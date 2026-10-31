@@ -170,7 +170,7 @@ describe('persistLlmCapabilityCallSystemPromptDigest', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const digest = `sha256:${createHash('sha256').update('present').digest('hex')}`;
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await openTestNativeWorkspace(workspaceDb);
       // The evidence owner restricts the digest to the two Gateway-entry capabilities.
       for (const [family, capabilityId, eligible] of [
@@ -215,7 +215,7 @@ describe('persistLlmCapabilityCallSystemPromptDigest', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const digest = `sha256:${createHash('sha256').update('present').digest('hex')}`;
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await openTestNativeWorkspace(workspaceDb);
       await expect(
         persistLlmCapabilityCallSystemPromptDigest({

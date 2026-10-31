@@ -1,3 +1,31 @@
+import {
+  readWorkspaceNotebookSelection,
+  type WorkspaceNotebookSelection,
+} from '../knowledge/notebook-workspace-selection.js';
+import { syncCanonicalDirectoryAsync } from './canonical-filesystem.js';
+import { readControlKnowledgeProposal } from './control-store-knowledge-heads.js';
+import { readImmutableContentBytes } from './immutable-content-read.js';
+import {
+  KnowledgeProposalRecordSchema,
+  KnowledgeProposalReviewFileSchema,
+  KnowledgeProposalReviewRecordSchema,
+  retainedProposal,
+  serializeKnowledgeProposalRecord,
+} from './knowledge-proposal-codecs.js';
+import { listAppliedNativeMigrationIds } from './migrate.js';
+
+export {
+  ensureCanonicalDirectoryAsync,
+  syncCanonicalDirectoryAsync,
+} from './canonical-filesystem.js';
+export {
+  ActorRefReaderSchema,
+  KnowledgeProposalRecordSchema,
+  KnowledgeProposalReviewFileSchema,
+  KnowledgeProposalReviewRecordSchema,
+  serializeKnowledgeProposalRecord,
+} from './knowledge-proposal-codecs.js';
+
 import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
@@ -23,11 +51,8 @@ import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type AgentEnvironmentPackageSnapshotRecord as AppApiAgentEnvironmentPackageSnapshotRecord,
-  KnowledgeManagerDraftedProposalSchema,
   KnowledgeProposalPageIdSchema,
-  KnowledgeProposalReviewSchema,
   KnowledgeSourceSchema,
-  validKnowledgeProposalShape,
 } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
@@ -36,14 +61,12 @@ import {
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import {
-  ActorRefSchema,
   AgentSessionIdSchema,
   type ArtifactSchema,
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
   compareCodeUnits,
   deriveEntityId,
-  entityIdPattern,
   type ItemSchema,
   isSealedTurnTerminal,
   KnowledgeNotebookPageSchema,
@@ -78,7 +101,7 @@ import {
   stringListFrontmatterField,
   validateOpenKitKnowledgeProfile,
 } from '../knowledge/okf.js';
-import { readSourcePointers } from '../knowledge/source-pointers.js';
+import { decodeSourcePointer, readSourcePointers } from '../knowledge/source-pointers.js';
 import type {
   AgentSession,
   KnowledgeProposalRecord,
@@ -142,9 +165,6 @@ export type { CaptureCoverageBinding };
 export { CaptureCoverageBindingSchema };
 
 const CanonicalTimestampSchema = z.string().datetime();
-const retainedProposal = Symbol('retainedKnowledgeProposal');
-/** Retained attribution is descriptive; all actor branches and accountability fields remain closed. */
-export const ActorRefReaderSchema = z.union(ActorRefSchema.options.map((schema) => schema.strip()));
 /** Canonical history projects fixed retained v1 payloads without their native headers. */
 const ItemReaderSchema = StoredItemPayloadV1Schema;
 /** Retained Turn snapshots validate attribution and Item relationships independently of wire schemas. */
@@ -155,76 +175,6 @@ export const ArtifactReaderSchema = StoredArtifactSnapshotV1Schema;
 const SseEventReaderSchema = StoredEventPayloadV1Schema;
 /** System metadata excludes the editable name and derived counts. */
 export const WorkspaceSystemRecordSchema = StoredWorkspaceV1Schema.omit({ schemaVersion: true });
-const { status: _proposalStatus, ...knowledgeProposalRecordShape } =
-  KnowledgeManagerDraftedProposalSchema.shape;
-export const KnowledgeProposalRecordSchema = z
-  .object(knowledgeProposalRecordShape)
-  .extend({
-    id: z.string().regex(/^kp_[a-f0-9]{64}$/),
-    producer: ActorRefReaderSchema,
-  })
-  .strip()
-  .refine(
-    validKnowledgeProposalShape,
-    'Knowledge Proposal must contain exactly one complete candidate shape.'
-  );
-export const KnowledgeProposalReviewRecordSchema = KnowledgeProposalReviewSchema.safeExtend({
-  reviewId: z.string().regex(entityIdPattern('kr')),
-  actor: ActorRefReaderSchema,
-})
-  .strip()
-  .superRefine((review, context) => {
-    const accepted = review.decision === 'accepted';
-    if (
-      accepted
-        ? !review.changedPageIds && review.targetAbsentAtDecision === null
-        : review.targetAbsentAtDecision !== null
-    ) {
-      context.addIssue({
-        code: 'custom',
-        message: 'Only an accepted review may record target absence.',
-        path: ['targetAbsentAtDecision'],
-      });
-    }
-  });
-/** Retained Review reader validates ordered decision core and identities without descriptive annotations. */
-export const KnowledgeProposalReviewFileSchema = z
-  .object({
-    proposalId: z.string().regex(/^kp_[a-f0-9]{64}$/),
-    workspaceId: WorkspaceIdSchema,
-    decisions: z.array(KnowledgeProposalReviewRecordSchema).min(1),
-  })
-  .strip()
-  .superRefine((file, context) => {
-    const requestIds = new Set<string>();
-    const reviewIds = new Set<string>();
-    let terminal = false;
-
-    for (const [index, review] of file.decisions.entries()) {
-      const expectedReviewId = deriveEntityId('kr', {
-        ownerScope: { kind: 'workspace', workspaceId: file.workspaceId },
-        proposalId: file.proposalId,
-        requestId: review.requestId,
-      });
-      if (
-        review.proposalId !== file.proposalId ||
-        review.workspaceId !== file.workspaceId ||
-        review.reviewId !== expectedReviewId ||
-        requestIds.has(review.requestId) ||
-        reviewIds.has(review.reviewId) ||
-        terminal
-      ) {
-        context.addIssue({
-          code: 'custom',
-          message: 'Knowledge Proposal review history is not append-only canonical history.',
-          path: ['decisions', index],
-        });
-      }
-      requestIds.add(review.requestId);
-      reviewIds.add(review.reviewId);
-      terminal ||= review.decision === 'accepted' || review.decision === 'rejected';
-    }
-  });
 export const KnowledgeSourceRecordSchema = KnowledgeSourceSchema.extend({
   capturedAt: CanonicalTimestampSchema,
   createdAt: CanonicalTimestampSchema,
@@ -709,14 +659,12 @@ export function assertSafeWorkspacePathSegment(value: string, label: string): vo
  * @returns Exact UTF-8 page bytes, or null when the page is absent.
  */
 export function readWorkspaceKnowledgePage(
-  workspaceRoot: string,
+  selection: WorkspaceNotebookSelection,
   knowledgePageId: string,
   notebookRevision?: string
 ): string | null {
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-  });
-  const pinned = notebookRevision ?? notebook.publishedRevision();
+  const notebook = selection.notebook;
+  const pinned = notebookRevision ?? selection.head.notebookCommit;
   if (notebookRevision !== undefined) notebook.history({ revision: pinned, limit: 1 });
   const path = `${knowledgePageId}.md`;
   if (!Object.hasOwn(notebook.inspectRevision(pinned).entries, path)) return null;
@@ -790,10 +738,7 @@ export interface WorkspaceFileRecords {
 }
 
 /** File-owned resources exclude all activated native product metadata and histories. */
-type FileOwnedWorkspaceRecords = Pick<
-  WorkspaceFileRecords,
-  'workspace' | 'artifacts' | 'knowledgeProposals' | 'knowledgeProposalReviews'
->;
+type FileOwnedWorkspaceRecords = Pick<WorkspaceFileRecords, 'workspace' | 'artifacts'>;
 
 /** One published Turn identity read without repairing canonical files. */
 export interface PublishedTurnIdentity {
@@ -1408,7 +1353,7 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
 }
 
 /**
- * Writes only still-file-owned configuration, Artifacts and Knowledge Proposals under a resolved root.
+ * Writes only still-file-owned configuration and Artifacts under a resolved root.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
@@ -1426,7 +1371,6 @@ export function writeWorkspaceFileRecords(
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   writeWorkspaceConfiguration(workspaceRoot, records.workspace, updateWorkspaceConfigName);
-  writeKnowledge(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records, initialArtifact);
 }
 
@@ -1514,12 +1458,40 @@ export function loadWorkspace(workspaceRoot: string, workspaceId: string): Works
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
   const artifacts = loadArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
-  const knowledge = readWorkspaceKnowledgePages(workspaceRoot);
-  const { knowledgeProposals, knowledgeProposalReviews } = readWorkspaceKnowledgeProposalInventory(
-    workspaceRoot,
-    workspaceId
+  const knowledgeReader = getWorkspaceProductReadHandle(
+    join(workspaceRoot, 'db', 'workspace.sqlite'),
+    { kind: 'workspace', workspaceId }
   );
-  const knowledgeSources = loadKnowledgeSources(workspaceRoot, workspaceId, threadIds, turnsById);
+  const activated = listAppliedNativeMigrationIds(knowledgeReader.sqlite, 'workspace').includes(
+    'workspace_0019_knowledge_authority'
+  );
+  const selection = activated
+    ? readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, workspaceId)
+    : undefined;
+  // The file-authority boot barrier validates predecessors before the one-way transfer. An activated root never falls back.
+  const knowledge = selection
+    ? readWorkspaceKnowledgePages(workspaceRoot, selection)
+    : Object.entries(
+        new KnowledgeNotebook({
+          repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+        }).readRevision(
+          new KnowledgeNotebook({
+            repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+          }).publishedRevision()
+        ).files
+      )
+        .filter(([path]) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
+        .map(([path, content]) => parseOwnedKnowledgePage(path, path.slice(0, -3), content));
+  const { knowledgeProposals, knowledgeProposalReviews } = activated
+    ? readWorkspaceKnowledgeProposalInventory(workspaceRoot, workspaceId)
+    : readPreKnowledgeWorkspaceProposalInventory(workspaceRoot, workspaceId);
+  const knowledgeSources = loadKnowledgeSources(
+    workspaceRoot,
+    workspaceId,
+    threadIds,
+    turnsById,
+    selection
+  );
   const agentSessions = listNativeProducts(scope, 'agent-session').map(
     (row) => AgentSessionRecordSchema.parse(row.record) as AgentSession
   );
@@ -1785,60 +1757,17 @@ export function listKnowledgePageIds(pagesRoot: string, prefix = ''): string[] {
  * @param workspaceRoot Published workspace root.
  * @returns Canonical pages in file-name order.
  */
-export function readWorkspaceKnowledgePages(workspaceRoot: string): KnowledgeNotebookPage[] {
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-  });
-  const revision = notebook.publishedRevision();
+export function readWorkspaceKnowledgePages(
+  workspaceRoot: string,
+  selection: WorkspaceNotebookSelection
+): KnowledgeNotebookPage[] {
+  if (selection.workspaceRoot !== workspaceRoot)
+    throw new Error('Workspace Knowledge binding is recovery_required.');
+  const notebook = selection.notebook;
+  const revision = selection.head.notebookCommit;
   return Object.entries(notebook.readRevision(revision).files)
     .filter(([path]) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
     .map(([path, content]) => parseOwnedKnowledgePage(path, path.slice(0, -3), content));
-}
-
-/**
- * Serializes one immutable Knowledge Proposal owner without review state.
- *
- * @param proposal Proposal tuple to serialize.
- * @returns Exact canonical proposal-file bytes.
- */
-export function serializeKnowledgeProposalRecord(
-  proposal: KnowledgeProposalRecord | Omit<KnowledgeProposalRecord, 'workspaceId'>
-): string {
-  const retained = (
-    proposal as KnowledgeProposalRecord & {
-      [retainedProposal]?: { bytes: string; core: KnowledgeProposalRecord };
-    }
-  )[retainedProposal];
-  if (
-    retained &&
-    'workspaceId' in proposal &&
-    isDeepStrictEqual(retained.core, KnowledgeProposalRecordSchema.parse(proposal))
-  )
-    return retained.bytes;
-  return [
-    '---',
-    'type: "proposal"',
-    'operation: "notebook-change"',
-    `owner_scope: ${JSON.stringify(proposal.ownerScope)}`,
-    `base_revision: ${JSON.stringify(proposal.baseRevision)}`,
-    `candidate_revision: ${JSON.stringify(proposal.candidateRevision)}`,
-    ...(proposal.changes
-      ? [
-          `changes: ${JSON.stringify(proposal.changes.map(({ path, content }) => ({ path, removed: content === null })))}`,
-        ]
-      : [`knowledge_page_id: ${JSON.stringify(proposal.knowledgePageId)}`]),
-    `content_digest: ${JSON.stringify(proposal.contentDigest)}`,
-    `source_references: ${JSON.stringify(proposal.sourceReferences)}`,
-    `rationale: ${JSON.stringify(proposal.rationale)}`,
-    ...(proposal.confidence === undefined
-      ? []
-      : [`confidence: ${JSON.stringify(proposal.confidence)}`]),
-    'review_required: true',
-    `producer: ${JSON.stringify(proposal.producer)}`,
-    `created_at: ${JSON.stringify(proposal.createdAt)}`,
-    '---',
-    proposal.rationale,
-  ].join('\n');
 }
 
 /**
@@ -1852,7 +1781,7 @@ export function serializeKnowledgeProposalRecord(
  * @param workspaceId Owning Workspace id.
  * @returns Canonical records in stable file-name and retained decision order.
  */
-export function readWorkspaceKnowledgeProposalInventory(
+export function readPreKnowledgeWorkspaceProposalInventory(
   workspaceRoot: string,
   workspaceId: string
 ): {
@@ -1870,6 +1799,79 @@ export function readWorkspaceKnowledgeProposalInventory(
   };
 }
 
+/** Selects exact SQL Knowledge authority through the existing Workspace read-handle lifetime. */
+export function readAdmittedWorkspaceKnowledgeSelection(
+  workspaceRoot: string,
+  workspaceId: string
+): WorkspaceNotebookSelection {
+  const owner = { kind: 'workspace' as const, workspaceId };
+  const reader = getWorkspaceProductReadHandle(
+    join(workspaceRoot, 'db', 'workspace.sqlite'),
+    owner
+  );
+  const config = readRetainedV1(
+    parseJsoncObject(readCanonicalTextFile(join(workspaceRoot, 'config', 'workspace.jsonc'))),
+    WorkspaceConfigSchema.parse
+  );
+  const knowledgeBaseId = config.workspace.defaultKnowledgeBaseId;
+  if (!knowledgeBaseId) throw new Error('Workspace Knowledge binding is recovery_required.');
+  return readWorkspaceNotebookSelection({
+    workspaceRoot,
+    workspaceDb: { scope: 'workspace', workspaceId, sqlite: reader.sqlite },
+    knowledgeBaseId,
+  });
+}
+
+/** Reads original immutable Proposal documents and ordered Reviews only from their native rows. */
+export function readWorkspaceKnowledgeProposalInventory(
+  workspaceRoot: string,
+  workspaceId: string
+): {
+  knowledgeProposals: KnowledgeProposalRecord[];
+  knowledgeProposalReviews: KnowledgeProposalReviewRecord[];
+} {
+  const reader = getWorkspaceProductReadHandle(join(workspaceRoot, 'db', 'workspace.sqlite'), {
+    kind: 'workspace',
+    workspaceId,
+  });
+  const db = { scope: 'workspace' as const, workspaceId, sqlite: reader.sqlite };
+  const rows = reader.sqlite
+    .prepare('SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY proposal_id')
+    .all() as { proposal_id: string }[];
+  const knowledgeProposals: KnowledgeProposalRecord[] = [];
+  const knowledgeProposalReviews: KnowledgeProposalReviewRecord[] = [];
+  for (const row of rows) {
+    const selected = readControlKnowledgeProposal(db, row.proposal_id);
+    if (!selected) throw new Error('Workspace Knowledge Proposal is recovery_required.');
+    const content = selected.proposal.documentContent;
+    const bytes = readImmutableContentBytes(
+      {
+        root: join(workspaceRoot, 'knowledge', 'content'),
+        knowledgeBaseId: selected.proposal.knowledgeBaseId,
+        mount: content.reference.locator.mount,
+      },
+      { kind: 'workspace', workspaceId },
+      content,
+      content.byteLength
+    );
+    const proposal = parseWorkspaceKnowledgeProposalDocument(
+      workspaceRoot,
+      workspaceId,
+      row.proposal_id,
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    );
+    if (
+      proposal.baseRevision !== selected.proposal.baseRevision ||
+      proposal.candidateRevision !== selected.proposal.candidateRevision ||
+      proposal.contentDigest !== selected.proposal.contentDigest
+    )
+      throw new Error('Workspace Knowledge Proposal is recovery_required.');
+    knowledgeProposals.push(proposal);
+    knowledgeProposalReviews.push(...selected.reviews);
+  }
+  return { knowledgeProposals, knowledgeProposalReviews };
+}
+
 /**
  * Loads knowledge proposal Markdown records.
  *
@@ -1882,116 +1884,125 @@ function loadKnowledgeProposals(
   workspaceId: string
 ): KnowledgeProposalRecord[] {
   const root = join(workspaceRoot, 'knowledge', 'proposals');
-
   return listFileNames(root)
     .filter((name) => name.endsWith('.md'))
-    .map((fileName) => {
-      const path = join(root, fileName);
-      const content = readCanonicalTextFile(path);
-      const parsed = parseOkfDocument({ path, content });
-
-      if (!parsed.ok) {
-        throw new Error(`Knowledge proposal ${fileName} is invalid.`);
-      }
-
-      const id = fileName.slice(0, -'.md'.length);
-      const sourceReferences = stringListFrontmatterField(parsed.document, 'source_references');
-      const producerValue = parsed.document.frontmatter.producer;
-      const confidenceValue = parsed.document.frontmatter.confidence;
-      if (
-        parsed.document.frontmatter.type !== 'proposal' ||
-        parsed.document.frontmatter.operation !== 'notebook-change' ||
-        parsed.document.frontmatter.review_required !== true ||
-        sourceReferences === null ||
-        typeof producerValue !== 'object' ||
-        producerValue === null ||
-        (parsed.document.frontmatter.changes === undefined && typeof confidenceValue !== 'number')
-      ) {
-        throw new Error(`Knowledge proposal ${id} has invalid immutable metadata.`);
-      }
-
-      const notebook = new KnowledgeNotebook({
-        repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-      });
-      const candidateRevision = requiredFrontmatterString(
-        parsed.document,
-        'candidate_revision',
-        path
-      );
-      const baseRevision = requiredFrontmatterString(parsed.document, 'base_revision', path);
-      const changedMetadata = parsed.document.frontmatter.changes;
-      if (
-        changedMetadata !== undefined &&
-        (Object.hasOwn(parsed.document.frontmatter, 'knowledge_page_id') ||
-          confidenceValue !== undefined)
-      )
-        throw new Error('Knowledge Proposal mixes candidate forms.');
-      const knowledgePageId =
-        changedMetadata === undefined
-          ? requiredFrontmatterString(parsed.document, 'knowledge_page_id', path)
-          : undefined;
-      const candidate = notebook.retainedCandidate(id);
-      if (
-        candidate.revision !== candidateRevision ||
-        candidate.parentRevision !== baseRevision ||
-        candidate.metadata.authority.kind !== 'proposal' ||
-        candidate.metadata.authority.proposalId !== id
-      )
-        throw new Error('Knowledge Proposal retained candidate is unavailable.');
-      const candidateFiles = notebook.readRevision(candidateRevision).files;
-      const baseFiles = notebook.readContent(baseRevision);
-      const candidateContent = notebook.readContent(candidateRevision);
-      const changes =
-        changedMetadata === undefined
-          ? undefined
-          : [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateContent)])]
-              .sort()
-              .filter((path) => baseFiles[path] !== candidateContent[path])
-              .map((path) => ({ path, content: candidateContent[path] ?? null }));
-      if (
-        changes &&
-        !isDeepStrictEqual(
-          changedMetadata,
-          changes.map(({ path, content }) => ({ path, removed: content === null }))
-        )
-      )
-        throw new Error('Knowledge Proposal changed paths contradict its candidate.');
-      const canonicalPageBytes = knowledgePageId
-        ? candidateFiles[`${knowledgePageId}.md`]
-        : undefined;
-      const proposal = KnowledgeProposalRecordSchema.parse({
-        id,
+    .map((fileName) =>
+      parseWorkspaceKnowledgeProposalDocument(
+        workspaceRoot,
         workspaceId,
-        operation: 'notebook-change',
-        ownerScope: parsed.document.frontmatter.owner_scope,
-        baseRevision,
-        candidateRevision,
-        ...(changes ? { changes } : { knowledgePageId, canonicalPageBytes }),
-        contentDigest: requiredFrontmatterString(parsed.document, 'content_digest', path),
-        sourceReferences,
-        rationale: requiredFrontmatterString(parsed.document, 'rationale', path),
-        ...(changes ? {} : { confidence: confidenceValue }),
-        producer: producerValue,
-        createdAt: requiredFrontmatterString(parsed.document, 'created_at', path),
-      });
-      const candidateDigest = `sha256:${createHash('sha256')
-        .update(
-          proposal.changes ? JSON.stringify(proposal.changes) : proposal.canonicalPageBytes!,
-          'utf8'
-        )
-        .digest('hex')}`;
-      if (
-        proposal.contentDigest !== candidateDigest ||
-        !isDeepStrictEqual(proposal.ownerScope, { kind: 'workspace', workspaceId }) ||
-        !isDeepStrictEqual(candidate.metadata.producer, proposal.producer)
-      ) {
-        throw new Error(`Knowledge proposal ${id} does not preserve its canonical bytes.`);
-      }
-      Object.defineProperty(proposal, retainedProposal, {
-        value: { bytes: content, core: structuredClone(proposal) },
-      });
-      return proposal;
-    });
+        fileName.slice(0, -3),
+        readCanonicalTextFile(join(root, fileName))
+      )
+    );
+}
+
+/** Verifies the exact original Proposal document and its immutable Git candidate through the one parser. */
+export function parseWorkspaceKnowledgeProposalDocument(
+  workspaceRoot: string,
+  workspaceId: string,
+  id: string,
+  content: string
+): KnowledgeProposalRecord {
+  const fileName = `${id}.md`;
+  const path = join(workspaceRoot, 'knowledge', 'proposals', fileName);
+  const parsed = parseOkfDocument({ path, content });
+
+  if (!parsed.ok) {
+    throw new Error(`Knowledge proposal ${fileName} is invalid.`);
+  }
+
+  const sourceReferences = stringListFrontmatterField(parsed.document, 'source_references');
+  const producerValue = parsed.document.frontmatter.producer;
+  const confidenceValue = parsed.document.frontmatter.confidence;
+  if (
+    parsed.document.frontmatter.type !== 'proposal' ||
+    parsed.document.frontmatter.operation !== 'notebook-change' ||
+    parsed.document.frontmatter.review_required !== true ||
+    sourceReferences === null ||
+    typeof producerValue !== 'object' ||
+    producerValue === null ||
+    (parsed.document.frontmatter.changes === undefined && typeof confidenceValue !== 'number')
+  ) {
+    throw new Error(`Knowledge proposal ${id} has invalid immutable metadata.`);
+  }
+
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  });
+  const candidateRevision = requiredFrontmatterString(parsed.document, 'candidate_revision', path);
+  const baseRevision = requiredFrontmatterString(parsed.document, 'base_revision', path);
+  const changedMetadata = parsed.document.frontmatter.changes;
+  if (
+    changedMetadata !== undefined &&
+    (Object.hasOwn(parsed.document.frontmatter, 'knowledge_page_id') ||
+      confidenceValue !== undefined)
+  )
+    throw new Error('Knowledge Proposal mixes candidate forms.');
+  const knowledgePageId =
+    changedMetadata === undefined
+      ? requiredFrontmatterString(parsed.document, 'knowledge_page_id', path)
+      : undefined;
+  const candidate = notebook.retainedCandidate(id);
+  if (
+    candidate.revision !== candidateRevision ||
+    candidate.parentRevision !== baseRevision ||
+    candidate.metadata.authority.kind !== 'proposal' ||
+    candidate.metadata.authority.proposalId !== id
+  )
+    throw new Error('Knowledge Proposal retained candidate is unavailable.');
+  const baseFiles = notebook.readContent(baseRevision);
+  const candidateContent = notebook.readContent(candidateRevision);
+  const changes =
+    changedMetadata === undefined
+      ? undefined
+      : [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateContent)])]
+          .sort()
+          .filter((path) => baseFiles[path] !== candidateContent[path])
+          .map((path) => ({ path, content: candidateContent[path] ?? null }));
+  if (
+    changes &&
+    !isDeepStrictEqual(
+      changedMetadata,
+      changes.map(({ path, content }) => ({ path, removed: content === null }))
+    )
+  )
+    throw new Error('Knowledge Proposal changed paths contradict its candidate.');
+  // readContent already verifies every exact Page and Source blob in this revision.
+  const canonicalPageBytes = knowledgePageId
+    ? candidateContent[`${knowledgePageId}.md`]
+    : undefined;
+  const proposal = KnowledgeProposalRecordSchema.parse({
+    id,
+    workspaceId,
+    operation: 'notebook-change',
+    ownerScope: parsed.document.frontmatter.owner_scope,
+    baseRevision,
+    candidateRevision,
+    ...(changes ? { changes } : { knowledgePageId, canonicalPageBytes }),
+    contentDigest: requiredFrontmatterString(parsed.document, 'content_digest', path),
+    sourceReferences,
+    rationale: requiredFrontmatterString(parsed.document, 'rationale', path),
+    ...(changes ? {} : { confidence: confidenceValue }),
+    producer: producerValue,
+    createdAt: requiredFrontmatterString(parsed.document, 'created_at', path),
+  });
+  const candidateDigest = `sha256:${createHash('sha256')
+    .update(
+      proposal.changes ? JSON.stringify(proposal.changes) : proposal.canonicalPageBytes!,
+      'utf8'
+    )
+    .digest('hex')}`;
+  if (
+    proposal.contentDigest !== candidateDigest ||
+    !isDeepStrictEqual(proposal.ownerScope, { kind: 'workspace', workspaceId }) ||
+    !isDeepStrictEqual(candidate.metadata.producer, proposal.producer)
+  ) {
+    throw new Error(`Knowledge proposal ${id} does not preserve its canonical bytes.`);
+  }
+  Object.defineProperty(proposal, retainedProposal, {
+    value: { bytes: content, core: structuredClone(proposal) },
+  });
+  return proposal;
 }
 
 /**
@@ -2065,14 +2076,41 @@ function loadKnowledgeSources(
   workspaceRoot: string,
   workspaceId: string,
   threadIds: ReadonlySet<string>,
-  turnsById: ReadonlyMap<string, Turn>
+  turnsById: ReadonlyMap<string, Turn>,
+  selection?: WorkspaceNotebookSelection
 ): KnowledgeSourceRecord[] {
-  const sources = [
-    ...readSourcePointers({
-      dataRoot: dirname(dirname(workspaceRoot)),
-      ownerScope: { kind: 'workspace', workspaceId },
-    }).values(),
-  ].map(({ source }) => KnowledgeSourceRecordSchema.parse({ ...source, workspaceId }));
+  const owner = {
+    dataRoot: dirname(dirname(workspaceRoot)),
+    ownerScope: { kind: 'workspace' as const, workspaceId },
+  };
+  const predecessor = selection
+    ? undefined
+    : new KnowledgeNotebook({ repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git') });
+  const pointers = selection
+    ? readSourcePointers(owner, undefined, selection)
+    : new Map(
+        Object.entries(predecessor!.readSourcePointers(predecessor!.publishedRevision())).map(
+          ([id, content]) => [
+            id,
+            decodeSourcePointer({
+              ownerScope: owner.ownerScope,
+              knowledgeBaseId: WorkspaceConfigSchema.parse(
+                parseJsoncObject(
+                  readCanonicalTextFile(join(workspaceRoot, 'config', 'workspace.jsonc'))
+                )
+              ).workspace.defaultKnowledgeBaseId!,
+              scopeSchemaText: readCanonicalTextFile(
+                join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml')
+              ),
+              id,
+              content,
+            }),
+          ]
+        )
+      );
+  const sources = [...pointers.values()].map(({ source }) =>
+    KnowledgeSourceRecordSchema.parse({ ...source, workspaceId })
+  );
   for (const source of sources)
     if (
       (source.originatingThreadId !== null && !threadIds.has(source.originatingThreadId)) ||
@@ -2192,10 +2230,6 @@ function loadArtifacts(
  */
 function assertSafeWorkspaceFileRecordIds(records: FileOwnedWorkspaceRecords): void {
   assertSafeWorkspacePathSegment(records.workspace.id, 'Workspace id');
-  for (const proposal of records.knowledgeProposals)
-    assertSafeWorkspacePathSegment(proposal.id, 'Knowledge proposal id');
-  for (const review of records.knowledgeProposalReviews)
-    assertSafeWorkspacePathSegment(review.proposalId, 'Knowledge proposal review id');
   for (const artifact of records.artifacts)
     assertSafeWorkspacePathSegment(artifact.id, 'Artifact id');
 }
@@ -2398,60 +2432,6 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
     StoredArtifactV1Schema
   );
   writeFileAtomic(join(filesRoot, contentFileName), artifact.content.body);
-}
-
-/**
- * Writes separate Knowledge Proposal and Review owners without changing notebook content.
- *
- * @param workspaceRoot Resolved workspace root.
- * @param records Current workspace records.
- */
-function writeKnowledge(workspaceRoot: string, records: FileOwnedWorkspaceRecords): void {
-  const proposalsRoot = join(workspaceRoot, 'knowledge', 'proposals');
-  const reviewsRoot = join(workspaceRoot, 'knowledge', 'reviews');
-  const expectedProposals = new Set(records.knowledgeProposals.map((record) => `${record.id}.md`));
-  const expectedReviews = new Set(
-    records.knowledgeProposalReviews.map((record) => `${record.proposalId}.json`)
-  );
-  const reviewsByProposal = new Map<string, KnowledgeProposalReviewRecord[]>();
-  for (const review of records.knowledgeProposalReviews)
-    reviewsByProposal.set(review.proposalId, [
-      ...(reviewsByProposal.get(review.proposalId) ?? []),
-      review,
-    ]);
-  ensureCanonicalDirectory(proposalsRoot);
-  ensureCanonicalDirectory(reviewsRoot);
-  removeStaleFiles(proposalsRoot, expectedProposals, '.md');
-  const existingProposals = new Map(
-    loadKnowledgeProposals(workspaceRoot, records.workspace.id).map((proposal) => [
-      proposal.id,
-      proposal,
-    ])
-  );
-  for (const proposal of records.knowledgeProposals) {
-    const previous = existingProposals.get(proposal.id);
-    if (previous) {
-      if (
-        !isDeepStrictEqual(
-          KnowledgeProposalRecordSchema.parse(previous),
-          KnowledgeProposalRecordSchema.parse(proposal)
-        )
-      )
-        throw new Error(`Knowledge proposal ${proposal.id} changed immutable content.`);
-      continue;
-    }
-    writeFileAtomic(
-      join(proposalsRoot, `${proposal.id}.md`),
-      serializeKnowledgeProposalRecord(proposal)
-    );
-  }
-  removeStaleFiles(reviewsRoot, expectedReviews, '.json');
-  for (const [proposalId, decisions] of reviewsByProposal)
-    writeOwnedDescriptiveJson(
-      join(reviewsRoot, `${proposalId}.json`),
-      { proposalId, workspaceId: decisions[0]!.workspaceId, decisions },
-      KnowledgeProposalReviewFileSchema
-    );
 }
 
 /** Normalizes a Proposal without losing its already verified immutable source bytes. */
@@ -3054,39 +3034,6 @@ export function publishCanonicalPath(staged: string, destination: string): void 
   }
 }
 
-/** Synchronizes one directory without blocking asynchronous file collection or following a link. */
-export async function syncCanonicalDirectoryAsync(path: string): Promise<void> {
-  const descriptor = await fsPromises.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    if (!(await descriptor.stat()).isDirectory())
-      throw new Error(`Canonical path must be a directory: ${path}.`);
-    await descriptor.sync();
-  } finally {
-    await descriptor.close();
-  }
-}
-
-/** Creates missing asynchronous publication parents and commits their entries before use. */
-export async function ensureCanonicalDirectoryAsync(path: string): Promise<void> {
-  const metadata = await fsPromises.lstat(path).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
-  if (!metadata) {
-    // Commit each parent before creating children so a failed retry has one entry to verify.
-    await ensureCanonicalDirectoryAsync(dirname(path));
-    try {
-      await fsPromises.mkdir(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-  }
-  const current = metadata ?? (await fsPromises.lstat(path));
-  if (!current.isDirectory() || current.isSymbolicLink())
-    throw new Error(`Canonical path must be a directory: ${path}.`);
-  await syncCanonicalDirectoryAsync(dirname(path));
-}
-
 /** Synchronizes a complete asynchronous staging tree, with child entries committed before their parents. */
 export async function syncCanonicalTreeAsync(path: string): Promise<void> {
   const metadata = await fsPromises.lstat(path);
@@ -3146,21 +3093,6 @@ function removeStaleDirectories(root: string, expectedNames: ReadonlySet<string>
   for (const name of listDirectoryNames(root)) {
     if (!expectedNames.has(name)) {
       rmSync(join(root, name), { recursive: true, force: true });
-    }
-  }
-}
-
-/**
- * Removes unexpected owned files with one suffix.
- *
- * @param root Parent directory.
- * @param expectedNames File names to retain.
- * @param suffix Owned file suffix.
- */
-function removeStaleFiles(root: string, expectedNames: ReadonlySet<string>, suffix: string): void {
-  for (const name of listFileNames(root)) {
-    if (name.endsWith(suffix) && !expectedNames.has(name)) {
-      rmSync(join(root, name), { force: true });
     }
   }
 }

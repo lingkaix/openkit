@@ -2,7 +2,8 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it, onTestFinished } from 'vitest';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { FsStore } from '../lib/store.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -10,14 +11,17 @@ import {
   authorityRequestId,
   candidatePage,
   createFixture,
+  currentNotebookRevision,
   currentPage,
   decide,
   digest,
   expectAuthorityFailure,
   type Fixture,
+  replaceRetainedProposalReviews,
+  retainedProposalState,
 } from '../test-support/knowledge-proposal-authority.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import {
   KnowledgeProposalReviewFileSchema,
   loadWorkspace,
@@ -67,14 +71,15 @@ describe('knowledge proposal authority', () => {
         requireActivePreparation();
         accepted = await decide(baseline, 'accepted', 'review-annotated-accepted');
         requireActivePreparation();
-        const retained = JSON.parse(readFileSync(baseline.reviewPath, 'utf8'));
-        retained.futureNote = 'Retained Review description';
-        for (const review of retained.decisions) {
+        const retained = JSON.parse(
+          retainedProposalState(baseline, baseline.proposal.id).reviewsJson
+        );
+        for (const review of retained) {
           review.futureNote = 'Retained decision description';
           review.actor.futureNote = 'Retained attribution description';
         }
-        annotatedBytes = `${JSON.stringify(retained, null, 2)}\n`;
-        writeFileSync(baseline.reviewPath, annotatedBytes);
+        annotatedBytes = JSON.stringify(retained);
+        replaceRetainedProposalReviews(baseline, baseline.proposal.id, annotatedBytes);
         await shutdownControlStoreWorkerClient();
         requireActivePreparation();
         baseline.coreDb.sqlite.close();
@@ -89,17 +94,34 @@ describe('knowledge proposal authority', () => {
       const store = new FsStore({ dataRoot });
       const workspaceRoot = join(dataRoot, 'workspaces', baseline.workspaceId);
       const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
-      return {
+      const workspaceDb = openWorkspaceDb(dataRoot, baseline.workspaceId);
+      const notebook = (() => {
+        try {
+          return readWorkspaceNotebookSelection({
+            workspaceDb,
+            workspaceRoot,
+            knowledgeBaseId: readDefaultKnowledgeBaseId({
+              dataRoot,
+              scope: { kind: 'workspace', workspaceId: baseline.workspaceId },
+            }),
+          }).notebook;
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      })();
+      const fixture = {
         ...baseline,
         dataRoot,
         coreDb,
         store,
         workspaceRoot,
         repositoryPath,
-        notebook: new KnowledgeNotebook({ repositoryPath }),
+        notebook,
         app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
-        proposalPath: join(workspaceRoot, 'knowledge', 'proposals', `${baseline.proposal.id}.md`),
-        reviewPath: join(workspaceRoot, 'knowledge', 'reviews', `${baseline.proposal.id}.json`),
+      };
+      return {
+        ...fixture,
+        proposalPath: retainedProposalState(fixture, baseline.proposal.id).proposalPath,
       };
     }
 
@@ -120,19 +142,19 @@ describe('knowledge proposal authority', () => {
         f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId)
       ).toEqual(accepted);
       expect(await decide(f, 'accepted', 'review-annotated-accepted')).toEqual(accepted);
-      expect(readFileSync(f.reviewPath, 'utf8')).toBe(annotatedBytes);
+      expect(retainedProposalState(f, f.proposal.id).reviewsJson).toBe(annotatedBytes);
     });
 
     it('reads a fresh canonical Proposal and Review census and refuses contradictory or orphan Reviews', async () => {
       const f = await reviewedFixture();
       const proposalBytes = readFileSync(f.proposalPath, 'utf8');
-      const revision = f.notebook.publishedRevision();
+      const revision = currentNotebookRevision(f);
       const history = f.notebook.readRevision(revision);
       const first = readWorkspaceKnowledgeProposalInventory(f.workspaceRoot, f.workspaceId);
       expect(first.knowledgeProposals).toEqual([f.proposal]);
       expect(first.knowledgeProposalReviews).toEqual([deferred.review, accepted.review]);
 
-      const later = f.store.createKnowledgeProposal({
+      const later = await f.store.createKnowledgeProposal({
         workspaceId: f.workspaceId,
         requestId: authorityRequestId('inventory-later-proposal'),
         baseRevision: revision,
@@ -151,10 +173,10 @@ describe('knowledge proposal authority', () => {
         'deferred',
         'inventory-later-review'
       );
-      const laterProposalPath = join(f.workspaceRoot, 'knowledge', 'proposals', `${later.id}.md`);
-      const laterReviewPath = join(f.workspaceRoot, 'knowledge', 'reviews', `${later.id}.json`);
+      const laterState = retainedProposalState(f, later.id);
+      const laterProposalPath = laterState.proposalPath;
       const laterProposalBytes = readFileSync(laterProposalPath, 'utf8');
-      const laterReviewBytes = readFileSync(laterReviewPath, 'utf8');
+      const laterReviewBytes = laterState.reviewsJson;
       const fresh = readWorkspaceKnowledgeProposalInventory(f.workspaceRoot, f.workspaceId);
       expect(fresh.knowledgeProposals.map(({ id }) => id).sort()).toEqual(
         [f.proposal.id, later.id].sort()
@@ -170,21 +192,27 @@ describe('knowledge proposal authority', () => {
         laterDecision.review
       );
       expect(readFileSync(f.proposalPath, 'utf8')).toBe(proposalBytes);
-      expect(readFileSync(f.reviewPath, 'utf8')).toBe(annotatedBytes);
-      expect(f.notebook.publishedRevision()).toBe(revision);
+      expect(retainedProposalState(f, f.proposal.id).reviewsJson).toBe(annotatedBytes);
+      expect(currentNotebookRevision(f)).toBe(revision);
       expect(f.notebook.readRevision(revision)).toEqual(history);
 
       const changed = JSON.parse(laterReviewBytes);
-      changed.decisions[0].changedPageIds = ['review/inventory-foreign'];
-      expect(KnowledgeProposalReviewFileSchema.safeParse(changed).success).toBe(true);
-      writeFileSync(laterReviewPath, `${JSON.stringify(changed, null, 2)}\n`);
+      changed[0].changedPageIds = ['review/inventory-foreign'];
+      expect(
+        KnowledgeProposalReviewFileSchema.safeParse({
+          proposalId: later.id,
+          workspaceId: f.workspaceId,
+          decisions: changed,
+        }).success
+      ).toBe(true);
+      replaceRetainedProposalReviews(f, later.id, JSON.stringify(changed));
       try {
         expect(() =>
           readWorkspaceKnowledgeProposalInventory(f.workspaceRoot, f.workspaceId)
         ).toThrow();
         expect(() => loadWorkspace(f.workspaceRoot, f.workspaceId)).toThrow();
       } finally {
-        writeFileSync(laterReviewPath, laterReviewBytes);
+        replaceRetainedProposalReviews(f, later.id, laterReviewBytes);
       }
 
       rmSync(laterProposalPath);
@@ -192,11 +220,11 @@ describe('knowledge proposal authority', () => {
         expect(() =>
           readWorkspaceKnowledgeProposalInventory(f.workspaceRoot, f.workspaceId)
         ).toThrow();
-        expect(readFileSync(laterReviewPath, 'utf8')).toBe(laterReviewBytes);
+        expect(retainedProposalState(f, later.id).reviewsJson).toBe(laterReviewBytes);
       } finally {
         writeFileSync(laterProposalPath, laterProposalBytes);
       }
-      expect(f.notebook.publishedRevision()).toBe(revision);
+      expect(currentNotebookRevision(f)).toBe(revision);
       expect(f.notebook.readRevision(revision)).toEqual(history);
     });
 
@@ -215,8 +243,8 @@ describe('knowledge proposal authority', () => {
     ] as const)('refuses changed ordered decision core: %s', async (key, value) => {
       const f = await reviewedFixture();
       const changed = JSON.parse(annotatedBytes);
-      changed.decisions[1][key] = value;
-      writeFileSync(f.reviewPath, `${JSON.stringify(changed, null, 2)}\n`);
+      changed[1][key] = value;
+      replaceRetainedProposalReviews(f, f.proposal.id, JSON.stringify(changed));
       await expectAuthorityFailure(
         () => f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId),
         'recovery_required'
@@ -231,8 +259,8 @@ describe('knowledge proposal authority', () => {
     it('refuses reversed retained decision order', async () => {
       const f = await reviewedFixture();
       const retained = JSON.parse(annotatedBytes);
-      retained.decisions.reverse();
-      writeFileSync(f.reviewPath, `${JSON.stringify(retained, null, 2)}\n`);
+      retained.reverse();
+      replaceRetainedProposalReviews(f, f.proposal.id, JSON.stringify(retained));
       await expectAuthorityFailure(
         () => f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId),
         'recovery_required'

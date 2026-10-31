@@ -4,11 +4,12 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readPortableWorkerContextPackageTrace } from './context/worker-context-package.js';
-import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
+import { NotebookError } from './knowledge/notebook.js';
 import {
   currentWorkspaceNotebookRead,
   type WorkspaceNotebookRead,
 } from './knowledge/notebook-index-source.js';
+import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import {
   type KnowledgePageReferenceProof,
   KnowledgePageValidationError,
@@ -163,13 +164,15 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
     scope: { kind: 'workspace', workspaceId: input.workspaceId },
   });
   const pageScopeId = `page/workspace/${input.workspaceId}/${knowledgeBaseId}`;
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
+  if (!input.workspaceDb) throw new NotebookError('recovery_required');
+  const workspaceRoot = join(dataRoot, 'workspaces', input.workspaceId);
+  const selection = readWorkspaceNotebookSelection({
+    workspaceDb: input.workspaceDb,
+    workspaceRoot,
+    knowledgeBaseId,
   });
-  const prepared = currentWorkspaceNotebookRead(
-    input.notebookRead,
-    join(dataRoot, 'workspaces', input.workspaceId)
-  );
+  const notebook = selection.notebook;
+  const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
   const revision =
     input.notebookRevision ?? prepared?.current.revision ?? notebook.publishedRevision();
   if (!prepared && input.notebookRevision !== undefined) notebook.history({ revision, limit: 1 });

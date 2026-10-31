@@ -15,8 +15,9 @@ import {
   readAuthorizedServerNotebookPages,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
-import { readCanonicalTextFile } from '../storage/workspace-file-records.js';
+import { openWorkspaceDb } from '../storage/db.js';
 import { KnowledgeNotebook, validateNotebookFiles } from './notebook.js';
+import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import {
   parseOkfDocument,
   parseScopeKnowledgeSchema,
@@ -71,24 +72,35 @@ export async function resolveKnowledgeMeaningReference(input: {
       : { kind: 'workspace', workspaceId: input.workspaceId };
     const binding = () => readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
     if (binding() !== scope.knowledgeBaseId) return unavailable;
+    const selectWorkspace = () => {
+      const workspaceDb = openWorkspaceDb(dataRoot, input.workspaceId);
+      try {
+        return readWorkspaceNotebookSelection({
+          workspaceDb,
+          workspaceRoot: join(dataRoot, 'workspaces', input.workspaceId),
+          knowledgeBaseId: scope.knowledgeBaseId,
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    };
     if (scope.family === 'raw') {
       // This native meaning path cannot turn a Worker's KB read grant into an original-byte lease.
       if (input.access.resourcePolicyActor?.kind === 'agent') return unavailable;
       const owner = { dataRoot, ownerScope };
-      const notebook = new KnowledgeNotebook({
-        repositoryPath: join(
-          server
-            ? join(dataRoot, 'server', 'knowledge')
-            : join(dataRoot, 'workspaces', input.workspaceId, 'knowledge'),
-          'notebook.git'
-        ),
-      });
+      const serverNotebook = server
+        ? new KnowledgeNotebook({
+            repositoryPath: join(dataRoot, 'server', 'knowledge', 'notebook.git'),
+          })
+        : undefined;
       const current = (): { pointer: SourcePointer; revision: string } | null => {
         if (server) admitServerKnowledgeRetrieval(target);
         else admitKnowledgeRetrieval(target);
         if (binding() !== scope.knowledgeBaseId) return null;
+        const selection = server ? undefined : selectWorkspace();
+        const notebook = serverNotebook ?? selection!.notebook;
         const revision = notebook.publishedRevision();
-        const matches = [...readSourcePointers(owner, revision).values()].filter(
+        const matches = [...readSourcePointers(owner, revision, selection).values()].filter(
           ({ fields }) =>
             fields.contentRef.locator.path === parsed.reference.objectId &&
             fields.contentRef.contentDigest === parsed.contentDigest &&
@@ -136,10 +148,6 @@ export async function resolveKnowledgeMeaningReference(input: {
     const notebookRoot = server
       ? join(dataRoot, 'server', 'knowledge')
       : join(dataRoot, 'workspaces', input.workspaceId, 'knowledge');
-    const currentSchema = () =>
-      parseScopeKnowledgeSchema(
-        readCanonicalTextFile(join(notebookRoot, 'schema', 'scope-schema.yaml'))
-      );
     const read = (notebookRevision?: string) =>
       (server ? readAuthorizedServerNotebookPages : readAuthorizedWorkspaceNotebookPages)({
         ...target,
@@ -147,7 +155,7 @@ export async function resolveKnowledgeMeaningReference(input: {
         ...(notebookRevision === undefined ? {} : { notebookRevision }),
       });
     const valid = (selected: ReturnType<typeof read>) => {
-      const schema = currentSchema();
+      const schema = parseScopeKnowledgeSchema(selected.scopeSchemaText);
       if (!schema.ok) return false;
       const page = selected.pages[0];
       if (!page || page.id !== id) return false;
@@ -183,9 +191,9 @@ export async function resolveKnowledgeMeaningReference(input: {
       `sha256:${createHash('sha256').update(content).digest('hex')}`;
     let selected = current;
     if (hash(current.pages[0]!.content) !== parsed.contentDigest) {
-      const notebook = new KnowledgeNotebook({
-        repositoryPath: join(notebookRoot, 'notebook.git'),
-      });
+      const notebook = server
+        ? new KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') })
+        : selectWorkspace().notebook;
       let revision: string | null = current.notebookRevision;
       let previousBlob: string | undefined;
       let match: string | undefined;

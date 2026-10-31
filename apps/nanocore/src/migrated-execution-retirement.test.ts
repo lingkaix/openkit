@@ -77,7 +77,7 @@ describe('migrated execution route retirement', () => {
     const beforeQueue = requireSchedulerAdmissionEntry(coreDb, 'queue_retirement');
     const beforeTurn = { ...store.getTurnById(turn.id) };
     const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const recoveryScope = { workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id, turnId: turn.id };
     const app = createApp({ coreDb, dataRoot, store, automationStore, workspaceMutationAdmission });
     const binding = {

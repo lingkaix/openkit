@@ -27,7 +27,7 @@ function createWorkspaceDb() {
     rmSync(dataRoot, { force: true, recursive: true });
   });
   workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return workspaceDb;
 }
 

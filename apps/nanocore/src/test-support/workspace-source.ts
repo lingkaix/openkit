@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { publishCapturedSource } from '../knowledge/source-publication.js';
 import { readManagedSourceText } from '../knowledge/source-reading.js';
@@ -25,10 +26,17 @@ export async function captureWorkspaceSourceFixture(input: {
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   const workspaceDb = openWorkspaceDb(dataRoot, source.workspaceId);
-  applyScopedMigrations(workspaceDb);
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', source.workspaceId, 'knowledge', 'notebook.git'),
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  const workspaceRoot = join(dataRoot, 'workspaces', source.workspaceId);
+  const selection = readWorkspaceNotebookSelection({
+    workspaceDb,
+    workspaceRoot,
+    knowledgeBaseId: readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: source.workspaceId },
+    }),
   });
+  const notebook = selection.notebook;
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const requestId = randomUUID();
@@ -53,12 +61,13 @@ export async function captureWorkspaceSourceFixture(input: {
             request: {
               workspaceId: source.workspaceId,
               requestId,
-              baseRevision: notebook.publishedRevision(),
+              baseRevision: selection.head.notebookCommit,
               changes: [],
               summary: 'Capture explicit fixture evidence.',
             },
             runtimeConfigManager: { current: () => snapshot },
             workspaceMutationAdmission,
+            scopeSchemaText: selection.scopeSchemaText,
           });
         },
       },
@@ -84,16 +93,29 @@ export async function readWorkspaceSourceFixture(input: {
     dataRoot: input.dataRoot,
     ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
   };
-  const pointer = readSourcePointers(owner).get(input.sourceId);
-  if (!pointer) throw new Error('Fixture Source pointer is unavailable.');
-  return readManagedSourceText({
-    owner,
-    pointer,
-    access: {
-      store: input.store,
-      coreDb: input.coreDb,
-      actor: { kind: 'user', id: input.userId },
-      requestActor: { kind: 'local', userId: input.userId },
-    },
-  });
+  const workspaceDb = openWorkspaceDb(input.dataRoot, input.workspaceId);
+  try {
+    const selection = readWorkspaceNotebookSelection({
+      workspaceDb,
+      workspaceRoot: join(input.dataRoot, 'workspaces', input.workspaceId),
+      knowledgeBaseId: readDefaultKnowledgeBaseId({
+        dataRoot: input.dataRoot,
+        scope: { kind: 'workspace', workspaceId: input.workspaceId },
+      }),
+    });
+    const pointer = readSourcePointers(owner, undefined, selection).get(input.sourceId);
+    if (!pointer) throw new Error('Fixture Source pointer is unavailable.');
+    return readManagedSourceText({
+      owner,
+      pointer,
+      access: {
+        store: input.store,
+        coreDb: input.coreDb,
+        actor: { kind: 'user', id: input.userId },
+        requestActor: { kind: 'local', userId: input.userId },
+      },
+    });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
 }

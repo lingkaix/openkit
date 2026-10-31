@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -16,6 +17,9 @@ import { basename, dirname, join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -31,7 +35,6 @@ import {
   openWorkspaceDb,
   openWorkspaceDbAtRoot,
   type UserDb,
-  verifyAndMigrateExistingScopedDatabases,
   type WorkspaceDb,
 } from './db.js';
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from './fs-layout.js';
@@ -40,6 +43,7 @@ import {
   applyScopedMigrations,
   listAppliedNativeMigrationIds,
 } from './migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from './workspace-storage-migration.js';
 
 /**
  * Creates an isolated data root for scoped database tests.
@@ -67,6 +71,49 @@ function initializeUnmigratedScopedDb(scopedDb: UserDb | WorkspaceDb): void {
   expect(listMigrationIds(sqlite, scope)).toEqual([]);
 }
 
+/** Creates the retained Knowledge predecessor that full Workspace boot migration admits. */
+function initializeWorkspaceKnowledgePredecessor(dataRoot: string, workspaceId: string): void {
+  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  const configRoot = join(workspaceRoot, 'config');
+  const knowledgeBaseId = testEntityId('kb', `scoped-database:${workspaceId}`);
+  mkdirSync(configRoot, { recursive: true });
+  writeFileSync(
+    join(configRoot, 'workspace.jsonc'),
+    `${JSON.stringify({
+      schemaVersion: 1,
+      workspace: {
+        name: workspaceId,
+        defaultAgentId: null,
+        defaultKnowledgeBaseId: knowledgeBaseId,
+        knowledgeMounts: [
+          {
+            name: 'managed',
+            backend: 'local',
+            root: 'raw',
+            default: true,
+            knowledgeBaseId,
+          },
+        ],
+      },
+    })}\n`
+  );
+  const schemaRoot = join(workspaceRoot, 'knowledge', 'schema');
+  mkdirSync(schemaRoot, { recursive: true });
+  writeFileSync(join(schemaRoot, 'scope-schema.yaml'), DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
+  new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  }).initialize({
+    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
+    metadata: {
+      summary: 'Scoped database fixture',
+      producer: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
+      authority: { kind: 'direct', instructionReference: 'test-fixture:scoped-database' },
+      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'0'.repeat(64)}` },
+      sourceReferences: [],
+    },
+  });
+}
+
 describe('scoped storage databases', () => {
   it('binds Workspace ORM reads and transactions to the supplied connection without hiding raw writes', () => {
     const root = createDataRoot();
@@ -74,7 +121,7 @@ describe('scoped storage databases', () => {
     const original = openWorkspaceDb(root, workspaceId);
     const sqlite = original.sqlite;
     try {
-      applyScopedMigrations(original);
+      applyScopedMigrations(original, undefined, 'pre-knowledge');
       sqlite.exec('CREATE TEMP TABLE binding_marker (value TEXT NOT NULL)');
       const before = sqlite.serialize();
       const bound = bindWorkspaceSqlite(sqlite, root, workspaceId);
@@ -136,7 +183,7 @@ describe('scoped storage databases', () => {
     const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
     let db = openWorkspaceDb(root, workspaceId);
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const tables = listTables(db.sqlite).filter((name) =>
         ['control_execution_steps', 'control_executions'].includes(name)
       );
@@ -207,10 +254,16 @@ describe('scoped storage databases', () => {
     },
     {
       name: 'openBootVerifiedWorkspaceDb',
-      create: (dataRoot: string) =>
-        openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
-      open: (dataRoot: string) => {
-        verifyAndMigrateExistingScopedDatabases(dataRoot);
+      activatesKnowledge: true,
+      create: (dataRoot: string) => {
+        initializeWorkspaceKnowledgePredecessor(
+          dataRoot,
+          'ws_00000000-0000-73c3-900f-8d310e4ba201'
+        );
+        return openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
+      },
+      open: async (dataRoot: string) => {
+        await verifyAndMigrateExistingScopedDatabases(dataRoot);
         return openBootVerifiedWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
       },
     },
@@ -223,15 +276,17 @@ describe('scoped storage databases', () => {
           workspaceRoot: join(dataRoot, 'workspaces', '.staging', 'full-reopen'),
         }),
     },
-  ])('keeps FULL synchronization on creation and WAL reopen through $name', (factory) => {
+  ])('keeps FULL synchronization on creation and WAL reopen through $name', async (factory) => {
     const dataRoot = createDataRoot();
     let sqlite: UserDb['sqlite'] | undefined;
     try {
-      const created = (factory.create ?? factory.open)(dataRoot);
+      const created = await (factory.create ?? factory.open)(dataRoot);
       sqlite = created.sqlite;
       expect(sqlite.inTransaction).toBe(false);
       expect(sqlite.pragma('synchronous', { simple: true }), 'fresh connection FULL').toBe(2);
       if (created.scope === 'core') applyMigrations(created);
+      else if (created.scope === 'workspace')
+        applyScopedMigrations(created, undefined, 'pre-knowledge');
       else applyScopedMigrations(created);
       expect(sqlite.inTransaction).toBe(false);
       expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -244,13 +299,18 @@ describe('scoped storage databases', () => {
       sqlite.close();
       sqlite = undefined;
 
-      sqlite = factory.open(dataRoot).sqlite;
+      sqlite = (await factory.open(dataRoot)).sqlite;
       // Read the returned connection before any migration can mask its connection-local policy.
       expect(sqlite.name).toBe(expectedPath);
       expect(sqlite.inTransaction).toBe(false);
-      expect(sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
-        retainedMigrations
-      );
+      const reopenedMigrations = sqlite
+        .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
+        .all();
+      if ('activatesKnowledge' in factory) {
+        expect(reopenedMigrations).toHaveLength(retainedMigrations.length + 1);
+        expect(reopenedMigrations.slice(0, retainedMigrations.length)).toEqual(retainedMigrations);
+        expect(reopenedMigrations.at(-1)).toMatchObject({ created_at: 1793415600000 });
+      } else expect(reopenedMigrations).toEqual(retainedMigrations);
       expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
       expect(sqlite.pragma('synchronous', { simple: true }), 'reopened connection FULL').toBe(2);
     } finally {
@@ -303,8 +363,8 @@ describe('scoped storage databases', () => {
     );
 
     try {
-      applyScopedMigrations(workspaceDb);
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       const tables = listTables(workspaceDb.sqlite);
 
@@ -522,7 +582,7 @@ describe('scoped storage databases', () => {
   it.each([
     'missing',
     'corrupt',
-  ] as const)('contains a %s registered Workspace database without replacing authority or blocking its sibling', (fault) => {
+  ] as const)('contains a %s registered Workspace database without replacing authority or blocking its sibling', async (fault) => {
     const dataRoot = createDataRoot();
     const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
     const siblingId = 'ws_00000000-0000-7a13-853c-5d52c0c5884f';
@@ -531,12 +591,13 @@ describe('scoped storage databases', () => {
       applyMigrations(coreDb);
       const ownerUserId = ensureLocalUser(coreDb);
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       workspaceDb.sqlite.close();
       recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
       const sibling = openWorkspaceDb(dataRoot, siblingId);
       initializeUnmigratedScopedDb(sibling);
       sibling.sqlite.close();
+      initializeWorkspaceKnowledgePredecessor(dataRoot, siblingId);
       recordWorkspaceOwnerMembership({ coreDb, workspaceId: siblingId, ownerUserId });
       const registrations = coreDb.sqlite
         .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
@@ -550,7 +611,7 @@ describe('scoped storage databases', () => {
       else writeFileSync(databasePath, corruptBytes);
 
       // A local integrity failure must not abort verification of a healthy sibling.
-      expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).not.toThrow();
+      await expect(verifyAndMigrateExistingScopedDatabases(dataRoot)).resolves.toBeUndefined();
       if (fault === 'missing') {
         expect(existsSync(databasePath)).toBe(false);
         expect(readdirSync(dirname(databasePath))).toEqual([]);
@@ -581,11 +642,12 @@ describe('scoped storage databases', () => {
     }
   });
 
-  it('migrates real scoped databases without treating Workspace staging as a scope', () => {
+  it('migrates real scoped databases without treating Workspace staging as a scope', async () => {
     const dataRoot = createDataRoot();
     const created = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
     initializeUnmigratedScopedDb(created);
     created.sqlite.close();
+    initializeWorkspaceKnowledgePredecessor(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
     const stagingRoot = join(dataRoot, 'workspaces', '.staging');
     const stagedChild = join(stagingRoot, 'ws_00000000-0000-7a13-853c-5d52c0c5884f');
     const sentinel = Buffer.from([0, 1, 127, 255]);
@@ -596,7 +658,7 @@ describe('scoped storage databases', () => {
     initializeUnmigratedScopedDb(userDb);
     userDb.sqlite.close();
 
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
 
     expect(readdirSync(stagingRoot)).toEqual(['ws_00000000-0000-7a13-853c-5d52c0c5884f']);
     expect(readdirSync(stagedChild)).toEqual(['sentinel']);
@@ -628,6 +690,7 @@ describe('scoped storage databases', () => {
         'workspace_0016_capture_origin',
         'workspace_0017_knowledge_heads',
         'workspace_0018_knowledge_proposals',
+        'workspace_0019_knowledge_authority',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -648,7 +711,7 @@ describe('scoped storage databases', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       expect(
         workspaceDb.sqlite
@@ -818,7 +881,7 @@ describe('scoped storage databases', () => {
       'ws_00000000-0000-73c3-900f-8d310e4ba201'
     );
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       expect(tableColumns(workspaceDb.sqlite, 'pending_user_turn_records')).toEqual([]);
       expect(tableColumns(workspaceDb.sqlite, 'steering_terminal_outcomes')).toEqual([]);
       expect(tableColumns(workspaceDb.sqlite, 'goals')).toEqual([
@@ -863,7 +926,7 @@ describe('scoped storage databases', () => {
         join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'quarantine'),
       verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
     },
-  ])('keeps corrupt $scope authority closed at its owning scope', ({
+  ])('keeps corrupt $scope authority closed at its owning scope', async ({
     scope,
     path,
     quarantine,
@@ -886,7 +949,8 @@ describe('scoped storage databases', () => {
       const workspace = openWorkspaceDb(dataRoot, workspaceId);
       initializeUnmigratedScopedDb(workspace);
       workspace.sqlite.close();
-      expect(() => verify(dataRoot)).not.toThrow();
+      initializeWorkspaceKnowledgePredecessor(dataRoot, workspaceId);
+      await expect(verify(dataRoot)).resolves.toBeUndefined();
       expect(() =>
         openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b').sqlite.close()
       ).toThrow();
@@ -945,7 +1009,7 @@ process.kill(process.pid, 'SIGKILL');`,
     }
   });
 
-  it('migrates healthy existing scoped databases during boot scan', () => {
+  it('migrates healthy existing scoped databases during boot scan', async () => {
     const dataRoot = createDataRoot();
     const initialUserDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
     initializeUnmigratedScopedDb(initialUserDb);
@@ -953,8 +1017,9 @@ process.kill(process.pid, 'SIGKILL');`,
     const initialWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
     initializeUnmigratedScopedDb(initialWorkspaceDb);
     initialWorkspaceDb.sqlite.close();
+    initializeWorkspaceKnowledgePredecessor(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
 
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
@@ -988,6 +1053,7 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0016_capture_origin',
         'workspace_0017_knowledge_heads',
         'workspace_0018_knowledge_proposals',
+        'workspace_0019_knowledge_authority',
       ]);
     } finally {
       userDb.sqlite.close();
@@ -1000,7 +1066,8 @@ process.kill(process.pid, 'SIGKILL');`,
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      initializeWorkspaceKnowledgePredecessor(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
       await openTestNativeWorkspace(workspaceDb);
       await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
@@ -1018,7 +1085,7 @@ process.kill(process.pid, 'SIGKILL');`,
       workspaceDb.sqlite.close();
     }
 
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
 
     const restartedDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 

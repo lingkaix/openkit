@@ -33,7 +33,7 @@ async function fixture() {
   const knowledgeBaseId = allocateEntityId('kb');
   const owner = { kind: 'workspace' as const, workspaceId };
   let db = openWorkspaceDb(root, workspaceId);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   const client = getControlStoreWorkerClient();
   const contentRoot = join(root, 'immutable');
   const stagingRoot = join(root, 'staging');
@@ -303,7 +303,7 @@ it('prepares exact original schema bytes without SQL effects and refuses invalid
     ).rejects.toThrow();
     const foreign = openWorkspaceDb(f.db().dataRoot, allocateEntityId('ws'));
     try {
-      applyScopedMigrations(foreign);
+      applyScopedMigrations(foreign, undefined, 'pre-knowledge');
       await expect(prepareControlKnowledgeHead({ ...input, db: foreign })).rejects.toThrow();
     } finally {
       foreign.sqlite.close();

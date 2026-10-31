@@ -46,7 +46,7 @@ describe('dispatchLogicalModel member selection', () => {
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await openTestNativeWorkspace(workspaceDb);
       const authorityActor = {
         kind: 'agent',

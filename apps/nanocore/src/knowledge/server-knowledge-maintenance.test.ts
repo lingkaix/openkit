@@ -21,7 +21,7 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { attributedNotebookPageBytes } from './notebook-publication.js';
+import { attributedNotebookPageBytes } from './okf.js';
 import { initializeScopedNotebook, pinScopedNotebook } from './scoped-notebook-owner.js';
 import {
   prepareServerKnowledgeMaintenance,

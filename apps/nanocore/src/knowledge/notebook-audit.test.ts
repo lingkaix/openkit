@@ -38,7 +38,7 @@ function fixture() {
   });
   applyMigrations(coreDb);
   applyScopedMigrations(userDb);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return { dataRoot, coreDb, userDb, workspaceDb };
 }
 

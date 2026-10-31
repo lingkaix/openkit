@@ -49,12 +49,12 @@ export function parseWorkspaceStorageMigrationArgs(
  * @returns Operator-safe success summary.
  * @throws Error when arguments, preflight, backup, migration, or verification fail.
  */
-export function runWorkspaceStorageMigrationCli(
+export async function runWorkspaceStorageMigrationCli(
   argv: readonly string[],
   write: (line: string) => void = (line) => process.stdout.write(line)
-): WorkspaceStorageMigrationCliSummary {
+): Promise<WorkspaceStorageMigrationCliSummary> {
   const args = parseWorkspaceStorageMigrationArgs(argv);
-  const summary = migrateWorkspaceStorage(args);
+  const summary = await migrateWorkspaceStorage(args);
 
   write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary;

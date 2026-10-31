@@ -114,7 +114,7 @@ function fixture(bindings: PolicyDocumentV1['statements']) {
     workspaceDb.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const document: PolicyDocumentV1 = { schemaVersion: 1, statements: bindings };
   return {
     workspaceDb,

@@ -946,7 +946,7 @@ describe('generic turn routes', () => {
         'ws_00000000-0000-7000-8000-000000000001'
       );
       try {
-        applyScopedMigrations(workspaceDb);
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
         await raiseRecordedPendingRequest(
           fixture.store,
           workspaceDb.sqlite,

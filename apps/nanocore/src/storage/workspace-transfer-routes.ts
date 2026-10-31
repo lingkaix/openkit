@@ -64,6 +64,7 @@ import {
   writeImportedWorkspaceCatalog,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
 import {
   parseWorkerContextPackageTrace,
@@ -79,6 +80,7 @@ import {
   importedWorkspaceNotebookFiles,
   readPortableWorkspaceNotebookPages,
 } from '../knowledge/notebook-workspace-portability.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
 import {
@@ -205,6 +207,7 @@ import {
   listNativeProducts,
   nativeProductScope,
   preserveDescriptiveRecord,
+  readAdmittedWorkspaceKnowledgeSelection,
   readCanonicalFile,
   readNativeProduct,
   readNativeTurnHistory,
@@ -609,6 +612,14 @@ function collectWorkspaceExportRows(
       const workspaceSyncRecords = listExportableWorkspaceSyncRecords(workspaceDb, workspaceId);
       const workspaceMaterialRows = listExportableWorkspaceMaterialRows(workspaceDb);
       return {
+        knowledgeSelection: readWorkspaceNotebookSelection({
+          workspaceDb,
+          workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceId),
+          knowledgeBaseId: readDefaultKnowledgeBaseId({
+            dataRoot: workspaceDb.dataRoot,
+            scope: { kind: 'workspace', workspaceId },
+          }),
+        }),
         artifactReviews: listExportableArtifactReviews(workspaceDb),
         evaluationCandidateSets: readExportableCandidateSets(workspaceDb),
         auditEvents: listPortableWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb),
@@ -1178,13 +1189,19 @@ export async function importVerifiedWorkspace({
   });
   const observations = retainedImportedObservations(snapshot, verified);
   const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
-    snapshot.finalizeNotebookKnowledge?.(readPortableWorkspaceNotebookPages(workspaceRoot));
+    snapshot.finalizeNotebookKnowledge?.(
+      readPortableWorkspaceNotebookPages(
+        workspaceRoot,
+        readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, importedWorkspaceId)
+      )
+    );
     writeWorkspacePortableFileState(workspaceRoot, {
       ...snapshot.portableFileState,
       retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
         workspaceRoot,
         workspaceId: importedWorkspaceId,
         knowledgeBaseId: snapshot.defaultKnowledgeBaseId,
+        selection: readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, importedWorkspaceId),
         traces: snapshot.portableFileState.retrievalTraceFiles,
       }),
     });
@@ -1655,6 +1672,9 @@ function createVerifiedWorkspaceExportFiles({
   const lightApps = listExportableLightAppFamilies(dataRoot, workspaceId);
   const exported = writeWorkspaceExportTree({
     sourceWorkspaceRoot: join(dataRoot, 'workspaces', workspaceId),
+    ...('knowledgeSelection' in workspaceRowFamilies
+      ? { sourceNotebookSelection: workspaceRowFamilies.knowledgeSelection }
+      : {}),
     ...(deletionRecoveryContext ? { deletionRecoveryContext } : {}),
     exportRoot,
     exportId,

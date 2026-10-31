@@ -134,6 +134,13 @@
       "when": 1793410200000,
       "tag": "0018_knowledge_proposals",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1793415600000,
+      "tag": "0019_knowledge_authority",
+      "breakpoints": true
     }
   ]
 }

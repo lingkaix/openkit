@@ -2312,7 +2312,7 @@ describe('Knowledge OpenAPI derivation', () => {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
       ...KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(24);
+    expect(Object.keys(definitions)).toHaveLength(25);
     for (const id of [
       'knowledge.observation.list',
       'knowledge.observation.record',
@@ -2333,6 +2333,7 @@ describe('Knowledge OpenAPI derivation', () => {
         'knowledge.maintain',
         'knowledge.proposal.read',
         'knowledge.schema.preview',
+        'knowledge.schema.apply',
         'knowledge.notebook.history',
         'knowledge.notebook.diff',
         'knowledge.notebook.restore',

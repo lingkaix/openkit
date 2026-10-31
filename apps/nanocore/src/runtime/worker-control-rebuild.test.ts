@@ -1,4 +1,5 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -6,12 +7,20 @@ import {
   AgentEnvironmentPackageSchema,
   redactAgentEnvironmentPackageSnapshot,
 } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import { type ActorRef, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  openBootVerifiedWorkspaceDb,
+  openCoreDb,
+  openWorkspaceDb,
+} from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -38,6 +47,49 @@ interface RestorableWorkerControlFixture {
   readonly workerInferenceToken: string;
   /** Raw worker-capability token retained by the restarted client. */
   readonly workerCapabilityToken: string;
+}
+
+/** Creates the retained predecessor that the real boot migration transfers into native Knowledge. */
+function initializeWorkspaceKnowledgePredecessor(dataRoot: string, workspaceId: string): void {
+  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  const knowledgeBaseId = testEntityId('kb', `worker-control-rebuild:${workspaceId}`);
+  mkdirSync(join(workspaceRoot, 'config'), { recursive: true });
+  writeFileSync(
+    join(workspaceRoot, 'config', 'workspace.jsonc'),
+    `${JSON.stringify(
+      writeRetainedV1({
+        workspace: {
+          name: workspaceId,
+          defaultAgentId: null,
+          defaultKnowledgeBaseId: knowledgeBaseId,
+          knowledgeMounts: [
+            {
+              name: 'managed',
+              backend: 'local',
+              root: 'raw',
+              default: true,
+              knowledgeBaseId,
+            },
+          ],
+        },
+      })
+    )}\n`
+  );
+  const schemaRoot = join(workspaceRoot, 'knowledge', 'schema');
+  mkdirSync(schemaRoot, { recursive: true });
+  writeFileSync(join(schemaRoot, 'scope-schema.yaml'), DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
+  new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  }).initialize({
+    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
+    metadata: {
+      summary: 'Worker control rebuild fixture',
+      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      authority: { kind: 'direct', instructionReference: 'test-fixture:worker-control-rebuild' },
+      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'0'.repeat(64)}` },
+      sourceReferences: [],
+    },
+  });
 }
 
 /**
@@ -105,9 +157,13 @@ async function createRestorableWorkerControlFixture(
       workspaceRoots: [],
     })
   );
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-
-  applyScopedMigrations(workspaceDb);
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const predecessorDb = openWorkspaceDb(dataRoot, workspaceId);
+  applyScopedMigrations(predecessorDb, undefined, 'pre-knowledge');
+  predecessorDb.sqlite.close();
+  initializeWorkspaceKnowledgePredecessor(dataRoot, workspaceId);
+  await verifyAndMigrateExistingScopedDatabases(dataRoot);
+  const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
   try {
     if (options.recordSnapshot !== false) {
       recordAgentEnvironmentPackageSnapshot(workspaceDb, {

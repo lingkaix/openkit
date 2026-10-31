@@ -81,7 +81,7 @@ async function fixture(member = true, citedAnswer = false) {
     workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     repositoryWorkspaceDb: (workspaceId: string) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       return db;
     },
   };

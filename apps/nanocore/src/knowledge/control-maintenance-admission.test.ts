@@ -39,7 +39,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
     kind === 'user' ? quickChatWorkspaceIdForUser(userId) : allocateEntityId('ws');
   const db = kind === 'server' ? openCoreDb(root) : openWorkspaceDb(root, workspaceId);
   if (db.scope === 'core') applyMigrations(db);
-  else applyScopedMigrations(db);
+  else applyScopedMigrations(db, undefined, 'pre-knowledge');
   db.sqlite.close();
   const require = createRequire(import.meta.url);
   const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;

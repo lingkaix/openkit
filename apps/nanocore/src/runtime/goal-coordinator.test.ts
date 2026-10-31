@@ -143,7 +143,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
     llmGatewayDispatcher: { createResponses: dispatch } as never,
   });
   const db = openWorkspaceDb(dataRoot, workspace.id);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   const updateTurn = store.updateTurn.bind(store);
   let acknowledgeCoordinator!: (turnId: string) => void;
   const coordinatorAcknowledged = new Promise<string>((resolve) => {
@@ -565,7 +565,7 @@ it('completes the real Coordinator request through stock Codex with unchanged To
     llmGatewayDispatcher: dispatcher,
   });
   const db = openWorkspaceDb(dataRoot, workspace.id);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   try {
     const response = await app.request('/api/app/operations/goal.create', {
       method: 'POST',

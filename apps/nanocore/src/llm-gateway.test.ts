@@ -2992,7 +2992,7 @@ describe('OpenAI-compatible agent gateway', () => {
       applyMigrations(coreDb);
       const fixtureWorkspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       try {
-        applyScopedMigrations(fixtureWorkspaceDb);
+        applyScopedMigrations(fixtureWorkspaceDb, undefined, 'pre-knowledge');
         await openTestNativeWorkspace(fixtureWorkspaceDb);
       } finally {
         fixtureWorkspaceDb.sqlite.close();

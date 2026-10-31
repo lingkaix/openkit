@@ -6,11 +6,13 @@ import {
   type ReadKnowledgeProposalResponse,
   ReadKnowledgeProposalResponseSchema,
 } from '@openkit/app-api-schemas';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type OperationImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { KnowledgeNotebook, NotebookError } from './notebook.js';
+import { NotebookError } from './notebook.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 
 /** Current publication/source owners reused only for a read; this feature retains no state. */
 type Dependencies = Pick<
@@ -61,15 +63,15 @@ export function createKnowledgeProposalPreviewOperationImplementations(
         // This verifier owns the exact saved document, retained candidate ref and fixed-base change set.
         const saved = proposal;
         const proposalDigest = store.knowledgeProposalDigest(input.workspaceId, input.proposalId);
-        const notebook = new KnowledgeNotebook({
-          repositoryPath: join(
+        const selection = readWorkspaceNotebookSelection({
+          workspaceDb,
+          workspaceRoot: join(dataRoot, 'workspaces', input.workspaceId),
+          knowledgeBaseId: readDefaultKnowledgeBaseId({
             dataRoot,
-            'workspaces',
-            input.workspaceId,
-            'knowledge',
-            'notebook.git'
-          ),
+            scope: { kind: 'workspace', workspaceId: input.workspaceId },
+          }),
         });
+        const notebook = selection.notebook;
         if (notebook.publishedRevision() !== saved.baseRevision)
           throw new OperationError(
             'conflict',
@@ -91,6 +93,7 @@ export function createKnowledgeProposalPreviewOperationImplementations(
             requestActor,
             runtimeConfigManager,
             workspaceMutationAdmission,
+            scopeSchemaText: selection.scopeSchemaText,
             request: {
               workspaceId: input.workspaceId,
               requestId: candidate.metadata.changeRequest.requestId,

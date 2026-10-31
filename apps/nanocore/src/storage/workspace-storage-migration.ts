@@ -10,10 +10,10 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
-
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   allocateEntityId,
@@ -23,9 +23,18 @@ import {
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-
+import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
+import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
+import {
+  type PreparedKnowledgeAuthorityTransfer,
+  prepareControlKnowledgeAuthorityTransfer,
+  prepareWorkspaceKnowledgeProposal,
+  prepareWorkspaceKnowledgeSelection,
+} from './control-store-knowledge.js';
 import { openControlStoreProductReadHandle } from './control-store-products.js';
 import {
   assertBackupMatchesPredecessor,
@@ -37,16 +46,37 @@ import {
   writeColdDataRootBackupManifest,
   writeStorageJsonAtomically as writeJsonAtomically,
 } from './data-root-backup.js';
+import type { WorkspaceDb } from './db.js';
 import {
+  assertSqliteIntegrity,
   type CoreDb,
+  listChildDirectories,
+  listWorkspaceDirectories,
+  openBootVerifiedWorkspaceDb,
+  openUserDb,
   openWorkspaceDbAtRoot,
-  verifyAndMigrateExistingScopedDatabases,
 } from './db.js';
-import { readDataRootLayoutMarker, resolveDataRootPath } from './fs-layout.js';
+import {
+  ensureLayout,
+  readDataRootLayoutMarker,
+  resolveDataRootPath,
+  userDbPath,
+  workspaceDbPath,
+} from './fs-layout.js';
 import { rebuildExistingWorkspaceDerivedIndexes } from './index-rebuild.js';
-import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import {
+  applyMigrations,
+  applyScopedMigrations,
+  listAppliedNativeMigrationIds,
+} from './migrate.js';
 import * as schema from './schema/index.js';
-import { loadWorkspaceFileRecords, WorkspaceSystemRecordSchema } from './workspace-file-records.js';
+import {
+  loadWorkspaceFileRecords,
+  readCanonicalTextFile,
+  readPreKnowledgeWorkspaceProposalInventory,
+  syncCanonicalTreeAsync,
+  WorkspaceSystemRecordSchema,
+} from './workspace-file-records.js';
 
 /** Stable preflight diagnostic codes for the one-way Workspace storage migration. */
 export type WorkspaceStorageMigrationDiagnosticCode =
@@ -271,9 +301,9 @@ const WORKSPACE_STORAGE_STAGING_DIRECTORY = '.workspace-storage-v2-staging';
  * @returns Successful migration summary.
  * @throws Error when preflight, backup, staging, publication, schema migration, or verification fails.
  */
-export function migrateWorkspaceStorage(
+export async function migrateWorkspaceStorage(
   input: MigrateWorkspaceStorageInput
-): WorkspaceStorageMigrationResult {
+): Promise<WorkspaceStorageMigrationResult> {
   const now = input.now ?? (() => new Date().toISOString());
   const startedAt = now();
   const stagingRoot = resolveDataRootPath(input.dataRoot, WORKSPACE_STORAGE_STAGING_DIRECTORY);
@@ -363,7 +393,31 @@ export function migrateWorkspaceStorage(
 
       try {
         migrateStagedWorkspaceMetadata(stagedWorkspaceRoot, source.workspaceId);
-        applyScopedMigrations(workspaceDb);
+        if (
+          listAppliedNativeMigrationIds(workspaceDb.sqlite, 'workspace').includes(
+            'workspace_0019_knowledge_authority'
+          )
+        ) {
+          applyScopedMigrations(workspaceDb);
+        } else {
+          applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+          const config = WorkspaceConfigSchema.parse(
+            parseJsoncObject(
+              readCanonicalTextFile(join(stagedWorkspaceRoot, 'config', 'workspace.jsonc'))
+            )
+          );
+          const knowledgeBaseId = config.workspace.defaultKnowledgeBaseId;
+          if (!knowledgeBaseId) throw new Error('Workspace Knowledge binding is missing.');
+          const carry = await prepareExistingWorkspaceKnowledgeAuthority({
+            db: workspaceDb,
+            workspaceRoot: stagedWorkspaceRoot,
+            knowledgeBaseId,
+            notebook: new KnowledgeNotebook({
+              repositoryPath: join(stagedWorkspaceRoot, 'knowledge', 'notebook.git'),
+            }),
+          });
+          applyScopedMigrations(workspaceDb, carry);
+        }
         // Verify successor authority before publication can remove the predecessor paths.
         const reader = openControlStoreProductReadHandle(
           join(stagedWorkspaceRoot, 'db', 'workspace.sqlite'),
@@ -409,7 +463,7 @@ export function migrateWorkspaceStorage(
     coreDb = undefined;
 
     stage = 'verification';
-    verifyAndMigrateExistingScopedDatabases(input.dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(input.dataRoot);
     const rebuiltIndexes = rebuildExistingWorkspaceDerivedIndexes(input.dataRoot, { now });
     if (rebuiltIndexes.length !== sources.length) {
       throw new Error('Derived-index verification did not rebuild every migrated Workspace.');
@@ -1167,4 +1221,141 @@ function redactFailureMessage(error: unknown, dataRoot: string): string {
  */
 function toReportPath(root: string, path: string): string {
   return relative(root, path).split(sep).join('/');
+}
+
+/**
+ * Validates and migrates existing user- and workspace-scope databases at boot.
+ *
+ * @param dataRoot Data root to scan.
+ * SQLite keeps its existing journal recovery; migrations and domain recovery wait for file admission.
+ * @param validateFileAuthority Boot's file-history barrier, after integrity checks and before domain mutations.
+ * Isolated failures refuse only their owning scope; shared layout failures still throw.
+ */
+export async function verifyAndMigrateExistingScopedDatabases(
+  dataRoot: string,
+  validateFileAuthority?: () => void
+): Promise<void> {
+  ensureLayout(dataRoot);
+  const scopes = [
+    ...listChildDirectories(join(dataRoot, 'users')).map((id) => ({ scope: 'user' as const, id })),
+    ...listWorkspaceDirectories(dataRoot).map((id) => ({ scope: 'workspace' as const, id })),
+  ];
+  for (const { scope, id } of scopes) {
+    if (!isScopeAdmitted(dataRoot, scope, id)) continue;
+    try {
+      const path = scope === 'workspace' ? workspaceDbPath(dataRoot, id) : userDbPath(dataRoot, id);
+      if (scope === 'workspace' && (!existsSync(path) || statSync(path).size === 0))
+        throw new Error('Expected Workspace database is missing or uninitialized.');
+      assertSqliteIntegrity(path);
+    } catch {
+      refuseScope(dataRoot, { scope, id, check: 'database' });
+    }
+  }
+  // Boot must not migrate or recover a scope whose canonical file authority is unreadable.
+  validateFileAuthority?.();
+  for (const { scope, id } of scopes) {
+    if (!isScopeAdmitted(dataRoot, scope, id)) continue;
+    try {
+      if (scope === 'workspace') await migrateWorkspaceDatabase(dataRoot, id);
+      else migrateUserDatabase(dataRoot, id);
+    } catch {
+      refuseScope(dataRoot, { scope, id, check: 'database' });
+    }
+  }
+}
+
+/**
+ * Applies user-scope migrations after integrity and boot file-authority admission.
+ *
+ * @param dataRoot Data root that owns the database.
+ * @param userId User id that owns the database.
+ * @throws When the existing authoritative database fails SQLite integrity validation.
+ */
+function migrateUserDatabase(dataRoot: string, userId: string): void {
+  const userDb = openUserDb(dataRoot, userId);
+
+  try {
+    applyScopedMigrations(userDb);
+  } finally {
+    userDb.sqlite.close();
+  }
+}
+
+/**
+ * Applies Workspace migrations and call-loss recovery only after both authority checks.
+ *
+ * @param dataRoot Data root that owns the database.
+ * @param workspaceId Workspace id that owns the database.
+ * @throws When the authoritative Workspace database is missing or fails SQLite integrity validation.
+ */
+async function migrateWorkspaceDatabase(dataRoot: string, workspaceId: string): Promise<void> {
+  const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+
+  try {
+    const activated = listAppliedNativeMigrationIds(workspaceDb.sqlite, 'workspace').includes(
+      'workspace_0019_knowledge_authority'
+    );
+    if (!activated) {
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+      const transfer = await prepareExistingWorkspaceKnowledgeAuthority({
+        db: workspaceDb,
+        workspaceRoot,
+        knowledgeBaseId: readDefaultKnowledgeBaseId({
+          dataRoot,
+          scope: { kind: 'workspace', workspaceId },
+        }),
+        notebook: new KnowledgeNotebook({
+          repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+        }),
+      });
+      applyScopedMigrations(workspaceDb, transfer);
+    } else applyScopedMigrations(workspaceDb);
+    recoverRunningCapabilityCalls({ workspaceDb });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+/** Carries original file authority only under the existing pre-serving Workspace exclusion. */
+async function prepareExistingWorkspaceKnowledgeAuthority(input: {
+  readonly db: WorkspaceDb;
+  readonly workspaceRoot: string;
+  readonly knowledgeBaseId: string;
+  readonly notebook: KnowledgeNotebook;
+}): Promise<PreparedKnowledgeAuthorityTransfer> {
+  const notebookCommit = input.notebook.publishedRevision();
+  const schemaText = readCanonicalTextFile(
+    join(input.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml')
+  );
+  const inventory = readPreKnowledgeWorkspaceProposalInventory(
+    input.workspaceRoot,
+    input.db.workspaceId
+  );
+  await syncCanonicalTreeAsync(join(input.workspaceRoot, 'knowledge', 'notebook.git'));
+  const head = await prepareWorkspaceKnowledgeSelection({ ...input, notebookCommit, schemaText });
+  const proposals = [];
+  for (const original of inventory.knowledgeProposals) {
+    const proposal = await prepareWorkspaceKnowledgeProposal({ ...input, proposal: original });
+    const hasReviews = inventory.knowledgeProposalReviews.some(
+      (review) => review.proposalId === original.id
+    );
+    const reviews: unknown = hasReviews
+      ? JSON.parse(
+          readCanonicalTextFile(
+            join(input.workspaceRoot, 'knowledge', 'reviews', `${original.id}.json`)
+          )
+        ).decisions
+      : [];
+    if (!Array.isArray(reviews))
+      throw new TypeError('Knowledge carry has invalid original Reviews.');
+    proposals.push({ proposal, reviews });
+  }
+  if (
+    input.notebook.publishedRevision() !== notebookCommit ||
+    readCanonicalTextFile(join(input.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml')) !==
+      schemaText
+  )
+    throw new TypeError('Knowledge predecessor changed during authority transfer.');
+  return prepareControlKnowledgeAuthorityTransfer({ db: input.db, heads: [head], proposals });
 }

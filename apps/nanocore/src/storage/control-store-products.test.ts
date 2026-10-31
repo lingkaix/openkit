@@ -206,7 +206,7 @@ async function nativeFixture(kind: 'server' | 'workspace') {
   const path = db.sqlite.name;
   try {
     if (db.scope === 'core') applyMigrations(db);
-    else applyScopedMigrations(db);
+    else applyScopedMigrations(db, undefined, 'pre-knowledge');
   } finally {
     db.sqlite.close();
   }

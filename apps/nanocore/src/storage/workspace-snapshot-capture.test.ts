@@ -40,9 +40,9 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createLightApp, createRecord } from '../generative-kernel/commands.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { publishWorkspaceNotebook } from '../knowledge/notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
@@ -371,7 +371,7 @@ const databaseHandles: { readonly sqlite: Database.Database }[] = [];
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { version: '0.1.0-c-a-oracle', buildId: 'independent-snapshot-oracle' };
 const formats = {
-  'drizzle.workspace': 19,
+  'drizzle.workspace': 20,
   'drizzle.app.1': 1,
   'drizzle.app.2': 2,
   'drizzle.app.3': 3,
@@ -3731,6 +3731,8 @@ describe('C-a independent sealed generations', () => {
       join(f.workspaceRoot, 'light-apps', app.appId, 'data.sqlite'),
       f.root
     );
+    const firstKnowledgeHeads = beforeFirstWorkspace.knowledge_notebook_heads!;
+    expect(firstKnowledgeHeads.length).toBeGreaterThan(0);
     const firstGitHeads = Object.entries(tree(f.workspaceRoot)).filter(
       ([path, hash]) =>
         hash.startsWith('sha256:') &&
@@ -3800,7 +3802,7 @@ describe('C-a independent sealed generations', () => {
         hash.startsWith('sha256:') &&
         /^\/knowledge\/notebook\.git\/(?:HEAD$|refs\/|packed-refs$)/.test(path)
     );
-    expect(secondGitHeads).not.toEqual(firstGitHeads);
+    expect(beforeSecondWorkspace.knowledge_notebook_heads).not.toEqual(firstKnowledgeHeads);
     const secondWorkspaceReader = openControlStoreProductReadHandle(
       sourceScope.path,
       nativeTurn.owner
@@ -4547,10 +4549,16 @@ describe('C-a independent sealed generations', () => {
     const f = await fixture();
     const db = openWorkspaceDb(f.dataRoot, workspaceId);
     databaseHandles.push(db);
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(f.workspaceRoot, 'knowledge', 'notebook.git'),
+    const selection = readWorkspaceNotebookSelection({
+      workspaceDb: db,
+      workspaceRoot: f.workspaceRoot,
+      knowledgeBaseId: readDefaultKnowledgeBaseId({
+        dataRoot: f.dataRoot,
+        scope: { kind: 'workspace', workspaceId },
+      }),
     });
-    const baseRevision = notebook.publishedRevision();
+    const notebook = selection.notebook;
+    const baseRevision = selection.head.notebookCommit;
     const originalIndex = notebook.readRevision(baseRevision).files['index.md']!;
     const request = {
       workspaceId,
@@ -4576,6 +4584,7 @@ describe('C-a independent sealed generations', () => {
           coreDb: f.coreDb,
           workspaceDb: db,
           notebook,
+          scopeSchemaText: selection.scopeSchemaText,
           actor,
           requestActor: { kind: 'local', userId: f.ownerId },
           request,
@@ -4612,7 +4621,13 @@ describe('C-a independent sealed generations', () => {
       expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
       const before = tree(join(f.workspaceRoot, 'knowledge', 'notebook.git'));
       await expect(publishWorkspaceNotebook(dependencies, request)).rejects.toThrow();
-      expect(notebook.publishedRevision()).toBe(baseRevision);
+      expect(
+        readWorkspaceNotebookSelection({
+          workspaceDb: db,
+          workspaceRoot: f.workspaceRoot,
+          knowledgeBaseId: selection.head.knowledgeBaseId,
+        }).head.notebookCommit
+      ).toBe(baseRevision);
       expect(tree(join(f.workspaceRoot, 'knowledge', 'notebook.git'))).toEqual(before);
     } finally {
       resume();
@@ -4624,7 +4639,13 @@ describe('C-a independent sealed generations', () => {
       expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
       const published = await publishWorkspaceNotebook(dependencies, request);
       expect(published.outcome).toBe('published');
-      expect(notebook.publishedRevision()).not.toBe(baseRevision);
+      expect(
+        readWorkspaceNotebookSelection({
+          workspaceDb: db,
+          workspaceRoot: f.workspaceRoot,
+          knowledgeBaseId: selection.head.knowledgeBaseId,
+        }).head.notebookCommit
+      ).not.toBe(baseRevision);
       await f.read(captured.manifest.backupId, async (bundle) => {
         for (const [path, hash] of heads)
           expect(digest(await bytes(bundle, path.slice(1)))).toBe(hash);

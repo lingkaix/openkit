@@ -51,9 +51,10 @@ import {
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   DISPLAY_PROJECTION_REFRESH_FIELDS,
@@ -624,8 +625,24 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                         automationStore: input.automationStore,
                         turnStartServices: input.turnStartServices,
                         knowledgeCallId: call.id,
-                        knowledgePublicationAdmission: (publication) =>
-                          readWorkspaceNotebookAdmission({
+                        knowledgePublicationAdmission: (publication) => {
+                          const workspaceRoot = join(
+                            input.coreDb!.dataRoot,
+                            'workspaces',
+                            environmentPackage.scope.workspaceId
+                          );
+                          const selection = readWorkspaceNotebookSelection({
+                            workspaceDb: workspaceDb!,
+                            workspaceRoot,
+                            knowledgeBaseId: readDefaultKnowledgeBaseId({
+                              dataRoot: input.coreDb!.dataRoot,
+                              scope: {
+                                kind: 'workspace',
+                                workspaceId: environmentPackage.scope.workspaceId,
+                              },
+                            }),
+                          });
+                          return readWorkspaceNotebookAdmission({
                             store: input.store,
                             coreDb: input.coreDb!,
                             workspaceDb: workspaceDb!,
@@ -654,18 +671,12 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                                 throw mcpDeniedError();
                               requireCurrentBuiltinToolPolicy();
                             },
-                            notebook: new KnowledgeNotebook({
-                              repositoryPath: join(
-                                input.coreDb!.dataRoot,
-                                'workspaces',
-                                environmentPackage.scope.workspaceId,
-                                'knowledge',
-                                'notebook.git'
-                              ),
-                            }),
+                            notebook: selection.notebook,
+                            scopeSchemaText: selection.scopeSchemaText,
                             runtimeConfigManager: { current: input.runtimeConfig },
                             workspaceMutationAdmission: input.workspaceMutationAdmission,
-                          }),
+                          });
+                        },
                         ...(input.fileAdmission ? { fileAdmission: input.fileAdmission } : {}),
                         ...(input.captureArtifact
                           ? { captureArtifact: input.captureArtifact }

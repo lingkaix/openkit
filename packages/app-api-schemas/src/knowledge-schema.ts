@@ -72,3 +72,22 @@ export const PreviewKnowledgeSchemaResponseSchema = z
 /** Exact draft input and observed, non-authorizing inspection output. */
 export type PreviewKnowledgeSchemaRequest = z.infer<typeof PreviewKnowledgeSchemaRequestSchema>;
 export type PreviewKnowledgeSchemaResponse = z.infer<typeof PreviewKnowledgeSchemaResponseSchema>;
+
+/** An authenticated human applies exactly one complete, previously inspected Workspace report. */
+export const ApplyKnowledgeSchemaRequestSchema = PreviewKnowledgeSchemaRequestSchema.extend({
+  reviewedReport: PreviewKnowledgeSchemaResponseSchema,
+}).strict();
+
+/** The original native command selects the canonical reviewed report; Notebook bytes stay pinned. */
+export const ApplyKnowledgeSchemaResponseSchema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    notebookRevision: z.string().min(1),
+    baseSchemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    candidateSchemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    reportDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  })
+  .strict();
+
+export type ApplyKnowledgeSchemaRequest = z.infer<typeof ApplyKnowledgeSchemaRequestSchema>;
+export type ApplyKnowledgeSchemaResponse = z.infer<typeof ApplyKnowledgeSchemaResponseSchema>;

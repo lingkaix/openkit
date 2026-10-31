@@ -115,6 +115,7 @@ export function registerKnowledgePackageRoutes(
           return context.json(KnowledgePackageImportResponseSchema.parse(result));
         }
         const captured = await exportKnowledgePackage({
+          workspaceDb: dependencies.repositoryWorkspaceDb(workspaceId),
           ...dependencies,
           dataRoot: dependencies.dataRoot,
           workspaceId,

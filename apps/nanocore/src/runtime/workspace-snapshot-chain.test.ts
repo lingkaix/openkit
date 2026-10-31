@@ -36,7 +36,7 @@ const base = { tree: '1'.repeat(40), manifest: '2'.repeat(40) };
 const next = { tree: '3'.repeat(40), manifest: '4'.repeat(40) };
 function fixture() {
   const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'snapshot-chain-')), identity.workspaceId);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   return db;
 }
 describe('durable snapshot chain', () => {
@@ -109,7 +109,7 @@ describe('durable snapshot chain', () => {
   it('replays exact bytes after a cold database reopen and refuses damaged credential evidence', () => {
     const root = mkdtempSync(join(tmpdir(), 'snapshot-restart-'));
     let db = openWorkspaceDb(root, identity.workspaceId);
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     const capture = { ...identity, collectionId: 'cold' };
     const result = {
       outcome: 'candidate',
@@ -477,7 +477,7 @@ function retainedSnapshotChainFixture() {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   authorizeWorkspaceBaselineInitialization(db, identity);
   acceptWorkspaceBaseline(db, identity, base, base.tree, base.tree);
   const capture = { ...identity, collectionId: 'retained-collection' };

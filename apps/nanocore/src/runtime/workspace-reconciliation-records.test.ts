@@ -49,7 +49,7 @@ describe('workspace reconciliation records', () => {
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       applyMigrations(coreDb);
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const packageSnapshotId = 'package';
       const packageDigest = createHash('sha256').update(packageSnapshotId).digest('hex');
       const backendSessionId = `nh-${'1'.repeat(16)}-${packageDigest.slice(0, 16)}`;
@@ -184,7 +184,7 @@ describe('workspace reconciliation records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-reconciliation-extensions-'));
     let db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const original = recordWorkspaceReconciliationRecord(db, {
         ...workspaceReconciliationRecord(),
         backendReachability: {
@@ -298,7 +298,7 @@ describe('workspace reconciliation records', () => {
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const record = recordWorkspaceReconciliationRecord(db, workspaceReconciliationRecord());
       db.sqlite
         .prepare('UPDATE workspace_reconciliation_records SET schema_version=2,payload_json=?')
@@ -339,7 +339,7 @@ describe('workspace reconciliation records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       recordWorkspaceReconciliationRecord(workspaceDb, workspaceReconciliationRecord());
       recordWorkspaceReconciliationRecord(workspaceDb, {
@@ -376,7 +376,7 @@ describe('workspace reconciliation records', () => {
     const decidedAt = '2026-07-08T00:05:00.000Z';
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       recordWorkspaceReconciliationRecord(workspaceDb, {
         ...workspaceReconciliationRecord(),
@@ -450,7 +450,7 @@ describe('workspace reconciliation records', () => {
     const decidedAt = '2026-07-08T00:10:00.000Z';
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       recordWorkspaceReconciliationRecord(workspaceDb, {
         ...workspaceReconciliationRecord(),
@@ -510,7 +510,7 @@ describe('workspace reconciliation records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordWorkspaceReconciliationRecord(workspaceDb, {
         ...workspaceReconciliationRecord(),
         collectedOutputManifestIds: [],

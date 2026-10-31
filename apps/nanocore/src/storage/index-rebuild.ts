@@ -69,7 +69,11 @@ import {
   workspaceDbPath,
 } from './fs-layout.js';
 import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
-import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
+import {
+  assertCanonicalDirectory,
+  readAdmittedWorkspaceKnowledgeSelection,
+  readCanonicalTextFile,
+} from './workspace-file-records.js';
 
 export type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 
@@ -291,16 +295,19 @@ export function rebuildWorkspaceDerivedIndexes(
   const indexPath = join(indexesRoot, 'knowledge-validation.json');
   const rebuiltAt = input.now?.() ?? new Date().toISOString();
   const pageScopeId = currentKnowledgePageScope(input, 'workspace');
+  const selection = readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, input.workspaceId);
   const source = readWorkspaceNotebookIndexSource(
     workspaceRoot,
     input.notebookRevision,
     undefined,
-    input.notebookRead
+    input.notebookRead,
+    selection
   );
   const projected = projectWorkspaceKnowledgeIndexes({
     pages: source.pages,
     pageScopeId,
-    scopeSchemaText: readScopeKnowledgeSchemaText(workspaceRoot),
+    scopeSchemaText: readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, input.workspaceId)
+      .scopeSchemaText,
     registeredSources: readRegisteredSources(workspaceRoot, input.workspaceId),
   });
   const linkGraph: WorkspaceKnowledgeLinkGraph = {
@@ -675,6 +682,7 @@ async function retrieveNotebookSelection(
   const pinnedInput = { ...preparedInput, notebookRevision };
   const pinnedPages = new Map(admittedPages.pages.map((page) => [page.id, page.content]));
   const conflictNotebook = new KnowledgeNotebook({
+    ...(notebookRead ? { selectedRevision: notebookRead.selection.head.notebookCommit } : {}),
     repositoryPath: join(
       memory
         ? userMemoryRoot(input.dataRoot, input.access.actor.id)
@@ -690,7 +698,8 @@ async function retrieveNotebookSelection(
     sourceScope
   );
   const scopeSchemaText =
-    scopedPages?.scopeSchemaText ?? readScopeKnowledgeSchemaText(workspaceRoot);
+    scopedPages?.scopeSchemaText ??
+    readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, input.workspaceId).scopeSchemaText;
   const registeredSources =
     scopedPages?.registeredSources ??
     new Map(
@@ -1227,9 +1236,7 @@ export async function prepareKnowledgeRetrievalTraceRead(input: KnowledgeTraceRe
     notebookRevision: trace.notebookRevision,
   });
   // Trace validation owns reserved Page blobs as well as the ordinary query inventory.
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(prepared.workspaceRoot, 'knowledge', 'notebook.git'),
-  });
+  const notebook = prepared.notebook;
   const paths = Object.keys(prepared.selected.entries).filter(
     (path) => !Object.hasOwn(prepared.selected.files, path)
   );
@@ -1298,7 +1305,8 @@ function currentKnowledgeReferenceContent(
     throw knowledgeTraceUnavailable();
   admitKnowledgeRetrieval(input);
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
-  const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot);
+  const selection = readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, input.workspaceId);
+  const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
   const currentRead =
     prepared && Object.hasOwn(prepared.current.files, `${reference.objectId}.md`)
       ? prepared
@@ -1307,7 +1315,8 @@ function currentKnowledgeReferenceContent(
     workspaceRoot,
     undefined,
     [reference.objectId],
-    currentRead
+    currentRead,
+    selection
   );
   const pinnedRead =
     prepared &&
@@ -1321,7 +1330,8 @@ function currentKnowledgeReferenceContent(
           workspaceRoot,
           input.notebookRevision,
           [reference.objectId],
-          pinnedRead
+          pinnedRead,
+          selection
         )
       : current;
   if (!pinned.pages.has(reference.objectId)) return null;
@@ -1573,7 +1583,8 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   }
   if (trace.sourceScope !== currentKnowledgePageScope(input, 'workspace'))
     throw knowledgeTraceUnavailable();
-  const candidate = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot);
+  const selection = readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, input.workspaceId);
+  const candidate = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
   const prepared =
     candidate?.selected.revision === notebookRevision &&
     Object.keys(candidate.selected.entries).every((path) =>
@@ -1587,9 +1598,13 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     workspaceRoot,
     notebookRevision,
     undefined,
-    prepared
+    prepared,
+    selection
   ).pages;
-  const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
+  const scopeSchemaText = readAdmittedWorkspaceKnowledgeSelection(
+    workspaceRoot,
+    input.workspaceId
+  ).scopeSchemaText;
   const registeredSources = prepared?.sources
     ? new Map([...prepared.sources.values()].map(({ source }) => [source.id, source.contentDigest]))
     : readRegisteredSources(workspaceRoot, input.workspaceId);
@@ -1775,18 +1790,16 @@ function readRegisteredSources(
 ): Map<string, string | null> {
   return new Map(
     [
-      ...readSourcePointers({
-        dataRoot: resolve(workspaceRoot, '../..'),
-        ownerScope: { kind: 'workspace', workspaceId },
-      }).values(),
+      ...readSourcePointers(
+        {
+          dataRoot: resolve(workspaceRoot, '../..'),
+          ownerScope: { kind: 'workspace', workspaceId },
+        },
+        undefined,
+        readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, workspaceId)
+      ).values(),
     ].map(({ source }) => [source.id, source.contentDigest])
   );
-}
-
-/** Reads the exact workspace Knowledge schema text when present. */
-function readScopeKnowledgeSchemaText(workspaceRoot: string): string | undefined {
-  const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml');
-  return existsSync(schemaPath) ? readCanonicalTextFile(schemaPath) : undefined;
 }
 
 /**

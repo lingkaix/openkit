@@ -99,7 +99,7 @@ function fixture() {
   const workspaceId = allocateEntityId('ws');
   const db = openWorkspaceDb(root, workspaceId);
   databases.push(db);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   // Establish the real initiator and Workspace ownership before Main becomes query-only.
   const coreDb = createTestCoreDb(root);
   let actor: { kind: 'user'; id: string };

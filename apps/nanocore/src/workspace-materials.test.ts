@@ -56,7 +56,7 @@ describe('Workspace Material authority', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       const firstCreatedAt = '2026-07-18T00:00:00.000Z';
       const secondCreatedAt = firstCreatedAt;
@@ -509,7 +509,7 @@ describe('Workspace Material authority', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71c4-b2f4-f9c81445576b');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const content = '# Exact queued revision\n';
       const material = createWorkspaceMaterial(workspaceDb, {
         acceptedAt: '2026-07-18T01:00:00.000Z',

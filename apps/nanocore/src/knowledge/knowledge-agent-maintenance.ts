@@ -1,19 +1,25 @@
+import {
+  type ControlMaintenanceAdmissionInput,
+  ControlMaintenanceAdmissionInputSchema,
+  type ControlMaintenanceAdmissionResult,
+} from '../storage/control-store-maintenance-codecs.js';
+
+export {
+  type ControlMaintenanceAdmissionInput,
+  ControlMaintenanceAdmissionInputSchema,
+  type ControlMaintenanceAdmissionResult,
+  ControlMaintenanceAdmissionResultSchema,
+} from '../storage/control-store-maintenance-codecs.js';
+
 import { createHash, randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
-  ActorRefSchema,
   allocateEntityId,
   type Item,
   isSealedTurnTerminal,
-  KnowledgeOwnerScopeSchema,
-  RequestIdSchema,
   responsibleUserIdForActor,
-  ThreadIdSchema,
-  TurnIdSchema,
 } from '@openkit/protocol';
-import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
@@ -33,6 +39,7 @@ import {
   admitKnowledgeRetrieval,
   knowledgeSourceLineageReadable,
   readAuthorizedWorkspaceNotebookPages,
+  readCurrentWorkspaceNotebookSelection,
   threadReadable,
 } from '../retrieval-knowledge-adapter.js';
 import {
@@ -57,12 +64,11 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
+import { DEFAULT_NOTEBOOK_INDEX, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
-  attributedNotebookPageBytes,
   type NotebookPublicationAdmission,
   type NotebookUpdate,
   publishWorkspaceNotebook,
@@ -70,6 +76,7 @@ import {
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import {
+  attributedNotebookPageBytes,
   parseOkfDocument,
   resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
@@ -79,66 +86,6 @@ import { publishCapturedSource } from './source-publication.js';
 import { readManagedSourceText } from './source-reading.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
-
-/** Original request facts from runIdempotentCommand, not a second request or receipt owner. */
-const MaintenanceReceiptSchema = z
-  .object({
-    key: z.string().min(1),
-    command: z.enum([
-      'knowledge.maintain',
-      'knowledge.tell',
-      'knowledge.server.maintain',
-      'knowledge.server.tell',
-    ]),
-    requestId: RequestIdSchema,
-    scope: z.union([
-      z.object({ actorId: z.string().min(1), workspaceId: z.string().min(1) }).strict(),
-      z.object({ actorId: z.string().min(1), coreId: z.literal('server') }).strict(),
-    ]),
-    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    responseKind: z.literal('turn'),
-    createdAt: z.string().datetime(),
-    expiresAt: z.string().datetime(),
-  })
-  .strict();
-
-/** Closed native admission; model content cannot select a database, execution callback, or immutable byte body. */
-export const ControlMaintenanceAdmissionInputSchema = z
-  .object({
-    purpose: z.enum(['maintenance', 'query']),
-    ownerScope: KnowledgeOwnerScopeSchema,
-    actor: ActorRefSchema,
-    requestId: RequestIdSchema,
-    threadId: ThreadIdSchema,
-    turnId: TurnIdSchema,
-    startedAt: z.string().datetime(),
-    trigger: z.enum(['request', 'schedule']),
-    instructions: z.string().max(64 * 1024),
-    captureCoverage: z
-      .object({ scope: z.enum(['server', 'workspace', 'task']), value: z.enum(['off', 'on']) })
-      .strict(),
-    outputThreadId: ThreadIdSchema.optional(),
-    receipt: MaintenanceReceiptSchema.optional(),
-  })
-  .strict();
-
-/** Structured-clone input to the existing control worker; authority is admitted before dispatch. */
-export type ControlMaintenanceAdmissionInput = z.infer<
-  typeof ControlMaintenanceAdmissionInputSchema
->;
-
-/** Only acknowledged product identities leave SQL; busy admission has no permission to invoke a model. */
-export const ControlMaintenanceAdmissionResultSchema = z.object({
-  threadId: ThreadIdSchema,
-  turnId: TurnIdSchema,
-  busy: z.boolean(),
-  replayed: z.boolean(),
-});
-
-/** A complete acknowledged admission result; consumers ignore additive descriptive fields. */
-export type ControlMaintenanceAdmissionResult = z.infer<
-  typeof ControlMaintenanceAdmissionResultSchema
->;
 
 /**
  * Selects and admits complete Knowledge work against current native scope state in the caller's savepoint.
@@ -505,15 +452,15 @@ export async function prepareKnowledgeMaintenance(
     })
   )
     throw new NotebookError('invalid_request');
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(
-      dependencies.coreDb.dataRoot,
-      'workspaces',
-      input.workspaceId,
-      'knowledge',
-      'notebook.git'
-    ),
-  });
+  const workspaceDb = dependencies.openWorkspace(input.workspaceId);
+  const selectNotebook = () =>
+    readCurrentWorkspaceNotebookSelection({
+      workspaceDb,
+      dataRoot: dependencies.coreDb.dataRoot,
+      workspaceId: input.workspaceId,
+    });
+  let workspaceSelection = selectNotebook();
+  let notebook = workspaceSelection.notebook;
   let baseRevision = notebook.publishedRevision();
   input.currentAdmission?.({
     workspaceId: input.workspaceId,
@@ -534,7 +481,13 @@ export async function prepareKnowledgeMaintenance(
     trigger: input.trigger,
     instructions: input.instructions,
     captureCoverage: store.getLiveCaptureCoverage(),
-    ...(input.receipt ? { receipt: MaintenanceReceiptSchema.parse(input.receipt) } : {}),
+    ...(input.receipt
+      ? {
+          receipt: ControlMaintenanceAdmissionInputSchema.shape.receipt
+            .unwrap()
+            .parse(input.receipt),
+        }
+      : {}),
   });
   if (admitted.replayed) throw new NotebookError('recovery_required');
   const thread = store.getThread(input.workspaceId, admitted.threadId);
@@ -570,7 +523,6 @@ export async function prepareKnowledgeMaintenance(
     notebookRevision: baseRevision,
   };
   admitKnowledgeRetrieval(target);
-  const workspaceDb = dependencies.openWorkspace(input.workspaceId);
   const statusItem = (
     summary: string,
     failed = false,
@@ -617,6 +569,7 @@ export async function prepareKnowledgeMaintenance(
           requestActor: input.requestActor!,
           actor,
           notebook,
+          scopeSchemaText: workspaceSelection.scopeSchemaText,
           request,
         });
   const empty = {
@@ -713,7 +666,9 @@ export async function prepareKnowledgeMaintenance(
         const readSource = async (source: KnowledgeSourceRecord) => {
           if (!knowledgeSourceLineageReadable(target, source))
             throw new NotebookError('invalid_request');
-          const pointer = readSourcePointers(sourceOwner).get(source.id);
+          const pointer = readSourcePointers(sourceOwner, undefined, workspaceSelection).get(
+            source.id
+          );
           if (!pointer || pointer.source.contentDigest !== source.contentDigest)
             throw new NotebookError('recovery_required');
           const delivered = await readManagedSourceText({ owner: sourceOwner, pointer, access });
@@ -770,8 +725,9 @@ export async function prepareKnowledgeMaintenance(
                 requestId: randomUUID(),
                 commandInput: { maintenanceRequestId: input.requestId, source: metadata },
                 captureChannel: 'knowledge.source.register',
-                revalidatePublication: () =>
-                  admission({ ...empty, baseRevision: notebook.publishedRevision() }),
+                revalidatePublication: () => {
+                  admission({ ...empty, baseRevision: notebook.publishedRevision() });
+                },
               },
               metadata,
               Buffer.from(content)
@@ -837,7 +793,9 @@ export async function prepareKnowledgeMaintenance(
         const instructions = suppliedSource
           ? `${input.instructions} This knowledge.tell request supplies information in source:${suppliedSource.id}@${suppliedSource.contentDigest}. Integrate that Source, preserving evidence, conflicts and unknowns. The overview and prior human notebook edits are separate context; equality between them does not mean the supplied information is already integrated. If the information is already represented, a native no-change outcome is valid. Otherwise edit the admitted notebook snapshot, keep its overview current, then submit those edits under the existing publication and Review rules. Source capture alone is not notebook page integration.`
           : input.instructions;
-        // Native Source capture adds a Git commit. Pin the editor and model only after capture.
+        // Native Source capture advances the selected SQL head. Pin the editor and model only after capture.
+        workspaceSelection = selectNotebook();
+        notebook = workspaceSelection.notebook;
         baseRevision = notebook.publishedRevision();
         target.notebookRevision = baseRevision;
         empty.baseRevision = baseRevision;

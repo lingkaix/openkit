@@ -63,7 +63,7 @@ async function fixture() {
   };
   const db = openWorkspaceDb(root, scope.workspaceId);
   databases.push(db);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   const coreDb = createTestCoreDb(root);
   let authorityActor: ActorRef;
   try {
@@ -271,7 +271,7 @@ describe('durable atomic Worker raw output accounting', () => {
     roots.push(archiveRoot);
     const restored = openWorkspaceDb(archiveRoot, scope.workspaceId);
     databases.push(restored);
-    applyScopedMigrations(restored);
+    applyScopedMigrations(restored, undefined, 'pre-knowledge');
     importWorkspaceCapabilityUsageLedger({
       workspaceDb: restored,
       capabilityCalls: calls,

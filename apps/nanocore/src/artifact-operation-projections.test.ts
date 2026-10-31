@@ -89,7 +89,7 @@ async function fixture(member = true, acceptingProductWork = true, privateOrigin
     updatedAt: turn.startedAt!,
   });
   const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   createArtifactReview(db, {
     artifactId: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
     artifactVersion: 1,
@@ -403,7 +403,7 @@ describe('Artifact definition projections', () => {
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const artifactId = 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f';
     const db = openWorkspaceDb(f.dataRoot, workspaceId);
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     try {
       const content = 'A\r\n😀e\u0301 tail';
       const material = createWorkspaceMaterial(db, {

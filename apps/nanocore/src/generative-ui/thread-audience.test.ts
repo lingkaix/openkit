@@ -472,7 +472,7 @@ describe('Generative UI Thread audience', () => {
       let presentationCountBefore = 0;
       const countDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
-        applyScopedMigrations(countDb);
+        applyScopedMigrations(countDb, undefined, 'pre-knowledge');
         presentationCountBefore = (
           countDb.sqlite.prepare('SELECT COUNT(*) AS n FROM generative_presentations').get() as {
             n: number;
@@ -819,7 +819,7 @@ describe('Generative UI Thread audience', () => {
       ];
       const forgedDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
-        applyScopedMigrations(forgedDb);
+        applyScopedMigrations(forgedDb, undefined, 'pre-knowledge');
         forgedDb.sqlite
           .prepare(
             `INSERT INTO generative_presentations (

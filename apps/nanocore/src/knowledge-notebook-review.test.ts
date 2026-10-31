@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { readAdmittedWorkspaceKnowledgeSelection } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from './test-support/demo-store.js';
 import {
@@ -34,7 +35,7 @@ async function fixture() {
       ownerUserId: LOCAL_USER_ID,
     });
     const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const f = {
       dataRoot,
       coreDb,
@@ -83,6 +84,14 @@ function git(f: ReturnType<typeof fixture>, ...args: string[]) {
     encoding: 'utf8',
   }).trimEnd();
 }
+
+/** Reads the current Workspace Notebook authority from the admitted SQL selection. */
+function currentRevision(f: ReturnType<typeof fixture>): string {
+  return readAdmittedWorkspaceKnowledgeSelection(
+    join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID),
+    DEMO_WORKSPACE_ID
+  ).head.notebookCommit;
+}
 /** Existing native route; request identity uses the common command header. */
 async function call(
   f: ReturnType<typeof fixture>,
@@ -115,7 +124,7 @@ async function draft(f: ReturnType<typeof fixture>, id = 'alpha', agent = false)
   expect(source.status, JSON.stringify(source.body)).toBe(200);
   const reference = `source:${source.body.source.id}@${source.body.source.contentDigest}`;
   const bytes = page(id, 'Exact reviewed text.\n', reference);
-  const baseRevision = git(f, 'rev-parse', 'refs/heads/published');
+  const baseRevision = currentRevision(f);
   const input = {
     requestId: randomUUID(),
     baseRevision,
@@ -131,7 +140,7 @@ async function draft(f: ReturnType<typeof fixture>, id = 'alpha', agent = false)
     ? {
         status: 200,
         body: {
-          proposal: f.store.createKnowledgeProposal({
+          proposal: await f.store.createKnowledgeProposal({
             ...input,
             workspaceId: DEMO_WORKSPACE_ID,
             producer: { kind: 'agent', id: 'agent_synthetic', responsibleUserId: LOCAL_USER_ID },
@@ -143,12 +152,7 @@ async function draft(f: ReturnType<typeof fixture>, id = 'alpha', agent = false)
     : await call(f, 'knowledge.proposal.draft', input);
   expect(response.status, JSON.stringify(response.body)).toBe(200);
   const proposal = response.body.proposal;
-  const proposalDigest = digest(
-    readFileSync(
-      join(f.dataRoot, `workspaces/${DEMO_WORKSPACE_ID}/knowledge/proposals`, `${proposal.id}.md`),
-      'utf8'
-    )
-  );
+  const proposalDigest = f.store.knowledgeProposalDigest(DEMO_WORKSPACE_ID, proposal.id);
   return { proposal, proposalDigest, bytes, reference, baseRevision };
 }
 /** Human decision names the exact retained tuple, never a mutable current page. */
@@ -175,9 +179,9 @@ describe('native fixed-base Knowledge Review and removal', () => {
   it('publishes the retained candidate and refuses a stale Review without changing the winner', async () => {
     const f = await fixture();
     const d = await draft(f);
-    expect(git(f, 'rev-parse', `refs/proposals/${d.proposal.id}`)).toBe(
-      d.proposal.candidateRevision
-    );
+    expect(
+      f.store.projectKnowledgeProposalDraft(DEMO_WORKSPACE_ID, d.proposal.id).candidateRevision
+    ).toBe(d.proposal.candidateRevision);
     const decisionInput = {
       requestId: randomUUID(),
       proposalId: d.proposal.id,
@@ -197,7 +201,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
         .listKnowledgeProposalReviewDecisions(DEMO_WORKSPACE_ID)
         .filter((review) => review.proposalId === d.proposal.id)
     ).toHaveLength(1);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(d.proposal.candidateRevision);
+    expect(currentRevision(f)).toBe(d.proposal.candidateRevision);
     expect(
       execFileSync(
         'git',
@@ -226,7 +230,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
     expect(winner.status, JSON.stringify(winner.body)).toBe(200);
     const rejected = await accept(f, stale);
     expect(rejected.status, JSON.stringify(rejected.body)).toBe(409);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner.body.notebookRevision);
+    expect(currentRevision(f)).toBe(winner.body.notebookRevision);
     expect(
       execFileSync(
         'git',
@@ -235,9 +239,9 @@ describe('native fixed-base Knowledge Review and removal', () => {
       )
     ).toBe(winnerBytes);
     expect(f.store.getKnowledgeProposalReviewDecision(stale.proposal.id)).toBeNull();
-    expect(git(f, 'rev-parse', `refs/proposals/${stale.proposal.id}`)).toBe(
-      stale.proposal.candidateRevision
-    );
+    expect(
+      f.store.projectKnowledgeProposalDraft(DEMO_WORKSPACE_ID, stale.proposal.id).candidateRevision
+    ).toBe(stale.proposal.candidateRevision);
   });
 
   it('reverses and explicitly removes through new commits while retaining original bytes and receipts', async () => {
@@ -265,7 +269,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
     };
     const reversed = await call(f, 'knowledge.proposal.reverse', reverseInput);
     expect(reversed.status, JSON.stringify(reversed.body)).toBe(200);
-    const removedRevision = git(f, 'rev-parse', 'refs/heads/published');
+    const removedRevision = currentRevision(f);
     expect(removedRevision).not.toBe(d.proposal.candidateRevision);
     expect(git(f, 'ls-tree', '-r', '--name-only', removedRevision)).not.toContain('alpha.md');
     expect(
@@ -287,7 +291,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
     });
     expect(created.status, JSON.stringify(created.body)).toBe(200);
     expect((await call(f, 'knowledge.proposal.reverse', reverseInput)).status).toBe(200);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(created.body.notebookRevision);
+    expect(currentRevision(f)).toBe(created.body.notebookRevision);
     // A replacement reversal copies the original exact path from Git, rather than deleting it.
     const replacementDraft = await draft(f);
     const replacementReview = await accept(f, replacementDraft);
@@ -328,9 +332,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
       confirmRemoval: true,
     });
     expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
-    expect(git(f, 'ls-tree', '-r', '--name-only', 'refs/heads/published')).not.toContain(
-      'alpha.md'
-    );
+    expect(git(f, 'ls-tree', '-r', '--name-only', currentRevision(f))).not.toContain('alpha.md');
     expect(
       execFileSync(
         'git',

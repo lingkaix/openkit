@@ -45,8 +45,9 @@ import {
 import { createWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, verifyAndMigrateExistingScopedDatabases } from './storage/db.js';
+import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -212,7 +213,7 @@ async function populate(f: ReturnType<typeof fixture>) {
     join(f.dataRoot, 'workspaces', quarantinedId, 'db', 'workspace.sqlite'),
     'Unreadable cleanup fixture authority'
   );
-  verifyAndMigrateExistingScopedDatabases(f.dataRoot);
+  await verifyAndMigrateExistingScopedDatabases(f.dataRoot);
   const execution = attempt(f.coreDb);
   const target = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
     deploymentId: testEntityId('dep', 'deployment_cleanup'),

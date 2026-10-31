@@ -588,7 +588,7 @@ describe('remote MCP App endpoint', () => {
       denialReason: 'authority-denied',
     });
     const workspaceDb = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const beforeTurn = { ...f.store.getTurnById(turn.id) };
     const beforeRetry = requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_retry');
     const beforeCancel = requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_cancel');
@@ -1812,7 +1812,7 @@ for (const projection of ['HTTP', 'MCP'] as const) {
     });
     const f = await fixture('server', () => readiness);
     const db = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     try {
       const token = f.token();
       const rows = () => ({

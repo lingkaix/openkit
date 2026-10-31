@@ -47,7 +47,7 @@ describe('worker Context Package authority reader', () => {
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
     try {
       const turn = await store.createTurn(
@@ -225,7 +225,7 @@ describe('S39 exact source owner map', () => {
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     try {
       const admission = new FileStorageAdmission(dataRoot, () => 0n);
       const original = Buffer.from([0, 255, 1]);

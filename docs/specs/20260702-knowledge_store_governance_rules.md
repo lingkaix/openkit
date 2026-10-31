@@ -109,6 +109,8 @@ If migration cannot repair a record safely, that record becomes an invalid or ne
 
 If schema migration cannot prove a complete valid result, OpenKit MUST retain the previous valid schema and MUST NOT publish a partially migrated active schema.
 
+Reviewed Workspace schema application uses the [existing lifecycle freeze and exact native permission](20261019-durable_execution_and_control_store.md#reviewed-workspace-schema-application).
+
 ## Conformance And Required Fields
 
 OpenKit distinguishes portable format compatibility from active Knowledge validity.
@@ -264,7 +266,9 @@ A Context Package may deliver a bounded body, excerpt, or descriptor under [its 
 
 Default retrieval evaluates freshness labels. Date-based expiry is not implemented.
 
-Canonical OKF Claims and reusable Observations now share the Git Notebook writer, history and current readers. Unresolved subject assessments drive the existing Proposal and retrieval refusals; supporting evidence does not identify subjects. Standalone fact DTOs, monthly JSONL and portable ledger records are retired without conversion. The ordinary validation, source, Review, index, query trace and explicit context-preparation owners remain in force.
+Workspace publication uses one native SQL transaction for its expected-head check, admitted head, applicable original Review, required Audit and original command receipt. Git refs, authored schema files and predecessor Proposal/Review files do not select current Workspace authority. User Memory and Server Knowledge keep their existing scope owners.
+
+Canonical OKF Claims and reusable Observations share the Notebook content history and current readers. Unresolved subject assessments drive the existing Proposal and retrieval refusals; supporting evidence does not identify subjects. Standalone fact DTOs, monthly JSONL and portable ledger records are retired without conversion. The ordinary validation, source, Review, index, query trace and explicit context-preparation owners remain in force.
 
 The transport-neutral operation catalog, bundled CLI, and public App API project those existing owners. No user-facing stdio MCP facade remains. That absence is the deleted stdio package and is not a prohibition of the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md).
 

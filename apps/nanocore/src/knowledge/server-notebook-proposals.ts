@@ -23,12 +23,12 @@ import {
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { projectKnowledgeProposalPreview } from './notebook-proposal-preview.js';
 import {
-  attributedNotebookPageBytes,
   type NotebookEdit,
   type NotebookPublicationAdmission,
   publishNotebook,
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
+import { attributedNotebookPageBytes } from './okf.js';
 
 type Proposal = z.infer<typeof ServerKnowledgeProposalSchema>;
 type Review = z.infer<typeof ServerKnowledgeReviewSchema>;

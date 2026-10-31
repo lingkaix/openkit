@@ -40,10 +40,7 @@ import {
   applyScopedMigrations,
   listAppliedNativeMigrationIds,
 } from './migrate.js';
-import {
-  readWorkspaceKnowledgeProposalInventory,
-  serializeKnowledgeProposalRecord,
-} from './workspace-file-records.js';
+import { serializeKnowledgeProposalRecord } from './workspace-file-records.js';
 
 /** Requires actual Storage stage and publication success, never a fabricated descriptor. */
 function storageValue<T>(result: StorageResult<T>): T {
@@ -58,11 +55,13 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
   const client = getControlStoreWorkerClient();
   let db: WorkspaceDb | undefined;
   let sourceDb: WorkspaceDb | undefined;
+  let transferDb: WorkspaceDb | undefined;
   let storage: LocalStorage | undefined;
   onTestFinished(async () => {
     await client.shutdown();
     if (db?.sqlite.open) db.sqlite.close();
     if (sourceDb?.sqlite.open) sourceDb.sqlite.close();
+    if (transferDb?.sqlite.open) transferDb.sqlite.close();
     await storage?.close();
     for (const cleanup of cleanups.reverse()) await cleanup();
     rmSync(root, { recursive: true, force: true });
@@ -72,20 +71,14 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
   );
   await decide(source, 'deferred', 'native-proposal-deferred');
   await decide(source, 'accepted', 'native-proposal-accepted');
-  const inventory = readWorkspaceKnowledgeProposalInventory(
-    source.workspaceRoot,
-    source.workspaceId
-  );
-  const originalProposal = inventory.knowledgeProposals.find(
-    (value) => value.id === source.proposal.id
-  )!;
-  const reviews = inventory.knowledgeProposalReviews.filter(
-    (review) => review.proposalId === source.proposal.id
-  );
+  sourceDb = openWorkspaceDb(source.dataRoot, source.workspaceId);
+  const sourceState = readControlKnowledgeProposal(sourceDb, source.proposal.id);
+  expect(sourceState).not.toBeNull();
+  const originalProposal = source.proposal;
+  const reviews = sourceState!.reviews;
   expect(reviews.map((review) => review.decision)).toEqual(['deferred', 'accepted']);
   const deferred = reviews[0]!;
   const accepted = reviews[1]!;
-  sourceDb = openWorkspaceDb(source.dataRoot, source.workspaceId);
   const receipts = reviews.map((review) => {
     const receipt = source.store.getCommandRequest(
       'knowledge.proposal.decide',
@@ -102,15 +95,18 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
   for (const review of reviews)
     expect(audits.some((event) => event.requestId === review.requestId)).toBe(true);
   const proposalBytes = readFileSync(source.proposalPath, 'utf8');
-  const reviewBytes = readFileSync(source.reviewPath, 'utf8');
-  const originalReviewFile = JSON.parse(reviewBytes) as { decisions?: unknown };
-  expect(Array.isArray(originalReviewFile.decisions)).toBe(true);
-  const originalRawDecisions = originalReviewFile.decisions as unknown[];
+  const sourceReviewRow = sourceDb.sqlite
+    .prepare('SELECT reviews_json FROM knowledge_notebook_proposals WHERE proposal_id = ?')
+    .get(source.proposal.id) as { reviews_json: string };
+  const originalRawDecisions = JSON.parse(sourceReviewRow.reviews_json) as unknown[];
+  expect(originalRawDecisions).toHaveLength(2);
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot: source.dataRoot,
     scope: { kind: 'workspace', workspaceId: source.workspaceId },
   });
   const owner = { kind: 'workspace' as const, workspaceId: source.workspaceId };
+  const sourceHead = readControlKnowledgeHead(sourceDb, knowledgeBaseId);
+  expect(sourceHead).not.toBeNull();
   const contentRoot = join(root, 'immutable');
   const stagingRoot = join(root, 'staging');
   mkdirSync(contentRoot);
@@ -158,7 +154,10 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
   };
   // Same-owner dormant metadata composition only; this target is not a Workspace migration.
   db = openWorkspaceDb(root, source.workspaceId);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  const transferRoot = join(root, 'transfer');
+  transferDb = openWorkspaceDb(transferRoot, source.workspaceId);
+  applyScopedMigrations(transferDb, undefined, 'pre-knowledge');
   await client.open({
     database: 'proposal-tuple',
     path: workspaceDbPath(root, source.workspaceId),
@@ -170,7 +169,12 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
   source.notebook.inspectRevision(source.proposal.baseRevision);
   source.notebook.inspectRevision(source.proposal.candidateRevision);
   const sourceSchemaBytes = readFileSync(
-    join(source.workspaceRoot, 'knowledge/schema/scope-schema.yaml'),
+    join(
+      source.workspaceRoot,
+      'knowledge',
+      'content',
+      sourceHead!.schemaContent.reference.locator.path
+    ),
     'utf8'
   );
   const head = {
@@ -200,12 +204,14 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
     target: { knowledgePageId: source.knowledgePageId },
   };
   const beforePreparation = db.sqlite.serialize();
-  const publishedRevision = source.notebook.publishedRevision();
+  const publishedRevision = sourceHead!.notebookCommit;
   const publishedFiles = readdirSync(contentRoot, { recursive: true }).sort();
   const unchangedBeforePublication = () => {
     expect(db!.sqlite.serialize()).toEqual(beforePreparation);
     expect(readControlKnowledgeHead(db!, knowledgeBaseId)).toBeNull();
-    expect(source.notebook.publishedRevision()).toBe(publishedRevision);
+    expect(readControlKnowledgeHead(sourceDb!, knowledgeBaseId)?.notebookCommit).toBe(
+      publishedRevision
+    );
     expect(readdirSync(contentRoot, { recursive: true }).sort()).toEqual(publishedFiles);
     expect(readFileSync(source.proposalPath, 'utf8')).toBe(proposalBytes);
   };
@@ -245,17 +251,16 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
     expect(proposal).toEqual(expectedProposal);
     expect(db.sqlite.serialize()).toEqual(beforePreparation);
     expect(readControlKnowledgeHead(db, knowledgeBaseId)).toBeNull();
-    expect(source.notebook.publishedRevision()).toBe(publishedRevision);
+    expect(readControlKnowledgeHead(sourceDb!, knowledgeBaseId)?.notebookCommit).toBe(
+      publishedRevision
+    );
     expect(
       readFileSync(join(contentRoot, proposal.documentContent.reference.locator.path), 'utf8')
     ).toBe(proposalBytes);
   } finally {
     await discard(content);
   }
-  const transferHead = {
-    ...head,
-    notebookCommit: source.notebook.publishedRevision(),
-  };
+  const transferHead = sourceHead!;
   expect(transferHead.notebookCommit).toBe(proposal.candidateRevision);
   expect(
     readFileSync(join(contentRoot, transferHead.schemaContent.reference.locator.path))
@@ -272,37 +277,26 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
       when: number;
     }>;
   };
-  expect(productionJournal.entries.at(-1)?.tag).toBe('0018_knowledge_proposals');
-  const authorityEntry = {
-    breakpoints: true,
-    idx: productionJournal.entries.length,
-    tag: '0019_knowledge_authority',
-    version: '6',
-    when: 1_793_412_000_000,
-  };
+  expect(productionJournal.entries.at(-1)?.tag).toBe('0019_knowledge_authority');
+  const authorityEntry = productionJournal.entries.at(-1)!;
   const authorityMigrationFolder = (name: string, failLedger: boolean) => {
     const folder = join(root, name);
     mkdirSync(join(folder, 'meta'), { recursive: true });
     for (const entry of productionJournal.entries)
       copyFileSync(new URL(`${entry.tag}.sql`, migrationRoot), join(folder, `${entry.tag}.sql`));
-    writeFileSync(
-      join(folder, 'meta/_journal.json'),
-      JSON.stringify({
-        ...productionJournal,
-        entries: [...productionJournal.entries, authorityEntry],
-      })
-    );
-    writeFileSync(
-      join(folder, `${authorityEntry.tag}.sql`),
-      failLedger
-        ? `CREATE TEMP TRIGGER refuse_knowledge_authority_ledger
+    writeFileSync(join(folder, 'meta/_journal.json'), JSON.stringify(productionJournal));
+    if (failLedger)
+      writeFileSync(
+        join(folder, `${authorityEntry.tag}.sql`),
+        `${readFileSync(new URL(`${authorityEntry.tag}.sql`, migrationRoot), 'utf8')}
+--> statement-breakpoint
+CREATE TEMP TRIGGER refuse_knowledge_authority_ledger
            BEFORE INSERT ON __drizzle_migrations
            WHEN NEW.created_at = ${authorityEntry.when}
            BEGIN
              SELECT RAISE(ABORT, 'deciding knowledge authority rollback');
            END;`
-        : 'SELECT 1;'
-    );
+      );
     return folder;
   };
   expect(() =>
@@ -333,8 +327,13 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
       ? { ...(review as Record<string, unknown>), futureNote: 'Inert retained Review annotation' }
       : review
   );
-  const transfer = prepareControlKnowledgeAuthorityTransfer({
+  const sourceTransfer = prepareControlKnowledgeAuthorityTransfer({
     db: sourceDb,
+    heads: [transferHead],
+    proposals: [{ proposal, reviews: transferRawDecisions }],
+  });
+  const transfer = prepareControlKnowledgeAuthorityTransfer({
+    db: transferDb,
     heads: [transferHead],
     proposals: [{ proposal, reviews: transferRawDecisions }],
   });
@@ -344,8 +343,8 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
   const sourceAudits = listSqliteAuditEvents(sourceDb.sqlite, source.workspaceId);
   const sourceFiles = {
     proposal: readFileSync(source.proposalPath),
-    review: readFileSync(source.reviewPath),
-    revision: source.notebook.publishedRevision(),
+    reviewsJson: sourceReviewRow.reviews_json,
+    revision: sourceHead!.notebookCommit,
     immutable: readdirSync(contentRoot, { recursive: true }).sort(),
     schemaContent: readFileSync(join(contentRoot, head.schemaContent.reference.locator.path)),
     proposalContent: readFileSync(
@@ -360,8 +359,15 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
     ).toEqual(sourceReceipts);
     expect(listSqliteAuditEvents(sourceDb!.sqlite, source.workspaceId)).toEqual(sourceAudits);
     expect(readFileSync(source.proposalPath)).toEqual(sourceFiles.proposal);
-    expect(readFileSync(source.reviewPath)).toEqual(sourceFiles.review);
-    expect(source.notebook.publishedRevision()).toBe(sourceFiles.revision);
+    expect(
+      sourceDb!.sqlite
+        .prepare('SELECT reviews_json FROM knowledge_notebook_proposals WHERE proposal_id = ?')
+        .pluck()
+        .get(source.proposal.id)
+    ).toBe(sourceFiles.reviewsJson);
+    expect(readControlKnowledgeHead(sourceDb!, knowledgeBaseId)?.notebookCommit).toBe(
+      sourceFiles.revision
+    );
     expect(readdirSync(contentRoot, { recursive: true }).sort()).toEqual(sourceFiles.immutable);
     expect(readFileSync(join(contentRoot, head.schemaContent.reference.locator.path))).toEqual(
       sourceFiles.schemaContent
@@ -371,39 +377,41 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
     ).toEqual(sourceFiles.proposalContent);
   };
   const successfulMigration = authorityMigrationFolder('authority-success', false);
-  const targetBeforeMissingTransfer = db.sqlite.serialize();
-  expect(() => applyNativeScopeMigrations(db!.sqlite, 'workspace', successfulMigration)).toThrow();
-  expect(db.sqlite.serialize()).toEqual(targetBeforeMissingTransfer);
-  expect(listAppliedNativeMigrationIds(db.sqlite, 'workspace', successfulMigration)).not.toContain(
-    'workspace_0019_knowledge_authority'
-  );
-  const targetBeforeWrongBinding = db.sqlite.serialize();
+  const targetBeforeMissingTransfer = transferDb.sqlite.serialize();
   expect(() =>
-    applyNativeScopeMigrations(db!.sqlite, 'workspace', successfulMigration, transfer)
+    applyNativeScopeMigrations(transferDb!.sqlite, 'workspace', successfulMigration)
   ).toThrow();
-  expect(db.sqlite.serialize()).toEqual(targetBeforeWrongBinding);
-  expect(listAppliedNativeMigrationIds(db.sqlite, 'workspace', successfulMigration)).not.toContain(
-    'workspace_0019_knowledge_authority'
-  );
+  expect(transferDb.sqlite.serialize()).toEqual(targetBeforeMissingTransfer);
+  expect(
+    listAppliedNativeMigrationIds(transferDb.sqlite, 'workspace', successfulMigration)
+  ).not.toContain('workspace_0019_knowledge_authority');
+  const targetBeforeWrongBinding = transferDb.sqlite.serialize();
+  expect(() =>
+    applyNativeScopeMigrations(transferDb!.sqlite, 'workspace', successfulMigration, sourceTransfer)
+  ).toThrow();
+  expect(transferDb.sqlite.serialize()).toEqual(targetBeforeWrongBinding);
+  expect(
+    listAppliedNativeMigrationIds(transferDb.sqlite, 'workspace', successfulMigration)
+  ).not.toContain('workspace_0019_knowledge_authority');
 
   const failedMigration = authorityMigrationFolder('authority-rollback', true);
   expect(() =>
-    applyNativeScopeMigrations(sourceDb!.sqlite, 'workspace', failedMigration, transfer)
+    applyNativeScopeMigrations(transferDb!.sqlite, 'workspace', failedMigration, transfer)
   ).toThrow();
-  expect(readControlKnowledgeHead(sourceDb, knowledgeBaseId)).toBeNull();
-  expect(readControlKnowledgeProposal(sourceDb, proposal.proposalId)).toBeNull();
+  expect(readControlKnowledgeHead(transferDb, knowledgeBaseId)).toBeNull();
+  expect(readControlKnowledgeProposal(transferDb, proposal.proposalId)).toBeNull();
   expect(
-    listAppliedNativeMigrationIds(sourceDb.sqlite, 'workspace', failedMigration)
+    listAppliedNativeMigrationIds(transferDb.sqlite, 'workspace', failedMigration)
   ).not.toContain('workspace_0019_knowledge_authority');
   assertOriginalEvidence();
 
-  applyNativeScopeMigrations(sourceDb.sqlite, 'workspace', successfulMigration, transfer);
-  expect(readControlKnowledgeHead(sourceDb, knowledgeBaseId)).toEqual(transferHead);
-  expect(readControlKnowledgeProposal(sourceDb, proposal.proposalId)).toEqual({
+  applyNativeScopeMigrations(transferDb.sqlite, 'workspace', successfulMigration, transfer);
+  expect(readControlKnowledgeHead(transferDb, knowledgeBaseId)).toEqual(transferHead);
+  expect(readControlKnowledgeProposal(transferDb, proposal.proposalId)).toEqual({
     proposal,
     reviews,
   });
-  const retainedReviews = sourceDb.sqlite
+  const retainedReviews = transferDb.sqlite
     .prepare('SELECT reviews_json FROM knowledge_notebook_proposals WHERE proposal_id = ?')
     .get(proposal.proposalId) as { reviews_json: string };
   expect(JSON.parse(retainedReviews.reviews_json)).toEqual(
@@ -414,12 +422,12 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
     }))
   );
   expect(
-    listAppliedNativeMigrationIds(sourceDb.sqlite, 'workspace', successfulMigration)
+    listAppliedNativeMigrationIds(transferDb.sqlite, 'workspace', successfulMigration)
   ).toContain('workspace_0019_knowledge_authority');
   assertOriginalEvidence();
-  const afterTransfer = sourceDb.sqlite.serialize();
-  applyNativeScopeMigrations(sourceDb.sqlite, 'workspace', successfulMigration);
-  expect(sourceDb.sqlite.serialize()).toEqual(afterTransfer);
+  const afterTransfer = transferDb.sqlite.serialize();
+  applyNativeScopeMigrations(transferDb.sqlite, 'workspace', successfulMigration);
+  expect(transferDb.sqlite.serialize()).toEqual(afterTransfer);
   assertOriginalEvidence();
 
   expect(readControlKnowledgeProposal(db, proposal.proposalId)).toBeNull();
@@ -545,5 +553,10 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
     readFileSync(join(contentRoot, proposal.documentContent.reference.locator.path), 'utf8')
   ).toBe(proposalBytes);
   expect(readFileSync(source.proposalPath, 'utf8')).toBe(proposalBytes);
-  expect(readFileSync(source.reviewPath, 'utf8')).toBe(reviewBytes);
+  expect(
+    sourceDb.sqlite
+      .prepare('SELECT reviews_json FROM knowledge_notebook_proposals WHERE proposal_id = ?')
+      .pluck()
+      .get(source.proposal.id)
+  ).toBe(sourceReviewRow.reviews_json);
 });

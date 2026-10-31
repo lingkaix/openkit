@@ -45,7 +45,7 @@ describe('workspace sync records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-format-'));
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const fixture = workspaceSyncImportFixture();
       importWorkspaceSyncRecords(db, fixture);
       db.sqlite.prepare(`UPDATE ${table} SET schema_version = 2, payload_json = ?`).run('{');
@@ -94,7 +94,7 @@ describe('workspace sync records', () => {
     });
     fixture.stagedReviews[0]!.patchPayload = { mediaType: 'text/x-diff', text, digest, bytes };
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       importWorkspaceSyncRecords(db, fixture);
       db.sqlite.close();
       db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -216,7 +216,7 @@ describe('workspace sync records', () => {
       'staged_workspace_reviews',
     ];
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       importWorkspaceSyncRecords(db, fixture);
       const baseline = listExportableWorkspaceSyncRecords(
         db,
@@ -300,7 +300,7 @@ describe('workspace sync records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-corrupt-retained-'));
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       importWorkspaceSyncRecords(db, workspaceSyncImportFixture());
       const row = db.sqlite
         .prepare('SELECT patch_payload_json FROM staged_workspace_reviews')
@@ -323,7 +323,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       expect(() => recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() })).toThrow(
         'Workspace synchronization input lineage is missing: wis_1'
       );
@@ -337,7 +337,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordWorkspaceInputSnapshots(workspaceDb, [workspaceInputSnapshot()]);
       expect(() => recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() })).toThrow(
         'Workspace synchronization materialization lineage is missing: wmr_1'
@@ -352,7 +352,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
 
       const producer = {
@@ -483,7 +483,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       expect(() => recordWorkspaceSyncReview(workspaceDb, { item: invalid() })).toThrow();
       for (const table of [
@@ -508,7 +508,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordWorkspaceInputSnapshots(workspaceDb, [workspaceInputSnapshot()]);
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
 
@@ -525,7 +525,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       const item = workspaceReviewItem();
       recordWorkspaceSyncReview(workspaceDb, { item });
@@ -550,7 +550,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       const original = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       const stored = workspaceDb.sqlite
@@ -619,7 +619,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       const original = recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       const originalChangeSets = listWorkspaceChangeSets(
@@ -673,7 +673,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
 
@@ -688,7 +688,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       updateWorkspaceSyncReviewDecision(workspaceDb, {
@@ -725,7 +725,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
 
@@ -793,7 +793,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const materialization = productionWorkspaceMaterializationRecord(
         'aepsnap_crash_replay',
         'sandbox_crash_replay'
@@ -872,7 +872,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const primarySnapshot = workspaceInputSnapshot();
       const materializations = buildWorkspaceMaterializationRecords({
         createdAt: timestamp,
@@ -932,7 +932,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
 
@@ -968,7 +968,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordWorkspaceMaterializationRecords(workspaceDb, [workspaceMaterializationRecord()]);
 
       updateBackendWorkspaceHandleCleanupStatus(
@@ -1021,7 +1021,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
@@ -1056,7 +1056,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       const snapshots = listWorkspaceInputSnapshots(
@@ -1088,7 +1088,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordTestWorkspaceReviewMaterialization(workspaceDb, workspaceReviewItem());
       recordWorkspaceSyncReview(workspaceDb, { item: workspaceReviewItem() });
       const stored = listExportableWorkspaceSyncRecords(
@@ -1111,7 +1111,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const input = workspaceSyncImportFixture();
       const stagedReview = input.stagedReviews[0];
       expect(stagedReview).toBeDefined();
@@ -1206,7 +1206,7 @@ describe('workspace sync records', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const original = workspaceSyncImportFixture();
       importWorkspaceSyncRecords(workspaceDb, original);
 

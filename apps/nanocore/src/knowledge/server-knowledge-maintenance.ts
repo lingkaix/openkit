@@ -32,12 +32,9 @@ import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
+import { type NotebookPublicationAdmission, publishNotebook } from './notebook-publication.js';
 import {
   attributedNotebookPageBytes,
-  type NotebookPublicationAdmission,
-  publishNotebook,
-} from './notebook-publication.js';
-import {
   parseKnowledgePageSourceReference,
   parseOkfDocument,
   parseScopeKnowledgeSchema,

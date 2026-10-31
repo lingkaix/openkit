@@ -19,7 +19,7 @@ describe('workspace apply plans', () => {
     let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const plan = workspaceApplyPlan();
       const first = recordWorkspaceApplyPlan(workspaceDb, plan);
       workspaceDb.sqlite.close();
@@ -43,7 +43,7 @@ describe('workspace apply plans', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const original = workspaceApplyPlan();
       recordWorkspaceApplyPlan(workspaceDb, original);
 
@@ -65,7 +65,7 @@ describe('workspace apply plans', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const original = workspaceApplyPlan();
       recordWorkspaceApplyPlan(workspaceDb, original);
 
@@ -116,7 +116,7 @@ function retainedApplyPlanFixture() {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   recordWorkspaceApplyPlan(db, plan);
   return { db, plan };
 }

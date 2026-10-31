@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
 import {
   KnowledgeRetrievalTraceSchema,
   type ProductRetrievalTrace,
@@ -14,17 +13,21 @@ import {
   type KnowledgeRetrievalAccess,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
-import { KnowledgeNotebook, NotebookError } from './notebook.js';
+import { NotebookError } from './notebook.js';
+import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { parseOkfDocument, stringListFrontmatterField, updateOkfFrontmatter } from './okf.js';
 
 /** Reads all exact pages from one published commit, including reserved navigation. */
-export function readPortableWorkspaceNotebookPages(workspaceRoot: string): {
+export function readPortableWorkspaceNotebookPages(
+  workspaceRoot: string,
+  selection: WorkspaceNotebookSelection
+): {
   readonly notebookRevision: string;
   readonly nativeKnowledgePages: ReadonlyMap<string, string>;
 } {
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-  });
+  if (!selection || selection.workspaceRoot !== workspaceRoot)
+    throw new NotebookError('recovery_required');
+  const notebook = selection.notebook;
   const revision = notebook.publishedRevision();
   const snapshot = notebook.readRevision(revision);
   return {
@@ -230,10 +233,11 @@ export function bindImportedWorkspaceNotebookTraces(input: {
   readonly workspaceId: string;
   readonly knowledgeBaseId: string;
   readonly traces: ReadonlyMap<string, ProductRetrievalTrace>;
+  readonly selection: WorkspaceNotebookSelection;
 }): ReadonlyMap<string, ProductRetrievalTrace> {
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(input.workspaceRoot, 'knowledge', 'notebook.git'),
-  });
+  if (!input.selection || input.selection.workspaceRoot !== input.workspaceRoot)
+    throw new NotebookError('recovery_required');
+  const notebook = input.selection.notebook;
   const revision = notebook.publishedRevision();
   const { files } = notebook.readRevision(revision);
   return new Map(

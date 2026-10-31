@@ -67,6 +67,7 @@ export type OperationTarget =
         | 'authorized-workspaces'
         | 'automation'
         | 'workspace-deletion'
+        | 'workspace-schema'
         | 'deleted-workspace'
         | 'deployment'
         | 'configured-runtime-target';

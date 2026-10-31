@@ -69,6 +69,32 @@ export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   'worker.recovery.retry',
 ] as const satisfies readonly CommandRequestName[];
 
+/** Workspace Knowledge commands commit their original receipt with SQL publication; other scopes retain their current writer. */
+export const CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS = [
+  'knowledge.schema.apply',
+  'knowledge.notebook.update',
+  'knowledge.notebook.restore',
+  'knowledge.notebook.create',
+  'knowledge.notebook.delete',
+  'knowledge.proposal.draft',
+  'knowledge.proposal.decide',
+  'knowledge.proposal.reverse',
+  'knowledge.package.import',
+  'knowledge.source.register',
+] as const satisfies readonly CommandRequestName[];
+
+/** Selects the existing native receipt partition without activating shared Server or User commands. */
+export function isControlNativeReceiptCommand(
+  command: string,
+  scope: 'core' | 'workspace'
+): boolean {
+  return (
+    CONTROL_NATIVE_RECEIPT_COMMANDS.some((name) => name === command) ||
+    (scope === 'workspace' &&
+      CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS.some((name) => name === command))
+  );
+}
+
 /** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */
 export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.judgement-add'
   AND response_kind='evaluation_judgement' AND response_id=request_id
@@ -146,15 +172,15 @@ export function pruneControlAdmissionReceipts(
     owner.kind === 'server'
       ? "json_extract(scope_json,'$.coreId')='server' AND json_extract(scope_json,'$.workspaceId') IS NULL"
       : "json_extract(scope_json,'$.workspaceId')=? AND json_extract(scope_json,'$.coreId') IS NULL";
+  const commands =
+    owner.kind === 'workspace'
+      ? [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS]
+      : CONTROL_NATIVE_RECEIPT_COMMANDS;
   sqlite
     .prepare(
-      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND (command_name IN (${CONTROL_NATIVE_RECEIPT_COMMANDS.map(() => '?').join(',')})${owner.kind === 'workspace' ? ` OR ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}` : ''}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND (command_name IN (${commands.map(() => '?').join(',')})${owner.kind === 'workspace' ? ` OR ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}` : ''}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
     )
-    .run(
-      referenceTime,
-      ...CONTROL_NATIVE_RECEIPT_COMMANDS,
-      ...(owner.kind === 'workspace' ? [owner.workspaceId] : [])
-    );
+    .run(referenceTime, ...commands, ...(owner.kind === 'workspace' ? [owner.workspaceId] : []));
 }
 
 /** Applies the original receipt, required local Audit and complete product tuple in the caller's savepoint, never a nested commit. */

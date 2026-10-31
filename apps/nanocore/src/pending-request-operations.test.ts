@@ -52,7 +52,7 @@ async function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'revi
     }
   );
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const gate = {
     approvalId: `ap_${actionSlug}`,
     approvalItemId: testEntityId('it', `it_${actionSlug}`),

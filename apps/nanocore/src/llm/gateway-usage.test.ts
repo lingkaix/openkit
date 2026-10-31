@@ -64,7 +64,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         ...(auditLineage ? { auditLineage } : {}),
@@ -145,7 +145,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
@@ -498,7 +498,7 @@ it.each([
   const workspaceId = testEntityId('ws', 'usage-components');
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   try {
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     await openTestNativeWorkspace(workspaceDb);
     const threadId = testEntityId('th', 'usage-components');
     const turnId = testEntityId('tu', 'usage-components');

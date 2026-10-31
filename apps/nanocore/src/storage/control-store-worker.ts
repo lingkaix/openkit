@@ -1694,7 +1694,13 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
   try {
     assertSavepointSafeSchema(sqlite);
     if (request.initialize !== undefined) {
-      applyNativeScopeMigrations(sqlite, request.initialize);
+      applyNativeScopeMigrations(
+        sqlite,
+        request.initialize,
+        undefined,
+        undefined,
+        request.initialize === 'workspace' ? 'pre-knowledge' : 'full'
+      );
       assertSavepointSafeSchema(sqlite);
     }
     if (contentMount) {

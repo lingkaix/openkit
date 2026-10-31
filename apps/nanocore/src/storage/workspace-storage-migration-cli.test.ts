@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { runWorkspaceStorageMigrationCli } from './workspace-storage-migration-cli.js';
 
 describe('workspace storage migration CLI', () => {
-  it('refuses to migrate while the NanoCore process lock exists', () => {
+  it('refuses to migrate while the NanoCore process lock exists', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-migration-cli-'));
     const dataRoot = join(parent, 'data');
     const backupRoot = join(parent, 'backup');
@@ -16,12 +16,12 @@ describe('workspace storage migration CLI', () => {
     mkdirSync(join(dataRoot, 'server', 'runtime'), { recursive: true });
     writeFileSync(lockPath, 'locked\n');
 
-    expect(() =>
+    await expect(
       runWorkspaceStorageMigrationCli(
         ['--data-root', dataRoot, '--backup-root', backupRoot],
         () => undefined
       )
-    ).toThrow(/Refusing to migrate while NanoCore appears to be running/);
+    ).rejects.toThrow(/Refusing to migrate while NanoCore appears to be running/);
     expect(existsSync(backupRoot)).toBe(false);
   });
 });

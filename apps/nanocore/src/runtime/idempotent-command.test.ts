@@ -290,7 +290,7 @@ describe('workspace-transaction idempotent commands', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const insertOwner = workspaceDb.sqlite.prepare(
         `INSERT INTO idempotency_requests (
           request_key,

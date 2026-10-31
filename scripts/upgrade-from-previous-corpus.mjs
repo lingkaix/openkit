@@ -54,6 +54,7 @@ export const NATIVE_METADATA_FAMILIES = Object.freeze([
   'Thread record',
   'Turn record',
   'AgentSession',
+  'Knowledge Proposal Review',
 ]);
 
 const FIXTURE = Object.freeze({
@@ -81,7 +82,11 @@ async function owners(appRoot) {
     records: 'storage/workspace-file-records.js',
     products: 'storage/control-store-products.js',
     notebook: 'knowledge/notebook.js',
+    notebookSelection: 'knowledge/notebook-workspace-selection.js',
+    notebookPublication: 'knowledge/notebook-publication.js',
     notebookOwner: 'knowledge/scoped-notebook-owner.js',
+    knowledgeOperations: 'knowledge-operations.js',
+    controlKnowledge: 'storage/control-store-knowledge.js',
     knowledgeBase: 'config/knowledge-base.js',
     okf: 'knowledge/okf.js',
     pageFixture: 'test-support/knowledge-page.js',
@@ -379,8 +384,13 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         createdAt: FIXTURE.at,
         updatedAt: FIXTURE.at,
       };
-      const notebook = new o.notebook.KnowledgeNotebook({
-        repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+      const sourceSelection = o.notebookSelection.readWorkspaceNotebookSelection({
+        workspaceDb: sourceDb,
+        workspaceRoot,
+        knowledgeBaseId: o.knowledgeBase.readDefaultKnowledgeBaseId({
+          dataRoot: r.data,
+          scope: { kind: 'workspace', workspaceId: workspace.id },
+        }),
       });
       const runtimeConfigManager = {
         current: () => o.runtimeConfig.createInMemoryRuntimeConfigSnapshot({ dataRoot: r.data }),
@@ -407,13 +417,14 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
               workspaceDb: sourceDb,
               actor: producer,
               requestActor: ctx.actor,
-              notebook,
+              notebook: sourceSelection.notebook,
+              scopeSchemaText: sourceSelection.scopeSchemaText,
               runtimeConfigManager,
               workspaceMutationAdmission,
               request: {
                 workspaceId: workspace.id,
                 requestId,
-                baseRevision: notebook.publishedRevision(),
+                baseRevision: sourceSelection.head.notebookCommit,
                 changes: [],
                 summary: 'Capture public corpus evidence.',
               },
@@ -450,16 +461,28 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
             instructionReference: 'fixture:upgrade-from-previous',
           },
         });
-      const notebook = new o.notebook.KnowledgeNotebook({
-        repositoryPath: join(notebookRoot, 'notebook.git'),
-      });
-      const baseRevision = notebook.publishedRevision();
       const ownerScope =
         scope === 'workspace'
           ? { kind: scope, workspaceId: workspace.id }
           : scope === 'user'
             ? { kind: scope, userId }
             : { kind: scope };
+      const workspaceDb =
+        scope === 'workspace' ? o.db.openWorkspaceDb(r.data, workspace.id) : undefined;
+      const workspaceSelection = workspaceDb
+        ? o.notebookSelection.readWorkspaceNotebookSelection({
+            workspaceDb,
+            workspaceRoot,
+            knowledgeBaseId: o.knowledgeBase.readDefaultKnowledgeBaseId({
+              dataRoot: r.data,
+              scope: ownerScope,
+            }),
+          })
+        : undefined;
+      const notebook =
+        workspaceSelection?.notebook ??
+        new o.notebook.KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') });
+      const baseRevision = workspaceSelection?.head.notebookCommit ?? notebook.publishedRevision();
       const content = o.pageFixture.serializeKnowledgePageFixture(
         {
           title: 'Public synthetic continuity',
@@ -500,21 +523,73 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
           },
         });
       }
-      const candidateRevision = notebook.prepare({
-        baseRevision,
-        changes,
-        metadata: {
-          summary: 'Public synthetic upgrade fixture',
-          producer,
-          authority: { kind: 'direct', instructionReference: 'fixture:upgrade-from-previous' },
-          changeRequest: {
-            requestId: randomUUID(),
-            inputDigest: `sha256:${sha256(JSON.stringify(changes))}`,
+      const requestId = randomUUID();
+      let candidateRevision;
+      if (workspaceDb && workspaceSelection) {
+        try {
+          const request = {
+            workspaceId: workspace.id,
+            requestId,
+            baseRevision,
+            changes: Object.entries(changes).map(([path, content]) => ({ path, content })),
+            summary: 'Public synthetic upgrade fixture',
+          };
+          const published = await o.notebookPublication.publishWorkspaceNotebook(
+            {
+              store: ctx.store,
+              workspaceDb,
+              notebook,
+              producer,
+              actor: producer,
+              command: { name: 'knowledge.notebook.update', input: request },
+              inflightCommands: ctx.inflightCommands,
+              revalidate: () =>
+                o.notebookAdmission.readWorkspaceNotebookAdmission({
+                  store: ctx.store,
+                  coreDb: ctx.coreDb,
+                  workspaceDb,
+                  actor: producer,
+                  requestActor: ctx.actor,
+                  notebook,
+                  scopeSchemaText: workspaceSelection.scopeSchemaText,
+                  runtimeConfigManager: {
+                    current: () =>
+                      o.runtimeConfig.createInMemoryRuntimeConfigSnapshot({ dataRoot: r.data }),
+                  },
+                  workspaceMutationAdmission: new o.mutationAdmission.WorkspaceMutationAdmission(),
+                  request,
+                }),
+            },
+            request
+          );
+          candidateRevision = published.notebookRevision;
+          const current = o.notebookSelection.readWorkspaceNotebookSelection({
+            workspaceDb,
+            workspaceRoot,
+            knowledgeBaseId: workspaceSelection.head.knowledgeBaseId,
+          });
+          if (current.head.notebookCommit !== candidateRevision)
+            throw new Error('Workspace corpus Knowledge publication was not current.');
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      } else {
+        candidateRevision = notebook.prepare({
+          baseRevision,
+          changes,
+          metadata: {
+            summary: 'Public synthetic upgrade fixture',
+            producer,
+            authority: { kind: 'direct', instructionReference: 'fixture:upgrade-from-previous' },
+            changeRequest: {
+              requestId,
+              inputDigest: `sha256:${sha256(JSON.stringify(changes))}`,
+            },
+            sourceReferences: [],
           },
-          sourceReferences: [],
-        },
-      });
-      notebook.publish({ baseRevision, candidateRevision });
+        });
+        notebook.publish({ baseRevision, candidateRevision });
+      }
       selectors.notebooks.push({ scope, revision: candidateRevision });
     }
     const userNotebook = selectors.notebooks.find((entry) => entry.scope === 'user');
@@ -534,9 +609,16 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       digest: `sha256:${sha256(suppressedPage)}`,
       sourceFingerprints: [],
     });
-    const notebook = new o.notebook.KnowledgeNotebook({
-      repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+    const proposalDb = o.db.openWorkspaceDb(r.data, workspace.id);
+    const proposalSelection = o.notebookSelection.readWorkspaceNotebookSelection({
+      workspaceDb: proposalDb,
+      workspaceRoot,
+      knowledgeBaseId: o.knowledgeBase.readDefaultKnowledgeBaseId({
+        dataRoot: r.data,
+        scope: { kind: 'workspace', workspaceId: workspace.id },
+      }),
     });
+    proposalDb.sqlite.close();
     const candidatePage = o.pageFixture.serializeKnowledgePageFixture(
       {
         title: 'Public synthetic candidate',
@@ -546,10 +628,10 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       },
       { kind: 'workspace', workspaceId: workspace.id }
     );
-    const proposal = ctx.store.createKnowledgeProposal({
+    const proposal = await ctx.store.createKnowledgeProposal({
       workspaceId: workspace.id,
       requestId: randomUUID(),
-      baseRevision: notebook.publishedRevision(),
+      baseRevision: proposalSelection.head.notebookCommit,
       changes: [{ path: 'candidate.md', content: candidatePage }],
       sourceReferences: [],
       summary: 'Public synthetic retained candidate',
@@ -558,10 +640,16 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       verifiedExternalReferences: [],
     });
     selectors.proposalId = proposal.id;
-    const proposalBytes = readFileSync(
-      join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`)
+    const retainedProposalDb = o.db.openWorkspaceDb(r.data, workspace.id);
+    const retainedProposal = o.controlKnowledge.readControlKnowledgeProposal(
+      retainedProposalDb,
+      proposal.id
     );
-    ctx.store.recordKnowledgeProposalReviewDecision({
+    retainedProposalDb.sqlite.close();
+    if (!retainedProposal) throw new Error('Corpus Proposal was not retained.');
+    selectors.proposalPath = `workspaces/${workspace.id}/knowledge/content/${retainedProposal.proposal.documentContent.reference.locator.path}`;
+    const proposalBytes = readFileSync(join(r.data, selectors.proposalPath));
+    const decisionInput = {
       workspaceId: workspace.id,
       proposalId: proposal.id,
       requestId: randomUUID(),
@@ -569,9 +657,23 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       proposalDigest: `sha256:${sha256(proposalBytes)}`,
       baseRevision: proposal.baseRevision,
       candidateRevision: proposal.candidateRevision,
-      actor: producer,
-      decidedAt: FIXTURE.at,
-      verifiedExternalReferences: [],
+    };
+    const knowledgeOperations = o.knowledgeOperations.createKnowledgeOperationImplementations({
+      coreDb: ctx.coreDb,
+      store: ctx.store,
+      inflightCommands: ctx.inflightCommands,
+      repositoryWorkspaceDb: (workspaceId) => o.db.openWorkspaceDb(r.data, workspaceId),
+      runtimeConfigManager: {
+        current: () => o.runtimeConfig.createInMemoryRuntimeConfigSnapshot({ dataRoot: r.data }),
+      },
+      workspaceMutationAdmission: new o.mutationAdmission.WorkspaceMutationAdmission(),
+    });
+    await knowledgeOperations['knowledge.proposal.decide'](decisionInput, {
+      kind: 'public',
+      actor: ctx.actor,
+      actorRef: producer,
+      scope: { kind: 'workspace', workspaceId: workspace.id },
+      delivery: 'human',
     });
     // Raw source is unaccepted evidence; these synthetic claims grant no physical admission.
     const packageSnapshotId = 'b01-public-unaccepted-package';
@@ -895,38 +997,70 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
           : scope === 'user'
             ? `users/${selectors.userId}/memory`
             : 'server/knowledge';
-      const notebook = new o.notebook.KnowledgeNotebook({
-        repositoryPath: join(r.data, path, 'notebook.git'),
-      });
-      const revision = notebook.readRevision(notebook.publishedRevision());
+      const workspaceDb =
+        scope === 'workspace' ? o.db.openWorkspaceDb(r.data, selectors.workspaceId) : undefined;
+      const selected = workspaceDb
+        ? o.notebookSelection.readWorkspaceNotebookSelection({
+            workspaceDb,
+            workspaceRoot,
+            knowledgeBaseId: o.knowledgeBase.readDefaultKnowledgeBaseId({
+              dataRoot: r.data,
+              scope: { kind: 'workspace', workspaceId: selectors.workspaceId },
+            }),
+          })
+        : undefined;
+      const notebook =
+        selected?.notebook ??
+        new o.notebook.KnowledgeNotebook({ repositoryPath: join(r.data, path, 'notebook.git') });
+      const revision = notebook.readRevision(
+        selected?.head.notebookCommit ?? notebook.publishedRevision()
+      );
       notebookValues.push({ scope, ...revision });
       notebookPaths.push(`${path}/notebook.git`);
-      const schema = o.okf.parseScopeKnowledgeSchema(
-        readFileSync(join(r.data, path, 'schema', 'scope-schema.yaml'), 'utf8')
-      );
-      if (!schema.ok) throw new Error('Retained notebook schema is invalid.');
-      schemaValues.push({ scope, schema: schema.schema });
-      schemaPaths.push(`${path}/schema/scope-schema.yaml`);
+      if (selected) {
+        schemaValues.push({ scope, schema: selected.scopeSchema });
+        schemaPaths.push(
+          `${workspacePath}/knowledge/content/${selected.head.schemaContent.reference.locator.path}`
+        );
+        workspaceDb.sqlite.close();
+      } else {
+        const schema = o.okf.parseScopeKnowledgeSchema(
+          readFileSync(join(r.data, path, 'schema', 'scope-schema.yaml'), 'utf8')
+        );
+        if (!schema.ok) throw new Error('Retained notebook schema is invalid.');
+        schemaValues.push({ scope, schema: schema.schema });
+        schemaPaths.push(`${path}/schema/scope-schema.yaml`);
+      }
     }
     record('Notebook content and history', notebookValues, notebookPaths);
     record('Notebook scope schema', schemaValues, schemaPaths);
     record(
       'Knowledge Proposal',
       [ctx.store.getKnowledgeProposal(selectors.proposalId)],
-      [`${workspacePath}/knowledge/proposals/${selectors.proposalId}.md`]
+      [selectors.proposalPath]
     );
     record(
       'Knowledge Proposal Review',
       ctx.store.listKnowledgeProposalReviewDecisions(selectors.workspaceId, selectors.proposalId),
-      [`${workspacePath}/knowledge/reviews/${selectors.proposalId}.json`]
+      []
     );
     const sourceOwner = {
       dataRoot: r.data,
       ownerScope: { kind: 'workspace', workspaceId: selectors.workspaceId },
     };
+    const sourceDb = o.db.openWorkspaceDb(r.data, selectors.workspaceId);
+    const sourceSelection = o.notebookSelection.readWorkspaceNotebookSelection({
+      workspaceDb: sourceDb,
+      workspaceRoot,
+      knowledgeBaseId: o.knowledgeBase.readDefaultKnowledgeBaseId({
+        dataRoot: r.data,
+        scope: { kind: 'workspace', workspaceId: selectors.workspaceId },
+      }),
+    });
     const workspaceSource = o.sourcePointers
-      .readSourcePointers(sourceOwner)
+      .readSourcePointers(sourceOwner, undefined, sourceSelection)
       .get(selectors.sourceId);
+    sourceDb.sqlite.close();
     if (!workspaceSource) throw new Error('Corpus Source pointer is unavailable.');
     record(
       'Workspace Source identity',

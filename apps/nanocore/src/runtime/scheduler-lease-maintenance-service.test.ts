@@ -326,7 +326,7 @@ describe('scheduler lease maintenance service', () => {
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, 'heartbeat');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
@@ -369,7 +369,7 @@ describe('scheduler lease maintenance service', () => {
     } as const;
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, 'server_user', triggerActor);
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
@@ -409,7 +409,7 @@ describe('scheduler lease maintenance service', () => {
     const errors: unknown[] = [];
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, 'actor_mismatch', {
         kind: 'automation',
         id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
@@ -461,7 +461,7 @@ describe('scheduler lease maintenance service', () => {
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, 'release_retry');
       const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_retry',
@@ -500,7 +500,7 @@ describe('scheduler lease maintenance service', () => {
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, 'zero_input');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
@@ -544,7 +544,7 @@ describe('scheduler lease maintenance service', () => {
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, 'partial_handoff');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
@@ -611,7 +611,7 @@ describe('scheduler lease maintenance service', () => {
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, 'stale_retained');
       dispatchLease(coreDb, 'release_retained');
       const staleEnvironmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
@@ -676,7 +676,7 @@ describe('scheduler lease maintenance service', () => {
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, 'release_timeout');
       const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_timeout',

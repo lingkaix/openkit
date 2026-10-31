@@ -1468,7 +1468,9 @@ export async function recoverStoppedSqlCorpus({ appRoot, dataRoot, sql }) {
       workspaceMutationAdmission: admission,
     });
     o.usage.recoverRunningCapabilityCalls({ workspaceDb: core });
-    o.db.verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+    await (
+      await o.load('storage/workspace-storage-migration')
+    ).verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
       o.store.FsStore.validateFileAuthority(dataRoot)
     );
     const store = new o.store.FsStore({ dataRoot });

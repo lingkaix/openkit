@@ -25,12 +25,12 @@ import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { projectKnowledgeProposalPreview } from './notebook-proposal-preview.js';
 import {
-  attributedNotebookPageBytes,
   type NotebookEdit,
   type NotebookPublicationAdmission,
   publishNotebook,
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
+import { attributedNotebookPageBytes } from './okf.js';
 
 const UserOwner = z.object({ kind: z.literal('user'), userId: z.string() }).strip();
 const { workspaceId: _proposalWorkspace, ...proposalShape } =

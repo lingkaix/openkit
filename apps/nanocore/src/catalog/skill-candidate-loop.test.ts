@@ -96,7 +96,7 @@ async function fixture(privateOwnerUserId?: string) {
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: LOCAL_USER_ID });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   cleanup.push(() => workspaceDb.sqlite.close());
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const actor: Actor = { kind: 'session', userId: LOCAL_USER_ID };
   const thread = await store.createThread(
     workspaceId,
@@ -230,7 +230,7 @@ describe('synthetic Skill Artifact/catalog component', () => {
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: LOCAL_USER_ID });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     cleanup.push(() => workspaceDb.sqlite.close());
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     recordTestNativeRuntimeTarget(coreDb);
     const producerSkill = importWorkspaceSkill({
       dataRoot,

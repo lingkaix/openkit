@@ -6,16 +6,19 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
+import type { AuditEvent } from '@openkit/protocol';
 import {
   ArtifactReviewError,
   type ControlReviewCommandInput,
   type ControlReviewCommandResult,
 } from '../artifact-reviews.js';
+import { prepareAuditEventStatement } from '../audit-events.js';
 import type {
   ControlMaintenanceAdmissionInput,
   ControlMaintenanceAdmissionResult,
 } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
+import type { CommandRequestRecord } from '../lib/store.js';
 import { OperationError, restoreControlCapabilityFailure } from '../operation-error.js';
 import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
 import {
@@ -46,6 +49,7 @@ import {
   FileStorageAdmission,
   type FileStorageReservation,
 } from './artifacts/file-admission.js';
+import { prepareControlCommandRequestStatement } from './command-request-codecs.js';
 import { CONTROL_STORE_BUDGET, type ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
 import {
@@ -55,6 +59,10 @@ import {
   controlCapabilityText,
   prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
+import {
+  type ControlKnowledgeHead,
+  controlKnowledgeHeadStatements,
+} from './control-store-knowledge-heads.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
 import {
   type ControlEventAppend,
@@ -135,6 +143,26 @@ export interface ControlRecoveryNativeCall {
   readonly freeze: WorkspaceFrozenAdmission;
   readonly binding: ControlRecoveryNativeBinding;
 }
+
+const workspaceSchemaApplicationCall = Symbol('workspace-schema-application-call');
+
+/** One exact schema application admitted by the current lifecycle freeze owner. */
+interface ControlWorkspaceSchemaApplicationCall {
+  readonly kind: 'workspace-schema-application';
+  readonly [workspaceSchemaApplicationCall]: true;
+  readonly freeze: WorkspaceFrozenAdmission;
+  readonly workspaceId: string;
+  readonly command: Omit<OpenCommand, 'operation'>;
+  readonly path: string;
+  readonly identity: string;
+  readonly expectedHead: ControlKnowledgeHead;
+  readonly nextHead: ControlKnowledgeHead;
+  readonly requestId: string;
+  readonly reportDigest: string;
+  readonly statements: readonly ControlSqlStatement[];
+}
+
+type ControlFrozenNativeCall = ControlRecoveryNativeCall | ControlWorkspaceSchemaApplicationCall;
 /** Native requests own release; the filesystem owner retains all physical admission semantics. */
 type NativeCapacityReservation = Pick<FileStorageReservation, 'release'>;
 /** Queued backing belongs to one database; host attribution preserves it after channel loss. */
@@ -192,7 +220,7 @@ interface Pending {
   readonly host: WriterHost;
   readonly command: ControlWorkerCommand;
   readonly request: ControlWorkerRequest;
-  readonly recovery?: ControlRecoveryNativeCall;
+  readonly recovery?: ControlFrozenNativeCall;
   /** Unposted capture waiters share this same finite admission map and byte budget. */
   posted: boolean;
   /** The original admitted scope ACK gates posting after finite request admission. */
@@ -737,10 +765,10 @@ class ControlStoreWorkerClient {
     return { path, identity, host };
   }
 
-  /** Checks the existing freeze/physical owner again at each trusted lifecycle submission. */
-  private assertRecovery(
+  /** Checks the exact freeze and physical owner again at each trusted lifecycle submission. */
+  private assertFrozenCall(
     command: ControlWorkerCommand,
-    recovery: ControlRecoveryNativeCall | undefined,
+    recovery: ControlFrozenNativeCall | undefined,
     opening?: Opening
   ): void {
     if (recovery === undefined) {
@@ -771,6 +799,47 @@ class ControlStoreWorkerClient {
           },
         });
       return;
+    }
+    if ('kind' in recovery) {
+      try {
+        const physical =
+          opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
+        let admitted = physical?.command;
+        if (command.operation === 'open') {
+          const {
+            operation: _operation,
+            version: _version,
+            id: _id,
+            ...input
+          } = command as Extract<ControlWorkerRequest, { operation: 'open' }>;
+          admitted = input;
+        }
+        const current = statSync(recovery.path);
+        if (
+          recovery[workspaceSchemaApplicationCall] !== true ||
+          recovery.kind !== 'workspace-schema-application' ||
+          !this.workspaceMutationAdmission?.ownsFreeze(recovery.workspaceId, recovery.freeze) ||
+          recovery.command.productOwner?.kind !== 'workspace' ||
+          recovery.command.productOwner.workspaceId !== recovery.workspaceId ||
+          recovery.command.database !== `workspace:${resolve(recovery.command.path)}` ||
+          recovery.command.create !== false ||
+          recovery.command.initialize !== 'workspace' ||
+          realpathSync(recovery.command.path) !== recovery.path ||
+          `${current.dev}:${current.ino}` !== recovery.identity ||
+          (physical !== undefined &&
+            (physical.path !== recovery.path || physical.identity !== recovery.identity)) ||
+          !isDeepStrictEqual(recovery.command, admitted) ||
+          !('database' in command) ||
+          command.database !== recovery.command.database ||
+          (command.operation !== 'open' &&
+            (command.operation !== 'write' ||
+              !isDeepStrictEqual(command.statements, recovery.statements)))
+        )
+          throw new Error('Workspace Schema application binding is not current.');
+        return;
+      } catch {
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      }
     }
     try {
       const { binding, freeze } = recovery;
@@ -822,6 +891,14 @@ class ControlStoreWorkerClient {
     command: Omit<OpenCommand, 'operation'>,
     recovery?: ControlRecoveryNativeCall
   ): Promise<void> {
+    await this.openFrozen(command, recovery);
+  }
+
+  /** Internal open shared only by recovery and the exact schema-freeze composition. */
+  private async openFrozen(
+    command: Omit<OpenCommand, 'operation'>,
+    recovery?: ControlFrozenNativeCall
+  ): Promise<void> {
     this.assertAccepting();
     if (
       !isControlWorkerRequest({
@@ -832,14 +909,14 @@ class ControlStoreWorkerClient {
       })
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    this.assertRecovery({ ...command, operation: 'open' }, recovery);
+    this.assertFrozenCall({ ...command, operation: 'open' }, recovery);
     const existing = this.openings.get(command.database);
     if (existing) {
       if (existing.host.failed) throw new ControlStoreWorkerError('unavailable', 'not-committed');
       if (!isDeepStrictEqual(existing.command, command))
         throw new ControlStoreWorkerError('invalid-request', 'not-committed');
       await existing.promise;
-      this.assertRecovery({ ...command, operation: 'open' }, recovery);
+      this.assertFrozenCall({ ...command, operation: 'open' }, recovery);
       return;
     }
     const binding = structuredClone(command);
@@ -880,6 +957,87 @@ class ControlStoreWorkerClient {
   }
 
   /**
+   * Opens one exact Workspace Schema application while its exclusive lifecycle freeze remains owned.
+   *
+   * The returned function can submit only the head CAS, original successful Audit and
+   * original receipt that were bound here. The caller rechecks current human and Policy
+   * authority after this awaited open and before it invokes the function. Ordinary
+   * publishers remain closed, and each native boundary rechecks the live freeze and inode.
+   *
+   * @param input Exact physical owner and reviewed Schema application tuple.
+   * @returns A single-use submitter for the already bound native tuple.
+   */
+  async openWorkspaceSchemaApplication(input: {
+    readonly workspaceDb: WorkspaceDb;
+    readonly command: Omit<OpenCommand, 'operation'>;
+    readonly freeze: WorkspaceFrozenAdmission;
+    readonly expectedHead: ControlKnowledgeHead;
+    readonly nextHead: ControlKnowledgeHead;
+    readonly audit: AuditEvent;
+    readonly receipt: CommandRequestRecord;
+    readonly reportDigest: string;
+  }): Promise<() => Promise<void>> {
+    const { workspaceDb: db, expectedHead, nextHead, receipt, audit } = input;
+    const command = structuredClone(input.command);
+    const path = realpathSync(command.path);
+    const current = statSync(path);
+    if (
+      !this.workspaceMutationAdmission?.ownsFreeze(db.workspaceId, input.freeze) ||
+      db.scope !== 'workspace' ||
+      !db.sqlite.open ||
+      db.sqlite.inTransaction ||
+      resolve(db.sqlite.name) !== resolve(path) ||
+      typeof command.dataRoot !== 'string' ||
+      resolve(command.dataRoot) !== resolve(db.dataRoot) ||
+      command.database !== `workspace:${resolve(command.path)}` ||
+      command.productOwner?.kind !== 'workspace' ||
+      command.productOwner.workspaceId !== db.workspaceId ||
+      command.create !== false ||
+      command.initialize !== 'workspace' ||
+      expectedHead.workspaceId !== db.workspaceId ||
+      nextHead.workspaceId !== db.workspaceId ||
+      nextHead.knowledgeBaseId !== expectedHead.knowledgeBaseId ||
+      !/^sha256:[a-f0-9]{64}$/.test(input.reportDigest) ||
+      receipt.command !== 'knowledge.schema.apply' ||
+      receipt.requestId !== audit.requestId ||
+      receipt.response.kind !== 'knowledge_schema_report' ||
+      receipt.response.id !== input.reportDigest ||
+      audit.workspaceId !== db.workspaceId ||
+      audit.category !== 'knowledge' ||
+      audit.action !== 'knowledge.schema.apply' ||
+      audit.outcome !== 'succeeded' ||
+      audit.resource !== `knowledge-schema-report:${input.reportDigest}`
+    )
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const statements = Object.freeze([
+      ...controlKnowledgeHeadStatements(nextHead, expectedHead),
+      prepareAuditEventStatement(audit),
+      prepareControlCommandRequestStatement(db.workspaceId, receipt),
+    ]);
+    const application: ControlWorkspaceSchemaApplicationCall = Object.freeze({
+      kind: 'workspace-schema-application',
+      [workspaceSchemaApplicationCall]: true as const,
+      freeze: input.freeze,
+      workspaceId: db.workspaceId,
+      command,
+      path,
+      identity: `${current.dev}:${current.ino}`,
+      expectedHead: structuredClone(expectedHead),
+      nextHead: structuredClone(nextHead),
+      requestId: receipt.requestId,
+      reportDigest: input.reportDigest,
+      statements,
+    });
+    await this.openFrozen(command, application);
+    let submitted = false;
+    return async () => {
+      if (submitted) throw new ControlStoreWorkerError('precondition', 'not-committed');
+      submitted = true;
+      await this.writeFrozen(command.database, statements, application);
+    };
+  }
+
+  /**
    * Submits a whole conditional transition and its original receipt, never a callback.
    *
    * @param database Already-admitted worker database key.
@@ -890,6 +1048,15 @@ class ControlStoreWorkerClient {
     database: string,
     statements: readonly ControlSqlStatement[],
     recovery?: ControlRecoveryNativeCall
+  ): Promise<readonly ControlSqlResult[]> {
+    return this.writeFrozen(database, statements, recovery);
+  }
+
+  /** Internal write shared only by recovery and the exact schema-freeze composition. */
+  private async writeFrozen(
+    database: string,
+    statements: readonly ControlSqlStatement[],
+    recovery?: ControlFrozenNativeCall
   ): Promise<readonly ControlSqlResult[]> {
     const reply = await this.request(
       { operation: 'write', database, statements },
@@ -1378,7 +1545,7 @@ class ControlStoreWorkerClient {
 
   /** Closes a scope only after its previously accepted writes have finished. */
   async close(database: string, recovery?: ControlRecoveryNativeCall): Promise<void> {
-    this.assertRecovery({ operation: 'close', database }, recovery);
+    this.assertFrozenCall({ operation: 'close', database }, recovery);
     const opening = this.openings.get(database);
     try {
       // Idle readers must not prevent the writer's final close from checkpointing at rest.
@@ -1395,7 +1562,7 @@ class ControlStoreWorkerClient {
     database: string,
     recovery?: ControlRecoveryNativeCall
   ): Promise<string | null> {
-    this.assertRecovery({ operation: 'recovery-seal', database }, recovery);
+    this.assertFrozenCall({ operation: 'recovery-seal', database }, recovery);
     const opening = this.openings.get(database);
     try {
       // The caller excludes new publishers. Accepted same-Turn producers can still be waiting
@@ -1554,7 +1721,7 @@ class ControlStoreWorkerClient {
     materialParts?: readonly string[],
     target?: WriterHost,
     deferPost = false,
-    recovery?: ControlRecoveryNativeCall
+    recovery?: ControlFrozenNativeCall
   ): Promise<Success> {
     if (command.operation !== 'shutdown') {
       try {
@@ -1583,7 +1750,7 @@ class ControlStoreWorkerClient {
         command.operation === 'item');
     const opening = database === undefined ? undefined : this.openings.get(database);
     try {
-      this.assertRecovery(command, recovery, opening);
+      this.assertFrozenCall(command, recovery, opening);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -1783,7 +1950,7 @@ class ControlStoreWorkerClient {
     const opening =
       'database' in entry.command ? this.openings.get(entry.command.database) : undefined;
     try {
-      this.assertRecovery(entry.command, entry.recovery, opening);
+      this.assertFrozenCall(entry.command, entry.recovery, opening);
     } catch (error) {
       const members = entry.cohort?.frame.requests.map(
         (request) => this.pending.get(request.id)!
@@ -1809,7 +1976,7 @@ class ControlStoreWorkerClient {
     if (members.some((member) => !member.ready)) return;
     try {
       for (const member of members)
-        this.assertRecovery(
+        this.assertFrozenCall(
           member.command,
           member.recovery,
           'database' in member.command ? this.openings.get(member.command.database) : undefined

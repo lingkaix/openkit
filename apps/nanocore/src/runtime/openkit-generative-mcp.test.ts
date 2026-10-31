@@ -101,7 +101,7 @@ describe('openkit-generative MCP', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-mcp-'));
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -242,7 +242,7 @@ describe('openkit-generative MCP', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-mcp-publish-'));
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',

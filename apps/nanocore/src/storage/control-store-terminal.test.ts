@@ -130,7 +130,7 @@ function fixture(kind: 'server' | 'workspace' = 'server') {
     rmSync(root, { recursive: true, force: true });
   });
   if (db.scope === 'core') applyMigrations(db);
-  else applyScopedMigrations(db);
+  else applyScopedMigrations(db, undefined, 'pre-knowledge');
   mkdirSync(join(root, 'content'));
   const mount = {
     root: join(root, 'content'),

@@ -30,12 +30,16 @@ import {
   type WorkspaceNotebookRead,
 } from './knowledge/notebook-index-source.js';
 import {
-  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
+  readWorkspaceNotebookSelection,
+  type WorkspaceNotebookSelection,
+} from './knowledge/notebook-workspace-selection.js';
+import {
   type KnowledgePageReferenceProof,
   parseKnowledgePageSourceReference,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   resolveRegisteredKnowledgeSourceReference,
+  type ScopeKnowledgeSchema,
   stringFrontmatterField,
   stringListFrontmatterField,
   validateScopeKnowledgeSchema,
@@ -57,7 +61,7 @@ import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
 import type { RetrievalDocument, RetrievalScope } from './retrieval-service.js';
-import { type CoreDb, openWorkspaceDb, type UserDb } from './storage/db.js';
+import { type CoreDb, openWorkspaceDb, type UserDb, type WorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
 import { assertCanonicalDirectory } from './storage/workspace-file-records.js';
 
@@ -250,22 +254,24 @@ export function knowledgePageDelegated(
   if (sourceScope === 'user') admitUserMemoryRetrieval(input);
   else if (sourceScope === 'server') admitServerKnowledgeRetrieval(input);
   else admitKnowledgeRetrieval(input);
-  const notebook = new KnowledgeNotebook({
-    repositoryPath:
-      sourceScope === 'user'
-        ? join(
-            resolveScopedNotebookOwner({
-              coreDb: input.access.coreDb!,
-              actor: input.access.requestActor,
-              target: { kind: 'user' },
-            }).notebookRoot,
-            'notebook.git'
-          )
-        : sourceScope === 'server'
-          ? join(input.dataRoot, 'server', 'knowledge', 'notebook.git')
-          : join(input.dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
-  });
-  const revision = input.notebookRevision ?? notebook.publishedRevision();
+  const workspace = sourceScope === 'workspace' ? pinNotebook(input) : undefined;
+  const notebook =
+    workspace?.notebook ??
+    new KnowledgeNotebook({
+      repositoryPath:
+        sourceScope === 'user'
+          ? join(
+              resolveScopedNotebookOwner({
+                coreDb: input.access.coreDb!,
+                actor: input.access.requestActor,
+                target: { kind: 'user' },
+              }).notebookRoot,
+              'notebook.git'
+            )
+          : join(input.dataRoot, 'server', 'knowledge', 'notebook.git'),
+    });
+  const revision =
+    input.notebookRevision ?? workspace?.notebookRevision ?? notebook.publishedRevision();
   notebook.history({ revision, limit: 1 });
   let record = notebook.inspectRevision(revision);
   const path = `${pageId}.md`;
@@ -669,6 +675,52 @@ interface PinnedNotebookTarget extends Target {
   readonly notebookRevision: string;
   readonly entries: Readonly<Record<string, string>>;
   readonly contents: Map<string, string>;
+  readonly scopeSchema: ScopeKnowledgeSchema;
+  readonly scopeSchemaText: string;
+}
+
+/** Opens only the explicit Workspace database needed to bind one request-local SQL selection. */
+function selectWorkspaceNotebook(
+  dataRoot: string,
+  workspaceId: string,
+  knowledgeBaseId: string
+): WorkspaceNotebookSelection {
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  try {
+    return readCurrentWorkspaceNotebookSelection({
+      workspaceDb,
+      dataRoot,
+      workspaceId,
+      expectedKnowledgeBaseId: knowledgeBaseId,
+    });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+/** Selects one current Workspace tuple from an explicit admitted physical connection. */
+export function readCurrentWorkspaceNotebookSelection(input: {
+  readonly workspaceDb: Pick<WorkspaceDb, 'scope' | 'sqlite' | 'workspaceId'>;
+  readonly dataRoot: string;
+  readonly workspaceId: string;
+  readonly expectedKnowledgeBaseId?: string;
+}): WorkspaceNotebookSelection {
+  if (input.workspaceDb.workspaceId !== input.workspaceId)
+    throw new NotebookError('recovery_required');
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: input.dataRoot,
+    scope: { kind: 'workspace', workspaceId: input.workspaceId },
+  });
+  if (
+    input.expectedKnowledgeBaseId !== undefined &&
+    input.expectedKnowledgeBaseId !== knowledgeBaseId
+  )
+    throw new NotebookError('recovery_required');
+  return readWorkspaceNotebookSelection({
+    workspaceDb: input.workspaceDb,
+    workspaceRoot: join(input.dataRoot, 'workspaces', input.workspaceId),
+    knowledgeBaseId,
+  });
 }
 
 /** Checks the physical owner before content I/O; neither a pin nor an index supplies authority. */
@@ -692,13 +744,10 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
     dataRoot,
     scope: { kind: 'workspace', workspaceId: input.workspaceId },
   });
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
-  });
-  const prepared = currentWorkspaceNotebookRead(
-    input.notebookRead,
-    join(dataRoot, 'workspaces', input.workspaceId)
-  );
+  const workspaceRoot = join(dataRoot, 'workspaces', input.workspaceId);
+  const selection = selectWorkspaceNotebook(dataRoot, input.workspaceId, knowledgeBaseId);
+  const notebook = selection.notebook;
+  const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
   if (prepared !== input.notebookRead) input = { ...input, notebookRead: prepared };
   const notebookRevision =
     input.notebookRevision ?? prepared?.current.revision ?? notebook.publishedRevision();
@@ -715,6 +764,8 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
     pageScopeId: `page/workspace/${input.workspaceId}/${knowledgeBaseId}`,
     notebook,
     notebookRevision,
+    scopeSchema: selection.scopeSchema,
+    scopeSchemaText: selection.scopeSchemaText,
     entries: record ? record.entries : notebook.inspectRevision(notebookRevision).entries,
     contents: new Map(
       record
@@ -750,7 +801,7 @@ function pinnedPageReadable(
   if (
     parsed.document.frontmatter.sensitivity !== undefined &&
     (sensitivity === null ||
-      (!DEFAULT_SCOPE_KNOWLEDGE_SCHEMA.allowedSensitivities.includes(sensitivity) &&
+      (!input.scopeSchema.allowedSensitivities.includes(sensitivity) &&
         sensitivity !== 'restricted'))
   )
     return false;
@@ -900,6 +951,7 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
   readonly notebookRevision: string;
   readonly pages: readonly AuthorizedWorkspaceNotebookPage[];
   readonly referenceProofs: ReadonlyMap<string, KnowledgePageReferenceProof>;
+  readonly scopeSchemaText: string;
 } {
   const pinned = pinNotebook(input);
   const ids =
@@ -943,12 +995,21 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
     notebookRevision: pinned.notebookRevision,
     pages: currentPages,
     referenceProofs: new Map([...referenceProofs].filter(([id]) => currentIds.has(id))),
+    scopeSchemaText: pinned.scopeSchemaText,
   };
 }
 /** Admits the physical owner before async query inventory loading; live checks still follow I/O. */
 export async function prepareAuthorizedWorkspaceNotebookRead(input: Target) {
   const dataRoot = admitWorkspaceNotebookTarget(input);
-  return prepareWorkspaceNotebookRead({ ...input, dataRoot });
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'workspace', workspaceId: input.workspaceId },
+  });
+  return prepareWorkspaceNotebookRead({
+    ...input,
+    dataRoot,
+    selection: selectWorkspaceNotebook(dataRoot, input.workspaceId, knowledgeBaseId),
+  });
 }
 /** Declares only body, description and tags as body fields; title has its own kernel weight. */
 function textRanges(content: string, body: string): { start: number; end: number }[] {

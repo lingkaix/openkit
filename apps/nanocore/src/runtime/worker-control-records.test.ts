@@ -657,7 +657,7 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
   });
   await store.updateTurn(turn.id, { agentSessionId });
   const db = openWorkspaceDb(root, pkg.scope.workspaceId);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   recordAgentEnvironmentPackageSnapshot(db, { environmentPackage: pkg, createdAt: pkg.createdAt });
   const owner = { threadId: turn.threadId, turnId: turn.id };
   let activePackage = pkg;

@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import {
   KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES,
   type KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
@@ -16,10 +15,12 @@ import {
   knowledgeSourceAudienceReadable,
   knowledgeSourceLineageReadable,
   readAuthorizedWorkspaceNotebookPages,
+  readCurrentWorkspaceNotebookSelection,
 } from '../retrieval-knowledge-adapter.js';
-import { KnowledgeNotebook, NotebookError } from './notebook.js';
+import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import { humanPageBytes, publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { parseSourcePointer } from './source-pointers.js';
 
 /** Existing native authority and publication dependencies; no history-owned state is retained. */
@@ -85,6 +86,7 @@ export class AuthorizedHistory {
     readonly notebook: KnowledgeNotebook,
     readonly dataRoot: string,
     readonly workspaceId: string,
+    readonly workspaceSelection: WorkspaceNotebookSelection,
     readonly access: KnowledgeRetrievalAccess
   ) {
     this.read(notebook.publishedRevision(), []);
@@ -119,7 +121,8 @@ export class AuthorizedHistory {
           ownerScope: { kind: 'workspace', workspaceId: this.workspaceId },
         },
         id,
-        content
+        content,
+        this.workspaceSelection
       );
       if (
         !knowledgeSourceLineageReadable(
@@ -228,23 +231,28 @@ export function createNotebookHistoryOperations(
   const { store, coreDb } = dependencies;
   const open = (workspaceId: string, context: AdmittedOperationContext) => {
     const dataRoot = store?.getDataRoot();
-    if (!store || !coreDb || !dataRoot)
+    if (!store || !coreDb || !dataRoot || !dependencies.repositoryWorkspaceDb)
       throw new OperationError('recovery_required', 'Notebook storage is unavailable.', 503);
-    return new AuthorizedHistory(
-      new KnowledgeNotebook({
-        repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
-      }),
-      dataRoot,
-      workspaceId,
-      {
-        store,
-        coreDb,
-        actor: context.actorRef,
-        requestActor: publicOperationActor(context),
-        outputThreadId: context.queryContext?.threadId,
-        outputTurnId: context.queryContext?.turnId,
+    const selection = (() => {
+      const workspaceDb = dependencies.repositoryWorkspaceDb!(workspaceId);
+      try {
+        return readCurrentWorkspaceNotebookSelection({
+          workspaceDb,
+          dataRoot,
+          workspaceId,
+        });
+      } finally {
+        workspaceDb.sqlite.close();
       }
-    );
+    })();
+    return new AuthorizedHistory(selection.notebook, dataRoot, workspaceId, selection, {
+      store,
+      coreDb,
+      actor: context.actorRef,
+      requestActor: publicOperationActor(context),
+      outputThreadId: context.queryContext?.threadId,
+      outputTurnId: context.queryContext?.turnId,
+    });
   };
   const run = async <T>(action: () => T | Promise<T>): Promise<T> => {
     try {
@@ -326,6 +334,7 @@ export function createNotebookHistoryOperations(
                     coreDb,
                     workspaceDb,
                     notebook: history.notebook,
+                    scopeSchemaText: history.workspaceSelection.scopeSchemaText,
                     request,
                     requestActor: publicOperationActor(context),
                     actor,

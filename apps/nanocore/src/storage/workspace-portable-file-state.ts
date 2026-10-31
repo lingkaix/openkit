@@ -27,7 +27,11 @@ import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { validateRecurringPortableHistory } from './recurring-portable-history.js';
 import { StoredProductRetrievalTraceV1Schema } from './retrieval-trace-retained-v1.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
-import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
+import {
+  assertCanonicalDirectory,
+  readAdmittedWorkspaceKnowledgeSelection,
+  readCanonicalTextFile,
+} from './workspace-file-records.js';
 
 const RetrievalTraceReaderSchema = StoredProductRetrievalTraceV1Schema;
 
@@ -74,14 +78,15 @@ export function readWorkspacePortableFileState(
   const root = resolve(workspaceRoot);
 
   assertCanonicalDirectory(root);
+  const selection = readAdmittedWorkspaceKnowledgeSelection(root, owners.workspaceId);
   const recurringHistory = readOptionalText(root, 'imports/recurrence-history.json');
   if (recurringHistory !== null) validateRecurringPortableHistory(recurringHistory);
   return {
     recurringHistory,
     retrievalTraceFiles: readWorkspaceRetrievalTraceFiles(root, owners),
     workspaceConfig: readOptionalText(root, 'config/workspace.jsonc'),
-    workspaceSchema: readOptionalText(root, 'knowledge/schema/scope-schema.yaml'),
-    ...readPortableWorkspaceNotebookPages(root),
+    workspaceSchema: selection.scopeSchemaText,
+    ...readPortableWorkspaceNotebookPages(root, selection),
     workerContextPackageFiles: readWorkerContextPackageFiles(root, owners.turns),
   };
 }

@@ -8,6 +8,8 @@ import {
 } from '@openkit/protocol';
 import { type Document, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 
+import { NotebookError } from './notebook-error.js';
+
 export const OKF_SNAPSHOT_ID = 'docs/okf-spec-v0.2-snapshot.md#v0.2';
 /** Accepted governed profile for complete notebook ownership and Git content history. */
 export const OPENKIT_KNOWLEDGE_PROFILE_VERSION = 'openkit-knowledge-profile-v4';
@@ -1341,4 +1343,26 @@ function readStringList(
     message: `Scope knowledge schema field ${field} must be a string array.`,
   });
   return [];
+}
+
+/** Normalizes service-owned attribution before publication or retention of an exact Review candidate. */
+export function attributedNotebookPageBytes(
+  path: string,
+  content: string,
+  ownerScope: KnowledgeOwnerScope,
+  reviewState: 'user-authored' | 'delegated' | 'accepted'
+): string {
+  const parsed = parseOkfDocument({ path, content });
+  if (!parsed.ok)
+    throw new NotebookError(
+      'invalid_request',
+      undefined,
+      parsed.errors.map(({ code }) => code)
+    );
+  if (parsed.document.reserved) return content;
+  const profile = validateOpenKitKnowledgeProfile(parsed.document, ownerScope);
+  if (profile.conformance !== 'OpenKit-profile-valid') throw new NotebookError('invalid_request');
+  return parsed.document.frontmatter.review_state === reviewState
+    ? content
+    : updateOkfFrontmatter({ path, content, updates: { review_state: reviewState } });
 }

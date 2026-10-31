@@ -21,7 +21,7 @@ const producer = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' 
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-initialization-'));
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
   const initialization = {

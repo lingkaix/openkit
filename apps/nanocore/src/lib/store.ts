@@ -1,3 +1,19 @@
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
+import { prepareWorkspaceKnowledgeProposal } from '../storage/control-store-knowledge.js';
+import {
+  type ControlKnowledgeHead,
+  type ControlKnowledgeProposal,
+  controlKnowledgeHeadGuardStatement,
+  controlKnowledgeHeadStatements,
+  controlKnowledgeProposalStatement,
+  controlKnowledgeReviewStatement,
+  readControlKnowledgeProposal,
+} from '../storage/control-store-knowledge-heads.js';
+import { readImmutableContentBytes } from '../storage/immutable-content-read.js';
+import {
+  ActorRefReaderSchema,
+  knowledgeProposalDocumentDigest,
+} from '../storage/knowledge-proposal-codecs.js';
 import type {
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
@@ -7,7 +23,7 @@ export { commandRequestExpiresAt, commandRequestKey } from '../storage/command-r
 
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   IntroduceWorkspaceArtifactResponse,
@@ -29,6 +45,7 @@ import {
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import type {
   ActorRef,
+  AuditEvent,
   KnowledgeNotebookPageSchema,
   PolicyDocumentV1,
   WorkspaceRecordSchema,
@@ -69,7 +86,7 @@ import {
   type ControlReviewCommandInput,
   type CreateArtifactReviewInput,
 } from '../artifact-reviews.js';
-import { prepareAuditEvent } from '../audit-events.js';
+import { prepareAuditEvent, prepareAuditEventStatement } from '../audit-events.js';
 import {
   assertScopeAdmitted,
   isScopeAdmitted,
@@ -85,18 +102,17 @@ import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
-import { KnowledgeNotebook, validateNotebookFiles } from '../knowledge/notebook.js';
+import { type KnowledgeNotebook, validateNotebookFiles } from '../knowledge/notebook.js';
+import { NotebookError } from '../knowledge/notebook-error.js';
 import {
   initializeWorkspaceNotebook,
   type NotebookInitialization,
 } from '../knowledge/notebook-initialization.js';
-import {
-  attributedNotebookPageBytes,
-  type NotebookEdit,
-} from '../knowledge/notebook-publication.js';
+import type { NotebookEdit } from '../knowledge/notebook-publication.js';
 import { validateNotebookCandidate } from '../knowledge/notebook-validation.js';
 import { importedWorkspaceNotebookReferences } from '../knowledge/notebook-workspace-portability.js';
 import {
+  attributedNotebookPageBytes,
   createDefaultScopeKnowledgeSchemaText,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   type KnowledgePageReferenceProof,
@@ -153,6 +169,7 @@ import {
   getCommandRequestRecordFromDb,
   listCommandRequestRecords,
   normalizeCommandRequestResponse,
+  prepareControlCommandRequestStatement,
   readCommandRequestRecordsFromSqlite,
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
@@ -219,7 +236,6 @@ import {
   CaptureCoverageBindingSchema,
   isCurrentAgentSessionStatus,
   KnowledgeProposalRecordSchema,
-  KnowledgeProposalReviewFileSchema,
   listDirectoryNames,
   listNativeProducts,
   loadWorkspace,
@@ -229,6 +245,7 @@ import {
   nativeProductScope,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgePage,
+  parseWorkspaceKnowledgeProposalDocument,
   preserveDescriptiveRecord,
   projectWorkspaceSystemRecord,
   publishCanonicalPath,
@@ -419,6 +436,7 @@ export type CommandRequestName =
   | 'knowledge.package.import'
   | 'knowledge.notebook.update'
   | 'knowledge.notebook.restore'
+  | 'knowledge.schema.apply'
   | 'knowledge.source.register'
   | 'thread.create'
   | 'thread.update'
@@ -513,6 +531,7 @@ export type CommandRequestResponseKind =
   | 'user'
   | 'knowledge'
   | 'knowledge_notebook_revision'
+  | 'knowledge_schema_report'
   | 'knowledge_source'
   | 'thread'
   | 'turn'
@@ -1746,6 +1765,8 @@ export class FsStore {
     }
 
     try {
+      let initialWorkspaceDb: WorkspaceDb | undefined;
+      let initialSchemaText: string | undefined;
       const prepareFiles = () => {
         ensureLayoutDirectories(dataRoot);
         mkdirSync(stagingParent, { recursive: true });
@@ -1761,48 +1782,48 @@ export class FsStore {
           scope: { kind: 'workspace', workspaceId },
           knowledgeBaseId,
         });
-        const pageScopeId = `page/workspace/${workspaceId}/${knowledgeBaseId}`;
-        const workspaceDb = openWorkspaceDbAtRoot({
+        initialWorkspaceDb = openWorkspaceDbAtRoot({
           dataRoot,
           workspaceId,
           workspaceRoot: stagingRoot,
         });
-        try {
-          applyScopedMigrations(workspaceDb);
-          const scopeSchemaText =
-            initialNotebookSchemaText ??
-            createDefaultScopeKnowledgeSchemaText(new Date().toISOString());
-          // Initial history belongs to this actual creation/import, not to invented predecessor edits.
-          initializeWorkspaceNotebook({
-            workspaceRoot: stagingRoot,
-            workspaceId,
-            workspaceDb,
-            initialization: notebookInitialization,
-            files: initialNotebookFiles ?? {},
-            ...(initialNotebookSources === undefined
-              ? {}
-              : { sourcePointers: initialNotebookSources }),
-            revalidate: () => ({
-              pageScopeId,
-              scopeSchemaText,
-              reviewRequiredPageIds: [],
-              registeredSources: new Map(
-                records.knowledgeSources.map((source) => [source.id, source.contentDigest])
-              ),
-              resolvedReferences: importedWorkspaceNotebookReferences(
-                initialNotebookFiles ?? {},
-                pageScopeId
-              ),
-            }),
-          });
-        } finally {
-          // Publish a complete main database rather than depending on an open handle or WAL sidecar.
-          workspaceDb.sqlite.close();
-        }
-        stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
+        applyScopedMigrations(initialWorkspaceDb, undefined, 'pre-knowledge');
+        initialSchemaText =
+          initialNotebookSchemaText ??
+          createDefaultScopeKnowledgeSchemaText(new Date().toISOString());
       };
-      if (fileWriteAdmission) withCanonicalFileWriteAdmission(fileWriteAdmission, prepareFiles);
-      else prepareFiles();
+      try {
+        if (fileWriteAdmission) withCanonicalFileWriteAdmission(fileWriteAdmission, prepareFiles);
+        else prepareFiles();
+        await initializeWorkspaceNotebook({
+          workspaceRoot: stagingRoot,
+          workspaceId,
+          workspaceDb: initialWorkspaceDb!,
+          initialization: notebookInitialization,
+          files: initialNotebookFiles ?? {},
+          ...(fileWriteAdmission ? { fileWriteAdmission } : {}),
+          ...(initialNotebookSources === undefined
+            ? {}
+            : { sourcePointers: initialNotebookSources }),
+          revalidate: () => ({
+            pageScopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`,
+            scopeSchemaText: initialSchemaText!,
+            reviewRequiredPageIds: [],
+            registeredSources: new Map(
+              records.knowledgeSources.map((source) => [source.id, source.contentDigest])
+            ),
+            resolvedReferences: importedWorkspaceNotebookReferences(
+              initialNotebookFiles ?? {},
+              `page/workspace/${workspaceId}/${knowledgeBaseId}`
+            ),
+          }),
+        });
+      } finally {
+        initialWorkspaceDb?.sqlite.close();
+      }
+      const stage = () => stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
+      if (fileWriteAdmission) withCanonicalFileWriteAdmission(fileWriteAdmission, stage);
+      else stage();
       const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId }, stagingRoot);
       const entries: Array<{ input: ControlProductEntry; id: string; identity: string }> = [];
       for (const turn of records.turns) {
@@ -1990,7 +2011,7 @@ export class FsStore {
     }
   }
 
-  /** Writes only the independently file-owned Workspace configuration, Artifact and Proposal families. */
+  /** Writes only the independently file-owned Workspace configuration and Artifact families. */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
     workspaceRoot: string,
@@ -2005,12 +2026,6 @@ export class FsStore {
         artifacts: [...this.artifacts.values()].filter(
           (artifact) => artifact.workspaceId === workspaceId
         ),
-        knowledgeProposals: [...this.knowledgeProposals.values()].filter(
-          (proposal) => proposal.workspaceId === workspaceId
-        ),
-        knowledgeProposalReviews: [...this.knowledgeProposalReviews.values()]
-          .flat()
-          .filter((review) => review.workspaceId === workspaceId),
       },
       updateWorkspaceConfigName,
       initialArtifact
@@ -2100,15 +2115,7 @@ export class FsStore {
       KnowledgeProposalRecordSchema.parse(proposal);
       pageScopeId = this.workspaceKnowledgePageScopeId(proposal.workspaceId);
       if (this.dataRoot) {
-        const schemaPath = join(
-          this.workspaceRootPath(proposal.workspaceId),
-          'knowledge',
-          'schema',
-          'scope-schema.yaml'
-        );
-        if (existsSync(schemaPath)) {
-          scopeSchemaText = readCanonicalTextFile(schemaPath);
-        }
+        scopeSchemaText = this.workspaceKnowledgeSelection(proposal.workspaceId).scopeSchemaText;
       }
     } catch {
       throw new KnowledgePageValidationError();
@@ -2303,7 +2310,7 @@ export class FsStore {
       let pageBytes: string | null;
       try {
         pageBytes = readWorkspaceKnowledgePage(
-          this.workspaceRootPath(workspaceId),
+          this.workspaceKnowledgeSelection(workspaceId),
           ownerId,
           notebookRevision
         );
@@ -2384,19 +2391,34 @@ export class FsStore {
     }
 
     try {
-      const path = join(
-        this.workspaceRootPath(proposal.workspaceId),
-        'knowledge',
-        'proposals',
-        `${proposal.id}.md`
+      const root = this.workspaceRootPath(proposal.workspaceId);
+      const scope = this.nativeScope({ kind: 'workspace', workspaceId: proposal.workspaceId });
+      const reader = getWorkspaceProductReadHandle(scope.path, {
+        kind: 'workspace',
+        workspaceId: proposal.workspaceId,
+      });
+      const selected = readControlKnowledgeProposal(
+        { scope: 'workspace', workspaceId: proposal.workspaceId, sqlite: reader.sqlite },
+        proposal.id
       );
-      const actual = readCanonicalTextFile(path);
+      if (!selected) throw knowledgeProposalAuthorityError('recovery_required');
+      const actual = new TextDecoder('utf-8', { fatal: true }).decode(
+        readImmutableContentBytes(
+          {
+            root: join(root, 'knowledge', 'content'),
+            knowledgeBaseId: selected.proposal.knowledgeBaseId,
+            mount: selected.proposal.documentContent.reference.locator.mount,
+          },
+          scope.owner,
+          selected.proposal.documentContent,
+          selected.proposal.documentContent.byteLength
+        )
+      );
       if (actual !== expected) {
         throw knowledgeProposalAuthorityError('recovery_required');
       }
       const notebook = this.proposalNotebook(proposal.workspaceId);
       const candidate = notebook.retainedCandidate(proposal.id);
-      const candidateFiles = notebook.readRevision(proposal.candidateRevision).files;
       const content = proposal.canonicalPageBytes;
       const baseFiles = notebook.readContent(proposal.baseRevision);
       const candidateContent = notebook.readContent(proposal.candidateRevision);
@@ -2410,7 +2432,7 @@ export class FsStore {
         (proposal.changes
           ? !isDeepStrictEqual(changes, proposal.changes) ||
             contentDigest(JSON.stringify(changes)) !== proposal.contentDigest
-          : content !== candidateFiles[`${proposal.knowledgePageId}.md`] ||
+          : content !== candidateContent[`${proposal.knowledgePageId}.md`] ||
             content === undefined ||
             contentDigest(content) !== proposal.contentDigest) ||
         candidate.metadata.authority.kind !== 'proposal' ||
@@ -2475,15 +2497,21 @@ export class FsStore {
     }
 
     try {
-      const path = join(
-        this.workspaceRootPath(proposal.workspaceId),
-        'knowledge',
-        'reviews',
-        `${proposal.id}.json`
+      const scope = this.nativeScope({ kind: 'workspace', workspaceId: proposal.workspaceId });
+      const reader = getWorkspaceProductReadHandle(scope.path, {
+        kind: 'workspace',
+        workspaceId: proposal.workspaceId,
+      });
+      const selected = readControlKnowledgeProposal(
+        { scope: 'workspace', workspaceId: proposal.workspaceId, sqlite: reader.sqlite },
+        proposal.id
       );
-      const retained = KnowledgeProposalReviewFileSchema.parse(
-        JSON.parse(readCanonicalTextFile(path))
-      );
+      if (!selected) throw knowledgeProposalAuthorityError('recovery_required');
+      const retained = {
+        proposalId: proposal.id,
+        workspaceId: proposal.workspaceId,
+        decisions: selected.reviews,
+      };
       if (
         !isDeepStrictEqual(retained, {
           proposalId: proposal.id,
@@ -2493,6 +2521,21 @@ export class FsStore {
       ) {
         throw knowledgeProposalAuthorityError('recovery_required');
       }
+      const audits = reader.sqlite
+        .prepare(
+          `SELECT actor_json FROM audit_events WHERE workspace_id = ? AND request_id = ?
+         AND category = 'knowledge' AND action = 'knowledge.proposal.decide' AND outcome = 'succeeded'`
+        )
+        .all(proposal.workspaceId, review.requestId) as { actor_json: string | null }[];
+      if (
+        audits.length !== 1 ||
+        audits[0]!.actor_json === null ||
+        !isDeepStrictEqual(
+          ActorRefReaderSchema.parse(JSON.parse(audits[0]!.actor_json!)),
+          review.actor
+        )
+      )
+        throw knowledgeProposalAuthorityError('recovery_required');
       return review;
     } catch (error) {
       if (
@@ -3041,8 +3084,10 @@ export class FsStore {
             artifact.workspaceId === workspaceId &&
             !this.pendingArtifactSubmissions.has(artifact.id)
         ).length,
-        knowledgeEntryCount: readWorkspaceKnowledgePages(this.workspaceRootPath(workspaceId))
-          .length,
+        knowledgeEntryCount: readWorkspaceKnowledgePages(
+          this.workspaceRootPath(workspaceId),
+          this.workspaceKnowledgeSelection(workspaceId)
+        ).length,
       });
       return {
         ...system,
@@ -3114,7 +3159,10 @@ export class FsStore {
     const project = this.workspaceAgentCatalogProjection;
 
     const knowledge = this.dataRoot
-      ? readWorkspaceKnowledgePages(this.workspaceRootPath(workspaceId))
+      ? readWorkspaceKnowledgePages(
+          this.workspaceRootPath(workspaceId),
+          this.workspaceKnowledgeSelection(workspaceId)
+        )
       : resources.knowledge;
     return { ...resources, knowledge, ...(project ? { agents: project() } : {}) };
   }
@@ -3461,6 +3509,129 @@ export class FsStore {
           (item) => item.id === itemId
         )
       : undefined;
+  }
+
+  /**
+   * Commits one admitted Workspace Knowledge tuple with its original Audit and command facts.
+   *
+   * The caller prepares immutable bytes and owns current semantic admission. This
+   * method selects only the existing native physical owner and fixed Knowledge
+   * statements; it accepts no SQL or mutation callback. FULL ACK precedes projection.
+   *
+   * @param input Exact selected heads, optional original Proposal/Review, Audits and receipt.
+   * @returns Completion only after the native tuple is durably acknowledged.
+   */
+  public async commitWorkspaceKnowledge(input: {
+    readonly workspaceDb: WorkspaceDb;
+    readonly expectedHead: ControlKnowledgeHead;
+    readonly nextHead?: ControlKnowledgeHead;
+    readonly newProposal?: ControlKnowledgeProposal;
+    readonly review?: {
+      readonly proposalId: string;
+      readonly review: KnowledgeProposalReviewRecord;
+    };
+    readonly audits: readonly AuditEvent[];
+    readonly receipt?: CommandRequestRecord;
+    /** Exact reviewed Schema application owned by the current exclusive lifecycle freeze. */
+    readonly schemaApplication?: {
+      readonly schemaFreeze: WorkspaceFrozenAdmission;
+      readonly requestId: string;
+      readonly reportDigest: string;
+    };
+    /** Existing synchronous semantic admission; it selects no SQL or effect. */
+    readonly revalidatePublication: () => void;
+  }): Promise<void> {
+    const db = input.workspaceDb;
+    if (
+      !this.dataRoot ||
+      resolve(db.dataRoot) !== resolve(this.dataRoot) ||
+      db.scope !== 'workspace' ||
+      !db.sqlite.open ||
+      db.sqlite.inTransaction ||
+      input.expectedHead.workspaceId !== db.workspaceId ||
+      (input.nextHead &&
+        (input.nextHead.workspaceId !== db.workspaceId ||
+          input.nextHead.knowledgeBaseId !== input.expectedHead.knowledgeBaseId)) ||
+      (input.newProposal &&
+        (input.newProposal.workspaceId !== db.workspaceId ||
+          input.newProposal.knowledgeBaseId !== input.expectedHead.knowledgeBaseId)) ||
+      input.audits.some((event) => event.workspaceId !== db.workspaceId)
+    )
+      throw new NotebookError('recovery_required');
+    const schema = input.schemaApplication;
+    if (
+      (!schema && input.receipt?.command === 'knowledge.schema.apply') ||
+      (schema &&
+        (!input.nextHead ||
+          input.newProposal !== undefined ||
+          input.review !== undefined ||
+          !input.receipt ||
+          input.audits.length !== 1 ||
+          input.receipt.command !== 'knowledge.schema.apply' ||
+          input.receipt.requestId !== schema.requestId ||
+          input.receipt.response.kind !== 'knowledge_schema_report' ||
+          input.receipt.response.id !== schema.reportDigest ||
+          input.audits[0]?.requestId !== schema.requestId ||
+          input.audits[0]?.resource !== `knowledge-schema-report:${schema.reportDigest}` ||
+          !this.workspaceMutationAdmission?.ownsFreeze(db.workspaceId, schema.schemaFreeze)))
+    )
+      throw new NotebookError('recovery_required');
+    const scope = this.nativeScope({ kind: 'workspace', workspaceId: db.workspaceId });
+    if (resolve(db.sqlite.name) !== resolve(scope.path))
+      throw new NotebookError('recovery_required');
+    const database = `workspace:${scope.path}`;
+    const client = getControlStoreWorkerClient();
+    try {
+      const command = {
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot,
+        create: false as const,
+        initialize: 'workspace' as const,
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      };
+      let submitSchema: (() => Promise<void>) | undefined;
+      if (schema)
+        submitSchema = await client.openWorkspaceSchemaApplication({
+          workspaceDb: db,
+          command,
+          freeze: schema.schemaFreeze,
+          expectedHead: input.expectedHead,
+          nextHead: input.nextHead!,
+          audit: input.audits[0]!,
+          receipt: input.receipt!,
+          reportDigest: schema.reportDigest,
+        });
+      else await client.open(command);
+      // The existing semantic owner checks authority again after native opening.
+      const admission: unknown = input.revalidatePublication();
+      if (admission && typeof (admission as { then?: unknown }).then === 'function')
+        throw new TypeError('Knowledge publication admission must be synchronous.');
+      if (submitSchema) await submitSchema();
+      else
+        await client.write(database, [
+          ...(input.nextHead
+            ? controlKnowledgeHeadStatements(input.nextHead, input.expectedHead)
+            : [controlKnowledgeHeadGuardStatement(db, input.expectedHead)]),
+          ...(input.newProposal ? [controlKnowledgeProposalStatement(input.newProposal)] : []),
+          ...(input.review
+            ? [controlKnowledgeReviewStatement(db, input.review.proposalId, input.review.review)]
+            : []),
+          ...input.audits.map(prepareAuditEventStatement),
+          ...(input.receipt
+            ? [prepareControlCommandRequestStatement(db.workspaceId, input.receipt)]
+            : []),
+        ]);
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.code === 'precondition'
+      )
+        throw new NotebookError('conflict');
+      throw error;
+    }
   }
 
   /** Resolves the real admitted SQLite and private Storage owner, never an alias or synthetic Workspace. */
@@ -6825,10 +6996,80 @@ export class FsStore {
 
   /** Resolves this Workspace's existing single Git content owner. */
   private proposalNotebook(workspaceId: string): KnowledgeNotebook {
-    if (!this.dataRoot) throw knowledgeProposalAuthorityError('recovery_required');
-    return new KnowledgeNotebook({
-      repositoryPath: join(this.workspaceRootPath(workspaceId), 'knowledge', 'notebook.git'),
+    return this.workspaceKnowledgeSelection(workspaceId).notebook;
+  }
+
+  /** Reads one exact head and schema using the existing physical Workspace reader. */
+  private workspaceKnowledgeSelection(workspaceId: string) {
+    const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+    const reader = getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId });
+    return readWorkspaceNotebookSelection({
+      workspaceRoot: this.workspaceRootPath(workspaceId),
+      workspaceDb: { scope: 'workspace', workspaceId, sqlite: reader.sqlite },
+      knowledgeBaseId: readDefaultKnowledgeBaseId({
+        dataRoot: this.dataRoot!,
+        scope: { kind: 'workspace', workspaceId },
+      }),
     });
+  }
+
+  /** Refreshes projections only from exact SQL-selected immutable Proposal documents and Reviews. */
+  private refreshKnowledgeProposalInventory(workspaceId: string): void {
+    if (!this.dataRoot) return;
+    try {
+      const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+      const reader = getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId });
+      const db = { scope: 'workspace' as const, workspaceId, sqlite: reader.sqlite };
+      const root = this.workspaceRootPath(workspaceId);
+      const rows = reader.sqlite
+        .prepare('SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY proposal_id')
+        .all() as { proposal_id: string }[];
+      const proposals: KnowledgeProposalRecord[] = [];
+      const reviews: KnowledgeProposalReviewRecord[] = [];
+      for (const row of rows) {
+        const current = readControlKnowledgeProposal(db, row.proposal_id);
+        if (!current) throw knowledgeProposalAuthorityError('recovery_required');
+        const bytes = readImmutableContentBytes(
+          {
+            root: join(root, 'knowledge', 'content'),
+            knowledgeBaseId: current.proposal.knowledgeBaseId,
+            mount: current.proposal.documentContent.reference.locator.mount,
+          },
+          scope.owner,
+          current.proposal.documentContent,
+          current.proposal.documentContent.byteLength
+        );
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        const proposal = parseWorkspaceKnowledgeProposalDocument(
+          root,
+          workspaceId,
+          row.proposal_id,
+          text
+        );
+        if (
+          proposal.baseRevision !== current.proposal.baseRevision ||
+          proposal.candidateRevision !== current.proposal.candidateRevision ||
+          proposal.contentDigest !== current.proposal.contentDigest
+        )
+          throw knowledgeProposalAuthorityError('recovery_required');
+        proposals.push(proposal);
+        reviews.push(...current.reviews);
+      }
+      const currentIds = new Set(proposals.map(({ id }) => id));
+      for (const [id, record] of this.knowledgeProposals)
+        if (record.workspaceId === workspaceId) {
+          if (!currentIds.has(id)) this.knowledgeProposals.delete(id);
+          this.knowledgeProposalReviews.delete(id);
+        }
+      for (const proposal of proposals) this.knowledgeProposals.set(proposal.id, proposal);
+      for (const review of reviews)
+        this.knowledgeProposalReviews.set(review.proposalId, [
+          ...(this.knowledgeProposalReviews.get(review.proposalId) ?? []),
+          review,
+        ]);
+    } catch {
+      throw knowledgeProposalAuthorityError('recovery_required');
+    }
   }
 
   /** Verifies the exact original without materializing a file body or substituting another version. */
@@ -6868,7 +7109,61 @@ export class FsStore {
    * @param input Validated proposal request and server-owned attribution.
    * @returns Stored knowledge proposal.
    */
-  public createKnowledgeProposal(
+  public async createKnowledgeProposal(
+    input: CreateKnowledgeProposalInput | CreateNotebookProposalInput
+  ): Promise<KnowledgeProposalRecord> {
+    if (!this.dataRoot) {
+      const proposal = this.prepareKnowledgeProposal(input);
+      this.knowledgeProposals.set(proposal.id, proposal);
+      return proposal;
+    }
+    const release = this.enterWorkspaceMutation(input.workspaceId, 'capture');
+    const root = this.workspaceRootPath(input.workspaceId);
+    const db = openWorkspaceDbAtRoot({
+      dataRoot: this.dataRoot,
+      workspaceId: input.workspaceId,
+      workspaceRoot: root,
+    });
+    try {
+      const selected = this.workspaceKnowledgeSelection(input.workspaceId);
+      const proposal = this.prepareKnowledgeProposal(input);
+      const prepared = await prepareWorkspaceKnowledgeProposal({
+        db,
+        workspaceRoot: root,
+        knowledgeBaseId: selected.head.knowledgeBaseId,
+        notebook: selected.notebook,
+        proposal,
+      });
+      // Maintenance's original Turn command is already durable; no nested command receipt is created.
+      this.getWorkspace(input.workspaceId);
+      const scope = this.nativeScope({ kind: 'workspace', workspaceId: input.workspaceId });
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      // Preparation and native opening are async boundaries; the current Workspace must still exist.
+      this.getWorkspace(input.workspaceId);
+      await client.write(database, [
+        controlKnowledgeHeadGuardStatement(db, selected.head),
+        controlKnowledgeProposalStatement(prepared),
+      ]);
+      this.refreshKnowledgeProposalInventory(input.workspaceId);
+      return this.projectKnowledgeProposalDraft(input.workspaceId, proposal.id);
+    } finally {
+      db.sqlite.close();
+      release();
+    }
+  }
+
+  /** Prepares the existing immutable candidate without publishing Proposal or Review authority. */
+  public prepareKnowledgeProposal(
     input: CreateKnowledgeProposalInput | CreateNotebookProposalInput
   ): KnowledgeProposalRecord {
     this.getWorkspace(input.workspaceId);
@@ -6957,13 +7252,6 @@ export class FsStore {
     proposal.candidateRevision = candidateRevision;
     notebook.retainCandidate({ proposalId: id, candidateRevision });
 
-    this.knowledgeProposals.set(proposal.id, proposal);
-    try {
-      this.persist(proposal.workspaceId);
-    } catch (error) {
-      this.knowledgeProposals.delete(proposal.id);
-      throw error;
-    }
     return proposal;
   }
 
@@ -6975,8 +7263,11 @@ export class FsStore {
    */
   public getKnowledgeProposal(proposalId: string): KnowledgeProposalRecord | null {
     const proposal = this.knowledgeProposals.get(proposalId);
-    if (proposal) this.assertWorkspacePublicationAcknowledged(proposal.workspaceId);
-    return proposal ?? null;
+    if (proposal) {
+      this.assertWorkspacePublicationAcknowledged(proposal.workspaceId);
+      this.refreshKnowledgeProposalInventory(proposal.workspaceId);
+    }
+    return this.knowledgeProposals.get(proposalId) ?? null;
   }
 
   /**
@@ -6992,6 +7283,7 @@ export class FsStore {
     proposalId: string
   ): KnowledgeProposalRecord {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
+    this.refreshKnowledgeProposalInventory(workspaceId);
     const proposal = this.knowledgeProposals.get(proposalId);
     if (!proposal || proposal.workspaceId !== workspaceId) {
       throw knowledgeProposalAuthorityError('recovery_required');
@@ -7002,10 +7294,9 @@ export class FsStore {
 
   /** Returns the exact existing immutable Proposal document digest for human Review binding. */
   public knowledgeProposalDigest(workspaceId: string, proposalId: string): string {
-    return contentDigest(
-      this.verifiedKnowledgeProposalBytes(
-        this.projectKnowledgeProposalDraft(workspaceId, proposalId)
-      )
+    // Projection already verifies the original immutable document and its complete candidate.
+    return knowledgeProposalDocumentDigest(
+      this.projectKnowledgeProposalDraft(workspaceId, proposalId)
     );
   }
 
@@ -7017,18 +7308,14 @@ export class FsStore {
    */
   public listKnowledgeProposals(workspaceId: string): KnowledgeProposalRecord[] {
     this.getWorkspace(workspaceId);
+    this.refreshKnowledgeProposalInventory(workspaceId);
     return [...this.knowledgeProposals.values()].filter(
       (proposal) => proposal.workspaceId === workspaceId
     );
   }
 
-  /**
-   * Appends one exact human decision; the shared Notebook publisher alone applies accepted content.
-   *
-   * @param input Authenticated append request.
-   * @returns Stored Review row and its fixed candidate projection.
-   */
-  public recordKnowledgeProposalReviewDecision(
+  /** Prepares the exact current human decision; the owning native tuple alone publishes it. */
+  public prepareKnowledgeProposalReviewDecision(
     input: RecordKnowledgeProposalReviewDecisionInput
   ): SubmitKnowledgeProposalDecisionResponse {
     const proposal = this.knowledgeProposals.get(input.proposalId);
@@ -7087,8 +7374,6 @@ export class FsStore {
           : null,
       decidedAt: input.decidedAt,
     });
-    this.knowledgeProposalReviews.set(proposal.id, [...decisions, review]);
-    this.persist(proposal.workspaceId);
     return SubmitKnowledgeProposalDecisionResponseSchema.parse({
       review,
       application: accepted
@@ -7117,6 +7402,7 @@ export class FsStore {
     reviewId: string
   ): SubmitKnowledgeProposalDecisionResponse {
     this.getWorkspace(workspaceId);
+    this.refreshKnowledgeProposalInventory(workspaceId);
     const review = [...this.knowledgeProposalReviews.values()]
       .flat()
       .find(
@@ -7209,12 +7495,9 @@ export class FsStore {
     let pageScopeId: string | undefined;
     try {
       pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
-      const workspaceRoot = this.workspaceRootPath(workspaceId);
-      content = readWorkspaceKnowledgePage(workspaceRoot, knowledgePageId);
-      const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
-      if (existsSync(schemaPath)) {
-        scopeSchemaText = readCanonicalTextFile(schemaPath);
-      }
+      const selection = this.workspaceKnowledgeSelection(workspaceId);
+      content = readWorkspaceKnowledgePage(selection, knowledgePageId);
+      scopeSchemaText = selection.scopeSchemaText;
     } catch {
       throw new KnowledgePageValidationError();
     }
@@ -7283,6 +7566,13 @@ export class FsStore {
   public getKnowledgeProposalReviewDecision(
     proposalId: string
   ): KnowledgeProposalReviewRecord | null {
+    const proposal = this.knowledgeProposals.get(proposalId);
+    if (proposal && this.dataRoot)
+      return (
+        this.listKnowledgeProposalReviewDecisions(proposal.workspaceId)
+          .filter((review) => review.proposalId === proposalId)
+          .at(-1) ?? null
+      );
     const review = this.knowledgeProposalReviews.get(proposalId)?.at(-1);
     if (review) this.assertWorkspacePublicationAcknowledged(review.workspaceId);
     return review ?? null;
@@ -7298,9 +7588,25 @@ export class FsStore {
     workspaceId: string
   ): KnowledgeProposalReviewRecord[] {
     this.getWorkspace(workspaceId);
-    return [...this.knowledgeProposalReviews.values()]
-      .flat()
-      .filter((review) => review.workspaceId === workspaceId);
+    if (!this.dataRoot)
+      return [...this.knowledgeProposalReviews.values()]
+        .flat()
+        .filter((review) => review.workspaceId === workspaceId);
+    try {
+      const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+      const reader = getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId });
+      const db = { scope: 'workspace' as const, workspaceId, sqlite: reader.sqlite };
+      const rows = reader.sqlite
+        .prepare('SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY rowid')
+        .all() as { proposal_id: string }[];
+      return rows.flatMap(({ proposal_id }) => {
+        const state = readControlKnowledgeProposal(db, proposal_id);
+        if (!state) throw knowledgeProposalAuthorityError('recovery_required');
+        return state.reviews;
+      });
+    } catch {
+      throw knowledgeProposalAuthorityError('recovery_required');
+    }
   }
 
   /**
@@ -7326,10 +7632,14 @@ export class FsStore {
     this.getWorkspace(workspaceId);
     if (!this.dataRoot) return [];
     return [
-      ...readSourcePointers({
-        dataRoot: this.dataRoot,
-        ownerScope: { kind: 'workspace', workspaceId },
-      }).values(),
+      ...readSourcePointers(
+        {
+          dataRoot: this.dataRoot,
+          ownerScope: { kind: 'workspace', workspaceId },
+        },
+        undefined,
+        this.workspaceKnowledgeSelection(workspaceId)
+      ).values(),
     ].map(({ source }) => ({ ...source, workspaceId }));
   }
 

@@ -41,7 +41,7 @@ function retainedSnapshotFixture(
     if (db.sqlite.open) db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   const snapshot = {
     workspaceId,
     schemaSnapshotId: 'mcp-schema-fixture',
@@ -179,7 +179,7 @@ describe('retained MCP Tool schema SQL format', () => {
         const destinationRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-schema-portable-'));
         let destination = openWorkspaceDb(destinationRoot, snapshot.workspaceId);
         try {
-          applyScopedMigrations(destination);
+          applyScopedMigrations(destination, undefined, 'pre-knowledge');
           // Backup Export/Import: portable SQL rows cross strict line-oriented JSON transport.
           const jsonl = `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`;
           const transported = jsonl

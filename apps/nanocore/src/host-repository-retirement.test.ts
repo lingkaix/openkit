@@ -35,7 +35,7 @@ describe('retired host repository routes', () => {
       if (suffix === '/git-push-records/gpr_retired') {
         const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
-          applyScopedMigrations(db);
+          applyScopedMigrations(db, undefined, 'pre-knowledge');
           // A real historical child proves base route ownership instead of opaque-child denial.
           const present = db.sqlite
             .prepare(

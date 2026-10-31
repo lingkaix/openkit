@@ -35,7 +35,7 @@ describe('workspace apply results', () => {
       },
     };
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       recordWorkspaceApplyResult(db, input);
       expect(
         db.sqlite
@@ -113,7 +113,7 @@ describe('workspace apply results', () => {
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const input: RecordWorkspaceApplyResultInput = {
         requestId: 'request_apply_version',
         result: {
@@ -168,7 +168,7 @@ describe('workspace apply results', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       recordWorkspaceApplyResult(workspaceDb, {
         actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -287,7 +287,7 @@ describe('workspace apply results', () => {
     } satisfies RecordWorkspaceApplyResultInput;
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordWorkspaceApplyResult(workspaceDb, baseline);
 
       const conflicts: readonly RecordWorkspaceApplyResultInput[] = [

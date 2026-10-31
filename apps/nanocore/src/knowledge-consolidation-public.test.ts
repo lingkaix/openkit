@@ -43,7 +43,7 @@ async function fixture(): Promise<Fixture> {
     ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
   const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot,
     scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
@@ -69,7 +69,7 @@ async function reopen(f: ReturnType<typeof fixture>) {
   f.coreDb = openCoreDb(f.dataRoot);
   applyMigrations(f.coreDb);
   f.workspaceDb = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
-  applyScopedMigrations(f.workspaceDb);
+  applyScopedMigrations(f.workspaceDb, undefined, 'pre-knowledge');
   f.store = new FsStore({ dataRoot: f.dataRoot });
   f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
 }

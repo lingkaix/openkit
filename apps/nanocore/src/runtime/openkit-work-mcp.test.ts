@@ -149,7 +149,7 @@ async function submissionFixture(turnInputs: Buffer[] = []) {
     agentSessionId: 'as_00000000-0000-75c5-83d7-1a74418e3a38',
   });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   onTestFinished(async () => {
     await closeRetrievalServices();
     await shutdownControlStoreWorkerClient();

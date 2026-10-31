@@ -7256,6 +7256,66 @@
         }
       }
     },
+    "/api/app/operations/knowledge.schema.apply": {
+      "post": {
+        "operationId": "knowledge.schema.apply",
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Apply an exact human-reviewed complete Workspace schema report under its idle lifecycle freeze.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/knowledge.schema.apply.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Apply an exact human-reviewed complete Workspace schema report under its idle lifecycle freeze.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/knowledge.schema.apply.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/knowledge.schema.preview": {
       "post": {
         "operationId": "knowledge.schema.preview",
@@ -71285,6 +71345,264 @@
           "proposalId",
           "reviewId",
           "application"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.schema.apply.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "schemaText": {
+            "type": "string"
+          },
+          "reviewedReport": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "notebookRevision": {
+                "type": "string",
+                "minLength": 1
+              },
+              "baseSchemaDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "candidateSchemaDigest": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              },
+              "coverage": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "inventoryComplete": {
+                "type": "boolean"
+              },
+              "dependencyInventory": {
+                "minItems": 4,
+                "maxItems": 4,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "family": {
+                      "type": "string",
+                      "enum": [
+                        "maintenance",
+                        "proposals",
+                        "indexes",
+                        "trace-references"
+                      ]
+                    },
+                    "complete": {
+                      "type": "boolean"
+                    },
+                    "records": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "valid",
+                              "needs-review"
+                            ]
+                          },
+                          "diagnostics": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "code": {
+                                  "type": "string"
+                                },
+                                "field": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "code"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "status",
+                          "diagnostics"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "diagnostics": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "field": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "inventoryDigest": {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    }
+                  },
+                  "required": [
+                    "family",
+                    "complete",
+                    "records",
+                    "diagnostics"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "completeMigration": {
+                "type": "boolean",
+                "const": false
+              },
+              "schemaDiagnostics": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "records": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "valid",
+                        "invalid-draft",
+                        "needs-review"
+                      ]
+                    },
+                    "diagnostics": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "code": {
+                            "type": "string"
+                          },
+                          "field": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "code"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "status",
+                    "diagnostics"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "workspaceId",
+              "notebookRevision",
+              "baseSchemaDigest",
+              "candidateSchemaDigest",
+              "coverage",
+              "inventoryComplete",
+              "dependencyInventory",
+              "completeMigration",
+              "schemaDiagnostics",
+              "records"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "workspaceId",
+          "baseRevision",
+          "schemaText",
+          "reviewedReport"
+        ],
+        "additionalProperties": false
+      },
+      "knowledge.schema.apply.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "baseSchemaDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "candidateSchemaDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "reportDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "notebookRevision",
+          "baseSchemaDigest",
+          "candidateSchemaDigest",
+          "reportDigest"
         ],
         "additionalProperties": false
       },
@@ -155489,5 +155807,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:8ff5550a736bb66a575a033c4caad99eb5efeaa365f7bc0b5f0c0632062f86f2"
+  "x-openkit-source-digest": "sha256:e0a7ee4e0fe761edab00fc1e33425d43be31f6bad1e369cb24750f359ec6a966"
 }
