@@ -1116,6 +1116,8 @@ describe('database setup', () => {
       // Accepted host retirement follows the same named, populated one-way cutover boundary.
       .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.ts`))
       .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.test.ts`))
+      // The canonical User reader fixture uses a private physical-database marker.
+      .filter((path) => path !== join(sourceRoot, 'storage', 'db.test.ts'))
       // These exact tests inject SQL faults into private databases; they own no production schema.
       .filter((path) => path !== join(sourceRoot, 'workspace-retirement.test.ts'))
       .filter((path) => path !== join(sourceRoot, 'operation-error.test.ts'))
