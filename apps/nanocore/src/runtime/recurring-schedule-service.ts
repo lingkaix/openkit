@@ -42,7 +42,7 @@ export function startRecurringScheduleService(
   let stopped = false;
   let running: Promise<void> | undefined;
   const scan = async () => {
-    const candidates = input.schedules.collectScanCandidates(now());
+    const candidates = input.schedules.collectScanCandidates(now(), input.onError);
     for (const occurrence of candidates) {
       if (stopped) return;
       const release = input.schedules.mutationAdmission.enter(occurrence.workspaceId);

@@ -35,6 +35,7 @@ import { StoredAutomationCadenceV1Schema } from '../storage/recurring-retained-v
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   advanceRecurringNominal,
+  RecurringCadenceExhaustedError,
   recurringNominalMatches,
   recurringPrefixThrough,
 } from './recurring-cadence.js';
@@ -67,7 +68,8 @@ export class AutomationStore {
           )
             throw new Error('Recurring scan has invalid required timing values.');
           const cadence = StoredAutomationCadenceV1Schema.parse(JSON.parse(recordJson));
-          return recurringPrefixThrough(cadence, first, through)?.next ?? first;
+          const coverage = recurringPrefixThrough(cadence, first, through);
+          return coverage ? coverage.next : first;
         })
     );
   }
@@ -102,6 +104,8 @@ export class AutomationStore {
   public createAutomation(userId: string, value: CreateAutomationRequest): AutomationRecord {
     const input = CreateAutomationRequestSchema.strict().parse(value);
     const timestamp = this.now();
+    if (input.intervalSeconds !== undefined)
+      this.requireRepresentableSuccessor(input, Date.parse(timestamp));
     const id = allocateEntityId('auto');
     const record: AutomationRecord = {
       ...input,
@@ -168,6 +172,7 @@ export class AutomationStore {
               status,
               nextScheduledAt: new Date(scheduledAt).toISOString(),
             };
+            this.requireRepresentableSuccessor(schedule, Date.parse(scheduledAt));
           } else {
             if (scheduledAt !== undefined)
               throw new AutomationMutationError('A nominal instant is accepted only on resume.');
@@ -178,6 +183,8 @@ export class AutomationStore {
             for (const field of ['agentId', 'profileId', 'modelId'] as const)
               if (candidate[field] === null) delete candidate[field];
             schedule = readRecurringSchedule(JSON.stringify(candidate));
+            if (edits.intervalSeconds !== undefined)
+              this.requireRepresentableSuccessor(schedule, Date.parse(timestamp));
           }
           const updated = { ...schedule, revision: schedule.revision + 1, updatedAt: timestamp };
           this.writeSchedule(updated);
@@ -216,7 +223,10 @@ export class AutomationStore {
   }
 
   /** Selects at most 128 live candidates before recording bounded expired backlog; no worker runs here. */
-  public collectScanCandidates(timestamp: string): RecurringOccurrence[] {
+  public collectScanCandidates(
+    timestamp: string,
+    onError?: (error: unknown) => void
+  ): RecurringOccurrence[] {
     const now = Date.parse(timestamp);
     const releases = new Map<string, () => void>();
     const admit = (workspaceId: string) => {
@@ -260,11 +270,12 @@ export class AutomationStore {
             const schedule = readRetainedV1(row, () => readRecurringSchedule(row.record_json));
             if (!admit(schedule.workspaceId)) continue;
             const next = Date.parse(schedule.nextScheduledAt!);
-            const first = recurringPrefixThrough(schedule, next, now - DEADLINE_MS)?.next ?? next;
+            const coverage = recurringPrefixThrough(schedule, next, now - DEADLINE_MS);
+            const first = coverage ? coverage.next : next;
             for (
               let at = first, count = 0;
-              at <= now && count < SCAN_LIMIT;
-              at = advanceRecurringNominal(schedule, at), count++
+              at !== null && at <= now && count < SCAN_LIMIT;
+              at = this.nextNominal(schedule, at), count++
             )
               candidates.push({ schedule, at });
           }
@@ -274,10 +285,10 @@ export class AutomationStore {
             if (candidate.occurrence) return candidate.occurrence;
             let schedule = this.getAutomation(candidate.schedule.id);
             if (Date.parse(schedule.nextScheduledAt!) <= now - DEADLINE_MS) expiredRangeCount++;
-            schedule = this.accountExpiredPrefix(schedule, now, timestamp);
+            schedule = this.accountExpiredPrefix(schedule, now, timestamp, onError);
             const occurrence = this.newOccurrence(schedule, candidate.at, timestamp);
             this.writeOccurrence(occurrence, true);
-            this.advanceSchedule(schedule, candidate.at);
+            this.advanceSchedule(schedule, candidate.at, onError);
             return occurrence;
           });
           // Expiring pending history and expired-only schedules also have a fixed per-scan bound.
@@ -294,7 +305,8 @@ export class AutomationStore {
         WHERE status = 'active' AND next_scheduled_at <= ? ORDER BY next_scheduled_at, id LIMIT ?`)
             .all(now - DEADLINE_MS, SCAN_LIMIT - expiredRangeCount) as JsonRow[]) {
             const schedule = readRetainedV1(row, () => readRecurringSchedule(row.record_json));
-            if (admit(schedule.workspaceId)) this.accountExpiredPrefix(schedule, now, timestamp);
+            if (admit(schedule.workspaceId))
+              this.accountExpiredPrefix(schedule, now, timestamp, onError);
           }
           return selected;
         })
@@ -491,8 +503,8 @@ export class AutomationStore {
     const now = Date.parse(timestamp);
     if (schedule.status === 'active' && schedule.nextScheduledAt) {
       schedule = this.accountExpiredPrefix(schedule, now, timestamp);
-      const first = Date.parse(schedule.nextScheduledAt!);
-      for (let at = first; at <= now; at = advanceRecurringNominal(schedule, at)) {
+      const first = schedule.nextScheduledAt === null ? null : Date.parse(schedule.nextScheduledAt);
+      for (let at = first; at !== null && at <= now; at = this.nextNominal(schedule, at)) {
         const occurrence = this.newOccurrence(schedule, at, timestamp);
         this.finish(occurrence, 'cancelled', timestamp, true);
         schedule = this.advanceSchedule(schedule, at);
@@ -514,7 +526,8 @@ export class AutomationStore {
   private accountExpiredPrefix(
     schedule: AutomationRecord,
     now: number,
-    timestamp: string
+    timestamp: string,
+    onError?: (error: unknown) => void
   ): AutomationRecord {
     if (!schedule.nextScheduledAt) return schedule;
     const first = Date.parse(schedule.nextScheduledAt);
@@ -562,15 +575,44 @@ export class AutomationStore {
       summary: `Expired nominal range ${record.firstScheduledAt} through ${record.lastScheduledAt}; count ${count}.`,
       now: new Date(timestamp),
     });
-    return this.advanceSchedule(schedule, last);
+    return this.advanceSchedule(schedule, last, onError);
   }
 
-  /** Advances the exact nominal cadence, never callback time. */
-  private advanceSchedule(schedule: AutomationRecord, at: number): AutomationRecord {
+  /** Refuses new cadence authority when its actual admission anchor has no valid successor. */
+  private requireRepresentableSuccessor(
+    cadence: Parameters<typeof advanceRecurringNominal>[0],
+    at: number
+  ): void {
+    if (this.nextNominal(cadence, at) === null)
+      throw new AutomationMutationError('Recurring cadence has no representable UTC successor.');
+  }
+
+  /** Exhaustion ends only this cadence; invalid core values still fail closed. */
+  private nextNominal(
+    cadence: Parameters<typeof advanceRecurringNominal>[0],
+    at: number,
+    onError?: (error: unknown) => void
+  ): number | null {
+    try {
+      return advanceRecurringNominal(cadence, at);
+    } catch (error) {
+      if (!(error instanceof RecurringCadenceExhaustedError)) throw error;
+      onError?.(error);
+      return null;
+    }
+  }
+
+  /** Advances the exact nominal cadence, retaining its final instant when the calendar ends. */
+  private advanceSchedule(
+    schedule: AutomationRecord,
+    at: number,
+    onError?: (error: unknown) => void
+  ): AutomationRecord {
+    const next = this.nextNominal(schedule, at, onError);
     const updated = {
       ...schedule,
       greatestAccountedScheduledAt: new Date(at).toISOString(),
-      nextScheduledAt: new Date(advanceRecurringNominal(schedule, at)).toISOString(),
+      nextScheduledAt: next === null ? null : new Date(next).toISOString(),
     };
     this.writeSchedule(updated);
     return updated;

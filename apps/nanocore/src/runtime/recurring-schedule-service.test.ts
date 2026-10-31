@@ -132,6 +132,68 @@ describe('serialized recurring scanner', () => {
     ).toEqual({ n: 1 });
   });
 
+  it('keeps healthy admission and maintenance running after an admitted cadence exhausts the UTC range', async () => {
+    const { schedules, schedule, start, setTime } = await fixture();
+    const paused = schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
+      expectedRevision: schedule.revision,
+      status: 'paused',
+    });
+    const created = schedules.createAutomation(schedule.responsibleUserId, {
+      workspaceId: schedule.workspaceId,
+      threadId: schedule.threadId,
+      name: 'Long cadence',
+      intervalSeconds: 250_000_000_000,
+      prompt: 'Inspect status',
+    });
+    const active = schedules.updateAutomation(schedule.responsibleUserId, created.id, {
+      expectedRevision: created.revision,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    const [initial] = schedules.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    expect(initial?.scheduleId).toBe(active.id);
+    schedules.commitAttempt(initial!.id, initial!.definitionRevision, structuredClone(ready));
+    // This state is produced by admission and scan owners, without fabricating retained rows.
+    const finalInstant = '9948-12-22T12:26:40.000Z';
+    schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
+      expectedRevision: paused.revision,
+      status: 'active',
+      scheduledAt: finalInstant,
+    });
+    setTime(finalInstant);
+    const prepare = vi.fn(
+      async (): Promise<RecurringPreparation> => ({
+        kind: 'failure',
+        code: 'selection_unavailable',
+      })
+    );
+    const maintenance = vi.fn();
+    const { service, onError } = start(prepare, maintenance);
+    await service.runOnce();
+    const healthyHistory = schedules.listHistory(schedule.id).items;
+    expect(
+      healthyHistory.find(
+        (item) => item.kind === 'occurrence' && item.record.scheduledAt === finalInstant
+      )
+    ).toMatchObject({
+      record: { state: 'pending', attempts: [{ number: 1 }] },
+    });
+    expect(schedules.getAutomation(active.id).nextScheduledAt).toBeNull();
+    expect(maintenance).toHaveBeenCalledTimes(1);
+    // The exhausted successor is diagnosed once, not retried on every five-second scan.
+    expect(onError).toHaveBeenCalledTimes(1);
+    await service.runOnce();
+    expect(
+      schedules
+        .listHistory(schedule.id)
+        .items.find(
+          (item) => item.kind === 'occurrence' && item.record.scheduledAt === finalInstant
+        )
+    ).toMatchObject({ record: { attempts: [{ number: 1 }, { number: 2 }] } });
+    expect(maintenance).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
   it('coalesces overlapping callbacks and retries a failure only on a later scan', async () => {
     const { schedules, schedule, start } = await fixture();
     let release!: (value: RecurringPreparation) => void;

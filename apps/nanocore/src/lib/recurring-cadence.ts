@@ -5,8 +5,11 @@ import { StoredAutomationCadenceV1Schema } from '../storage/recurring-retained-v
 export interface RecurringNominalPrefix {
   readonly count: number;
   readonly last: number;
-  readonly next: number;
+  readonly next: number | null;
 }
+
+/** A valid cadence has no successor in the retained four-digit UTC timestamp range. */
+export class RecurringCadenceExhaustedError extends RangeError {}
 
 /** Checks every monthly UTC field; fixed intervals accept any valid initial anchor. */
 export function recurringNominalMatches(cadence: AutomationCadence, instant: number): boolean {
@@ -28,9 +31,16 @@ export function advanceRecurringNominal(cadence: AutomationCadence, instant: num
   const timing = StoredAutomationCadenceV1Schema.parse(cadence);
   if (!recurringNominalMatches(timing, instant))
     throw new RangeError('Recurring cursor does not match its monthly UTC rule.');
-  return timing.monthlyUtc === undefined
-    ? checkedDate(instant + intervalStep(timing.intervalSeconds!)).getTime()
-    : monthlyInstant(monthIndex(instant) + 1, timing.monthlyUtc);
+  try {
+    return timing.monthlyUtc === undefined
+      ? checkedDate(instant + intervalStep(timing.intervalSeconds!)).getTime()
+      : monthlyInstant(monthIndex(instant) + 1, timing.monthlyUtc);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    throw new RecurringCadenceExhaustedError(
+      'Recurring cadence has no further representable UTC occurrence.'
+    );
+  }
 }
 
 /** Locates exact missed coverage in constant work, including outages spanning many calendar months. */
@@ -52,13 +62,27 @@ export function recurringPrefixThrough(
     return {
       count: lastMonth - firstMonth + 1,
       last,
-      next: monthlyInstant(lastMonth + 1, timing.monthlyUtc),
+      next: nextOrNull(timing, last),
     };
   }
+  // An unsafe millisecond step is larger than the complete supported calendar. Only
+  // this first instant can belong to the prefix; its successor is unrepresentable.
+  if (!Number.isSafeInteger(timing.intervalSeconds! * 1000))
+    return { count: 1, last: first, next: null };
   const step = intervalStep(timing.intervalSeconds!);
   const count = Math.floor((through - first) / step) + 1;
   const last = first + (count - 1) * step;
-  return { count, last: checkedDate(last).getTime(), next: checkedDate(last + step).getTime() };
+  return { count, last: checkedDate(last).getTime(), next: nextOrNull(timing, last) };
+}
+
+/** Preserves exact covered instants when only their successor is outside the calendar. */
+function nextOrNull(cadence: AutomationCadence, instant: number): number | null {
+  try {
+    return advanceRecurringNominal(cadence, instant);
+  } catch (error) {
+    if (!(error instanceof RecurringCadenceExhaustedError)) throw error;
+    return null;
+  }
 }
 
 /** Validates immutable range coverage without granting live actor or admission authority. */

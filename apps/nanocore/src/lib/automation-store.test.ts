@@ -66,6 +66,170 @@ const payload = {
 };
 
 describe('durable fixed-interval recurrence', () => {
+  it('refuses an overflowing fixed interval before it can block another schedule scan', () => {
+    const { store } = fixture();
+    const userId = testEntityId('usr', 'user_creator');
+    const healthy = store.createAutomation(userId, definition);
+    store.updateAutomation(userId, healthy.id, {
+      expectedRevision: healthy.revision,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    // Scheduler Recurring Event Triggers: calendar overflow is a refusal at admission.
+    expect
+      .soft(() =>
+        store.createAutomation(userId, { ...definition, intervalSeconds: 300_000_000_000 })
+      )
+      .toThrow(AutomationMutationError);
+    expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([
+      expect.objectContaining({ scheduleId: healthy.id }),
+    ]);
+  });
+
+  it('refuses unsafe activation of a retained paused definition without changing it', () => {
+    const { db, store } = fixture();
+    const userId = testEntityId('usr', 'user_creator');
+    const unsafe = store.createAutomation(userId, definition);
+    // Fault-inject a previously admitted cadence at its owning retained-row seam.
+    const retained = { ...unsafe, intervalSeconds: 300_000_000_000 };
+    db.sqlite
+      .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
+      .run(JSON.stringify(retained), unsafe.id);
+    expect(() =>
+      store.updateAutomation(userId, unsafe.id, {
+        expectedRevision: unsafe.revision,
+        status: 'active',
+        scheduledAt: '2026-10-16T00:00:00.000Z',
+      })
+    ).toThrow(AutomationMutationError);
+    expect(store.getAutomation(unsafe.id)).toEqual(retained);
+  });
+
+  it('admits a very large representable cadence without an arbitrary interval ceiling', () => {
+    const { store } = fixture();
+    const userId = testEntityId('usr', 'user_creator');
+    const created = store.createAutomation(userId, {
+      ...definition,
+      intervalSeconds: 250_000_000_000,
+    });
+    const active = store.updateAutomation(userId, created.id, {
+      expectedRevision: created.revision,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    expect(active.intervalSeconds).toBe(250_000_000_000);
+    const candidates = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    expect(candidates).toHaveLength(1);
+    expect(store.getAutomation(created.id).nextScheduledAt).toBe('9948-12-22T12:26:40.000Z');
+  });
+
+  it('contains a retained overflowing successor while committing healthy scan work once', () => {
+    const { db, store } = fixture();
+    const userId = testEntityId('usr', 'user_creator');
+    const active = [0, 1].map(() => {
+      const created = store.createAutomation(userId, definition);
+      return store.updateAutomation(userId, created.id, {
+        expectedRevision: created.revision,
+        status: 'active',
+        scheduledAt: '2026-10-16T00:00:00.000Z',
+      });
+    });
+    const [healthy, unsafe] = active;
+    db.sqlite
+      .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
+      .run(JSON.stringify({ ...unsafe, intervalSeconds: 300_000_000_000 }), unsafe!.id);
+    const candidates = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    expect(candidates.map((candidate) => candidate.scheduleId).sort()).toEqual(
+      active.map((entry) => entry.id).sort()
+    );
+    for (const candidate of candidates)
+      store.commitAttempt(candidate.id, candidate.definitionRevision, { kind: 'ready', payload });
+    expect(store.getAutomation(unsafe!.id)).toMatchObject({
+      nextScheduledAt: null,
+      greatestAccountedScheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
+    expect(store.collectScanCandidates('2026-10-16T00:00:05.000Z')).toEqual([
+      expect.objectContaining({ scheduleId: healthy!.id, scheduledAt: '2026-10-16T00:00:05.000Z' }),
+    ]);
+    expect(store.listHistory(unsafe!.id).items).toHaveLength(1);
+    expect(store.listHistory(unsafe!.id).items[0]).toMatchObject({
+      record: { state: 'admission-accepted' },
+    });
+  });
+
+  it('accounts an expired retained final instant without poisoning the SQL live frontier', () => {
+    const { db, store, setTime } = fixture();
+    const userId = testEntityId('usr', 'user_creator');
+    const unsafe = store.createAutomation(userId, definition);
+    const active = store.updateAutomation(userId, unsafe.id, {
+      expectedRevision: unsafe.revision,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    db.sqlite
+      .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
+      .run(JSON.stringify({ ...active, intervalSeconds: 300_000_000_000 }), unsafe.id);
+    const healthy = store.createAutomation(userId, definition);
+    store.updateAutomation(userId, healthy.id, {
+      expectedRevision: healthy.revision,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:20:00.000Z',
+    });
+    setTime('2026-10-16T00:20:00.000Z');
+    expect(store.collectScanCandidates('2026-10-16T00:20:00.000Z')).toEqual([
+      expect.objectContaining({ scheduleId: healthy.id }),
+    ]);
+    expect(store.listHistory(unsafe.id).items).toEqual([
+      expect.objectContaining({
+        kind: 'expired-range',
+        record: expect.objectContaining({
+          count: 1,
+          firstScheduledAt: '2026-10-16T00:00:00.000Z',
+          lastScheduledAt: '2026-10-16T00:00:00.000Z',
+        }),
+      }),
+    ]);
+    expect(store.getAutomation(unsafe.id).nextScheduledAt).toBeNull();
+  });
+
+  it.each([
+    'pause',
+    'delete',
+  ] as const)('seals a retained overflowing cadence on %s without losing its final instant', (action) => {
+    const { db, store } = fixture();
+    const userId = testEntityId('usr', 'user_creator');
+    const created = store.createAutomation(userId, definition);
+    const active = store.updateAutomation(userId, created.id, {
+      expectedRevision: created.revision,
+      status: 'active',
+      scheduledAt: '2026-10-16T00:00:00.000Z',
+    });
+    db.sqlite
+      .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
+      .run(JSON.stringify({ ...active, intervalSeconds: 300_000_000_000 }), created.id);
+    if (action === 'pause')
+      store.updateAutomation(userId, created.id, {
+        expectedRevision: active.revision,
+        status: 'paused',
+      });
+    else store.deleteAutomation(userId, created.id);
+    expect(store.getAutomation(created.id)).toMatchObject({
+      status: action === 'pause' ? 'paused' : 'deleted',
+      nextScheduledAt: null,
+    });
+    expect(store.listHistory(created.id).items).toEqual([
+      expect.objectContaining({
+        kind: 'occurrence',
+        record: expect.objectContaining({
+          state: 'cancelled',
+          scheduledAt: '2026-10-16T00:00:00.000Z',
+        }),
+      }),
+    ]);
+    expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
+  });
+
   it('writes v1 paused schedules and preserves identity across a database reopen', () => {
     const { db, root, clock, store } = fixture();
     const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);

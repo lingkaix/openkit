@@ -1,5 +1,7 @@
 # Runtime
 
+The recurring service passes its existing bounded error observer into schedule scanning. Successor exhaustion accounts the affected schedule's final instant and leaves its existing cursor null, so healthy admission and Knowledge maintenance continue when the occurrence and its ten-minute deadline remain representable. The existing deadline-range refusal remains unchanged. No new timer, retry, failure state or interval maximum is introduced.
+
 Worker heartbeat acceptance uses the existing canonical control acknowledgement and durably joins only the original sequence fingerprint and NanoHost attempt liveness transaction. Duplicate acceptance never renews liveness or needs a retained heartbeat snapshot. A failed enclosing transaction restores the prior live view and clears its uncommitted sequence cache before retry, preserving the original error and forcing the durable owner to decide acceptance. The live heartbeat view is process-local; restart ignores historical heartbeat payload rows without deleting or decoding them. Exact-next process-key adoption, absolute deadlines and current authority remain with their existing owners.
 
 Artifact notices carry optional worker-announced `digest` and `collectionHint` through the control client, bounded HTTP reader, original sequence fingerprint and durable notice. Restart and exact replay preserve the supplied text; omitted fields stay omitted. These descriptive values neither prove collected bytes nor authorize collection or canonical Artifact publication.
