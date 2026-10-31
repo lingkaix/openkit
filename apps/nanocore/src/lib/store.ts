@@ -258,7 +258,6 @@ import {
   nativeProductMetadataScope,
   nativeProductScope,
   parseCanonicalWorkspaceHistory,
-  parseOwnedKnowledgePage,
   parseWorkspaceKnowledgeProposalDocument,
   preserveDescriptiveRecord,
   projectWorkspaceSystemRecord,
@@ -1826,41 +1825,6 @@ export class FsStore {
     return `page/workspace/${workspaceId}/${knowledgeBaseId}`;
   }
 
-  /** Validates exact canonical fixture bytes before an in-memory page is admitted. */
-  private assertValidKnowledgePageCandidate(
-    workspaceId: string,
-    candidate: KnowledgeNotebookPage,
-    knowledge: readonly KnowledgeNotebookPage[]
-  ): void {
-    const parsed = parseOkfDocument({ path: candidate.path, content: candidate.content });
-    const sourceReferences = parsed.document
-      ? stringListFrontmatterField(parsed.document, 'source_refs')
-      : null;
-    if (!parsed.ok || sourceReferences === null) throw new KnowledgePageValidationError();
-    const qualifiedLocalReferences = sourceReferences.filter(
-      (reference) =>
-        /^source:.+@sha256:[a-f0-9]{64}$/.test(reference) || reference.startsWith('openkit:')
-    );
-    const resolvedReferences = this.resolveKnowledgePageSourceReferences(
-      workspaceId,
-      qualifiedLocalReferences,
-      []
-    );
-    const report = validateKnowledgePageCandidate({
-      path: candidate.path,
-      content: candidate.content,
-      expectedOwnerScope: { kind: 'workspace', workspaceId },
-      registeredSources: new Map(
-        this.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
-      ),
-      knowledgeIds: new Set(knowledge.map((page) => page.id)),
-      resolvedReferences,
-    });
-    if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
-      throw new KnowledgePageValidationError();
-    }
-  }
-
   /**
    * Validates one immutable proposal tuple and its exact current evidence.
    *
@@ -3095,39 +3059,6 @@ export class FsStore {
       agents,
     });
     return updatedAgent;
-  }
-
-  /**
-   * Adds one complete canonical page to an explicit in-memory fixture Store.
-   *
-   * @param workspaceId Workspace that owns the fixture page.
-   * @param input Bundle-relative path and exact full OKF Markdown bytes.
-   * @returns Validated canonical page with path-derived identity and digest.
-   * @throws OperationError for a file-backed Store, whose Notebook publisher owns all writes.
-   */
-  public createKnowledgePage(
-    workspaceId: string,
-    input: Pick<KnowledgeNotebookPage, 'path' | 'content'>
-  ): KnowledgeNotebookPage {
-    if (this.dataRoot)
-      throw new OperationError(
-        'recovery_required',
-        'File-backed Knowledge changes require the notebook publisher.',
-        409
-      );
-    const resources = this.storedWorkspaceResources(workspaceId);
-    validateNotebookFiles({ [input.path]: input.content }, true);
-    const page = parseOwnedKnowledgePage(input.path, input.path.slice(0, -3), input.content);
-    if (resources.knowledge.some((existing) => existing.path === page.path)) {
-      throw new OperationError('conflict', `Knowledge page already exists: ${page.path}`, 409);
-    }
-    this.assertValidKnowledgePageCandidate(workspaceId, page, [...resources.knowledge, page]);
-    this.workspaceResources.set(workspaceId, {
-      ...resources,
-      knowledge: [...resources.knowledge, page],
-    });
-    this.refreshWorkspaceCounts(workspaceId);
-    return page;
   }
 
   /** Joins every native publisher to the same application-owned Workspace gate, including background admissions. */

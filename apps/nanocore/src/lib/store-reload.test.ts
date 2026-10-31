@@ -31,6 +31,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import {
+  allocateEntityId,
   ItemSchema,
   PROTOCOL_VERSION,
   ThreadSchema,
@@ -764,20 +765,25 @@ describe('FsStore canonical reload', () => {
 
   it('reloads canonical workspace records and event logs without store.json', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-reload-'));
-    const fixtureStore = new FsStore();
-    const workspace = await fixtureStore.createWorkspace('Reload Workspace');
-    const knowledge = fixtureStore.createKnowledgePage(
-      workspace.id,
-      knowledgePageFixture(
-        {
-          id: 'reload-context',
-          title: 'Reload context',
-          content: 'Snapshot reload should preserve this canonical page.',
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-        { kind: 'workspace', workspaceId: workspace.id }
-      )
+    const workspaceTimestamp = new Date().toISOString();
+    const workspace = WorkspaceRecordSchema.parse({
+      id: allocateEntityId('ws'),
+      name: 'Reload Workspace',
+      kind: 'general',
+      status: 'active',
+      counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+      createdAt: workspaceTimestamp,
+      updatedAt: workspaceTimestamp,
+    });
+    const knowledge = knowledgePageFixture(
+      {
+        id: 'reload-context',
+        title: 'Reload context',
+        content: 'Snapshot reload should preserve this canonical page.',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: workspace.id }
     );
     const store = createTestStore({ dataRoot });
     await store.importWorkspaceSnapshot({
@@ -1056,34 +1062,15 @@ describe('FsStore canonical reload', () => {
     expect(events.at(-1)?.sequence).toBe(105);
   });
 
-  it('refuses direct file-backed Knowledge writers without changing the published notebook', async () => {
+  it('exposes no retired direct Knowledge writers and preserves the published notebook', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-knowledge-writer-'));
     const store = createTestStore({ dataRoot });
     const input = workspaceImportPayload(testEntityId('ws', 'knowledge-writer-boundary'));
     const workspace = await store.importWorkspaceSnapshot(input);
-    const knowledge = input.knowledge[0]!;
     const notebook = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
     const revision = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit;
     const retained = notebook.readRevision(revision);
-    const refusal = 'File-backed Knowledge changes require the notebook publisher.';
-
-    const candidate = knowledgePageFixture(
-      {
-        id: 'bypass',
-        title: 'Bypass',
-        content: 'Must not publish.',
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-      { kind: 'workspace', workspaceId: workspace.id }
-    );
-    expect(() => store.createKnowledgePage(workspace.id, candidate)).toThrow(refusal);
-    expect(() =>
-      store.createKnowledgePage(workspace.id, {
-        path: knowledge.path,
-        content: candidate.content,
-      })
-    ).toThrow(refusal);
+    expect(store).not.toHaveProperty('createKnowledgePage');
     expect(store).not.toHaveProperty('updateKnowledgeEntry');
     expect(store).not.toHaveProperty('deleteKnowledgeEntry');
     expect(readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit).toBe(
