@@ -120,7 +120,7 @@ describe('conversation navigation', () => {
       coreDb,
       store,
       agentManifests: [createTestAgentSetup().manifest],
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
     const response = await app.request(
       ...operationRequest(
@@ -177,7 +177,7 @@ describe('conversation navigation', () => {
       coreDb,
       store,
       agentManifests: [createTestAgentSetup().manifest],
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
     const admin = createOpenKitAccessTokenRecord(coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

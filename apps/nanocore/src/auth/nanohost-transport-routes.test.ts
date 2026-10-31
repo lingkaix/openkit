@@ -184,7 +184,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
           name: 'non-server',
           response: await createApp({
             mode: 'local',
-            turnExecutor: new SimulatedTurnExecutor(),
+            turnExecutor: new SimulatedTurnExecutor({ coreDb }),
           }).request(...operationRequest('nanohost.runtime-target', {})),
           status: 404,
         },
@@ -194,7 +194,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
             auth: ownerSessionAuth(),
             mode: 'server',
             openKitConfig: { nanohost: config },
-            turnExecutor: new SimulatedTurnExecutor(),
+            turnExecutor: new SimulatedTurnExecutor({ coreDb }),
           }).request(
             ...operationRequest(
               'nanohost.runtime-target',

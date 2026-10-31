@@ -135,7 +135,7 @@ it('admits member management and exact member deletion replay while preserving p
       mode: 'server',
       auth,
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       releaseIdentity: { releaseTag: 'v0.1.0-test', sourceCommit: '1'.repeat(40) },
     });
     const call = (operation: string, input: Record<string, unknown>, token?: string) => {
