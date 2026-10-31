@@ -90,7 +90,7 @@ import {
 } from './config/runtime-config.js';
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import * as workerCoordinator from './internal-agents/worker-coordinator.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
+import type { KnowledgeNotebook } from './knowledge/notebook.js';
 import { parseOkfDocument } from './knowledge/okf.js';
 import { parseSourcePointer } from './knowledge/source-pointers.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -239,6 +239,7 @@ import { recordTestNativeRuntimeTarget } from './test-support/native-environment
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
@@ -692,15 +693,8 @@ async function createApp(
 function fixtureNotebook(store: FsStore): KnowledgeNotebook {
   const dataRoot = store.getDataRoot();
   if (!dataRoot) throw new Error('Notebook fixture requires a disk-backed store.');
-  return new KnowledgeNotebook({
-    repositoryPath: join(
-      dataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      'knowledge',
-      'notebook.git'
-    ),
-  });
+  return readTestWorkspaceNotebookSelection(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+    .notebook;
 }
 
 /** Reads exact current page bytes from Git, with no materialized-file authority. */
@@ -922,6 +916,32 @@ function submitKnowledgeProposalDecision(
         }),
       }
     )
+  );
+}
+
+/** Captures one exact reviewed request from the healthy native Proposal owner. */
+function captureKnowledgeProposalDecisionRequest(
+  store: FsStore,
+  proposalId: string,
+  requestId: string,
+  decision: 'accepted' | 'rejected' | 'deferred'
+) {
+  const proposal = store.getKnowledgeProposal(proposalId);
+  if (!proposal) throw new Error('Proposal fixture is unavailable.');
+  return knowledgeOperationRequest(
+    'knowledge.proposal.decide',
+    { workspaceId: proposal.workspaceId, proposalId },
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requestId,
+        decision,
+        proposalDigest: store.knowledgeProposalDigest(proposal.workspaceId, proposalId),
+        baseRevision: proposal.baseRevision,
+        candidateRevision: proposal.candidateRevision,
+      }),
+    }
   );
 }
 
@@ -10921,21 +10941,27 @@ describe('nanocore server', () => {
       } else {
         const interrupted = await draftKnowledgeProposalFixture(app, store, 'interrupted');
         const interruptedRequestId = knowledgeProposalRequestId('decision-interrupted');
-        const completed = await submitKnowledgeProposalDecision(
-          app,
+        const interruptedProposal = store.getKnowledgeProposal(interrupted.proposalId);
+        if (!interruptedProposal) throw new Error('Proposal fixture is unavailable.');
+        const interruptedWorkspaceId = interruptedProposal.workspaceId;
+        const reviewedRequest = captureKnowledgeProposalDecisionRequest(
           store,
           interrupted.proposalId,
           interruptedRequestId,
           'accepted'
         );
+        const completed = await app.request(...reviewedRequest);
         expect(completed.status, await completed.clone().text()).toBe(200);
-        const publishedRevision = fixtureNotebook(store).publishedRevision();
+        const publishedRevision = readTestWorkspaceNotebookSelection(
+          store.getDataRoot()!,
+          interruptedWorkspaceId
+        ).head.notebookCommit;
         const missingBlobPath = removeKnowledgeFixtureBlob(
           store,
           publishedRevision,
           interrupted.knowledgePageId
         );
-        const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
+        const workspaceDb = openTestWorkspaceDb(coreDb, interruptedWorkspaceId);
         workspaceDb.sqlite
           .prepare(
             `DELETE FROM idempotency_requests
@@ -10947,20 +10973,37 @@ describe('nanocore server', () => {
           .run(interruptedRequestId);
         workspaceDb.sqlite.close();
 
-        const resumed = await submitKnowledgeProposalDecision(
-          app,
-          store,
-          interrupted.proposalId,
-          interruptedRequestId,
-          'accepted'
-        );
+        const resumed = await app.request(...reviewedRequest);
         expect(resumed.status, await resumed.clone().text()).toBe(409);
         await expect(resumed.json()).resolves.toMatchObject({ code: 'recovery_required' });
         expect(existsSync(missingBlobPath)).toBe(false);
-        expect(fixtureNotebook(store).publishedRevision()).toBe(publishedRevision);
+        expect(
+          readTestWorkspaceNotebookSelection(store.getDataRoot()!, interruptedWorkspaceId).head
+            .notebookCommit
+        ).toBe(publishedRevision);
         expect(store.getKnowledgeProposalReviewDecision(interrupted.proposalId)?.decision).toBe(
           'accepted'
         );
+        const recoveryDb = openTestWorkspaceDb(coreDb, interruptedWorkspaceId);
+        try {
+          expect(
+            recoveryDb.sqlite
+              .prepare(
+                `SELECT COUNT(*) AS count FROM idempotency_requests
+                 WHERE command_name = 'knowledge.proposal.decide' AND request_id = ?`
+              )
+              .pluck()
+              .get(interruptedRequestId)
+          ).toBe(0);
+          expect(
+            recoveryDb.sqlite
+              .prepare('SELECT COUNT(*) AS count FROM audit_events WHERE request_id = ?')
+              .pluck()
+              .get(interruptedRequestId)
+          ).toBe(0);
+        } finally {
+          recoveryDb.sqlite.close();
+        }
       }
     } finally {
       coreDb.sqlite.close();

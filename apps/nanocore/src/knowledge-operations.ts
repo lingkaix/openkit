@@ -1639,7 +1639,13 @@ export function createKnowledgeOperationImplementations(
     },
     'knowledge.proposal.decide': async (input, context) => {
       const { workspaceId, proposalId, ...commandInput } = input;
-      const proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
+      let proposal: ReturnType<typeof requireAuthorizedKnowledgeProposal>;
+      // Inventory refusals precede governed publication and need the same public projection.
+      try {
+        proposal = requireAuthorizedKnowledgeProposal(store, workspaceId, proposalId);
+      } catch (error) {
+        notebookCommandFailure(error);
+      }
       const request: NotebookUpdate = {
         workspaceId,
         requestId: commandInput.requestId,
