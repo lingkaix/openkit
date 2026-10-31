@@ -7,8 +7,7 @@ import type {
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
-import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   listRestorableNanoHostExecutionAttempts,
@@ -73,11 +72,10 @@ export function rebuildWorkerControlGatewaySessions(
       !hasPendingWorkerCancellationFinal(lease, new Date().toISOString())
     )
       continue;
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lease.workspaceId);
+    const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, lease.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
 
     try {
-      applyScopedMigrations(workspaceDb);
       environmentPackage = requireAgentEnvironmentPackageSnapshot(
         workspaceDb,
         lease.workspaceId,

@@ -196,3 +196,5 @@ Native scope close and recovery sealing join the same accepted publication prefi
 The User readonly opener verifies the existing database is a regular file under its canonical parent before SQLite opens it. Recovery inventory retains its separate admission boundary; a linked file or ancestor grants no alternate physical scope.
 
 The physical product reader applies the existing 5 ms Main lock wait before serving reads, including direct and cached readers. Workspace read views reuse that policy; native writable connections keep their separate writer policy.
+
+Worker-control restart rebuild reads the retained AEP through the existing admitted readonly Workspace owner. Rebuild creates no layout and runs no migration; exact attempt/package/actor lineage, accepted Core records and read-handle closure retain their existing owners.
