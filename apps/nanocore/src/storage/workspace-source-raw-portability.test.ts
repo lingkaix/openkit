@@ -10,7 +10,6 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { deriveManagedSourceAccess } from '../knowledge/managed-source-access.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import type { NotebookUpdate } from '../knowledge/notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
 import { parseOkfDocument } from '../knowledge/okf.js';
@@ -19,6 +18,7 @@ import { parseSourcePointer } from '../knowledge/source-pointers.js';
 import { publishCapturedSource } from '../knowledge/source-publication.js';
 import { FsStore } from '../lib/store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -78,9 +78,7 @@ async function capturedSource() {
   await f.store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
   const scope = { kind: 'workspace' as const, workspaceId: workspace.id };
   const owner = { dataRoot: f.dataRoot, ownerScope: scope };
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
+  const selection = () => readTestWorkspaceNotebookSelection(f.dataRoot, workspace.id);
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: f.dataRoot });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const requestId = randomUUID();
@@ -102,7 +100,7 @@ async function capturedSource() {
     readWorkspaceNotebookAdmission({
       ...f,
       workspaceDb,
-      notebook,
+      notebook: selection().notebook,
       actor,
       requestActor,
       request,
@@ -122,7 +120,7 @@ async function capturedSource() {
         admission({
           workspaceId: workspace.id,
           requestId,
-          baseRevision: notebook.publishedRevision(),
+          baseRevision: selection().head.notebookCommit,
           changes: [],
           summary: 'Capture the binary original.',
         });
@@ -131,9 +129,9 @@ async function capturedSource() {
     source,
     original
   );
-  const revision = notebook.publishedRevision();
-  const pointer = notebook.readSourcePointers(revision)[source.id]!;
-  const selected = parseSourcePointer(owner, source.id, pointer);
+  const revision = selection().head.notebookCommit;
+  const pointer = selection().notebook.readSourcePointers(revision)[source.id]!;
+  const selected = parseSourcePointer(owner, source.id, pointer, selection());
   expect(selected.fields).toMatchObject({
     byteLength: original.byteLength,
     mediaType: 'image/png',
@@ -162,7 +160,9 @@ async function capturedSource() {
     turn,
     source,
     scope,
-    notebook,
+    get notebook() {
+      return selection().notebook;
+    },
     revision,
     pointer,
     reference: selected.fields.contentRef,
@@ -211,7 +211,7 @@ describe('canonical Source originals in Workspace transfer', () => {
     expect(knowledgeBaseId).not.toBe(f.reference.knowledgeBaseId);
     const reopened = new FsStore({ dataRoot: f.dataRoot });
     const targetRoot = join(f.dataRoot, 'workspaces', imported.workspace.id, 'knowledge');
-    const notebook = new KnowledgeNotebook({ repositoryPath: join(targetRoot, 'notebook.git') });
+    const importedSelection = readTestWorkspaceNotebookSelection(f.dataRoot, imported.workspace.id);
     const sources = reopened.listKnowledgeSources(imported.workspace.id);
     expect(sources).toHaveLength(1);
     const source = sources[0]!;
@@ -229,9 +229,9 @@ describe('canonical Source originals in Workspace transfer', () => {
       originatingTurnId: turns[0]!.id,
       originatingFileId: null,
     });
-    const revision = notebook.publishedRevision();
-    const pointerBytes = notebook.readSourcePointers(revision)[source.id]!;
-    const pointer = parseSourcePointer(owner, source.id, pointerBytes);
+    const revision = importedSelection.head.notebookCommit;
+    const pointerBytes = importedSelection.notebook.readSourcePointers(revision)[source.id]!;
+    const pointer = parseSourcePointer(owner, source.id, pointerBytes, importedSelection);
     expect(pointer.fields).toMatchObject({
       byteLength: original.byteLength,
       mediaType: 'image/png',
@@ -301,11 +301,7 @@ describe('canonical Source originals in Workspace transfer', () => {
     } finally {
       await storage.close();
     }
-    expect(
-      new KnowledgeNotebook({
-        repositoryPath: join(targetRoot, 'notebook.git'),
-      }).readSourcePointers(revision)[source.id]
-    ).toBe(pointerBytes);
+    expect(importedSelection.notebook.readSourcePointers(revision)[source.id]).toBe(pointerBytes);
     expect(f.notebook.readSourcePointers(f.revision)[f.source.id]).toBe(f.pointer);
     expect(readFileSync(f.rawPath)).toEqual(Buffer.from(original));
   });
