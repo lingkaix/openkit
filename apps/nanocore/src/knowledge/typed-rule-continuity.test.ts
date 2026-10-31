@@ -26,12 +26,12 @@ import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-agent.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
+import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { parseOkfDocument } from './okf.js';
 
 const NOW = '2026-10-19T00:00:00.000Z';
