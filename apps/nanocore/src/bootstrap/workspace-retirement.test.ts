@@ -108,7 +108,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     mode: 'server',
     workerMcpGateway: gateway,
     workspaceMutationAdmission: admission,
-    turnExecutor: new SimulatedTurnExecutor(),
+    turnExecutor: new SimulatedTurnExecutor({ coreDb }),
   });
   disposals.push(async () => {
     await gateway.close();
@@ -641,7 +641,7 @@ describe('retired registry consumers and retained Core migration', () => {
       store,
       mode: 'server',
       workspaceMutationAdmission: admission,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
     const retry = (operation: string, input: Record<string, unknown>) =>
       restarted.request(`/api/app/operations/${operation}`, {

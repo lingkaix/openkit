@@ -130,7 +130,7 @@ async function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'revi
   workspaceDb.sqlite.close();
 
   return {
-    app: createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor() }),
+    app: createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor({ coreDb }) }),
     coreDb,
     gate,
     turnInput: `Approve ${action}`,
@@ -342,7 +342,7 @@ describe('Pending Request operations', () => {
       fixture.app = createApp({
         coreDb: fixture.coreDb,
         store: fixture.store,
-        turnExecutor: new SimulatedTurnExecutor(),
+        turnExecutor: new SimulatedTurnExecutor({ coreDb: fixture.coreDb }),
       });
       expect(fixture.store.getApproval(fixture.gate.approvalId).status).toBe('granted');
       expect(fixture.store.listCommandRequests()).toMatchObject([
@@ -550,7 +550,7 @@ describe('Pending Request operations', () => {
       createdAt: new Date().toISOString(),
       resolvedAt: null,
     });
-    const executor = new SimulatedTurnExecutor();
+    const executor = new SimulatedTurnExecutor({ coreDb });
     const respondApproval = vi
       .spyOn(executor, 'respondApproval')
       .mockImplementation(async (requestStore, approvalRequestId, decision) =>
@@ -631,7 +631,7 @@ describe('Pending Request operations', () => {
       createdAt: '2026-07-12T00:00:00.000Z',
       resolvedAt: null,
     });
-    const executor = new SimulatedTurnExecutor();
+    const executor = new SimulatedTurnExecutor({ coreDb });
     const respondApproval = vi.spyOn(executor, 'respondApproval');
     const app = createApp({ coreDb, store, turnExecutor: executor });
 

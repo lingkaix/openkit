@@ -122,3 +122,5 @@ Server history tests read current Items through canonical Turn projections and c
 Four direct Core-owned Worker-control fixtures use those same native roots before Thread creation. Their original acceptance, rollback, heartbeat replay and supply ACK owners stay unchanged. The shared route helper remains rootless until its session-bound terminal fixture uses the existing execution-acceptance owner.
 
 RuntimeTarget refusal, conversation navigation and member-management fixtures give the deterministic executor their existing Core handle. Their App authority inputs and all read, refusal and recovery assertions stay unchanged; these fixtures do not claim Worker execution.
+
+Approval refusal and Workspace retirement fixtures share their existing Core with the deterministic executor. Original person-grant receipts, no-executor refusals, quarantine and restart assertions retain their existing setup and owners; no Worker execution is inferred.
