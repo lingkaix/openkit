@@ -124,7 +124,6 @@ import {
   attributedNotebookPageBytes,
   createDefaultScopeKnowledgeSchemaText,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
-  type KnowledgePageReferenceProof,
   KnowledgePageValidationError,
   parseOkfDocument,
   stringListFrontmatterField,
@@ -7088,121 +7087,6 @@ export class FsStore {
     }
 
     return SubmitKnowledgeProposalDecisionResponseSchema.parse({ review, application });
-  }
-
-  /**
-   * Projects one exact accepted Proposal tuple into request-scoped reference proof.
-   *
-   * @param workspaceId Workspace that owns the Proposal, Review, and Page.
-   * @param reviewId Exact accepted Review row.
-   * @param verifiedExternalReferences Exact work-history references verified by their owners.
-   * @returns Page-bound proof after every current owner is revalidated.
-   * @throws Error when the accepted tuple or any source owner is absent or contradictory.
-   */
-  public projectKnowledgeProposalReferenceProof(
-    workspaceId: string,
-    reviewId: string,
-    verifiedExternalReferences: readonly string[]
-  ): KnowledgePageReferenceProof {
-    const decision = this.projectKnowledgeProposalDecision(workspaceId, reviewId);
-    const proposal = this.knowledgeProposals.get(decision.review.proposalId);
-    if (decision.review.decision !== 'accepted' || !decision.application || !proposal) {
-      throw knowledgeProposalAuthorityError('recovery_required');
-    }
-    this.assertValidKnowledgeProposal(proposal, verifiedExternalReferences);
-    if (!proposal.knowledgePageId) throw knowledgeProposalAuthorityError('invalid_request');
-    return {
-      contentDigest: proposal.contentDigest,
-      knowledgePageId: proposal.knowledgePageId,
-      resolvedReferences: new Set(proposal.sourceReferences),
-      sourceReferences: proposal.sourceReferences,
-    };
-  }
-
-  /**
-   * Projects one accepted portable-import Page into request-scoped reference proof.
-   *
-   * @param workspaceId Imported Workspace that owns the ordinary authoritative Page.
-   * @param knowledgePageId Exact bundle-relative Page identity.
-   * @param verifiedExternalReferences Exact reminted work-history references verified by S39.
-   * @returns Page-bound proof after every current owner is revalidated.
-   * @throws KnowledgePageValidationError when import lineage, Page bytes, or sources conflict.
-   */
-  public projectImportedKnowledgePageReferenceProof(
-    workspaceId: string,
-    knowledgePageId: string,
-    verifiedExternalReferences: readonly string[]
-  ): KnowledgePageReferenceProof {
-    const workspace = this.getWorkspace(workspaceId);
-    if (!workspace.importedFrom || !this.dataRoot) {
-      throw new KnowledgePageValidationError();
-    }
-
-    let content: string | null;
-    let scopeSchemaText: string | undefined;
-    let pageScopeId: string | undefined;
-    try {
-      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
-      const selection = this.workspaceKnowledgeSelection(workspaceId);
-      content = readWorkspaceKnowledgePage(selection, knowledgePageId);
-      scopeSchemaText = selection.scopeSchemaText;
-    } catch {
-      throw new KnowledgePageValidationError();
-    }
-    if (!content) {
-      throw new KnowledgePageValidationError();
-    }
-
-    const path = `knowledge/pages/${knowledgePageId}.md`;
-    const parsed = parseOkfDocument({ path, content });
-    const sourceReferences = parsed.document
-      ? stringListFrontmatterField(parsed.document, 'source_refs')
-      : null;
-    if (
-      !parsed.ok ||
-      parsed.document.conceptId !== knowledgePageId ||
-      (parsed.document.frontmatter.openkit_entry_id !== undefined &&
-        parsed.document.frontmatter.openkit_entry_id !== knowledgePageId) ||
-      parsed.document.frontmatter.type !== 'KnowledgePage' ||
-      parsed.document.frontmatter.openkit_status !== 'active' ||
-      (parsed.document.frontmatter.status !== undefined &&
-        parsed.document.frontmatter.status !== 'stable') ||
-      parsed.document.frontmatter.review_state !== 'accepted' ||
-      sourceReferences === null ||
-      !KnowledgeManagerDraftProposalRequestSchema.shape.sourceReferences.safeParse(sourceReferences)
-        .success
-    ) {
-      throw new KnowledgePageValidationError();
-    }
-
-    const resolvedReferences = this.resolveKnowledgePageSourceReferences(
-      workspaceId,
-      sourceReferences,
-      verifiedExternalReferences
-    );
-    const report = validateKnowledgePageCandidate({
-      path,
-      content,
-      ...(pageScopeId === undefined ? {} : { pageScopeId }),
-      ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
-      registeredSources: new Map(
-        this.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
-      ),
-      knowledgeIds: new Set(
-        this.getWorkspaceResources(workspaceId).knowledge.map((entry) => entry.id)
-      ),
-      resolvedReferences,
-    });
-    if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
-      throw new KnowledgePageValidationError();
-    }
-
-    return {
-      contentDigest: contentDigest(content),
-      knowledgePageId,
-      resolvedReferences,
-      sourceReferences,
-    };
   }
 
   /**
