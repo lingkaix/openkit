@@ -17,6 +17,7 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { asPiAiGatewayClientDouble } from '../test-support/pi-ai-gateway-client-double.js';
 import type { OpenAICompatibleResponsesResponse } from './openai-compatible-client.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
@@ -1033,10 +1034,10 @@ describe('Gateway stock IR convergence', () => {
     const chat = vi.fn(async () => ({ choices: [] }));
     const responses = vi.fn();
     const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: {
+      piAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: chat,
         createResponses: responses,
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     await dispatcher.createChatCompletion(provider, {
       model: 'physical',

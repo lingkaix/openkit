@@ -99,7 +99,6 @@ import {
   FsStore,
   type FsStoreOptions,
 } from './lib/store.js';
-import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -238,6 +237,7 @@ import {
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import {
@@ -615,7 +615,7 @@ function chatAnsweringProvider(
       defaultLogicalModelId: gatewayConfig.defaultLogicalModelId,
       profiles: [],
     },
-    llmPiAiClient: {
+    llmPiAiClient: asPiAiGatewayClientDouble({
       createResponses: async (_provider, request) => {
         const user = request.input.filter((message) => message.role === 'user').at(-1);
         prompts.push(user?.content.map((part) => part.text).join('') ?? '');
@@ -634,7 +634,7 @@ function chatAnsweringProvider(
           ],
         };
       },
-    } as unknown as PiAiGatewayClient,
+    }),
   };
 }
 
@@ -7894,7 +7894,7 @@ describe('nanocore server', () => {
         defaultLogicalModelId: gatewayConfig.defaultLogicalModelId,
         profiles: [],
       },
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
           const ordinaryAssistant = request.tools?.some((tool) => tool.name === 'goal_create');
           if (ordinaryAssistant) assistantCalls += 1;
@@ -7924,7 +7924,7 @@ describe('nanocore server', () => {
                   ],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     const requestId = '0190f4c8-0000-7000-8000-000000000305';
     const submit = () =>

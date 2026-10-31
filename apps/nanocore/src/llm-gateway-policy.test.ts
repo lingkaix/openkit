@@ -2,11 +2,11 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 
 function createConfiguredProviderOptions(gateway: { enabled?: boolean } = {}) {
   return {
@@ -93,7 +93,7 @@ describe('LLM gateway policy controls', () => {
     const app = createApp({
       ...createConfiguredProviderOptions(),
       coreDb,
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (_provider, request) => ({
           id: 'chatcmpl_policy_allowed',
           object: 'chat.completion',
@@ -107,7 +107,7 @@ describe('LLM gateway policy controls', () => {
             },
           ],
         }),
-      } as unknown as PiAiGatewayClient,
+      }),
     });
 
     try {

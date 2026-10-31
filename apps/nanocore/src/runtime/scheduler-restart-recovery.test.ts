@@ -68,6 +68,7 @@ import {
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { asPiAiGatewayClientDouble } from '../test-support/pi-ai-gateway-client-double.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
@@ -1754,9 +1755,9 @@ describe('terminal failed-start product recovery', () => {
         turnExecutor: executor,
         agentManifests: [createTestAgentSetup().manifest],
         gatewayConfig: createTestGatewayConfig(),
-        llmPiAiClient: {
+        llmPiAiClient: asPiAiGatewayClientDouble({
           createResponses,
-        } as unknown as PiAiGatewayClient,
+        }),
         providerRegistry: new ProviderRegistry([
           {
             displayName: 'Fixture',

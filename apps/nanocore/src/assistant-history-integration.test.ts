@@ -11,7 +11,6 @@ import type {
   OpenAICompatibleResponsesRequest,
   OpenAICompatibleResponsesResponse,
 } from './llm/openai-compatible-client.js';
-import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
   closeRetrievalServices,
@@ -28,6 +27,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const PAST_QUERY = 'cedarneedle';
@@ -163,7 +163,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
         models: ['openai/gpt-5.2'],
       },
     ]),
-    llmPiAiClient: {
+    llmPiAiClient: asPiAiGatewayClientDouble({
       createResponses: async (_provider, request): Promise<OpenAICompatibleResponsesResponse> => {
         requests.push(structuredClone(request));
         if (requests.length > 1) {
@@ -201,7 +201,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
               ],
             };
       },
-    } as unknown as PiAiGatewayClient,
+    }),
   });
   const opened = await app.request(
     ...operationRequest(

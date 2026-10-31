@@ -16,7 +16,6 @@ import * as assistantCommandOwners from './internal-agents/assistant-command-run
 import * as knowledgeOwners from './knowledge-operations.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
-import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
@@ -33,6 +32,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const cleanups: Array<() => void> = [];
@@ -103,7 +103,7 @@ async function fixture(availableBytes?: () => bigint) {
     coreDb,
     dataRoot,
     store,
-    llmPiAiClient: provider as unknown as PiAiGatewayClient,
+    llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
     ...(availableBytes
       ? { fileAdmission: new FileStorageAdmission(dataRoot, () => 1_000_000n, availableBytes) }
       : {}),
@@ -564,7 +564,7 @@ describe('Turn-owned conversation originals', () => {
       dataRoot: state.dataRoot,
       store: state.store,
       turnExecutor: executor,
-      llmPiAiClient: provider as unknown as PiAiGatewayClient,
+      llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
       agentManifests: [setup.manifest],
       openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     });
@@ -719,7 +719,7 @@ describe('Turn-owned conversation originals', () => {
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: state.store,
-      llmPiAiClient: provider as unknown as PiAiGatewayClient,
+      llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
     });
     const threadsBefore = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
     const response = await app.request('/api/app/operations/conversation.submit', {
@@ -923,7 +923,7 @@ describe('Turn-owned conversation originals', () => {
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: restarted,
-      llmPiAiClient: state.provider as unknown as PiAiGatewayClient,
+      llmPiAiClient: asPiAiGatewayClientDouble(state.provider as Record<string, unknown>),
     });
     const restartedReplay = await restartedApp.request(
       ...operationRequest('conversation.submit', {}, { body: JSON.stringify(input) })
