@@ -133,3 +133,5 @@ On 1.0.2, native codemode scripts test tool membership with `"name" in tools`; r
 Native forwarding uses the existing private channel and does not start another prompt or change result correlation. The shim owns restricted admission and native file/log publication; this host does not create another retention channel, receiver or store. Native SDK events, the persisted session JSONL and stdout/stderr logs remain distinct sources. Missing or bounded-out events are explicit gaps. Capture defaults remain OFF.
 
 The host types settled outcomes with the private channel's closed failure vocabulary and checks non-success reasons before native identity promotion or outbound publication. Unknown producer reasons become `failed/pi-output-malformed`; length and requested interruption retain their exact existing reasons. The supervising reader independently enforces the same vocabulary, with a test-only set comparison and no production package coupling.
+
+Native session identity and settled outcome checks use the shared Protocol object-access guard. Exact field, current route, path, header and correlation checks remain local.

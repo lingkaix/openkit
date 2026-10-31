@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { isRecord } from '@openkit/protocol';
 
 /**
  * Maximum UTF-8 bytes of the final assistant message content serialized as JSON. The bound covers
@@ -188,9 +189,4 @@ function readSettledAssistantMessage(value: unknown): PiAssistantMessage | null 
     return null;
   }
   return value as PiAssistantMessage;
-}
-
-/** Checks whether one value is a non-array object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

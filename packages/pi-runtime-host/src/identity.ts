@@ -2,6 +2,7 @@ import { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } from 'node:constants';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, open } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { isRecord } from '@openkit/protocol';
 
 /** Maximum accepted bytes before the first complete Pi session header newline. */
 const PI_SESSION_HEADER_MAX_BYTES = 64 * 1024;
@@ -227,9 +228,4 @@ async function requirePiDirectory(path: string): Promise<void> {
 /** Checks a Node filesystem error without widening unknown exceptions. */
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && 'code' in error;
-}
-
-/** Checks whether one JSON value is a non-array object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
