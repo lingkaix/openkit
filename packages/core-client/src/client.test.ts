@@ -216,7 +216,7 @@ function workspaceDeletionResponse() {
     deletion: {
       closureId: null,
       phase: 'fenced',
-      recoveryExportId: null,
+      recoveryBackupId: null,
       requestId,
       retainedStaging: false,
       status: 'active',
@@ -1256,13 +1256,14 @@ function workspaceImportResponse() {
 /** Returns one safe deleted-Workspace recovery projection. */
 function deletedWorkspaceRecoveryResponse() {
   return {
-    recovery: {
-      closureId: 'closure_demo',
-      deletionRequestId: '00000000-0000-4000-8000-000000000002',
-      import: workspaceImportResponse(),
-      recoveryExportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    },
+    command: 'restore',
+    disposition: 'restored',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    currentRevision: 2,
+    selection: { kind: 'admission', requestId },
+    droppedSourceMemberIds: [],
+    restrictedRecovery: false,
+    nextAction: 'none',
   };
 }
 

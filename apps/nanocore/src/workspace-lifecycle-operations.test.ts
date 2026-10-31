@@ -1,5 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
@@ -12,16 +13,23 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
-import type { AuthVariables } from './auth/middleware.js';
-import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
+import type { AuthVariables, BetterAuthServer } from './auth/middleware.js';
+import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import { disableCanonicalUser } from './auth/user-lifecycle.js';
+import { computeBootReadinessSnapshot, isScopeAdmitted } from './bootstrap/readiness.js';
+import { restoreWorkspaceRecoveryAdmission } from './bootstrap/workspace-recovery.js';
+import { readReleaseIdentity } from './diagnostics/release-identity.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { workspaceRecoveryCandidateDigest } from './storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
+import { WORKSPACE_BACKUP_POLICY } from './storage/workspace-backup.js';
+import { readWorkspaceSnapshotMetadata } from './storage/workspace-backup-bundle.js';
+import { readRecoveryAdmission } from './storage/workspace-recovery-admissions.js';
 import {
   createAppWithLocalIdentity as createApp,
   createTestSessionActor,
@@ -32,6 +40,11 @@ import { operationRequest } from './test-support/operation-request.js';
 import { readWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import {
+  getWorkspaceInvitation,
+  getWorkspaceMember,
+  getWorkspaceRegistryLifecycleFact,
+} from './workspace-sharing.js';
 
 const REQUEST_ID = '00000000-0000-4000-8000-000000000023';
 
@@ -166,7 +179,8 @@ it('allows the administrator recovery-state read through a closed mutation gate 
 /** Creates real owner, member, invitation and Workspace records, without fixture-supplied admission defaults. */
 async function fixture(
   getBootReadiness?: () => BootReadinessSnapshot,
-  mode: 'local' | 'server' = 'local'
+  mode: 'local' | 'server' = 'local',
+  auth?: BetterAuthServer
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-lifecycle-cutover-'));
   const coreDb = openCoreDb(dataRoot);
@@ -198,9 +212,14 @@ async function fixture(
     )
     .run(workspaceId, new Date(Date.now() + 86400000).toISOString(), timestamp, timestamp);
   const admission = new WorkspaceMutationAdmission();
+  const releaseIdentityPath = join(dataRoot, 'fixture-release-identity.json');
+  const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  writeFileSync(releaseIdentityPath, JSON.stringify({ releaseTag: null, sourceCommit }));
   const app = createApp({
     workspaceMutationAdmission: admission,
     ...(getBootReadiness ? { getBootReadiness } : {}),
+    ...(auth ? { auth } : {}),
+    releaseIdentity: readReleaseIdentity(releaseIdentityPath),
     coreDb,
     dataRoot,
     store,
@@ -595,6 +614,304 @@ it('refuses HTTP user.disable during closed product admission without disabling 
   }
 });
 
+/** Deleted Workspace Recovery preserves identity; the shared report is not a portable import result. */
+it('recovers a cleaned Workspace as its non-admin original owner and replays without replacing later work', async () => {
+  const ownerId = 'usr_00000000-0000-7000-8000-000000000001';
+  const privateOwnerId = testEntityId('usr', 'member');
+  // Authentication is the external effect; current canonical and Workspace authority stay real.
+  const auth: BetterAuthServer = {
+    api: {
+      getSession: async () => ({
+        session: { id: 'original-owner-recovery-session' },
+        user: { id: ownerId },
+      }),
+    },
+    handler: async () => Response.json({ status: 'auth-ok' }),
+  };
+  const f = await fixture(undefined, 'server', auth);
+  try {
+    expect(
+      isCurrentDeploymentAdministrator(f.coreDb, createTestSessionActor(f.coreDb, ownerId))
+    ).toBe(false);
+    const privateThread = await f.store.createThread(
+      f.workspaceId,
+      'Other member private history',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: privateOwnerId }
+    );
+    const deletionRequestId = randomUUID();
+    const deleted = await f.app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: f.workspaceId },
+        {
+          body: JSON.stringify({
+            requestId: deletionRequestId,
+            expectedRegistryRevision: 1,
+            confirmation: `permanently-delete-workspace:${f.workspaceId}:1`,
+          }),
+        }
+      )
+    );
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
+    expect(await deleted.json()).toMatchObject({
+      deletion: { phase: 'cleaned', status: 'deleted' },
+    });
+    const deletion = readWorkspaceDeletionRequest(f.dataRoot, f.workspaceId, deletionRequestId);
+    expect(deletion).toMatchObject({
+      phase: 'cleaned',
+      originalOwnerUserId: ownerId,
+      initiatingUserId: ownerId,
+    });
+    expect(existsSync(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(false);
+    expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toMatchObject({
+      workspaceId: f.workspaceId,
+      ownerUserId: ownerId,
+      status: 'deleted',
+    });
+    const removedMember = getWorkspaceMember(f.coreDb, f.workspaceId, privateOwnerId);
+    const revokedInvitation = getWorkspaceInvitation(
+      f.coreDb,
+      'inv_00000000-0000-79cc-be8a-99985c4c44e4'
+    );
+    expect(removedMember).toMatchObject({ status: 'removed' });
+    expect(revokedInvitation).toMatchObject({ effectiveStatus: 'revoked' });
+    const requestId = randomUUID();
+    // The public command has no lost-safety consent or administrator override input.
+    const recover = () =>
+      f.app.request(
+        ...operationRequest(
+          'workspace.deleted-recover',
+          { workspaceId: f.workspaceId },
+          {
+            body: JSON.stringify({ requestId, deletionRequestId }),
+          }
+        )
+      );
+    const recovered = await recover();
+    expect(recovered.status, await recovered.clone().text()).toBe(200);
+    const report = await recovered.json();
+    const registry = getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)!;
+    expect(registry).toMatchObject({
+      workspaceId: f.workspaceId,
+      ownerUserId: ownerId,
+      status: 'active',
+    });
+    expect(report).toEqual({
+      command: 'restore',
+      disposition: 'restored',
+      workspaceId: f.workspaceId,
+      currentRevision: registry.registryRevision,
+      selection: { kind: 'admission', requestId },
+      droppedSourceMemberIds: [],
+      restrictedRecovery: false,
+      nextAction: 'none',
+    });
+    expect(JSON.stringify(report)).not.toContain(privateThread.id);
+    expect(f.store.getThread(f.workspaceId, privateThread.id)).toMatchObject({
+      id: privateThread.id,
+      visibility: 'private',
+      privateOwnerUserId: privateOwnerId,
+    });
+    expect(getWorkspaceMember(f.coreDb, f.workspaceId, privateOwnerId)).toEqual(removedMember);
+    expect(getWorkspaceInvitation(f.coreDb, 'inv_00000000-0000-79cc-be8a-99985c4c44e4')).toEqual(
+      revokedInvitation
+    );
+    const readable = await f.app.request(
+      ...operationRequest('workspace.read', { workspaceId: f.workspaceId })
+    );
+    expect(readable.status, await readable.clone().text()).toBe(200);
+    expect(f.admission.isClosed(f.workspaceId)).toBe(false);
+    const later = await f.store.createThread(f.workspaceId, 'Healthy work after recovery');
+    const audits = listServerAuditEvents(f.coreDb);
+    const replay = await recover();
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(await replay.json()).toEqual(report);
+    expect(f.store.getThread(f.workspaceId, later.id)).toEqual(later);
+    expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(registry);
+    expect(listServerAuditEvents(f.coreDb)).toEqual(audits);
+    expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspaceId, deletionRequestId)).toEqual(
+      deletion
+    );
+    // A retained result grants no current authority: the existing user owner disables this real user.
+    f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, ownerId))();
+    const refused = await recover();
+    expect(refused.status).toBe(401);
+    expect(f.store.getThread(f.workspaceId, later.id)).toEqual(later);
+    expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(registry);
+    expect(listServerAuditEvents(f.coreDb)).toEqual(audits);
+    expect(f.admission.isClosed(f.workspaceId)).toBe(false);
+  } finally {
+    await f.close();
+  }
+});
+
+/** A committed recovery result is not serving activation; only explicit exact retry may finish it. */
+it('continues the original committed recovery after serving activation fails without repeating its Core effects', async () => {
+  const ownerId = 'usr_00000000-0000-7000-8000-000000000001';
+  const auth: BetterAuthServer = {
+    api: {
+      getSession: async () => ({
+        session: { id: 'recovery-activation-session' },
+        user: { id: ownerId },
+      }),
+    },
+    handler: async () => Response.json({ status: 'auth-ok' }),
+  };
+  const f = await fixture(undefined, 'server', auth);
+  const activation = vi.spyOn(f.store, 'reloadRecoveredWorkspace');
+  try {
+    const deletionRequestId = randomUUID();
+    const deleted = await f.app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: f.workspaceId },
+        {
+          body: JSON.stringify({
+            requestId: deletionRequestId,
+            expectedRegistryRevision: 1,
+            confirmation: `permanently-delete-workspace:${f.workspaceId}:1`,
+          }),
+        }
+      )
+    );
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
+    expect(await deleted.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
+    const requestId = randomUUID();
+    const recover = (app: typeof f.app) =>
+      app.request(
+        ...operationRequest(
+          'workspace.deleted-recover',
+          { workspaceId: f.workspaceId },
+          {
+            body: JSON.stringify({ requestId, deletionRequestId }),
+          }
+        )
+      );
+    let committed: ReturnType<typeof readRecoveryAdmission>;
+    let committedRegistry: ReturnType<typeof getWorkspaceRegistryLifecycleFact>;
+    activation.mockImplementationOnce(() => {
+      committed = readRecoveryAdmission(f.coreDb, requestId);
+      committedRegistry = getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId);
+      throw new Error('Injected serving activation failure after the Core result.');
+    });
+    const pending = await recover(f.app);
+    activation.mockRestore();
+    expect(pending.status, await pending.clone().text()).toBe(200);
+    expect(await pending.json()).toMatchObject({
+      command: 'restore',
+      disposition: 'pending',
+      workspaceId: f.workspaceId,
+      selection: { kind: 'admission', requestId },
+      restrictedRecovery: false,
+      nextAction: 'finish',
+    });
+    expect(committed!).toMatchObject({
+      admission_id: requestId,
+      workspace_id: f.workspaceId,
+      state: 'finished',
+      proof: { result: { disposition: 'restored', workspaceId: f.workspaceId } },
+    });
+    expect(committedRegistry!).toMatchObject({
+      workspaceId: f.workspaceId,
+      ownerUserId: ownerId,
+      status: 'active',
+    });
+    const committedAudits = listServerAuditEvents(f.coreDb);
+    expect(
+      committedAudits.filter(
+        (event) => event.action === 'workspace.deleted-recover' && event.requestId === requestId
+      )
+    ).toEqual([
+      expect.objectContaining({ actor: { kind: 'user', id: ownerId }, outcome: 'succeeded' }),
+    ]);
+    expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
+    for (const suffix of ['-wal', '-shm'])
+      expect(
+        existsSync(join(f.dataRoot, 'workspaces', f.workspaceId, `db/workspace.sqlite${suffix}`))
+      ).toBe(false);
+    const fencedImage = workspaceRecoveryCandidateDigest(
+      join(f.dataRoot, 'workspaces', f.workspaceId)
+    );
+    await expect(f.store.createThread(f.workspaceId, 'Must remain fenced')).rejects.toThrow();
+    expect(workspaceRecoveryCandidateDigest(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(
+      fencedImage
+    );
+    expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(committed!);
+    expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
+    expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
+    // Recompose the real App from retained owners; this is not a cold-process restart claim.
+    // Drain the old process-local native owner before installing the reconstructed gate.
+    await shutdownControlStoreWorkerClient();
+    const restartedGate = new WorkspaceMutationAdmission();
+    restoreWorkspaceRecoveryAdmission(f.coreDb, restartedGate);
+    // Bootstrap must not reopen a placed target whose exact byte seal still owns activation.
+    expect(workspaceRecoveryCandidateDigest(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(
+      committed!.proof.candidateDigest
+    );
+    const restartedStore = new FsStore({ dataRoot: f.dataRoot });
+    const restarted = createApp({
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: restartedStore,
+      mode: 'server',
+      auth,
+      workspaceMutationAdmission: restartedGate,
+      turnExecutor: new SimulatedTurnExecutor(),
+      releaseIdentity: readReleaseIdentity(join(f.dataRoot, 'fixture-release-identity.json')),
+    });
+    expect(restartedGate.isClosed(f.workspaceId)).toBe(true);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
+    const unreviewed = join(f.dataRoot, 'workspaces', f.workspaceId, 'unreviewed-recovery.txt');
+    writeFileSync(unreviewed, 'Unreviewed candidate bytes.');
+    const refused = await recover(restarted);
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    await expect(refused.json()).resolves.toMatchObject({ code: 'recovery_required' });
+    expect(existsSync(unreviewed)).toBe(true);
+    expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(committed!);
+    expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
+    expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
+    expect(restartedGate.isClosed(f.workspaceId)).toBe(true);
+    rmSync(unreviewed);
+    expect(workspaceRecoveryCandidateDigest(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(
+      committed!.proof.candidateDigest
+    );
+    const finished = await recover(restarted);
+    expect(finished.status, await finished.clone().text()).toBe(200);
+    const result = await finished.json();
+    expect(result).toMatchObject({
+      command: 'restore',
+      disposition: 'restored',
+      workspaceId: f.workspaceId,
+      currentRevision: committedRegistry!.registryRevision,
+      selection: { kind: 'admission', requestId },
+      restrictedRecovery: false,
+      nextAction: 'none',
+    });
+    expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(committed!);
+    expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
+    expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
+    expect(restartedGate.isClosed(f.workspaceId)).toBe(false);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(true);
+    const later = await restartedStore.createThread(
+      f.workspaceId,
+      'Healthy work after explicit finish'
+    );
+    const replay = await recover(restarted);
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(await replay.json()).toEqual(result);
+    expect(restartedStore.getThread(f.workspaceId, later.id)).toEqual(later);
+    expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(committed!);
+    expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
+    expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
+  } finally {
+    activation.mockRestore();
+    await f.close();
+  }
+});
+
 it('preserves administrator actor, original deletion owner, exact retry and recovery ownership', async () => {
   const f = await fixture(undefined, 'server');
   try {
@@ -695,19 +1012,40 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
       )
     ).toBe(false);
     expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspaceId, requestId)).toEqual(record);
+    const recoveryRequestId = randomUUID();
+    const removedMember = getWorkspaceMember(
+      f.coreDb,
+      f.workspaceId,
+      testEntityId('usr', 'member')
+    );
+    const revokedInvitation = getWorkspaceInvitation(
+      f.coreDb,
+      'inv_00000000-0000-79cc-be8a-99985c4c44e4'
+    );
     const recovery = await f.app.request(
       ...operationRequest(
         'workspace.deleted-recover',
         { workspaceId: f.workspaceId },
         {
-          body: JSON.stringify({ deletionRequestId: requestId, requestId: randomUUID() }),
+          body: JSON.stringify({ deletionRequestId: requestId, requestId: recoveryRequestId }),
           headers: { authorization: `Bearer ${admin.secret}` },
         }
       )
     );
     expect(recovery.status, await recovery.clone().text()).toBe(200);
     const body = await recovery.json();
-    const restoredDb = openWorkspaceDb(f.dataRoot, body.recovery.import.importedWorkspaceId);
+    expect(body).toMatchObject({
+      command: 'restore',
+      disposition: 'restored',
+      workspaceId: f.workspaceId,
+      selection: { kind: 'admission', requestId: recoveryRequestId },
+      restrictedRecovery: false,
+      nextAction: 'none',
+    });
+    expect(body.currentRevision).toBe(
+      getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)!.registryRevision
+    );
+    const restoredDb = openWorkspaceDb(f.dataRoot, f.workspaceId);
     try {
       const rows = restoredDb.sqlite.prepare('SELECT payload_json FROM goals').all() as Array<{
         payload_json: string;
@@ -726,15 +1064,24 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
     expect(
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id,status FROM workspace_registry WHERE workspace_id = ?')
-        .get(body.recovery.import.importedWorkspaceId)
+        .get(f.workspaceId)
     ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' });
     expect(
       f.coreDb.sqlite
         .prepare(
           'SELECT user_id,status FROM workspace_members WHERE workspace_id = ? ORDER BY user_id'
         )
-        .all(body.recovery.import.importedWorkspaceId)
-    ).toEqual([{ user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' }]);
+        .all(f.workspaceId)
+    ).toEqual([
+      { user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' },
+      { user_id: testEntityId('usr', 'member'), status: 'removed' },
+    ]);
+    expect(getWorkspaceMember(f.coreDb, f.workspaceId, testEntityId('usr', 'member'))).toEqual(
+      removedMember
+    );
+    expect(getWorkspaceInvitation(f.coreDb, 'inv_00000000-0000-79cc-be8a-99985c4c44e4')).toEqual(
+      revokedInvitation
+    );
   } finally {
     await f.close();
   }
@@ -790,10 +1137,10 @@ it('keeps a readonly Workspace credential from changing members or creating a co
   }
 });
 
-it('retains private ownership in the narrow administrator deletion recovery export', async () => {
+it('retains private ownership through administrator operational deletion recovery', async () => {
   const f = await fixture(undefined, 'server');
   try {
-    await f.store.createThread(
+    const privateThread = await f.store.createThread(
       f.workspaceId,
       'Retained private history',
       undefined,
@@ -834,33 +1181,42 @@ it('retains private ownership in the narrow administrator deletion recovery expo
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       initiatingUserId: testEntityId('usr', 'target'),
     });
-    const exported = verifyWorkspaceExportTree({
-      exportRoot: join(
-        f.dataRoot,
-        'server',
-        'exports',
-        'workspaces',
-        f.workspaceId,
-        request.recoveryExportId!
-      ),
+    const backup = await readWorkspaceSnapshotMetadata({
+      dataRoot: f.dataRoot,
+      workspaceId: f.workspaceId,
+      backupId: request.recoveryBackupId!,
+      supportedRequiredFeatures: WORKSPACE_BACKUP_POLICY.supportedRequiredFeatures,
     });
-    expect(
-      exported.fileContents
-        .get('records/threads.jsonl')!
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line))
-    ).toEqual([
-      expect.objectContaining({
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      }),
-    ]);
+    expect(backup.manifestDigest).toBe(request.recoveryBackupManifestDigest);
+    expect(backup.manifest.workspaceId).toBe(f.workspaceId);
     expect(
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id,status FROM workspace_registry WHERE workspace_id = ?')
         .get(f.workspaceId)
     ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'deleted' });
+    const recovery = await f.app.request(
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: f.workspaceId },
+        {
+          headers: { authorization: `Bearer ${admin.secret}` },
+          body: JSON.stringify({ requestId: randomUUID(), deletionRequestId: requestId }),
+        }
+      )
+    );
+    expect(recovery.status, await recovery.clone().text()).toBe(200);
+    expect(await recovery.json()).toMatchObject({
+      command: 'restore',
+      disposition: 'restored',
+      workspaceId: f.workspaceId,
+    });
+    expect(f.store.listThreads(f.workspaceId)).toEqual([
+      expect.objectContaining({
+        id: privateThread.id,
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      }),
+    ]);
     expect(
       listServerAuditEvents(f.coreDb).filter((event) => event.action === 'workspace.delete')
     ).toEqual([

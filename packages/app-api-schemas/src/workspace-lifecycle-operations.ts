@@ -242,13 +242,12 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     target: { kind: 'workspace-deletion' },
     policyOperation: 'workspace.lifecycle',
     mutating: true,
-    successStatuses: [200, 202],
   },
   'workspace.deleted-recover': {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'Recover the deleted Workspace from its verified archive.',
+    description: 'Restore the original deleted Workspace from its final operational backup.',
     inputSchema: RecoverDeletedWorkspaceRequestSchema.safeExtend({
       workspaceId: WorkspaceIdSchema,
     }),

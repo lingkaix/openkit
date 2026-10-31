@@ -602,7 +602,8 @@ describe('administrator cleanup public operation composition', () => {
         expectedRegistryRevision: 1,
       })
     )();
-    writeWorkspaceDeletionRequest(f.dataRoot, { ...request, phase: 'deleting' });
+    // Deliberate partial owner facts exercise read-only unknown evidence; no producer emits this pair.
+    writeWorkspaceDeletionRequest(f.dataRoot, { ...request, phase: 'fenced' });
     writeFileSync(join(f.dataRoot, 'orphan-cleanup-canary'), PRIVATE);
     const beforeRows = rows(f.coreDb);
     const beforeFiles = files(f.dataRoot);
@@ -610,7 +611,7 @@ describe('administrator cleanup public operation composition', () => {
     const result = bounded(await f.native());
     expect(result.items).toHaveLength(7);
     expect(result.items[0]).toMatchObject({
-      state: { phase: 'deleting' },
+      state: { phase: 'fenced' },
       evidence: { kind: 'unknown' },
     });
     await expect(

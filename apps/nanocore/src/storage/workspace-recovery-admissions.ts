@@ -161,6 +161,31 @@ function recoveryAdmissions(core: CoreDb, workspaceId?: string): RecoveryAdmissi
   return ids.map(({ admission_id }) => readRecoveryAdmission(core, admission_id)!);
 }
 
+/** Selects the unique finished original recovery; this grants no serving or replacement authority. */
+export function readFinishedDeletedWorkspaceRecovery(
+  core: CoreDb,
+  deletion: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord
+): RecoveryAdmission | undefined {
+  if (
+    !['deleted', 'cleaned'].includes(deletion.phase) ||
+    !deletion.recoveryBackupId ||
+    !deletion.closureDigest
+  )
+    return undefined;
+  const matches = recoveryAdmissions(core, deletion.workspaceId).filter(
+    (row) =>
+      row.state === 'finished' &&
+      row.proof.input.command === 'restore' &&
+      !row.proof.input.acknowledgeLostSafety &&
+      row.backup_id === deletion.recoveryBackupId &&
+      row.proof.capture.manifestDigest === deletion.recoveryBackupManifestDigest &&
+      row.proof.manifest.accounts.ownerId === deletion.originalOwnerUserId &&
+      row.proof.result.disposition === 'restored' &&
+      row.proof.result.currentRevision === deletion.expectedRegistryRevision + 3
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 /** Binds the exact prepared recovery's physical databases to its still-live mutation freeze. */
 export function bindWorkspaceRecoveryNativeOwner(
   core: CoreDb,
@@ -207,6 +232,57 @@ export function bindWorkspaceRecoveryNativeOwner(
     ...(canonical ? { canonical: Object.freeze({ freeze, binding: canonical }) } : {}),
     candidate: Object.freeze({ freeze, binding: candidate }),
   });
+}
+/** Binds only the placed terminal target for open/close before exact serving readmission. */
+export function bindWorkspaceRecoveryReadmissionNativeOwner(
+  core: CoreDb,
+  owned: RecoveryAdmission,
+  admission: WorkspaceMutationAdmission,
+  freeze: WorkspaceFrozenAdmission
+): ControlRecoveryNativeCall {
+  const current = readWorkspaceRecoveryReadmission(core, owned.admission_id, admission, freeze);
+  if (current.state !== 'finished' || !isDeepStrictEqual(current, owned))
+    refuseRecovery('recovery-required');
+  const sourceDataRoot = resolve(core.dataRoot);
+  const canonical = bindRecoveryDatabase(
+    sourceDataRoot,
+    sourceDataRoot,
+    current.workspace_id,
+    join(sourceDataRoot, 'workspaces', current.workspace_id)
+  );
+  admission.bindRecovery(current.workspace_id, freeze, { canonical });
+  return Object.freeze({ freeze, binding: canonical });
+}
+/** Closes the final deletion source through the same exact physical recovery binding before rename. */
+export function bindWorkspaceDeletionNativeOwner(
+  core: CoreDb,
+  deletion: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord,
+  admission: WorkspaceMutationAdmission,
+  freeze: WorkspaceFrozenAdmission
+): ControlRecoveryNativeCall {
+  const registry = core.sqlite
+    .prepare('SELECT status,revision,owner_user_id FROM workspace_registry WHERE workspace_id=?')
+    .get(deletion.workspaceId) as
+    | { status: string; revision: number; owner_user_id: string }
+    | undefined;
+  if (
+    deletion.phase !== 'closure-sealed' ||
+    !deletion.recoveryBackupId ||
+    !deletion.closureDigest ||
+    registry?.status !== 'deleting' ||
+    registry.revision !== deletion.expectedRegistryRevision + 1 ||
+    registry.owner_user_id !== deletion.originalOwnerUserId ||
+    !admission.ownsFreeze(deletion.workspaceId, freeze)
+  )
+    refuseRecovery('recovery-required');
+  const canonical = bindRecoveryDatabase(
+    resolve(core.dataRoot),
+    resolve(core.dataRoot),
+    deletion.workspaceId,
+    join(core.dataRoot, 'workspaces', deletion.workspaceId)
+  );
+  admission.bindRecovery(deletion.workspaceId, freeze, { canonical });
+  return Object.freeze({ freeze, binding: canonical });
 }
 /** Binds an existing physical database without creating schema or bypassing native admission. */
 function bindRecoveryDatabase(

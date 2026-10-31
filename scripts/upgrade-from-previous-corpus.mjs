@@ -42,11 +42,13 @@ export const FILE_CORPUS_FAMILIES = Object.freeze([
   'Encrypted Vault store',
   'Workspace export',
   'Data Root backup',
-  'Workspace deletion closure',
   'Turn human feedback',
   'Query-owned retrieval traces',
   'Unaccepted Workspace capture source',
 ]);
+
+/** Registered retained families intentionally excluded by an accepted pre-stable discontinuity. */
+export const DISCONTINUOUS_FILE_CORPUS_FAMILIES = Object.freeze(['Workspace deletion closure']);
 
 /** Mutable metadata compared through native snapshots rather than disposable file projections. */
 export const NATIVE_METADATA_FAMILIES = Object.freeze([
@@ -108,7 +110,6 @@ async function owners(appRoot) {
     transfer: 'storage/workspace-transfer-routes.js',
     exports: 'storage/workspace-export.js',
     backup: 'storage/data-root-backup.js',
-    closure: 'workspace-deletion-evidence.js',
     traces: 'storage/retrieval-traces.js',
     snapshotChain: 'runtime/workspace-snapshot-chain.js',
     jsonc: 'config/jsonc.js',
@@ -835,27 +836,6 @@ async function seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot)
     workspaceId: selectors.workspaceId,
   });
   selectors.exportId = exported.response.exportId;
-  const exportRoot = o.transfer.existingWorkspaceExportRoot(
-    r.data,
-    selectors.workspaceId,
-    selectors.exportId
-  );
-  selectors.closure = {
-    workspaceId: selectors.workspaceId,
-    requestId: randomUUID(),
-    originalOwnerUserId: selectors.userId,
-    sourceRegistryRevision: 1,
-    closureId: `wsclose_${randomUUID()}`,
-    cutoffTimestamp: new Date().toISOString(),
-    recoveryExportId: selectors.exportId,
-    recoveryExportManifestDigest: `sha256:${sha256(readFileSync(join(exportRoot, 'openkit-workspace-export.json')))}`,
-  };
-  o.closure.createWorkspaceDeletionClosure({
-    ...selectors.closure,
-    dataRoot: r.data,
-    coreDb: ctx.coreDb,
-    repositoryWorkspaceDb,
-  });
 }
 
 /** Reads every implemented family through native readers and measures originals by digest. This returns corpus evidence, never a release qualification verdict. */
@@ -1172,13 +1152,6 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       backupRoot: join(r.corpus, 'data-root-backup'),
     });
     record('Data Root backup', [backup.manifest], [], ['file-corpus/data-root-backup']);
-    const closureRoot = o.closure.existingWorkspaceDeletionClosureRoot(
-      r.data,
-      selectors.workspaceId,
-      selectors.closure.closureId
-    );
-    const closure = o.closure.verifyWorkspaceDeletionClosure({ ...selectors.closure, closureRoot });
-    record('Workspace deletion closure', [closure], [relative(r.data, closureRoot)]);
     record(
       'Query-owned retrieval traces',
       [

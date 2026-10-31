@@ -20,12 +20,13 @@ export type WorkspaceRecoveryFreezeOrigin =
       readonly revision: number;
       readonly candidateRef: string;
     }
-  | { readonly captureId: string };
+  | { readonly captureId: string }
+  | { readonly deletionRequestId: string; readonly revision: number };
 
 /** Source recovery binds only canonical bytes; target recovery also binds its owned candidate. */
 interface CaptureClosure {
   owner: WorkspaceFrozenAdmission | null;
-  readonly origin?: WorkspaceRecoveryFreezeOrigin;
+  origin?: WorkspaceRecoveryFreezeOrigin;
   recovery?:
     | { readonly canonical: object; readonly candidate?: object }
     | { readonly canonical?: object; readonly candidate: object };
@@ -95,6 +96,25 @@ export class WorkspaceMutationAdmission {
     )
       return { status: 'busy' };
     return this.ownFreeze(workspaceId, state, closure);
+  }
+
+  /** Transfers only the same live deletion closure to its exact newly retained target admission. */
+  public transferDeletionRecovery(
+    workspaceId: string,
+    owner: WorkspaceFrozenAdmission,
+    deletion: { readonly deletionRequestId: string; readonly revision: number },
+    target: {
+      readonly admissionId: string;
+      readonly revision: number;
+      readonly candidateRef: string;
+    }
+  ): void {
+    if (
+      !this.ownsFreeze(workspaceId, owner) ||
+      !isDeepStrictEqual(this.gates.get(workspaceId)!.captureClosed!.origin, deletion)
+    )
+      throw new Error('Workspace deletion recovery closure changed.');
+    this.gates.get(workspaceId)!.captureClosed!.origin = Object.freeze({ ...target });
   }
 
   /** Restores exclusion provenance only; this never recovers a live permission. */

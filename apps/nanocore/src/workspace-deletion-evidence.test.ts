@@ -47,8 +47,8 @@ it('verifies extended descriptive closure bytes after reopen while inventory and
       sourceRegistryRevision: 1,
       closureId: 'wsclose_extended',
       cutoffTimestamp: '2026-10-06T00:00:00.000Z',
-      recoveryExportId: 'wsexp_00000000-0000-706a-b20c-a6a21d73aae2',
-      recoveryExportManifestDigest: `sha256:${'a'.repeat(64)}`,
+      recoveryBackupId: 'wsbak_00000000-0000-706a-b20c-a6a21d73aae2',
+      recoveryBackupManifestDigest: `sha256:${'a'.repeat(64)}`,
     };
     const baseline = createWorkspaceDeletionClosure(input);
     const closureRoot = existingWorkspaceDeletionClosureRoot(
@@ -165,8 +165,8 @@ it('retains the immutable external admission join in deletion evidence before it
       sourceRegistryRevision: 1,
       closureId: 'wsclose_event',
       cutoffTimestamp: instant,
-      recoveryExportId: 'wsexp_00000000-0000-706a-b20c-a6a21d73aae2',
-      recoveryExportManifestDigest: `sha256:${'a'.repeat(64)}`,
+      recoveryBackupId: 'wsbak_00000000-0000-706a-b20c-a6a21d73aae2',
+      recoveryBackupManifestDigest: `sha256:${'a'.repeat(64)}`,
     };
     createWorkspaceDeletionClosure(input);
     const closureRoot = existingWorkspaceDeletionClosureRoot(

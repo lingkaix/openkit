@@ -5631,16 +5631,6 @@
               }
             }
           },
-          "202": {
-            "description": "Delete the Workspace or resume the exact recorded deletion request.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/workspace.delete.output"
-                }
-              }
-            }
-          },
           "default": {
             "description": "Protocol error envelope.",
             "content": {
@@ -5660,7 +5650,7 @@
         "tags": [
           "workspace"
         ],
-        "summary": "Recover the deleted Workspace from its verified archive.",
+        "summary": "Restore the original deleted Workspace from its final operational backup.",
         "security": [
           {
             "bearerAuth": []
@@ -5692,7 +5682,7 @@
         },
         "responses": {
           "200": {
-            "description": "Recover the deleted Workspace from its verified archive.",
+            "description": "Restore the original deleted Workspace from its final operational backup.",
             "content": {
               "application/json": {
                 "schema": {
@@ -48470,11 +48460,11 @@
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
-                  "recoveryExportId": {
+                  "recoveryBackupId": {
                     "anyOf": [
                       {
                         "type": "string",
-                        "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                       },
                       {
                         "type": "null"
@@ -48511,7 +48501,7 @@
                 "required": [
                   "workspaceId",
                   "requestId",
-                  "recoveryExportId",
+                  "recoveryBackupId",
                   "closureId",
                   "retainedStaging",
                   "status",
@@ -48531,11 +48521,11 @@
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
-                  "recoveryExportId": {
+                  "recoveryBackupId": {
                     "anyOf": [
                       {
                         "type": "string",
-                        "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                       },
                       {
                         "type": "null"
@@ -48573,7 +48563,7 @@
                 "required": [
                   "workspaceId",
                   "requestId",
-                  "recoveryExportId",
+                  "recoveryBackupId",
                   "closureId",
                   "retainedStaging",
                   "status",
@@ -48593,11 +48583,11 @@
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
-                  "recoveryExportId": {
+                  "recoveryBackupId": {
                     "anyOf": [
                       {
                         "type": "string",
-                        "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                       },
                       {
                         "type": "null"
@@ -48633,7 +48623,7 @@
                 "required": [
                   "workspaceId",
                   "requestId",
-                  "recoveryExportId",
+                  "recoveryBackupId",
                   "closureId",
                   "retainedStaging",
                   "status",
@@ -48673,412 +48663,352 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "recovery": {
-            "type": "object",
-            "properties": {
-              "sourceWorkspaceId": {
-                "type": "string",
-                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "deletionRequestId": {
-                "type": "string",
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-              },
-              "recoveryExportId": {
-                "type": "string",
-                "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "closureId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "import": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "capture",
+              "verify",
+              "restore",
+              "move-out",
+              "move-in",
+              "inspect",
+              "finish",
+              "abandon",
+              "reactivate"
+            ]
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "prepared",
+              "verified",
+              "restored",
+              "moved-out",
+              "imported",
+              "reactivated",
+              "abandoned",
+              "pending",
+              "quarantined"
+            ]
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "currentRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "selection": {
+            "oneOf": [
+              {
                 "type": "object",
                 "properties": {
-                  "mode": {
+                  "kind": {
                     "type": "string",
-                    "const": "imported"
+                    "const": "capture"
                   },
-                  "requestId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "exportId": {
+                  "backupId": {
                     "type": "string",
-                    "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "sourceWorkspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "exportedWorkspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "importedWorkspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "manifest": {
-                    "type": "object",
-                    "properties": {
-                      "schemaVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "recordType": {
-                        "type": "string",
-                        "const": "workspace-export"
-                      },
-                      "id": {
-                        "type": "string",
-                        "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      "ownerScope": {
-                        "type": "string",
-                        "const": "workspace"
-                      },
-                      "lineage": {
-                        "type": "object",
-                        "properties": {
-                          "workspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          }
-                        },
-                        "required": [
-                          "workspaceId"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "createdAt": {
-                        "type": "string",
-                        "format": "date-time",
-                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                      },
-                      "updatedAt": {
-                        "type": "string",
-                        "format": "date-time",
-                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                      },
-                      "contentDigest": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "redactionLevel": {
-                        "type": "string",
-                        "enum": [
-                          "metadata",
-                          "redacted",
-                          "full"
-                        ]
-                      },
-                      "sensitivity": {
-                        "type": "string",
-                        "enum": [
-                          "public",
-                          "internal",
-                          "restricted"
-                        ]
-                      },
-                      "requiredFeatures": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "extensions": {
-                        "type": "object",
-                        "propertyNames": {
-                          "type": "string"
-                        },
-                        "additionalProperties": {}
-                      },
-                      "sourceDeploymentId": {
-                        "type": "string",
-                        "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      "workspaceId": {
-                        "type": "string",
-                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      "exportCreatedAt": {
-                        "type": "string",
-                        "format": "date-time",
-                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                      },
-                      "exportFormatVersion": {
-                        "type": "number",
-                        "const": 3
-                      },
-                      "knowledgeNotebookRevision": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "contentInventory": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "path": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "digest": {
-                              "type": "string",
-                              "pattern": "^sha256:[a-f0-9]{64}$"
-                            },
-                            "bytes": {
-                              "type": "integer",
-                              "minimum": 0,
-                              "maximum": 9007199254740991
-                            }
-                          },
-                          "required": [
-                            "path",
-                            "digest",
-                            "bytes"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "schemaVersion",
-                      "recordType",
-                      "id",
-                      "ownerScope",
-                      "lineage",
-                      "createdAt",
-                      "updatedAt",
-                      "contentDigest",
-                      "redactionLevel",
-                      "sensitivity",
-                      "requiredFeatures",
-                      "extensions",
-                      "sourceDeploymentId",
-                      "workspaceId",
-                      "exportCreatedAt",
-                      "exportFormatVersion",
-                      "contentInventory"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "verification": {
-                    "type": "object",
-                    "properties": {
-                      "fileCount": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "totalBytes": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "checkedFiles": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      }
-                    },
-                    "required": [
-                      "fileCount",
-                      "totalBytes",
-                      "checkedFiles"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "collision": {
-                    "oneOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "const": "available"
-                          },
-                          "workspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          }
-                        },
-                        "required": [
-                          "status",
-                          "workspaceId"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "const": "collides"
-                          },
-                          "workspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "suggestedWorkspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          }
-                        },
-                        "required": [
-                          "status",
-                          "workspaceId",
-                          "suggestedWorkspaceId"
-                        ],
-                        "additionalProperties": false
-                      }
-                    ]
-                  },
-                  "workspace": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      "name": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "kind": {
-                        "type": "string",
-                        "enum": [
-                          "code",
-                          "content",
-                          "personal-ops",
-                          "research",
-                          "operations",
-                          "general",
-                          "personal"
-                        ]
-                      },
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "active",
-                          "archived"
-                        ]
-                      },
-                      "counts": {
-                        "type": "object",
-                        "properties": {
-                          "threadCount": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          },
-                          "artifactCount": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          },
-                          "knowledgeEntryCount": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          }
-                        },
-                        "required": [
-                          "threadCount",
-                          "artifactCount",
-                          "knowledgeEntryCount"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "importedFrom": {
-                        "type": "object",
-                        "properties": {
-                          "sourceDeploymentId": {
-                            "type": "string",
-                            "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "sourceWorkspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "exportCreatedAt": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "manifestDigest": {
-                            "type": "string",
-                            "pattern": "^sha256:[a-f0-9]{64}$"
-                          }
-                        },
-                        "required": [
-                          "sourceDeploymentId",
-                          "sourceWorkspaceId",
-                          "exportCreatedAt",
-                          "manifestDigest"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "createdAt": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "updatedAt": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "name",
-                      "kind",
-                      "status",
-                      "counts",
-                      "createdAt",
-                      "updatedAt"
-                    ],
-                    "additionalProperties": false
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                   }
                 },
                 "required": [
-                  "mode",
-                  "requestId",
-                  "exportId",
-                  "sourceWorkspaceId",
-                  "exportedWorkspaceId",
-                  "importedWorkspaceId",
-                  "manifest",
-                  "verification",
-                  "collision",
-                  "workspace"
+                  "kind",
+                  "backupId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "admission"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "requestId"
                 ],
                 "additionalProperties": false
               }
+            ]
+          },
+          "capture": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "backupId": {
+                "type": "string",
+                "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "knowledgeBaseIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "capturedRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "manifestDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+              },
+              "fileCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "totalBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "coverage": {
+                "type": "object",
+                "properties": {
+                  "includedAuthorities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "snapshotRoots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "omittedProjections": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "omittedVolumes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "externalDependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "vault",
+                            "worker-volume",
+                            "native-session",
+                            "server-knowledge",
+                            "external-source",
+                            "agent",
+                            "configuration",
+                            "catalog",
+                            "repository",
+                            "mount"
+                          ]
+                        },
+                        "reference": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "availability": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable",
+                            "omitted"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "reference",
+                        "availability"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "includedAuthorities",
+                  "snapshotRoots",
+                  "omittedProjections",
+                  "omittedVolumes",
+                  "externalDependencies"
+                ],
+                "additionalProperties": false
+              },
+              "source": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "live-workspace"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "stopped-data-root"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "data-root-backup"
+                      },
+                      "dataRootBackupId": {
+                        "type": "string",
+                        "pattern": "^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "consistency": {
+                        "type": "string",
+                        "enum": [
+                          "clean",
+                          "crash-consistent"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "dataRootBackupId",
+                      "consistency"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "interruptedTurnIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "unknownEffectTurnIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              }
             },
             "required": [
-              "sourceWorkspaceId",
-              "deletionRequestId",
-              "recoveryExportId",
-              "closureId",
-              "import"
+              "workspaceId",
+              "backupId",
+              "sourceDeploymentId",
+              "knowledgeBaseIds",
+              "capturedRevision",
+              "manifestDigest",
+              "fileCount",
+              "totalBytes",
+              "coverage",
+              "interruptedTurnIds",
+              "unknownEffectTurnIds"
             ],
             "additionalProperties": false
+          },
+          "droppedSourceMemberIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "restrictedRecovery": {
+            "anyOf": [
+              {
+                "type": "boolean",
+                "const": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "backupId": {
+                    "type": "string",
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "captureStartedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  "lossDetectedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
+                "required": [
+                  "backupId",
+                  "captureStartedAt",
+                  "lossDetectedAt"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "nextAction": {
+            "type": "string",
+            "enum": [
+              "none",
+              "inspect",
+              "finish",
+              "abandon",
+              "reactivate"
+            ]
           }
         },
         "required": [
-          "recovery"
+          "command",
+          "disposition",
+          "workspaceId",
+          "droppedSourceMemberIds",
+          "restrictedRecovery",
+          "nextAction"
         ],
         "additionalProperties": false
       },
@@ -152757,412 +152687,352 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "recovery": {
-            "type": "object",
-            "properties": {
-              "sourceWorkspaceId": {
-                "type": "string",
-                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "deletionRequestId": {
-                "type": "string",
-                "format": "uuid",
-                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-              },
-              "recoveryExportId": {
-                "type": "string",
-                "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "closureId": {
-                "type": "string",
-                "minLength": 1
-              },
-              "import": {
+          "command": {
+            "type": "string",
+            "enum": [
+              "capture",
+              "verify",
+              "restore",
+              "move-out",
+              "move-in",
+              "inspect",
+              "finish",
+              "abandon",
+              "reactivate"
+            ]
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "sealed",
+              "prepared",
+              "verified",
+              "restored",
+              "moved-out",
+              "imported",
+              "reactivated",
+              "abandoned",
+              "pending",
+              "quarantined"
+            ]
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "currentRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "selection": {
+            "oneOf": [
+              {
                 "type": "object",
                 "properties": {
-                  "mode": {
+                  "kind": {
                     "type": "string",
-                    "const": "imported"
+                    "const": "capture"
                   },
-                  "requestId": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "exportId": {
+                  "backupId": {
                     "type": "string",
-                    "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "sourceWorkspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "exportedWorkspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "importedWorkspaceId": {
-                    "type": "string",
-                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                  },
-                  "manifest": {
-                    "type": "object",
-                    "properties": {
-                      "schemaVersion": {
-                        "type": "integer",
-                        "exclusiveMinimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "recordType": {
-                        "type": "string",
-                        "const": "workspace-export"
-                      },
-                      "id": {
-                        "type": "string",
-                        "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      "ownerScope": {
-                        "type": "string",
-                        "const": "workspace"
-                      },
-                      "lineage": {
-                        "type": "object",
-                        "properties": {
-                          "workspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          }
-                        },
-                        "required": [
-                          "workspaceId"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "createdAt": {
-                        "type": "string",
-                        "format": "date-time",
-                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                      },
-                      "updatedAt": {
-                        "type": "string",
-                        "format": "date-time",
-                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                      },
-                      "contentDigest": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "redactionLevel": {
-                        "type": "string",
-                        "enum": [
-                          "metadata",
-                          "redacted",
-                          "full"
-                        ]
-                      },
-                      "sensitivity": {
-                        "type": "string",
-                        "enum": [
-                          "public",
-                          "internal",
-                          "restricted"
-                        ]
-                      },
-                      "requiredFeatures": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      },
-                      "extensions": {
-                        "type": "object",
-                        "propertyNames": {
-                          "type": "string"
-                        },
-                        "additionalProperties": {}
-                      },
-                      "sourceDeploymentId": {
-                        "type": "string",
-                        "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      "workspaceId": {
-                        "type": "string",
-                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      "exportCreatedAt": {
-                        "type": "string",
-                        "format": "date-time",
-                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                      },
-                      "exportFormatVersion": {
-                        "type": "number",
-                        "const": 3
-                      },
-                      "knowledgeNotebookRevision": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "contentInventory": {
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "path": {
-                              "type": "string",
-                              "minLength": 1
-                            },
-                            "digest": {
-                              "type": "string",
-                              "pattern": "^sha256:[a-f0-9]{64}$"
-                            },
-                            "bytes": {
-                              "type": "integer",
-                              "minimum": 0,
-                              "maximum": 9007199254740991
-                            }
-                          },
-                          "required": [
-                            "path",
-                            "digest",
-                            "bytes"
-                          ],
-                          "additionalProperties": false
-                        }
-                      }
-                    },
-                    "required": [
-                      "schemaVersion",
-                      "recordType",
-                      "id",
-                      "ownerScope",
-                      "lineage",
-                      "createdAt",
-                      "updatedAt",
-                      "contentDigest",
-                      "redactionLevel",
-                      "sensitivity",
-                      "requiredFeatures",
-                      "extensions",
-                      "sourceDeploymentId",
-                      "workspaceId",
-                      "exportCreatedAt",
-                      "exportFormatVersion",
-                      "contentInventory"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "verification": {
-                    "type": "object",
-                    "properties": {
-                      "fileCount": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "totalBytes": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "maximum": 9007199254740991
-                      },
-                      "checkedFiles": {
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "minLength": 1
-                        }
-                      }
-                    },
-                    "required": [
-                      "fileCount",
-                      "totalBytes",
-                      "checkedFiles"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "collision": {
-                    "oneOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "const": "available"
-                          },
-                          "workspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          }
-                        },
-                        "required": [
-                          "status",
-                          "workspaceId"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "status": {
-                            "type": "string",
-                            "const": "collides"
-                          },
-                          "workspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "suggestedWorkspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          }
-                        },
-                        "required": [
-                          "status",
-                          "workspaceId",
-                          "suggestedWorkspaceId"
-                        ],
-                        "additionalProperties": false
-                      }
-                    ]
-                  },
-                  "workspace": {
-                    "type": "object",
-                    "properties": {
-                      "id": {
-                        "type": "string",
-                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                      },
-                      "name": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "kind": {
-                        "type": "string",
-                        "enum": [
-                          "code",
-                          "content",
-                          "personal-ops",
-                          "research",
-                          "operations",
-                          "general",
-                          "personal"
-                        ]
-                      },
-                      "status": {
-                        "type": "string",
-                        "enum": [
-                          "active",
-                          "archived"
-                        ]
-                      },
-                      "counts": {
-                        "type": "object",
-                        "properties": {
-                          "threadCount": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          },
-                          "artifactCount": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          },
-                          "knowledgeEntryCount": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          }
-                        },
-                        "required": [
-                          "threadCount",
-                          "artifactCount",
-                          "knowledgeEntryCount"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "importedFrom": {
-                        "type": "object",
-                        "properties": {
-                          "sourceDeploymentId": {
-                            "type": "string",
-                            "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "sourceWorkspaceId": {
-                            "type": "string",
-                            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                          },
-                          "exportCreatedAt": {
-                            "type": "string",
-                            "minLength": 1
-                          },
-                          "manifestDigest": {
-                            "type": "string",
-                            "pattern": "^sha256:[a-f0-9]{64}$"
-                          }
-                        },
-                        "required": [
-                          "sourceDeploymentId",
-                          "sourceWorkspaceId",
-                          "exportCreatedAt",
-                          "manifestDigest"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "createdAt": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "updatedAt": {
-                        "type": "string",
-                        "minLength": 1
-                      }
-                    },
-                    "required": [
-                      "id",
-                      "name",
-                      "kind",
-                      "status",
-                      "counts",
-                      "createdAt",
-                      "updatedAt"
-                    ],
-                    "additionalProperties": false
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                   }
                 },
                 "required": [
-                  "mode",
-                  "requestId",
-                  "exportId",
-                  "sourceWorkspaceId",
-                  "exportedWorkspaceId",
-                  "importedWorkspaceId",
-                  "manifest",
-                  "verification",
-                  "collision",
-                  "workspace"
+                  "kind",
+                  "backupId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "admission"
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "requestId"
                 ],
                 "additionalProperties": false
               }
+            ]
+          },
+          "capture": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "backupId": {
+                "type": "string",
+                "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "sourceDeploymentId": {
+                "type": "string",
+                "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "knowledgeBaseIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "capturedRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "manifestDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+              },
+              "fileCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "totalBytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "coverage": {
+                "type": "object",
+                "properties": {
+                  "includedAuthorities": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "snapshotRoots": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "omittedProjections": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "omittedVolumes": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "externalDependencies": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "vault",
+                            "worker-volume",
+                            "native-session",
+                            "server-knowledge",
+                            "external-source",
+                            "agent",
+                            "configuration",
+                            "catalog",
+                            "repository",
+                            "mount"
+                          ]
+                        },
+                        "reference": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "availability": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable",
+                            "omitted"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "reference",
+                        "availability"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "includedAuthorities",
+                  "snapshotRoots",
+                  "omittedProjections",
+                  "omittedVolumes",
+                  "externalDependencies"
+                ],
+                "additionalProperties": false
+              },
+              "source": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "live-workspace"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "stopped-data-root"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "data-root-backup"
+                      },
+                      "dataRootBackupId": {
+                        "type": "string",
+                        "pattern": "^drb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "consistency": {
+                        "type": "string",
+                        "enum": [
+                          "clean",
+                          "crash-consistent"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "dataRootBackupId",
+                      "consistency"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "interruptedTurnIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "unknownEffectTurnIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              }
             },
             "required": [
-              "sourceWorkspaceId",
-              "deletionRequestId",
-              "recoveryExportId",
-              "closureId",
-              "import"
+              "workspaceId",
+              "backupId",
+              "sourceDeploymentId",
+              "knowledgeBaseIds",
+              "capturedRevision",
+              "manifestDigest",
+              "fileCount",
+              "totalBytes",
+              "coverage",
+              "interruptedTurnIds",
+              "unknownEffectTurnIds"
             ],
             "additionalProperties": false
+          },
+          "droppedSourceMemberIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "restrictedRecovery": {
+            "anyOf": [
+              {
+                "type": "boolean",
+                "const": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "backupId": {
+                    "type": "string",
+                    "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "captureStartedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  },
+                  "lossDetectedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
+                "required": [
+                  "backupId",
+                  "captureStartedAt",
+                  "lossDetectedAt"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "nextAction": {
+            "type": "string",
+            "enum": [
+              "none",
+              "inspect",
+              "finish",
+              "abandon",
+              "reactivate"
+            ]
           }
         },
         "required": [
-          "recovery"
+          "command",
+          "disposition",
+          "workspaceId",
+          "droppedSourceMemberIds",
+          "restrictedRecovery",
+          "nextAction"
         ],
         "additionalProperties": false
       },
@@ -153301,11 +153171,11 @@
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
-                  "recoveryExportId": {
+                  "recoveryBackupId": {
                     "anyOf": [
                       {
                         "type": "string",
-                        "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                       },
                       {
                         "type": "null"
@@ -153342,7 +153212,7 @@
                 "required": [
                   "workspaceId",
                   "requestId",
-                  "recoveryExportId",
+                  "recoveryBackupId",
                   "closureId",
                   "retainedStaging",
                   "status",
@@ -153362,11 +153232,11 @@
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
-                  "recoveryExportId": {
+                  "recoveryBackupId": {
                     "anyOf": [
                       {
                         "type": "string",
-                        "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                       },
                       {
                         "type": "null"
@@ -153404,7 +153274,7 @@
                 "required": [
                   "workspaceId",
                   "requestId",
-                  "recoveryExportId",
+                  "recoveryBackupId",
                   "closureId",
                   "retainedStaging",
                   "status",
@@ -153424,11 +153294,11 @@
                     "format": "uuid",
                     "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
                   },
-                  "recoveryExportId": {
+                  "recoveryBackupId": {
                     "anyOf": [
                       {
                         "type": "string",
-                        "pattern": "^wsexp_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        "pattern": "^wsbak_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                       },
                       {
                         "type": "null"
@@ -153464,7 +153334,7 @@
                 "required": [
                   "workspaceId",
                   "requestId",
-                  "recoveryExportId",
+                  "recoveryBackupId",
                   "closureId",
                   "retainedStaging",
                   "status",
@@ -155807,5 +155677,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e0a7ee4e0fe761edab00fc1e33425d43be31f6bad1e369cb24750f359ec6a966"
+  "x-openkit-source-digest": "sha256:0e3b1cd231368934a483ecf179bfcaf0dba66c805fbfeee65bd1f1d837ed4c27"
 }

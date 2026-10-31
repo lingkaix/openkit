@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { compareCodeUnits } from '@openkit/protocol';
 import { expect, it } from 'vitest';
 import { createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -10,13 +11,9 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
-import {
-  createVerifiedWorkspaceExport,
-  workspaceDeletionRecoveryExportId,
-} from './storage/workspace-transfer-routes.js';
+import { readWorkspaceSnapshotMetadata } from './storage/workspace-backup-bundle.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import {
   createWorkspaceDeletionRequest,
@@ -139,6 +136,7 @@ it('admits member management and exact member deletion replay while preserving p
       auth,
       store,
       turnExecutor: new SimulatedTurnExecutor(),
+      releaseIdentity: { releaseTag: 'v0.1.0-test', sourceCommit: '1'.repeat(40) },
     });
     const call = (operation: string, input: Record<string, unknown>, token?: string) => {
       const { requestId, ...body } = input;
@@ -179,20 +177,13 @@ it('admits member management and exact member deletion replay while preserving p
     // Workspace Backup: membership supplies no outward export grant, including private history.
     expect(ordinaryExport.status, await ordinaryExport.clone().text()).toBe(403);
     expect(await ordinaryExport.json()).toMatchObject({ code: 'workspace_access_denied' });
-    const missingDeletionRequestId = randomUUID();
-    await expect(
-      createVerifiedWorkspaceExport({
-        authorityUserId: USER_IDS.owner,
-        coreDb,
-        dataRoot: root,
-        deletionRecoveryRequestId: missingDeletionRequestId,
-        exportId: workspaceDeletionRecoveryExportId(missingDeletionRequestId),
-        repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
-        store,
-        workspaceId: workspace.id,
-      })
-    ).rejects.toThrow();
-    expect(existsSync(join(root, 'server', 'exports', 'workspaces', workspace.id))).toBe(false);
+    const missingRecovery = await call('workspace.deleted-recover', {
+      workspaceId: workspace.id,
+      requestId: randomUUID(),
+      deletionRequestId: randomUUID(),
+    });
+    expect(missingRecovery.status).toBe(409);
+    expect(existsSync(join(root, 'server', 'backups', 'workspaces', workspace.id))).toBe(false);
     const requestId = randomUUID();
     const deletionInput = {
       workspaceId: workspace.id,
@@ -210,24 +201,12 @@ it('admits member management and exact member deletion replay while preserving p
       initiatingUserId: USER_IDS.member,
       originalOwnerUserId: USER_IDS.owner,
     });
-    const verified = verifyWorkspaceExportTree({
-      exportRoot: join(
-        root,
-        'server',
-        'exports',
-        'workspaces',
-        workspace.id,
-        request.recoveryExportId!
-      ),
+    const verified = await readWorkspaceSnapshotMetadata({
+      dataRoot: root,
+      workspaceId: workspace.id,
+      backupId: request.recoveryBackupId!,
     });
-    const exportedThreads = verified.fileContents
-      .get('records/threads.jsonl')!
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(exportedThreads).toContainEqual(
-      expect.objectContaining({ id: privateThread.id, privateOwnerUserId: USER_IDS.privateOwner })
-    );
+    expect(verified.manifest.workspaceId).toBe(workspace.id);
     const before = coreDb.sqlite
       .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
       .all(requestId);
@@ -253,16 +232,13 @@ it('admits member management and exact member deletion replay while preserving p
     ).toBe(409);
     expect(readWorkspaceDeletionRequest(root, workspace.id, requestId)).toEqual(request);
     expect(
-      verifyWorkspaceExportTree({
-        exportRoot: join(
-          root,
-          'server',
-          'exports',
-          'workspaces',
-          workspace.id,
-          request.recoveryExportId!
-        ),
-      }).manifestDigest
+      (
+        await readWorkspaceSnapshotMetadata({
+          dataRoot: root,
+          workspaceId: workspace.id,
+          backupId: request.recoveryBackupId!,
+        })
+      ).manifestDigest
     ).toBe(verified.manifestDigest);
     expect((await call('workspace.delete', deletionInput, other.secret)).status).toBe(403);
     expect((await call('workspace.delete', deletionInput, originalOwner.secret)).status).toBe(403);
@@ -275,16 +251,32 @@ it('admits member management and exact member deletion replay while preserving p
         )
       ).status
     ).toBe(403);
+    const recoveryRequestId = randomUUID();
     const recovered = await call('workspace.deleted-recover', {
       workspaceId: workspace.id,
-      requestId: randomUUID(),
+      requestId: recoveryRequestId,
       deletionRequestId: requestId,
     });
     expect(recovered.status, await recovered.clone().text()).toBe(200);
     const result = (await recovered.json()) as {
-      recovery: { import: { importedWorkspaceId: string } };
+      command: string;
+      disposition: string;
+      workspaceId: string;
+      selection: { kind: string; requestId: string };
+      droppedSourceMemberIds: string[];
+      restrictedRecovery: boolean;
+      nextAction: string;
     };
-    const restoredId = result.recovery.import.importedWorkspaceId;
+    expect(result).toMatchObject({
+      command: 'restore',
+      disposition: 'restored',
+      workspaceId: workspace.id,
+      selection: { kind: 'admission', requestId: recoveryRequestId },
+      droppedSourceMemberIds: [],
+      restrictedRecovery: false,
+      nextAction: 'none',
+    });
+    const restoredId = result.workspaceId;
     expect(
       coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
@@ -292,17 +284,31 @@ it('admits member management and exact member deletion replay while preserving p
     ).toEqual({ owner_user_id: USER_IDS.owner });
     expect(
       coreDb.sqlite
-        .prepare('SELECT user_id FROM workspace_members WHERE workspace_id = ?')
+        .prepare(
+          'SELECT user_id,status FROM workspace_members WHERE workspace_id = ? ORDER BY user_id'
+        )
         .all(restoredId)
-    ).toEqual([{ user_id: USER_IDS.owner }]);
+    ).toEqual(
+      [
+        { user_id: USER_IDS.owner, status: 'active' },
+        ...[USER_IDS.member, USER_IDS.other, USER_IDS.privateOwner].map((userId) => ({
+          user_id: userId,
+          status: 'removed',
+        })),
+      ].sort((left, right) => compareCodeUnits(left.user_id, right.user_id))
+    );
     expect(store.listThreads(restoredId)).toContainEqual(
       expect.objectContaining({ privateOwnerUserId: USER_IDS.privateOwner })
     );
     expect(
       (
         coreDb.sqlite
-          .prepare("SELECT actor_json FROM audit_events WHERE action = 'workspace.delete'")
-          .all() as { actor_json: string }[]
+          .prepare(`SELECT actor_json FROM audit_events
+            WHERE action = 'workspace.delete'
+              AND request_id = ?
+              AND workspace_id = ?
+              AND outcome = 'succeeded'`)
+          .all(requestId, workspace.id) as { actor_json: string }[]
       ).map((row) => JSON.parse(row.actor_json))
     ).toEqual([{ id: USER_IDS.member, kind: 'user' }]);
   } finally {

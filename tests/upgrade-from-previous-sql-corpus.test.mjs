@@ -12,7 +12,10 @@ import {
   retainedFamilies,
   summarizeFamilies,
 } from '../scripts/upgrade-from-previous.mjs';
-import { FILE_CORPUS_FAMILIES } from '../scripts/upgrade-from-previous-corpus.mjs';
+import {
+  DISCONTINUOUS_FILE_CORPUS_FAMILIES,
+  FILE_CORPUS_FAMILIES,
+} from '../scripts/upgrade-from-previous-corpus.mjs';
 import {
   captureIdleNativeBinding,
   checkIdleNativeBinding,
@@ -153,7 +156,12 @@ test('covers every current registered SQLite authority family', () => {
     assert.ok(SQL_CORPUS_FAMILIES.includes(family), `${family} has native corpus coverage`);
   }
   assert.deepEqual(
-    [...FILE_CORPUS_FAMILIES, ...SQL_CORPUS_FAMILIES, ...EXTERNAL_FAMILIES].sort(),
+    [
+      ...FILE_CORPUS_FAMILIES,
+      ...DISCONTINUOUS_FILE_CORPUS_FAMILIES,
+      ...SQL_CORPUS_FAMILIES,
+      ...EXTERNAL_FAMILIES,
+    ].sort(),
     retainedFamilies(register).sort()
   );
 });

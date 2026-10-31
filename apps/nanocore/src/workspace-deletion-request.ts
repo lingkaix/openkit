@@ -15,14 +15,14 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { WorkspaceDeletionPhaseSchema } from '@openkit/app-api-schemas';
+import { WorkspaceBackupIdSchema, WorkspaceDeletionPhaseSchema } from '@openkit/app-api-schemas';
 import {
   AuditEventIdSchema,
+  allocateEntityId,
   deriveEntityId,
   RequestIdSchema,
   TimestampSchema,
   UserIdSchema,
-  WorkspaceExportIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -58,8 +58,8 @@ export const WorkspaceDeletionRequestRecordSchema = z
     confirmation: z.string().min(1),
     createdAt: TimestampSchema,
     phase: WorkspaceDeletionPhaseSchema,
-    recoveryExportId: WorkspaceExportIdSchema.nullable(),
-    recoveryExportManifestDigest: z.string().min(1).nullable(),
+    recoveryBackupId: WorkspaceBackupIdSchema.nullable(),
+    recoveryBackupManifestDigest: z.string().min(1).nullable(),
     closureId: z.string().min(1).nullable(),
     closureDigest: z.string().min(1).nullable(),
     stagingRelativePath: z.string().min(1).nullable(),
@@ -92,8 +92,12 @@ export const WorkspaceDeletionRequestRecordSchema = z
       WORKSPACE_DELETION_PHASES.indexOf(record.phase) >=
       WORKSPACE_DELETION_PHASES.indexOf(firstPhase);
     for (const [field, expected] of [
-      ['recoveryExportId', phaseCarries('exported')],
-      ['recoveryExportManifestDigest', phaseCarries('exported')],
+      ['recoveryBackupId', true],
+      [
+        'recoveryBackupManifestDigest',
+        phaseCarries('deleting') ||
+          (record.phase === 'fenced' && record.recoveryBackupManifestDigest !== null),
+      ],
       ['closureId', phaseCarries('closure-sealed')],
       ['closureDigest', phaseCarries('closure-sealed')],
       ['stagingRelativePath', phaseCarries('staged')],
@@ -257,8 +261,8 @@ export function createWorkspaceDeletionRequest(
     ...input,
     schemaVersion: 1,
     phase: 'requested',
-    recoveryExportId: null,
-    recoveryExportManifestDigest: null,
+    recoveryBackupId: allocateEntityId('wsbak'),
+    recoveryBackupManifestDigest: null,
     closureId: null,
     closureDigest: null,
     stagingRelativePath: null,
@@ -378,8 +382,8 @@ export function assertWorkspaceDeletionRecoveryExportAuthority(
     request.phase !== 'deleting' ||
     request.workspaceId !== input.workspaceId ||
     request.originalOwnerUserId !== input.authorityUserId ||
-    request.recoveryExportId !== null ||
-    request.recoveryExportManifestDigest !== null ||
+    request.recoveryBackupId !== null ||
+    request.recoveryBackupManifestDigest !== null ||
     input.exportId !== deriveEntityId('wsexp', ['delete', request.requestId]) ||
     registry?.status !== 'deleting' ||
     registry.ownerUserId !== request.originalOwnerUserId ||

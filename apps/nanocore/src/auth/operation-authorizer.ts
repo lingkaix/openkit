@@ -728,7 +728,7 @@ export function evaluateProductAuthorization(
     | { readonly kind: 'user'; readonly userId?: string }
     | { readonly kind: 'invitation'; readonly invitationId: string }
     | { readonly kind: 'server'; readonly family?: string | undefined }
-    | { readonly kind: 'workspace'; readonly workspaceId: string },
+    | { readonly kind: 'workspace'; readonly workspaceId: string; readonly deletedRecovery?: true },
   operation: string,
   mutating = false,
   now = new Date()
@@ -754,7 +754,7 @@ function readProductAuthorizationInput(
     | { readonly kind: 'user'; readonly userId?: string }
     | { readonly kind: 'invitation'; readonly invitationId: string }
     | { readonly kind: 'server'; readonly family?: string | undefined }
-    | { readonly kind: 'workspace'; readonly workspaceId: string },
+    | { readonly kind: 'workspace'; readonly workspaceId: string; readonly deletedRecovery?: true },
   operation: string,
   mutating = false,
   now = new Date()
@@ -763,9 +763,30 @@ function readProductAuthorizationInput(
   const currentTarget: ProductAccessTarget =
     target.kind === 'workspace'
       ? {
-          ...target,
+          kind: 'workspace',
+          workspaceId: target.workspaceId,
           active: isActiveRegisteredWorkspace(coreDb, target.workspaceId),
           membership: resolveWorkspaceMembershipRelation(coreDb, target.workspaceId, actor.userId),
+          ...(target.deletedRecovery
+            ? {
+                deletedRecovery: (() => {
+                  const row = coreDb.sqlite
+                    .prepare(
+                      'SELECT owner_user_id,status FROM workspace_registry WHERE workspace_id=?'
+                    )
+                    .get(target.workspaceId) as
+                    | { owner_user_id: string; status: string }
+                    | undefined;
+                  return {
+                    ownerActive:
+                      !!row &&
+                      ['deleted', 'active'].includes(row.status) &&
+                      isCanonicalUserActive(coreDb, row.owner_user_id),
+                    originalOwner: row?.owner_user_id === actor.userId,
+                  };
+                })(),
+              }
+            : {}),
         }
       : target.kind === 'user'
         ? { ...target, active: isCanonicalUserActive(coreDb, target.userId ?? actor.userId) }

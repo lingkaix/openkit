@@ -301,3 +301,5 @@ Subscription quota windows carry reported durations for client display labels. Q
 Authorized Workspace summaries are closed projections. Obsolete access-tier fields fail admission rather than being silently stripped; the retired access-change operation remains absent.
 
 Knowledge Manager answer citations require exact page revision/contentDigest, authorized pinned-read observedAt, and structured sourceCitations with existing ownerScope/sourceId/contentDigest. Observation time describes the read, not Notebook publication; unresolved proof strings supply no exact Source citation.
+
+`workspace.deleted-recover` returns the existing `WorkspaceSnapshotReport` directly: original identity and admission selection, successful registry revision, and truthful restored or finishable-pending disposition. Its input remains the original recovery and deletion request ids. Deletion progress names `recoveryBackupId`; no import-shaped result, private capture inventory or filesystem path is exposed. Native lifecycle owners retain exact lineage, safety and current authority.

@@ -2290,7 +2290,7 @@ describe('C-a capture and existing deletion ownership', () => {
 
   it.each([
     'capture-first',
-    'queued-before-freeze',
+    'publisher-before-freeze',
   ] as const)('refuses ordinary deletion at %s without stealing the capture fence', async (order) => {
     const f = await fixture();
     const deletion = deletionOperations(f);
@@ -2301,47 +2301,37 @@ describe('C-a capture and existing deletion ownership', () => {
       ownerUserId: f.ownerId,
     });
     expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
-    let releaseQueue: () => void = () => undefined;
-    let queued: Promise<unknown> | undefined;
     let deleting: Promise<{ error?: unknown; result?: unknown }> | undefined;
-    let restoreSerialization = () => {};
-    if (order === 'queued-before-freeze') {
-      const barrier = new Promise<void>((resolve) => {
-        releaseQueue = resolve;
-      });
-      let queueEntered!: () => void;
-      const ready = new Promise<void>((resolve) => {
-        queueEntered = resolve;
-      });
-      queued = f.mutationAdmission.runDeletionExclusive(workspaceId, async () => {
-        queueEntered();
-        await barrier;
-      });
-      await ready;
-      const runExclusive = f.mutationAdmission.runDeletionExclusive.bind(f.mutationAdmission);
-      let ownerEntered!: () => void;
-      const atOwner = new Promise<void>((resolve) => {
-        ownerEntered = resolve;
-      });
-      const serialized = vi
-        .spyOn(f.mutationAdmission, 'runDeletionExclusive')
-        .mockImplementation(<T>(selected: string, operation: () => Promise<T>): Promise<T> => {
-          ownerEntered();
-          return runExclusive(selected, operation);
-        });
-      restoreSerialization = () => serialized.mockRestore();
-      deleting = deletion.invoke('workspace.delete', deletion.request, deletion.context).then(
-        (result) => ({ result }),
-        (error: unknown) => ({ error })
-      );
-      await Promise.race([
-        atOwner,
-        deleting.then(() => {
-          throw new Error(
-            'Deletion did not reach its existing serialized owner while admission was open.'
+    if (order === 'publisher-before-freeze') {
+      // A live ordinary mutation lease makes lifecycle freeze refuse without waiting.
+      const releasePublisher = f.mutationAdmission.enter(workspaceId);
+      try {
+        expect(releasePublisher).not.toBeNull();
+        const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
+        const beforeSource = tree(f.workspaceRoot);
+        const sourceInode = lstatSync(f.workspaceRoot).ino;
+        const refusal = await deletion
+          .invoke('workspace.delete', deletion.request, deletion.context)
+          .then(
+            (result) => ({ result, error: undefined }),
+            (error: unknown) => ({ error, result: undefined })
           );
-        }),
-      ]);
+        expect(refusal.error).toMatchObject({
+          code: 'workspace_frozen',
+          status: 409,
+          details: { workspaceId, operation: 'delete', retryable: true },
+        });
+        expect(refusal.result).toBeUndefined();
+        expect(deletion.cleanup).not.toHaveBeenCalled();
+        expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
+        expect(getWorkspaceRegistryLifecycleFact(f.coreDb, workspaceId)).toEqual(deletion.registry);
+        expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
+        expect(lstatSync(f.workspaceRoot).ino).toBe(sourceInode);
+        expect(tree(f.workspaceRoot)).toEqual(beforeSource);
+        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      } finally {
+        releasePublisher?.();
+      }
     }
     let resume!: () => void;
     const barrier = new Promise<void>((resolve) => {
@@ -2371,8 +2361,6 @@ describe('C-a capture and existing deletion ownership', () => {
           (result) => ({ result }),
           (error: unknown) => ({ error })
         );
-      releaseQueue();
-      if (queued) await queued;
       const refusal = await deleting;
       expect(refusal.error).toMatchObject({
         code: 'workspace_frozen',
@@ -2399,11 +2387,8 @@ describe('C-a capture and existing deletion ownership', () => {
         'Sibling native acknowledgement'
       );
     } finally {
-      releaseQueue();
-      if (queued) await queued;
       resume();
       copy.mockRestore();
-      restoreSerialization();
       await capturing.then(
         (result) => {
           captured = result;

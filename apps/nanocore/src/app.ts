@@ -261,6 +261,7 @@ import {
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
+import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-admissions.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';
@@ -2736,6 +2737,7 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
   dataRoot: string;
   workspaceMutationAdmission: WorkspaceMutationAdmission;
 }): void {
+  const deletionRequests = listAllWorkspaceDeletionRequests(input.dataRoot);
   if (input.coreDb) {
     restoreWorkspaceRetirementAdmission({
       coreDb: input.coreDb,
@@ -2749,14 +2751,35 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
       )
       .all() as Array<{ workspaceId: string }>;
     for (const { workspaceId } of lifecycleRows) {
-      input.workspaceMutationAdmission.restoreClosed(workspaceId);
+      if (input.workspaceMutationAdmission.isClosed(workspaceId, 'capture')) continue;
+      const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, workspaceId);
+      const requests = deletionRequests.filter(
+        (row) =>
+          row.workspaceId === workspaceId &&
+          row.phase !== 'blocked' &&
+          row.originalOwnerUserId === registry?.ownerUserId &&
+          (registry.registryRevision === row.expectedRegistryRevision + 1 ||
+            registry.registryRevision === row.expectedRegistryRevision + 2)
+      );
+      const request = requests.length === 1 ? requests[0] : undefined;
+      if (
+        request &&
+        registry?.ownerUserId === request.originalOwnerUserId &&
+        (registry.registryRevision === request.expectedRegistryRevision + 1 ||
+          registry.registryRevision === request.expectedRegistryRevision + 2)
+      )
+        input.workspaceMutationAdmission.restoreRecoveryClosed(workspaceId, {
+          deletionRequestId: request.requestId,
+          revision: request.expectedRegistryRevision,
+        });
+      else input.workspaceMutationAdmission.restoreClosed(workspaceId);
     }
   }
   const requestsByWorkspace = new Map<
     string,
     ReturnType<typeof listAllWorkspaceDeletionRequests>
   >();
-  for (const request of listAllWorkspaceDeletionRequests(input.dataRoot)) {
+  for (const request of deletionRequests) {
     const requests = requestsByWorkspace.get(request.workspaceId) ?? [];
     requests.push(request);
     requestsByWorkspace.set(request.workspaceId, requests);
@@ -2766,7 +2789,22 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
     if (nonterminal.length === 0) {
       continue;
     }
-    input.workspaceMutationAdmission.restoreClosed(workspaceId);
+    if (input.coreDb && nonterminal.length === 1) {
+      const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, workspaceId);
+      if (
+        registry?.status === 'active' &&
+        readFinishedDeletedWorkspaceRecovery(input.coreDb, nonterminal[0]!)
+      )
+        continue;
+    }
+    if (!input.workspaceMutationAdmission.isClosed(workspaceId, 'capture')) {
+      if (nonterminal.length === 1)
+        input.workspaceMutationAdmission.restoreRecoveryClosed(workspaceId, {
+          deletionRequestId: nonterminal[0]!.requestId,
+          revision: nonterminal[0]!.expectedRegistryRevision,
+        });
+      else input.workspaceMutationAdmission.restoreClosed(workspaceId);
+    }
     if (!input.coreDb || nonterminal.length !== 1) {
       continue;
     }
@@ -2781,6 +2819,7 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
       !isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)
     ) {
       writeWorkspaceDeletionRequest(input.dataRoot, { ...request, phase: 'blocked' });
+      input.workspaceMutationAdmission.reopen(workspaceId, 'capture');
       input.workspaceMutationAdmission.reopen(workspaceId);
     }
   }

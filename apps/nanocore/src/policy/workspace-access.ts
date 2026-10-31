@@ -71,6 +71,8 @@ export type ProductAccessTarget =
       readonly workspaceId: string;
       readonly active: boolean;
       readonly membership: 'owner' | 'member' | null;
+      /** Exact current registry/owner facts for original-identity recovery only. */
+      readonly deletedRecovery?: { readonly ownerActive: boolean; readonly originalOwner: boolean };
     };
 
 /**
@@ -149,7 +151,14 @@ export function evaluateProductAccess(input: {
   // These branches project named current facts; only the Kernel returns an access result.
   if (facts.activeUser && facts.userId) {
     if (scope.kind === 'workspace') {
-      if (scope.active && scope.workspaceId) {
+      if (scope.deletedRecovery) {
+        if (scope.deletedRecovery.ownerActive) {
+          if (scope.deletedRecovery.originalOwner)
+            bind(member, ['workspace.write'], 'assoc:workspace-recovery-owner');
+          if (facts.administrator)
+            bind(administrator, ['workspace.write'], 'assoc:workspace-recovery-administrator');
+        }
+      } else if (scope.active && scope.workspaceId) {
         if (scope.membership)
           bind(member, WORKSPACE_MEMBER_OPERATIONS, 'assoc:workspace-active-member');
         if (facts.administrator)

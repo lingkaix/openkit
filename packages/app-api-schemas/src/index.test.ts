@@ -5654,7 +5654,7 @@ describe('WP5 Workspace sharing schemas', () => {
     requestId,
     status: 'active',
     phase: 'fenced',
-    recoveryExportId: null,
+    recoveryBackupId: null,
     closureId: null,
     retainedStaging: false,
   } as const;
@@ -5784,49 +5784,14 @@ describe('WP5 Workspace sharing schemas', () => {
 
   it('accepts only the bounded Workspace deletion and recovery contracts', () => {
     const deletedWorkspaceRecovery = {
-      sourceWorkspaceId: workspace.id,
-      deletionRequestId: '00000000-0000-4000-8000-000000000002',
-      recoveryExportId: 'wsexp_00000000-0000-7b20-a16c-5e4b4bdc5e50',
-      closureId: 'closure_recovery',
-      import: {
-        mode: 'imported',
-        requestId,
-        exportId: 'wsexp_00000000-0000-7b20-a16c-5e4b4bdc5e50',
-        sourceWorkspaceId: workspace.id,
-        exportedWorkspaceId: workspace.id,
-        importedWorkspaceId: 'ws_00000000-0000-7070-8f2f-a7b85ec0a443',
-        manifest: {
-          schemaVersion: 1,
-          recordType: 'workspace-export',
-          id: 'wsexp_00000000-0000-7b20-a16c-5e4b4bdc5e50',
-          ownerScope: 'workspace',
-          lineage: { workspaceId: workspace.id },
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          contentDigest: 'sha256:manifest',
-          redactionLevel: 'metadata',
-          sensitivity: 'internal',
-          requiredFeatures: [],
-          extensions: {},
-          sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
-          workspaceId: workspace.id,
-          exportCreatedAt: timestamp,
-          exportFormatVersion: 3,
-          contentInventory: [],
-        },
-        workspace: {
-          ...workspace,
-          id: 'ws_00000000-0000-7070-8f2f-a7b85ec0a443',
-          name: 'Recovered Workspace',
-          counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
-        },
-        verification: { fileCount: 0, totalBytes: 0, checkedFiles: [] },
-        collision: {
-          status: 'collides',
-          workspaceId: workspace.id,
-          suggestedWorkspaceId: 'ws_00000000-0000-7070-8f2f-a7b85ec0a443',
-        },
-      },
+      command: 'restore',
+      disposition: 'restored',
+      workspaceId: workspace.id,
+      currentRevision: 5,
+      selection: { kind: 'admission', requestId },
+      droppedSourceMemberIds: [],
+      restrictedRecovery: false,
+      nextAction: 'none',
     } as const;
 
     expect(
@@ -5855,10 +5820,9 @@ describe('WP5 Workspace sharing schemas', () => {
       }).deletionRequestId
     ).toBe('00000000-0000-4000-8000-000000000002');
     expect(
-      appApiSchemas.RecoverDeletedWorkspaceResponseSchema.parse({
-        recovery: deletedWorkspaceRecovery,
-      }).recovery.import.importedWorkspaceId
-    ).toBe('ws_00000000-0000-7070-8f2f-a7b85ec0a443');
+      appApiSchemas.RecoverDeletedWorkspaceResponseSchema.parse(deletedWorkspaceRecovery).selection
+        ?.requestId
+    ).toBe(requestId);
     for (const invalidDeletion of [
       { ...workspaceDeletion, path: '/private/workspace' },
       { ...workspaceDeletion, status: 'deleted' },
@@ -5868,31 +5832,16 @@ describe('WP5 Workspace sharing schemas', () => {
         false
       );
     }
-    for (const invalidRecovery of [
-      { ...deletedWorkspaceRecovery, sourceWorkspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
-      {
-        ...deletedWorkspaceRecovery,
-        recoveryExportId: 'wsexp_00000000-0000-727e-90ff-47fb691fffd7',
-      },
-      {
-        ...deletedWorkspaceRecovery,
-        import: {
-          ...deletedWorkspaceRecovery.import,
-          collision: { status: 'available', workspaceId: workspace.id },
-        },
-      },
-      {
-        ...deletedWorkspaceRecovery,
-        import: {
-          ...deletedWorkspaceRecovery.import,
-          importedWorkspaceId: workspace.id,
-          workspace,
-        },
-      },
+    for (const privateLineage of [
+      { sourceWorkspaceId: workspace.id },
+      { recoveryBackupId: 'wsbak_00000000-0000-727e-90ff-47fb691fffd7' },
+      { closureId: 'closure_recovery' },
+      { import: { mode: 'imported' } },
     ]) {
       expect(
         appApiSchemas.RecoverDeletedWorkspaceResponseSchema.safeParse({
-          recovery: invalidRecovery,
+          ...deletedWorkspaceRecovery,
+          ...privateLineage,
         }).success
       ).toBe(false);
     }

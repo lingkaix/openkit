@@ -114,8 +114,8 @@ describe('private Worker HTTP lineage', () => {
 describe('private retained named identities', () => {
   const review = StructuredWorkerDelegationRequestSchema.shape.reviewContext.unwrap();
   it.each([
-    { kind: 'wsexp', schema: WorkspaceDeletionRequestRecordSchema.shape.recoveryExportId },
-    { kind: 'wsexp', schema: WorkspaceDeletionClosureSchema.shape.recoveryExportId },
+    { kind: 'wsbak', schema: WorkspaceDeletionRequestRecordSchema.shape.recoveryBackupId },
+    { kind: 'wsbak', schema: WorkspaceDeletionClosureSchema.shape.recoveryBackupId },
     { kind: 'usr', schema: WorkspaceDeletionRequestRecordSchema.shape.originalOwnerUserId },
     { kind: 'aud', schema: WorkspaceDeletionRequestRecordSchema.shape.terminalAuditEventId },
     { kind: 'usr', schema: WorkspaceDeletionClosureSchema.shape.originalOwnerUserId },

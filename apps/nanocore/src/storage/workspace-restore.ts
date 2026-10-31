@@ -7,6 +7,7 @@ import {
   WorkspaceSnapshotReportSchema,
 } from '@openkit/app-api-schemas';
 import { compareCodeUnits } from '@openkit/protocol';
+import { recordServerAuditEvent } from '../audit-events.js';
 import {
   isScopeAdmitted,
   refuseScope,
@@ -20,11 +21,16 @@ import type { OperationInvocationDependencies } from '../operation-composition.j
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
+import type { WorkspaceDeletionRequestRecord } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   type WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
+import {
+  getWorkspaceRegistryLifecycleFact,
+  recoverDeletedWorkspaceRegistry,
+} from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest as candidateDigest } from './data-root-backup.js';
@@ -93,6 +99,11 @@ interface TargetRecoveryOwner {
   readonly core: CoreDb;
   readonly fileAdmission: FileStorageAdmission;
   readonly currentAuthority?: () => void;
+  /** Exact final-cut proof, revalidated by the deletion owner at each awaited boundary. */
+  readonly deletedRecovery?: {
+    readonly deletion: WorkspaceDeletionRequestRecord;
+    readonly actorId: string;
+  };
   readonly native?: {
     readonly gate: WorkspaceMutationAdmission;
     readonly freeze: WorkspaceFrozenAdmission;
@@ -106,7 +117,7 @@ export interface WorkspaceRecoveryTargetOwner extends TargetRecoveryOwner {
 
 /** Binds all target effects to the supplied Core and, online, the same live target freeze. */
 function assertTargetRecoveryOwner(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority'>,
+  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority' | 'deletedRecovery'>,
   dataRoot: string,
   workspaceId?: string
 ): void {
@@ -158,7 +169,7 @@ function mapping(
 }
 /** Publishes a proved candidate before one Core registration/result transaction; failure retains ownership. */
 async function finishTarget(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority'>,
+  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority' | 'deletedRecovery'>,
   owned: RecoveryAdmission,
   deps: WorkspaceRecoveryDependencies,
   expectedRelease?: WorkspaceBackupManifest['release']
@@ -166,6 +177,11 @@ async function finishTarget(
   const core = owner.core;
   assertTargetRecoveryOwner(owner, core.dataRoot, owned.workspace_id);
   const input = owned.proof.input as TargetArgs;
+  if (
+    getWorkspaceRegistryLifecycleFact(core, owned.workspace_id)?.status === 'deleted' &&
+    !owner.deletedRecovery
+  )
+    refuseRecovery('recovery-required');
   if (!['restore', 'move-in'].includes(input.command)) refuseRecovery('request-conflict');
   if (owned.state === 'abandoned') refuseRecovery('request-conflict');
   if (owned.state === 'finished') return owned.proof.result;
@@ -203,7 +219,7 @@ async function finishTarget(
     syncCanonicalDirectory(dirname(owned.candidate_ref));
     deps.atBoundary?.('after-target-rename');
   }
-  const report: WorkspaceRecoveryCliReport = {
+  let report: WorkspaceRecoveryCliReport = {
     ...owned.proof.result,
     disposition: input.command === 'restore' ? 'restored' : 'imported',
     droppedSourceMemberIds: map?.droppedSourceMemberIds ?? [],
@@ -256,6 +272,40 @@ async function finishTarget(
           .all(workspaceId) as { queue_entry_id: string }[];
         for (const row of queued)
           cancelSchedulerAdmissionEntry(core, { workspaceId, queueEntryId: row.queue_entry_id });
+      }
+      if (owner.deletedRecovery) {
+        const { deletion, actorId } = owner.deletedRecovery;
+        if (
+          input.command !== 'restore' ||
+          deletion.workspaceId !== workspaceId ||
+          deletion.recoveryBackupId !== owned.backup_id ||
+          deletion.recoveryBackupManifestDigest !== owned.proof.capture.manifestDigest ||
+          deletion.originalOwnerUserId !== owned.proof.manifest.accounts.ownerId
+        )
+          refuseRecovery('request-conflict');
+        const registry = recoverDeletedWorkspaceRegistry({
+          coreDb: core,
+          workspaceId,
+          originalOwnerUserId: deletion.originalOwnerUserId,
+          expectedRegistryRevision: deletion.expectedRegistryRevision + 2,
+        });
+        report = {
+          ...report,
+          currentRevision: registry.registryRevision,
+          selection: { kind: 'admission', requestId: owned.admission_id },
+        };
+        recordServerAuditEvent({
+          action: 'workspace.deleted-recover',
+          actor: { kind: 'user', id: actorId },
+          category: 'command',
+          coreDb: core,
+          outcome: 'succeeded',
+          requestId: owned.admission_id,
+          resource: `workspace:${workspaceId}`,
+          resourceRevision: registry.registryRevision,
+          summary: 'Original deleted Workspace restored from its final fenced backup.',
+          workspaceId,
+        });
       }
       endRecoveryAdmission(core, owned.admission_id, 'finished', report);
       deps.atBoundary?.('before-registration-commit');
@@ -426,6 +476,20 @@ async function admitTarget(
   }
   const manifest = readWorkspaceBackupManifest(input.bundleRoot);
   const workspaceId = manifest.workspaceId;
+  if (owner.deletedRecovery) {
+    const deletion = owner.deletedRecovery.deletion;
+    if (
+      input.command !== 'restore' ||
+      input.acknowledgeLostSafety ||
+      deletion.workspaceId !== workspaceId ||
+      deletion.recoveryBackupId !== manifest.backupId ||
+      deletion.originalOwnerUserId !== manifest.accounts.ownerId ||
+      !['deleted', 'cleaned'].includes(deletion.phase) ||
+      !deletion.closureId ||
+      !deletion.closureDigest
+    )
+      refuseRecovery('recovery-required');
+  }
   assertTargetRecoveryOwner(owner, input.dataRoot, workspaceId);
   const final = join(input.dataRoot, 'workspaces', workspaceId);
   if (
@@ -446,6 +510,11 @@ async function admitTarget(
     )
       refuseRecovery('deployment-mismatch');
     if (!registered) refuseRecovery('workspace-unavailable');
+    const lifecycle = getWorkspaceRegistryLifecycleFact(core, workspaceId);
+    if (lifecycle?.status !== 'active' && !owner.deletedRecovery)
+      refuseRecovery('workspace-unavailable');
+    if (owner.deletedRecovery && (lifecycle?.status !== 'deleted' || existsSync(final)))
+      refuseRecovery('recovery-required');
   } else if (
     registered ||
     existsSync(final) ||
@@ -522,7 +591,7 @@ export async function finishWorkspaceRecoveryAtCore(
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
 async function finishSelectedTarget(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority'>,
+  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority' | 'deletedRecovery'>,
   input: WorkspaceRecoverySelectedInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
@@ -545,7 +614,10 @@ export async function abandonWorkspaceRecovery(
 
 /** Closes original finish rights and retires only its owned target under the supplied Core. */
 export async function abandonWorkspaceRecoveryAtCore(
-  owner: Pick<WorkspaceRecoveryTargetOwner, 'core' | 'native' | 'currentAuthority'>,
+  owner: Pick<
+    WorkspaceRecoveryTargetOwner,
+    'core' | 'native' | 'currentAuthority' | 'deletedRecovery'
+  >,
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
   if (!owner.native) refuseRecovery('recovery-required');
@@ -554,7 +626,7 @@ export async function abandonWorkspaceRecoveryAtCore(
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
 async function abandonSelectedTarget(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority'>,
+  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority' | 'deletedRecovery'>,
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
   const core = owner.core;
@@ -664,7 +736,7 @@ async function bindTargetCandidate(
     );
     opened = true;
     assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
-    if (input.command === 'restore') {
+    if (input.command === 'restore' && !admitted.deletedRecovery) {
       const safety = await client.recoverySafety(
         database,
         {

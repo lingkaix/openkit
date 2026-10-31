@@ -841,6 +841,30 @@ export function completeWorkspaceDeletion(
   return requireWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
 }
 
+/** Reactivates only the exact deleted registry; removed members and invitations remain tombstones. */
+export function recoverDeletedWorkspaceRegistry(input: {
+  readonly coreDb: CoreDb;
+  readonly workspaceId: string;
+  readonly originalOwnerUserId: string;
+  readonly expectedRegistryRevision: number;
+}): WorkspaceRegistryLifecycleFact {
+  requireOuterTransaction(input.coreDb);
+  if (!isCanonicalUserActive(input.coreDb, input.originalOwnerUserId))
+    throw new Error('The original Workspace owner is unavailable.');
+  const changed = input.coreDb.sqlite
+    .prepare(
+      "UPDATE workspace_registry SET status='active',revision=revision+1,updated_at=? WHERE workspace_id=? AND owner_user_id=? AND status='deleted' AND revision=?"
+    )
+    .run(
+      new Date().toISOString(),
+      input.workspaceId,
+      input.originalOwnerUserId,
+      input.expectedRegistryRevision
+    );
+  if (changed.changes !== 1) throw new Error('Deleted Workspace recovery registry changed.');
+  return requireWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+}
+
 /** Reads one Workspace registry row in any current lifecycle state. */
 export function getWorkspaceRegistryLifecycleFact(
   coreDb: CoreDb,

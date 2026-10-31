@@ -106,6 +106,7 @@ import {
   type FileWriteCapacity,
 } from './artifacts/file-admission.js';
 import {
+  closeWorkspaceProductReadHandles,
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-products.js';
@@ -210,6 +211,7 @@ export type WorkspaceBackupSource =
       readonly mutationAdmission: WorkspaceMutationAdmission;
       /** Borrows the caller's exact current fence for a fresh manual backup; capture never releases it. */
       readonly freezeOwner?: WorkspaceFrozenAdmission;
+      readonly deletionRequest?: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord;
       readonly currentAuthority?: () => void;
       readonly canReadThread?: (threadId: string) => boolean;
     }
@@ -252,6 +254,7 @@ export function readBlockers(input: {
   readonly store: FsStore;
   readonly workspaceId: string;
   readonly operation?: WorkspaceFreezeRefusal['operation'];
+  readonly deletionRequest?: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord;
   readonly canReadThread?: (threadId: string) => boolean;
 }): readonly WorkspaceBlocker[] {
   try {
@@ -265,8 +268,68 @@ export function readBlockers(input: {
 /** Reads the same obstruction facts for an exact selected recovery, without granting serving admission. */
 export function readWorkspaceRecoveryBlockers(
   input: Parameters<typeof readBlockers>[0],
-  selected: RecoveryAdmission | { readonly captureId: string }
+  selected:
+    | RecoveryAdmission
+    | { readonly captureId: string }
+    | {
+        readonly deletionRequest: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord;
+        readonly admission?: RecoveryAdmission;
+      }
 ): readonly WorkspaceBlocker[] {
+  if ('deletionRequest' in selected) {
+    const { coreDb, workspaceId } = input;
+    const deletion = selected.deletionRequest;
+    const actual = listWorkspaceDeletionRequests(coreDb.dataRoot, workspaceId).find(
+      (row) => row.requestId === deletion.requestId
+    );
+    const registry = coreDb.sqlite
+      .prepare('SELECT owner_user_id,status,revision FROM workspace_registry WHERE workspace_id=?')
+      .get(workspaceId) as { owner_user_id: string; status: string; revision: number } | undefined;
+    if (
+      !actual ||
+      !isDeepStrictEqual(actual, deletion) ||
+      !['deleted', 'cleaned'].includes(deletion.phase) ||
+      !deletion.recoveryBackupId ||
+      !deletion.closureDigest ||
+      registry?.owner_user_id !== deletion.originalOwnerUserId ||
+      !['deleted', 'active'].includes(registry.status) ||
+      (registry.status === 'deleted' &&
+        registry.revision !== deletion.expectedRegistryRevision + 2) ||
+      (selected.admission &&
+        (selected.admission.workspace_id !== workspaceId ||
+          selected.admission.backup_id !== deletion.recoveryBackupId ||
+          selected.admission.proof.capture.manifestDigest !==
+            deletion.recoveryBackupManifestDigest ||
+          !isDeepStrictEqual(
+            readRecoveryAdmission(coreDb, selected.admission.admission_id),
+            selected.admission
+          )))
+    )
+      return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+    if (existsSync(join(coreDb.dataRoot, 'workspaces', workspaceId)))
+      return readWorkspaceBlockerFacts(input, selected.admission);
+    if (
+      registry.status !== 'deleted' ||
+      unresolvedRecoveryAdmissions(coreDb, workspaceId).some(
+        (row) => row.admission_id !== selected.admission?.admission_id
+      ) ||
+      (captureWorkerActive?.dataRoot === resolve(coreDb.dataRoot) &&
+        captureWorkerActive.workspaceId === workspaceId) ||
+      hasUnprovedNanoHostWorkspaceCleanup(coreDb, workspaceId)
+    )
+      return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+    // Absence is permitted only by the exact terminal deletion above. Surviving Core writers still block.
+    for (const sql of [
+      "SELECT 1 FROM scheduler_execution_attempts WHERE workspace_id=? AND phase<>'closed' LIMIT 1",
+      "SELECT 1 FROM worker_backend_sessions WHERE workspace_id=? AND (state<>'cleaned' OR physical_cleaned_at IS NULL) LIMIT 1",
+      "SELECT 1 FROM worker_storage_bindings WHERE workspace_id=? AND state<>'purged' LIMIT 1",
+      'SELECT 1 FROM agent_session_runtime_bindings WHERE workspace_id=? LIMIT 1',
+      "SELECT 1 FROM scheduler_admission_entries WHERE workspace_id=? AND status IN ('queued','denied') LIMIT 1",
+    ])
+      if (coreDb.sqlite.prepare(sql).get(workspaceId))
+        return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+    return [];
+  }
   const captureId = 'captureId' in selected ? selected.captureId : undefined;
   const current = readRecoveryAdmission(
     input.coreDb,
@@ -334,6 +397,34 @@ function readWorkspaceBlockerFacts(
   };
   try {
     const { coreDb, workspaceId } = input;
+    if (input.deletionRequest) {
+      const request = input.deletionRequest;
+      const actual = listWorkspaceDeletionRequests(coreDb.dataRoot, workspaceId).find(
+        (row) => row.requestId === request.requestId
+      );
+      const registry = coreDb.sqlite
+        .prepare(
+          'SELECT owner_user_id,status,revision FROM workspace_registry WHERE workspace_id=?'
+        )
+        .get(workspaceId) as
+        | { owner_user_id: string; status: string; revision: number }
+        | undefined;
+      if (
+        !actual ||
+        !isDeepStrictEqual(actual, request) ||
+        !['requested', 'fenced'].includes(request.phase) ||
+        registry?.owner_user_id !== request.originalOwnerUserId ||
+        !(
+          (registry.status === 'active' &&
+            registry.revision === request.expectedRegistryRevision) ||
+          (request.phase === 'fenced' &&
+            request.recoveryBackupManifestDigest !== null &&
+            registry.status === 'deleting' &&
+            registry.revision === request.expectedRegistryRevision + 1)
+        )
+      )
+        throw new Error('Deletion capture source changed.');
+    }
     if (!isEntityId('ws', workspaceId)) throw new Error('Invalid Workspace scope.');
     const canonical = join(coreDb.dataRoot, 'workspaces', workspaceId);
     const root =
@@ -372,7 +463,9 @@ function readWorkspaceBlockerFacts(
     }
     if (
       listWorkspaceDeletionRequests(coreDb.dataRoot, workspaceId).some(
-        (request) => !isTerminalWorkspaceDeletionRequest(request)
+        (request) =>
+          !isTerminalWorkspaceDeletionRequest(request) &&
+          !isDeepStrictEqual(request, input.deletionRequest)
       )
     )
       add({
@@ -1187,6 +1280,8 @@ function graph(
   } catch (error) {
     failure(error, 'incomplete-closure');
   } finally {
+    // Retire private reader identities before the validated placement can be renamed.
+    closeWorkspaceProductReadHandles(root);
     db.close();
   }
 }

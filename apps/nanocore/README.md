@@ -683,3 +683,5 @@ Light App catalog and get reads return `not_found` for a never-created app. An e
 The sharing owner refuses owner-only personal Workspace sharing and administrator recovery with HTTP 409 and the published `quick_chat_not_shareable` code before membership publication.
 
 Knowledge Manager answers retain the exact authorized page revision and content digest, registered Source pins with their original owner scope, and the observation time of the pinned read. Observation time does not claim revision publication time; unresolved Source strings do not become digest-pinned citations.
+
+Deleted Workspace recovery now uses the original operational backup and target admission. The final capture borrows the exact deletion freeze through native close and cleanup. Recovery reactivates the original registry row, preserves private owners and removed memberships, and reports the shared snapshot result only after serving activation. Explicit replay continues only the same retained request; no import/remint or lost-safety consent is implied. Ordinary portable import removal remains pending.

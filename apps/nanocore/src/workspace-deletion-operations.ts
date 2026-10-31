@@ -11,6 +11,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   RecoverDeletedWorkspaceResponseSchema,
   WorkspaceDeletionResponseSchema,
@@ -24,35 +25,51 @@ import {
 } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import {
+  evaluateProductAuthorization,
   hasWorkspaceDeletionRetryAuthority,
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
+import { isScopeAdmitted, refuseScope } from './bootstrap/readiness.js';
 import type { FsStore } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import type { OperationImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
-import { hasUnprovedNanoHostWorkspaceCleanup } from './runtime/nanohost-attempt-records.js';
-import { listWorkerBackendSessions } from './runtime/worker-backend-sessions.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { workspaceRecoveryCandidateDigest } from './storage/data-root-backup.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import { readBlockers } from './storage/workspace-backup.js';
-import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
+import { readDataRootLayoutMarker } from './storage/fs-layout.js';
+import {
+  createWorkspaceBackup,
+  readBlockers,
+  readWorkspaceRecoveryBlockers,
+  WORKSPACE_BACKUP_POLICY,
+} from './storage/workspace-backup.js';
+import {
+  readWorkspaceSnapshotMetadata,
+  withVerifiedWorkspaceSnapshotSource,
+} from './storage/workspace-backup-bundle.js';
 import {
   assertCanonicalDirectory,
   assertCanonicalRegularFile,
   readNativeProduct,
   WorkspaceSystemRecordSchema,
 } from './storage/workspace-file-records.js';
+import type { RecoveryAdmission } from './storage/workspace-recovery-admissions.js';
 import {
-  createVerifiedWorkspaceExport,
-  existingWorkspaceExportRoot,
-  importVerifiedWorkspace,
-  workspaceDeletionRecoveryExportId,
-} from './storage/workspace-transfer-routes.js';
+  bindWorkspaceDeletionNativeOwner,
+  bindWorkspaceRecoveryReadmissionNativeOwner,
+  readRecoveryAdmission,
+  resumeWorkspaceRecoveryOwner,
+} from './storage/workspace-recovery-admissions.js';
+import {
+  activateWorkspaceRecoveryAtCore,
+  admitWorkspaceBackupAtCore,
+} from './storage/workspace-restore.js';
 import {
   createWorkspaceDeletionClosure,
   existingWorkspaceDeletionClosureRoot,
@@ -69,7 +86,10 @@ import {
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
 import { resolveWorkspaceMembershipRelation } from './workspace-membership.js';
-import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from './workspace-mutation-admission.js';
 import {
   beginWorkspaceDeletion,
   completeWorkspaceDeletion,
@@ -89,6 +109,8 @@ export function createWorkspaceDeletionOperationImplementations(
     | 'closeWorkspaceMcpSessions'
     | 'repositoryWorkspaceDb'
     | 'store'
+    | 'runtimeConfigManager'
+    | 'diagnosticsServices'
   >
 ) {
   return {
@@ -114,82 +136,116 @@ export function createWorkspaceDeletionOperationImplementations(
       if (context.kind !== 'public')
         throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
       try {
-        return await input.workspaceMutationAdmission!.runDeletionExclusive(
-          value.workspaceId,
-          async () => {
-            const requests = listWorkspaceDeletionRequests(dataRoot, value.workspaceId);
-            const deletionOwned = requests.some(
-              (request) =>
-                request.requestId === value.requestId ||
-                !isTerminalWorkspaceDeletionRequest(request)
-            );
-            if (!deletionOwned) {
-              if (input.workspaceMutationAdmission!.isClosed(value.workspaceId))
-                throw new OperationError(
-                  'workspace_frozen',
-                  'Workspace is temporarily frozen.',
-                  409,
-                  {
-                    details: {
-                      workspaceId: value.workspaceId,
-                      operation: 'delete',
-                      retryable: true,
-                      blockers: [
-                        {
-                          kind: 'publication',
-                          reason: 'frozen',
-                          reference: { workspaceId: value.workspaceId },
-                          actions: [],
-                        },
-                      ],
-                    },
-                  }
-                );
-              // Mutable capture admission can reopen before immutable copying ends. Its durable pin
-              // still excludes destructive source removal; an exact deletion retry owns its prior state.
-              const blockers = readBlockers({
+        const gate = input.workspaceMutationAdmission!;
+        const deletionInput = {
+          actorId: context.actor.userId,
+          actor: context.actor,
+          administratorEligible: isCurrentDeploymentAdministrator(coreDb, context.actor),
+          closeWorkspaceMcpSessions: input.closeWorkspaceMcpSessions!,
+          coreDb,
+          dataRoot,
+          mutationAdmission: input.workspaceMutationAdmission!,
+          fileAdmission,
+          repositoryWorkspaceDb: input.repositoryWorkspaceDb!,
+          request: {
+            confirmation: value.confirmation,
+            expectedRegistryRevision: value.expectedRegistryRevision,
+            requestId: value.requestId,
+          },
+          store: input.store!,
+          workspaceId: value.workspaceId,
+        };
+        const existing = selectDeletionRequest(deletionInput, false);
+        let freeze: WorkspaceFrozenAdmission | undefined;
+        if (!existing || !['blocked', 'cleaned'].includes(existing.phase)) {
+          const inspect = () => {
+            if (existing?.phase === 'deleted') {
+              requireTerminalDeletionTruth(
+                { coreDb, store: input.store!, workspaceId: value.workspaceId },
+                existing
+              );
+              requireTerminalWorkspaceStorage(dataRoot, existing);
+              return [];
+            }
+            if (existing && !['requested', 'fenced'].includes(existing.phase)) {
+              requireDeletingRegistry(coreDb, existing);
+              if (!existsSync(join(dataRoot, 'workspaces', value.workspaceId))) {
+                requireExactStagedWorkspace(dataRoot, existing);
+                return [];
+              }
+              return readBlockers({
                 coreDb,
                 store: input.store!,
                 workspaceId: value.workspaceId,
                 operation: 'delete',
               });
-              if (blockers.length)
-                throw new OperationError(
-                  'workspace_blocked',
-                  'Resolve the Workspace blockers before deletion.',
-                  409,
-                  {
-                    details: {
-                      workspaceId: value.workspaceId,
-                      operation: 'delete',
-                      retryable: false,
-                      blockers,
-                    },
-                  }
-                );
             }
-            const result = await advanceWorkspaceDeletion({
-              actorId: context.actor.userId,
-              actor: context.actor,
-              administratorEligible: isCurrentDeploymentAdministrator(coreDb, context.actor),
-              closeWorkspaceMcpSessions: input.closeWorkspaceMcpSessions!,
+            return readBlockers({
               coreDb,
-              dataRoot,
-              mutationAdmission: input.workspaceMutationAdmission!,
-              fileAdmission,
-              repositoryWorkspaceDb: input.repositoryWorkspaceDb!,
-              request: {
-                confirmation: value.confirmation,
-                expectedRegistryRevision: value.expectedRegistryRevision,
-                requestId: value.requestId,
-              },
               store: input.store!,
               workspaceId: value.workspaceId,
+              operation: 'capture',
+              ...(existing ? { deletionRequest: existing } : {}),
             });
-            context.observeSuccessStatus?.(result.status);
-            return result.body;
+          };
+          const admitted =
+            existing && gate.isClosed(value.workspaceId, 'capture')
+              ? gate.tryResumeRecovery(
+                  value.workspaceId,
+                  {
+                    deletionRequestId: existing.requestId,
+                    revision: existing.expectedRegistryRevision,
+                  },
+                  inspect
+                )
+              : gate.tryFreeze(value.workspaceId, inspect);
+          if (admitted.status !== 'frozen')
+            throw new OperationError(
+              admitted.status === 'busy' ? 'workspace_frozen' : 'workspace_blocked',
+              'Workspace deletion is not admitted.',
+              409,
+              {
+                details: {
+                  workspaceId: value.workspaceId,
+                  operation: 'delete',
+                  retryable: admitted.status === 'busy',
+                  blockers:
+                    admitted.status === 'blocked'
+                      ? admitted.blockers
+                      : [
+                          {
+                            kind: 'publication',
+                            reason: 'frozen',
+                            reference: { workspaceId: value.workspaceId },
+                            actions: [],
+                          },
+                        ],
+                },
+              }
+            );
+          freeze = admitted;
+        }
+        try {
+          const result = await advanceWorkspaceDeletion({
+            ...deletionInput,
+            freezeOwner: freeze,
+            release: input.diagnosticsServices?.releaseIdentity,
+          });
+          context.observeSuccessStatus?.(result.status);
+          return result.body;
+        } finally {
+          if (freeze && gate.ownsFreeze(value.workspaceId, freeze)) {
+            const retained = listWorkspaceDeletionRequests(dataRoot, value.workspaceId).find(
+              (r) => r.requestId === value.requestId
+            );
+            if (retained && retained.phase !== 'blocked')
+              gate.restoreRecoveryClosed(value.workspaceId, {
+                deletionRequestId: retained.requestId,
+                revision: retained.expectedRegistryRevision,
+              });
+            freeze.release();
           }
-        );
+        }
       } catch (error) {
         if (error instanceof OperationError) throw error;
         throw recoveryRequired();
@@ -205,57 +261,21 @@ export function createWorkspaceDeletionOperationImplementations(
           'Deleted Workspace recovery is unavailable.',
           503
         );
-      if (context.kind !== 'public')
-        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      const accessDenied = new OperationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
+      );
+      if (context.kind !== 'public') throw accessDenied;
       const actor = context.actor;
       const workspaceId = value.workspaceId;
-      const administratorEligible = isCurrentDeploymentAdministrator(coreDb, actor);
       try {
-        const registry = getWorkspaceRegistryLifecycleFact(coreDb, workspaceId);
-        if (
-          !registry ||
-          registry.status !== 'deleted' ||
-          (!administratorEligible && registry.ownerUserId !== actor.userId) ||
-          !isCanonicalUserActive(coreDb, actor.userId) ||
-          !isCanonicalUserActive(coreDb, registry.ownerUserId)
-        ) {
-          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
-        }
-        const request = readWorkspaceDeletionRequest(
-          dataRoot,
+        return await recoverOriginalDeletedWorkspace(input, {
+          actor,
           workspaceId,
-          value.deletionRequestId
-        );
-        if (
-          !['deleted', 'cleaned'].includes(request.phase) ||
-          !request.recoveryExportId ||
-          !request.recoveryExportManifestDigest ||
-          !request.closureId ||
-          !request.closureDigest
-        ) {
-          throw new Error('Workspace deletion request is not recoverable.');
-        }
-        requireTerminalWorkspaceStorage(dataRoot, request);
-        requireTerminalDeletionTruth({ coreDb, store: input.store!, workspaceId }, request);
-        const verified = verifyDeletionArtifacts(dataRoot, request);
-        const imported = await importVerifiedWorkspace({
-          authorityUserId: actor.userId,
-          recoveryOwnerUserId: registry.ownerUserId,
-          coreDb,
-          dataRoot,
-          fileAdmission,
           requestId: value.requestId,
-          store: input.store!,
-          verified,
-        });
-        return RecoverDeletedWorkspaceResponseSchema.parse({
-          recovery: {
-            sourceWorkspaceId: workspaceId,
-            deletionRequestId: request.requestId,
-            recoveryExportId: request.recoveryExportId,
-            closureId: request.closureId,
-            import: imported,
-          },
+          deletionRequestId: value.deletionRequestId,
+          accessDenied,
         });
       } catch (error) {
         if (error instanceof OperationError) throw error;
@@ -267,6 +287,250 @@ export function createWorkspaceDeletionOperationImplementations(
       }
     },
   } satisfies Pick<OperationImplementations, 'workspace.delete' | 'workspace.deleted-recover'>;
+}
+
+/** Restores one original tombstone through the existing target admission and serving activation. */
+async function recoverOriginalDeletedWorkspace(
+  input: Parameters<typeof createWorkspaceDeletionOperationImplementations>[0],
+  value: {
+    actor: Actor;
+    workspaceId: string;
+    requestId: string;
+    deletionRequestId: string;
+    accessDenied: OperationError;
+  }
+) {
+  const { actor, workspaceId, requestId } = value;
+  const {
+    coreDb: core,
+    dataRoot,
+    store,
+    fileAdmission,
+    workspaceMutationAdmission: gate,
+    runtimeConfigManager: manager,
+  } = input;
+  if (!core || !dataRoot || !store || !fileAdmission || !gate || !manager) throw recoveryRequired();
+  const deletion = readWorkspaceDeletionRequest(dataRoot, workspaceId, value.deletionRequestId);
+  if (!['deleted', 'cleaned'].includes(deletion.phase)) throw recoveryRequired();
+  const currentAuthority = () => {
+    if (
+      evaluateProductAuthorization(
+        core,
+        actor,
+        { kind: 'workspace', workspaceId, deletedRecovery: true },
+        'workspace.write',
+        true
+      ).effect !== 'allow'
+    )
+      throw value.accessDenied;
+    const actual = readWorkspaceDeletionRequest(dataRoot, workspaceId, value.deletionRequestId);
+    if (!isDeepStrictEqual(actual, deletion)) throw recoveryRequired();
+    const previous = readRecoveryAdmission(core, requestId);
+    if (
+      previous &&
+      (previous.workspace_id !== workspaceId ||
+        previous.backup_id !== deletion.recoveryBackupId ||
+        previous.proof.capture.manifestDigest !== deletion.recoveryBackupManifestDigest ||
+        previous.proof.manifest.accounts.ownerId !== deletion.originalOwnerUserId ||
+        previous.proof.input.command !== 'restore' ||
+        previous.proof.input.acknowledgeLostSafety)
+    )
+      throw recoveryRequired();
+    requireTerminalDeletionTruth(
+      { coreDb: core, store, workspaceId, ...(previous ? { recovery: previous } : {}) },
+      deletion
+    );
+  };
+  currentAuthority();
+  const previous = readRecoveryAdmission(core, requestId);
+  const project = (
+    report: import('./storage/workspace-recovery-cli.js').WorkspaceRecoveryCliReport
+  ) =>
+    RecoverDeletedWorkspaceResponseSchema.parse({
+      command: 'restore',
+      disposition: report.disposition,
+      workspaceId,
+      currentRevision: report.currentRevision,
+      selection: { kind: 'admission', requestId },
+      droppedSourceMemberIds: [],
+      restrictedRecovery: false,
+      nextAction: report.nextAction,
+    });
+  if (
+    previous?.state === 'finished' &&
+    isScopeAdmitted(dataRoot, 'workspace', workspaceId) &&
+    !gate.isClosed(workspaceId)
+  )
+    return project(previous.proof.result);
+  // A resumed native open may normalize SQLite sidecars, never unreviewed candidate bytes.
+  if (
+    previous?.state === 'finished' &&
+    (!previous.proof.candidateDigest ||
+      workspaceRecoveryCandidateDigest(join(dataRoot, 'workspaces', workspaceId)) !==
+        previous.proof.candidateDigest)
+  )
+    throw recoveryRequired();
+  if (!previous) requireTerminalWorkspaceStorage(dataRoot, deletion);
+  const verified = await verifyDeletionArtifacts(dataRoot, deletion);
+  currentAuthority();
+  const inspect = () =>
+    readWorkspaceRecoveryBlockers(
+      { coreDb: core, store, workspaceId, operation: 'restore' },
+      { deletionRequest: deletion, ...(previous ? { admission: previous } : {}) }
+    );
+  let hold: Promise<() => void> | null = null;
+  const inspectAndHold = () => {
+    const blockers = inspect();
+    if (blockers.length) return blockers;
+    hold = getControlStoreWorkerClient(gate).tryPauseForWorkspaceCapture(
+      `workspace:${join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite')}`,
+      gate
+    );
+    return hold
+      ? []
+      : [
+          {
+            kind: 'publication' as const,
+            reason: 'pending-publication' as const,
+            reference: { workspaceId },
+            actions: [],
+          },
+        ];
+  };
+  const deletionOrigin = {
+    deletionRequestId: deletion.requestId,
+    revision: deletion.expectedRegistryRevision,
+  };
+  const freeze = previous
+    ? resumeWorkspaceRecoveryOwner(core, previous, gate, inspectAndHold)
+    : gate.tryResumeRecovery(workspaceId, deletionOrigin, inspectAndHold);
+  if (freeze.status !== 'frozen')
+    throw new OperationError(
+      freeze.status === 'busy' ? 'workspace_frozen' : 'workspace_blocked',
+      'Deleted Workspace recovery is not admitted.',
+      409,
+      {
+        details: {
+          workspaceId,
+          operation: 'restore',
+          retryable: freeze.status === 'busy',
+          blockers:
+            freeze.status === 'blocked'
+              ? freeze.blockers
+              : [
+                  {
+                    kind: 'publication',
+                    reason: 'frozen',
+                    reference: { workspaceId },
+                    actions: [],
+                  },
+                ],
+        },
+      }
+    );
+  try {
+    if (!hold) throw recoveryRequired();
+    const release = await (hold as Promise<() => void>);
+    try {
+      currentAuthority();
+      if (inspect().length) throw recoveryRequired();
+    } finally {
+      release();
+    }
+    const owner = {
+      core,
+      fileAdmission,
+      currentAuthority,
+      native: { gate, freeze },
+      deletedRecovery: { deletion, actorId: actor.userId },
+    };
+    refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'recovery' });
+    await admitWorkspaceBackupAtCore(owner, {
+      command: 'restore',
+      dataRoot,
+      bundleRoot: join(
+        dataRoot,
+        'server/backups/workspaces',
+        workspaceId,
+        deletion.recoveryBackupId!
+      ),
+      workspaceId,
+      requestId,
+      acknowledgeLostSafety: false,
+      expectedRelease: verified.manifest.release,
+      snapshotSource: {
+        dataRoot,
+        source: { kind: 'local-snapshot', workspaceId, backupId: deletion.recoveryBackupId! },
+      },
+    });
+    currentAuthority();
+    const completed = readRecoveryAdmission(core, requestId)!;
+    if (!previous)
+      gate.transferDeletionRecovery(workspaceId, freeze, deletionOrigin, {
+        admissionId: requestId,
+        revision: completed.revision - 1,
+        candidateRef: completed.candidate_ref,
+      });
+    if (previous) {
+      // A resumed census can leave WAL readers. Reuse the native close boundary before the byte seal.
+      const binding = bindWorkspaceRecoveryReadmissionNativeOwner(core, completed, gate, freeze);
+      const client = getControlStoreWorkerClient(gate);
+      await client.open(binding.binding.command, binding);
+      try {
+        currentAuthority();
+      } finally {
+        await client.close(binding.binding.command.database, binding);
+      }
+      currentAuthority();
+    }
+    return project(
+      activateWorkspaceRecoveryAtCore(owner, {
+        requestId,
+        store,
+        runtimeConfigManager: manager,
+        currentAuthority,
+      })
+    );
+  } catch (error) {
+    const retained = readRecoveryAdmission(core, requestId);
+    if (
+      retained &&
+      retained.workspace_id === workspaceId &&
+      retained.backup_id === deletion.recoveryBackupId &&
+      retained.proof.capture.manifestDigest === deletion.recoveryBackupManifestDigest &&
+      retained.state !== 'abandoned'
+    ) {
+      gate.restoreRecoveryClosed(workspaceId, {
+        admissionId: requestId,
+        revision: retained.revision - (retained.state === 'finished' ? 1 : 0),
+        candidateRef: retained.candidate_ref,
+      });
+      // A truthful pending response requires the exact still-sealed candidate, never a catch-all promise.
+      const target = existsSync(retained.candidate_ref)
+        ? retained.candidate_ref
+        : join(dataRoot, 'workspaces', workspaceId);
+      if (retained.proof.candidateDigest) {
+        try {
+          currentAuthority();
+          if (workspaceRecoveryCandidateDigest(target) === retained.proof.candidateDigest)
+            return RecoverDeletedWorkspaceResponseSchema.parse({
+              command: 'restore',
+              disposition: 'pending',
+              workspaceId,
+              selection: { kind: 'admission', requestId },
+              droppedSourceMemberIds: [],
+              restrictedRecovery: false,
+              nextAction: 'finish',
+            });
+        } catch {
+          /* Preserve the original failure when exact continuation cannot be proved. */
+        }
+      }
+    }
+    throw error;
+  } finally {
+    freeze.release();
+  }
 }
 
 /** Advances only the exact request-owned deletion phases; no ordinary Workspace content authority survives fencing. */
@@ -283,8 +547,13 @@ async function advanceWorkspaceDeletion(input: {
   request: { confirmation: string; expectedRegistryRevision: number; requestId: string };
   store: FsStore;
   workspaceId: string;
-}): Promise<{ body: ReturnType<typeof WorkspaceDeletionResponseSchema.parse>; status: 200 | 202 }> {
-  let request = selectDeletionRequest(input);
+  freezeOwner?: WorkspaceFrozenAdmission | undefined;
+  release?:
+    | { readonly sourceCommit?: string | null; readonly releaseTag?: string | null }
+    | null
+    | undefined;
+}): Promise<{ body: ReturnType<typeof WorkspaceDeletionResponseSchema.parse>; status: 200 }> {
+  let request = selectDeletionRequest(input)!;
   if (request.phase === 'blocked') {
     requireActiveBlockedRegistry(input.coreDb, request);
     return { body: deletionResponse(request), status: 200 };
@@ -292,10 +561,14 @@ async function advanceWorkspaceDeletion(input: {
   if (request.phase === 'cleaned') {
     requireTerminalWorkspaceStorage(input.dataRoot, request);
     requireTerminalDeletionTruth(input, request);
-    verifyDeletionArtifacts(input.dataRoot, request);
+    await verifyDeletionArtifacts(input.dataRoot, request);
     return { body: deletionResponse(request), status: 200 };
   }
-  await input.mutationAdmission.close(input.workspaceId);
+  if (
+    !input.freezeOwner ||
+    !input.mutationAdmission.ownsFreeze(input.workspaceId, input.freezeOwner)
+  )
+    throw recoveryRequired();
   await input.closeWorkspaceMcpSessions(input.workspaceId);
   // Cleanup can yield to revocation, so check authority before advancing the request.
   if (request.phase === 'requested' || request.phase === 'fenced') {
@@ -328,6 +601,7 @@ async function advanceWorkspaceDeletion(input: {
   if (!isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)) {
     if (['requested', 'fenced'].includes(request.phase)) {
       request = persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
+      input.mutationAdmission.reopen(input.workspaceId, 'capture');
       input.mutationAdmission.reopen(input.workspaceId);
       return { body: deletionResponse(request), status: 200 };
     }
@@ -343,6 +617,7 @@ async function advanceWorkspaceDeletion(input: {
       registry.ownerUserId === request.originalOwnerUserId &&
       registry.registryRevision === request.expectedRegistryRevision + 1
     ) {
+      await verifyRecoveryBackup(input.dataRoot, request);
       request = persistDeletionPhase(input.dataRoot, request, { phase: 'deleting' });
     }
   }
@@ -366,6 +641,7 @@ async function advanceWorkspaceDeletion(input: {
     const holdRecordIds = deletionHoldRecordIds(input.repositoryWorkspaceDb, input.workspaceId);
     if (holdRecordIds.length > 0) {
       persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
+      input.mutationAdmission.reopen(input.workspaceId, 'capture');
       input.mutationAdmission.reopen(input.workspaceId);
       throw new OperationError(
         'workspace_deletion_blocked',
@@ -375,19 +651,104 @@ async function advanceWorkspaceDeletion(input: {
       );
     }
   }
-  if (
-    request.phase === 'fenced' &&
-    hasActiveWorkspaceRuntime({
-      coreDb: input.coreDb,
-      repositoryWorkspaceDb: input.repositoryWorkspaceDb,
-      store: input.store,
-      workspaceId: input.workspaceId,
-    })
-  ) {
-    return { body: deletionResponse(request), status: 202 };
-  }
   if (request.phase === 'fenced') {
-    const deleting = input.coreDb.sqlite.transaction(() =>
+    const backupId = request.recoveryBackupId!;
+    const bundleRoot = join(
+      input.dataRoot,
+      'server/backups/workspaces',
+      input.workspaceId,
+      backupId
+    );
+    const currentAuthority = () => {
+      const row = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+      if (
+        !input.mutationAdmission.ownsFreeze(input.workspaceId, input.freezeOwner!) ||
+        row?.status !== 'active' ||
+        row.ownerUserId !== request.originalOwnerUserId ||
+        row.registryRevision !== request.expectedRegistryRevision ||
+        !isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+          mutating: true,
+          policyOperation: 'workspace.lifecycle',
+        })
+      )
+        throw recoveryRequired();
+    };
+    currentAuthority();
+    if (!input.release?.sourceCommit)
+      throw new OperationError(
+        'operation_storage_unavailable',
+        'The server build identity is unavailable.',
+        503
+      );
+    const verification = {
+      ...WORKSPACE_BACKUP_POLICY,
+      stagingParent: join(input.dataRoot, 'server/backups'),
+      admission: input.fileAdmission,
+      expectedRelease: {
+        version: input.release.releaseTag ?? 'source',
+        buildId: input.release.sourceCommit,
+      },
+    };
+    if (!existsSync(join(bundleRoot, 'seal.json'))) {
+      await createWorkspaceBackup({
+        ...verification,
+        bundleRoot,
+        workspaceId: input.workspaceId,
+        backupId,
+        purpose: 'backup',
+        expectedSourceDeploymentId: readDataRootLayoutMarker(input.dataRoot).deploymentId,
+        source: {
+          kind: 'live-workspace',
+          dataRoot: input.dataRoot,
+          coreDb: input.coreDb,
+          store: input.store,
+          mutationAdmission: input.mutationAdmission,
+          freezeOwner: input.freezeOwner,
+          deletionRequest: request,
+          currentAuthority,
+        },
+      });
+    }
+    const verified = await withVerifiedWorkspaceSnapshotSource(
+      {
+        ...verification,
+        dataRoot: input.dataRoot,
+        source: { kind: 'local-snapshot', workspaceId: input.workspaceId, backupId },
+      },
+      async (bundle) => ({ manifest: bundle.manifest, manifestDigest: bundle.manifestDigest })
+    );
+    currentAuthority();
+    if (
+      request.recoveryBackupManifestDigest !== null &&
+      request.recoveryBackupManifestDigest !== verified.manifestDigest
+    )
+      throw recoveryRequired();
+    if (
+      verified.manifest.accounts.ownerId !== request.originalOwnerUserId ||
+      verified.manifest.sourceDeploymentId !==
+        readDataRootLayoutMarker(input.dataRoot).deploymentId ||
+      verified.manifest.purpose !== 'backup'
+    )
+      throw recoveryRequired();
+    const holds = deletionHoldRecordIds(input.repositoryWorkspaceDb, input.workspaceId);
+    if (holds.length || !isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)) {
+      request = persistDeletionPhase(input.dataRoot, request, {
+        phase: 'blocked',
+        recoveryBackupManifestDigest: null,
+      });
+      input.mutationAdmission.reopen(input.workspaceId, 'capture');
+      throw new OperationError(
+        'workspace_deletion_blocked',
+        'Workspace deletion is blocked.',
+        409,
+        { details: { holdRecordIds: holds } }
+      );
+    }
+    // The final-cut pointer is durable before the active registry can change.
+    request = persistDeletionPhase(input.dataRoot, request, {
+      recoveryBackupManifestDigest: verified.manifestDigest,
+    });
+    input.coreDb.sqlite.transaction(() =>
       beginWorkspaceDeletion({
         coreDb: input.coreDb,
         workspaceId: input.workspaceId,
@@ -395,53 +756,21 @@ async function advanceWorkspaceDeletion(input: {
         expectedRegistryRevision: request.expectedRegistryRevision,
       })
     )();
-    request = persistDeletionPhase(input.dataRoot, request, { phase: 'deleting' });
-    if (deleting.registryRevision !== request.expectedRegistryRevision + 1) {
-      throw recoveryRequired();
-    }
-  }
-  if (['deleting', 'exported', 'closure-sealed', 'staged'].includes(request.phase)) {
-    requireDeletingRegistry(input.coreDb, request);
-  }
-  if (request.phase === 'deleting') {
-    const exportId = workspaceDeletionRecoveryExportId(request.requestId);
-    const exportRoot = join(
-      input.dataRoot,
-      'server',
-      'exports',
-      'workspaces',
-      input.workspaceId,
-      exportId
-    );
-    const exported = existsSync(exportRoot)
-      ? verifyWorkspaceExportTree({
-          exportRoot: existingWorkspaceExportRoot(input.dataRoot, input.workspaceId, exportId),
-        })
-      : (
-          await createVerifiedWorkspaceExport({
-            fileAdmission: input.fileAdmission,
-            authorityUserId: request.originalOwnerUserId,
-            authorityActor: { kind: 'user', id: input.actorId },
-            coreDb: input.coreDb,
-            dataRoot: input.dataRoot,
-            deletionRecoveryRequestId: request.requestId,
-            exportId,
-            repositoryWorkspaceDb: input.repositoryWorkspaceDb,
-            store: input.store,
-            workspaceId: input.workspaceId,
-          })
-        ).verified;
-    if (exported.manifest.id !== exportId || exported.manifest.workspaceId !== input.workspaceId) {
-      throw recoveryRequired();
-    }
     request = persistDeletionPhase(input.dataRoot, request, {
       phase: 'exported',
-      recoveryExportId: exported.manifest.id,
-      recoveryExportManifestDigest: exported.manifestDigest,
+      recoveryBackupId: backupId,
+      recoveryBackupManifestDigest: verified.manifestDigest,
     });
   }
+  if (['deleting', 'exported', 'closure-sealed', 'staged'].includes(request.phase))
+    requireDeletingRegistry(input.coreDb, request);
+  // A Core-fenced retry can only reuse the exact final-cut identity published before the CAS.
+  if (request.phase === 'deleting') {
+    await verifyRecoveryBackup(input.dataRoot, request);
+    request = persistDeletionPhase(input.dataRoot, request, { phase: 'exported' });
+  }
   if (request.phase === 'exported') {
-    const verified = verifyRecoveryExport(input.dataRoot, request);
+    const verified = await verifyRecoveryBackup(input.dataRoot, request);
     const closureId = deletionClosureId(request.requestId);
     const closureRoot = join(
       input.dataRoot,
@@ -463,8 +792,8 @@ async function advanceWorkspaceDeletion(input: {
           originalOwnerUserId: request.originalOwnerUserId,
           sourceRegistryRevision: request.expectedRegistryRevision + 1,
           closureId,
-          recoveryExportId: verified.manifest.id,
-          recoveryExportManifestDigest: verified.manifestDigest,
+          recoveryBackupId: verified.manifest.backupId,
+          recoveryBackupManifestDigest: verified.manifestDigest,
         })
       : createWorkspaceDeletionClosure({
           coreDb: input.coreDb,
@@ -476,8 +805,8 @@ async function advanceWorkspaceDeletion(input: {
           sourceRegistryRevision: request.expectedRegistryRevision + 1,
           closureId,
           cutoffTimestamp: new Date().toISOString(),
-          recoveryExportId: verified.manifest.id,
-          recoveryExportManifestDigest: verified.manifestDigest,
+          recoveryBackupId: verified.manifest.backupId,
+          recoveryBackupManifestDigest: verified.manifestDigest,
         });
     request = persistDeletionPhase(input.dataRoot, request, {
       phase: 'closure-sealed',
@@ -486,7 +815,7 @@ async function advanceWorkspaceDeletion(input: {
     });
   }
   if (request.phase === 'closure-sealed') {
-    verifyDeletionArtifacts(input.dataRoot, request);
+    await verifyDeletionArtifacts(input.dataRoot, request);
     const stagingRelativePath = workspaceDeletionStagingRelativePath(
       input.workspaceId,
       request.requestId
@@ -500,6 +829,24 @@ async function advanceWorkspaceDeletion(input: {
     }
     if (sourceExists) {
       requireWorkspaceRootIdentity(source, input.workspaceId);
+      const native = bindWorkspaceDeletionNativeOwner(
+        input.coreDb,
+        request,
+        input.mutationAdmission,
+        input.freezeOwner!
+      );
+      const client = getControlStoreWorkerClient(input.mutationAdmission);
+      await client.open(native.binding.command, native);
+      await client.close(native.binding.command.database, native);
+      if (
+        !input.mutationAdmission.ownsFreeze(input.workspaceId, input.freezeOwner!) ||
+        !hasWorkspaceDeletionRetryAuthority(input.coreDb, input.actor, input.workspaceId, {
+          dataRoot: input.dataRoot,
+          requestId: request.requestId,
+        })
+      )
+        throw recoveryRequired();
+      requireDeletingRegistry(input.coreDb, request);
       mkdirPrivate(dirname(target));
       closeWorkspaceProductReadHandles(source);
       renameSync(source, target);
@@ -515,7 +862,7 @@ async function advanceWorkspaceDeletion(input: {
   }
   if (request.phase === 'staged') {
     requireExactStagedWorkspace(input.dataRoot, request);
-    verifyDeletionArtifacts(input.dataRoot, request);
+    await verifyDeletionArtifacts(input.dataRoot, request);
     removeSupersededWorkspaceExports(input.dataRoot, request);
     const terminal = input.coreDb.sqlite.transaction(() => {
       const recurringAudit = listSqliteAuditEvents(input.coreDb.sqlite, input.workspaceId, true);
@@ -580,7 +927,7 @@ async function advanceWorkspaceDeletion(input: {
   if (request.phase === 'deleted') {
     const stagingRoot = requireTerminalWorkspaceStorage(input.dataRoot, request);
     requireTerminalDeletionTruth(input, request);
-    verifyDeletionArtifacts(input.dataRoot, request);
+    await verifyDeletionArtifacts(input.dataRoot, request);
     input.store.evictWorkspace(input.workspaceId);
     try {
       if (existsSync(stagingRoot)) {
@@ -599,16 +946,19 @@ async function advanceWorkspaceDeletion(input: {
   return { body: deletionResponse(request), status: 200 };
 }
 
-function selectDeletionRequest(input: {
-  actorId: string;
-  administratorEligible: boolean;
-  coreDb: CoreDb;
-  dataRoot: string;
-  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  request: { confirmation: string; expectedRegistryRevision: number; requestId: string };
-  workspaceId: string;
-  store: FsStore;
-}): WorkspaceDeletionRequestRecord {
+function selectDeletionRequest(
+  input: {
+    actorId: string;
+    administratorEligible: boolean;
+    coreDb: CoreDb;
+    dataRoot: string;
+    repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
+    request: { confirmation: string; expectedRegistryRevision: number; requestId: string };
+    workspaceId: string;
+    store: FsStore;
+  },
+  create = true
+): WorkspaceDeletionRequestRecord | undefined {
   let records: WorkspaceDeletionRequestRecord[];
   try {
     records = listWorkspaceDeletionRequests(input.dataRoot, input.workspaceId);
@@ -667,6 +1017,7 @@ function selectDeletionRequest(input: {
       { details: { holdRecordIds } }
     );
   }
+  if (!create) return undefined;
   return createWorkspaceDeletionRequest(input.dataRoot, {
     confirmation: input.request.confirmation,
     createdAt: new Date().toISOString(),
@@ -678,38 +1029,26 @@ function selectDeletionRequest(input: {
   });
 }
 
-function verifyRecoveryExport(
-  dataRoot: string,
-  request: WorkspaceDeletionRequestRecord
-): ReturnType<typeof verifyWorkspaceExportTree> {
-  if (!request.recoveryExportId || !request.recoveryExportManifestDigest) {
-    throw recoveryRequired();
-  }
-  const verified = verifyWorkspaceExportTree({
-    exportRoot: existingWorkspaceExportRoot(
-      dataRoot,
-      request.workspaceId,
-      request.recoveryExportId
-    ),
+async function verifyRecoveryBackup(dataRoot: string, request: WorkspaceDeletionRequestRecord) {
+  if (!request.recoveryBackupId || !request.recoveryBackupManifestDigest) throw recoveryRequired();
+  const verified = await readWorkspaceSnapshotMetadata({
+    ...WORKSPACE_BACKUP_POLICY,
+    dataRoot,
+    workspaceId: request.workspaceId,
+    backupId: request.recoveryBackupId,
   });
   if (
-    verified.manifest.workspaceId !== request.workspaceId ||
-    verified.manifest.id !== request.recoveryExportId ||
-    verified.manifestDigest !== request.recoveryExportManifestDigest
-  ) {
+    verified.manifestDigest !== request.recoveryBackupManifestDigest ||
+    verified.manifest.accounts.ownerId !== request.originalOwnerUserId ||
+    verified.manifest.purpose !== 'backup'
+  )
     throw recoveryRequired();
-  }
   return verified;
 }
 
-function verifyDeletionArtifacts(
-  dataRoot: string,
-  request: WorkspaceDeletionRequestRecord
-): ReturnType<typeof verifyWorkspaceExportTree> {
-  const verified = verifyRecoveryExport(dataRoot, request);
-  if (!request.closureId || !request.closureDigest) {
-    throw recoveryRequired();
-  }
+async function verifyDeletionArtifacts(dataRoot: string, request: WorkspaceDeletionRequestRecord) {
+  const verified = await verifyRecoveryBackup(dataRoot, request);
+  if (!request.closureId || !request.closureDigest) throw recoveryRequired();
   const closure = verifyWorkspaceDeletionClosure({
     closureRoot: existingWorkspaceDeletionClosureRoot(
       dataRoot,
@@ -721,12 +1060,10 @@ function verifyDeletionArtifacts(
     originalOwnerUserId: request.originalOwnerUserId,
     sourceRegistryRevision: request.expectedRegistryRevision + 1,
     closureId: request.closureId,
-    recoveryExportId: verified.manifest.id,
-    recoveryExportManifestDigest: verified.manifestDigest,
+    recoveryBackupId: verified.manifest.backupId,
+    recoveryBackupManifestDigest: verified.manifestDigest,
   });
-  if (closure.manifestDigest !== request.closureDigest) {
-    throw recoveryRequired();
-  }
+  if (closure.manifestDigest !== request.closureDigest) throw recoveryRequired();
   return verified;
 }
 
@@ -750,6 +1087,7 @@ function requireTerminalDeletionTruth(
     coreDb: CoreDb;
     store: FsStore;
     workspaceId: string;
+    recovery?: RecoveryAdmission;
   },
   request: WorkspaceDeletionRequestRecord
 ): { auditEventId: string; commandReceiptKey: string } {
@@ -776,9 +1114,18 @@ function requireTerminalDeletionTruth(
   );
   if (
     !registry ||
-    registry.status !== 'deleted' ||
+    !(
+      registry.status === 'deleted' ||
+      (registry.status === 'active' &&
+        input.recovery?.state === 'finished' &&
+        input.recovery.backup_id === request.recoveryBackupId &&
+        input.recovery.proof.capture.manifestDigest === request.recoveryBackupManifestDigest &&
+        input.recovery.proof.result.currentRevision === request.expectedRegistryRevision + 3)
+    ) ||
     registry.ownerUserId !== request.originalOwnerUserId ||
-    registry.registryRevision !== request.expectedRegistryRevision + 2 ||
+    (registry.status === 'deleted'
+      ? registry.registryRevision !== request.expectedRegistryRevision + 2
+      : registry.registryRevision < request.expectedRegistryRevision + 3) ||
     !receipt ||
     receipt.inputHash !==
       commandInputHash({
@@ -789,7 +1136,7 @@ function requireTerminalDeletionTruth(
     receipt.response.kind !== 'workspace_deletion' ||
     receipt.response.id !== request.requestId ||
     auditEvents.length !== 1 ||
-    auditEvents[0]?.resourceRevision !== registry.registryRevision ||
+    auditEvents[0]?.resourceRevision !== request.expectedRegistryRevision + 2 ||
     (request.commandReceiptKey !== null && request.commandReceiptKey !== receipt.key) ||
     (request.terminalAuditEventId !== null && request.terminalAuditEventId !== auditEvents[0]?.id)
   ) {
@@ -865,24 +1212,16 @@ function removeSupersededWorkspaceExports(
   dataRoot: string,
   request: WorkspaceDeletionRequestRecord
 ): void {
-  if (!request.recoveryExportId) {
-    throw recoveryRequired();
-  }
-  const workspaceExportsRoot = dirname(
-    existingWorkspaceExportRoot(dataRoot, request.workspaceId, request.recoveryExportId)
-  );
-  for (const entry of readdirSync(workspaceExportsRoot, { withFileTypes: true })) {
-    if (entry.name === request.recoveryExportId) {
-      continue;
-    }
-    const path = join(workspaceExportsRoot, entry.name);
+  const root = join(dataRoot, 'server/exports/workspaces', request.workspaceId);
+  if (!existsSync(root)) return;
+  assertCanonicalDirectory(root);
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
     const stat = lstatSync(path);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw recoveryRequired();
-    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw recoveryRequired();
     rmSync(path, { recursive: true });
   }
-  fsyncDirectory(workspaceExportsRoot);
+  fsyncDirectory(root);
 }
 
 function deletionHoldRecordIds(
@@ -906,67 +1245,6 @@ function requireDeletingRegistry(coreDb: CoreDb, request: WorkspaceDeletionReque
     registry.registryRevision !== request.expectedRegistryRevision + 1
   ) {
     throw recoveryRequired();
-  }
-}
-
-/**
- * Reports whether Workspace deletion must preserve runtime proof, an unproved lease, or a pending apply.
- *
- * Every non-closed execution attempt blocks deletion until its actual handoff and exact fence are proved.
- *
- * @param input Core, Workspace, and AgentSession sources for the target Workspace.
- * @returns True when deletion must remain fenced.
- */
-function hasActiveWorkspaceRuntime(input: {
-  coreDb: CoreDb;
-  repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  store: FsStore;
-  workspaceId: string;
-}): boolean {
-  if (
-    input.store
-      .listWorkspaceAgentSessions(input.workspaceId)
-      .some((session) => ['created', 'initializing', 'busy'].includes(session.status)) ||
-    // A completed Turn leaves an idle native binding that still needs its retained AEP for retirement.
-    input.coreDb.sqlite
-      .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE workspace_id = ? LIMIT 1')
-      .get(input.workspaceId) ||
-    hasUnprovedNanoHostWorkspaceCleanup(input.coreDb, input.workspaceId) ||
-    listWorkerBackendSessions(input.coreDb).some(
-      (session) => session.workspaceId === input.workspaceId && session.state !== 'cleaned'
-    )
-  ) {
-    return true;
-  }
-  const workspaceDb = input.repositoryWorkspaceDb(input.workspaceId);
-  try {
-    // Unreadable Plan or Result meaning cannot authorize destructive cleanup.
-    for (const row of workspaceDb.sqlite
-      .prepare(`
-      SELECT schema_version AS schemaVersion FROM workspace_apply_plans WHERE workspace_id=?
-      UNION ALL
-      SELECT schema_version AS schemaVersion FROM workspace_apply_results WHERE workspace_id=?
-    `)
-      .all(input.workspaceId, input.workspaceId))
-      readRetainedV1(row, () => undefined);
-    return Boolean(
-      workspaceDb.sqlite
-        .prepare(
-          `SELECT 1
-           FROM workspace_apply_plans AS plan
-           WHERE plan.workspace_id = ? AND plan.approval_state = 'approved'
-             AND NOT EXISTS (
-               SELECT 1 FROM workspace_apply_results AS result
-               WHERE result.workspace_id = plan.workspace_id
-                 AND result.review_id = plan.review_id
-                 AND result.change_set_id = plan.change_set_id
-             )
-           LIMIT 1`
-        )
-        .get(input.workspaceId)
-    );
-  } finally {
-    workspaceDb.sqlite.close();
   }
 }
 
@@ -995,7 +1273,7 @@ function deletionState(request: WorkspaceDeletionRequestRecord): WorkspaceDeleti
     requestId: request.requestId,
     status,
     phase: request.phase,
-    recoveryExportId: request.recoveryExportId,
+    recoveryBackupId: request.recoveryBackupId,
     closureId: request.closureId,
     retainedStaging: request.retainedStaging,
   } as WorkspaceDeletionState;

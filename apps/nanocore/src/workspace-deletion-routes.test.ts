@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   cpSync,
@@ -11,7 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import {
   ApiCallError,
@@ -39,15 +40,16 @@ import {
 } from './runtime/nanohost-harness-records.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
+import { WORKSPACE_BACKUP_POLICY } from './storage/workspace-backup.js';
 import {
-  createVerifiedWorkspaceExport,
-  workspaceDeletionRecoveryExportId,
-} from './storage/workspace-transfer-routes.js';
+  readWorkspaceSnapshotMetadata,
+  withVerifiedWorkspaceSnapshotSource,
+} from './storage/workspace-backup-bundle.js';
 import { recordTestAgentEnvironmentPackage } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -59,10 +61,8 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
-import {
-  createWorkspaceDeletionClosure,
-  WORKSPACE_DELETION_LEGAL_HOLD_OWNERS,
-} from './workspace-deletion-evidence.js';
+import { WORKSPACE_DELETION_LEGAL_HOLD_OWNERS } from './workspace-deletion-evidence.js';
+import * as deletionRequestOwner from './workspace-deletion-request.js';
 import {
   createWorkspaceDeletionRequest,
   readWorkspaceDeletionRequest,
@@ -224,18 +224,7 @@ it.each([
       workerMcpGateway: gateway,
       workspaceMutationAdmission: admission,
     });
-    // A named busy session keeps the existing early-202 path observable without external work.
-    const now = new Date().toISOString();
-    await store.createAgentSession({
-      id: testEntityId('as', 'deletion-current-credential-busy'),
-      agentId: 'agent_codex_host',
-      workspaceId: workspace.id,
-      threadId: (await store.createThread(workspace.id, 'Still running')).id,
-      status: 'busy',
-      message: null,
-      createdAt: now,
-      updatedAt: now,
-    });
+    // Admission must be idle so the real public freeze reaches the awaited MCP boundary.
     const request = createWorkspaceDeletionRequest(dataRoot, {
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
       createdAt: new Date().toISOString(),
@@ -247,7 +236,6 @@ it.each([
     });
     if (phase === 'fenced') {
       writeWorkspaceDeletionRequest(dataRoot, { ...request, phase });
-      await admission.close(workspace.id);
     }
     const before = readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId);
     responsePromise = Promise.resolve(
@@ -328,27 +316,57 @@ it('resumes an exact fenced request after its registry transition without ordina
       turnExecutor: new SimulatedTurnExecutor(),
       workerMcpGateway: gateway,
       workspaceMutationAdmission: admission,
+      releaseIdentity: {
+        releaseTag: null,
+        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      },
     });
-    const request = createWorkspaceDeletionRequest(dataRoot, {
+    const command = {
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-      createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId: randomUUID(),
+    };
+    const originalWrite = deletionRequestOwner.writeWorkspaceDeletionRequest;
+    const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
+    let interrupted = false;
+    try {
+      phaseWrite.mockImplementation((root, record) => {
+        if (record.workspaceId === workspace.id && record.phase === 'exported') {
+          interrupted = true;
+          throw new Error('Injected failure after the real cut and Core transition.');
+        }
+        return originalWrite(root, record);
+      });
+      const interruptedResponse = await app.request(
+        ...operationRequest(
+          'workspace.delete',
+          { workspaceId: workspace.id },
+          {
+            headers: { authorization: `Bearer ${token.secret}` },
+            body: JSON.stringify(command),
+          }
+        )
+      );
+      expect(interruptedResponse.status).toBe(409);
+      expect(await interruptedResponse.json()).toMatchObject({ code: 'recovery_required' });
+    } finally {
+      phaseWrite.mockRestore();
+    }
+    expect(interrupted).toBe(true);
+    const request = readWorkspaceDeletionRequest(dataRoot, workspace.id, command.requestId);
+    expect(request.phase).toBe('fenced');
+    const backup = await readWorkspaceSnapshotMetadata({
+      ...WORKSPACE_BACKUP_POLICY,
+      dataRoot,
       workspaceId: workspace.id,
+      backupId: request.recoveryBackupId!,
     });
-    writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'fenced' });
-    await admission.close(workspace.id);
-    // Model the existing crash boundary between the Core transition and file-phase publication.
-    coreDb.sqlite.transaction(() =>
-      beginWorkspaceDeletion({
-        coreDb,
-        workspaceId: workspace.id,
-        originalOwnerUserId: request.originalOwnerUserId,
-        expectedRegistryRevision: request.expectedRegistryRevision,
-      })
-    )();
+    expect(request.recoveryBackupManifestDigest).toBe(backup.manifestDigest);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspace.id)
+    ).toEqual({ status: 'deleting', revision: 2 });
     expect(
       resolveWorkspaceMembershipRelation(
         coreDb,
@@ -356,6 +374,65 @@ it('resumes an exact fenced request after its registry transition without ordina
         'usr_00000000-0000-7000-8000-000000000001'
       )
     ).toBeNull();
+    // The pre-transition cut digest remains binding after Core CAS and before phase publication.
+    const backupRoot = join(
+      dataRoot,
+      'server',
+      'backups',
+      'workspaces',
+      workspace.id,
+      request.recoveryBackupId!
+    );
+    const backupBytes = () =>
+      ['manifest.json', 'seal.json'].map((name) => [name, readFileSync(join(backupRoot, name))]);
+    const beforeBackupBytes = backupBytes();
+    const terminalFacts = () => [
+      coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspace.id),
+      coreDb.sqlite
+        .prepare(
+          'SELECT COUNT(*) AS count FROM audit_events WHERE workspace_id = ? AND request_id = ?'
+        )
+        .get(workspace.id, request.requestId),
+      coreDb.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM idempotency_requests WHERE request_id = ?')
+        .get(request.requestId),
+    ];
+    const beforeTerminalFacts = terminalFacts();
+    const wrongDigest = `sha256:${'0'.repeat(64)}`;
+    expect(request.recoveryBackupManifestDigest).not.toBe(wrongDigest);
+    const substituted = { ...request, recoveryBackupManifestDigest: wrongDigest };
+    writeWorkspaceDeletionRequest(dataRoot, substituted);
+    const retainedPath = join(
+      dataRoot,
+      'server',
+      'exports',
+      'workspace-deletions',
+      workspace.id,
+      request.requestId,
+      'request.json'
+    );
+    const substitutedBytes = readFileSync(retainedPath);
+    const refused = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          headers: { authorization: `Bearer ${token.secret}` },
+          body: JSON.stringify(command),
+        }
+      )
+    );
+    expect(refused.status).toBe(409);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId)).toEqual(
+      substituted
+    );
+    expect(readFileSync(retainedPath)).toEqual(substitutedBytes);
+    expect(terminalFacts()).toEqual(beforeTerminalFacts);
+    expect(backupBytes()).toEqual(beforeBackupBytes);
+    expect(admission.isClosed(workspace.id)).toBe(true);
+    writeWorkspaceDeletionRequest(dataRoot, request);
     const response = await app.request(
       ...operationRequest(
         'workspace.delete',
@@ -526,7 +603,7 @@ it.each(
   }
 });
 
-it('durably fences an active owner deletion request before later lifecycle effects', async () => {
+it('refuses running work before admission and preserves exact deletion retry after cleanup failure', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-route-'));
   const coreDb = openCoreDb(dataRoot);
   const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
@@ -538,6 +615,10 @@ it('durably fences an active owner deletion request before later lifecycle effec
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Deletion fixture');
     const app = createApp({
+      releaseIdentity: {
+        releaseTag: null,
+        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      },
       coreDb,
       dataRoot,
       mode: 'local',
@@ -550,7 +631,13 @@ it('durably fences an active owner deletion request before later lifecycle effec
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const thread = await store.createThread(workspace.id, 'Deletion quiescence blocker');
+    const thread = await store.createThread(
+      workspace.id,
+      'Deletion quiescence blocker',
+      undefined,
+      'conversation',
+      { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
+    );
     const timestamp = new Date().toISOString();
     await store.createAgentSession({
       agentId: 'agent_codex_host',
@@ -565,31 +652,19 @@ it('durably fences an active owner deletion request before later lifecycle effec
 
     const requestId = '00000000-0000-4000-8000-000000000010';
     const confirmation = `permanently-delete-workspace:${workspace.id}:1`;
-    const response = await app.request(
-      ...operationRequest(
-        'workspace.delete',
-        { workspaceId: workspace.id },
-        {
-          body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      )
-    );
-
-    expect(response.status).toBe(202);
-    expect(closeWorkspaceMcpSessions).toHaveBeenCalledWith(workspace.id);
-    expect(await response.json()).toEqual({
-      deletion: {
-        closureId: null,
-        phase: 'fenced',
-        recoveryExportId: null,
-        requestId,
-        retainedStaging: false,
-        status: 'active',
-        workspaceId: workspace.id,
-      },
-    });
+    const input = { confirmation, expectedRegistryRevision: 1, requestId };
+    const remove = (value: typeof input = input) =>
+      app.request(
+        ...operationRequest(
+          'workspace.delete',
+          { workspaceId: workspace.id },
+          {
+            body: JSON.stringify(value),
+            headers: { 'content-type': 'application/json' },
+            method: 'POST',
+          }
+        )
+      );
     const requestRoot = join(
       dataRoot,
       'server',
@@ -599,10 +674,67 @@ it('durably fences an active owner deletion request before later lifecycle effec
       requestId
     );
     const requestPath = join(requestRoot, 'request.json');
+    const beforeRegistry = coreDb.sqlite
+      .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+      .get(workspace.id);
+    const beforeReceipts = coreDb.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+    const beforeAudits = coreDb.sqlite.prepare('SELECT * FROM audit_events').all();
+    const sourceRoot = join(dataRoot, 'workspaces', workspace.id);
+    const sourceInode = lstatSync(sourceRoot).ino;
+    const response = await remove();
+    expect(response.status).toBe(409);
+    const refusal = await response.json();
+    expect(refusal).toMatchObject({
+      code: 'workspace_blocked',
+      details: {
+        workspaceId: workspace.id,
+        operation: 'delete',
+        retryable: false,
+        blockers: expect.any(Array),
+      },
+    });
+    expect(refusal.details.blockers.length).toBeGreaterThan(0);
+    expect(JSON.stringify(refusal)).not.toContain(dataRoot);
+    expect(closeWorkspaceMcpSessions).not.toHaveBeenCalled();
+    expect(existsSync(requestRoot)).toBe(false);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspace.id)
+    ).toEqual(beforeRegistry);
+    expect(coreDb.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(
+      beforeReceipts
+    );
+    expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual(beforeAudits);
+    expect(lstatSync(sourceRoot).ino).toBe(sourceInode);
+    expect(store.getThread(workspace.id, thread.id)).toEqual(thread);
+
+    await store.updateAgentSession(testEntityId('as', 'session_workspace_deletion_blocker'), {
+      status: 'closed',
+      updatedAt: new Date().toISOString(),
+    });
+    closeWorkspaceMcpSessions.mockRejectedValueOnce(new Error('injected MCP cleanup failure'));
+    const cleanupFailure = await remove();
+    expect(cleanupFailure.status).toBe(409);
+    expect(await cleanupFailure.json()).toMatchObject({ code: 'recovery_required' });
+    expect(closeWorkspaceMcpSessions).toHaveBeenCalledExactlyOnceWith(workspace.id);
+    expect(existsSync(sourceRoot)).toBe(true);
+    expect(lstatSync(sourceRoot).ino).toBe(sourceInode);
+    expect(store.getThread(workspace.id, thread.id)).toEqual(thread);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+        .get(workspace.id)
+    ).toEqual(beforeRegistry);
+    expect(coreDb.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(
+      beforeReceipts
+    );
+    expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual(beforeAudits);
+
     const requestRootStat = lstatSync(requestRoot);
     const requestStat = lstatSync(requestPath);
     const requestRecord = JSON.parse(readFileSync(requestPath, 'utf8')) as Record<string, unknown>;
-
+    const retainedRequest = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
     expect(requestRootStat.isDirectory()).toBe(true);
     expect(requestRootStat.mode & 0o777).toBe(0o700);
     expect(requestStat.isFile()).toBe(true);
@@ -611,95 +743,92 @@ it('durably fences an active owner deletion request before later lifecycle effec
       confirmation,
       expectedRegistryRevision: 1,
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      phase: 'fenced',
+      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      phase: 'requested',
       requestId,
       schemaVersion: 1,
       workspaceId: workspace.id,
+      recoveryBackupId: expect.any(String),
     });
-    expect(JSON.stringify(requestRecord)).not.toContain(dataRoot);
     expect(
-      coreDb.sqlite
-        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
-        .get(workspace.id)
-    ).toEqual({ revision: 1, status: 'active' });
-
-    const changedInput = await app.request(
-      ...operationRequest(
-        'workspace.delete',
-        { workspaceId: workspace.id },
-        {
-          body: JSON.stringify({
-            confirmation: `permanently-delete-workspace:${workspace.id}:2`,
-            expectedRegistryRevision: 2,
-            requestId,
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
+      existsSync(
+        join(
+          dataRoot,
+          'server',
+          'backups',
+          'workspaces',
+          workspace.id,
+          requestRecord.recoveryBackupId as string,
+          'seal.json'
+        )
       )
-    );
+    ).toBe(false);
+    expect(JSON.stringify(requestRecord)).not.toContain(dataRoot);
+    const changedInput = await remove({
+      confirmation: `permanently-delete-workspace:${workspace.id}:2`,
+      expectedRegistryRevision: 2,
+      requestId,
+    });
     expect(changedInput.status).toBe(409);
     expect(await changedInput.json()).toMatchObject({ code: 'idempotency_key_conflict' });
-
-    const competingRequest = await app.request(
-      ...operationRequest(
-        'workspace.delete',
-        { workspaceId: workspace.id },
-        {
-          body: JSON.stringify({
-            confirmation,
-            expectedRegistryRevision: 1,
-            requestId: '00000000-0000-4000-8000-000000000015',
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      )
-    );
+    const competingRequest = await remove({
+      ...input,
+      requestId: '00000000-0000-4000-8000-000000000015',
+    });
     expect(competingRequest.status).toBe(409);
-    expect(await competingRequest.json()).toMatchObject({
-      code: 'workspace_deletion_in_progress',
-    });
+    expect(await competingRequest.json()).toMatchObject({ code: 'workspace_deletion_in_progress' });
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual(
+      retainedRequest
+    );
+    expect(closeWorkspaceMcpSessions).toHaveBeenCalledTimes(1);
 
-    await store.updateAgentSession(testEntityId('as', 'session_workspace_deletion_blocker'), {
-      status: 'closed',
-      updatedAt: new Date().toISOString(),
-    });
-    closeWorkspaceMcpSessions.mockRejectedValueOnce(new Error('injected MCP cleanup failure'));
-    const cleanupFailure = await app.request(
-      ...operationRequest(
-        'workspace.delete',
-        { workspaceId: workspace.id },
-        {
-          body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      )
-    );
-    expect(cleanupFailure.status).toBe(409);
-    expect(await cleanupFailure.json()).toMatchObject({ code: 'recovery_required' });
-    expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(true);
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
-        .get(workspace.id)
-    ).toEqual({ revision: 1, status: 'active' });
-    const retry = await app.request(
-      ...operationRequest(
-        'workspace.delete',
-        { workspaceId: workspace.id },
-        {
-          body: JSON.stringify({ confirmation, expectedRegistryRevision: 1, requestId }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      )
-    );
+    const retry = await remove();
     expect(retry.status, await retry.clone().text()).toBe(200);
-    expect(await retry.json()).toMatchObject({
+    const result = await retry.json();
+    expect(result).toMatchObject({
       deletion: { phase: 'cleaned', status: 'deleted', workspaceId: workspace.id },
     });
+    expect(closeWorkspaceMcpSessions).toHaveBeenCalledTimes(2);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toMatchObject({
+      originalOwnerUserId: requestRecord.originalOwnerUserId,
+      recoveryBackupId: requestRecord.recoveryBackupId,
+      phase: 'cleaned',
+    });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          'SELECT owner_user_id, status, revision FROM workspace_registry WHERE workspace_id = ?'
+        )
+        .get(workspace.id)
+    ).toEqual({ owner_user_id: requestRecord.originalOwnerUserId, status: 'deleted', revision: 3 });
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM idempotency_requests WHERE request_id = ?')
+        .get(requestId)
+    ).toEqual({ count: 1 });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE workspace_id = ? AND request_id = ? AND outcome = 'succeeded'"
+        )
+        .get(workspace.id, requestId)
+    ).toEqual({ count: 1 });
+    const replay = await remove();
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(result);
+    expect(closeWorkspaceMcpSessions).toHaveBeenCalledTimes(2);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT COUNT(*) AS count FROM idempotency_requests WHERE request_id = ?')
+        .get(requestId)
+    ).toEqual({ count: 1 });
+    expect(
+      coreDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE workspace_id = ? AND request_id = ? AND outcome = 'succeeded'"
+        )
+        .get(workspace.id, requestId)
+    ).toEqual({ count: 1 });
   } finally {
     await workerMcpGateway.close();
     coreDb.sqlite.close();
@@ -713,7 +842,7 @@ it.each([
   ['physical worker cleanup', '00000000-0000-4000-8000-000000000028'],
   ['approved apply plan', '00000000-0000-4000-8000-000000000029'],
   ['idle ready native binding', '00000000-0000-4000-8000-000000000037'],
-] as const)('keeps deletion fenced while %s remains nonterminal', async (blocker, requestId) => {
+] as const)('refuses deletion while %s remains nonterminal', async (blocker, requestId) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-quiescence-'));
   const coreDb = openCoreDb(dataRoot);
 
@@ -900,9 +1029,25 @@ it.each([
       )
     );
 
-    expect(response.status, await response.clone().text()).toBe(202);
+    expect(response.status, await response.clone().text()).toBe(409);
+    const refusal = await response.json();
+    expect(refusal).toMatchObject({
+      code: 'workspace_blocked',
+      details: {
+        workspaceId: workspace.id,
+        operation: 'delete',
+        retryable: false,
+        blockers: expect.any(Array),
+      },
+    });
+    expect(refusal.details.blockers.length).toBeGreaterThan(0);
+    expect(JSON.stringify(refusal)).not.toContain(dataRoot);
     if (retainedPackage) expect(readFileSync(retainedPackage.path)).toEqual(retainedPackage.bytes);
-    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('fenced');
+    expect(
+      existsSync(
+        join(dataRoot, 'server', 'exports', 'workspace-deletions', workspace.id, requestId)
+      )
+    ).toBe(false);
     expect(
       coreDb.sqlite
         .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
@@ -1094,6 +1239,10 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
       await closeDeletionQuiescenceAttempt(coreDb, suffix);
     }
     const app = createApp({
+      releaseIdentity: {
+        releaseTag: null,
+        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      },
       coreDb,
       dataRoot,
       mode: 'local',
@@ -1154,7 +1303,7 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
   }
 });
 
-it('keeps deletion fenced when one of five failed attempts remains closing without release proof', async () => {
+it('refuses deletion when one of five failed attempts remains closing without release proof', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-sibling-unproved-'));
   const coreDb = openCoreDb(dataRoot);
   const requestId = '00000000-0000-4000-8000-000000000037';
@@ -1213,8 +1362,24 @@ it('keeps deletion fenced when one of five failed attempts remains closing witho
       )
     );
 
-    expect(response.status, await response.clone().text()).toBe(202);
-    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('fenced');
+    expect(response.status, await response.clone().text()).toBe(409);
+    const refusal = await response.json();
+    expect(refusal).toMatchObject({
+      code: 'workspace_blocked',
+      details: {
+        workspaceId: workspace.id,
+        operation: 'delete',
+        retryable: false,
+        blockers: expect.any(Array),
+      },
+    });
+    expect(refusal.details.blockers.length).toBeGreaterThan(0);
+    expect(JSON.stringify(refusal)).not.toContain(dataRoot);
+    expect(
+      existsSync(
+        join(dataRoot, 'server', 'exports', 'workspace-deletions', workspace.id, requestId)
+      )
+    ).toBe(false);
     expect(
       coreDb.sqlite
         .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
@@ -1289,7 +1454,7 @@ it.each([
     requestId: '00000000-0000-4000-8000-000000000036',
     suffix: 'stale_cleaned',
   },
-])('keeps deletion fenced when $name', async (fixture) => {
+])('refuses deletion when $name', async (fixture) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-unproved-'));
   const coreDb = openCoreDb(dataRoot);
 
@@ -1380,10 +1545,24 @@ it.each([
       )
     );
 
-    expect(response.status, await response.clone().text()).toBe(202);
-    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, fixture.requestId).phase).toBe(
-      'fenced'
-    );
+    expect(response.status, await response.clone().text()).toBe(409);
+    const refusal = await response.json();
+    expect(refusal).toMatchObject({
+      code: 'workspace_blocked',
+      details: {
+        workspaceId: workspace.id,
+        operation: 'delete',
+        retryable: false,
+        blockers: expect.any(Array),
+      },
+    });
+    expect(refusal.details.blockers.length).toBeGreaterThan(0);
+    expect(JSON.stringify(refusal)).not.toContain(dataRoot);
+    expect(
+      existsSync(
+        join(dataRoot, 'server', 'exports', 'workspace-deletions', workspace.id, fixture.requestId)
+      )
+    ).toBe(false);
     expect(
       coreDb.sqlite
         .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
@@ -1491,24 +1670,6 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
     });
     const requestId = '00000000-0000-4000-8000-000000000023';
     const deletingRequestId = '00000000-0000-4000-8000-000000000025';
-    const deletingRequest = createWorkspaceDeletionRequest(dataRoot, {
-      confirmation: `permanently-delete-workspace:${deletingWorkspace.id}:1`,
-      createdAt: new Date().toISOString(),
-      expectedRegistryRevision: 1,
-      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      requestId: deletingRequestId,
-      workspaceId: deletingWorkspace.id,
-    });
-    coreDb.sqlite.transaction(() =>
-      beginWorkspaceDeletion({
-        coreDb,
-        expectedRegistryRevision: 1,
-        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        workspaceId: deletingWorkspace.id,
-      })
-    )();
-    writeWorkspaceDeletionRequest(dataRoot, { ...deletingRequest, phase: 'deleting' });
     const mutationAdmission = new WorkspaceMutationAdmission();
     const app = createApp({
       coreDb,
@@ -1517,7 +1678,61 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       store,
       turnExecutor: new SimulatedTurnExecutor(),
       workspaceMutationAdmission: mutationAdmission,
+      releaseIdentity: {
+        releaseTag: null,
+        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      },
     });
+    const originalWrite = deletionRequestOwner.writeWorkspaceDeletionRequest;
+    const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
+    let interrupted = false;
+    try {
+      phaseWrite.mockImplementation((root, record) => {
+        const retained = originalWrite(root, record);
+        if (retained.workspaceId === deletingWorkspace.id && retained.phase === 'exported') {
+          interrupted = true;
+          throw new Error('Injected failure after the genuine post-transition phase.');
+        }
+        return retained;
+      });
+      const stopped = await app.request(
+        ...operationRequest(
+          'workspace.delete',
+          { workspaceId: deletingWorkspace.id },
+          {
+            headers: { authorization: `Bearer ${admin.secret}` },
+            body: JSON.stringify({
+              confirmation: `permanently-delete-workspace:${deletingWorkspace.id}:1`,
+              expectedRegistryRevision: 1,
+              requestId: deletingRequestId,
+            }),
+          }
+        )
+      );
+      expect(stopped.status).toBe(409);
+      expect(await stopped.json()).toMatchObject({ code: 'recovery_required' });
+    } finally {
+      phaseWrite.mockRestore();
+    }
+    expect(interrupted).toBe(true);
+    const deletingRequest = readWorkspaceDeletionRequest(
+      dataRoot,
+      deletingWorkspace.id,
+      deletingRequestId
+    );
+    expect(deletingRequest.phase).toBe('exported');
+    const backup = await readWorkspaceSnapshotMetadata({
+      ...WORKSPACE_BACKUP_POLICY,
+      dataRoot,
+      workspaceId: deletingWorkspace.id,
+      backupId: deletingRequest.recoveryBackupId!,
+    });
+    expect(deletingRequest.recoveryBackupManifestDigest).toBe(backup.manifestDigest);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
+        .get(deletingWorkspace.id)
+    ).toEqual({ status: 'deleting', revision: 2 });
     const releaseMutation = mutationAdmission.enter(workspace.id);
     if (!releaseMutation) {
       throw new Error('Expected the active Workspace mutation to be admitted.');
@@ -1559,9 +1774,9 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
     expect(response.status, await response.clone().text()).toBe(200);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('blocked');
     expect(mutationAdmission.isClosed(workspace.id)).toBe(false);
-    expect(
-      readWorkspaceDeletionRequest(dataRoot, deletingWorkspace.id, deletingRequestId).phase
-    ).toBe('deleting');
+    expect(readWorkspaceDeletionRequest(dataRoot, deletingWorkspace.id, deletingRequestId)).toEqual(
+      deletingRequest
+    );
     expect(mutationAdmission.isClosed(deletingWorkspace.id)).toBe(true);
   } finally {
     coreDb.sqlite.close();
@@ -1676,8 +1891,8 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       closureId: `wsclose_delete_${requestId}`,
       commandReceiptKey: 'workspace-delete-receipt',
       phase: 'cleaned',
-      recoveryExportId: deriveEntityId('wsexp', ['delete', requestId]),
-      recoveryExportManifestDigest: 'export-digest',
+      recoveryBackupId: allocateEntityId('wsbak'),
+      recoveryBackupManifestDigest: 'export-digest',
       stagingRelativePath: workspaceDeletionStagingRelativePath(deletedWorkspace.id, requestId),
       terminalAuditEventId: testEntityId('aud', 'workspace-delete-audit'),
     });
@@ -1707,8 +1922,10 @@ it.each([
   'staged-contradiction',
 ] as const)('handles the %s crash boundary without duplicating or committing contradictory state', async (crashPoint) => {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-workspace-deletion-${crashPoint}-resume-`));
+  const backupParent = mkdtempSync(join(tmpdir(), 'openkit-deletion-before-cut-'));
   const coreDb = openCoreDb(dataRoot);
-
+  const originalWrite = deletionRequestOwner.writeWorkspaceDeletionRequest;
+  const phaseWrite = vi.spyOn(deletionRequestOwner, 'writeWorkspaceDeletionRequest');
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
@@ -1719,125 +1936,86 @@ it.each([
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const repositoryWorkspaceDb = (workspaceId: string) => {
-      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(workspaceDb);
-      return workspaceDb;
-    };
+    const canonicalRoot = join(dataRoot, 'workspaces', workspace.id);
+    const originalRoot = join(backupParent, 'workspace');
+    cpSync(canonicalRoot, originalRoot, { recursive: true });
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'local',
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+      releaseIdentity: {
+        releaseTag: null,
+        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      },
+    });
     const requestId = {
       export: '00000000-0000-4000-8000-000000000021',
       closure: '00000000-0000-4000-8000-000000000022',
       'staged-contradiction': '00000000-0000-4000-8000-000000000026',
     }[crashPoint];
-    let request = createWorkspaceDeletionRequest(dataRoot, {
+    const input = {
       confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-      createdAt: new Date().toISOString(),
       expectedRegistryRevision: 1,
-      originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      initiatingUserId: 'usr_00000000-0000-7000-8000-000000000001',
       requestId,
-      workspaceId: workspace.id,
-    });
-    coreDb.sqlite.transaction(() =>
-      beginWorkspaceDeletion({
-        coreDb,
-        expectedRegistryRevision: 1,
-        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        workspaceId: workspace.id,
-      })
-    )();
-    request = writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'deleting' });
-    const exportId = workspaceDeletionRecoveryExportId(requestId);
-    const wrongExportId = workspaceDeletionRecoveryExportId('00000000-0000-4000-8000-000000000973');
-    await expect(
-      createVerifiedWorkspaceExport({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        deletionRecoveryRequestId: requestId,
-        exportId: wrongExportId,
-        repositoryWorkspaceDb,
-        store,
-        workspaceId: workspace.id,
-      })
-    ).rejects.toThrow('Workspace deletion recovery export authority is inconsistent.');
-    expect(
-      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, wrongExportId))
-    ).toBe(false);
-    const exported = (
-      await createVerifiedWorkspaceExport({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        deletionRecoveryRequestId: requestId,
-        exportId,
-        repositoryWorkspaceDb,
-        store,
-        workspaceId: workspace.id,
-      })
-    ).verified;
-    if (crashPoint !== 'export') {
-      request = writeWorkspaceDeletionRequest(dataRoot, {
-        ...request,
-        phase: 'exported',
-        recoveryExportId: exportId,
-        recoveryExportManifestDigest: exported.manifestDigest,
-      });
-      const closure = createWorkspaceDeletionClosure({
-        closureId: `wsclose_delete_${requestId}`,
-        coreDb,
-        cutoffTimestamp: new Date().toISOString(),
-        dataRoot,
-        originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        recoveryExportId: exportId,
-        recoveryExportManifestDigest: exported.manifestDigest,
-        repositoryWorkspaceDb,
-        requestId,
-        sourceRegistryRevision: 2,
-        workspaceId: workspace.id,
-      });
-      if (crashPoint === 'staged-contradiction') {
-        request = writeWorkspaceDeletionRequest(dataRoot, {
-          ...request,
-          closureDigest: closure.manifestDigest,
-          closureId: closure.closureId,
-          phase: 'closure-sealed',
-        });
-        request = writeWorkspaceDeletionRequest(dataRoot, {
-          ...request,
-          phase: 'staged',
-          stagingRelativePath: workspaceDeletionStagingRelativePath(workspace.id, requestId),
-        });
+    };
+    const remove = () =>
+      app.request(
+        ...operationRequest(
+          'workspace.delete',
+          { workspaceId: workspace.id },
+          { body: JSON.stringify(input) }
+        )
+      );
+    const stopPhase = {
+      export: 'exported',
+      closure: 'closure-sealed',
+      'staged-contradiction': 'staged',
+    }[crashPoint];
+    let injected = false;
+    // The real public delete produces and retains the cut before this one-shot return fault.
+    phaseWrite.mockImplementation((root, record) => {
+      const retained = originalWrite(root, record);
+      if (!injected && retained.phase === stopPhase) {
+        injected = true;
+        throw new Error('Injected failure after retaining the genuine deletion phase.');
       }
-    }
-    const app = createApp({
-      coreDb,
-      dataRoot,
-      mode: 'local',
-      repositoryWorkspaceDb,
-      store,
-      turnExecutor: new SimulatedTurnExecutor(),
+      return retained;
     });
-
-    const response = await app.request(
-      ...operationRequest(
-        'workspace.delete',
-        { workspaceId: workspace.id },
-        {
-          body: JSON.stringify({
-            confirmation: request.confirmation,
-            expectedRegistryRevision: 1,
-            requestId,
-          }),
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-        }
-      )
-    );
-
+    await remove();
+    phaseWrite.mockRestore();
+    expect(injected).toBe(true);
+    const request = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
+    expect(request.phase).toBe(stopPhase);
+    expect(request.recoveryBackupId).toEqual(expect.any(String));
+    const backup = await readWorkspaceSnapshotMetadata({
+      ...WORKSPACE_BACKUP_POLICY,
+      dataRoot,
+      workspaceId: workspace.id,
+      backupId: request.recoveryBackupId!,
+    });
+    expect(backup.manifestDigest).toBe(request.recoveryBackupManifestDigest);
+    const wrongBackupId = allocateEntityId('wsbak');
+    writeWorkspaceDeletionRequest(dataRoot, { ...request, recoveryBackupId: wrongBackupId });
+    const wrongBinding = await remove();
+    expect(wrongBinding.status).toBe(409);
+    expect(
+      existsSync(join(dataRoot, 'server', 'backups', 'workspaces', workspace.id, wrongBackupId))
+    ).toBe(false);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual({
+      ...request,
+      recoveryBackupId: wrongBackupId,
+    });
+    writeWorkspaceDeletionRequest(dataRoot, request);
+    if (crashPoint === 'staged-contradiction')
+      cpSync(originalRoot, canonicalRoot, { recursive: true });
+    const response = await remove();
     if (crashPoint === 'staged-contradiction') {
       expect(response.status).toBe(409);
-      expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('staged');
+      expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual(request);
+      expect(existsSync(canonicalRoot)).toBe(true);
+      expect(existsSync(join(dataRoot, request.stagingRelativePath!))).toBe(true);
       expect(
         coreDb.sqlite
           .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
@@ -1849,17 +2027,30 @@ it.each([
     expect(await response.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toMatchObject({
       closureId: `wsclose_delete_${requestId}`,
-      recoveryExportId: exportId,
+      recoveryBackupId: request.recoveryBackupId,
+      recoveryBackupManifestDigest: backup.manifestDigest,
     });
+    expect(
+      (
+        await readWorkspaceSnapshotMetadata({
+          ...WORKSPACE_BACKUP_POLICY,
+          dataRoot,
+          workspaceId: workspace.id,
+          backupId: request.recoveryBackupId!,
+        })
+      ).manifestDigest
+    ).toBe(backup.manifestDigest);
   } finally {
+    phaseWrite.mockRestore();
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
+    rmSync(backupParent, { force: true, recursive: true });
   }
 });
 
-it('preserves private Thread ownership only through the exact current deletion recovery export', async () => {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-private-deletion-export-'));
+it('preserves private Thread ownership only through the exact current deletion recovery backup', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-private-deletion-backup-'));
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
@@ -1873,106 +2064,108 @@ it('preserves private Thread ownership only through the exact current deletion r
     ) VALUES (?, 'Private owner', 'private-owner@example.test', false, ?, ?, 'human', 'active', NULL)`)
       .run(privateOwnerUserId, now, now);
     const store = new FsStore({ dataRoot });
-    const workspace = await store.createWorkspace('Private deletion export');
+    const workspace = await store.createWorkspace('Private deletion backup');
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
     const privateThread = await store.createThread(
       workspace.id,
       'Private history',
       undefined,
       'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId,
-      }
+      { visibility: 'private', privateOwnerUserId }
     );
-    const repositoryWorkspaceDb = (workspaceId: string) => {
-      const db = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(db);
-      return db;
-    };
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      mode: 'local',
+      store,
+      turnExecutor: new SimulatedTurnExecutor(),
+      releaseIdentity: {
+        releaseTag: null,
+        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      },
+    });
     const requestId = '00000000-0000-4000-8000-000000000974';
-    const request = createWorkspaceDeletionRequest(dataRoot, {
-      confirmation: `permanently-delete-workspace:${workspace.id}:1`,
-      createdAt: new Date().toISOString(),
-      expectedRegistryRevision: 1,
-      originalOwnerUserId: ownerUserId,
-      initiatingUserId: ownerUserId,
-      requestId,
+    const deleted = await app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            requestId,
+            expectedRegistryRevision: 1,
+            confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+          }),
+        }
+      )
+    );
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
+    expect(await deleted.json()).toMatchObject({ deletion: { phase: 'cleaned' } });
+    const request = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
+    const backup = await readWorkspaceSnapshotMetadata({
+      ...WORKSPACE_BACKUP_POLICY,
+      dataRoot,
+      workspaceId: workspace.id,
+      backupId: request.recoveryBackupId!,
+    });
+    const wrongRequest = await app.request(
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({
+            deletionRequestId: '00000000-0000-4000-8000-000000000975',
+            requestId: randomUUID(),
+          }),
+        }
+      )
+    );
+    expect(wrongRequest.status).toBe(409);
+    expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual(request);
+    expect(
+      (
+        await readWorkspaceSnapshotMetadata({
+          ...WORKSPACE_BACKUP_POLICY,
+          dataRoot,
+          workspaceId: workspace.id,
+          backupId: request.recoveryBackupId!,
+        })
+      ).manifestDigest
+    ).toBe(backup.manifestDigest);
+    const recoveryRequestId = randomUUID();
+    const recover = () =>
+      app.request(
+        ...operationRequest(
+          'workspace.deleted-recover',
+          { workspaceId: workspace.id },
+          { body: JSON.stringify({ deletionRequestId: requestId, requestId: recoveryRequestId }) }
+        )
+      );
+    const recovered = await recover();
+    expect(recovered.status, await recovered.clone().text()).toBe(200);
+    const result = await recovered.json();
+    expect(result).toMatchObject({
+      command: 'restore',
+      disposition: 'restored',
       workspaceId: workspace.id,
     });
-    coreDb.sqlite.transaction(() =>
-      beginWorkspaceDeletion({
-        coreDb,
-        expectedRegistryRevision: 1,
-        originalOwnerUserId: ownerUserId,
-        workspaceId: workspace.id,
-      })
-    )();
-    writeWorkspaceDeletionRequest(dataRoot, { ...request, phase: 'deleting' });
-    const exportId = workspaceDeletionRecoveryExportId(requestId);
-    const exported = (
-      await createVerifiedWorkspaceExport({
-        authorityUserId: ownerUserId,
-        coreDb,
-        dataRoot,
-        deletionRecoveryRequestId: requestId,
-        exportId,
-        repositoryWorkspaceDb,
-        store,
-        workspaceId: workspace.id,
-      })
-    ).verified;
-    const threads = exported.fileContents
-      .get('records/threads.jsonl')!
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(threads).toContainEqual(
-      expect.objectContaining({
-        id: privateThread.id,
-        visibility: 'private',
-        privateOwnerUserId,
-      })
+    expect(JSON.stringify(result)).not.toContain(privateThread.id);
+    expect(store.getThread(workspace.id, privateThread.id)).toEqual(
+      expect.objectContaining({ id: privateThread.id, visibility: 'private', privateOwnerUserId })
     );
-    const wrongExportId = workspaceDeletionRecoveryExportId('00000000-0000-4000-8000-000000000975');
-    await expect(
-      createVerifiedWorkspaceExport({
-        authorityUserId: ownerUserId,
-        coreDb,
-        dataRoot,
-        deletionRecoveryRequestId: requestId,
-        exportId: wrongExportId,
-        repositoryWorkspaceDb,
-        store,
-        workspaceId: workspace.id,
-      })
-    ).rejects.toThrow('Workspace deletion recovery export authority is inconsistent.');
+    const replay = await recover();
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(result);
     expect(
-      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, wrongExportId))
-    ).toBe(false);
-    writeWorkspaceDeletionRequest(dataRoot, {
-      ...request,
-      phase: 'exported',
-      recoveryExportId: exportId,
-      recoveryExportManifestDigest: exported.manifestDigest,
-    });
-    await expect(
-      createVerifiedWorkspaceExport({
-        authorityUserId: ownerUserId,
-        coreDb,
-        dataRoot,
-        deletionRecoveryRequestId: requestId,
-        exportId,
-        repositoryWorkspaceDb,
-        store,
-        workspaceId: workspace.id,
-      })
-    ).rejects.toThrow('Workspace deletion recovery export authority is inconsistent.');
-    expect(
-      verifyWorkspaceExportTree({
-        exportRoot: join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, exportId),
-      }).manifestDigest
-    ).toBe(exported.manifestDigest);
+      (
+        await readWorkspaceSnapshotMetadata({
+          ...WORKSPACE_BACKUP_POLICY,
+          dataRoot,
+          workspaceId: workspace.id,
+          backupId: request.recoveryBackupId!,
+        })
+      ).manifestDigest
+    ).toBe(backup.manifestDigest);
   } finally {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
@@ -1980,7 +2173,7 @@ it('preserves private Thread ownership only through the exact current deletion r
   }
 });
 
-it('retains a Thread-owned retrieval trace in the verified deletion recovery export', async () => {
+it('retains a Thread-owned retrieval trace in the verified operational deletion recovery backup', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-retrieval-trace-'));
   const coreDb = openCoreDb(dataRoot);
 
@@ -2001,6 +2194,10 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       return workspaceDb;
     };
     const app = createApp({
+      releaseIdentity: {
+        releaseTag: null,
+        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      },
       coreDb,
       dataRoot,
       mode: 'local',
@@ -2069,22 +2266,6 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       readFileSync(join(dataRoot, 'workspaces', workspace.id, traceRelativePath), 'utf8')
     );
     const unboundRequestId = '00000000-0000-4000-8000-000000000903';
-    const unboundExportId = workspaceDeletionRecoveryExportId(unboundRequestId);
-    await expect(
-      createVerifiedWorkspaceExport({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        deletionRecoveryRequestId: unboundRequestId,
-        exportId: unboundExportId,
-        repositoryWorkspaceDb,
-        store,
-        workspaceId: workspace.id,
-      })
-    ).rejects.toThrow();
-    expect(
-      existsSync(join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, unboundExportId))
-    ).toBe(false);
     const requestId = '00000000-0000-4000-8000-000000000902';
     const response = await app.request(
       ...operationRequest(
@@ -2103,28 +2284,51 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     );
 
     expect(response.status, await response.clone().text()).toBe(200);
-    expect(await response.json()).toMatchObject({
+    const deleted = await response.json();
+    expect(deleted).toMatchObject({
       deletion: { phase: 'cleaned', status: 'deleted', workspaceId: workspace.id },
     });
     const deletion = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
     expect(deletion).toMatchObject({
       phase: 'cleaned',
-      recoveryExportId: deriveEntityId('wsexp', ['delete', requestId]),
-      recoveryExportManifestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      recoveryBackupId: deleted.deletion.recoveryBackupId,
+      recoveryBackupManifestDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
     });
-    const exportRoot = join(
-      dataRoot,
-      'server',
-      'exports',
-      'workspaces',
-      workspace.id,
-      deletion.recoveryExportId!
+    const unboundRecovery = await app.request(
+      ...operationRequest(
+        'workspace.deleted-recover',
+        { workspaceId: workspace.id },
+        {
+          body: JSON.stringify({ deletionRequestId: unboundRequestId, requestId: randomUUID() }),
+        }
+      )
     );
-    const verified = verifyWorkspaceExportTree({ exportRoot });
-    expect(verified.manifestDigest).toBe(deletion.recoveryExportManifestDigest);
-    expect(verified.checkedFiles).toContain(`workspace-files/${traceRelativePath}`);
-    const exportedTrace = JSON.parse(
-      readFileSync(join(exportRoot, 'workspace-files', traceRelativePath), 'utf8')
+    expect(unboundRecovery.status).toBe(409);
+    expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
+    expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId)).toEqual(deletion);
+    const exportedTrace = await withVerifiedWorkspaceSnapshotSource(
+      {
+        ...WORKSPACE_BACKUP_POLICY,
+        dataRoot,
+        source: {
+          kind: 'local-snapshot',
+          workspaceId: workspace.id,
+          backupId: deletion.recoveryBackupId!,
+        },
+        stagingParent: join(dataRoot, 'server', 'backups'),
+        admission: new FileStorageAdmission(dataRoot, () => 0n),
+        expectedRelease: {
+          version: 'source',
+          buildId: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+        },
+      },
+      async (bundle) => {
+        expect(bundle.manifestDigest).toBe(deletion.recoveryBackupManifestDigest);
+        expect(bundle.manifest.inventory.map((entry) => entry.path)).toContain(traceRelativePath);
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of bundle.readFile(traceRelativePath)) chunks.push(chunk);
+        return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      }
     );
     expect(exportedTrace).toEqual(sourceTrace);
     expect(JSON.stringify(exportedTrace)).not.toContain('"score"');
@@ -2147,6 +2351,10 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Terminal deletion fixture');
     const app = createApp({
+      releaseIdentity: {
+        releaseTag: null,
+        sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      },
       coreDb,
       dataRoot,
       mode: 'local',
@@ -2170,7 +2378,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     expect(priorExportResponse.status, await priorExportResponse.clone().text()).toBe(200);
     const priorExport = (await priorExportResponse.json()) as { exportId: string };
 
-    // Deletion's exact internal export must preserve private owners without granting the caller private access.
+    // Deletion's exact operational backup must preserve private owners without granting the caller private access.
     const privateThread = await store.createThread(
       workspace.id,
       'Private recovery history',
@@ -2237,11 +2445,12 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     );
 
     expect(response.status, await response.clone().text()).toBe(200);
-    expect(await response.json()).toEqual({
+    const deleted = await response.json();
+    expect(deleted).toEqual({
       deletion: {
         closureId: expect.any(String),
         phase: 'cleaned',
-        recoveryExportId: expect.any(String),
+        recoveryBackupId: expect.any(String),
         requestId,
         retainedStaging: false,
         status: 'deleted',
@@ -2249,11 +2458,14 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       },
     });
     const completedRequest = readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId);
-    expect(completedRequest.recoveryExportId).toBe(deriveEntityId('wsexp', ['delete', requestId]));
+    expect(completedRequest.recoveryBackupId).toBe(deleted.deletion.recoveryBackupId);
     expect(completedRequest.closureId).toBe(`wsclose_delete_${requestId}`);
     const workspaceExportsRoot = join(dataRoot, 'server', 'exports', 'workspaces', workspace.id);
     expect(existsSync(join(workspaceExportsRoot, priorExport.exportId))).toBe(false);
-    expect(readdirSync(workspaceExportsRoot)).toEqual([completedRequest.recoveryExportId]);
+    const workspaceBackupsRoot = join(dataRoot, 'server', 'backups', 'workspaces', workspace.id);
+    expect(readdirSync(workspaceBackupsRoot).filter((entry) => entry !== 'objects')).toEqual([
+      completedRequest.recoveryBackupId,
+    ]);
     expect(
       coreDb.sqlite
         .prepare(
@@ -2482,9 +2694,9 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       'usr_00000000-0000-7000-8000-000000000001'
     );
     const exportManifestPath = join(
-      workspaceExportsRoot,
-      reboundRequest.recoveryExportId!,
-      'openkit-workspace-export.json'
+      workspaceBackupsRoot,
+      reboundRequest.recoveryBackupId!,
+      'manifest.json'
     );
     const exportManifestText = readFileSync(exportManifestPath, 'utf8');
     const exportManifest = JSON.parse(exportManifestText) as Record<string, unknown>;
@@ -2569,23 +2781,19 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
       )
     );
     expect(recoveryResponse.status, await recoveryResponse.clone().text()).toBe(200);
-    const recovered = (await recoveryResponse.json()) as {
-      recovery: {
-        sourceWorkspaceId: string;
-        deletionRequestId: string;
-        import: { importedWorkspaceId: string; collision: { status: string } };
-      };
-    };
-    expect(recovered.recovery).toMatchObject({
-      deletionRequestId: requestId,
-      sourceWorkspaceId: workspace.id,
-      import: { collision: { status: 'collides' } },
+    const recovered = await recoveryResponse.json();
+    expect(recovered).toMatchObject({
+      command: 'restore',
+      disposition: 'restored',
+      workspaceId: workspace.id,
+      selection: { kind: 'admission', requestId: recoveryRequestId },
+      restrictedRecovery: false,
+      nextAction: 'none',
     });
-    expect(recovered.recovery.import.importedWorkspaceId).not.toBe(workspace.id);
     expect(
       coreDb.sqlite
         .prepare('SELECT owner_user_id, status FROM workspace_registry WHERE workspace_id = ?')
-        .get(recovered.recovery.import.importedWorkspaceId)
+        .get(workspace.id)
     ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' });
     expect(
       coreDb.sqlite
@@ -2593,8 +2801,14 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
           `SELECT user_id, status FROM workspace_members
            WHERE workspace_id = ? ORDER BY user_id`
         )
-        .all(recovered.recovery.import.importedWorkspaceId)
-    ).toEqual([{ status: 'active', user_id: 'usr_00000000-0000-7000-8000-000000000001' }]);
+        .all(workspace.id)
+    ).toEqual([
+      { status: 'active', user_id: 'usr_00000000-0000-7000-8000-000000000001' },
+      { status: 'removed', user_id: 'usr_00000000-0000-7d56-82f8-ec994b63859b' },
+    ]);
+    expect(store.getThread(workspace.id, privateThread.id)?.privateOwnerUserId).toBe(
+      privateThread.privateOwnerUserId
+    );
   } finally {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();

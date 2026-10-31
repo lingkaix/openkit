@@ -3,11 +3,15 @@ import { dirname, join } from 'node:path';
 import { isEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { configureOwnedSqlite } from '../storage/control-store.js';
+import { workspaceRecoveryCandidateDigest } from '../storage/data-root-backup.js';
 import type { CoreDb } from '../storage/db.js';
 import { bindWorkspaceSqlite } from '../storage/db.js';
 import { abandonCapture, inspectCapture } from '../storage/workspace-capture-protection.js';
 import { syncCanonicalDirectory } from '../storage/workspace-file-records.js';
+import { readFinishedDeletedWorkspaceRecovery } from '../storage/workspace-recovery-admissions.js';
+import { listAllWorkspaceDeletionRequests } from '../workspace-deletion-request.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from './readiness.js';
 
 /** Only owned seal absence permits abandonment; a retired publication also owes durable absence. */
@@ -91,6 +95,20 @@ export function restoreWorkspaceRecoveryAdmission(
   for (const row of unresolved)
     refuseScope(core.dataRoot, { scope: 'workspace', id: row.workspace_id, check: 'recovery' });
   const captureOrigins = new Map<string, string>();
+  // The same exact current deletion/result join binds sealed-target inspection and fence rejoin.
+  const finishedDeletedRecoveries = (workspaceId: string) => {
+    const registry = getWorkspaceRegistryLifecycleFact(core, workspaceId);
+    return listAllWorkspaceDeletionRequests(core.dataRoot)
+      .filter(
+        (deletion) =>
+          deletion.workspaceId === workspaceId &&
+          registry?.status === 'active' &&
+          registry.ownerUserId === deletion.originalOwnerUserId &&
+          registry.registryRevision === deletion.expectedRegistryRevision + 3
+      )
+      .map((deletion) => readFinishedDeletedWorkspaceRecovery(core, deletion))
+      .filter((row) => row !== undefined);
+  };
   // Capture protection also survives a failure before complete bundle facts can be recorded in Core.
   for (const id of registered) {
     if (!isScopeAdmitted(core.dataRoot, 'workspace', id)) {
@@ -103,6 +121,15 @@ export function restoreWorkspaceRecoveryAdmission(
     }
     let db: Database.Database | undefined;
     try {
+      if (!isScopeAdmitted(core.dataRoot, 'workspace', id)) {
+        const finished = finishedDeletedRecoveries(id);
+        if (
+          finished.length === 1 &&
+          finished[0]!.proof.candidateDigest ===
+            workspaceRecoveryCandidateDigest(join(workspaces, id))
+        )
+          continue;
+      }
       db = new Database(join(workspaces, id, 'db/workspace.sqlite'), {
         readonly: true,
         fileMustExist: true,
@@ -184,6 +211,19 @@ export function restoreWorkspaceRecoveryAdmission(
       mutationAdmission?.restoreRecoveryClosed(failure.id, {
         captureId: captureOrigins.get(failure.id)!,
       });
+    } else if (failure.check === 'recovery' && owners.length === 0) {
+      // A committed original recovery may still owe serving activation. Rejoin its exact
+      // retained admission, never infer permission from a generic closed gate or id prefix.
+      const finished = finishedDeletedRecoveries(failure.id);
+      if (finished.length === 1) {
+        const owner = finished[0]!;
+        mutationAdmission?.restoreRecoveryClosed(failure.id, {
+          admissionId: owner.admission_id,
+          revision: owner.revision - 1,
+          candidateRef: owner.candidate_ref,
+        });
+      } else if (!mutationAdmission?.isClosed(failure.id, 'capture'))
+        mutationAdmission?.restoreClosed(failure.id, 'capture');
     } else if (failure.check === 'recovery' && mutationAdmission?.isClosed(failure.id, 'capture')) {
     } else
       mutationAdmission?.restoreClosed(

@@ -13,14 +13,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
-import { EvidenceBundleRecordSchema } from '@openkit/app-api-schemas';
+import { EvidenceBundleRecordSchema, WorkspaceBackupIdSchema } from '@openkit/app-api-schemas';
 import {
   DeploymentIdSchema,
   RequestIdSchema,
   readRetainedV1,
   TimestampSchema,
   UserIdSchema,
-  WorkspaceExportIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -96,8 +95,8 @@ export const WorkspaceDeletionClosureSchema = z
     closureId: z.string().min(1),
     cutoffTimestamp: TimestampSchema,
     cutoff: z.literal('pre-terminal-deletion'),
-    recoveryExportId: WorkspaceExportIdSchema,
-    recoveryExportManifestDigest: DigestSchema,
+    recoveryBackupId: WorkspaceBackupIdSchema,
+    recoveryBackupManifestDigest: DigestSchema,
     contentInventory: z.array(ClosureInventoryEntrySchema),
   })
   .strip()
@@ -169,8 +168,8 @@ export function createWorkspaceDeletionClosure(input: {
   sourceRegistryRevision: number;
   closureId: string;
   cutoffTimestamp: string;
-  recoveryExportId: string;
-  recoveryExportManifestDigest: string;
+  recoveryBackupId: string;
+  recoveryBackupManifestDigest: string;
 }): VerifiedWorkspaceDeletionClosure {
   const closureRoot = workspaceDeletionClosureRoot(
     input.dataRoot,
@@ -267,8 +266,8 @@ export function createWorkspaceDeletionClosure(input: {
       closureId: input.closureId,
       cutoffTimestamp: input.cutoffTimestamp,
       cutoff: 'pre-terminal-deletion',
-      recoveryExportId: input.recoveryExportId,
-      recoveryExportManifestDigest: input.recoveryExportManifestDigest,
+      recoveryBackupId: input.recoveryBackupId,
+      recoveryBackupManifestDigest: input.recoveryBackupManifestDigest,
       contentInventory,
     });
     writePrivateText(
@@ -283,8 +282,8 @@ export function createWorkspaceDeletionClosure(input: {
       originalOwnerUserId: input.originalOwnerUserId,
       sourceRegistryRevision: input.sourceRegistryRevision,
       closureId: input.closureId,
-      recoveryExportId: input.recoveryExportId,
-      recoveryExportManifestDigest: input.recoveryExportManifestDigest,
+      recoveryBackupId: input.recoveryBackupId,
+      recoveryBackupManifestDigest: input.recoveryBackupManifestDigest,
     });
   } catch (error) {
     rmSync(closureRoot, { force: true, recursive: true });
@@ -302,8 +301,8 @@ export function verifyWorkspaceDeletionClosure(input: {
   originalOwnerUserId: string;
   sourceRegistryRevision: number;
   closureId: string;
-  recoveryExportId: string;
-  recoveryExportManifestDigest: string;
+  recoveryBackupId: string;
+  recoveryBackupManifestDigest: string;
 }): VerifiedWorkspaceDeletionClosure {
   assertCanonicalDirectory(input.closureRoot);
   const manifestPath = join(input.closureRoot, 'workspace-closure.json');
@@ -319,8 +318,8 @@ export function verifyWorkspaceDeletionClosure(input: {
     manifest.originalOwnerUserId !== input.originalOwnerUserId ||
     manifest.sourceRegistryRevision !== input.sourceRegistryRevision ||
     manifest.closureId !== input.closureId ||
-    manifest.recoveryExportId !== input.recoveryExportId ||
-    manifest.recoveryExportManifestDigest !== input.recoveryExportManifestDigest
+    manifest.recoveryBackupId !== input.recoveryBackupId ||
+    manifest.recoveryBackupManifestDigest !== input.recoveryBackupManifestDigest
   ) {
     throw new Error('Workspace deletion closure identity is contradictory.');
   }

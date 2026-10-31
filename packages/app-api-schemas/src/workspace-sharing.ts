@@ -4,12 +4,14 @@ import {
   RequestIdSchema,
   TimestampSchema,
   UserIdSchema,
-  WorkspaceExportIdSchema,
   WorkspaceIdSchema,
   WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { WorkspaceImportResponseSchema } from './storage.js';
+import {
+  WorkspaceBackupIdSchema,
+  WorkspaceSnapshotReportSchema,
+} from './workspace-snapshot-operations.js';
 
 /** Durable lifecycle state of one Workspace membership. */
 export const WorkspaceMembershipStatusSchema = z.enum(['active', 'removed']);
@@ -285,7 +287,7 @@ export const WorkspaceDeletionPhaseSchema = z.enum([
 const WorkspaceDeletionStateBaseSchema = z.object({
   workspaceId: WorkspaceIdSchema,
   requestId: RequestIdSchema,
-  recoveryExportId: WorkspaceExportIdSchema.nullable(),
+  recoveryBackupId: WorkspaceBackupIdSchema.nullable(),
   closureId: z.string().min(1).nullable(),
   retainedStaging: z.boolean(),
 });
@@ -330,37 +332,13 @@ export const DeleteWorkspaceRequestSchema = z
     }
   });
 
-/** Request that imports the recovery export for one deleted Workspace. */
+/** Request that restores the original deleted Workspace from its final operational backup. */
 export const RecoverDeletedWorkspaceRequestSchema = z
   .object({
     requestId: RequestIdSchema,
     deletionRequestId: RequestIdSchema,
   })
   .strict();
-
-/** Safe result of recovering one deleted Workspace into a reminted identity. */
-export const DeletedWorkspaceRecoveryStateSchema = z
-  .object({
-    sourceWorkspaceId: WorkspaceIdSchema,
-    deletionRequestId: RequestIdSchema,
-    recoveryExportId: WorkspaceExportIdSchema,
-    closureId: z.string().min(1),
-    import: WorkspaceImportResponseSchema,
-  })
-  .strict()
-  .refine(
-    (value) =>
-      value.sourceWorkspaceId === value.import.sourceWorkspaceId &&
-      value.sourceWorkspaceId === value.import.exportedWorkspaceId &&
-      value.sourceWorkspaceId === value.import.manifest.workspaceId &&
-      value.recoveryExportId === value.import.exportId &&
-      value.recoveryExportId === value.import.manifest.id &&
-      value.import.collision.status === 'collides' &&
-      value.import.collision.workspaceId === value.sourceWorkspaceId &&
-      value.import.importedWorkspaceId !== value.sourceWorkspaceId &&
-      value.import.workspace.id === value.import.importedWorkspaceId,
-    { message: 'Recovery import must match the deleted Workspace and remint its identity.' }
-  );
 
 /** Response listing every Workspace authorized for the current caller. */
 export const ListAuthorizedWorkspacesResponseSchema = z
@@ -406,9 +384,7 @@ export const WorkspaceDeletionResponseSchema = z
   .strict();
 
 /** Response returned after recovering one deleted Workspace. */
-export const RecoverDeletedWorkspaceResponseSchema = z
-  .object({ recovery: DeletedWorkspaceRecoveryStateSchema })
-  .strict();
+export const RecoverDeletedWorkspaceResponseSchema = WorkspaceSnapshotReportSchema;
 
 /** Safe current record returned by one Workspace sharing revision conflict. */
 export const WorkspaceRevisionConflictDetailsSchema = z.discriminatedUnion('resource', [
@@ -522,10 +498,9 @@ export type WorkspaceDeletionPhase = z.infer<typeof WorkspaceDeletionPhaseSchema
 export type WorkspaceDeletionState = z.infer<typeof WorkspaceDeletionStateSchema>;
 /** Owner-confirmed request that permanently deletes one Workspace. */
 export type DeleteWorkspaceRequest = z.infer<typeof DeleteWorkspaceRequestSchema>;
-/** Request that imports the recovery export for one deleted Workspace. */
+/** Request that restores the original deleted Workspace from its final operational backup. */
 export type RecoverDeletedWorkspaceRequest = z.infer<typeof RecoverDeletedWorkspaceRequestSchema>;
 /** Safe result of recovering one deleted Workspace into a reminted identity. */
-export type DeletedWorkspaceRecoveryState = z.infer<typeof DeletedWorkspaceRecoveryStateSchema>;
 /** Response listing every Workspace authorized for the current caller. */
 export type ListAuthorizedWorkspacesResponse = z.infer<
   typeof ListAuthorizedWorkspacesResponseSchema
