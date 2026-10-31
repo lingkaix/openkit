@@ -373,6 +373,15 @@ describe('retained MCP Tool schema SQL format', () => {
       serviceRef: `mcp-tool:${selected.id}`,
       redactionClass: 'metadata-only',
     });
+    // #568: exact retained catalog/source/Tool content stays at its snapshot-writer owner.
+    expect(listExportableMcpToolSchemaSnapshots(db, live.workspaceId)).toContainEqual(
+      expect.objectContaining({
+        catalogEntryId: live.catalogEntryId,
+        schemaSnapshotId: live.schemaSnapshotId,
+        source: 'live',
+        tools: live.tools,
+      })
+    );
     const expectedLive = { schemaSnapshotId: live.schemaSnapshotId, tools: live.tools };
     // DX requires current committed binding after ACK, rather than a cached earlier absence.
     expect(readTurnMcpToolSchemaSnapshot(input)).toEqual(expectedLive);

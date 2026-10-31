@@ -231,6 +231,8 @@ Knowledge public operations derive from `KNOWLEDGE_OPERATION_DEFINITIONS` and No
 
 After building NanoCore, run `pnpm --filter @openkit/nanocore exec vitest run --config vitest.e2e.config.ts e2e/workspace-portability.spec.ts e2e/secret-redaction.spec.ts` to check retained Knowledge through the built server's derived HTTP bindings. The two-job portability runner uses the same derived CLI entry contracts.
 
+`e2e/worker-mcp-lifecycle.spec.ts` owns the built-process Task/MCP lifecycle proof formerly carried by the Worker-listener smoke. It uses public setup and observation operations, real MCP SDK framing and a real stdio Tool process; its NanoHost/Worker protocol peer supplies external effects. Retained schema-body invariants remain with the schema-snapshot owner tests. The L5 Worker-listener script checks boot/readiness and shutdown only.
+
 The storage App API derives `storage.layout-report`, `backup.create`, and `backup.verify` as `POST /api/app/operations/<id>` for layout diagnostics and server-managed hot backup verification. Deployment-wide routes accept the implicit local actor, a presented `server-admin` Token, or a Better Auth session whose active canonical User owns a currently usable `server-admin` Token; Workspace-scoped Tokens receive `403 Forbidden`. Backup responses return only a backup id, manifest, and checked inventory summary; they do not expose filesystem paths.
 
 Restore is intentionally a stopped-server operator command, not a live App API. The App image exposes it as `/usr/local/bin/openkit-restore`. Stop NanoCore first; the command refuses when `server/runtime/nanocore.lock` exists, verifies the backup manifest, replaces the target data root through the existing restore helper, and prints a path-free JSON summary.

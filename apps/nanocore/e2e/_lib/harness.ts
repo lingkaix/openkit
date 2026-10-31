@@ -98,7 +98,7 @@ export async function startNanoCoreHarness(
 }
 
 /** Completes first-admin setup through the public API using this disposable root's operator emission. */
-export async function completeServerBootstrap(harness: NanoCoreHarness): Promise<void> {
+export async function completeServerBootstrap(harness: NanoCoreHarness): Promise<string> {
   const owner = {
     email: 'bootstrap-owner@example.invalid',
     name: 'Bootstrap Owner',
@@ -131,11 +131,13 @@ export async function completeServerBootstrap(harness: NanoCoreHarness): Promise
       tokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
     }),
   });
-  // The returned administrator bearer is not needed by these ordinary-user scenarios.
-  await response.body?.cancel();
   if (response.status !== 201) {
     throw new Error(`Public server bootstrap must succeed; received ${response.status}.`);
   }
+  const body: unknown = await response.json();
+  if (!body || typeof body !== 'object' || !('token' in body) || typeof body.token !== 'string')
+    throw new Error('Public server bootstrap did not return administrator access.');
+  return body.token;
 }
 
 /**
