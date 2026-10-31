@@ -10,6 +10,8 @@ const CURRENT_ENTRYPOINTS = [
   'goal-orchestrator',
   'quick-chat',
   'knowledge-manager',
+  'policy-agent-gate',
+  'context-compaction',
 ] as const;
 
 describe('built-in Agent System Prompts', () => {

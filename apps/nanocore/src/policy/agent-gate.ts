@@ -4,6 +4,7 @@ import {
   PolicySubjectV1Schema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
 import {
   type AgentTool,
   type InternalAgentLogicalModel,
@@ -11,10 +12,6 @@ import {
   runInternalAgentLoop,
 } from '../internal-agents/internal-agent-loop.js';
 import type { PolicyProposal } from './statements.js';
-
-/** Fixed instructions are authority; the minimized proposal is untrusted review material. */
-export const POLICY_AGENT_GATE_PROMPT =
-  'Review only the supplied I16 Tool summary within the explicitly activated Policy domain. Submit policy.gate-result with decision allow, deny, or escalate and risk, authorizationAssessment, and rationale. Escalate when facts are insufficient. Your assessment cannot authorize a missing grant, satisfy a human-only approval, or change Policy. The final Policy Kernel decides authority. No investigative or effect Tools are available.';
 
 /** Runs the existing bounded loop with only a typed result closure and no effect or investigative Tools. */
 export async function runPolicyAgentGate(
@@ -61,7 +58,7 @@ export async function runPolicyAgentGate(
   };
   const exit = await runInternalAgentLoop(
     {
-      systemPrompt: POLICY_AGENT_GATE_PROMPT,
+      systemPrompt: assembleBuiltInSystemPrompt('policy-agent-gate'),
       messages: [
         {
           role: 'user',
