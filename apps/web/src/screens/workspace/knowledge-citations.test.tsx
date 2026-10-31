@@ -38,6 +38,10 @@ const UNRELATED_PAGE = knowledgeNotebookPageFixture({
 });
 const CITATION = {
   reference: { scopeId: WORKSPACE_PAGE_SCOPE, objectId: PAGE.id },
+  revision: 'reading-room-revision-fixture',
+  contentDigest: PAGE.contentDigest,
+  observedAt: TIMESTAMP,
+  sourceCitations: [],
   kind: 'preference',
   title: PAGE.title,
   excerpt: 'The reading room opens at 09:00 on weekdays.',
