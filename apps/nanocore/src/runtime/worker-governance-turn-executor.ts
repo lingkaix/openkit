@@ -27,6 +27,7 @@ import {
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { publishedErrorMessage } from '../api-errors.js';
+import { ArtifactAuthorityError } from '../artifact-authority.js';
 import {
   currentSchedulerAdmissionWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
@@ -69,7 +70,6 @@ import { workerInputWithKnowledgeOverview } from '../context/worker-overview-inp
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  ArtifactAuthorityError,
   type FsStore,
   StoreRecordNotFoundError,
   type TerminalTurnPublication,

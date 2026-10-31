@@ -17,6 +17,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import { ArtifactAuthorityError } from '../artifact-authority.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { searchPdfSourceSnapshot } from '../context/pdf-source-representation.js';
@@ -33,12 +34,7 @@ import type {
   NotebookPublicationAdmission,
   NotebookUpdate,
 } from '../knowledge/notebook-publication.js';
-import {
-  ArtifactAuthorityError,
-  commandRequestExpiresAt,
-  commandRequestKey,
-  type FsStore,
-} from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, type FsStore } from '../lib/store.js';
 import {
   createOperationInvocation,
   type OperationInvocationDependencies,

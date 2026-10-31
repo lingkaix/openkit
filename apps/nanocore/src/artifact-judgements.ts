@@ -6,6 +6,7 @@ import {
   JudgementRecordSchema,
 } from '@openkit/app-api-schemas';
 import { UserActorRefSchema, writeRetainedV1 } from '@openkit/protocol';
+import { ArtifactAuthorityError } from './artifact-authority.js';
 import {
   ArtifactReviewError,
   executeControlReviewCommand,
@@ -17,7 +18,7 @@ import {
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
-import { ArtifactAuthorityError, type FsStore, StoreRecordNotFoundError } from './lib/store.js';
+import { type FsStore, StoreRecordNotFoundError } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import type { IdempotentCommandReceipt } from './runtime/idempotent-command.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';

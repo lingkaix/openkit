@@ -9,7 +9,8 @@ import {
   deriveEntityId,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
-import { ArtifactAuthorityError, type FsStore } from './lib/store.js';
+import { ArtifactAuthorityError } from './artifact-authority.js';
+import type { FsStore } from './lib/store.js';
 import type { AdmittedOperationContext } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import {

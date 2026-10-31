@@ -28,6 +28,7 @@ import {
   workerObservationSourceRelativePath,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
+import { ArtifactAuthorityError } from '../artifact-authority.js';
 import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
@@ -36,7 +37,7 @@ import {
 import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-visibility.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { ArtifactAuthorityError, FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import {

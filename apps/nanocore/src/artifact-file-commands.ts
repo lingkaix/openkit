@@ -5,7 +5,8 @@ import {
 } from '@openkit/app-api-schemas';
 import { deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { ArtifactAuthorityError, type CommandRequestRecord, type FsStore } from './lib/store.js';
+import { ArtifactAuthorityError } from './artifact-authority.js';
+import type { CommandRequestRecord, FsStore } from './lib/store.js';
 import type { AdmittedOperationContext } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import {

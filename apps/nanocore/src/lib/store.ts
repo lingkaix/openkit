@@ -1,3 +1,4 @@
+import { ArtifactAuthorityError, projectArtifactVersion } from '../artifact-authority.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { prepareWorkspaceKnowledgeProposal } from '../storage/control-store-knowledge.js';
 import {
@@ -29,7 +30,7 @@ import {
 export { commandRequestExpiresAt, commandRequestKey } from '../storage/command-request-records.js';
 
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
   isDeepStrictEqual as alreadyDecidedPublicationBytesEqual,
@@ -160,6 +161,7 @@ import type { AppDb } from '../storage/app-db.js';
 import {
   artifactVersionRecordPath,
   publishArtifactVersionRecord,
+  readArtifactVersionHistory,
   readArtifactVersionRecord,
   rollbackArtifactVersionRecord,
 } from '../storage/artifacts/artifact-version-records.js';
@@ -286,23 +288,6 @@ import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type ProtocolWorkspaceResources = import('zod').infer<typeof WorkspaceResourcesSchema>;
 type WorkspaceResources = Omit<ProtocolWorkspaceResources, 'agents'> & { agents: RuntimeAgent[] };
-
-/** Derives public metadata from the single retained snapshot and its producing facts. */
-function projectArtifactVersion(record: ArtifactVersionRecord): ArtifactVersion {
-  const { artifact, version } = record;
-  return {
-    artifactId: artifact.id,
-    workspaceId: artifact.workspaceId,
-    artifactVersion: artifact.version,
-    title: artifact.title,
-    summary: artifact.summary,
-    contentDigest: artifact.contentDigest,
-    ...version,
-    parentVersion: artifact.version === 1 ? null : artifact.version - 1,
-    requestId: artifact.lastMutationRequestId,
-    recordedAt: artifact.updatedAt,
-  };
-}
 
 /** Staged workspace root made available before an imported workspace is published. */
 export interface ImportWorkspaceStage {
@@ -936,36 +921,6 @@ export interface CommitArtifactVersionInput {
 /** Native absence of an addressed record, distinct from unexpected storage or implementation failure. */
 export class StoreRecordNotFoundError extends Error {}
 
-/** Closed S16 failures owned by the Artifact authority boundary. */
-export type ArtifactAuthorityErrorCode =
-  | 'invalid_request'
-  | 'source_digest_mismatch'
-  | 'recovery_required'
-  | 'stale'
-  | 'conflict'
-  | 'thread_busy';
-
-/** Structured failure raised by Artifact creation and introduction. */
-export class ArtifactAuthorityError extends Error {
-  /** Stable S16 error code. */
-  public readonly code: ArtifactAuthorityErrorCode;
-  /** Exact HTTP status assigned by S16. */
-  public readonly status: 400 | 409;
-
-  /**
-   * Creates one Artifact authority failure.
-   *
-   * @param code Stable S16 error code.
-   * @param message Product-safe diagnostic.
-   */
-  public constructor(code: ArtifactAuthorityErrorCode, message: string) {
-    super(message);
-    this.name = 'ArtifactAuthorityError';
-    this.code = code;
-    this.status = ['invalid_request', 'source_digest_mismatch'].includes(code) ? 400 : 409;
-  }
-}
-
 /**
  * Optional store configuration.
  */
@@ -1255,7 +1210,7 @@ export class FsStore {
     for (const artifact of records.artifacts) {
       versions.set(
         artifact.id,
-        FsStore.loadArtifactVersions(workspaceRoot, artifact, turns, records.itemRevisions)
+        readArtifactVersionHistory(workspaceRoot, artifact, turns, records.itemRevisions)
       );
     }
     return versions;
@@ -1481,74 +1436,6 @@ export class FsStore {
     }
 
     return record;
-  }
-
-  /** Loads exact retained history with the same lineage and Item proof before restart or import admission. */
-  private static loadArtifactVersions(
-    workspaceRoot: string,
-    artifact: Artifact,
-    turns: ReadonlyMap<string, Turn>,
-    itemRevisions: readonly Item[]
-  ): ArtifactVersionRecord[] {
-    try {
-      const versionRoot = dirname(
-        dirname(artifactVersionRecordPath(workspaceRoot, artifact.id, 1))
-      );
-      if (
-        readdirSync(versionRoot).some(
-          (name) =>
-            /^\d+$/.test(name) && (String(Number(name)) !== name || Number(name) > artifact.version)
-        )
-      )
-        throw new Error('The Artifact has an unacknowledged or contradictory version.');
-      const versions = Array.from({ length: artifact.version }, (_, index) =>
-        readArtifactVersionRecord(workspaceRoot, artifact.id, index + 1)
-      );
-      for (const record of versions) {
-        if (
-          record.artifact.workspaceId !== artifact.workspaceId ||
-          !isDeepStrictEqual(record.artifact.origin, artifact.origin)
-        )
-          throw new Error('Artifact version origin is contradictory.');
-        const lineage = record.version;
-        if (lineage.turnId !== null) {
-          const producingTurn = turns.get(lineage.turnId);
-          if (
-            !producingTurn ||
-            workspaceIdForOwner(producingTurn.owner) !== artifact.workspaceId ||
-            producingTurn.threadId !== lineage.threadId ||
-            !isDeepStrictEqual(producingTurn.triggerActor, lineage.actor) ||
-            !itemRevisions.some(
-              (item) =>
-                item.type === 'artifact-reference' &&
-                workspaceIdForOwner(item.owner) === artifact.workspaceId &&
-                item.threadId === lineage.threadId &&
-                item.turnId === lineage.turnId &&
-                item.artifactId === artifact.id &&
-                item.artifactVersion === record.artifact.version &&
-                item.lastMutationRequestId === record.artifact.lastMutationRequestId &&
-                item.title === record.artifact.title &&
-                item.summary === record.artifact.summary
-            )
-          )
-            throw new Error('The retained Artifact version lacks its exact producing Item.');
-        }
-      }
-      const retained = versions.at(-1)!.artifact;
-      if (
-        !isDeepStrictEqual(
-          { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
-          artifact
-        )
-      )
-        throw new Error('The Artifact current-head projection is contradictory.');
-      return versions;
-    } catch {
-      throw new ArtifactAuthorityError(
-        'recovery_required',
-        'The retained Artifact version history is unavailable.'
-      );
-    }
   }
 
   /** Refuses stale Workspace state after a failed canonical directory commit; only reopen clears it. */
@@ -2708,12 +2595,7 @@ export class FsStore {
         for (const artifact of history.artifacts) {
           importedArtifactVersions.set(
             artifact.id,
-            FsStore.loadArtifactVersions(
-              stage.workspaceRoot,
-              artifact,
-              turns,
-              history.itemRevisions
-            )
+            readArtifactVersionHistory(stage.workspaceRoot, artifact, turns, history.itemRevisions)
           );
         }
       },

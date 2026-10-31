@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
 import { apiErrorPayload } from './api-errors.js';
+import { ArtifactAuthorityError } from './artifact-authority.js';
 import { importArtifactFile } from './artifact-file-commands.js';
 import { commitArtifactVersionCommand } from './artifact-versions.js';
 import type { AuthVariables } from './auth/middleware.js';
@@ -10,7 +11,7 @@ import {
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isArtifactVisible, isThreadIdVisible } from './auth/thread-visibility.js';
-import { ArtifactAuthorityError, type FsStore, StoreRecordNotFoundError } from './lib/store.js';
+import { type FsStore, StoreRecordNotFoundError } from './lib/store.js';
 import { registerAppApiRoute } from './openapi.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { admitOperation, type OperationAdmissionDependencies } from './operation-resolvers.js';

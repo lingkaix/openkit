@@ -8,6 +8,7 @@ import {
   WorkerTranscriptItemRecordSchema,
 } from '@openkit/worker-protocol';
 import type { z } from 'zod';
+import { ArtifactAuthorityError } from '../artifact-authority.js';
 import {
   assertArtifactReviewPublication,
   type createArtifactReview,
@@ -16,7 +17,6 @@ import {
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  ArtifactAuthorityError,
   type FsStore,
   StoreRecordNotFoundError,
 } from '../lib/store.js';

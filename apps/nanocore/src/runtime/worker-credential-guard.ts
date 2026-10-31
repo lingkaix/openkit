@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { ArtifactAuthorityError } from '../lib/store.js';
+import { ArtifactAuthorityError } from '../artifact-authority.js';
 
 /** Backend-private comparison evidence for one original worker materialization. */
 export interface WorkerCredentialCheckValues {

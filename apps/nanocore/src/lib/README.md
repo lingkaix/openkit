@@ -100,3 +100,5 @@ Ordinary Core-minted Item and live event appends address their supplied owner an
 The target recovery owner may settle only its restored Workspace publication marker after placement and complete scoped Store/config validation. It keeps readiness refused until its separate final synchronous settlement and does not clear sibling markers.
 
 `conversation-write-policy.ts` owns the existing pure sealed-Turn field and replay predicates and their refusal constructors. Exact publication equality remains distinct from the named display-field refresh; callers still own native reads, admission, the complete transaction and acknowledgement.
+
+Artifact history and its producing-Item verification use `storage/artifacts/artifact-version-records.ts`; `artifact-authority.ts` owns the existing typed Artifact refusal and exact public version projection. Store no longer defines either responsibility.

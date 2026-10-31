@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { isAbsolute, relative } from 'node:path';
-import { ArtifactAuthorityError } from '../lib/store.js';
+import { ArtifactAuthorityError } from '../artifact-authority.js';
+
 import { getRetrievalService } from '../retrieval-service.js';
 import type { StagedArtifactPayload } from '../storage/artifacts/file-payload.js';
 import {

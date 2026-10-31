@@ -11,18 +11,14 @@ import {
   type SelectCandidateSetRequest,
 } from '@openkit/app-api-schemas';
 import { UserActorRefSchema, writeRetainedV1 } from '@openkit/protocol';
+import { ArtifactAuthorityError } from './artifact-authority.js';
 import type { Actor } from './auth/identity.js';
 import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
-import {
-  ArtifactAuthorityError,
-  type CommandRequestRecord,
-  type FsStore,
-  StoreRecordNotFoundError,
-} from './lib/store.js';
+import { type CommandRequestRecord, type FsStore, StoreRecordNotFoundError } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import {
   type InflightIdempotentCommand,

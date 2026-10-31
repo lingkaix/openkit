@@ -1,12 +1,16 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import type { Item, Turn } from '@openkit/protocol';
 import {
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
   readRetainedV1,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { ArtifactAuthorityError } from '../../artifact-authority.js';
 import {
   ActorRefReaderSchema,
   ArtifactReaderSchema,
@@ -19,6 +23,8 @@ import {
   writeFileAtomic,
 } from '../workspace-file-records.js';
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './file-records.js';
+
+type Artifact = ArtifactVersionRecord['artifact'];
 
 /** Resolves the canonical immutable record beside its exact original payload. */
 export function artifactVersionRecordPath(
@@ -173,4 +179,70 @@ export function rollbackArtifactVersionRecord(
     recursive: true,
     force: true,
   });
+}
+
+/** Loads exact retained history with the same lineage and Item proof before restart or import admission. */
+export function readArtifactVersionHistory(
+  workspaceRoot: string,
+  artifact: Artifact,
+  turns: ReadonlyMap<string, Turn>,
+  itemRevisions: readonly Item[]
+): ArtifactVersionRecord[] {
+  try {
+    const versionRoot = dirname(dirname(artifactVersionRecordPath(workspaceRoot, artifact.id, 1)));
+    if (
+      readdirSync(versionRoot).some(
+        (name) =>
+          /^\d+$/.test(name) && (String(Number(name)) !== name || Number(name) > artifact.version)
+      )
+    )
+      throw new Error('The Artifact has an unacknowledged or contradictory version.');
+    const versions = Array.from({ length: artifact.version }, (_, index) =>
+      readArtifactVersionRecord(workspaceRoot, artifact.id, index + 1)
+    );
+    for (const record of versions) {
+      if (
+        record.artifact.workspaceId !== artifact.workspaceId ||
+        !isDeepStrictEqual(record.artifact.origin, artifact.origin)
+      )
+        throw new Error('Artifact version origin is contradictory.');
+      const lineage = record.version;
+      if (lineage.turnId !== null) {
+        const producingTurn = turns.get(lineage.turnId);
+        if (
+          !producingTurn ||
+          workspaceIdForOwner(producingTurn.owner) !== artifact.workspaceId ||
+          producingTurn.threadId !== lineage.threadId ||
+          !isDeepStrictEqual(producingTurn.triggerActor, lineage.actor) ||
+          !itemRevisions.some(
+            (item) =>
+              item.type === 'artifact-reference' &&
+              workspaceIdForOwner(item.owner) === artifact.workspaceId &&
+              item.threadId === lineage.threadId &&
+              item.turnId === lineage.turnId &&
+              item.artifactId === artifact.id &&
+              item.artifactVersion === record.artifact.version &&
+              item.lastMutationRequestId === record.artifact.lastMutationRequestId &&
+              item.title === record.artifact.title &&
+              item.summary === record.artifact.summary
+          )
+        )
+          throw new Error('The retained Artifact version lacks its exact producing Item.');
+      }
+    }
+    const retained = versions.at(-1)!.artifact;
+    if (
+      !isDeepStrictEqual(
+        { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+        artifact
+      )
+    )
+      throw new Error('The Artifact current-head projection is contradictory.');
+    return versions;
+  } catch {
+    throw new ArtifactAuthorityError(
+      'recovery_required',
+      'The retained Artifact version history is unavailable.'
+    );
+  }
 }

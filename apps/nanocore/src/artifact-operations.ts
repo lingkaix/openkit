@@ -17,6 +17,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
+import { ArtifactAuthorityError } from './artifact-authority.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import {
   ArtifactReviewError,
@@ -38,12 +39,7 @@ import {
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from './context/worker-context-package.js';
-import {
-  ArtifactAuthorityError,
-  type CommandRequestRecord,
-  type FsStore,
-  StoreRecordNotFoundError,
-} from './lib/store.js';
+import { type CommandRequestRecord, type FsStore, StoreRecordNotFoundError } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import type { FamilyImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
