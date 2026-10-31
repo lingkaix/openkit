@@ -21,6 +21,8 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import { corruptTestWorkspaceNotebookCommit } from '../test-support/workspace-notebook-corruption.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -75,8 +77,14 @@ function retained(
     scope.kind === 'server'
       ? join(f.dataRoot, 'server', 'knowledge')
       : join(f.dataRoot, 'workspaces', scope.workspaceId, 'knowledge');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
-  const revision = notebook.publishedRevision();
+  const notebook =
+    scope.kind === 'server'
+      ? new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') })
+      : readTestWorkspaceNotebookSelection(f.dataRoot, scope.workspaceId).notebook;
+  const revision =
+    scope.kind === 'server'
+      ? notebook.publishedRevision()
+      : readTestWorkspaceNotebookSelection(f.dataRoot, scope.workspaceId).head.notebookCommit;
   const pointer = notebook.readSourcePointers(revision)[sourceId]!;
   const parsed = parseOkfDocument({ path: `sources/${sourceId}.md`, content: pointer });
   if (!parsed.ok) throw new Error('Fixture requires a published canonical SourceSummary.');
@@ -138,9 +146,7 @@ describe('pinned raw Source meaning receiver', () => {
     }
     writeFileSync(saved.rawPath, 'Changed current original.');
     expect(await f.read(saved.reference)).toEqual(unavailable(saved.reference));
-    expect(saved.notebook.readSourcePointers(saved.notebook.publishedRevision())[source.id]).toBe(
-      saved.pointer
-    );
+    expect(saved.notebook.readSourcePointers(saved.revision)[source.id]).toBe(saved.pointer);
     writeFileSync(saved.rawPath, content);
     expect.soft(await f.read(saved.reference)).toMatchObject({ status: 'available', content });
     // The same retained URI cannot keep Server authority after its current actor is disabled.
@@ -253,14 +259,21 @@ describe('pinned raw Source meaning receiver', () => {
       content: saved.pointer,
       updates: { sensitivity: 'confidential' },
     });
-    const baseRevision = saved.notebook.publishedRevision();
+    const baseRevision = saved.revision;
     const candidateRevision = saved.notebook.prepareSourcePointers({
       baseRevision,
       changes: { [source.id]: confidential },
       metadata: saved.notebook.readRevision(baseRevision).metadata,
     });
-    saved.notebook.publish({ baseRevision, candidateRevision });
-    expect(parseSourcePointer(owner, source.id, confidential).source.contentDigest).toBe(digest);
+    corruptTestWorkspaceNotebookCommit(f.dataRoot, scope.workspaceId, candidateRevision);
+    expect(
+      parseSourcePointer(
+        owner,
+        source.id,
+        confidential,
+        readTestWorkspaceNotebookSelection(f.dataRoot, scope.workspaceId)
+      ).source.contentDigest
+    ).toBe(digest);
     expect(await f.read(saved.reference)).toEqual(unavailable(saved.reference));
   });
 });
