@@ -1484,8 +1484,17 @@ describe('worker control routes', () => {
   });
 
   it('enforces durable scheduler binding refs through the default gateway factory', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-default-')));
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-default-'));
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Default binding thread'
@@ -1523,9 +1532,6 @@ describe('worker control routes', () => {
       workspaceId: environmentPackage.scope.workspaceId,
     };
 
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1925,8 +1931,17 @@ describe('worker control routes', () => {
   });
 
   it('rolls back final status atomically before a successful restart retry', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-final-')));
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-final-'));
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Final status thread'
@@ -1964,9 +1979,6 @@ describe('worker control routes', () => {
       workspaceId: environmentPackage.scope.workspaceId,
     };
 
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2865,8 +2877,17 @@ describe('worker control routes', () => {
   });
 
   it('retains accepted supply refresh acknowledgement evidence in Core', async () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-supply-refresh-ack-')));
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-supply-refresh-ack-'));
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Supply refresh thread'
@@ -2905,9 +2926,6 @@ describe('worker control routes', () => {
     };
 
     try {
-      applyMigrations(coreDb);
-      ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3354,7 +3372,15 @@ describe('worker control routes', () => {
   it('replays the heartbeat ACK after database reopen without a retained heartbeat or liveness renewal', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-'));
     let coreDb = openCoreDb(dataRoot);
-    const store = await createDemoStore();
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Rebuild worker session'
@@ -3393,9 +3419,6 @@ describe('worker control routes', () => {
     };
 
     try {
-      applyMigrations(coreDb);
-      ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',

@@ -118,3 +118,5 @@ The public caller-override case in `../knowledge-manager.test.ts` uses a private
 Worker recovery fixtures open handles after actual Demo Workspace publication in the same root. Provenance fixtures keep running Turns without assigned Sessions; human-approval fixtures use atomic terminal publication with the original response request ID before exact replay.
 
 Server history tests read current Items through canonical Turn projections and complete events through the canonical transcript. The unused Item-list and bounded-event convenience methods are removed; live append, reload and Workspace cursor bounds keep their existing owners.
+
+Four direct Core-owned Worker-control fixtures use those same native roots before Thread creation. Their original acceptance, rollback, heartbeat replay and supply ACK owners stay unchanged. The shared route helper remains rootless until its session-bound terminal fixture uses the existing execution-acceptance owner.
