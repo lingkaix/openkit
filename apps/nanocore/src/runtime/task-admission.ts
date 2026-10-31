@@ -146,7 +146,9 @@ export function createCoordinatorTaskTool(options: {
           if (admission.kernel.effect !== 'allow')
             throw new TurnStartValidationError(
               'task_admission_failed',
-              'The selected Task Worker or resources are outside the current Goal domain.'
+              admission.domainAvailable
+                ? 'The selected Task Worker or resources are outside the current Goal domain.'
+                : 'No admitted Goal domain is available for this active Plan. Retry publication from its recorded Plan approval under current authority; if revoked or expired, propose and approve a replacement Plan.'
             );
         };
         // Refuse before creating a Task; asynchronous preparation must not preserve stale bounds.

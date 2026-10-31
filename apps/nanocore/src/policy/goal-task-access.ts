@@ -152,9 +152,12 @@ export interface GoalTaskAdmissionInput {
 }
 
 /** Bounds the prepared Worker/resource selection; it neither grants an effect nor spends a use. */
-export function evaluateGoalTaskAdmission(
-  input: GoalTaskAdmissionInput
-): Pick<GoalTaskAccessResult, 'kernel' | 'authorizationRevision'> {
+export function evaluateGoalTaskAdmission(input: GoalTaskAdmissionInput): Pick<
+  GoalTaskAccessResult,
+  'kernel' | 'authorizationRevision'
+> & {
+  readonly domainAvailable: boolean;
+} {
   const agentId = AgentIdSchema.parse(input.agentId);
   const resources = input.resources.map((value) => PolicyResourceV1Schema.parse(value));
   const domain = input.domain;
@@ -171,6 +174,8 @@ export function evaluateGoalTaskAdmission(
       )
   );
   return {
+    // Report the existing selected owner fact; only the Kernel decides admission.
+    domainAvailable: domain?.state === 'active',
     kernel: scopeKernel({
       operation: 'turn.run',
       user: `agent:${agentId}`,

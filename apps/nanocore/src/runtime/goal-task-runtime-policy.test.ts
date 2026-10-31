@@ -1086,6 +1086,20 @@ describe('Goal-domain Task consumers', () => {
     expect(
       f.db.sqlite.prepare('SELECT thread_id FROM goal_card_tasks ORDER BY thread_id').all()
     ).toEqual(before);
+    const refusal = JSON.parse(result.content[0]!.text);
+    expect(refusal.code).toBe('task_admission_failed');
+    if (reason === 'missing-domain') {
+      expect(refusal.message).toMatch(
+        /Goal domain.*(?:not admitted|unavailable)|no admitted Goal domain/i
+      );
+      expect(refusal.message).toMatch(/retry.*publication|publication.*retry/i);
+      expect(refusal.message).toMatch(/recorded.*approval/i);
+      expect(refusal.message).toMatch(/current.*authority/i);
+    } else {
+      expect(refusal.message).toBe(
+        'The selected Task Worker or resources are outside the current Goal domain.'
+      );
+    }
   });
 
   it('lets an admitted selected Worker reach ordinary Task execution', async () => {
