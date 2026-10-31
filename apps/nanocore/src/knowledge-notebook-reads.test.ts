@@ -1,3 +1,4 @@
+import { corruptTestWorkspaceNotebookCommit } from './test-support/workspace-notebook-corruption.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -12,7 +13,6 @@ import {
 } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import {
   collectKnowledgeInventory,
@@ -37,6 +37,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
@@ -170,17 +171,26 @@ async function fixture() {
   });
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
   const repositoryPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git');
-  const notebook = new KnowledgeNotebook({ repositoryPath });
   const access: KnowledgeRetrievalAccess = {
     store,
     coreDb,
     actor: { kind: 'user', id: LOCAL_USER_ID },
     requestActor: { kind: 'session', userId: LOCAL_USER_ID },
   };
-  return { dataRoot, workspaceId: workspace.id, access, coreDb, store, repositoryPath, notebook };
+  return {
+    dataRoot,
+    workspaceId: workspace.id,
+    access,
+    coreDb,
+    store,
+    repositoryPath,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
+  };
 }
 
-/** Publish test-owned content through the actual content owner, without claiming native admission. */
+/** Injects exact retained OKF and deliberate corruption after real native owner admission; creates no success evidence. */
 function publish(f: Awaited<ReturnType<typeof fixture>>, changes: Record<string, string | null>) {
   const baseRevision = f.notebook.publishedRevision();
   const candidateRevision = f.notebook.prepare({
@@ -194,7 +204,7 @@ function publish(f: Awaited<ReturnType<typeof fixture>>, changes: Record<string,
       sourceReferences: [],
     },
   });
-  f.notebook.publish({ baseRevision, candidateRevision });
+  corruptTestWorkspaceNotebookCommit(f.dataRoot, f.workspaceId, candidateRevision);
   return candidateRevision;
 }
 

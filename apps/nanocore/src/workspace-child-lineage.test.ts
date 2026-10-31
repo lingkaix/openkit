@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -14,6 +13,7 @@ import { knowledgeOperationRequest } from './test-support/knowledge-operation.js
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** One direct Core request expected to fail closed on child lineage. */
@@ -89,15 +89,10 @@ async function createLineageFixture() {
     expect(created.status, await created.clone().text()).toBe(200);
     expect((await created.json()).changedPageIds).toEqual(['foreign-knowledge']);
     const foreignKnowledge = { id: 'foreign-knowledge' };
-    const foreignNotebook = new KnowledgeNotebook({
-      repositoryPath: join(
-        dataRoot,
-        'workspaces',
-        foreignWorkspace.id,
-        'knowledge',
-        'notebook.git'
-      ),
-    });
+    const foreignNotebook = readTestWorkspaceNotebookSelection(
+      dataRoot,
+      foreignWorkspace.id
+    ).notebook;
     const foreignKnowledgeBytes = foreignNotebook.readRevision(foreignNotebook.publishedRevision())
       .files[`${foreignKnowledge.id}.md`]!;
     const foreignKnowledgeDigest = `sha256:${createHash('sha256').update(foreignKnowledgeBytes).digest('hex')}`;
@@ -267,15 +262,10 @@ describe('Workspace child lineage', () => {
   });
 
   it('keeps scoped Knowledge page names and Source identities within the selected Workspace', async () => {
-    const foreignNotebook = new KnowledgeNotebook({
-      repositoryPath: join(
-        fixture.dataRoot,
-        'workspaces',
-        fixture.foreignWorkspace.id,
-        'knowledge',
-        'notebook.git'
-      ),
-    });
+    const foreignNotebook = readTestWorkspaceNotebookSelection(
+      fixture.dataRoot,
+      fixture.foreignWorkspace.id
+    ).notebook;
     const foreignRevision = foreignNotebook.publishedRevision();
     const foreignBytes = foreignNotebook.readRevision(foreignRevision).files;
     for (const [id, child, status, code] of [
@@ -325,18 +315,16 @@ describe('Workspace child lineage', () => {
       // Page names are Notebook-relative; absent selected-scope pages cannot address another tree.
       expect(response.status, `${id}: ${await response.clone().text()}`).toBe(status);
       await expect(response.json()).resolves.toMatchObject({ code });
-      expect(foreignNotebook.publishedRevision()).toBe(foreignRevision);
+      expect(
+        readTestWorkspaceNotebookSelection(fixture.dataRoot, fixture.foreignWorkspace.id).head
+          .notebookCommit
+      ).toBe(foreignRevision);
       expect(foreignNotebook.readRevision(foreignRevision).files).toEqual(foreignBytes);
       expect(
-        new KnowledgeNotebook({
-          repositoryPath: join(
-            fixture.dataRoot,
-            'workspaces',
-            fixture.allowedWorkspace.id,
-            'knowledge',
-            'notebook.git'
-          ),
-        }).publishedRevision()
+        readTestWorkspaceNotebookSelection(
+          fixture.dataRoot,
+          fixture.allowedWorkspace.id
+        ).notebook.publishedRevision()
       ).toBe(fixture.allowedNotebookRevision);
     }
   });

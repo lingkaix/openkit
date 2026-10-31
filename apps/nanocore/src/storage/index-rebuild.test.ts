@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   lstatSync,
@@ -19,11 +20,12 @@ import { KnowledgeRetrievalTraceSchema } from '@openkit/app-api-schemas';
 import { formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import type { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
 import type { KnowledgeSourceRecord } from '../lib/store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -31,7 +33,10 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { createTestStore } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import { corruptTestWorkspaceNotebookCommit } from '../test-support/workspace-notebook-corruption.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
@@ -150,7 +155,7 @@ function sourceReferencePage(knowledgePageId: string, reference: string): string
   ].join('\n');
 }
 
-/** Publishes exact test-owned bytes through Git, without claiming native mutation admission. */
+/** Injects exact retained page bytes, including validation faults, into an already admitted private owner. */
 function publishPage(workspaceRoot: string, path: string, content: string): void {
   const notebook = workspaceNotebook(workspaceRoot);
   const baseRevision = notebook.publishedRevision();
@@ -165,14 +170,19 @@ function publishPage(workspaceRoot: string, path: string, content: string): void
       sourceReferences: [],
     },
   });
-  notebook.publish({ baseRevision, candidateRevision });
+  corruptTestWorkspaceNotebookCommit(
+    dirname(dirname(workspaceRoot)),
+    workspaceRoot.split('/').at(-1)!,
+    candidateRevision
+  );
 }
 
 /** Opens the canonical content owner for this fixture. */
 function workspaceNotebook(workspaceRoot: string): KnowledgeNotebook {
-  return new KnowledgeNotebook({
-    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-  });
+  return readTestWorkspaceNotebookSelection(
+    dirname(dirname(workspaceRoot)),
+    workspaceRoot.split('/').at(-1)!
+  ).notebook;
 }
 
 /** Reads the exact current published page, never a materialized physical copy. */
@@ -222,7 +232,7 @@ it('refuses missing native Workspace authority rather than using a former metada
 });
 
 let pageSequence = 0;
-/** Publishes canonical fixture bytes through the existing test-owned Git content seam. */
+/** Selects canonical fixture bytes through the explicit retained-content fault seam. */
 function publishFixturePage(
   dataRoot: string,
   workspaceId: string,
@@ -1191,25 +1201,53 @@ describe('workspace derived index rebuild', () => {
 
   it('uses the workspace schema when rebuilding extension knowledge pages', async () => {
     const dataRoot = createDataRoot();
-    await createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Seed knowledge',
       content: 'Seed body.',
     });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
-      [
-        `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"`,
-        'status: "active"',
-        'allowed_types: ["KnowledgePage", "RepoConvention"]',
-        'allowed_statuses: ["active"]',
-        'allowed_review_states: ["user-authored"]',
-        'allowed_sensitivities: ["normal"]',
-        'allowed_freshness: ["current"]',
-        '',
-      ].join('\n')
+    const access = localRetrievalAccess(dataRoot, store, 'ws_00000000-0000-7000-8000-000000000001');
+    const app = createApp({ dataRoot, coreDb: access.coreDb, store });
+    const selected = readTestWorkspaceNotebookSelection(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
     );
+    const schemaText = selected.scopeSchemaText.replace(
+      /^allowed_types: (.+)$/m,
+      (_line, values: string) =>
+        `allowed_types: ${JSON.stringify([...JSON.parse(values), 'RepoConvention'])}`
+    );
+    const preview = await app.request(
+      ...operationRequest(
+        'knowledge.schema.preview',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          baseRevision: selected.head.notebookCommit,
+          schemaText,
+        },
+        { body: JSON.stringify({ requestId: randomUUID() }) }
+      )
+    );
+    expect(preview.status, await preview.clone().text()).toBe(200);
+    const reviewedReport = await preview.json();
+    const applied = await app.request(
+      ...operationRequest(
+        'knowledge.schema.apply',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          baseRevision: selected.head.notebookCommit,
+          schemaText,
+          reviewedReport,
+        },
+        { body: JSON.stringify({ requestId: randomUUID() }) }
+      )
+    );
+    expect(applied.status, await applied.clone().text()).toBe(200);
+    expect(
+      readTestWorkspaceNotebookSelection(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+        .scopeSchemaText
+    ).toBe(schemaText);
     publishPage(
       workspaceRoot,
       'repo.md',
@@ -1256,22 +1294,38 @@ describe('workspace derived index rebuild', () => {
       content: 'This body should not be indexed.',
     });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
-    writeFileSync(
-      join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
-      `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"\n`
-    );
-
     rebuildWorkspaceDerivedIndexes({
       dataRoot,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-
-    const validation = JSON.parse(
-      readFileSync(join(workspaceRoot, 'indexes', 'knowledge-validation.json'), 'utf8')
-    ) as { records: Array<{ indexed: boolean; errors: unknown[] }> };
-
-    expect(validation.records.every((record) => !record.indexed)).toBe(true);
-    expect(validation.records.some((record) => record.errors.length > 0)).toBe(true);
+    const indexesRoot = join(workspaceRoot, 'indexes');
+    const originalIndexes = readIndexBytes(indexesRoot);
+    const selected = readTestWorkspaceNotebookSelection(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
+    );
+    const schemaPath = join(
+      workspaceRoot,
+      'knowledge',
+      'content',
+      selected.head.schemaContent.reference.locator.path
+    );
+    const originalSchema = readFileSync(schemaPath);
+    chmodSync(schemaPath, 0o644);
+    try {
+      writeFileSync(schemaPath, `schema_version: "${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION}"\n`);
+      // SQL binds immutable schema bytes. A malformed selected schema must refuse before any index write.
+      expect(() =>
+        rebuildWorkspaceDerivedIndexes({
+          dataRoot,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
+      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      expect(readIndexBytes(indexesRoot)).toEqual(originalIndexes);
+    } finally {
+      writeFileSync(schemaPath, originalSchema);
+      chmodSync(schemaPath, 0o444);
+    }
   });
 
   it('requires active knowledge page source references to resolve to registered records', async () => {

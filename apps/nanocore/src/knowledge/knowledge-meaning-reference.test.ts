@@ -15,6 +15,9 @@ import { applyMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import { corruptTestWorkspaceNotebookCommit } from '../test-support/workspace-notebook-corruption.js';
+import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
@@ -41,15 +44,23 @@ async function fixture() {
     requestActor: { kind: 'local', userId },
   };
   const ownerScope = { kind: 'workspace' as const, workspaceId: workspace.id };
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
   onTestFinished(async () => {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { dataRoot, coreDb, userId, store, access, workspace, ownerScope, notebook };
+  return {
+    dataRoot,
+    coreDb,
+    userId,
+    store,
+    access,
+    workspace,
+    ownerScope,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
+  };
 }
 
 /** Native page bytes, including descriptive extensions, are checked as a complete exact document. */
@@ -68,13 +79,23 @@ function page(ownerScope: KnowledgeOwnerScope, sourceReferences: string[] = []) 
   );
 }
 
-/** Fixed Git publication is the fixture effect; the subject is the native read boundary. */
-function publish(
+/** Workspace content uses actual native publication; candidate and Server content retain their existing owners. */
+async function publish(
   f: Awaited<ReturnType<typeof fixture>>,
   notebook: KnowledgeNotebook,
   content: string,
-  retainOnly = false
+  retainOnly = false,
+  ownerScope: KnowledgeOwnerScope = f.ownerScope
 ) {
+  if (!retainOnly && ownerScope.kind === 'workspace') {
+    return (
+      await publishTestWorkspaceNotebook({
+        ...f,
+        workspaceId: f.workspace.id,
+        changes: { 'domain.md': content },
+      })
+    ).notebookRevision;
+  }
   const baseRevision = notebook.publishedRevision();
   const candidateRevision = notebook.prepare({
     baseRevision,
@@ -117,7 +138,7 @@ describe('exact governed Knowledge meaning receiver', () => {
   it('returns exact current and older published bytes without selecting an unpublished candidate', async () => {
     const f = await fixture();
     const content = page(f.ownerScope);
-    const revision = publish(f, f.notebook, content);
+    const revision = await publish(f, f.notebook, content);
     const uri = reference(f);
     expect(await resolve(f, uri)).toEqual({
       status: 'available',
@@ -127,7 +148,7 @@ describe('exact governed Knowledge meaning receiver', () => {
       content,
     });
     const changed = content.replace('Exact domain meaning.', 'Later domain meaning.');
-    publish(f, f.notebook, changed);
+    await publish(f, f.notebook, changed);
     expect(await resolve(f, uri)).toEqual({
       status: 'available',
       reference: uri,
@@ -136,14 +157,14 @@ describe('exact governed Knowledge meaning receiver', () => {
       content,
     });
     const pending = changed.replace('Later domain meaning.', 'Unpublished meaning.');
-    publish(f, f.notebook, pending, true);
+    await publish(f, f.notebook, pending, true);
     const pendingUri = reference(f, f.ownerScope, pending);
     expect(await resolve(f, pendingUri)).toEqual(unavailable(pendingUri));
   });
 
   it('refuses missing pins, wrong bytes/KB/Workspace, private User and unsupported raw targets uniformly', async () => {
     const f = await fixture();
-    publish(f, f.notebook, page(f.ownerScope));
+    await publish(f, f.notebook, page(f.ownerScope));
     const uri = reference(f);
     for (const denied of [
       uri.split('@')[0]!,
@@ -167,16 +188,16 @@ describe('exact governed Knowledge meaning receiver', () => {
   it('rechecks current caller and current page sensitivity even for a retained old pin', async () => {
     const f = await fixture();
     const content = page(f.ownerScope);
-    publish(f, f.notebook, content);
+    await publish(f, f.notebook, content);
     const uri = reference(f);
     expect((await resolve(f, uri)).status).toBe('available');
-    publish(
+    await publish(
       f,
       f.notebook,
       updateOkfFrontmatter({ path: 'domain.md', content, updates: { sensitivity: 'confidential' } })
     );
     expect(await resolve(f, uri)).toEqual(unavailable(uri));
-    publish(f, f.notebook, content);
+    await publish(f, f.notebook, content);
     f.coreDb.db.transaction(() => disableCanonicalUser(f.coreDb, f.userId));
     expect(await resolve(f, uri)).toEqual(unavailable(uri));
   });
@@ -220,7 +241,7 @@ describe('exact governed Knowledge meaning receiver', () => {
       content: material,
     });
     const content = page(f.ownerScope, [`source:${source.id}@${digest(material)}`]);
-    publish(f, f.notebook, content);
+    await publish(f, f.notebook, content);
     const uri = reference(f, f.ownerScope, content);
     expect((await resolve(f, uri)).status).toBe('available');
     writeManagedThreadPolicyFixture({
@@ -239,7 +260,7 @@ describe('exact governed Knowledge meaning receiver', () => {
       content: page(f.ownerScope),
       updates: { custom: { keep: ['exact', 'extension'] } },
     });
-    publish(f, f.notebook, content);
+    await publish(f, f.notebook, content);
     expect(await resolve(f, reference(f, f.ownerScope, content))).toMatchObject({
       status: 'available',
       content,
@@ -250,7 +271,8 @@ describe('exact governed Knowledge meaning receiver', () => {
       { requiredFeatures: ['openkit.unknown.v1'] },
     ]) {
       const invalid = updateOkfFrontmatter({ path: 'domain.md', content, updates });
-      publish(f, f.notebook, invalid);
+      const corruptRevision = await publish(f, f.notebook, invalid, true);
+      corruptTestWorkspaceNotebookCommit(f.dataRoot, f.workspace.id, corruptRevision);
       const uri = reference(f, f.ownerScope, invalid);
       expect(await resolve(f, uri)).toEqual(unavailable(uri));
     }
@@ -269,7 +291,7 @@ describe('exact governed Knowledge meaning receiver', () => {
     });
     const scope = { kind: 'server' } as const;
     const content = page(scope);
-    const revision = publish(f, notebook, content);
+    const revision = await publish(f, notebook, content, false, scope);
     const uri = reference(f, scope, content);
     expect(await resolve(f, uri)).toEqual({
       status: 'available',

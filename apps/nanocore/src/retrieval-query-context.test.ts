@@ -1,5 +1,6 @@
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createTestStore } from './test-support/store.js';
+import { corruptTestWorkspaceNotebookCommit } from './test-support/workspace-notebook-corruption.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 // openkit-test-platform: posix
 
@@ -24,7 +25,7 @@ import {
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
+import type { KnowledgeNotebook } from './knowledge/notebook.js';
 import { validateNotebookCandidate } from './knowledge/notebook-validation.js';
 import { parseOkfDocument, stringListFrontmatterField } from './knowledge/okf.js';
 import type { FsStore } from './lib/store.js';
@@ -50,6 +51,7 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { writeManagedThreadPolicyFixture } from './test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const ACTOR = {
@@ -1176,10 +1178,8 @@ function createEntry(
     pageScopeId: pageScope(fixture),
     base,
     candidate: { files: { ...base.files, [`${entry.id}.md`]: bytes } },
-    scopeSchemaText: readFileSync(
-      join(fixture.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
-      'utf8'
-    ),
+    scopeSchemaText: readTestWorkspaceNotebookSelection(fixture.dataRoot, fixture.workspaceId)
+      .scopeSchemaText,
     registeredSources: new Map(
       fixture.store
         .listKnowledgeSources(fixture.workspaceId)
@@ -1198,9 +1198,7 @@ function pageScope(fixture: Fixture): string {
 
 /** The same immutable Git owner used by retrieval; no materialized pages tree is authoritative. */
 function fixtureNotebook(fixture: Fixture): KnowledgeNotebook {
-  return new KnowledgeNotebook({
-    repositoryPath: join(fixture.workspaceRoot, 'knowledge', 'notebook.git'),
-  });
+  return readTestWorkspaceNotebookSelection(fixture.dataRoot, fixture.workspaceId).notebook;
 }
 
 /** Reads the exact current page from its published commit. */
@@ -1211,7 +1209,7 @@ function readPage(fixture: Fixture, pageId: string): string {
   ]!;
 }
 
-/** Seeds exact retained Git bytes, including deliberate corruption, without weakening the reader's oracle or invoking a retired Store writer. */
+/** Injects exact retained Git bytes, including deliberate corruption, into the existing SQL selection without a successful publication claim. */
 function publishFixturePage(fixture: Fixture, pageId: string, content: string): void {
   const notebook = fixtureNotebook(fixture);
   const baseRevision = notebook.publishedRevision();
@@ -1229,7 +1227,7 @@ function publishFixturePage(fixture: Fixture, pageId: string, content: string): 
         : [],
     },
   });
-  notebook.publish({ baseRevision, candidateRevision });
+  corruptTestWorkspaceNotebookCommit(fixture.dataRoot, fixture.workspaceId, candidateRevision);
 }
 
 function findTraceFiles(root: string): string[] {
