@@ -336,13 +336,15 @@ export function decode(
   return record;
 }
 
+type ProductReadStatements = Map<ControlProductKind | 'entries', Database.Statement>;
+
 /** Returns only native SQL metadata and its revision, never a file-backed fallback or cache. */
 export function readProduct(
   sqlite: Database.Database,
   owner: ControlProductOwner,
   kind: ControlProductKind,
   id: string,
-  prepared?: Map<ControlProductKind, Database.Statement>
+  prepared?: ProductReadStatements
 ) {
   let statement = prepared?.get(kind);
   if (!statement) {
@@ -353,13 +355,79 @@ export function readProduct(
   return row === undefined ? undefined : decodeRow(sqlite, kind, row, owner, prepared);
 }
 
+/** Reads one bounded metadata page on the supplied owner connection and its current snapshot. */
+export function listProducts(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  kind: ControlProductKind,
+  afterId = '',
+  limit: number = CONTROL_PRODUCT_LIMITS.pageRows,
+  prepared?: ProductReadStatements
+): ControlProductSnapshot[] {
+  ControlProductKindSchema.parse(kind);
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > CONTROL_PRODUCT_LIMITS.pageRows)
+    throw new ControlProductPreconditionError();
+  const rows = sqlite
+    .prepare(`SELECT * FROM ${tables[kind]} WHERE id>? ORDER BY id LIMIT ?`)
+    .all(afterId, limit) as MetadataRow[];
+  return rows.map((row) => decodeRow(sqlite, kind, row, owner, prepared));
+}
+
+/** Reads ordered immutable descriptors without opening, closing, or advancing the supplied snapshot. */
+export function readProductEntries(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  turnId: string,
+  kind: 'item' | 'event',
+  after = 0,
+  limit: number = CONTROL_PRODUCT_LIMITS.pageRows,
+  prepared?: ProductReadStatements
+): ControlProductEntryView[] {
+  if (
+    (kind !== 'item' && kind !== 'event') ||
+    !Number.isSafeInteger(after) ||
+    after < 0 ||
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > CONTROL_PRODUCT_LIMITS.pageRows
+  )
+    throw new ControlProductPreconditionError();
+  if (!readProduct(sqlite, owner, 'turn', turnId, prepared)) return [];
+  let statement = prepared?.get('entries');
+  if (!statement) {
+    statement = sqlite.prepare(
+      'SELECT schema_version,sequence,id,revision,content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence>? ORDER BY sequence LIMIT ?'
+    );
+    prepared?.set('entries', statement);
+  }
+  const rows = statement.all(kind, turnId, after, limit) as {
+    schema_version: number;
+    sequence: number;
+    id: string;
+    revision: number;
+    content_json: string;
+  }[];
+  return rows.map((row) => {
+    if (row.schema_version !== 1 || !Number.isSafeInteger(row.revision) || row.revision < 1)
+      throw new ControlProductPreconditionError();
+    const content = ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json));
+    assertControlProductOwner(
+      owner,
+      'representation' in content.reference
+        ? content.reference.ownerScope
+        : content.reference.locator.ownerScope
+    );
+    return { sequence: row.sequence, id: row.id, revision: row.revision, content };
+  });
+}
+
 /** Rejects disagreements between indexed SQL authority and its retained metadata view. */
 function decodeRow(
   sqlite: Database.Database,
   kind: ControlProductKind,
   row: MetadataRow,
   owner: ControlProductOwner,
-  prepared?: Map<ControlProductKind, Database.Statement>
+  prepared?: ProductReadStatements
 ) {
   if (row.schema_version !== 1 || !Number.isSafeInteger(row.revision) || row.revision < 1)
     throw new ControlProductPreconditionError();
@@ -2868,9 +2936,8 @@ export function openControlStoreProductReadHandle(
   if (!lstatSync(path).isFile() || realpathSync(dirname(path)) !== resolve(dirname(path)))
     throw new ControlProductPreconditionError();
   const sqlite = new Database(path, { readonly: true, fileMustExist: true });
-  // Only the closed metadata-kind set is prepared; no canonical row survives a read.
-  const prepared = new Map<ControlProductKind, Database.Statement>();
-  let entriesStatement: Database.Statement | undefined;
+  // Only known metadata and entry queries are prepared; no canonical row survives a read.
+  const prepared: ProductReadStatements = new Map();
   try {
     sqlite.pragma('query_only = ON');
   } catch (error) {
@@ -2886,13 +2953,7 @@ export function openControlStoreProductReadHandle(
     },
     /** Materializes at most one bounded page; no cursor or transaction escapes. */
     list(kind: ControlProductKind, afterId = '', limit = CONTROL_PRODUCT_LIMITS.pageRows) {
-      ControlProductKindSchema.parse(kind);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > CONTROL_PRODUCT_LIMITS.pageRows)
-        throw new ControlProductPreconditionError();
-      const rows = sqlite
-        .prepare(`SELECT * FROM ${tables[kind]} WHERE id>? ORDER BY id LIMIT ?`)
-        .all(afterId, limit) as MetadataRow[];
-      return rows.map((row) => decodeRow(sqlite, kind, row, owner, prepared));
+      return listProducts(sqlite, owner, kind, afterId, limit, prepared);
     },
     /** Reads ordered immutable descriptors, not mutable transcript files or a repair authority. */
     entries(
@@ -2901,43 +2962,7 @@ export function openControlStoreProductReadHandle(
       after = 0,
       limit = CONTROL_PRODUCT_LIMITS.pageRows
     ) {
-      if (
-        (kind !== 'item' && kind !== 'event') ||
-        !Number.isSafeInteger(after) ||
-        after < 0 ||
-        !Number.isSafeInteger(limit) ||
-        limit < 1 ||
-        limit > CONTROL_PRODUCT_LIMITS.pageRows
-      )
-        throw new ControlProductPreconditionError();
-      if (!readProduct(sqlite, owner, 'turn', turnId, prepared)) return [];
-      entriesStatement ??= sqlite.prepare(
-        'SELECT schema_version,sequence,id,revision,content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence>? ORDER BY sequence LIMIT ?'
-      );
-      const rows = entriesStatement.all(kind, turnId, after, limit) as {
-        schema_version: number;
-        sequence: number;
-        id: string;
-        revision: number;
-        content_json: string;
-      }[];
-      return rows.map((row) => {
-        if (row.schema_version !== 1 || !Number.isSafeInteger(row.revision) || row.revision < 1)
-          throw new ControlProductPreconditionError();
-        const content = ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json));
-        assertControlProductOwner(
-          owner,
-          'representation' in content.reference
-            ? content.reference.ownerScope
-            : content.reference.locator.ownerScope
-        );
-        return {
-          sequence: row.sequence,
-          id: row.id,
-          revision: row.revision,
-          content,
-        };
-      });
+      return readProductEntries(sqlite, owner, turnId, kind, after, limit, prepared);
     },
     /** Releases only this native reader, never a live writer or retained bytes. */
     close() {

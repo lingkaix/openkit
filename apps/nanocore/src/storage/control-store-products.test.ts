@@ -31,7 +31,11 @@ import type {
   ControlProductMutation,
   ControlProductOwner,
 } from './control-store-products.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import {
+  listProducts,
+  openControlStoreProductReadHandle,
+  readProductEntries,
+} from './control-store-products.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';
@@ -468,6 +472,43 @@ describe('prepared control product boundaries', () => {
     } finally {
       reader?.close();
       f.db.sqlite.close();
+    }
+  });
+
+  it('keeps supplied-connection metadata and entry reads in their original snapshot', async () => {
+    const f = await nativeFixture('workspace');
+    const first = await initialEntries(f);
+    const reader = openControlStoreProductReadHandle(f.path, f.owner);
+    try {
+      reader.sqlite.exec('BEGIN');
+      expect(listProducts(reader.sqlite, f.owner, 'turn')).toMatchObject([{ revision: 1 }]);
+      const content = await publish(f, item(f, first.body.id, 'later revision'));
+      await client!.transition(
+        'native',
+        nativeInput(
+          f,
+          [
+            {
+              kind: 'turn',
+              expectedRevision: 1,
+              record: {
+                ...f.turn,
+                status: 'running',
+                startedAt: timestamp,
+              },
+            },
+          ],
+          [{ kind: 'item', turnId: f.turnId, sequence: 2, expectedRevision: 1, content }]
+        )
+      );
+      expect(listProducts(reader.sqlite, f.owner, 'turn')).toMatchObject([{ revision: 1 }]);
+      expect(readProductEntries(reader.sqlite, f.owner, f.turnId, 'item')).toHaveLength(1);
+      reader.sqlite.exec('ROLLBACK');
+      expect(listProducts(reader.sqlite, f.owner, 'turn')).toMatchObject([{ revision: 2 }]);
+      expect(readProductEntries(reader.sqlite, f.owner, f.turnId, 'item')).toHaveLength(2);
+    } finally {
+      if (reader.sqlite.inTransaction) reader.sqlite.exec('ROLLBACK');
+      reader.close();
     }
   });
 
