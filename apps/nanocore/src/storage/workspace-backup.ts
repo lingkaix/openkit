@@ -95,6 +95,7 @@ import {
   listWorkspaceDeletionRequests,
 } from '../workspace-deletion-request.js';
 import type {
+  WorkspaceFreezeAdmission,
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
@@ -207,6 +208,8 @@ export type WorkspaceBackupSource =
       readonly coreDb: CoreDb;
       readonly store: FsStore;
       readonly mutationAdmission: WorkspaceMutationAdmission;
+      /** Borrows the caller's exact current fence for a fresh manual backup; capture never releases it. */
+      readonly freezeOwner?: WorkspaceFrozenAdmission;
       readonly currentAuthority?: () => void;
       readonly canReadThread?: (threadId: string) => boolean;
     }
@@ -1644,7 +1647,10 @@ async function runWorkspaceCapture(
   if (
     (input.origin !== undefined && input.origin !== 'manual' && input.origin !== 'automatic') ||
     (input.origin === 'automatic' &&
-      (input.source.kind !== 'live-workspace' || input.purpose !== 'backup'))
+      (input.source.kind !== 'live-workspace' || input.purpose !== 'backup')) ||
+    (input.source.kind === 'live-workspace' &&
+      input.source.freezeOwner &&
+      (automatic || input.origin === 'automatic' || input.purpose !== 'backup'))
   )
     refuse('invalid-arguments');
   if (input.source.kind !== 'live-workspace') return captureWorkspaceBackup(input);
@@ -1670,8 +1676,16 @@ async function runWorkspaceCapture(
     live.currentAuthority?.();
     // Presence selects acquisition only. The worker still proves finished capture and exact bytes.
     // The existing worker slot excludes another owned capture publishing this path meanwhile.
-    if (!automatic && existsSync(input.bundleRoot)) {
-      releaseReplayRead = live.mutationAdmission.enter(input.workspaceId) ?? undefined;
+    if (
+      !automatic &&
+      (existsSync(input.bundleRoot) ||
+        (live.freezeOwner &&
+          !live.mutationAdmission.ownsFreeze(input.workspaceId, live.freezeOwner)))
+    ) {
+      // A new lifecycle fence neither admits a foreign owner nor proves an older sealed cut current.
+      releaseReplayRead = live.freezeOwner
+        ? undefined
+        : (live.mutationAdmission.enter(input.workspaceId) ?? undefined);
       if (!releaseReplayRead)
         throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
           details: { workspaceId: input.workspaceId, retryable: true },
@@ -1770,13 +1784,19 @@ async function runWorkspaceCapture(
                   if (value.action === 'written') reservation.recordWritten(value.bytes as number);
                 }
               } else {
-                if (value.phase !== 'cleanup' && value.phase !== 'cleanup-end')
+                if (value.phase !== 'cleanup' && value.phase !== 'cleanup-end') {
                   live.currentAuthority?.();
+                  if (
+                    live.freezeOwner &&
+                    !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner)
+                  )
+                    refuse('recovery-required');
+                }
                 if (value.phase === 'freeze') {
                   live.store.setWorkspaceMutationAdmission(live.mutationAdmission);
                   let hold: Promise<() => void> | null = null;
                   const wasClosed = live.mutationAdmission.isClosed(targetWorkspaceId);
-                  const admission = live.mutationAdmission.tryFreeze(targetWorkspaceId, () => {
+                  const captureBlockers = (): readonly WorkspaceBlocker[] => {
                     const blockers = readBlockers({
                       ...live,
                       workspaceId: targetWorkspaceId,
@@ -1797,7 +1817,19 @@ async function runWorkspaceCapture(
                             actions: [],
                           },
                         ];
-                  });
+                  };
+                  let admission: WorkspaceFreezeAdmission;
+                  if (live.freezeOwner) {
+                    const blockers = captureBlockers();
+                    admission = blockers.length
+                      ? { status: 'blocked', blockers }
+                      : live.freezeOwner;
+                  } else {
+                    admission = live.mutationAdmission.tryFreeze(
+                      targetWorkspaceId,
+                      captureBlockers
+                    );
+                  }
                   if (admission.status !== 'frozen') {
                     const busy = wasClosed && admission.status === 'busy';
                     throw new OperationError(
@@ -1839,11 +1871,16 @@ async function runWorkspaceCapture(
                   if (closing) return;
                   if (authorityError) throw authorityError;
                   live.currentAuthority?.();
+                  if (
+                    live.freezeOwner &&
+                    !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner)
+                  )
+                    refuse('recovery-required');
                 }
                 if (value.phase === 'cut') {
                   resumeNative?.();
                   resumeNative = undefined;
-                  if (input.purpose === 'backup') {
+                  if (input.purpose === 'backup' && captureFreeze !== live.freezeOwner) {
                     captureFreeze?.release();
                     captureFreeze = undefined;
                   }
@@ -1911,7 +1948,7 @@ async function runWorkspaceCapture(
         } catch {
           /* Unknown retained truth keeps MOVE exclusion. */
         }
-      } else captureFreeze?.release();
+      } else if (captureFreeze !== live.freezeOwner) captureFreeze?.release();
     } catch (error) {
       cleanupFailure ??= error;
     }
@@ -1927,6 +1964,8 @@ async function runWorkspaceCapture(
     authorityError ??= cleanupFailure;
   }
   if (authorityError) throw authorityError;
+  if (live.freezeOwner && !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner))
+    refuse('recovery-required');
   if (result === null) return undefined;
   if (!result) refuse('recovery-required');
   const captured = result;

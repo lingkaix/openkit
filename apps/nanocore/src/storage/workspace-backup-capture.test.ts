@@ -17,10 +17,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from '../artifact-reviews.js';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -41,6 +42,7 @@ import {
   saveWorkspaceMaterialRevision,
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openControlStoreProductReadHandle } from './control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -433,6 +435,192 @@ async function verifiedFiles(input: WorkspaceBackupVerificationInput) {
     };
   });
 }
+
+/** Scoped Freeze requires the lifecycle caller to retain its exact exclusion across capture. */
+describe('borrowed lifecycle capture freeze', () => {
+  it('keeps the caller freeze through the cut, seal and real Worker exit until caller release', async () => {
+    const f = await fixture();
+    const coreDb = openCoreDb(f.dataRoot);
+    const gate = new WorkspaceMutationAdmission();
+    f.store.setWorkspaceMutationAdmission(gate);
+    const owner = gate.tryFreeze(workspaceId, () => []);
+    if (owner.status !== 'frozen') throw new Error('Expected the caller-owned freeze.');
+    const input = inputFor(f, {
+      kind: 'live-workspace',
+      dataRoot: f.dataRoot,
+      coreDb,
+      store: f.store,
+      mutationAdmission: gate,
+      freezeOwner: owner,
+    });
+    const bundleRoot = join(f.dataRoot, 'server/backups/workspaces', workspaceId, input.backupId);
+    let captureWorker: Worker | undefined;
+    const observations: { phase: string; owned: boolean; sealed: boolean }[] = [];
+    let publisher: Promise<{ error: unknown } | { result: unknown }> | undefined;
+    const emit = Worker.prototype.emit;
+    // Observe and forward actual Worker events; no capture, writer or acknowledgement is replaced.
+    const observer = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: Worker,
+      event,
+      ...args
+    ) {
+      const message = args[0];
+      if (event === 'message' && message?.kind === 'phase') {
+        captureWorker ??= this;
+        if (
+          this === captureWorker &&
+          ['post-cut-validation', 'finish', 'cleanup-end'].includes(message.phase)
+        ) {
+          observations.push({
+            phase: message.phase,
+            owned: gate.ownsFreeze(workspaceId, owner),
+            sealed: existsSync(join(bundleRoot, 'seal.json')),
+          });
+          if (message.phase === 'post-cut-validation')
+            publisher = f.store.createThread(workspaceId, 'Competing post-cut publisher').then(
+              (result) => ({ result }),
+              (error: unknown) => ({ error })
+            );
+        }
+      }
+      if (event === 'exit' && this === captureWorker)
+        observations.push({
+          phase: 'exit',
+          owned: gate.ownsFreeze(workspaceId, owner),
+          sealed: existsSync(join(bundleRoot, 'seal.json')),
+        });
+      return emit.call(this, event, ...args);
+    });
+    try {
+      await expect(createWorkspaceBackup({ ...input, bundleRoot })).resolves.toMatchObject({
+        disposition: 'sealed',
+        report: { workspaceId, source: { kind: 'live-workspace' } },
+      });
+      expect(observations.map((entry) => entry.phase)).toEqual(
+        expect.arrayContaining(['post-cut-validation', 'finish', 'cleanup-end', 'exit'])
+      );
+      expect(observations.every((entry) => entry.owned)).toBe(true);
+      expect(observations.find((entry) => entry.phase === 'finish')?.sealed).toBe(true);
+      expect(observations.find((entry) => entry.phase === 'exit')?.sealed).toBe(true);
+      expect(publisher).toBeDefined();
+      await expect(publisher!).resolves.toMatchObject({ error: { code: 'workspace_frozen' } });
+      expect(gate.ownsFreeze(workspaceId, owner)).toBe(true);
+      await expect(
+        f.store.createThread(workspaceId, 'Publisher after capture return')
+      ).rejects.toMatchObject({
+        code: 'workspace_frozen',
+      });
+      owner.release();
+      await expect(
+        f.store.createThread(workspaceId, 'Publisher after caller release')
+      ).resolves.toMatchObject({
+        owner: { kind: 'workspace', workspaceId },
+      });
+    } finally {
+      observer.mockRestore();
+      owner.release();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('preserves caller ownership on a post-cut refusal and refuses foreign or released owners', async () => {
+    const f = await fixture();
+    const coreDb = openCoreDb(f.dataRoot);
+    const gate = new WorkspaceMutationAdmission();
+    f.store.setWorkspaceMutationAdmission(gate);
+    const owner = gate.tryFreeze(workspaceId, () => []);
+    const otherGate = new WorkspaceMutationAdmission();
+    const foreignGate = otherGate.tryFreeze(workspaceId, () => []);
+    const foreignWorkspace = gate.tryFreeze(allocateEntityId('ws'), () => []);
+    if (
+      owner.status !== 'frozen' ||
+      foreignGate.status !== 'frozen' ||
+      foreignWorkspace.status !== 'frozen'
+    )
+      throw new Error('Expected independently owned freezes.');
+    let authorized = true;
+    let cutReached = false;
+    const source = {
+      kind: 'live-workspace' as const,
+      dataRoot: f.dataRoot,
+      coreDb,
+      store: f.store,
+      mutationAdmission: gate,
+      currentAuthority: () => {
+        if (!authorized) throw new Error('Test current authority refused.');
+      },
+    };
+    const input = inputFor(f, { ...source, freezeOwner: owner });
+    const bundleRoot = join(f.dataRoot, 'server/backups/workspaces', workspaceId, input.backupId);
+    const emit = Worker.prototype.emit;
+    const observer = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: Worker,
+      event,
+      ...args
+    ) {
+      if (
+        event === 'message' &&
+        args[0]?.kind === 'phase' &&
+        args[0].phase === 'post-cut-validation'
+      ) {
+        cutReached = true;
+        authorized = false;
+      }
+      return emit.call(this, event, ...args);
+    });
+    let replacement: typeof owner | undefined;
+    try {
+      await expect(createWorkspaceBackup({ ...input, bundleRoot })).rejects.toThrow(
+        'Test current authority refused.'
+      );
+      expect(cutReached).toBe(true);
+      expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
+      expect(gate.ownsFreeze(workspaceId, owner)).toBe(true);
+      await expect(
+        f.store.createThread(workspaceId, 'Publisher after capture refusal')
+      ).rejects.toMatchObject({
+        code: 'workspace_frozen',
+      });
+      authorized = true;
+      observer.mockRestore();
+      for (const invalidOwner of [foreignGate, foreignWorkspace]) {
+        const refused = inputFor(f, { ...source, freezeOwner: invalidOwner });
+        const output = join(f.dataRoot, 'server/backups/workspaces', workspaceId, refused.backupId);
+        await expect(createWorkspaceBackup({ ...refused, bundleRoot: output })).rejects.toThrow();
+        expect(existsSync(join(output, 'seal.json'))).toBe(false);
+        expect(gate.ownsFreeze(workspaceId, owner)).toBe(true);
+      }
+      owner.release();
+      const next = gate.tryFreeze(workspaceId, () => []);
+      if (next.status !== 'frozen') throw new Error('Expected the replacement caller freeze.');
+      replacement = next;
+      const stale = inputFor(f, { ...source, freezeOwner: owner });
+      const staleOutput = join(
+        f.dataRoot,
+        'server/backups/workspaces',
+        workspaceId,
+        stale.backupId
+      );
+      await expect(createWorkspaceBackup({ ...stale, bundleRoot: staleOutput })).rejects.toThrow();
+      expect(existsSync(join(staleOutput, 'seal.json'))).toBe(false);
+      expect(gate.ownsFreeze(workspaceId, replacement)).toBe(true);
+      expect(gate.enter(workspaceId)).toBeNull();
+      replacement.release();
+      await expect(
+        f.store.createThread(workspaceId, 'Publisher after replacement release')
+      ).resolves.toMatchObject({
+        owner: { kind: 'workspace', workspaceId },
+      });
+    } finally {
+      observer.mockRestore();
+      owner.release();
+      replacement?.release();
+      foreignGate.release();
+      foreignWorkspace.release();
+      coreDb.sqlite.close();
+    }
+  });
+});
 
 describe('D0-1: capture complete stopped authority', () => {
   it('WM 340–363, 367–371: stopped capture retains every local family, identity, digest and mode', async () => {

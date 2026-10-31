@@ -335,6 +335,8 @@ Keep current authorization, inert historical requests and authority, native iden
 
 The lifecycle owner MUST atomically exclude new target publishers before checking authoritative blockers. If a publisher is already admitted, another freeze exists, or required facts are unreadable, it refuses immediately. It reopens admission when inspection refuses. Successful admission returns one idempotent release. No SQL transaction spans an await. An ordinary mutation admission must not count the lifecycle operation itself as running work.
 
+An existing lifecycle owner may lend its exact current freeze to a fresh manual backup capture of the same Workspace. Capture still checks current authority and blockers and drains the original native acknowledgements; it does not release the caller's freeze on success or refusal. Foreign, released and replaced owners refuse. This does not admit an older sealed generation through a new freeze or change ordinary capture release, automatic policy or MOVE.
+
 Every mutable publisher, including late terminal publication, dispatch, claim, filesystem apply and maintenance, shares that exclusion. Gate counters alone do not prove inactivity. The snapshot owner checks existing durable execution, physical cleanup, claim and recovery facts. Unknown or ambiguous facts block. Healthy siblings remain admitted.
 
 | Family | Blocker versus inert history |
