@@ -12,6 +12,8 @@ Workspace Knowledge selection, completed-work proof reads, and Material retrieva
 
 Artifact catalog disclosure and exact Knowledge meaning reads use that same admitted read owner. Artifact listing never runs schema migration; audience filtering, internal Sync Review evidence exclusion, and exact page or Source pin checks remain with their product owners.
 
+Command receipt inventories open existing scope-owned readers without migration or pruning. Active User listing retains scope admission and expiry filtering; recovery inventories retain expired rows and their existing fail-closed unreadable result without granting scope admission.
+
 Preparation for the control-store switch reuses synchronous deciding bodies on supplied owning handles. SQLite-only Goal and Task helpers take `Pick<WorkspaceDb, 'sqlite'>`; they do not open another connection or bypass existing transactions or savepoints. `prepareAuditEvent` builds the existing validated value without writing or authorizing it; current recorders still insert on Main. Already asynchronous Thread/context, runtime, scheduling, administration and activation producers await existing Store results before they use or publish dependent values. Store signatures, file authority, SQL callbacks and Main SQL ownership stay unchanged until the separately qualified switch.
 
 This directory contains NanoCore's composition root and feature owners. `app.ts` mounts middleware and concrete feature registrars; complete product behavior belongs in the nearest cohesive route, runtime, storage, provider, policy, or workspace owner.

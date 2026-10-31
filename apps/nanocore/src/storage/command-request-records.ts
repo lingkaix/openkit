@@ -1,7 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { compareCodeUnits, readRetainedV1, WorkspaceIdSchema } from '@openkit/protocol';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type {
@@ -38,6 +38,7 @@ import {
   type CoreDb,
   openCoreDb,
   openUserDb,
+  openUserReadDb,
   openWorkspaceDb,
   type UserDb,
   type WorkspaceDb,
@@ -369,8 +370,16 @@ export type DurableCommandRequestRead =
 export function readDurableCommandRequestRecords(dataRoot: string): DurableCommandRequestRead {
   try {
     const records: CommandRequestRecord[] = [];
-    for (const path of existingCommandRequestDatabasePaths(dataRoot)) {
-      const sqlite = new Database(path, { fileMustExist: true, readonly: true });
+    for (const { path, owner } of existingCommandRequestDatabases(dataRoot)) {
+      const sqlite =
+        owner.scope === 'user'
+          ? openUserReadDb(dataRoot, owner.userId).sqlite
+          : openControlStoreProductReadHandle(
+              path,
+              owner.scope === 'workspace'
+                ? { kind: 'workspace', workspaceId: owner.workspaceId }
+                : { kind: 'server' }
+            ).sqlite;
       try {
         const table = sqlite
           .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -398,18 +407,24 @@ export function readDurableCommandRequestRecords(dataRoot: string): DurableComma
   }
 }
 
+/** Existing receipt file paired with its directory-owned scope; never retained or an admission grant. */
+type ExistingCommandRequestDatabase = {
+  readonly path: string;
+  readonly owner: Exclude<CommandRequestOwner, { readonly scope: 'app' }>;
+};
+
 /**
- * Lists database files that already exist for command receipts.
+ * Lists existing command receipt files with their physical scopes.
  *
  * @param dataRoot Data root to inspect.
- * @returns Existing Core, User, and Workspace database paths.
+ * @returns Existing Core, User, and Workspace database paths and scope identities.
  * @throws Error when a scanned directory contains a symbolic link.
  */
-function existingCommandRequestDatabasePaths(dataRoot: string): string[] {
-  const paths: string[] = [];
+function existingCommandRequestDatabases(dataRoot: string): ExistingCommandRequestDatabase[] {
+  const paths: ExistingCommandRequestDatabase[] = [];
   const corePath = coreDbPath(dataRoot);
   if (existsSync(corePath)) {
-    paths.push(corePath);
+    paths.push({ path: corePath, owner: { scope: 'core' } });
   }
   const usersRoot = resolveDataRootPath(dataRoot, 'users');
   if (existsSync(usersRoot)) {
@@ -421,7 +436,7 @@ function existingCommandRequestDatabasePaths(dataRoot: string): string[] {
       }
       if (!entry.isDirectory()) continue;
       const path = userDbPath(dataRoot, entry.name);
-      if (existsSync(path)) paths.push(path);
+      if (existsSync(path)) paths.push({ path, owner: { scope: 'user', userId: entry.name } });
     }
   }
   const workspacesRoot = resolveDataRootPath(dataRoot, 'workspaces');
@@ -434,7 +449,8 @@ function existingCommandRequestDatabasePaths(dataRoot: string): string[] {
       }
       if (!entry.isDirectory() || entry.name === '.staging') continue;
       const path = workspaceDbPath(dataRoot, entry.name);
-      if (existsSync(path)) paths.push(path);
+      if (existsSync(path))
+        paths.push({ path, owner: { scope: 'workspace', workspaceId: entry.name } });
     }
   }
   return paths;
@@ -487,6 +503,7 @@ export function listCommandRequestRecords(
 
   const records = owners.flatMap((owner) => {
     if (owner.scope === 'workspace') assertScopeAdmitted(dataRoot, 'workspace', owner.workspaceId);
+    if (owner.scope === 'user') assertScopeAdmitted(dataRoot, 'user', owner.userId);
     const reader =
       owner.scope === 'workspace'
         ? openControlStoreProductReadHandle(workspaceDbPath(dataRoot, owner.workspaceId), {
@@ -497,7 +514,9 @@ export function listCommandRequestRecords(
     const db =
       reader && owner.scope === 'workspace'
         ? bindWorkspaceSqlite(reader.sqlite, dataRoot, owner.workspaceId)
-        : openCommandRequestDb(dataRoot, owner);
+        : owner.scope === 'user'
+          ? openUserReadDb(dataRoot, owner.userId)
+          : openCommandRequestDb(dataRoot, owner);
 
     try {
       return (

@@ -172,7 +172,6 @@
     "apps/nanocore/src/storage/artifacts/zip-snapshot.ts\tfs:open\t0de01d507f5cc55f5b03e6011480dd422315f8060ff91b0948f12df8dc94a864": 1,
     "apps/nanocore/src/storage/artifacts/zip-snapshot.ts\tfs:rm\t3f75538f89767daf36b7bde81ea3fc8754a1df468b0027e44858ab63c4fe4a10": 1,
     "apps/nanocore/src/storage/canonical-filesystem.ts\tfs:mkdir\tff1fb0cda0642f41b072ec37a5b5f782c29c67c183a8c63b0db6eeb44eb91c70": 1,
-    "apps/nanocore/src/storage/command-request-records.ts\tsqlite\t80968b7ffb5c7326d774308c00d109de578eac5ee4544bfa920a2fa46fccfa21": 1,
     "apps/nanocore/src/storage/control-store-products.ts\tfs:link\tfd0716f2d8972ec603cf6f04fbc3e06b7de03318b7ce79728c68ebc9a6268ad4": 1,
     "apps/nanocore/src/storage/control-store-products.ts\tfs:unlink\t2abe6572b78fcab00b8c74f8c05d3122df55bc1c695b7b72ee4f0c0f1fc59e68": 2,
     "apps/nanocore/src/storage/control-store-products.ts\tsqlite\t109d542f333a5b86b370e7054f484c8ccba77f2709061cb4cb7570233253a62b": 1,

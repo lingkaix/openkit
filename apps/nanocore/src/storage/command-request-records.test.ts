@@ -15,7 +15,9 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { createTestStore } from '../test-support/store.js';
 import {
   getCommandRequestRecordFromDb,
+  listCommandRequestRecords,
   normalizeCommandRequestResponse,
+  readDurableCommandRequestRecords,
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from './command-request-records.js';
@@ -528,5 +530,45 @@ describe('retained SQL receipt format', () => {
       'Unsupported retained record format.'
     );
     expect(db.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(before);
+  });
+});
+
+describe('User command receipt inventories', () => {
+  it('lists only active receipts while durable inventory retains the complete ordered history', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-user-receipt-inventory-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
+    const userId = testEntityId('usr', 'user-receipt-inventory');
+    const expired = store.recordCommandRequest({
+      command: 'workspace.create',
+      requestId: '0190f4c8-0000-7000-8000-000000000601',
+      scope: { userId },
+      inputHash: 'sha256:user-receipt-expired',
+      response: { kind: 'workspace', id: testEntityId('ws', 'expired-user-receipt') },
+      createdAt: '2026-10-06T00:00:00.000Z',
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const active = store.recordCommandRequest({
+      command: 'workspace.create',
+      requestId: '0190f4c8-0000-7000-8000-000000000602',
+      scope: { userId },
+      inputHash: 'sha256:user-receipt-active',
+      response: { kind: 'workspace', id: testEntityId('ws', 'active-user-receipt') },
+      createdAt: '2026-10-07T00:00:00.000Z',
+      expiresAt: '3001-01-01T00:00:00.000Z',
+    });
+
+    expect(readDurableCommandRequestRecords(dataRoot)).toEqual({
+      records: [expired, active],
+      status: 'readable',
+    });
+    expect(listCommandRequestRecords(dataRoot, '3000-01-01T00:00:00.000Z')).toEqual([active]);
+    expect(readDurableCommandRequestRecords(dataRoot)).toEqual({
+      records: [expired, active],
+      status: 'readable',
+    });
   });
 });
