@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
@@ -18,15 +18,19 @@ import {
   controlKnowledgeHeadStatements,
   controlKnowledgeProposalStatement,
   controlKnowledgeReviewStatement,
+  prepareControlKnowledgeProposal,
   readControlKnowledgeHead,
   readControlKnowledgeProposal,
 } from './control-store-knowledge.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
-import { publishImmutableContent } from './immutable-content.js';
+import { type ImmutableContentHandoff, publishImmutableContent } from './immutable-content.js';
 import { applyScopedMigrations } from './migrate.js';
-import { readWorkspaceKnowledgeProposalInventory } from './workspace-file-records.js';
+import {
+  readWorkspaceKnowledgeProposalInventory,
+  serializeKnowledgeProposalRecord,
+} from './workspace-file-records.js';
 
 /** Requires actual Storage stage and publication success, never a fabricated descriptor. */
 function storageValue<T>(result: StorageResult<T>): T {
@@ -55,10 +59,16 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
   );
   await decide(source, 'deferred', 'native-proposal-deferred');
   await decide(source, 'accepted', 'native-proposal-accepted');
-  const reviews = readWorkspaceKnowledgeProposalInventory(
+  const inventory = readWorkspaceKnowledgeProposalInventory(
     source.workspaceRoot,
     source.workspaceId
-  ).knowledgeProposalReviews.filter((review) => review.proposalId === source.proposal.id);
+  );
+  const originalProposal = inventory.knowledgeProposals.find(
+    (value) => value.id === source.proposal.id
+  )!;
+  const reviews = inventory.knowledgeProposalReviews.filter(
+    (review) => review.proposalId === source.proposal.id
+  );
   expect(reviews.map((review) => review.decision)).toEqual(['deferred', 'accepted']);
   const deferred = reviews[0]!;
   const accepted = reviews[1]!;
@@ -105,7 +115,7 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
     expiresAt: '2099-01-01T00:00:00.000Z',
     revoked: false,
   };
-  const publish = async (text: string) => {
+  const stageContent = async (text: string): Promise<ImmutableContentHandoff> => {
     const bytes = Buffer.from(text);
     const { handle } = storageValue(
       await contentStorage.beginStage({
@@ -118,15 +128,16 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
       await contentStorage.writeStage({ access, handle, data: bytes.toString('base64') })
     );
     const stage = storageValue(await contentStorage.finishStage({ access, handle }));
+    return { storage: contentStorage, access, stage, mountRoot: contentRoot };
+  };
+  const discard = async (content: ImmutableContentHandoff) =>
+    storageValue(await contentStorage.discardStage({ access, handle: content.stage.handle }));
+  const publish = async (text: string) => {
+    const content = await stageContent(text);
     try {
-      return await publishImmutableContent({
-        storage: contentStorage,
-        access,
-        stage,
-        mountRoot: contentRoot,
-      });
+      return await publishImmutableContent(content);
     } finally {
-      storageValue(await contentStorage.discardStage({ access, handle }));
+      await discard(content);
     }
   };
   // Same-owner dormant metadata composition only; this target is not a Workspace migration.
@@ -150,16 +161,79 @@ it('commits original ordered Reviews with the exact head, receipt and Audit or r
       readFileSync(join(source.workspaceRoot, 'knowledge/schema/scope-schema.yaml'), 'utf8')
     ),
   };
-  const proposal: ControlKnowledgeProposal = {
+  const content = await stageContent(proposalBytes);
+  const expectedProposal: ControlKnowledgeProposal = {
     workspaceId: source.workspaceId,
     knowledgeBaseId,
     proposalId: source.proposal.id,
     baseRevision: source.proposal.baseRevision,
     candidateRevision: source.proposal.candidateRevision,
     contentDigest: source.proposal.contentDigest,
-    documentContent: await publish(proposalBytes),
+    documentContent: {
+      ...content.stage.content,
+      reference: {
+        ...content.stage.content.reference,
+        locator: {
+          ...content.stage.content.reference.locator,
+          path: `sha256/${content.stage.content.reference.contentDigest.slice('sha256:'.length)}`,
+        },
+      },
+    },
     target: { knowledgePageId: source.knowledgePageId },
   };
+  const beforePreparation = db.sqlite.serialize();
+  const publishedRevision = source.notebook.publishedRevision();
+  const publishedFiles = readdirSync(contentRoot, { recursive: true }).sort();
+  const unchangedBeforePublication = () => {
+    expect(db!.sqlite.serialize()).toEqual(beforePreparation);
+    expect(readControlKnowledgeHead(db!, knowledgeBaseId)).toBeNull();
+    expect(source.notebook.publishedRevision()).toBe(publishedRevision);
+    expect(readdirSync(contentRoot, { recursive: true }).sort()).toEqual(publishedFiles);
+    expect(readFileSync(source.proposalPath, 'utf8')).toBe(proposalBytes);
+  };
+  const preparation = { db, knowledgeBaseId, notebook: source.notebook, content };
+  let proposal: ControlKnowledgeProposal;
+  try {
+    // NotebookEditing13: document bytes alone cannot prove the supplied candidate body.
+    const bodyFault = {
+      ...originalProposal,
+      canonicalPageBytes: `${originalProposal.canonicalPageBytes}\nAdditional valid Markdown.\n`,
+    };
+    expect(serializeKnowledgeProposalRecord(bodyFault)).toBe(proposalBytes);
+    await expect(
+      prepareControlKnowledgeProposal({ ...preparation, proposal: bodyFault })
+    ).rejects.toThrow();
+    unchangedBeforePublication();
+    const lineageFault = { ...originalProposal, candidateRevision: originalProposal.baseRevision };
+    const wrongCandidateContent = await stageContent(
+      serializeKnowledgeProposalRecord(lineageFault)
+    );
+    try {
+      await expect(
+        prepareControlKnowledgeProposal({
+          ...preparation,
+          proposal: lineageFault,
+          content: wrongCandidateContent,
+        })
+      ).rejects.toThrow();
+      unchangedBeforePublication();
+    } finally {
+      await discard(wrongCandidateContent);
+    }
+    proposal = await prepareControlKnowledgeProposal({
+      ...preparation,
+      proposal: originalProposal,
+    });
+    expect(proposal).toEqual(expectedProposal);
+    expect(db.sqlite.serialize()).toEqual(beforePreparation);
+    expect(readControlKnowledgeHead(db, knowledgeBaseId)).toBeNull();
+    expect(source.notebook.publishedRevision()).toBe(publishedRevision);
+    expect(
+      readFileSync(join(contentRoot, proposal.documentContent.reference.locator.path), 'utf8')
+    ).toBe(proposalBytes);
+  } finally {
+    await discard(content);
+  }
   expect(readControlKnowledgeProposal(db, proposal.proposalId)).toBeNull();
   await client.write('proposal-tuple', [
     ...controlKnowledgeHeadStatements(head, null),

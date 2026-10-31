@@ -1,5 +1,7 @@
+import { isDeepStrictEqual } from 'node:util';
 import { KnowledgeProposalPageIdSchema } from '@openkit/app-api-schemas';
 import {
+  compareCodeUnits,
   KnowledgeBaseIdSchema,
   KnowledgeContentReferenceSchema,
   readRetainedV1,
@@ -11,11 +13,15 @@ import { STORAGE_LIMITS, type StorageContent } from '@openkit/storage';
 import { z } from 'zod';
 import type { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { parseScopeKnowledgeSchema } from '../knowledge/okf.js';
-import type { KnowledgeProposalReviewRecord } from '../lib/store.js';
+import type { KnowledgeProposalRecord, KnowledgeProposalReviewRecord } from '../lib/store.js';
 import type { ControlSqlStatement } from './control-store-worker-protocol.js';
 import type { WorkspaceDb } from './db.js';
 import { type ImmutableContentHandoff, publishImmutableContent } from './immutable-content.js';
-import { KnowledgeProposalReviewFileSchema } from './workspace-file-records.js';
+import {
+  KnowledgeProposalRecordSchema,
+  KnowledgeProposalReviewFileSchema,
+  serializeKnowledgeProposalRecord,
+} from './workspace-file-records.js';
 
 /** Exact selected immutable Notebook tree and original schema bytes, owned by one Workspace KB. */
 export interface ControlKnowledgeHead {
@@ -87,6 +93,44 @@ function decodeHead(record: unknown): ControlKnowledgeHead {
   return head;
 }
 
+/** Captures sealed byte facts before awaits while retaining the request's live Storage admission. */
+function verifiedKnowledgeHandoff(
+  db: WorkspaceDb,
+  knowledgeBaseId: string,
+  originalText: string,
+  content: ImmutableContentHandoff
+): ImmutableContentHandoff {
+  WorkspaceIdSchema.parse(db.workspaceId);
+  KnowledgeBaseIdSchema.parse(knowledgeBaseId);
+  if (db.scope !== 'workspace' || !db.sqlite.open || db.sqlite.inTransaction)
+    throw new TypeError('Knowledge preparation requires an open Workspace outside SQL.');
+  const stored = headSchema.shape.schemaContent.parse(content.stage.content);
+  const { reference } = stored;
+  const handoff: ImmutableContentHandoff = {
+    storage: content.storage,
+    mountRoot: content.mountRoot,
+    access: content.access,
+    stage: { handle: content.stage.handle, content: stored },
+  };
+  if (
+    reference.knowledgeBaseId !== knowledgeBaseId ||
+    reference.locator.ownerScope.kind !== 'workspace' ||
+    reference.locator.ownerScope.workspaceId !== db.workspaceId ||
+    reference.range !== null ||
+    reference.availability !== 'available' ||
+    handoff.access.knowledgeBaseId !== knowledgeBaseId ||
+    handoff.access.ownerScope.kind !== 'workspace' ||
+    handoff.access.ownerScope.workspaceId !== db.workspaceId ||
+    handoff.access.mode !== 'staged-write' ||
+    handoff.access.mount !== reference.locator.mount ||
+    Buffer.from(originalText, 'utf8').toString('utf8') !== originalText ||
+    Buffer.byteLength(originalText, 'utf8') !== stored.byteLength ||
+    `sha256:${sha256Hex(originalText)}` !== reference.contentDigest
+  )
+    throw new TypeError('Knowledge preparation has inconsistent admitted input.');
+  return handoff;
+}
+
 /**
  * Verifies an admitted schema stage and publishes its exact original bytes before later head SQL.
  *
@@ -109,38 +153,9 @@ export async function prepareControlKnowledgeHead(input: {
   readonly content: ImmutableContentHandoff;
 }): Promise<ControlKnowledgeHead> {
   const { db, knowledgeBaseId, notebook, notebookCommit, schemaText } = input;
-  WorkspaceIdSchema.parse(db.workspaceId);
-  KnowledgeBaseIdSchema.parse(knowledgeBaseId);
-  if (db.scope !== 'workspace' || !db.sqlite.open || db.sqlite.inTransaction)
-    throw new TypeError('Knowledge preparation requires an open Workspace outside SQL.');
-  const schemaContent = headSchema.shape.schemaContent.parse(input.content.stage.content);
-  const { reference } = schemaContent;
-  // Capture sealed byte facts before awaits, while retaining the request's live
-  // Storage admission object so an observed revocation is not frozen away.
-  const handoff: ImmutableContentHandoff = {
-    storage: input.content.storage,
-    mountRoot: input.content.mountRoot,
-    access: input.content.access,
-    stage: { handle: input.content.stage.handle, content: schemaContent },
-  };
-  if (
-    reference.knowledgeBaseId !== knowledgeBaseId ||
-    reference.locator.ownerScope.kind !== 'workspace' ||
-    reference.locator.ownerScope.workspaceId !== db.workspaceId ||
-    reference.range !== null ||
-    reference.availability !== 'available' ||
-    handoff.access.knowledgeBaseId !== knowledgeBaseId ||
-    handoff.access.ownerScope.kind !== 'workspace' ||
-    handoff.access.ownerScope.workspaceId !== db.workspaceId ||
-    handoff.access.mode !== 'staged-write' ||
-    handoff.access.mount !== reference.locator.mount ||
-    Buffer.from(schemaText, 'utf8').toString('utf8') !== schemaText ||
-    Buffer.byteLength(schemaText, 'utf8') !== schemaContent.byteLength ||
-    `sha256:${sha256Hex(schemaText)}` !== reference.contentDigest ||
-    !parseScopeKnowledgeSchema(schemaText).ok
-  ) {
+  const handoff = verifiedKnowledgeHandoff(db, knowledgeBaseId, schemaText, input.content);
+  if (!parseScopeKnowledgeSchema(schemaText).ok)
     throw new TypeError('Knowledge schema preparation has inconsistent admitted input.');
-  }
   await notebook.inspectRevisionAsync(notebookCommit);
   // The existing publisher rechecks the real sealed bytes and digest, then fsyncs
   // the create-only object and its directory. It never receives re-encoded YAML.
@@ -434,6 +449,97 @@ export function readControlKnowledgeProposal(
 ): ControlKnowledgeProposalState | null {
   const value = readProposalRow(db, proposalId);
   return value && { proposal: value.proposal, reviews: value.reviews };
+}
+
+/**
+ * Verifies and synchronizes the original Proposal document before later native SQL.
+ *
+ * The existing serializer preserves retained original bytes. Immutable Git readers
+ * verify the declared candidate, parent and producer; no ref is advanced. Current
+ * human/Source authority, the actual private Notebook binding, bounded stage lifetime
+ * and historical Git synchronization remain with the admitting caller. No SQL
+ * transaction may span preparation, and this result grants no Review or publication.
+ *
+ * @param input Original admitted Proposal, its explicit owner, real Notebook and sealed document stage.
+ * @returns Compact immutable selection after exact original-byte publication and synchronization.
+ * @throws Before document publication if bytes, scope, candidate or retained lineage contradict.
+ */
+export async function prepareControlKnowledgeProposal(input: {
+  readonly db: WorkspaceDb;
+  readonly knowledgeBaseId: string;
+  readonly notebook: KnowledgeNotebook;
+  readonly proposal: KnowledgeProposalRecord;
+  readonly content: ImmutableContentHandoff;
+}): Promise<ControlKnowledgeProposal> {
+  const proposal = KnowledgeProposalRecordSchema.parse(input.proposal);
+  // Preserve the source object's retained byte binding before any await or known-field projection.
+  const originalText = serializeKnowledgeProposalRecord(input.proposal);
+  const { db, knowledgeBaseId, notebook } = input;
+  const handoff = verifiedKnowledgeHandoff(db, knowledgeBaseId, originalText, input.content);
+  if (
+    proposal.workspaceId !== db.workspaceId ||
+    proposal.ownerScope.kind !== 'workspace' ||
+    proposal.ownerScope.workspaceId !== db.workspaceId
+  )
+    throw new TypeError('Knowledge Proposal preparation has inconsistent ownership.');
+  const candidate = await notebook.inspectRevisionAsync(proposal.candidateRevision);
+  await notebook.inspectRevisionAsync(proposal.baseRevision);
+  if (
+    candidate.parentRevision !== proposal.baseRevision ||
+    candidate.metadata.authority.kind !== 'proposal' ||
+    candidate.metadata.authority.proposalId !== proposal.id ||
+    !isDeepStrictEqual(candidate.metadata.producer, proposal.producer) ||
+    !isDeepStrictEqual(candidate.metadata.sourceReferences, proposal.sourceReferences)
+  )
+    throw new TypeError('Knowledge Proposal contradicts its immutable candidate lineage.');
+
+  let contentDigest: string;
+  if (proposal.changes) {
+    // Reuse both native immutable readers and their existing reserved Source edit paths.
+    const readContent = async (revision: string) => {
+      const pages = await notebook.readRevisionAsync(revision);
+      const sources = await notebook.readSourcePointersAsync(revision);
+      return {
+        ...pages.files,
+        ...Object.fromEntries(
+          Object.entries(sources).map(([id, bytes]) => [`@sources/${id}.md`, bytes])
+        ),
+      };
+    };
+    const [base, next] = await Promise.all([
+      readContent(proposal.baseRevision),
+      readContent(proposal.candidateRevision),
+    ]);
+    const changes = [...new Set([...Object.keys(base), ...Object.keys(next)])]
+      .sort(compareCodeUnits)
+      .filter((path) => base[path] !== next[path])
+      .map((path) => ({ path, content: next[path] ?? null }));
+    if (!isDeepStrictEqual(changes, proposal.changes))
+      throw new TypeError('Knowledge Proposal content contradicts its immutable candidate.');
+    contentDigest = `sha256:${sha256Hex(JSON.stringify(changes))}`;
+  } else {
+    const path = `${proposal.knowledgePageId}.md`;
+    const actual = await notebook.readRevisionAsync(proposal.candidateRevision, [path]);
+    if (actual.files[path] !== proposal.canonicalPageBytes)
+      throw new TypeError('Knowledge Proposal content contradicts its immutable candidate.');
+    contentDigest = `sha256:${sha256Hex(actual.files[path]!)}`;
+  }
+  if (contentDigest !== proposal.contentDigest)
+    throw new TypeError('Knowledge Proposal content digest contradicts its immutable candidate.');
+  const documentContent = await publishImmutableContent(handoff);
+  return decodeProposal({
+    workspaceId: db.workspaceId,
+    knowledgeBaseId,
+    proposalId: proposal.id,
+    baseRevision: proposal.baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    contentDigest,
+    documentContent,
+    target: proposal.changes
+      ? { changedPageIds: proposal.changes.map(({ path }) => path.slice(0, -3)) }
+      : { knowledgePageId: proposal.knowledgePageId },
+    requiredFeatures: [],
+  });
 }
 
 /**
