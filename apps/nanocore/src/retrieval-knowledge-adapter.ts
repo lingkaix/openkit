@@ -10,7 +10,6 @@ import {
   WorkspaceIdSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
-import Database from 'better-sqlite3';
 import { parseDocument } from 'yaml';
 import type { Actor } from './auth/identity.js';
 import {
@@ -61,7 +60,13 @@ import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
 import type { RetrievalDocument, RetrievalScope } from './retrieval-service.js';
-import { type CoreDb, openWorkspaceDb, type UserDb, type WorkspaceDb } from './storage/db.js';
+import {
+  type CoreDb,
+  openUserReadDb,
+  openWorkspaceDb,
+  type UserDb,
+  type WorkspaceDb,
+} from './storage/db.js';
 import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
 import { assertCanonicalDirectory } from './storage/workspace-file-records.js';
 
@@ -376,7 +381,7 @@ export function readAuthorizedUserMemoryPages(input: Target) {
     scope: { kind: 'user', userId: actor.userId },
   });
   const userRoot = join(input.dataRoot, 'users', actor.userId);
-  let sqlite: Database.Database | undefined;
+  let ownedUserDb: UserDb | undefined;
   try {
     let userDb = input.access.userDb;
     for (const path of [
@@ -392,8 +397,8 @@ export function readAuthorizedUserMemoryPages(input: Target) {
       throw new NotebookError('recovery_required');
     if (!userDb) {
       // Existing trace consumers open read-only authority and never initialize or migrate a User store.
-      sqlite = new Database(path, { readonly: true, fileMustExist: true });
-      userDb = { scope: 'user', dataRoot: input.dataRoot, userId: actor.userId, sqlite };
+      ownedUserDb = openUserReadDb(input.dataRoot, actor.userId);
+      userDb = ownedUserDb;
     }
     const context = { coreDb, userDb, actor };
     admitMemoryContext(context);
@@ -504,7 +509,7 @@ export function readAuthorizedUserMemoryPages(input: Target) {
     if (error instanceof OperationError || error instanceof NotebookError) throw error;
     throw new NotebookError('recovery_required');
   } finally {
-    sqlite?.close();
+    ownedUserDb?.sqlite.close();
   }
 }
 /** Resolves trusted query lineage before any source inventory or kernel access. */

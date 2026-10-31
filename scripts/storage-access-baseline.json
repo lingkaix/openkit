@@ -104,7 +104,6 @@
     "apps/nanocore/src/lib/store.ts\tfs:rmSync\tc71022b6cf983fefeed5983f05119eea4607d7a8af6e426ea5d15f16a800d047": 1,
     "apps/nanocore/src/llm/provider-subscription-accounts.ts\tfs:rmdirSync\taba385d5cc85e3b5a1180ba8dd70a437b7ab68d732a50e723ec3e7cfb30dafef": 1,
     "apps/nanocore/src/llm/provider-subscription-accounts.ts\tfs:unlinkSync\tef1ab11b42ea2b6e4f46c7979d586eb99fcd2b97be89107b41df2dd1872adf75": 1,
-    "apps/nanocore/src/retrieval-knowledge-adapter.ts\tsqlite\t109d542f333a5b86b370e7054f484c8ccba77f2709061cb4cb7570233253a62b": 1,
     "apps/nanocore/src/retrieval-service.ts\tfs:mkdir\t5ba7c655a296d22b0d9a56577b1b6912352b885c90b1cde084a17200fd971523": 1,
     "apps/nanocore/src/runtime/cancelled-admission-checkpoint-cleanup.ts\tfs:mkdirSync\t13db5775fc8332102ad590d7cd43288c512250b783adb983d62764eaf0ff2f42": 1,
     "apps/nanocore/src/runtime/filesystem-workspace-sync.ts\tfs:chmod\t055a5a90ed231388b54f1484ab67a3afd46d4e4fa4e2ea4d8f7dd0a4636de9ef": 1,
