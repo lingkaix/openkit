@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
@@ -11,6 +11,7 @@ import type { TurnStartRuntimeContext } from './runtime/types.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import * as loopOwners from './runtime/worker-turn-loop.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -261,7 +262,13 @@ describe('reasoning effort admission and replay', () => {
     'turn.start',
     'conversation.submit',
   ])('rejects unknown effort before %s effects', async (entry) => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mode-entry-effort-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ store });
     const before = store.listThreads('ws_00000000-0000-7000-8000-000000000001').length;
     const input =
@@ -306,6 +313,12 @@ describe('reasoning effort admission and replay', () => {
 });
 
 it('publishes resolver effort levels, empty controls, and absent controls in the conversation catalog', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mode-entry-effort-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(dataRoot);
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
   const models = ['controlled', 'empty', 'plain'];
   const setup = createTestAgentSetup({ logicalModelId: 'controlled' });
   setup.manifest.models.allowedLogicalModelIds = models;
@@ -328,7 +341,7 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
   ]);
   const base = createTestGatewayConfig();
   const app = createAppWithWorkspaceAuthority({
-    store: await createDemoStore(),
+    store: await createDemoStore({ dataRoot }),
     providerRegistry,
     gatewayConfig: {
       ...base,
