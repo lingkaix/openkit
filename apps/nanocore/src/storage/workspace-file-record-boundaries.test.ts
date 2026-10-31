@@ -19,12 +19,13 @@ import { ItemSchema, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestStore } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import { corruptTestWorkspaceNotebookCommit } from '../test-support/workspace-notebook-corruption.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
@@ -125,7 +126,9 @@ async function createNotebookBoundaryFixture() {
     store,
     workspaceRoot,
     repositoryPath,
-    notebook: new KnowledgeNotebook({ repositoryPath }),
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
     initialize: (files: Record<string, string>) =>
       store.importWorkspaceSnapshot({
         workspace,
@@ -376,6 +379,7 @@ describe('workspace file-record write and load boundaries', () => {
     const publishedPath = join(f.repositoryPath, 'refs', 'heads', 'published');
     const corruptRef = `${'0'.repeat(40)}\n`;
     writeFileSync(publishedPath, corruptRef);
+    corruptTestWorkspaceNotebookCommit(f.dataRoot, f.workspace.id, corruptRef.trim());
 
     const thread = await f.store.createThread(f.workspace.id, 'Do not repair the Notebook');
     expect(f.store.getThread(f.workspace.id, thread.id)).toEqual(thread);

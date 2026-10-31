@@ -26,12 +26,12 @@ import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-agent.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { parseOkfDocument } from './okf.js';
 
 const NOW = '2026-10-19T00:00:00.000Z';
@@ -164,8 +164,13 @@ async function fixture() {
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
-  const repositoryPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git');
-  const reopen = () => new KnowledgeNotebook({ repositoryPath });
+  const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'workspace', workspaceId: workspace.id },
+  });
+  const reopen = () =>
+    readWorkspaceNotebookSelection({ workspaceDb, workspaceRoot, knowledgeBaseId }).notebook;
   const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
   const providerRegistry = new ProviderRegistry([
     {
