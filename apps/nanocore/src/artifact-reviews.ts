@@ -1293,7 +1293,8 @@ export const ControlReviewCommandInputSchema = z.discriminatedUnion('mode', [
       agentSessionId: AgentSessionIdSchema,
       agentId: z.string().min(1),
       receipt: ControlReviewReceiptSchema,
-      transition: ControlProductTransitionSchema,
+      // The Review and product owners share a value cycle; resolve its schema only at parse time.
+      transition: z.lazy(() => ControlProductTransitionSchema),
     })
     .strict(),
   z
