@@ -18,11 +18,11 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
 import { deriveManagedSourceAccess } from './managed-source-access.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { parseOkfDocument, validateOpenKitKnowledgeProfile } from './okf.js';
 import { readSourceByteRange } from './source-bytes.js';
 import { parseSourcePointer } from './source-pointers.js';
@@ -67,7 +67,6 @@ async function fixture() {
   const scope = { kind: 'workspace' as const, workspaceId: workspace.id };
   const root = join(dataRoot, 'workspaces', workspace.id);
   const notebookRoot = join(root, 'knowledge');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') });
   const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot, scope });
   return {
     dataRoot,
@@ -82,7 +81,9 @@ async function fixture() {
     scope,
     root,
     notebookRoot,
-    notebook,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
     knowledgeBaseId,
   };
 }
@@ -309,7 +310,12 @@ describe('Workspace native Source cutover', () => {
       mediaType: 'image/png',
       captureChannel: 'knowledge.source.register',
     });
-    const pointer = parseSourcePointer(owner, source.id, saved.content);
+    const pointer = parseSourcePointer(
+      owner,
+      source.id,
+      saved.content,
+      readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
+    );
     const mount = readKnowledgeMounts({ dataRoot: f.dataRoot, scope: f.scope }).find(
       (candidate) => candidate.default
     )!;

@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { AuthVariables } from './auth/middleware.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -21,6 +20,7 @@ import { knowledgeOperationRequest } from './test-support/knowledge-operation.js
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 afterEach(closeRetrievalServices);
@@ -52,9 +52,8 @@ async function createKnowledgeFixture(
   workspaceId: string,
   input: { knowledgePageId: string; title: string; content: string }
 ): Promise<{ id: string }> {
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
-  });
+  const baseRevision = readTestWorkspaceNotebookSelection(dataRoot, workspaceId).head
+    .notebookCommit;
   const response = await app.request(
     ...knowledgeOperationRequest(
       'knowledge.notebook.create',
@@ -72,7 +71,7 @@ async function createKnowledgeFixture(
           ),
           summary: 'Publish search fixture',
           requestId: randomUUID(),
-          baseRevision: notebook.publishedRevision(),
+          baseRevision,
         }),
       }
     )
