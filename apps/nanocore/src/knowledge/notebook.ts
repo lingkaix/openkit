@@ -647,12 +647,12 @@ export class KnowledgeNotebook {
       throw new NotebookError('recovery_required');
     // fsck checks every retained object, including unreachable candidate objects, by its real hash.
     this.git(['fsck', '--strict', '--full', '--no-reflogs', '--no-dangling']);
-    for (const row of this.git([
+    const refs = this.git([
       'for-each-ref',
       '--format=%(refname) %(objectname) %(objecttype) %(symref)',
-    ])
-      .trim()
-      .split('\n')) {
+    ]);
+    // A native Workspace selects its parentless seed in SQL without a Git ref.
+    for (const row of refs === '' ? [] : refs.trim().split('\n')) {
       const [ref, revision, type, symbolicTarget] = row.split(' ');
       if (!ref || !revision || type !== 'commit' || symbolicTarget)
         throw new NotebookError('recovery_required');
