@@ -36,7 +36,7 @@ describe('storage layout report', () => {
     const workspace = openWorkspaceDb(root, workspaceId);
     try {
       applyMigrations(core);
-      applyScopedMigrations(workspace);
+      applyScopedMigrations(workspace, undefined, 'pre-knowledge');
       const tables = workspace.sqlite
         .prepare(
           "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('control_executions', 'control_execution_steps') ORDER BY name"
@@ -88,7 +88,7 @@ describe('storage layout report', () => {
     try {
       applyMigrations(coreDb);
       applyScopedMigrations(userDb);
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       const report = createStorageLayoutReport(dataRoot);
 

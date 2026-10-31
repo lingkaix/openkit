@@ -9,7 +9,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join, posix } from 'node:path';
+import { dirname, join, posix, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { formatReferenceUri, parseReferenceUri } from '@openkit/protocol';
 import { applyEdits, modify } from 'jsonc-parser';
@@ -17,11 +17,7 @@ import { parseJsoncObject } from '../../config/jsonc.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../../config/knowledge-base.js';
 import type { RuntimeConfigManager } from '../../config/runtime-config.js';
 import { findWorkspaceConfig } from '../../config/runtime-config.js';
-import {
-  DEFAULT_NOTEBOOK_INDEX,
-  KnowledgeNotebook,
-  NotebookError,
-} from '../../knowledge/notebook.js';
+import { DEFAULT_NOTEBOOK_INDEX, NotebookError } from '../../knowledge/notebook.js';
 import { publishWorkspaceNotebook } from '../../knowledge/notebook-publication.js';
 import { validateNotebookCandidate } from '../../knowledge/notebook-validation.js';
 import {
@@ -29,6 +25,10 @@ import {
   importedWorkspaceNotebookReferences,
   remintPortableWorkspaceNotebookPages,
 } from '../../knowledge/notebook-workspace-portability.js';
+import {
+  readWorkspaceNotebookSelection,
+  type WorkspaceNotebookSelection,
+} from '../../knowledge/notebook-workspace-selection.js';
 import {
   createDefaultScopeKnowledgeSchemaText,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -74,6 +74,7 @@ export async function exportKnowledgePackage(input: {
   readonly dataRoot: string;
   readonly workspaceId: string;
   readonly access: KnowledgeRetrievalAccess;
+  readonly workspaceDb: WorkspaceDb;
   readonly directory: string;
   readonly revalidate: () => void;
   readonly fileAdmission: FileStorageAdmission;
@@ -82,23 +83,38 @@ export async function exportKnowledgePackage(input: {
   revalidateDisclosure: () => void;
 }> {
   input.revalidate();
+  if (
+    input.workspaceDb.workspaceId !== input.workspaceId ||
+    resolve(input.workspaceDb.dataRoot) !== resolve(input.dataRoot)
+  )
+    throw new NotebookError('recovery_required');
   const ownerScope = { kind: 'workspace' as const, workspaceId: input.workspaceId };
   const owner = { dataRoot: input.dataRoot, ownerScope };
   const scope = { dataRoot: input.dataRoot, scope: ownerScope };
-  const root = join(input.dataRoot, 'workspaces', input.workspaceId, 'knowledge');
+  const workspaceRoot = join(input.dataRoot, 'workspaces', input.workspaceId);
+  const root = join(workspaceRoot, 'knowledge');
   assertCanonicalDirectory(root);
   const knowledgeBaseId = readDefaultKnowledgeBaseId(scope);
   const mounts = readKnowledgeMounts(scope);
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
-  const revision = notebook.publishedRevision();
-  const pages = notebook.readRevision(revision).files;
-  const schema = readCanonicalTextFile(join(root, 'schema', 'scope-schema.yaml'));
-  const pointers = readSourcePointers(owner, revision);
+  const selection = readWorkspaceNotebookSelection({
+    workspaceDb: input.workspaceDb,
+    workspaceRoot,
+    knowledgeBaseId,
+  });
+  const revision = selection.head.notebookCommit;
+  const pages = selection.notebook.readRevision(revision).files;
+  const schema = selection.scopeSchemaText;
+  const pointers = readSourcePointers(owner, revision, selection);
   const check = () => {
     input.revalidate();
+    const current = readWorkspaceNotebookSelection({
+      workspaceDb: input.workspaceDb,
+      workspaceRoot,
+      knowledgeBaseId,
+    });
     if (
-      notebook.publishedRevision() !== revision ||
-      readCanonicalTextFile(join(root, 'schema', 'scope-schema.yaml')) !== schema ||
+      !isDeepStrictEqual(current.head, selection.head) ||
+      current.scopeSchemaText !== schema ||
       !isDeepStrictEqual(readKnowledgeMounts(scope), mounts)
     )
       throw new NotebookError('conflict');
@@ -206,8 +222,7 @@ export async function exportKnowledgePackage(input: {
     return {
       manifest,
       revalidateDisclosure: () => {
-        input.revalidate();
-        if (notebook.publishedRevision() !== revision) throw new NotebookError('conflict');
+        check();
         for (const pointer of pointers.values())
           if (
             !knowledgeSourceLineageReadable(
@@ -239,14 +254,14 @@ export async function exportKnowledgePackage(input: {
 
 /** Requires a genuinely fresh seed, including retained history and Proposal state, before target preparation. */
 function requireBootstrapOnly(input: {
-  readonly notebook: KnowledgeNotebook;
+  readonly selection: WorkspaceNotebookSelection;
   readonly root: string;
   readonly store: FsStore;
   readonly workspaceId: string;
 }) {
-  const graph = input.notebook.validateRetainedGraph();
-  const seed = input.notebook.readRevision(graph.publishedRevision);
-  const schemaText = readCanonicalTextFile(join(input.root, 'schema', 'scope-schema.yaml'));
+  const graph = input.selection.notebook.validateRetainedGraph();
+  const seed = input.selection.notebook.readRevision(graph.publishedRevision);
+  const schemaText = input.selection.scopeSchemaText;
   const parsedSchema = parseScopeKnowledgeSchema(schemaText);
   const defaultSchema =
     schemaText === DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT ||
@@ -260,7 +275,7 @@ function requireBootstrapOnly(input: {
     seed.metadata.producer.id !== 'notebook-initializer' ||
     Object.keys(seed.files).length !== 1 ||
     seed.files['index.md'] !== DEFAULT_NOTEBOOK_INDEX ||
-    Object.keys(input.notebook.readSourcePointers(seed.revision)).length ||
+    Object.keys(input.selection.notebook.readSourcePointers(seed.revision)).length ||
     input.store.listKnowledgeProposals(input.workspaceId).length ||
     !defaultSchema ||
     (existsSync(join(input.root, 'raw')) && readdirSync(join(input.root, 'raw')).length)
@@ -290,8 +305,24 @@ export async function importKnowledgePackage(input: {
   });
   if (manifest.ownerScope.kind !== 'workspace') throw new NotebookError('invalid_request');
   input.revalidate();
-  const root = join(input.dataRoot, 'workspaces', input.workspaceId, 'knowledge');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
+  if (
+    input.workspaceDb.workspaceId !== input.workspaceId ||
+    resolve(input.workspaceDb.dataRoot) !== resolve(input.dataRoot)
+  )
+    throw new NotebookError('recovery_required');
+  const workspaceRoot = join(input.dataRoot, 'workspaces', input.workspaceId);
+  const root = join(workspaceRoot, 'knowledge');
+  const scope = {
+    dataRoot: input.dataRoot,
+    scope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
+  };
+  const knowledgeBaseId = readDefaultKnowledgeBaseId(scope);
+  const selection = readWorkspaceNotebookSelection({
+    workspaceDb: input.workspaceDb,
+    workspaceRoot,
+    knowledgeBaseId,
+  });
+  const notebook = selection.notebook;
   const commandInput = { workspaceId: input.workspaceId, requestId: input.requestId, manifest };
   const receipt = input.store.getCommandRequest(
     'knowledge.package.import',
@@ -302,10 +333,6 @@ export async function importKnowledgePackage(input: {
   if (receipt) {
     const retained = notebook.readRevision(receipt.response.id);
     if (!retained.parentRevision) throw new NotebookError('recovery_required');
-    const knowledgeBaseId = readDefaultKnowledgeBaseId({
-      dataRoot: input.dataRoot,
-      scope: { kind: 'workspace', workspaceId: input.workspaceId },
-    });
     const pageScopeId = `page/workspace/${input.workspaceId}/${knowledgeBaseId}`;
     const result = await publishWorkspaceNotebook(
       {
@@ -318,6 +345,11 @@ export async function importKnowledgePackage(input: {
         sourcePointers: notebook.readSourcePointers(retained.revision),
         revalidate: () => {
           input.revalidate();
+          const current = readWorkspaceNotebookSelection({
+            workspaceDb: input.workspaceDb,
+            workspaceRoot,
+            knowledgeBaseId,
+          });
           assertPortableWorkspaceNotebookDisclosure({
             dataRoot: input.dataRoot,
             workspaceId: input.workspaceId,
@@ -332,7 +364,7 @@ export async function importKnowledgePackage(input: {
           });
           return {
             pageScopeId,
-            scopeSchemaText: readCanonicalTextFile(join(root, 'schema', 'scope-schema.yaml')),
+            scopeSchemaText: current.scopeSchemaText,
             reviewRequiredPageIds: [],
             registeredSources: new Map(
               input.store
@@ -357,12 +389,7 @@ export async function importKnowledgePackage(input: {
       notebookRevision: result.notebookRevision,
     };
   }
-  const seed = requireBootstrapOnly({ ...input, root, notebook });
-  const scope = {
-    dataRoot: input.dataRoot,
-    scope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
-  };
-  const knowledgeBaseId = readDefaultKnowledgeBaseId(scope);
+  const seed = requireBootstrapOnly({ ...input, root, selection });
   const targetMounts = readKnowledgeMounts(scope);
   if (targetMounts.length !== 1) throw new NotebookError('conflict');
   const textEntries = manifest.contentInventory.filter((entry) => !entry.path.startsWith('raw/'));
@@ -373,6 +400,8 @@ export async function importKnowledgePackage(input: {
     throw new NotebookError('invalid_request');
   const schema = readCanonicalTextFile(join(input.directory, 'schema', 'scope-schema.yaml'));
   if (!parseScopeKnowledgeSchema(schema).ok) throw new NotebookError('invalid_request');
+  // Scope Schema migration remains preview-only. A package cannot replace the selected authority.
+  if (schema !== selection.scopeSchemaText) throw new NotebookError('conflict');
   const files = new Map<string, string>();
   const payloadFiles = new Map<string, string>();
   for (const entry of manifest.contentInventory) {
@@ -555,7 +584,17 @@ export async function importKnowledgePackage(input: {
   parseJsoncObject(config);
   try {
     input.revalidate();
-    requireBootstrapOnly({ ...input, root, notebook });
+    const current = readWorkspaceNotebookSelection({
+      workspaceDb: input.workspaceDb,
+      workspaceRoot,
+      knowledgeBaseId,
+    });
+    if (
+      !isDeepStrictEqual(current.head, selection.head) ||
+      current.scopeSchemaText !== selection.scopeSchemaText
+    )
+      throw new NotebookError('conflict');
+    requireBootstrapOnly({ ...input, root, selection: current });
     for (const [path, source] of transfer.payloadFiles) {
       const target = join(input.dataRoot, 'workspaces', input.workspaceId, path);
       let parent = dirname(target);
@@ -604,7 +643,20 @@ export async function importKnowledgePackage(input: {
     };
   } catch (error) {
     // Preserve a published or unknown outcome. Only a proved unchanged seed permits local staging compensation.
-    if (notebook.publishedRevision() !== seed.revision)
+    let current: WorkspaceNotebookSelection;
+    try {
+      current = readWorkspaceNotebookSelection({
+        workspaceDb: input.workspaceDb,
+        workspaceRoot,
+        knowledgeBaseId,
+      });
+    } catch {
+      throw new NotebookError('recovery_required');
+    }
+    if (
+      !isDeepStrictEqual(current.head, selection.head) ||
+      current.scopeSchemaText !== selection.scopeSchemaText
+    )
       throw new NotebookError('recovery_required');
     withCanonicalFileWriteAdmission(input.fileAdmission, () => {
       writeFileAtomic(schemaPath, oldSchema);

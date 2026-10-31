@@ -21,7 +21,7 @@ describe('runtime evidence', () => {
     const input = runtimeProvenanceInput(packageSnapshotId);
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       const first = recordWorkerRuntimeProvenanceEvidence(workspaceDb, input);
       const retained = workspaceDb.sqlite.prepare('SELECT * FROM runtime_evidence').get();
@@ -82,7 +82,7 @@ describe('runtime evidence', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       importWorkspaceRuntimeEvidence(workspaceDb, [
         {
@@ -165,7 +165,7 @@ it('refuses an unknown runtime evidence row version before malformed JSON or ret
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   const record = recordWorkerRuntimeProvenanceEvidence(db, input);
   db.sqlite
     .prepare("UPDATE runtime_evidence SET schema_version=2, upload_manifest_json='{invalid'")

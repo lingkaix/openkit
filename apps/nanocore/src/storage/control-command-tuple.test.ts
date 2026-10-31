@@ -71,7 +71,7 @@ it('composes an original receipt and Audit atomically and preserves them after n
   // This isolated dormant target carries the SAME owner identity and original facts.
   // It proves tuple serialization, not admission, business-state copying or migration.
   targetDb = openWorkspaceDb(targetRoot, source.workspaceId);
-  applyScopedMigrations(targetDb);
+  applyScopedMigrations(targetDb, undefined, 'pre-knowledge');
   await client.open({
     database: 'command-tuple',
     path: workspaceDbPath(targetRoot, source.workspaceId),

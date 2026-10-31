@@ -333,7 +333,7 @@ async function fixture(channelHistory = false, unfinished = false) {
     priorMoves: [],
     release: { version: release.releaseTag, buildId: release.sourceCommit },
     requiredFeatures: [],
-    databaseFormats: [{ path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 19 } }],
+    databaseFormats: [{ path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 20 } }],
     capture: {
       startedAt: '2026-10-21T10:00:00.000Z',
       completedAt: '2026-10-21T10:00:00.000Z',
@@ -375,7 +375,7 @@ async function fixture(channelHistory = false, unfinished = false) {
       stagingParent: join(root, 'staging'),
       admission: new FileStorageAdmission(root, () => 0n),
       expectedRelease: manifest.release,
-      supportedDatabaseFormats: { 'drizzle.workspace': 19 },
+      supportedDatabaseFormats: { 'drizzle.workspace': 20 },
     },
     async (verified) => {
       expect(verified.manifest).toEqual(manifest);
@@ -1660,10 +1660,20 @@ describe('D0-2 same-deployment restore', () => {
       threadId: DEMO_THREAD_ID,
       userId: f.ownerId,
     });
+    const priorConfig = WorkspaceConfigSchema.parse(
+      parseJsoncObject(readFileSync(configPath, 'utf8'))
+    );
     const config = WorkspaceConfigSchema.parse({
+      ...priorConfig,
       schemaVersion: 1,
-      requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
-      workspace: { name: 'Current restricted Workspace', policy: { mediation: policy } },
+      requiredFeatures: [
+        ...new Set([...(priorConfig.requiredFeatures ?? []), WORKSPACE_RESOURCE_POLICY_FEATURE]),
+      ],
+      workspace: {
+        ...priorConfig.workspace,
+        name: 'Current restricted Workspace',
+        policy: { mediation: policy },
+      },
     });
     const configBytes = Buffer.from(
       `// Current post-capture policy: 🌍\r\n${JSON.stringify(config, null, 2)}\r\n`,

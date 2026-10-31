@@ -153,7 +153,7 @@ function fixture(bindings: PolicyBindingV1[] = []) {
     workspaceDb.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const document: PolicyDocumentV1 = { schemaVersion: 1, statements: [domain, ...bindings] };
   const statement = { id: domain.id, digest: policyDigest(domain) };
   return {

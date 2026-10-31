@@ -407,7 +407,7 @@ describe('bounded scheduled poll event admission', () => {
   it('joins the native Work Tool to isolated admission and refuses substituted scope and human entry', async () => {
     const f = await fixture();
     const workspaceDb = openWorkspaceDb(f.root, f.source.workspaceId);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     try {
       const services = {
         coreDb: f.db,
@@ -500,7 +500,7 @@ describe('bounded scheduled poll event admission', () => {
     });
     f.store.setWorkspaceResourcePolicyProjection(() => policy);
     const workspaceDb = openWorkspaceDb(f.root, f.source.workspaceId);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     try {
       const createThread = vi.spyOn(f.store, 'createThread');
       await expect(

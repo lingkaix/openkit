@@ -428,7 +428,7 @@ describe('workspace storage migration preflight', () => {
 });
 
 describe('workspace storage migration', () => {
-  it('refuses entropy failure before backup or staging publication and preserves the predecessor', () => {
+  it('refuses entropy failure before backup or staging publication and preserves the predecessor', async () => {
     const fixture = createMigrationFixture();
     fixture.coreDb.sqlite.close();
     const backupParent = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-entropy-'));
@@ -438,9 +438,9 @@ describe('workspace storage migration', () => {
       throw new Error('Backup identity entropy unavailable.');
     });
     try {
-      expect(() =>
+      await expect(
         migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
-      ).toThrow('Backup identity entropy unavailable.');
+      ).rejects.toThrow('Backup identity entropy unavailable.');
       expect(existsSync(backupRoot)).toBe(false);
       expect(inventoryRegularFiles(fixture.dataRoot)).toEqual(predecessor);
     } finally {
@@ -450,7 +450,7 @@ describe('workspace storage migration', () => {
     }
   });
 
-  it('refuses to overwrite an existing external backup destination', () => {
+  it('refuses to overwrite an existing external backup destination', async () => {
     const fixture = createMigrationFixture();
     const backupRoot = join(
       mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-retention-')),
@@ -462,20 +462,20 @@ describe('workspace storage migration', () => {
     writeFileSync(sentinelPath, 'retain\n');
     fixture.coreDb.sqlite.close();
 
-    expect(() =>
+    await expect(
       migrateWorkspaceStorage({
         backupRoot,
         dataRoot: fixture.dataRoot,
         now: () => timestamp,
       })
-    ).toThrow(/backup.*must not already exist/i);
+    ).rejects.toThrow(/backup.*must not already exist/i);
     expect(readFileSync(sentinelPath, 'utf8')).toBe('retain\n');
     expect(
       JSON.parse(readFileSync(join(fixture.dataRoot, 'server', 'layout.json'), 'utf8'))
     ).toMatchObject({ layoutVersion: 1 });
   });
 
-  it('rejects a copied backup that differs from the captured complete predecessor inventory', () => {
+  it('rejects a copied backup that differs from the captured complete predecessor inventory', async () => {
     const fixture = createMigrationFixture();
     const serverFile = join(fixture.dataRoot, 'server', 'migration-source.txt');
     const backupRoot = join(
@@ -487,7 +487,7 @@ describe('workspace storage migration', () => {
     writeFileSync(serverFile, 'captured\n');
     fixture.coreDb.sqlite.close();
 
-    expect(() =>
+    await expect(
       migrateWorkspaceStorage({
         backupRoot,
         dataRoot: fixture.dataRoot,
@@ -499,7 +499,7 @@ describe('workspace storage migration', () => {
           return timestamp;
         },
       })
-    ).toThrow(/backup.*predecessor.*inventory/i);
+    ).rejects.toThrow(/backup.*predecessor.*inventory/i);
     expect(verifyDataRootBackupManifest({ backupRoot }).checkedFiles).toContain(
       'server/migration-source.txt'
     );
@@ -551,7 +551,7 @@ describe('workspace storage migration', () => {
 
     let failure: unknown;
     try {
-      migrateWorkspaceStorage({
+      await migrateWorkspaceStorage({
         backupRoot,
         dataRoot: fixture.dataRoot,
         now: () => timestamp,
@@ -587,7 +587,7 @@ describe('workspace storage migration', () => {
     ).toMatchObject({ layoutVersion: 1 });
   });
 
-  it('closes a failed Core inspection and removes its private SQLite copy', () => {
+  it('closes a failed Core inspection and removes its private SQLite copy', async () => {
     const fixture = createMigrationFixture();
     const backupParent = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-corrupt-core-'));
     const backupRoot = join(backupParent, 'backup');
@@ -601,9 +601,9 @@ describe('workspace storage migration', () => {
     const prepared = vi.spyOn(Database.prototype, 'prepare');
     let inspection: Database.Database | undefined;
     try {
-      expect(() =>
+      await expect(
         migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
-      ).toThrow();
+      ).rejects.toThrow();
       const index = prepared.mock.calls.findIndex(([sql]) => sql === 'PRAGMA quick_check');
       inspection = prepared.mock.contexts[index] as Database.Database | undefined;
       if (!inspection) throw new Error('Expected a native Core integrity inspection.');
@@ -619,7 +619,7 @@ describe('workspace storage migration', () => {
     }
   });
 
-  it('reads retained Core WAL authority during preflight without changing predecessor bytes', () => {
+  it('reads retained Core WAL authority during preflight without changing predecessor bytes', async () => {
     const fixture = createMigrationFixture();
     const backupParent = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-retained-wal-'));
     const backupRoot = join(backupParent, 'backup');
@@ -656,9 +656,9 @@ process.kill(process.pid, 'SIGKILL');`,
       expect(readFileSync(`${corePath}-wal`).length).toBeGreaterThan(32);
       const predecessorInventory = inventoryRegularFiles(fixture.dataRoot);
 
-      expect(() =>
+      await expect(
         migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
-      ).toThrow(/preflight.*workspace_owner_mismatch/);
+      ).rejects.toThrow(/preflight.*workspace_owner_mismatch/);
       expect(inventoryRegularFiles(fixture.dataRoot)).toEqual(predecessorInventory);
       expect(existsSync(backupRoot)).toBe(false);
       expect(existsSync(join(fixture.dataRoot, 'workspaces'))).toBe(false);
@@ -669,7 +669,7 @@ process.kill(process.pid, 'SIGKILL');`,
     }
   });
 
-  it('refuses invalid existing Workspace configuration before publication or source removal', () => {
+  it('refuses invalid existing Workspace configuration before publication or source removal', async () => {
     const fixture = createMigrationFixture();
     const sourceRoot = sourceWorkspaceRoot(fixture);
     const configPath = join(sourceRoot, 'config', 'workspace.jsonc');
@@ -685,15 +685,15 @@ process.kill(process.pid, 'SIGKILL');`,
     );
     fixture.coreDb.sqlite.close();
 
-    expect(() =>
+    await expect(
       migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(existsSync(join(fixture.dataRoot, 'workspaces'))).toBe(false);
     expect(existsSync(sourceRoot)).toBe(true);
     expect(readFileSync(configPath)).toEqual(invalidConfigBytes);
   });
 
-  it('refuses a file-only predecessor before publication and preserves its verified backup', () => {
+  it('refuses a file-only predecessor before publication and preserves its verified backup', async () => {
     const fixture = createMigrationFixture();
     const sourceRoot = sourceWorkspaceRoot(fixture);
     const backupParent = mkdtempSync(join(tmpdir(), 'openkit-file-only-layout-refusal-'));
@@ -703,9 +703,9 @@ process.kill(process.pid, 'SIGKILL');`,
     const markerPath = join(fixture.dataRoot, 'server', 'layout.json');
     const markerBytes = readFileSync(markerPath);
     try {
-      expect(() =>
+      await expect(
         migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
-      ).toThrow();
+      ).rejects.toThrow();
       expect(existsSync(join(fixture.dataRoot, 'workspaces'))).toBe(false);
       expect(existsSync(sourceRoot)).toBe(true);
       expect(readFileSync(markerPath)).toEqual(markerBytes);
@@ -762,7 +762,7 @@ process.kill(process.pid, 'SIGKILL');`,
     writeFileSync(join(secondSourceRoot, 'files', 'second.txt'), 'second\n');
     fixture.coreDb.sqlite.close();
 
-    const result = migrateWorkspaceStorage({
+    const result = await migrateWorkspaceStorage({
       backupRoot,
       dataRoot: fixture.dataRoot,
       now: () => timestamp,
@@ -880,7 +880,7 @@ process.kill(process.pid, 'SIGKILL');`,
     );
     fixture.coreDb.sqlite.close();
 
-    migrateWorkspaceStorage({
+    await migrateWorkspaceStorage({
       backupRoot,
       dataRoot: fixture.dataRoot,
       now: () => timestamp,
@@ -910,7 +910,7 @@ process.kill(process.pid, 'SIGKILL');`,
     expect(existsSync(join(publishedRoot, 'knowledge-fts.json'))).toBe(false);
   });
 
-  it('fails closed when a published top-level root still has the v1 marker', () => {
+  it('fails closed when a published top-level root still has the v1 marker', async () => {
     const fixture = createMigrationFixture();
     const sourceRoot = sourceWorkspaceRoot(fixture);
     const targetRoot = resolveDataRootPath(fixture.dataRoot, 'workspaces', fixture.workspaceId);
@@ -923,13 +923,13 @@ process.kill(process.pid, 'SIGKILL');`,
     cpSync(sourceRoot, targetRoot, { recursive: true });
     fixture.coreDb.sqlite.close();
 
-    expect(() =>
+    await expect(
       migrateWorkspaceStorage({
         backupRoot,
         dataRoot: fixture.dataRoot,
         now: () => timestamp,
       })
-    ).toThrow(/mixed|published|layout/i);
+    ).rejects.toThrow(/mixed|published|layout/i);
     expect(existsSync(sourceRoot)).toBe(true);
     expect(existsSync(targetRoot)).toBe(true);
     expect(existsSync(backupRoot)).toBe(false);

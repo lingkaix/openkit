@@ -3,8 +3,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
-import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
+import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import { configureOwnedSqlite } from './control-store.js';
 import { openControlStoreProductReadHandle } from './control-store-products.js';
@@ -19,7 +18,6 @@ import {
   userDbPath,
   workspaceDbPath,
 } from './fs-layout.js';
-import { applyScopedMigrations } from './migrate.js';
 import * as schema from './schema/index.js';
 
 /**
@@ -191,47 +189,6 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
 }
 
 /**
- * Validates and migrates existing user- and workspace-scope databases at boot.
- *
- * @param dataRoot Data root to scan.
- * SQLite keeps its existing journal recovery; migrations and domain recovery wait for file admission.
- * @param validateFileAuthority Boot's file-history barrier, after integrity checks and before domain mutations.
- * Isolated failures refuse only their owning scope; shared layout failures still throw.
- */
-export function verifyAndMigrateExistingScopedDatabases(
-  dataRoot: string,
-  validateFileAuthority?: () => void
-): void {
-  ensureLayout(dataRoot);
-  const scopes = [
-    ...listChildDirectories(join(dataRoot, 'users')).map((id) => ({ scope: 'user' as const, id })),
-    ...listWorkspaceDirectories(dataRoot).map((id) => ({ scope: 'workspace' as const, id })),
-  ];
-  for (const { scope, id } of scopes) {
-    if (!isScopeAdmitted(dataRoot, scope, id)) continue;
-    try {
-      const path = scope === 'workspace' ? workspaceDbPath(dataRoot, id) : userDbPath(dataRoot, id);
-      if (scope === 'workspace' && (!existsSync(path) || statSync(path).size === 0))
-        throw new Error('Expected Workspace database is missing or uninitialized.');
-      assertSqliteIntegrity(path);
-    } catch {
-      refuseScope(dataRoot, { scope, id, check: 'database' });
-    }
-  }
-  // Boot must not migrate or recover a scope whose canonical file authority is unreadable.
-  validateFileAuthority?.();
-  for (const { scope, id } of scopes) {
-    if (!isScopeAdmitted(dataRoot, scope, id)) continue;
-    try {
-      if (scope === 'workspace') migrateWorkspaceDatabase(dataRoot, id);
-      else migrateUserDatabase(dataRoot, id);
-    } catch {
-      refuseScope(dataRoot, { scope, id, check: 'database' });
-    }
-  }
-}
-
-/**
  * Lists admitted existing Workspace scopes for ordinary scans, excluding staging and boot quarantine.
  *
  * @param dataRoot Data root whose existing workspace directories should be scanned.
@@ -333,47 +290,12 @@ export function getCoreDb(env: NodeJS.ProcessEnv = process.env): CoreDb {
 }
 
 /**
- * Applies user-scope migrations after integrity and boot file-authority admission.
- *
- * @param dataRoot Data root that owns the database.
- * @param userId User id that owns the database.
- * @throws When the existing authoritative database fails SQLite integrity validation.
- */
-function migrateUserDatabase(dataRoot: string, userId: string): void {
-  const userDb = openUserDb(dataRoot, userId);
-
-  try {
-    applyScopedMigrations(userDb);
-  } finally {
-    userDb.sqlite.close();
-  }
-}
-
-/**
- * Applies Workspace migrations and call-loss recovery only after both authority checks.
- *
- * @param dataRoot Data root that owns the database.
- * @param workspaceId Workspace id that owns the database.
- * @throws When the authoritative Workspace database is missing or fails SQLite integrity validation.
- */
-function migrateWorkspaceDatabase(dataRoot: string, workspaceId: string): void {
-  const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
-
-  try {
-    applyScopedMigrations(workspaceDb);
-    recoverRunningCapabilityCalls({ workspaceDb });
-  } finally {
-    workspaceDb.sqlite.close();
-  }
-}
-
-/**
  * Fails closed when an existing authoritative SQLite database is corrupt.
  *
  * @param path SQLite database path.
  * @throws When SQLite cannot open or validate the existing file.
  */
-function assertSqliteIntegrity(path: string): void {
+export function assertSqliteIntegrity(path: string): void {
   if (!existsSync(path)) {
     return;
   }
@@ -392,7 +314,7 @@ function assertSqliteIntegrity(path: string): void {
  * @param dataRoot Data root whose Workspace tree should be scanned.
  * @returns Workspace directory names in stable order, including scopes with missing databases.
  */
-function listWorkspaceDirectories(dataRoot: string): string[] {
+export function listWorkspaceDirectories(dataRoot: string): string[] {
   return listChildDirectories(join(dataRoot, 'workspaces')).filter((name) => name !== '.staging');
 }
 
@@ -402,7 +324,7 @@ function listWorkspaceDirectories(dataRoot: string): string[] {
  * @param path Parent path.
  * @returns Child directory names.
  */
-function listChildDirectories(path: string): string[] {
+export function listChildDirectories(path: string): string[] {
   if (!existsSync(path)) {
     return [];
   }

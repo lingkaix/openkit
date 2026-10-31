@@ -185,7 +185,7 @@ function fixture(kind: 'server' | 'workspace') {
     db.sqlite.close();
   });
   if (db.scope === 'core') applyMigrations(db);
-  else applyScopedMigrations(db);
+  else applyScopedMigrations(db, undefined, 'pre-knowledge');
   const scope = owner.kind === 'server' ? { coreId: 'server' } : { workspaceId: owner.workspaceId };
   return { root, db, owner, scope };
 }

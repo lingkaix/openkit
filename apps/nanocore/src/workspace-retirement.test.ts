@@ -40,6 +40,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import * as databases from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
@@ -198,7 +199,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
     );
   if (fault === 'index')
     refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'index' });
-  databases.verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+  await verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
     FsStore.validateFileAuthority(dataRoot)
   );
   expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(

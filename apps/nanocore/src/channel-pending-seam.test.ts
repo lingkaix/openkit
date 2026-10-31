@@ -94,7 +94,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
     requesterKind: 'person' as const,
   };
   const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   try {
     if (kind === 'approval') {
       await store.createItem({

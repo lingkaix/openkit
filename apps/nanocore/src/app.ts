@@ -80,6 +80,7 @@ import {
 } from './channel-services.js';
 import { createDiscordRestTransport } from './channels/discord-rest.js';
 import { createAgentNativeEnvironmentService } from './config/agent-native-environment.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import type { CoreMode } from './config/mode.js';
 import { loadOpenKitConfig, type OpenKitConfig } from './config/openkit-config.js';
 import {
@@ -108,8 +109,8 @@ import { prepareKnowledgeMaintenance } from './knowledge/knowledge-agent-mainten
 import { runKnowledgeMaintenanceCommand } from './knowledge/knowledge-maintenance-command.js';
 import { scanDailyKnowledgeMaintenance } from './knowledge/knowledge-maintenance-schedule.js';
 import { checkMemoryForgetIntent } from './knowledge/memory-forget.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import {
   currentServerMaintenanceActor,
   prepareServerKnowledgeMaintenance,
@@ -1722,6 +1723,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               currentAdmission: (request) => {
                 const db = repositoryWorkspaceDb(workspaceId);
                 try {
+                  const selection = readWorkspaceNotebookSelection({
+                    workspaceDb: db,
+                    workspaceRoot: join(coreDb.dataRoot, 'workspaces', workspaceId),
+                    knowledgeBaseId: readDefaultKnowledgeBaseId({
+                      dataRoot: coreDb.dataRoot,
+                      scope: { kind: 'workspace', workspaceId },
+                    }),
+                  });
                   return readWorkspaceNotebookAdmission({
                     store: sharedStore,
                     coreDb,
@@ -1731,15 +1740,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                     currentAuthority,
                     runtimeConfigManager,
                     workspaceMutationAdmission,
-                    notebook: new KnowledgeNotebook({
-                      repositoryPath: join(
-                        coreDb.dataRoot,
-                        'workspaces',
-                        workspaceId,
-                        'knowledge',
-                        'notebook.git'
-                      ),
-                    }),
+                    notebook: selection.notebook,
+                    scopeSchemaText: selection.scopeSchemaText,
                   });
                 } finally {
                   db.sqlite.close();

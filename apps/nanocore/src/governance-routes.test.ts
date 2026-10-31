@@ -28,7 +28,7 @@ it.each([
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
     db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

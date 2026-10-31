@@ -65,7 +65,7 @@ async function fixture() {
       const migrations = await import(${JSON.stringify(migrationsUrl)});
       const products = await import(${JSON.stringify(productsUrl)});
       let db = storage.openWorkspaceDb(workerData.root, workerData.workspaceId);
-      migrations.applyScopedMigrations(db);
+      migrations.applyScopedMigrations(db, undefined, 'pre-knowledge');
       const owner = { kind: 'workspace', workspaceId: workerData.workspaceId };
       const at = new Date().toISOString();
       db.sqlite.transaction(() => products.applyControlProducts(db.sqlite, owner, [{

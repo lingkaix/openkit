@@ -11,10 +11,11 @@ import {
   measureCanonicalFile,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
-import { KnowledgeNotebook } from './notebook.js';
+import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { updateOkfFrontmatter } from './okf.js';
 import {
   decodeSourcePointer,
+  readSourcePointers,
   type SourceMetadataSchema,
   type SourcePointer,
 } from './source-pointers.js';
@@ -46,33 +47,25 @@ export function exportWorkspaceSources(input: {
   readonly workspaceRoot: string;
   readonly workspaceId: string;
   readonly revision: string;
+  /** Exact SQL-selected Notebook/schema tuple supplied by the admitted Workspace owner. */
+  readonly selection: WorkspaceNotebookSelection;
   readonly exportRoot: string;
   readonly sources: readonly (z.infer<typeof SourceMetadataSchema> & { workspaceId: string })[];
-  /** Exact scope facts captured by the export owner, never inferred from root ancestry. */
-  readonly knowledgeBaseId: string | undefined;
-  readonly scopeSchemaText: string | null;
   readonly mounts: unknown;
 }): void {
   const scope = { kind: 'workspace' as const, workspaceId: input.workspaceId };
   const notebookRoot = join(input.workspaceRoot, 'knowledge');
   assertCanonicalDirectory(notebookRoot);
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') });
-  notebook.history({ revision: input.revision, limit: 1 });
-  const blobs = Object.entries(notebook.readSourcePointers(input.revision));
-  if (blobs.length && (!input.knowledgeBaseId || !input.scopeSchemaText))
-    throw new Error('Source export scope facts are unavailable.');
-  const pointers = new Map(
-    blobs.map(([id, content]) => [
-      id,
-      decodeSourcePointer({
-        ownerScope: scope,
-        knowledgeBaseId: input.knowledgeBaseId!,
-        scopeSchemaText: input.scopeSchemaText!,
-        id,
-        content,
-      }),
-    ])
-  );
+  if (
+    input.selection.workspaceRoot !== input.workspaceRoot ||
+    input.selection.head.workspaceId !== input.workspaceId ||
+    input.selection.head.notebookCommit !== input.revision
+  )
+    throw new Error('Source export selection does not match the pinned Workspace.');
+  input.selection.notebook.history({ revision: input.revision, limit: 1 });
+  // The selected SQL head supplies identity; this parent is only the physical locator required by the pointer reader.
+  const owner = { dataRoot: dirname(dirname(input.workspaceRoot)), ownerScope: scope };
+  const pointers = readSourcePointers(owner, input.revision, input.selection);
   const expected = new Map(
     input.sources.map(({ workspaceId: _workspaceId, ...source }) => [source.id, source])
   );
@@ -83,7 +76,7 @@ export function exportWorkspaceSources(input: {
     throw new Error('Source export snapshot does not match the pinned Notebook.');
   if (!pointers.size) return;
   const mounts = KnowledgeMountsSchema.parse(input.mounts);
-  if (mounts.some((mount) => mount.knowledgeBaseId !== input.knowledgeBaseId))
+  if (mounts.some((mount) => mount.knowledgeBaseId !== input.selection.head.knowledgeBaseId))
     throw new Error('Source mounts belong to a different Knowledge Base.');
   assertKnowledgeMountNamespaces(notebookRoot, mounts);
   for (const [id, pointer] of pointers) {

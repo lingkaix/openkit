@@ -265,7 +265,7 @@ describe('Server Knowledge through the existing retrieval source', () => {
   it('selects an ordinary generated delegated Workspace publication only with its actual publishing commit', async () => {
     const f = await fixture();
     const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     onTestFinished(() => workspaceDb.sqlite.close());
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(f.dataRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git'),

@@ -54,7 +54,7 @@ function deployment(
     workspaceMutationAdmission: admission,
     repositoryWorkspaceDb: (workspaceId) => {
       const db = openWorkspaceDb(root, workspaceId);
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       return db;
     },
   });

@@ -84,7 +84,7 @@ async function createContext(requestId = randomUUID()): Promise<
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-ui-'));
   const store = await createDemoStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return {
     store,
     inflightCommands: new WeakMap(),

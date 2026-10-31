@@ -1,15 +1,13 @@
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { KnowledgeSourceSchema } from '@openkit/app-api-schemas';
 import {
-  KnowledgeContentReferenceSchema,
   type KnowledgeOwnerScope,
   KnowledgeOwnerScopeSchema,
   KnowledgeSourceIdSchema,
 } from '@openkit/protocol';
 import { stringify } from 'yaml';
-import { z } from 'zod';
+import type { z } from 'zod';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   serverKnowledgeRoot,
@@ -17,33 +15,22 @@ import {
   WorkOwnershipViolationError,
 } from '../storage/fs-layout.js';
 import { readCanonicalTextFile } from '../storage/workspace-file-records.js';
-import { KnowledgeNotebook, NotebookError } from './notebook.js';
+import { KnowledgeNotebook } from './notebook.js';
+import { NotebookError } from './notebook-error.js';
+import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import {
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
   validateScopeKnowledgeSchema,
 } from './okf.js';
+import { SourceMetadataSchema, SourcePointerFieldsSchema } from './source-pointer-codecs.js';
 
-/** Existing Source metadata, projected from the sole Notebook pointer rather than a registry. */
-export const SourceMetadataSchema = KnowledgeSourceSchema.omit({ workspaceId: true }).extend({
-  createdAt: z.iso.datetime({ offset: true }),
-  updatedAt: z.iso.datetime({ offset: true }),
-});
-
-/** Captured Source fields have one serialized meaning across User, Workspace and Server. */
-export const SourcePointerFieldsSchema = z.object({
-  contentRef: KnowledgeContentReferenceSchema.refine((reference) => reference.range === null),
-  byteLength: z.number().int().nonnegative(),
-  mediaType: z.string().min(1),
-  sourceKind: SourceMetadataSchema.shape.kind,
-  uri: SourceMetadataSchema.shape.uri,
-  capturedAt: z.iso.datetime({ offset: true }),
-  captureChannel: z.string().regex(/^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/),
-  originatingThreadId: SourceMetadataSchema.shape.originatingThreadId,
-  originatingTurnId: SourceMetadataSchema.shape.originatingTurnId,
-  originatingFileId: SourceMetadataSchema.shape.originatingFileId,
-});
+export {
+  assertSourcePointerEdit,
+  SourceMetadataSchema,
+  SourcePointerFieldsSchema,
+} from './source-pointer-codecs.js';
 
 /** Current native owner and its canonical Notebook; this locator supplies no authorization. */
 export interface SourcePointerOwner {
@@ -72,17 +59,19 @@ export function sourceNotebookRoot(owner: SourcePointerOwner): string {
 export function parseSourcePointer(
   owner: SourcePointerOwner,
   id: string,
-  content: string
+  content: string,
+  workspaceSelection?: WorkspaceNotebookSelection
 ): SourcePointer {
+  if (owner.ownerScope.kind === 'workspace' && workspaceSelection === undefined)
+    throw new NotebookError('recovery_required');
   return decodeSourcePointer({
     ownerScope: owner.ownerScope,
-    knowledgeBaseId: readDefaultKnowledgeBaseId({
-      dataRoot: owner.dataRoot,
-      scope: owner.ownerScope,
-    }),
-    scopeSchemaText: readCanonicalTextFile(
-      join(sourceNotebookRoot(owner), 'schema', 'scope-schema.yaml')
-    ),
+    knowledgeBaseId:
+      workspaceSelection?.head.knowledgeBaseId ??
+      readDefaultKnowledgeBaseId({ dataRoot: owner.dataRoot, scope: owner.ownerScope }),
+    scopeSchemaText:
+      workspaceSelection?.scopeSchemaText ??
+      readCanonicalTextFile(join(sourceNotebookRoot(owner), 'schema', 'scope-schema.yaml')),
     id,
     content,
   });
@@ -142,28 +131,6 @@ export function decodeSourcePointer(input: {
   }
 }
 
-/** Allows descriptive edits while preserving captured facts, governance and unknown extensions. */
-export function assertSourcePointerEdit(before: string, after: string): void {
-  const original = parseOkfDocument({ path: 'sources/source.md', content: before });
-  const candidate = parseOkfDocument({ path: 'sources/source.md', content: after });
-  if (!original.ok || !candidate.ok) throw new NotebookError('invalid_request');
-  const protectedFields = (fields: Record<string, unknown>) =>
-    Object.fromEntries(
-      Object.entries(fields).filter(
-        ([key]) => !['title', 'description', 'tags', 'updated_at', 'review_state'].includes(key)
-      )
-    );
-  if (
-    original.document.frontmatter.type !== 'SourceSummary' ||
-    !SourcePointerFieldsSchema.safeParse(candidate.document.frontmatter).success ||
-    !isDeepStrictEqual(
-      protectedFields(original.document.frontmatter),
-      protectedFields(candidate.document.frontmatter)
-    )
-  )
-    throw new NotebookError('invalid_request');
-}
-
 /** Serializes native captured facts; descriptions and summary never choose owner, digest or channel. */
 export function serializeSourcePointer(input: {
   readonly owner: SourcePointerOwner;
@@ -172,6 +139,8 @@ export function serializeSourcePointer(input: {
   readonly summary?: string;
   readonly description?: string;
   readonly tags?: readonly string[];
+  /** Exact SQL-selected head; required for a Workspace owner. */
+  readonly workspaceSelection?: WorkspaceNotebookSelection;
 }): string {
   const source = SourceMetadataSchema.parse(input.source);
   const fields = SourcePointerFieldsSchema.parse(input.fields);
@@ -185,9 +154,12 @@ export function serializeSourcePointer(input: {
     fields.originatingFileId !== source.originatingFileId
   )
     throw new NotebookError('invalid_request');
-  const schema = parseScopeKnowledgeSchema(
-    readCanonicalTextFile(join(sourceNotebookRoot(input.owner), 'schema', 'scope-schema.yaml'))
-  );
+  if (input.owner.ownerScope.kind === 'workspace' && input.workspaceSelection === undefined)
+    throw new NotebookError('recovery_required');
+  const scopeSchemaText =
+    input.workspaceSelection?.scopeSchemaText ??
+    readCanonicalTextFile(join(sourceNotebookRoot(input.owner), 'schema', 'scope-schema.yaml'));
+  const schema = parseScopeKnowledgeSchema(scopeSchemaText);
   if (!schema.ok) throw new NotebookError('recovery_required');
   const content = `---\n${stringify({
     okf_version: '0.2',
@@ -216,26 +188,32 @@ export function serializeSourcePointer(input: {
   );
   if (profile.conformance !== 'scope-schema-valid' || profile.errors.length)
     throw new NotebookError('invalid_request');
-  parseSourcePointer(input.owner, source.id, content);
+  parseSourcePointer(input.owner, source.id, content, input.workspaceSelection);
   return content;
 }
 
 /** Reads metadata at one published revision; callers must admit current owner/audience before disclosure. */
 export function readSourcePointers(
   owner: SourcePointerOwner,
-  revision?: string
+  revision?: string,
+  workspaceSelection?: WorkspaceNotebookSelection
 ): ReadonlyMap<string, SourcePointer> {
   const root = lstatSync(sourceNotebookRoot(owner), { throwIfNoEntry: false });
   if (!root?.isDirectory() || root.isSymbolicLink()) throw new NotebookError('recovery_required');
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(sourceNotebookRoot(owner), 'notebook.git'),
-  });
-  const selected = revision ?? notebook.publishedRevision();
+  if (owner.ownerScope.kind === 'workspace' && workspaceSelection === undefined)
+    throw new NotebookError('recovery_required');
+  const notebook =
+    workspaceSelection?.notebook ??
+    new KnowledgeNotebook({
+      repositoryPath: join(sourceNotebookRoot(owner), 'notebook.git'),
+    });
+  const selected =
+    revision ?? workspaceSelection?.head.notebookCommit ?? notebook.publishedRevision();
   if (revision !== undefined) notebook.history({ revision, limit: 1 });
   return new Map(
     Object.entries(notebook.readSourcePointers(selected)).map(([id, content]) => [
       id,
-      parseSourcePointer(owner, id, content),
+      parseSourcePointer(owner, id, content, workspaceSelection),
     ])
   );
 }

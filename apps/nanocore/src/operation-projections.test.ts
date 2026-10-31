@@ -1816,7 +1816,7 @@ describe('Goal definition projections', () => {
             .goalId
         ).toBe(goal.goalId);
       const db = openWorkspaceDb(f.command.dataRoot, goal.workspaceId);
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       try {
         // Use the Goal owner's live Turn while its controlled Provider waits.
         await entered.promise;
@@ -1836,7 +1836,7 @@ describe('Goal definition projections', () => {
             store: f.store,
             repositoryWorkspaceDb: (workspaceId) => {
               const db = openWorkspaceDb(f.command.dataRoot, workspaceId);
-              applyScopedMigrations(db);
+              applyScopedMigrations(db, undefined, 'pre-knowledge');
               return db;
             },
             inflightCommands: new WeakMap(),
@@ -1950,7 +1950,7 @@ import { readPendingRequest } from './runtime/pending-requests.js';
 it('discloses and grants a Coordinator proposal to the current administrator without membership, retaining actual attribution and refusing revoked consumption', async () => {
   const f = await operationFixture({ mode: 'server' });
   const db = openWorkspaceDb(f.command.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   try {
     const { user: administrator } = await createBetterAuth(f.coreDb, { env: {} }).api.signUpEmail({
       body: {

@@ -55,7 +55,7 @@ describe('filesystem workspace staging roots', () => {
     } satisfies RecordFilesystemWorkspaceStagingRootInput;
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const stored = recordFilesystemWorkspaceStagingRoot(workspaceDb, baseline);
       const storedRow = workspaceDb.sqlite
         .prepare(`SELECT schema_version AS schemaVersion, before_manifest_json AS payload
@@ -142,7 +142,7 @@ describe('filesystem workspace staging roots', () => {
     } satisfies RecordFilesystemWorkspaceStagingRootInput;
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       recordFilesystemWorkspaceStagingRoot(workspaceDb, input);
       workspaceDb.sqlite
         .prepare(`UPDATE workspace_filesystem_staging_roots

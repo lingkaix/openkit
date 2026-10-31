@@ -216,7 +216,7 @@ function fixture() {
   roots.push(root);
   const environmentPackage = createEnvironmentPackage();
   const db = openWorkspaceDb(root, environmentPackage.scope.workspaceId);
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   fault.canonical = join(
     root,
     'workspaces',

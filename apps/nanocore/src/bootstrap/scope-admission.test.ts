@@ -1,11 +1,21 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
+import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -15,11 +25,12 @@ import {
   openCoreDbWithIntegrityCheck,
   openUserDb,
   openWorkspaceDb,
-  verifyAndMigrateExistingScopedDatabases,
 } from '../storage/db.js';
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
+import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
+import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
 import {
@@ -60,6 +71,50 @@ afterEach(async () => {
 const badId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
 const goodId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
 
+/** Creates complete retained Knowledge predecessor bytes for one healthy Workspace boot fixture. */
+function initializeWorkspaceKnowledgePredecessor(dataRoot: string, workspaceId: string): void {
+  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  const knowledgeBaseId = testEntityId('kb', `scope-admission:${workspaceId}`);
+  const configRoot = join(workspaceRoot, 'config');
+  mkdirSync(configRoot, { recursive: true });
+  writeFileSync(
+    join(configRoot, 'workspace.jsonc'),
+    `${JSON.stringify(
+      writeRetainedV1({
+        workspace: {
+          name: workspaceId,
+          defaultAgentId: null,
+          defaultKnowledgeBaseId: knowledgeBaseId,
+          knowledgeMounts: [
+            {
+              name: 'managed',
+              backend: 'local',
+              root: 'raw',
+              default: true,
+              knowledgeBaseId,
+            },
+          ],
+        },
+      })
+    )}\n`
+  );
+  const schemaRoot = join(workspaceRoot, 'knowledge', 'schema');
+  mkdirSync(schemaRoot, { recursive: true });
+  writeFileSync(join(schemaRoot, 'scope-schema.yaml'), DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
+  new KnowledgeNotebook({
+    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+  }).initialize({
+    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
+    metadata: {
+      summary: 'Scope admission fixture',
+      producer: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
+      authority: { kind: 'direct', instructionReference: 'test-fixture:scope-admission' },
+      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'0'.repeat(64)}` },
+      sourceReferences: [],
+    },
+  });
+}
+
 describe('scope-owned admission', () => {
   it.each([
     'absent',
@@ -92,20 +147,21 @@ describe('scope-owned admission', () => {
     'corrupt',
     'missing',
     'empty',
-  ] as const)('refuses Workspace database state %s without recreation', (fault) => {
+  ] as const)('refuses Workspace database state %s without recreation', async (fault) => {
     const dataRoot = root();
     for (const id of [badId, goodId]) {
       const db = openWorkspaceDb(dataRoot, id);
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       db.sqlite.close();
     }
+    initializeWorkspaceKnowledgePredecessor(dataRoot, goodId);
     const path = workspaceDbPath(dataRoot, badId);
     const damaged =
       fault === 'empty' ? Buffer.alloc(0) : Buffer.from('unreadable canonical Workspace authority');
     if (fault === 'missing') rmSync(path);
     else writeFileSync(path, damaged);
 
-    expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).not.toThrow();
+    await expect(verifyAndMigrateExistingScopedDatabases(dataRoot)).resolves.toBeUndefined();
     expect(isScopeAdmitted(dataRoot, 'workspace', badId)).toBe(false);
     expect(() => openBootVerifiedWorkspaceDb(dataRoot, badId)).toThrow('quarantined');
     expect(() => openWorkspaceDb(dataRoot, badId)).toThrow('quarantined');
@@ -179,7 +235,7 @@ describe('scope-owned admission', () => {
     await shutdownControlStoreWorkerClient();
     const badDatabase = workspaceDbPath(dataRoot, bad.id);
     const before = damageWorkspaceRecord(dataRoot, bad.id, '{bad history');
-    verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+    await verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
       FsStore.validateFileAuthority(dataRoot)
     );
     expect(isScopeAdmitted(dataRoot, 'workspace', bad.id)).toBe(false);
@@ -254,7 +310,7 @@ describe('scope-owned admission', () => {
     const before = readFileSync(workspaceDbPath(dataRoot, workspace.id));
     // Workspace 0000 predates native products. Its former file history is no longer an authority.
     // Boot cannot synthesize product records from later DDL or a readable configuration projection.
-    verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+    await verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
       FsStore.validateFileAuthority(dataRoot)
     );
     expect(isScopeAdmitted(dataRoot, 'workspace', workspace.id)).toBe(false);
@@ -279,7 +335,7 @@ describe('scope-owned admission', () => {
     } finally {
       db.sqlite.close();
     }
-    verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+    await verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
       FsStore.validateFileAuthority(dataRoot)
     );
     expect(isScopeAdmitted(dataRoot, 'workspace', bad.id)).toBe(false);
@@ -351,19 +407,20 @@ describe('scope-owned admission', () => {
     expect(readFileSync(badItemPath)).toEqual(before);
   });
 
-  it('contains private User database loss without refusing a healthy Workspace', () => {
+  it('contains private User database loss without refusing a healthy Workspace', async () => {
     const dataRoot = root();
     const userId = 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b';
     const user = openUserDb(dataRoot, userId);
     applyScopedMigrations(user);
     user.sqlite.close();
     const good = openWorkspaceDb(dataRoot, goodId);
-    applyScopedMigrations(good);
+    applyScopedMigrations(good, undefined, 'pre-knowledge');
     good.sqlite.close();
+    initializeWorkspaceKnowledgePredecessor(dataRoot, goodId);
     const path = userDbPath(dataRoot, userId);
     const damaged = Buffer.from('unreadable private User authority');
     writeFileSync(path, damaged);
-    expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).not.toThrow();
+    await expect(verifyAndMigrateExistingScopedDatabases(dataRoot)).resolves.toBeUndefined();
     expect(isScopeAdmitted(dataRoot, 'workspace', goodId)).toBe(true);
     expect(() => openUserDb(dataRoot, userId)).toThrow('quarantined');
     expect(readFileSync(path)).toEqual(damaged);

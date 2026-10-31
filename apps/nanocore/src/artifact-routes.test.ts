@@ -554,7 +554,7 @@ describe('Core artifact routes', () => {
     const completedAt = new Date().toISOString();
     await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const reviews: Awaited<ReturnType<typeof createReviewFixture>>[] = [];
     for (const [artifactId, content] of [
       ['ar_00000000-0000-71cf-a641-bd9c6acde17b', 'Review the first Artifact.'],
@@ -886,7 +886,7 @@ describe('Core artifact routes', () => {
     const completedAt = new Date().toISOString();
     await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     await createReviewFixture(
       store,
       workspaceDb,
@@ -983,7 +983,7 @@ describe('Core artifact routes', () => {
     } as const;
     store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', runtimeAgent);
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact Review redo thread'

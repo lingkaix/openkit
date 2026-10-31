@@ -13,12 +13,6 @@ import {
   ControlReviewCommandResultSchema,
 } from '../artifact-reviews.js';
 import {
-  type ControlMaintenanceAdmissionInput,
-  ControlMaintenanceAdmissionInputSchema,
-  type ControlMaintenanceAdmissionResult,
-  ControlMaintenanceAdmissionResultSchema,
-} from '../knowledge/knowledge-agent-maintenance.js';
-import {
   type ControlExecutionJournalInput,
   ControlExecutionJournalInputSchema,
 } from '../runtime/execution-journal.js';
@@ -56,6 +50,12 @@ import {
   ControlCapabilityWireInputSchema,
   controlCapabilityText,
 } from './control-store-capability.js';
+import {
+  type ControlMaintenanceAdmissionInput,
+  ControlMaintenanceAdmissionInputSchema,
+  type ControlMaintenanceAdmissionResult,
+  ControlMaintenanceAdmissionResultSchema,
+} from './control-store-maintenance-codecs.js';
 import {
   type ControlPendingTransition,
   ControlPendingTransitionSchema,

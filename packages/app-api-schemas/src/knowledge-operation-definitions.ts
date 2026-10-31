@@ -52,6 +52,8 @@ import {
   ReadKnowledgeProposalResponseSchema,
 } from './knowledge-proposal-preview.js';
 import {
+  ApplyKnowledgeSchemaRequestSchema,
+  ApplyKnowledgeSchemaResponseSchema,
   PreviewKnowledgeSchemaRequestSchema,
   PreviewKnowledgeSchemaResponseSchema,
 } from './knowledge-schema.js';
@@ -298,6 +300,20 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
 
 /** One public Notebook page lifecycle; all mutations use the existing publisher. */
 export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
+  'knowledge.schema.apply': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Apply an exact human-reviewed complete Workspace schema report under its idle lifecycle freeze.',
+    inputSchema: ApplyKnowledgeSchemaRequestSchema,
+    outputSchema: ApplyKnowledgeSchemaResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace-schema' },
+    policyOperation: 'knowledge.write',
+    mutating: true,
+  },
   'knowledge.schema.preview': {
     binding: 'json',
     returnsOneTimeSecret: false,

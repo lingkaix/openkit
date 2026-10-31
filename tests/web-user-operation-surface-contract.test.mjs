@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 347;
+const EXPECTED_CATALOG_SIZE = 348;
 const EXPECTED_SERVER_SIZE = 93;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 251;
+const EXPECTED_INCLUDED_SIZE = 252;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -41,6 +41,7 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['workspace.resource-access-apply', 'R033'],
   ['workspace.archive-download', 'R008'],
   ['knowledge.proposal.draft', 'R070'],
+  ['knowledge.schema.apply', 'R114'],
   ['knowledge.schema.preview', 'R114'],
   ['workspace.archive-import-dry-run', 'R008'],
   ['workspace.archive-import', 'R008'],
@@ -237,6 +238,7 @@ const WEB_OPERATION_GROUPS = {
     'knowledge.proposal.read': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.health.check': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.proposal.draft': { disposition: 'roadmap', roadmap: 'R070' },
+    'knowledge.schema.apply': { disposition: 'roadmap', roadmap: 'R114' },
     'knowledge.schema.preview': { disposition: 'roadmap', roadmap: 'R114' },
     'knowledge.source.list': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.context.prepare': { disposition: 'live', surface: 'Knowledge' },

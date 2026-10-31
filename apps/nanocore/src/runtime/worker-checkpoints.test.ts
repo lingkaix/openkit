@@ -31,7 +31,7 @@ import {
 async function createWorkspaceDb(): Promise<WorkspaceDb> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-checkpoints-'));
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   await openTestNativeWorkspace(workspaceDb);
   return workspaceDb;
 }

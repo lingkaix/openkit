@@ -20,7 +20,7 @@ describe('workspace quarantine records', () => {
     let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       const original = recordWorkspaceQuarantineRecord(workspaceDb, workspaceQuarantineRecord());
       expect(
@@ -79,7 +79,7 @@ describe('workspace quarantine records', () => {
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const record = recordWorkspaceQuarantineRecord(db, workspaceQuarantineRecord());
       db.sqlite
         .prepare('UPDATE workspace_quarantine_records SET schema_version=2,payload_json=?')

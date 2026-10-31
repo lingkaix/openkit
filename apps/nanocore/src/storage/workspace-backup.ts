@@ -71,6 +71,7 @@ import {
   readLightAppSnapshot,
   readLightAppSnapshots,
 } from '../generative-kernel/snapshots.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { readSourcePointers } from '../knowledge/source-pointers.js';
 import type { FsStore } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -738,7 +739,7 @@ export interface WorkspaceBackupStageResult {
 
 /** Installed native formats; app keys also admit recognized immutable recovery versions. */
 export const WORKSPACE_BACKUP_DATABASE_FORMATS: Readonly<Record<string, number>> = Object.freeze({
-  'drizzle.workspace': 19,
+  'drizzle.workspace': 20,
   'drizzle.app.1': 1,
   'drizzle.app.2': 2,
   'drizzle.app.3': 3,
@@ -1118,12 +1119,21 @@ function graph(
     const knowledgeBaseIds = [
       readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } }),
     ];
+    const selection = readWorkspaceNotebookSelection({
+      workspaceDb: { scope: 'workspace', sqlite: db, workspaceId },
+      workspaceRoot: root,
+      knowledgeBaseId: knowledgeBaseIds[0]!,
+    });
     const mounts = readKnowledgeMounts({ dataRoot, scope: { kind: 'workspace', workspaceId } });
     const externalDependencies: WorkspaceBackupManifest['coverage']['externalDependencies'] = [];
-    for (const pointer of readSourcePointers({
-      dataRoot,
-      ownerScope: { kind: 'workspace', workspaceId },
-    }).values()) {
+    for (const pointer of readSourcePointers(
+      {
+        dataRoot,
+        ownerScope: { kind: 'workspace', workspaceId },
+      },
+      undefined,
+      selection
+    ).values()) {
       const ref = pointer.fields.contentRef;
       const mount = mounts.find((m) => m.name === ref.locator.mount);
       if (ref.availability !== 'available' || !mount?.default) {
@@ -1298,6 +1308,9 @@ function privateRoot(stagingParent: string, workspaceId: string) {
   const container = mkdtempSync(join(stagingParent, 'workspace-capture-'));
   const workspaceRoot = join(container, 'workspaces', workspaceId);
   mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
+  // A SQL-selected bare Notebook can have no refs. File inventories omit that
+  // empty directory, but Git requires its container even for exact object reads.
+  ensureCanonicalDirectory(join(workspaceRoot, 'knowledge', 'notebook.git', 'refs'));
   return { container, workspaceRoot };
 }
 

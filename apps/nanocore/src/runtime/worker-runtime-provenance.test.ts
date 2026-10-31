@@ -1025,7 +1025,7 @@ async function createImportFixture(prefix: string): Promise<ImportFixture> {
     })
   );
 
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return {
     environmentPackage,
     lineage: {

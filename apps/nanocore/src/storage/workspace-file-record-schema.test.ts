@@ -2,6 +2,7 @@
 // The refusal helper preserves raw symbolic-link targets under the POSIX contract.
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   cpSync,
   mkdtempSync,
   readdirSync,
@@ -11,25 +12,36 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { parseOkfDocument, updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import {
+  createFixture,
+  decide,
+  replaceRetainedProposalReviews,
+  retainedProposalState,
+} from '../test-support/knowledge-proposal-authority.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import {
+  prepareWorkspaceKnowledgeSelection,
+  readControlKnowledgeProposal,
+} from './control-store-knowledge.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
 const TIMESTAMP = '2026-07-12T00:00:00.000Z';
 const PROPOSAL_REQUEST_ID = '00000000-0000-4000-8000-000000000117';
-const REVIEW_REQUEST_ID = '00000000-0000-4000-8000-000000000118';
 const VERIFIED_EXTERNAL_REFERENCE = `turn:${testEntityId('tu', 'canonical-record-fixture')}`;
 
 /**
@@ -39,7 +51,7 @@ const VERIFIED_EXTERNAL_REFERENCE = `turn:${testEntityId('tu', 'canonical-record
  * @param workspaceId Workspace that owns the Proposal.
  * @returns Persisted Proposal record.
  */
-function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
+async function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
   const canonicalPageBytes = [
     '---',
     'type: "KnowledgePage"',
@@ -61,18 +73,22 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
     '',
   ].join('\n');
 
-  return store.createKnowledgeProposal({
+  const dataRoot = store.getDataRoot()!;
+  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  const selection = readWorkspaceNotebookSelection({
+    workspaceDb,
+    workspaceRoot,
+    knowledgeBaseId: readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId },
+    }),
+  });
+  workspaceDb.sqlite.close();
+  const proposal = await store.createKnowledgeProposal({
     workspaceId,
     requestId: PROPOSAL_REQUEST_ID,
-    baseRevision: new KnowledgeNotebook({
-      repositoryPath: join(
-        store.getDataRoot()!,
-        'workspaces',
-        workspaceId,
-        'knowledge',
-        'notebook.git'
-      ),
-    }).publishedRevision(),
+    baseRevision: selection.head.notebookCommit,
     knowledgePageId: 'canonical-proposal',
     canonicalPageBytes,
     contentDigest: `sha256:${createHash('sha256').update(canonicalPageBytes).digest('hex')}`,
@@ -83,6 +99,68 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
     producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     createdAt: TIMESTAMP,
   });
+  const retainedDb = openWorkspaceDb(dataRoot, workspaceId);
+  try {
+    const retained = readControlKnowledgeProposal(retainedDb, proposal.id);
+    if (!retained) throw new Error('Strict Proposal fixture was not retained.');
+    return {
+      proposal,
+      path: join(
+        dataRoot,
+        'workspaces',
+        workspaceId,
+        'knowledge',
+        'content',
+        retained.proposal.documentContent.reference.locator.path
+      ),
+    };
+  } finally {
+    retainedDb.sqlite.close();
+  }
+}
+
+/**
+ * Rebinds one immutable Proposal descriptor to independently authored retained bytes.
+ *
+ * The fixture preserves the production digest-derived path and SQL descriptor invariant instead
+ * of mutating bytes behind an already retained immutable reference.
+ */
+function replaceRetainedProposalDocument(input: {
+  content: string;
+  dataRoot: string;
+  path: string;
+  proposalId: string;
+  workspaceId: string;
+}): string {
+  const bytes = Buffer.from(input.content, 'utf8');
+  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const relativePath = `sha256/${digest.slice('sha256:'.length)}`;
+  const replacementPath = join(dirname(input.path), digest.slice('sha256:'.length));
+  writeFileSync(replacementPath, bytes, { flag: 'wx', mode: 0o444 });
+
+  const workspaceDb = openWorkspaceDb(input.dataRoot, input.workspaceId);
+  try {
+    const row = workspaceDb.sqlite
+      .prepare('SELECT record_json FROM knowledge_notebook_proposals WHERE proposal_id = ?')
+      .get(input.proposalId) as { record_json: string } | undefined;
+    if (!row) throw new Error('Strict Proposal fixture metadata was not retained.');
+    const record = JSON.parse(row.record_json) as {
+      documentContent: {
+        byteLength: number;
+        reference: { contentDigest: string; locator: { path: string } };
+      };
+    };
+    record.documentContent.byteLength = bytes.byteLength;
+    record.documentContent.reference.contentDigest = digest;
+    record.documentContent.reference.locator.path = relativePath;
+    const result = workspaceDb.sqlite
+      .prepare('UPDATE knowledge_notebook_proposals SET record_json = ? WHERE proposal_id = ?')
+      .run(JSON.stringify(record), input.proposalId);
+    if (result.changes !== 1) throw new Error('Strict Proposal fixture metadata was not replaced.');
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+  return replacementPath;
 }
 
 /**
@@ -217,9 +295,8 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
 
 describe('workspace canonical record schemas', () => {
   it('reloads native proposal metadata without changing its canonical bytes', async () => {
-    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
-    const proposal = createStrictKnowledgeProposal(store, workspace.id);
-    const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
+    const { dataRoot, store, workspace } = await createCanonicalRecordFixture();
+    const { proposal, path } = await createStrictKnowledgeProposal(store, workspace.id);
     const content = readFileSync(path, 'utf8');
 
     const restarted = new FsStore({ dataRoot });
@@ -230,61 +307,54 @@ describe('workspace canonical record schemas', () => {
   });
 
   it('rejects a knowledge proposal missing its required created_at field', async () => {
-    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
-    const proposal = createStrictKnowledgeProposal(store, workspace.id);
-    const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
+    const { dataRoot, store, workspace } = await createCanonicalRecordFixture();
+    const { path } = await createStrictKnowledgeProposal(store, workspace.id);
 
-    writeFileSync(path, readFileSync(path, 'utf8').replace(`created_at: "${TIMESTAMP}"\n`, ''));
+    chmodSync(path, 0o600);
+    try {
+      writeFileSync(path, readFileSync(path, 'utf8').replace(`created_at: "${TIMESTAMP}"\n`, ''));
+    } finally {
+      chmodSync(path, 0o444);
+    }
 
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
   it('ignores an embedded Proposal status while preserving its source bytes', async () => {
-    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
-    const proposal = createStrictKnowledgeProposal(store, workspace.id);
-    const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
+    const { dataRoot, store, workspace } = await createCanonicalRecordFixture();
+    const { proposal, path } = await createStrictKnowledgeProposal(store, workspace.id);
     const content = readFileSync(path, 'utf8');
 
     const extended = content.replace(
       'review_required: true',
       'review_required: true\nstatus: "accepted"'
     );
-    writeFileSync(path, extended);
+    const extendedPath = replaceRetainedProposalDocument({
+      content: extended,
+      dataRoot,
+      path,
+      proposalId: proposal.id,
+      workspaceId: workspace.id,
+    });
 
     const reopened = new FsStore({ dataRoot });
     expect(reopened.getKnowledgeProposal(proposal.id)).toEqual(proposal);
     expect(reopened.getKnowledgeProposal(proposal.id)).not.toHaveProperty('status');
     await reopened.createThread(workspace.id, 'Preserve ignored status');
-    expect(readFileSync(path, 'utf8')).toBe(extended);
+    expect(readFileSync(extendedPath, 'utf8')).toBe(extended);
   });
 
   it('rejects a knowledge proposal review with invalid persisted fields', async () => {
-    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
-    const proposal = createStrictKnowledgeProposal(store, workspace.id);
-    store.recordKnowledgeProposalReviewDecision({
-      proposalId: proposal.id,
-      workspaceId: workspace.id,
-      decision: 'rejected',
-      requestId: REVIEW_REQUEST_ID,
-      baseRevision: proposal.baseRevision,
-      candidateRevision: proposal.candidateRevision,
-      proposalDigest: `sha256:${createHash('sha256')
-        .update(readFileSync(join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`)))
-        .digest('hex')}`,
-      verifiedExternalReferences: [VERIFIED_EXTERNAL_REFERENCE],
-      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      decidedAt: TIMESTAMP,
-    });
-    const path = join(workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`);
-    const record = JSON.parse(readFileSync(path, 'utf8')) as {
-      decisions: Array<Record<string, unknown>>;
-    };
-    record.decisions[0]!.decision = 'not-a-review-decision';
-    record.decisions[0]!.decidedAt = 'not-a-timestamp';
+    const f = await createFixture('canonical-invalid-review');
+    await decide(f, 'rejected', 'canonical-invalid-review-decision');
+    const decisions = JSON.parse(retainedProposalState(f, f.proposal.id).reviewsJson) as Array<
+      Record<string, unknown>
+    >;
+    decisions[0]!.decision = 'not-a-review-decision';
+    decisions[0]!.decidedAt = 'not-a-timestamp';
+    replaceRetainedProposalReviews(f, f.proposal.id, JSON.stringify(decisions));
 
-    writeFileSync(path, `${JSON.stringify(record)}\n`);
-
-    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(f.dataRoot, f.workspaceId);
   });
 
   it.each([
@@ -321,48 +391,81 @@ describe('workspace canonical record schemas', () => {
         updatedAt: TIMESTAMP,
       },
     });
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-    });
-    const baseRevision = notebook.publishedRevision();
-    const pointer = notebook.readSourcePointers(baseRevision)[source.id]!;
-    const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: pointer });
-    if (!parsed.ok) throw new Error('Healthy Source fixture must have valid frontmatter.');
-    const invalid =
-      violation === 'invalid kind'
-        ? updateOkfFrontmatter({
-            path: `sources/${source.id}.md`,
-            content: pointer,
-            updates: { sourceKind: 'not-a-source-kind' },
-          })
-        : violation === 'missing capturedAt'
-          ? pointer.replace(/^capturedAt:.*\n/m, '')
-          : updateOkfFrontmatter({
+    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+    try {
+      const selection = readWorkspaceNotebookSelection({
+        workspaceDb,
+        workspaceRoot,
+        knowledgeBaseId: readDefaultKnowledgeBaseId({
+          dataRoot,
+          scope: { kind: 'workspace', workspaceId: workspace.id },
+        }),
+      });
+      const notebook = selection.notebook;
+      const baseRevision = selection.head.notebookCommit;
+      const pointer = notebook.readSourcePointers(baseRevision)[source.id]!;
+      const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: pointer });
+      if (!parsed.ok) throw new Error('Healthy Source fixture must have valid frontmatter.');
+      const invalid =
+        violation === 'invalid kind'
+          ? updateOkfFrontmatter({
               path: `sources/${source.id}.md`,
               content: pointer,
-              updates:
-                violation === 'foreign scope'
-                  ? {
-                      scope: {
-                        kind: 'workspace',
-                        workspaceId: testEntityId('ws', 'foreign-source-owner'),
+              updates: { sourceKind: 'not-a-source-kind' },
+            })
+          : violation === 'missing capturedAt'
+            ? pointer.replace(/^capturedAt:.*\n/m, '')
+            : updateOkfFrontmatter({
+                path: `sources/${source.id}.md`,
+                content: pointer,
+                updates:
+                  violation === 'foreign scope'
+                    ? {
+                        scope: {
+                          kind: 'workspace',
+                          workspaceId: testEntityId('ws', 'foreign-source-owner'),
+                        },
+                      }
+                    : {
+                        contentRef: {
+                          ...(parsed.document.frontmatter.contentRef as Record<string, unknown>),
+                          contentDigest: null,
+                        },
                       },
-                    }
-                  : {
-                      contentRef: {
-                        ...(parsed.document.frontmatter.contentRef as Record<string, unknown>),
-                        contentDigest: null,
-                      },
-                    },
-            });
-    expect(invalid).not.toBe(pointer);
-    // Explicit test-owned retained-field corruption, not a governed Source edit.
-    const candidateRevision = notebook.prepareSourcePointers({
-      baseRevision,
-      changes: { [source.id]: invalid },
-      metadata: notebook.inspectRevision(baseRevision).metadata,
-    });
-    notebook.publish({ baseRevision, candidateRevision });
+              });
+      expect(invalid).not.toBe(pointer);
+      // Explicit test-owned retained-field corruption, not a governed Source edit.
+      const candidateRevision = notebook.prepareSourcePointers({
+        baseRevision,
+        changes: { [source.id]: invalid },
+        metadata: notebook.inspectRevision(baseRevision).metadata,
+      });
+      const nextHead = await prepareWorkspaceKnowledgeSelection({
+        db: workspaceDb,
+        workspaceRoot,
+        notebook,
+        knowledgeBaseId: selection.head.knowledgeBaseId,
+        notebookCommit: candidateRevision,
+        schemaText: selection.scopeSchemaText,
+      });
+      await store.commitWorkspaceKnowledge({
+        workspaceDb,
+        expectedHead: selection.head,
+        nextHead,
+        audits: [],
+        revalidatePublication: () => {
+          const current = readWorkspaceNotebookSelection({
+            workspaceDb,
+            workspaceRoot,
+            knowledgeBaseId: selection.head.knowledgeBaseId,
+          });
+          if (!isDeepStrictEqual(current.head, selection.head))
+            throw new Error('Fixture Workspace Knowledge head changed.');
+        },
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
 
     if (violation === 'foreign scope') {
       expect(() => new FsStore({ dataRoot })).toThrow();

@@ -442,7 +442,11 @@ export async function admitOperation(
           definition.policyOperation
         );
       scope = { kind: 'workspace', workspaceId };
-      if (definition.mutating && definition.target.kind !== 'workspace-deletion')
+      if (
+        definition.mutating &&
+        definition.target.kind !== 'workspace-deletion' &&
+        definition.target.kind !== 'workspace-schema'
+      )
         mutationWorkspaceId = workspaceId;
       break;
     }
@@ -606,6 +610,7 @@ export function resolveTarget(
     case 'authorized-workspaces':
     case 'automation':
     case 'workspace-deletion':
+    case 'workspace-schema':
     case 'deleted-workspace':
     case 'deployment':
     case 'configured-runtime-target':

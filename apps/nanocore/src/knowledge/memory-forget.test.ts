@@ -78,7 +78,7 @@ async function fixture(sourceBacked = false) {
   const userDb = openUserDb(dataRoot, userId);
   const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
   applyScopedMigrations(userDb);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const writer = {
     coreDb,
     userDb,

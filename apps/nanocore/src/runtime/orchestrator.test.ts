@@ -613,7 +613,7 @@ describe('startTurn orchestrator', () => {
     workspaceDb = openWorkspaceDb(ledgerRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const handle = await startTurn({
         gatewayConfig: createTestGatewayConfig(),
         defaultAgentId: 'agent_codex_host',

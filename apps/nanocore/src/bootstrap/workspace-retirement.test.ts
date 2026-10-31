@@ -34,18 +34,14 @@ import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import {
-  openCoreDb,
-  openUserDb,
-  openWorkspaceDb,
-  verifyAndMigrateExistingScopedDatabases,
-} from '../storage/db.js';
+import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userMemoryRoot, workspaceDbPath } from '../storage/fs-layout.js';
 import {
   applyMigrations,
   applyNativeScopeMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
@@ -148,7 +144,9 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
   if (fault === 'missing') rmSync(workspaceDbPath(dataRoot, workspaceId));
   if (fault === 'corrupt')
     writeFileSync(workspaceDbPath(dataRoot, workspaceId), 'Retained corrupt authority');
-  verifyAndMigrateExistingScopedDatabases(dataRoot, () => FsStore.validateFileAuthority(dataRoot));
+  await verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+    FsStore.validateFileAuthority(dataRoot)
+  );
   expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
   expect(isScopeAdmitted(dataRoot, 'workspace', siblingId)).toBe(true);
   const request = {
@@ -624,7 +622,7 @@ describe('retired registry consumers and retained Core migration', () => {
     });
     expect(admission.isClosed(f.workspaceId)).toBe(true);
     expect(readiness.isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
-    dbOwner.verifyAndMigrateExistingScopedDatabases(f.dataRoot, () =>
+    await verifyAndMigrateExistingScopedDatabases(f.dataRoot, () =>
       storeOwner.FsStore.validateFileAuthority(f.dataRoot)
     );
     expect(
@@ -870,7 +868,7 @@ describe('retired registry consumers and retained Core migration', () => {
     // A successor can itself retire; this must not fall back to either reserved identity.
     await shutdownControlStoreWorkerClient();
     rmSync(workspaceDbPath(f.dataRoot, successorId));
-    verifyAndMigrateExistingScopedDatabases(f.dataRoot, () =>
+    await verifyAndMigrateExistingScopedDatabases(f.dataRoot, () =>
       FsStore.validateFileAuthority(f.dataRoot)
     );
     expect(isScopeAdmitted(f.dataRoot, 'workspace', successorId)).toBe(false);

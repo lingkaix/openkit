@@ -55,7 +55,7 @@ async function fixture(
     }
   );
   const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   const common = {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: thread.id,

@@ -44,7 +44,7 @@ function fixture(kind: 'server' | 'workspace' = 'server') {
   const sqlite = db.sqlite;
   handles.push(sqlite);
   if (db.scope === 'core') applyMigrations(db);
-  else applyScopedMigrations(db);
+  else applyScopedMigrations(db, undefined, 'pre-knowledge');
   sqlite.pragma('synchronous = FULL');
   const threadId = allocateEntityId('th');
   const turnId = allocateEntityId('tu');

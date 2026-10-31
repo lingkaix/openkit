@@ -23,7 +23,7 @@ function createDbs(): { coreDb: CoreDb; workspaceDb: WorkspaceDb } {
   const coreDb = openCoreDb(dataRoot);
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
   applyMigrations(coreDb);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return { coreDb, workspaceDb };
 }
 

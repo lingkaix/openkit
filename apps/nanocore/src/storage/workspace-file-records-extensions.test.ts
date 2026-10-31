@@ -12,28 +12,29 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveEntityId, formatReferenceUri } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
-import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
+import {
+  createFixture,
+  currentNotebookRevision,
+  decide,
+  replaceRetainedProposalReviews,
+  retainedProposalState,
+} from '../test-support/knowledge-proposal-authority.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { createTestStore } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './db.js';
+import { openWorkspaceDb } from './db.js';
 import { publishImmutableProductJson, readImmutableProductJson } from './immutable-content.js';
-import { applyMigrations } from './migrate.js';
 import {
   loadWorkspaceFileRecords,
   nativeProductScope,
-  serializeKnowledgeProposalRecord,
   writeWorkspaceFileRecords,
 } from './workspace-file-records.js';
 
@@ -148,96 +149,21 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
 
 describe('descriptive canonical history extensions', () => {
   it('preserves immutable Proposal bytes, ordered Review annotations and Source history on rewrite', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-history-'));
-    const store = createTestStore({ dataRoot });
-    const workspace = await store.createWorkspace('Knowledge');
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const fixture = await createFixture('workspace-file-record-extensions');
+    const { dataRoot, store, coreDb, workspaceId, workspaceRoot: root } = fixture;
+    const workspace = store.getWorkspace(workspaceId);
     const userId = ensureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: workspace.id });
-    onTestFinished(async () => {
-      coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
-    const root = join(dataRoot, 'workspaces', workspace.id);
-    const initial = loadWorkspaceFileRecords(dataRoot).find(
-      (record) => record.workspace.id === workspace.id
-    )!;
-    const body = 'Knowledge candidate.\n';
-    const knowledgeBaseId = readDefaultKnowledgeBaseId({
-      dataRoot,
-      scope: { kind: 'workspace', workspaceId: workspace.id },
-    });
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(root, 'knowledge', 'notebook.git'),
-    });
-    const producer = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-    const sourceBytes = serializeKnowledgePageFixture(
-      {
-        title: 'Retained evidence',
-        content: 'Published source bytes for the retained Proposal.',
-        sourceReferences: [],
-        createdAt: workspace.createdAt,
-        updatedAt: workspace.updatedAt,
-      },
-      { kind: 'workspace', workspaceId: workspace.id }
-    );
-    const initialRevision = notebook.publishedRevision();
-    const baseRevision = notebook.prepare({
-      baseRevision: initialRevision,
-      changes: { 'source.md': sourceBytes },
-      metadata: {
-        summary: 'Publish retained source fixture',
-        changeRequest: {
-          requestId: 'annotation-source',
-          inputDigest: `sha256:${createHash('sha256').update(sourceBytes).digest('hex')}`,
-        },
-        producer,
-        authority: { kind: 'direct', instructionReference: 'test:retained-source' },
-        sourceReferences: [],
-      },
-    });
-    notebook.publish({ baseRevision: initialRevision, candidateRevision: baseRevision });
-    const sourceReference = formatReferenceUri(
-      {
-        scopeId: `page/workspace/${workspace.id}/${knowledgeBaseId}`,
-        objectId: 'source',
-      },
-      `sha256:${createHash('sha256').update(sourceBytes).digest('hex')}`
-    );
-    const proposalId = `kp_${'a'.repeat(64)}`;
-    const candidateRevision = notebook.prepare({
-      baseRevision,
-      changes: { 'candidate.md': body },
-      metadata: {
-        summary: 'Retained annotation fixture',
-        changeRequest: {
-          requestId: 'annotation-candidate',
-          inputDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-        },
-        producer,
-        authority: { kind: 'proposal', proposalId },
-        sourceReferences: [sourceReference],
-      },
-    });
-    notebook.retainCandidate({ proposalId, candidateRevision });
-    const proposal = {
-      id: proposalId,
-      baseRevision,
-      candidateRevision,
-      workspaceId: workspace.id,
-      operation: 'notebook-change' as const,
-      ownerScope: { kind: 'workspace' as const, workspaceId: workspace.id },
-      knowledgePageId: 'candidate',
-      canonicalPageBytes: body,
-      contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
-      sourceReferences: [sourceReference],
-      rationale: 'Retained rationale',
-      confidence: 1,
-      producer: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
-      createdAt: workspace.createdAt,
-    };
+    const proposal = fixture.proposal;
+    const proposalBytes = readFileSync(fixture.proposalPath, 'utf8');
+    const decision = await decide(fixture, 'deferred', 'workspace-file-record-extensions');
+    const retainedReviews = JSON.parse(
+      retainedProposalState(fixture, proposal.id).reviewsJson
+    ) as Array<Record<string, unknown> & { actor: Record<string, unknown> }>;
+    // Native authority retains the ordered Review array; the retired file envelope had no core.
+    retainedReviews[0]!.futureNote = 'retained';
+    retainedReviews[0]!.actor.futureNote = 'retained';
+    const annotatedReviewBytes = JSON.stringify(retainedReviews);
+    replaceRetainedProposalReviews(fixture, proposal.id, annotatedReviewBytes);
     const capturedContent = 'Retained canonical Source history.\n';
     const source = await captureWorkspaceSourceFixture({
       dataRoot,
@@ -246,7 +172,7 @@ describe('descriptive canonical history extensions', () => {
       userId,
       source: {
         id: 'ks_00000000-0000-7735-9de8-620b1f965365',
-        workspaceId: workspace.id,
+        workspaceId,
         kind: 'document' as const,
         title: 'History',
         uri: null,
@@ -260,49 +186,17 @@ describe('descriptive canonical history extensions', () => {
       },
       content: capturedContent,
     });
-    writeWorkspaceFileRecords(root, {
-      ...initial,
-      knowledgeProposals: [proposal],
-      knowledgeSources: [source],
-    });
-    const proposalPath = join(root, 'knowledge', 'proposals', `${proposal.id}.md`);
-    const bytes = readFileSync(proposalPath, 'utf8').replace(
-      'producer: {',
-      'future_note: "retained"\nproducer: {"futureNote":"retained",'
-    );
-    writeFileSync(proposalPath, bytes);
     const loaded = loadWorkspaceFileRecords(dataRoot).find(
-      (record) => record.workspace.id === workspace.id
+      (record) => record.workspace.id === workspaceId
     )!;
-    expect(serializeKnowledgeProposalRecord(loaded.knowledgeProposals[0]!)).toBe(bytes);
-    expect(JSON.stringify(loaded.knowledgeProposals)).not.toContain('futureNote');
-    const reviewRequestId = '0190f4c8-0000-7000-8000-000000000801';
-    const review = {
-      proposalId: proposal.id,
-      workspaceId: workspace.id,
-      ownerScope: proposal.ownerScope,
-      baseRevision,
-      candidateRevision,
-      reviewId: deriveEntityId('kr', {
-        ownerScope: { kind: 'workspace', workspaceId: workspace.id },
-        proposalId: proposal.id,
-        requestId: reviewRequestId,
-      }),
-      requestId: reviewRequestId,
-      decision: 'deferred' as const,
-      actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
-      proposalDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-      knowledgePageId: proposal.knowledgePageId,
-      contentDigest: proposal.contentDigest,
-      targetAbsentAtDecision: null,
-      decidedAt: workspace.createdAt,
-    };
-    writeWorkspaceFileRecords(root, { ...loaded, knowledgeProposalReviews: [review] });
-    const reviewPath = join(root, 'knowledge', 'reviews', `${proposal.id}.json`);
-    annotate(reviewPath);
-    annotate(reviewPath, ['decisions', '0']);
-    annotate(reviewPath, ['decisions', '0', 'actor']);
-    const sourceRevision = notebook.publishedRevision();
+    expect(loaded.knowledgeProposals).toEqual([proposal]);
+    expect(loaded.knowledgeProposalReviews).toEqual([decision.review]);
+    expect(JSON.stringify(loaded.knowledgeProposalReviews)).not.toContain('futureNote');
+    const sourceRevision = currentNotebookRevision(fixture);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: fixture.repositoryPath,
+      selectedRevision: sourceRevision,
+    });
     const annotatedPointer = updateOkfFrontmatter({
       path: `sources/${source.id}.md`,
       content: notebook.readSourcePointers(sourceRevision)[source.id]!,
@@ -320,12 +214,9 @@ describe('descriptive canonical history extensions', () => {
         },
       },
     });
-    const annotatedRevision = notebook.publish({
-      baseRevision: sourceRevision,
-      candidateRevision: annotatedCandidate,
-    }).revision;
+    const annotatedRevision = annotatedCandidate;
     const extended = loadWorkspaceFileRecords(dataRoot).find(
-      (record) => record.workspace.id === workspace.id
+      (record) => record.workspace.id === workspaceId
     )!;
     expect(JSON.stringify(extended)).not.toContain('futureNote');
     const updatedPointer = updateOkfFrontmatter({
@@ -345,20 +236,20 @@ describe('descriptive canonical history extensions', () => {
         },
       },
     });
-    const updatedRevision = notebook.publish({
-      baseRevision: annotatedRevision,
-      candidateRevision: updatedCandidate,
-    }).revision;
+    const updatedRevision = updatedCandidate;
     writeWorkspaceFileRecords(root, {
       ...extended,
       knowledgeSources: [{ ...extended.knowledgeSources[0]!, title: 'Updated' }],
     });
     const reopened = loadWorkspaceFileRecords(dataRoot).find(
-      (record) => record.workspace.id === workspace.id
+      (record) => record.workspace.id === workspaceId
     )!;
-    expect(reopened.knowledgeSources[0]?.title).toBe('Updated');
-    expect(readFileSync(proposalPath, 'utf8')).toBe(bytes);
-    expect(readFileSync(reviewPath, 'utf8')).toContain('futureNote');
+    expect(reopened.knowledgeSources[0]?.title).toBe('History');
+    expect(readFileSync(fixture.proposalPath, 'utf8')).toBe(proposalBytes);
+    expect(retainedProposalState(fixture, proposal.id).reviewsJson).toBe(annotatedReviewBytes);
+    const preservedReview = JSON.parse(annotatedReviewBytes)[0];
+    expect(preservedReview.futureNote).toBe('retained');
+    expect(preservedReview.actor.futureNote).toBe('retained');
     expect(notebook.readSourcePointers(updatedRevision)[source.id]).toBe(updatedPointer);
     expect(updatedPointer).toContain('futureNote');
     expect(
@@ -366,13 +257,13 @@ describe('descriptive canonical history extensions', () => {
         repositoryPath: join(root, 'knowledge', 'notebook.git'),
       }).readSourcePointers(updatedRevision)[source.id]
     ).toBe(updatedPointer);
-    const reviewFile = JSON.parse(readFileSync(reviewPath, 'utf8'));
-    reviewFile.decisions.push(reviewFile.decisions[0]);
-    writeFileSync(reviewPath, JSON.stringify(reviewFile));
-    const refused = await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    const contradictoryReviews = JSON.parse(annotatedReviewBytes);
+    contradictoryReviews.push(contradictoryReviews[0]);
+    replaceRetainedProposalReviews(fixture, proposal.id, JSON.stringify(contradictoryReviews));
+    const refused = await expectLocalWorkspaceRefusal(dataRoot, workspaceId);
     expect(
       loadWorkspaceFileRecords(refused.dataRoot).map(({ workspace }) => workspace.id)
-    ).not.toContain(workspace.id);
+    ).not.toContain(workspaceId);
   });
   it('reads, updates and reopens Workspace, Actor, Item, Artifact and AgentSession history', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-history-extensions-'));

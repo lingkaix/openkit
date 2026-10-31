@@ -460,7 +460,7 @@ describe('data-root backup manifest', () => {
       users: sourceDb.sqlite.prepare(authoritySql.users).all(),
     };
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const material = createWorkspaceMaterial(workspaceDb, {
       acceptedAt: timestamp,
       actor: { kind: 'user', id: LOCAL_USER_ID },

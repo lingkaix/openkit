@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
 import {
   KnowledgeAskResponseSchema,
   type KnowledgeRetrievalCandidate,
@@ -37,7 +36,6 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { retrieveUserMemory, retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { AuthorizedHistory } from './notebook-history.js';
 import {
   parseOkfDocument,
@@ -195,17 +193,6 @@ export async function askKnowledgeAgent(
         : input.caller === 'internal-agent'
           ? 'assistant'
           : 'app-api';
-    const notebook = memory
-      ? undefined
-      : new KnowledgeNotebook({
-          repositoryPath: join(
-            dataRoot,
-            'workspaces',
-            input.workspaceId,
-            'knowledge',
-            'notebook.git'
-          ),
-        });
     const primaryNotebook = memory
       ? readAuthorizedUserMemoryPages({ ...bound, pageIds: [] })
       : readAuthorizedWorkspaceNotebookPages({ ...bound, pageIds: [] });
@@ -224,6 +211,7 @@ export async function askKnowledgeAgent(
       });
       input.signal.throwIfAborted();
     }
+    const notebook = memory ? undefined : notebookRead!.notebook;
     const overviewPage = memory
       ? undefined
       : readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'], notebookRead })
@@ -369,7 +357,7 @@ export async function askKnowledgeAgent(
         dataRoot,
         ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
       };
-      const pointer = readSourcePointers(owner).get(sourceId);
+      const pointer = readSourcePointers(owner, undefined, notebookRead!.selection).get(sourceId);
       if (!pointer) return null;
       const delivered = await readManagedSourceText({ owner, pointer, access: bound.access });
       if (
@@ -597,10 +585,13 @@ export async function askKnowledgeAgent(
               {
                 type: 'text' as const,
                 text: JSON.stringify(
-                  new AuthorizedHistory(notebook, dataRoot, input.workspaceId, access).history({
-                    revision: baseRevision,
-                    limit: 20,
-                  })
+                  new AuthorizedHistory(
+                    notebook,
+                    dataRoot,
+                    input.workspaceId,
+                    notebookRead!.selection,
+                    access
+                  ).history({ revision: baseRevision, limit: 20 })
                 ),
               },
             ],

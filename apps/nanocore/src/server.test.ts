@@ -315,7 +315,7 @@ function createCoreDb(registerDemoMembership = true): CoreDb {
  */
 function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return workspaceDb;
 }
 

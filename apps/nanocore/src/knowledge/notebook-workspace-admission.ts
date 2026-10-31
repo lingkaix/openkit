@@ -11,11 +11,11 @@ import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authorit
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import {
-  assertCanonicalDirectory,
-  readCanonicalTextFile,
-} from '../storage/workspace-file-records.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../workspace-mutation-admission.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationAdmission, NotebookUpdate } from './notebook-publication.js';
 import {
@@ -38,7 +38,11 @@ interface WorkspacePublicationAuthority {
   readonly actor: Extract<ActorRef, { kind: 'user' }>;
   readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
+  /** Exact reviewed-Schema lifecycle freeze; it admits no ordinary publication. */
+  readonly schemaFreeze?: WorkspaceFrozenAdmission;
   readonly notebook: KnowledgeNotebook;
+  /** Exact SQL-selected schema bytes for activated Workspace readers. */
+  readonly scopeSchemaText: string;
   readonly request: NotebookUpdate;
 }
 
@@ -48,8 +52,12 @@ export function readWorkspaceNotebookAdmission(
 ): NotebookPublicationAdmission {
   const { workspaceId } = input.request;
   input.currentAuthority?.();
+  const ownsSchemaFreeze =
+    input.schemaFreeze !== undefined &&
+    input.workspaceMutationAdmission.ownsFreeze(workspaceId, input.schemaFreeze);
   if (
-    input.workspaceMutationAdmission.isClosed(workspaceId) ||
+    (input.schemaFreeze !== undefined && !ownsSchemaFreeze) ||
+    (input.workspaceMutationAdmission.isClosed(workspaceId) && !ownsSchemaFreeze) ||
     (input.requestActor
       ? input.actor.id !== input.requestActor.userId ||
         !isWorkspaceOperationAuthorized(input.coreDb, input.requestActor, workspaceId, {
@@ -76,9 +84,7 @@ export function readWorkspaceNotebookAdmission(
     join(workspaceRoot, 'knowledge', 'schema'),
   ])
     assertCanonicalDirectory(path);
-  const scopeSchemaText = readCanonicalTextFile(
-    join(workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml')
-  );
+  const scopeSchemaText = input.scopeSchemaText;
   const sourceRecords = new Map(
     input.store.listKnowledgeSources(workspaceId).map((source) => [source.id, source])
   );

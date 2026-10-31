@@ -25,7 +25,7 @@ it('retains exact correction attribution and reports apply, reject, stale and co
     if (db.sqlite.open) db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
   const acceptedAt = '2026-10-17T12:00:00.000Z';
   const { materialId } = createWorkspaceMaterial(db, {

@@ -1843,7 +1843,7 @@ describe('workspace auxiliary lineage reminting', () => {
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-import-sync-target-'));
     let db = openWorkspaceDb(targetRoot, targetWorkspaceId);
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       importWorkspaceApplyResults(db, imported.workspaceApplyResults);
       importWorkspaceReconciliationRecords(db, imported.workspaceReconciliationRecords);
       db.sqlite.close();
@@ -2508,7 +2508,7 @@ describe('workspace auxiliary lineage reminting', () => {
       'annotation'
     );
     const db = openWorkspaceDb(targetRoot, targetWorkspaceId);
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     importAgentEnvironmentPackageSnapshots(db, imported.agentEnvironmentPackageSnapshots);
     importMcpToolSchemaSnapshots(db, imported.mcpToolSchemaSnapshots);
     const record = imported.agentEnvironmentPackageSnapshots[0]!;
@@ -3995,7 +3995,7 @@ describe('slice 1d portable call fields', () => {
       source.workspaceId
     );
     try {
-      applyScopedMigrations(sourceDb);
+      applyScopedMigrations(sourceDb, undefined, 'pre-knowledge');
       importWorkspaceCapabilityUsageLedger({
         workspaceDb: sourceDb,
         capabilityCalls: input.capabilityCalls as never,
@@ -4022,7 +4022,7 @@ describe('slice 1d portable call fields', () => {
       targetWorkspaceId
     );
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       importWorkspaceCapabilityUsageLedger({
         workspaceDb: db,
         capabilityCalls: snapshot.capabilityCalls,

@@ -250,7 +250,7 @@ function createDurableWorkerControlLease(
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
 
   try {
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: environmentPackage.createdAt,
       environmentPackage,
@@ -1964,7 +1964,7 @@ describe('worker control routes', () => {
     });
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: environmentPackage.createdAt,
       environmentPackage,
@@ -2510,7 +2510,7 @@ describe('worker control routes', () => {
         binding,
         'sandbox_final_status_workspace'
       );
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const inputSnapshots = buildWorkspaceInputSnapshots({
         backendCapabilities: environmentPackage.backend.requiredCapabilities,
         backendKind: 'openshell',
@@ -3488,7 +3488,7 @@ describe('worker control routes', () => {
 
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
       try {
-        applyScopedMigrations(workspaceDb);
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           createdAt: '2026-06-16T00:00:01.000Z',
           environmentPackage,

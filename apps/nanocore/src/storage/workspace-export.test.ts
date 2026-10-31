@@ -388,7 +388,7 @@ describe('workspace export verifier', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-journal-export-'));
     const db = openWorkspaceDb(root, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const names = ['control_execution_steps', 'control_executions'];
       const tables = (
         db.sqlite
@@ -2895,7 +2895,7 @@ describe('workspace export verifier', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const tables = (
         workspaceDb.sqlite
           .prepare(

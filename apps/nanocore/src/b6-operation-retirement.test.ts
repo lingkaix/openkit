@@ -324,7 +324,7 @@ describe('B6 binding retirement', () => {
     }
     if (id === 'environment.snapshot-read') {
       const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       try {
         recordAgentEnvironmentPackageSnapshot(db, {
           environmentPackage: createEnvironmentPackage(),

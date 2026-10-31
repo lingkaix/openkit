@@ -15,7 +15,13 @@ import {
 import { retrievalTraceRelativePath } from '../storage/retrieval-traces.js';
 import { appendWorkObservation, readWorkObservations } from '../storage/work-observations.js';
 import { createApp } from '../test-support/app.js';
-import { createFixture, decide, digest } from '../test-support/knowledge-proposal-authority.js';
+import {
+  createFixture,
+  currentNotebookRevision,
+  decide,
+  digest,
+  retainedProposalState,
+} from '../test-support/knowledge-proposal-authority.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { closeTestCoreDb, createTestWorkspaceDb } from '../test-support/store.js';
 import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
@@ -125,9 +131,9 @@ it('previews real Workspace dependencies and keeps unreadable or malformed conta
   rebuildWorkspaceDerivedIndexes({ dataRoot: f.dataRoot, workspaceId: f.workspaceId });
   const schemaPath = join(f.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml');
   const schemaBytes = readFileSync(schemaPath, 'utf8');
-  const reviewBytes = readFileSync(f.reviewPath, 'utf8');
+  const reviewBytes = retainedProposalState(f, f.proposal.id).reviewsJson;
   const proposalBytes = readFileSync(f.proposalPath, 'utf8');
-  const revision = f.notebook.publishedRevision();
+  const revision = currentNotebookRevision(f);
   const content = f.notebook.readContent(revision);
   const indexPaths = [
     'knowledge-validation.json',
@@ -241,11 +247,11 @@ it('previews real Workspace dependencies and keeps unreadable or malformed conta
     expect(JSON.stringify(incomplete)).not.toContain(privateValue);
   }
   expect(readFileSync(schemaPath, 'utf8')).toBe(schemaBytes);
-  expect(readFileSync(f.reviewPath, 'utf8')).toBe(reviewBytes);
+  expect(retainedProposalState(f, f.proposal.id).reviewsJson).toBe(reviewBytes);
   expect(readFileSync(f.proposalPath, 'utf8')).toBe(proposalBytes);
   expect(readFileSync(tracePath, 'utf8')).toBe(traceBytes);
   expect(indexPaths.map((path) => readFileSync(path, 'utf8'))).toEqual(indexBytes);
-  expect(f.notebook.publishedRevision()).toBe(revision);
+  expect(currentNotebookRevision(f)).toBe(revision);
   expect(f.notebook.readContent(revision)).toEqual(content);
   expect(readWorkObservations(workspaceDb, observationOwner)).toEqual(observation);
 }, 180_000);

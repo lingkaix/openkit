@@ -89,7 +89,7 @@ describe('execution operation authority', () => {
       inflightCommands: new WeakMap(),
       repositoryWorkspaceDb: (id) => {
         const db = openWorkspaceDb(dataRoot, id);
-        applyScopedMigrations(db);
+        applyScopedMigrations(db, undefined, 'pre-knowledge');
         return db;
       },
     });

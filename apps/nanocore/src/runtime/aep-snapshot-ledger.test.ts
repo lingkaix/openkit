@@ -77,7 +77,7 @@ function createWorkspaceDb() {
     mkdtempSync(join(tmpdir(), 'openkit-aep-snapshot-ledger-')),
     'ws_00000000-0000-73c3-900f-8d310e4ba201'
   );
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return workspaceDb;
 }
 
@@ -824,7 +824,7 @@ describe('AEP snapshot ledger', () => {
     const { dataRoot, workspaceId } = workspaceDb;
     workspaceDb.sqlite.close();
     const reopened = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(reopened);
+    applyScopedMigrations(reopened, undefined, 'pre-knowledge');
 
     try {
       expect(

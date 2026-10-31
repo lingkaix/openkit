@@ -36,7 +36,7 @@ function openTestWorkspaceDb(workspaceId: string): WorkspaceDb {
     mkdtempSync(join(tmpdir(), 'openkit-artifact-reviews-')),
     workspaceId
   );
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return workspaceDb;
 }
 
@@ -598,7 +598,7 @@ it('chooses an accepted Material candidate after whole-revision apply advances i
     db.sqlite.close();
     const reopened = openWorkspaceDb(db.dataRoot, db.workspaceId);
     try {
-      applyScopedMigrations(reopened);
+      applyScopedMigrations(reopened, undefined, 'pre-knowledge');
       expect(getArtifactReview(reopened, artifactId, 1)).toEqual(choice);
       expect(selectArtifactReviewCandidate(reopened, selectionInput, true)).toEqual(choice);
       expect(authoritySnapshot(reopened)).toEqual(snapshot);
@@ -621,7 +621,7 @@ function retainedReviewFixture(): {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db);
+  applyScopedMigrations(db, undefined, 'pre-knowledge');
   const input = {
     artifactId: 'ar_00000000-0000-78f7-9fad-58a15c7011af',
     artifactVersion: 1,

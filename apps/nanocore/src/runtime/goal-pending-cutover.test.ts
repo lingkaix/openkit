@@ -19,7 +19,7 @@ describe('Coordinator command-intent approvals', () => {
       mkdtempSync(join(tmpdir(), 'goal-pending-')),
       'ws_00000000-0000-7509-8702-098e8909b075'
     );
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     try {
       const now = '2026-10-03T00:00:00.000Z';
       const input = {

@@ -31,6 +31,7 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import type { WorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { exportWorkspaceSources } from '../knowledge/source-workspace-portability.js';
 import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
 import { retainPermissionDecision } from '../policy/retained-records-v1.js';
@@ -106,6 +107,8 @@ export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'control_turns',
   'control_product_entries',
   'control_work_observations',
+  'knowledge_notebook_heads',
+  'knowledge_notebook_proposals',
   'goals',
   'goal_cards',
   'goal_plan_versions',
@@ -211,6 +214,8 @@ export interface VerifiedWorkspaceExportTree {
 export interface WriteWorkspaceExportTreeInput {
   /** Current source root required when canonical Artifacts own file-backed originals. */
   sourceWorkspaceRoot?: string;
+  /** Exact SQL selection supplied by the same admitted source snapshot owner. */
+  sourceNotebookSelection?: WorkspaceNotebookSelection;
   /** Exact internal deletion owner, revalidated before preserving private history. */
   deletionRecoveryContext?: WorkspaceDeletionRecoveryExportContext;
   /** Export root directory to populate. */
@@ -610,14 +615,15 @@ export function writeWorkspaceExportTree(
       );
     }
     if (input.sourceWorkspaceRoot && portableFileState.notebookRevision) {
+      if (!input.sourceNotebookSelection)
+        throw new Error('Source export requires its exact SQL Notebook selection.');
       exportWorkspaceSources({
         workspaceRoot: input.sourceWorkspaceRoot,
         workspaceId: history.workspace.id,
         revision: portableFileState.notebookRevision,
         exportRoot: input.exportRoot,
         sources: history.knowledgeSources,
-        knowledgeBaseId: workspaceConfig.workspace.defaultKnowledgeBaseId,
-        scopeSchemaText: portableFileState.workspaceSchema,
+        selection: input.sourceNotebookSelection,
         mounts: workspaceConfig.workspace.knowledgeMounts,
       });
     } else if (history.knowledgeSources.length) {

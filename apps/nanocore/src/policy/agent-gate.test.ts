@@ -199,7 +199,7 @@ function fixture(document: PolicyDocumentV1) {
     workspaceDb.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return {
     workspaceDb,
     document,

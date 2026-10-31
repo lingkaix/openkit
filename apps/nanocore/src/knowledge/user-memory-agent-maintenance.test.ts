@@ -31,8 +31,11 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { attributedNotebookPageBytes } from './notebook-publication.js';
-import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
+import {
+  attributedNotebookPageBytes,
+  parseOkfDocument,
+  stringListFrontmatterField,
+} from './okf.js';
 import { pinScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import {
   prepareUserMemoryMaintenance,

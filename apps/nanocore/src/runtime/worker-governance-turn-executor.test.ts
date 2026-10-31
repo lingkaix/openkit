@@ -109,13 +109,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import {
-  type CoreDb,
-  openCoreDb,
-  openWorkspaceDb,
-  verifyAndMigrateExistingScopedDatabases,
-  type WorkspaceDb,
-} from '../storage/db.js';
+import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import {
@@ -124,6 +118,7 @@ import {
 } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
+import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -289,7 +284,7 @@ function applyMigrations(coreDb: CoreDb): void {
  */
 function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   return workspaceDb;
 }
 
@@ -912,7 +907,7 @@ async function createWorkspaceChangeIngressFixture(name: string, strategy: 'git'
   const beforeDigest = `sha256:${'1'.repeat(64)}`;
   const afterDigest = `sha256:${'2'.repeat(64)}`;
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
   const storeDataRoot = mkdtempSync(join(tmpdir(), `openkit-ingress-${name}-store-`));
   const store = await createDemoStore({ dataRoot: storeDataRoot });
@@ -3941,7 +3936,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const publicationDb = openWorkspaceDb(dataRoot, fixture.workspaceId);
-    applyScopedMigrations(publicationDb);
+    applyScopedMigrations(publicationDb, undefined, 'pre-knowledge');
     publicationDb.sqlite.close();
     const mutationAdmission = new WorkspaceMutationAdmission();
     const authority = vi
@@ -7032,7 +7027,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Persist workspace review records'
     );
     const setupDb = openWorkspaceDb(dataRoot, workspace.id);
-    applyScopedMigrations(setupDb);
+    applyScopedMigrations(setupDb, undefined, 'pre-knowledge');
     setupDb.sqlite.close();
     const backend = new FakeWorkerGovernanceBackend();
     const collectWorkspaceChanges = vi
@@ -7126,7 +7121,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
 
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       try {
         expect.soft(startError).toBeNull();
         expect.soft(listWorkspaceInputSnapshots(workspaceDb, workspace.id)).toHaveLength(1);
@@ -8156,7 +8151,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     mkdirSync(workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'), {
       recursive: true,
     });
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
     const reopenedStore = new FsStore({ dataRoot });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),

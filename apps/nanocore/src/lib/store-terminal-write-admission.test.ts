@@ -8,8 +8,9 @@ import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-l
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openWorkspaceDb, verifyAndMigrateExistingScopedDatabases } from '../storage/db.js';
+import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -108,7 +109,7 @@ async function seedMcpBootItem(input: {
   const store = await createDemoStore({ dataRoot });
   const turn = await seedTurn(store, 'completed');
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const ledgerNow = new Date(COMPLETED_AT);
   try {
     const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
@@ -360,7 +361,7 @@ describe('post-terminal write admission', () => {
     const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     try {
       const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'mcp_admission',
@@ -392,7 +393,7 @@ describe('post-terminal write admission', () => {
     }
 
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
     expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
     expect(store.listAllItems()).toContainEqual(
@@ -406,7 +407,7 @@ describe('post-terminal write admission', () => {
     const conflictStore = await createDemoStore({ dataRoot: conflictRoot });
     const conflictTurn = await seedTurn(conflictStore, 'completed');
     const conflictDb = openWorkspaceDb(conflictRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(conflictDb);
+    applyScopedMigrations(conflictDb, undefined, 'pre-knowledge');
     try {
       const call = await startCapabilityCall({
         agentId: 'agent_codex',
@@ -452,7 +453,7 @@ describe('post-terminal write admission', () => {
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(conflictRoot);
+    await verifyAndMigrateExistingScopedDatabases(conflictRoot);
     await expect(reconcileWorkerMcpItems(conflictRoot, conflictStore)).rejects.toThrow(
       /conflicts with the already-decided record|MCP boot backfill conflicts/
     );
@@ -707,7 +708,7 @@ describe('post-terminal write admission', () => {
       itemId: 'it_00000000-0000-748c-8305-6a5f709ad4dc',
     });
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
     await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-748c-8305-6a5f709ad4dc/
     );
@@ -722,7 +723,7 @@ describe('post-terminal write admission', () => {
       scopeItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
     });
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
     await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-769e-be1f-7403aafc125a/
     );
@@ -737,7 +738,7 @@ describe('post-terminal write admission', () => {
       skipExistingItem: true,
     });
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
     expect(
       store.listAllItems().find((item) => item.id === 'it_00000000-0000-771b-ae29-9f651adf70c6')
@@ -757,7 +758,7 @@ describe('post-terminal write admission', () => {
       skipSnapshot: true,
     });
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(missing.dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(missing.dataRoot);
     expect(await reconcileWorkerMcpItems(missing.dataRoot, missing.store)).toBe(0);
     expect(
       missing.store
@@ -773,7 +774,7 @@ describe('post-terminal write admission', () => {
       skipSnapshot: true,
     });
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(present.dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(present.dataRoot);
     expect(await reconcileWorkerMcpItems(present.dataRoot, present.store)).toBe(0);
   });
 
@@ -787,7 +788,7 @@ describe('post-terminal write admission', () => {
       scopeItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
     });
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
     await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-78cf-ac54-13510d8883d9/
     );
@@ -802,7 +803,7 @@ describe('post-terminal write admission', () => {
       skipExistingItem: true,
     });
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
     const filled = store
       .listAllItems()
@@ -824,7 +825,7 @@ describe('post-terminal write admission', () => {
       skipExistingItem: true,
     });
     await shutdownControlStoreWorkerClient();
-    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    await verifyAndMigrateExistingScopedDatabases(dataRoot);
     expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
     expect(
       store.listAllItems().find((item) => item.id === 'it_00000000-0000-7ab4-86dd-d5511a0d438e')

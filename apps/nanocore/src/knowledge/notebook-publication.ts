@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type ActorRef,
@@ -7,11 +8,11 @@ import {
   parseReferenceScope,
 } from '@openkit/protocol';
 import {
+  prepareAuditEvent,
   recordServerAuditEvent,
   recordUserAuditEvent,
-  recordWorkspaceAuditEvent,
 } from '../audit-events.js';
-import type { CommandRequestScope, FsStore } from '../lib/store.js';
+import type { CommandRequestScope, FsStore, KnowledgeProposalReviewRecord } from '../lib/store.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import {
   commandInputHash,
@@ -19,10 +20,13 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-knowledge.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
-import { type KnowledgeNotebook, type NotebookCommitMetadata, NotebookError } from './notebook.js';
+import type { KnowledgeNotebook, NotebookCommitMetadata } from './notebook.js';
+import { NotebookError } from './notebook-error.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
-import { parseOkfDocument, updateOkfFrontmatter, validateOpenKitKnowledgeProfile } from './okf.js';
+import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
+import { attributedNotebookPageBytes } from './okf.js';
 import { decodeSourcePointer } from './source-pointers.js';
 
 const OPERATION = 'knowledge.notebook.update';
@@ -91,11 +95,14 @@ export interface NotebookPublicationDependencies {
     NotebookCommitMetadata['authority'],
     { kind: 'proposal' }
   >;
-  /** Exact existing Proposal candidate; the callback appends its human Review before publication. */
+  /** Exact existing Proposal candidate and its owning scope's original human Review append. */
   readonly reviewedCandidate?: {
     readonly proposalId: string;
     readonly candidateRevision: string;
-    readonly recordDecision: () => void;
+    /** Workspace appends this exact observed Review in the same native publication tuple. */
+    readonly review?: KnowledgeProposalReviewRecord;
+    /** User and Server retain their current scope-local decision writer. */
+    readonly recordDecision?: () => void;
   };
   /** Human-confirmed removed paths and their exact bytes at the fixed base. */
   readonly confirmedRemovals?: Readonly<Record<string, string>>;
@@ -141,28 +148,6 @@ function humanNotebookPageBytes(
   ownerScope: KnowledgeOwnerScope
 ): string {
   return attributedNotebookPageBytes(path, content, ownerScope, 'user-authored');
-}
-
-/** Normalizes service-owned attribution before publication or retention of an exact Review candidate. */
-export function attributedNotebookPageBytes(
-  path: string,
-  content: string,
-  ownerScope: KnowledgeOwnerScope,
-  reviewState: 'user-authored' | 'delegated' | 'accepted'
-): string {
-  const parsed = parseOkfDocument({ path, content });
-  if (!parsed.ok)
-    throw new NotebookError(
-      'invalid_request',
-      undefined,
-      parsed.errors.map(({ code }) => code)
-    );
-  if (parsed.document.reserved) return content;
-  const profile = validateOpenKitKnowledgeProfile(parsed.document, ownerScope);
-  if (profile.conformance !== 'OpenKit-profile-valid') throw new NotebookError('invalid_request');
-  return parsed.document.frontmatter.review_state === reviewState
-    ? content
-    : updateOkfFrontmatter({ path, content, updates: { review_state: reviewState } });
 }
 
 /** Reads only this command's existing Audit evidence; page content is never stored in Audit. */
@@ -310,7 +295,7 @@ function publicationAuthority(
       });
 }
 
-/** Publishes a human Workspace edit through one Git CAS, with existing Audit and receipt owners. */
+/** Publishes a human Workspace edit through the native SQL head, Audit and original receipt tuple. */
 export async function publishWorkspaceNotebook(
   dependencies: NotebookPublicationDependencies,
   request: NotebookUpdate
@@ -329,7 +314,7 @@ export async function publishWorkspaceNotebook(
   return { ...publication, ownerScope, receiptRef: { ...publication.receiptRef, ownerScope } };
 }
 
-/** Publishes through the one existing Git CAS, Audit and command receipt sequence for the trusted database owner. */
+/** Publishes through the trusted database owner and its original Audit and command receipt. */
 export async function publishNotebook(
   dependencies: ScopedNotebookPublicationDependencies,
   request: NotebookEdit
@@ -345,7 +330,7 @@ export async function publishNotebook(
   }
 }
 
-/** Keeps the existing Git, Audit and receipt sequence inside its owning mutable admission. */
+/** Keeps immutable preparation and the deciding head tuple inside its owning mutable admission. */
 async function publishAdmittedNotebook(
   dependencies: ScopedNotebookPublicationDependencies,
   request: NotebookEdit
@@ -379,7 +364,25 @@ async function publishAdmittedNotebook(
     if (revision !== evidence.candidateRevision) throw new NotebookError('recovery_required');
     const candidate = readNotebookAdmissionRevision(dependencies, request, evidence, ownerScope);
     // A saved unpublished candidate is not a completed publication.
-    dependencies.notebook.history({ revision, limit: 1 });
+    const pageScope = parseReferenceScope(dependencies.revalidate().pageScopeId ?? '');
+    if (
+      dependencies.owner.kind === 'workspace' &&
+      (pageScope?.family !== 'page' || pageScope.kind !== 'workspace')
+    )
+      throw new NotebookError('recovery_required');
+    const publishedNotebook =
+      dependencies.owner.kind === 'workspace'
+        ? readWorkspaceNotebookSelection({
+            workspaceDb: dependencies.owner.workspaceDb,
+            workspaceRoot: join(
+              dependencies.owner.workspaceDb.dataRoot,
+              'workspaces',
+              dependencies.owner.workspaceDb.workspaceId
+            ),
+            knowledgeBaseId: pageScope?.family === 'page' ? pageScope.knowledgeBaseId : '',
+          }).notebook
+        : dependencies.notebook;
+    publishedNotebook.history({ revision, limit: 1 });
     const base = dependencies.notebook.readRevision(request.baseRevision);
     const baseContent = dependencies.notebook.readContent(request.baseRevision);
     const candidateContent = dependencies.notebook.readContent(revision);
@@ -456,7 +459,7 @@ async function publishAdmittedNotebook(
         throw new NotebookError('recovery_required');
       return project(receipt.response.id, admitted);
     },
-    execute: () => {
+    execute: async (receipt) => {
       for (const prior of readNotebookAdmissions(
         dependencies,
         request,
@@ -516,6 +519,32 @@ async function publishAdmittedNotebook(
         return validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
       };
       const admission = dependencies.revalidate();
+      const pageScope = parseReferenceScope(admission.pageScopeId ?? '');
+      if (
+        dependencies.owner.kind === 'workspace' &&
+        (pageScope?.family !== 'page' ||
+          pageScope.kind !== 'workspace' ||
+          pageScope.workspaceId !== dependencies.owner.workspaceDb.workspaceId)
+      )
+        throw new NotebookError('invalid_request');
+      const workspaceSelection =
+        dependencies.owner.kind === 'workspace' && pageScope?.family === 'page'
+          ? readWorkspaceNotebookSelection({
+              workspaceDb: dependencies.owner.workspaceDb,
+              workspaceRoot: join(
+                dependencies.owner.workspaceDb.dataRoot,
+                'workspaces',
+                dependencies.owner.workspaceDb.workspaceId
+              ),
+              knowledgeBaseId: pageScope.knowledgeBaseId,
+            })
+          : undefined;
+      if (
+        workspaceSelection &&
+        (workspaceSelection.head.notebookCommit !== request.baseRevision ||
+          workspaceSelection.scopeSchemaText !== admission.scopeSchemaText)
+      )
+        throw new NotebookError('conflict');
       const validated = check(admission);
       if (validated.errors.length) throw new NotebookError('invalid_request');
       if (
@@ -551,21 +580,51 @@ async function publishAdmittedNotebook(
             sourceReferences: [...validated.sourceReferences],
           },
         });
-      // All work from this final current-authority check through CAS is synchronous, with no model run or await.
-      const finalAdmission = dependencies.revalidate();
-      const finalValidation = check(finalAdmission);
-      if (
-        !dependencies.reviewedCandidate &&
-        validated.changedPaths.some((path) =>
-          finalAdmission.reviewRequiredPageIds.includes(path.slice(0, -3))
+      const workspaceDb =
+        dependencies.owner.kind === 'workspace' ? dependencies.owner.workspaceDb : undefined;
+      const nextHead =
+        workspaceDb && workspaceSelection
+          ? await prepareWorkspaceKnowledgeSelection({
+              db: workspaceDb,
+              workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
+              notebook: dependencies.notebook,
+              knowledgeBaseId: workspaceSelection.head.knowledgeBaseId,
+              notebookCommit: candidateRevision,
+              schemaText: admission.scopeSchemaText,
+            })
+          : undefined;
+      // Immutable preparation finishes before this check; Store repeats it after native opening.
+      // Both observed SQL identities remain predicates of the worker's deciding savepoint.
+      const revalidatePublication = (): void => {
+        const finalAdmission = dependencies.revalidate();
+        if (workspaceDb && workspaceSelection) {
+          const current = readWorkspaceNotebookSelection({
+            workspaceDb,
+            workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
+            knowledgeBaseId: workspaceSelection.head.knowledgeBaseId,
+          });
+          if (
+            !isDeepStrictEqual(current.head, workspaceSelection.head) ||
+            current.scopeSchemaText !== admission.scopeSchemaText ||
+            finalAdmission.scopeSchemaText !== admission.scopeSchemaText
+          )
+            throw new NotebookError('conflict');
+        }
+        const finalValidation = check(finalAdmission);
+        if (
+          !dependencies.reviewedCandidate &&
+          validated.changedPaths.some((path) =>
+            finalAdmission.reviewRequiredPageIds.includes(path.slice(0, -3))
+          )
         )
-      )
-        throw new NotebookError('review_required');
-      if (
-        finalValidation.errors.length ||
-        !isDeepStrictEqual(finalValidation.sourceReferences, validated.sourceReferences)
-      )
-        throw new NotebookError('invalid_request');
+          throw new NotebookError('review_required');
+        if (
+          finalValidation.errors.length ||
+          !isDeepStrictEqual(finalValidation.sourceReferences, validated.sourceReferences)
+        )
+          throw new NotebookError('invalid_request');
+      };
+      revalidatePublication();
       const evidence: KnowledgeNotebookAdmission = {
         ownerScope,
         requestId: request.requestId,
@@ -587,15 +646,10 @@ async function publishAdmittedNotebook(
           notebookAdmission: evidence,
           summary: 'Notebook publication evidence retained.',
         };
-        if (dependencies.owner.kind === 'workspace')
-          recordWorkspaceAuditEvent({
-            ...event,
-            workspaceDb: dependencies.owner.workspaceDb,
-            workspaceId: dependencies.owner.workspaceDb.workspaceId,
-          });
-        else if (dependencies.owner.kind === 'user')
+        if (dependencies.owner.kind === 'user')
           recordUserAuditEvent({ ...event, userDb: dependencies.owner.userDb });
-        else recordServerAuditEvent({ ...event, coreDb: dependencies.owner.coreDb });
+        else if (dependencies.owner.kind === 'server')
+          recordServerAuditEvent({ ...event, coreDb: dependencies.owner.coreDb });
       };
       if (dependencies.reviewedCandidate) {
         const retained = dependencies.notebook.retainedCandidate(
@@ -614,7 +668,45 @@ async function publishAdmittedNotebook(
           Object.entries(files).some(([path, bytes]) => retainedFiles[path] !== bytes)
         )
           throw new NotebookError('conflict');
-        dependencies.reviewedCandidate.recordDecision();
+        if (workspaceDb) {
+          if (!dependencies.reviewedCandidate.review) throw new NotebookError('invalid_request');
+        } else {
+          if (!dependencies.reviewedCandidate.recordDecision)
+            throw new NotebookError('invalid_request');
+          dependencies.reviewedCandidate.recordDecision();
+        }
+      }
+      if (workspaceDb && workspaceSelection && nextHead) {
+        const { responseKind, ...originalReceipt } = receipt;
+        await dependencies.store.commitWorkspaceKnowledge({
+          workspaceDb,
+          expectedHead: workspaceSelection.head,
+          nextHead,
+          ...(dependencies.reviewedCandidate?.review
+            ? {
+                review: {
+                  proposalId: dependencies.reviewedCandidate.proposalId,
+                  review: dependencies.reviewedCandidate.review,
+                },
+              }
+            : {}),
+          audits: ['knowledge.notebook.admit', operation].map((action) =>
+            prepareAuditEvent({
+              workspaceId: workspaceDb.workspaceId,
+              requestId: request.requestId,
+              actor,
+              category: 'knowledge',
+              action,
+              outcome: 'succeeded',
+              resource: `knowledge-notebook:${candidateRevision}`,
+              notebookAdmission: evidence,
+              summary: 'Notebook publication evidence retained.',
+            })
+          ),
+          receipt: { ...originalReceipt, response: { kind: responseKind, id: candidateRevision } },
+          revalidatePublication,
+        });
+        return project(candidateRevision, evidence);
       }
       audit('knowledge.notebook.admit');
       dependencies.notebook.publish({ baseRevision: request.baseRevision, candidateRevision });

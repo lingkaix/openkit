@@ -87,7 +87,7 @@ describe('worker Context Package read projection', () => {
     const store = await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const thread = await store.createThread(workspaceId, 'Compact trace Material projection');
     const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
     const turn = await store.createTurn(
@@ -394,7 +394,7 @@ describe('worker Context Package read projection', () => {
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Missing accepted context trace'
@@ -500,7 +500,7 @@ describe('thread taskInputs projection', () => {
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Proven initiating request'
@@ -587,7 +587,7 @@ describe('thread taskInputs projection', () => {
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Corrupt initiating request'

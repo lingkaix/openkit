@@ -146,7 +146,7 @@ async function fixture(withWorkspaceSchemas = false) {
   });
   const workspaceDb = withWorkspaceSchemas ? openWorkspaceDb(dataRoot, workspaceId) : null;
   if (workspaceDb) {
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     cleanup.unshift(() => workspaceDb.sqlite.close());
     await openTestNativeWorkspace(workspaceDb);
   }

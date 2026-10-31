@@ -119,7 +119,6 @@ import {
   listExistingWorkspaceDatabaseScopes,
   openBootVerifiedWorkspaceDb,
   openCoreDbWithIntegrityCheck,
-  verifyAndMigrateExistingScopedDatabases,
 } from './storage/db.js';
 import {
   ensureConfigTemplateSurface,
@@ -140,6 +139,7 @@ import {
   discardAbandonedWorkspaceStaging,
   ensureCanonicalDirectory,
 } from './storage/workspace-file-records.js';
+import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
 import { shutdownTelemetry, startTelemetry } from './telemetry.js';
 import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
@@ -268,7 +268,7 @@ const bootResult = await runBootPhases({
       name: 'migrations',
       subsystem: 'storage',
       critical: true,
-      run: () => {
+      run: async () => {
         coreDb = openCoreDbWithIntegrityCheck(dataRoot, {
           freshInitialization: freshCoreInitialization,
         });
@@ -286,7 +286,7 @@ const bootResult = await runBootPhases({
             refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'database' });
           }
         }
-        verifyAndMigrateExistingScopedDatabases(dataRoot, () => {
+        await verifyAndMigrateExistingScopedDatabases(dataRoot, () => {
           // File validation cannot query projections that still need their scoped migrations.
           FsStore.validateFileAuthority(dataRoot);
         });

@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import {
   KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION,
@@ -9,7 +9,10 @@ import {
   KnowledgeSourceIdSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
-import { assertSourcePointerEdit } from './source-pointers.js';
+import { NotebookError } from './notebook-error.js';
+import { assertSourcePointerEdit } from './source-pointer-codecs.js';
+
+export { NotebookError, type NotebookLinkDiagnostic } from './notebook-error.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,32 +34,6 @@ export interface NotebookRevision {
   /** Canonical curated Pages only; Source pointer blobs have a separate native reader. */
   readonly files: Readonly<Record<string, string>>;
   readonly metadata: NotebookCommitMetadata;
-}
-
-/** Authored local-link feedback for the same admitted author, never process diagnostics. */
-export interface NotebookLinkDiagnostic {
-  readonly code: 'notebook.unresolved_page_link';
-  readonly pageId: string;
-  readonly target: string;
-}
-
-/** Closed content-owner failure; host and Git diagnostics stay private. */
-export class NotebookError extends Error {
-  constructor(
-    readonly code: 'invalid_request' | 'conflict' | 'recovery_required' | 'review_required',
-    readonly currentRevision?: string,
-    /** Native validation codes only; transient feedback, never authored text or publication authority. */
-    readonly diagnostics?: readonly string[],
-    /** Transient author feedback, ordered and bounded independently of generic codes. */
-    readonly linkDiagnostics?: readonly NotebookLinkDiagnostic[]
-  ) {
-    super(`Notebook ${code.replaceAll('_', ' ')}.`);
-    this.linkDiagnostics = linkDiagnostics
-      ?.slice()
-      .sort((left, right) => (left.pageId < right.pageId ? -1 : left.pageId > right.pageId ? 1 : 0))
-      .slice(0, 8)
-      .map(({ code, pageId, target }) => ({ code, pageId, target: target.slice(0, 256) }));
-  }
 }
 
 /** Checks bundle-relative Markdown paths before any Git input or filesystem projection. */
@@ -111,9 +88,15 @@ export function validateNotebookFiles(
 /** One bare Git content authority; it owns no live authorization, command receipts or editing lifecycle. */
 export class KnowledgeNotebook {
   private readonly repositoryPath: string;
+  private readonly selectedRevision: string | undefined;
 
-  constructor(input: { readonly repositoryPath: string }) {
+  constructor(input: {
+    readonly repositoryPath: string;
+    /** Exact SQL-selected Workspace head; User and Server owners keep their Git ref selection. */
+    readonly selectedRevision?: string;
+  }) {
     this.repositoryPath = resolve(input.repositoryPath);
+    this.selectedRevision = input.selectedRevision;
   }
 
   /** Builds fixed plumbing policy with ambient Git configuration, hooks, network and callbacks disabled. */
@@ -240,6 +223,19 @@ export class KnowledgeNotebook {
     readonly metadata: NotebookCommitMetadata;
     readonly beforePublish?: (candidateRevision: string) => void;
   }): string {
+    const revision = this.prepareInitialRevision(input);
+    // Native fresh-scope admission retains its Audit evidence after the exact commit exists and before its ref does.
+    input.beforePublish?.(revision);
+    this.publishInitialRevision(revision);
+    return revision;
+  }
+
+  /** Creates a fresh repository and its exact initial commit without publishing a current ref. */
+  prepareInitialRevision(input: {
+    readonly files?: Readonly<Record<string, string>>;
+    readonly sourcePointers?: Readonly<Record<string, string>>;
+    readonly metadata: NotebookCommitMetadata;
+  }): string {
     const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
     const files = { 'index.md': DEFAULT_NOTEBOOK_INDEX, ...input.files };
     if (!metadata.success) throw new NotebookError('invalid_request');
@@ -260,16 +256,21 @@ export class KnowledgeNotebook {
         return [id, this.git(['hash-object', '-w', '--stdin'], content).trim()];
       })
     );
-    const revision = this.createCommit(entries, metadata.data, null, sources);
-    // Native fresh-scope admission retains its Audit evidence after the exact commit exists and before its ref does.
-    input.beforePublish?.(revision);
+    return this.createCommit(entries, metadata.data, null, sources);
+  }
+
+  /** Publishes one validated parentless initial revision into a still-fresh repository. */
+  publishInitialRevision(revision: string): void {
+    if (this.inspectRevision(revision).parentRevision !== null)
+      throw new NotebookError('invalid_request');
     this.git(['update-ref', PUBLISHED_REF, revision, '0'.repeat(revision.length)]);
-    return revision;
   }
 
   /** Pins the complete current revision; missing or invalid initialized content fails closed. */
   publishedRevision(): string {
-    const revision = this.git(['rev-parse', '--verify', `${PUBLISHED_REF}^{commit}`]).trim();
+    const revision =
+      this.selectedRevision ??
+      this.git(['rev-parse', '--verify', `${PUBLISHED_REF}^{commit}`]).trim();
     this.inspectRevision(revision);
     return revision;
   }
@@ -361,25 +362,72 @@ export class KnowledgeNotebook {
 
   /** Pins current validated metadata without blocking on Git subprocesses. */
   async publishedRevisionAsync(): Promise<string> {
-    const ref = `${PUBLISHED_REF}^{commit}`;
-    const revision = (await this.gitAsync(['rev-parse', '--verify', ref])).trim();
+    const revision =
+      this.selectedRevision ??
+      (await this.gitAsync(['rev-parse', '--verify', `${PUBLISHED_REF}^{commit}`])).trim();
     await this.inspectRevisionAsync(revision);
     return revision;
   }
 
   /** Pins strict metadata and tree identities through the shared pure decoders. */
   async inspectRevisionAsync(revision: string) {
+    return (await this.inspectRevisionObjectsAsync(revision)).record;
+  }
+
+  /** Decodes one exact tree for Page and Source readers without a second Git inspection. */
+  private async inspectRevisionObjectsAsync(revision: string) {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
       throw new NotebookError('recovery_required');
     const commit = await this.gitAsync(['cat-file', 'commit', revision]);
     const record = this.decodeCommit(revision, commit);
     const tree = await this.gitAsync(['ls-tree', '-r', '-z', '--full-tree', revision]);
+    const entries = this.decodeTree(tree);
     return {
-      revision,
-      parentRevision: record.parentRevision,
-      entries: this.decodeTree(tree),
-      metadata: record.metadata,
+      record: {
+        revision,
+        parentRevision: record.parentRevision,
+        entries,
+        metadata: record.metadata,
+      },
+      sourceObjects: this.decodeSourceObjects(
+        tree
+          .split('\0')
+          .filter((row) => row.includes('\tsources/'))
+          .join('\0')
+      ),
     };
+  }
+
+  /** Loads one strict inventory, keeping exact Page selections and native Source bodies separate. */
+  async readRevisionWithSourcesAsync(
+    revision: string,
+    input: { readonly pageIds?: readonly string[]; readonly sources: boolean }
+  ) {
+    const { record, sourceObjects } = await this.inspectRevisionObjectsAsync(revision);
+    const paths = input.pageIds
+      ? input.pageIds.map((id) => `${id}.md`).filter((path) => Object.hasOwn(record.entries, path))
+      : Object.keys(record.entries).filter(
+          (path) => !['index.md', 'log.md'].includes(basename(path))
+        );
+    const files: Record<string, string> = Object.create(null);
+    for (const path of paths) {
+      const object = record.entries[path]!;
+      files[path] = await this.readBlobAsync(object);
+    }
+    const sources: Record<string, string> | undefined = input.sources
+      ? Object.create(null)
+      : undefined;
+    if (sources)
+      for (const [id, object] of Object.entries(sourceObjects))
+        sources[id] = await this.readBlobAsync(object);
+    return { ...record, files, sources };
+  }
+
+  /** Checks the exact immutable blob identity and UTF-8 bytes under the original read bounds. */
+  private async readBlobAsync(object: string): Promise<string> {
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
+      throw new NotebookError('recovery_required');
+    return this.decodeBlob(object, await this.gitBytesAsync(['cat-file', 'blob', object]));
   }
 
   /** Reads selected exact immutable Pages sequentially under the original bounds. */
@@ -389,26 +437,17 @@ export class KnowledgeNotebook {
     for (const path of paths ?? Object.keys(entries)) {
       const object = entries[path];
       if (!object) throw new NotebookError('invalid_request');
-      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
-        throw new NotebookError('recovery_required');
-      files[path] = this.decodeBlob(object, await this.gitBytesAsync(['cat-file', 'blob', object]));
+      files[path] = await this.readBlobAsync(object);
     }
     return { ...record, files };
   }
 
   /** Reads native Source pointers sequentially without reading raw originals. */
   async readSourcePointersAsync(revision: string): Promise<Readonly<Record<string, string>>> {
-    await this.inspectRevisionAsync(revision);
-    const args = ['ls-tree', '-r', '-z', '--full-tree', revision, '--', 'sources/'];
-    const sources = this.decodeSourceObjects(await this.gitAsync(args));
+    const { sourceObjects: sources } = await this.inspectRevisionObjectsAsync(revision);
     const content: [string, string][] = [];
     for (const [id, object] of Object.entries(sources)) {
-      if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(object))
-        throw new NotebookError('recovery_required');
-      content.push([
-        id,
-        this.decodeBlob(object, await this.gitBytesAsync(['cat-file', 'blob', object])),
-      ]);
+      content.push([id, await this.readBlobAsync(object)]);
     }
     return Object.fromEntries(content);
   }
@@ -618,7 +657,10 @@ export class KnowledgeNotebook {
       if (!ref || !revision || type !== 'commit' || symbolicTarget)
         throw new NotebookError('recovery_required');
       if (ref === PUBLISHED_REF) {
-        if (revision !== publishedRevision) throw new NotebookError('recovery_required');
+        // Workspace SQL owns current selection after activation. Its Git ref is a
+        // retained projection and may lag; User and Server keep the ref as owner.
+        if (this.selectedRevision === undefined && revision !== publishedRevision)
+          throw new NotebookError('recovery_required');
         continue;
       }
       const proposal = /^refs\/proposals\/([A-Za-z0-9_-]+)$/.exec(ref);

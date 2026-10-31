@@ -15,7 +15,7 @@ describe('Goal one-way cutover', () => {
       'ws_00000000-0000-7509-8702-098e8909b075'
     );
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const names = (
         db.sqlite.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all() as {
           name: string;
@@ -50,7 +50,7 @@ describe('Goal one-way cutover', () => {
       mkdtempSync(join(tmpdir(), 'goal-old-families-')),
       'ws_00000000-0000-7509-8702-098e8909b075'
     );
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     try {
       const old = [
         'goal_records',
@@ -149,7 +149,7 @@ describe('Goal one-way cutover', () => {
       mkdtempSync(join(tmpdir(), 'goal-old-pending-')),
       'ws_00000000-0000-7509-8702-098e8909b075'
     );
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     try {
       // Main's predecessor shape has neither Coordinator requesters nor deciding actor context.
       db.sqlite.exec('DROP TABLE pending_requests;');

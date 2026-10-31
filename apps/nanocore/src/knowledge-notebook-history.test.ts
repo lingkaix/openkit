@@ -14,6 +14,7 @@ import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { readAdmittedWorkspaceKnowledgeSelection } from './storage/workspace-file-records.js';
 import { createAppWithLocalIdentity } from './test-support/app.js';
 import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from './test-support/demo-store.js';
 import {
@@ -41,7 +42,7 @@ async function fixture(snapshotRoot?: string) {
       ownerUserId: LOCAL_USER_ID,
     });
     const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const f = {
       dataRoot,
       coreDb,
@@ -91,6 +92,14 @@ function git(f: Awaited<ReturnType<typeof fixture>>, ...args: string[]) {
     encoding: 'utf8',
   }).trimEnd();
 }
+
+/** Reads the current Workspace Notebook authority from the admitted SQL selection. */
+function currentRevision(f: Awaited<ReturnType<typeof fixture>>): string {
+  return readAdmittedWorkspaceKnowledgeSelection(
+    join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID),
+    DEMO_WORKSPACE_ID
+  ).head.notebookCommit;
+}
 /** Existing native route; request identity uses the common command header. */
 async function call(
   f: Awaited<ReturnType<typeof fixture>>,
@@ -127,7 +136,7 @@ afterEach(cleanupFixtures);
 
 /** Seed through current native source admission and fixed-base publication. */
 async function seed(f: Awaited<ReturnType<typeof fixture>>) {
-  const rootRevision = git(f, 'rev-parse', 'refs/heads/published');
+  const rootRevision = currentRevision(f);
   const source = await call(f, 'knowledge.source.register', {
     requestId: randomUUID(),
     kind: 'document',
@@ -137,7 +146,7 @@ async function seed(f: Awaited<ReturnType<typeof fixture>>) {
   expect(source.status, JSON.stringify(source.body)).toBe(200);
   const reference = `source:${source.body.source.id}@${source.body.source.contentDigest}`;
   const original = page('alpha', 'Original exact bytes.\n', reference);
-  const initial = git(f, 'rev-parse', 'refs/heads/published');
+  const initial = currentRevision(f);
   const proposal = await call(f, 'knowledge.proposal.draft', {
     requestId: randomUUID(),
     baseRevision: initial,
@@ -150,13 +159,7 @@ async function seed(f: Awaited<ReturnType<typeof fixture>>) {
   });
   expect(proposal.status, JSON.stringify(proposal.body)).toBe(200);
   const saved = proposal.body.proposal;
-  const proposalDigest = `sha256:${createHash('sha256')
-    .update(
-      readFileSync(
-        join(f.dataRoot, `workspaces/${DEMO_WORKSPACE_ID}/knowledge/proposals`, `${saved.id}.md`)
-      )
-    )
-    .digest('hex')}`;
+  const proposalDigest = f.store.knowledgeProposalDigest(DEMO_WORKSPACE_ID, saved.id);
   const first = await call(f, 'knowledge.proposal.decide', {
     requestId: randomUUID(),
     proposalId: saved.id,
@@ -319,7 +322,7 @@ describe('native Workspace Notebook history and restore', () => {
         summary: 'Missing historical page',
       });
       expect(missing.status, JSON.stringify(missing.body)).toBe(403);
-      expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(baseRevision);
+      expect(currentRevision(f)).toBe(baseRevision);
       const input = restoreInput;
       const restore = await call(f, 'knowledge.notebook.restore', input);
       expect(restore.status, JSON.stringify(restore.body)).toBe(200);
@@ -355,7 +358,7 @@ describe('native Workspace Notebook history and restore', () => {
           requestId: randomUUID(),
         });
         expect(stale.status, JSON.stringify(stale.body)).toBe(409);
-        expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner);
+        expect(currentRevision(f)).toBe(winner);
         const admissions = f.workspaceDb.sqlite
           .prepare(
             "SELECT notebook_admission_json AS admission FROM audit_events WHERE request_id = ? AND action = 'knowledge.notebook.restore'"
@@ -375,7 +378,7 @@ describe('native Workspace Notebook history and restore', () => {
           summary: 'Explicit removal through restore',
         };
         expect((await call(f, 'knowledge.notebook.restore', removal)).status).toBe(400);
-        expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner);
+        expect(currentRevision(f)).toBe(winner);
         const removed = await call(f, 'knowledge.notebook.restore', {
           ...removal,
           confirmRemoval: true,
@@ -471,7 +474,7 @@ describe('native Workspace Notebook history and restore', () => {
       });
     }
     expect(f.store.listCommandRequests()).toEqual(receipts);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(selection.baseRevision);
+    expect(currentRevision(f)).toBe(selection.baseRevision);
     expect(
       execFileSync(
         'git',
@@ -509,7 +512,7 @@ describe('native Workspace Notebook history and restore', () => {
       'DENIED-BODY-MARKER',
       `source:${source.body.source.id}@${source.body.source.contentDigest}`
     ).replace('review_state: accepted', 'review_state: user-authored');
-    const initial = git(f, 'rev-parse', 'refs/heads/published');
+    const initial = currentRevision(f);
     const published = await call(f, 'knowledge.notebook.update', {
       requestId: randomUUID(),
       baseRevision: initial,
@@ -518,10 +521,14 @@ describe('native Workspace Notebook history and restore', () => {
     });
     expect(published.status, JSON.stringify(published.body)).toBe(200);
     const baseRevision = published.body.notebookRevision;
-    const pointer = readSourcePointers({
-      dataRoot: f.dataRoot,
-      ownerScope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
-    }).get(source.body.source.id)!;
+    const pointer = readSourcePointers(
+      { dataRoot: f.dataRoot, ownerScope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID } },
+      undefined,
+      readAdmittedWorkspaceKnowledgeSelection(
+        join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID),
+        DEMO_WORKSPACE_ID
+      )
+    ).get(source.body.source.id)!;
     const originalPath = join(
       f.dataRoot,
       'workspaces',
@@ -658,7 +665,7 @@ describe('native Workspace Notebook history and restore', () => {
     const receipts = f.store.listCommandRequests();
     expect((await invoke('knowledge.notebook.restore', restore)).status).toBe(403);
     expect(f.store.listCommandRequests()).toEqual(receipts);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(baseRevision);
+    expect(currentRevision(f)).toBe(baseRevision);
     expect(
       execFileSync(
         'git',
@@ -669,16 +676,20 @@ describe('native Workspace Notebook history and restore', () => {
       )
     ).toBe(original);
     expect(
-      readSourcePointers({
-        dataRoot: f.dataRoot,
-        ownerScope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
-      }).get(source.body.source.id)?.content
+      readSourcePointers(
+        { dataRoot: f.dataRoot, ownerScope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID } },
+        undefined,
+        readAdmittedWorkspaceKnowledgeSelection(
+          join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID),
+          DEMO_WORKSPACE_ID
+        )
+      ).get(source.body.source.id)?.content
     ).toBe(pointer.content);
     expect(readFileSync(originalPath)).toEqual(originalBytes);
     revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
     expect((await invoke('knowledge.notebook.history', { limit: 1 })).status).toBe(401);
     expect((await invoke('knowledge.notebook.restore', restore)).status).toBe(401);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(baseRevision);
+    expect(currentRevision(f)).toBe(baseRevision);
   });
 });
 

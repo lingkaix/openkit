@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ApiErrorSchema, formatReferenceUri } from '@openkit/protocol';
 import { expect, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import type { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { FsStore } from '../lib/store.js';
+import { readControlKnowledgeProposal } from '../storage/control-store-knowledge.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createAppWithLocalIdentity } from './app.js';
@@ -21,7 +23,7 @@ export const PRODUCER = {
   id: 'agent_knowledge',
   responsibleUserId: FIXTURE_LOCAL_USER_ID,
 } as const;
-type Proposal = ReturnType<FsStore['createKnowledgeProposal']>;
+type Proposal = Awaited<ReturnType<FsStore['createKnowledgeProposal']>>;
 
 /** Hashes exact retained bytes independently of the Proposal reader. */
 export function digest(content: string): string {
@@ -86,11 +88,79 @@ export async function createOwners(registerCleanup = onTestFinished) {
     workspaceId,
     workspaceRoot,
     repositoryPath,
-    notebook: new KnowledgeNotebook({ repositoryPath }),
+    get notebook(): KnowledgeNotebook {
+      return currentSelection(this).notebook;
+    },
     app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
   };
 }
 export type Owners = Awaited<ReturnType<typeof createOwners>>;
+
+/** Pins one current Workspace SQL selection for the duration of a fixture operation. */
+function currentSelection(f: {
+  readonly dataRoot: string;
+  readonly workspaceId: string;
+  readonly workspaceRoot: string;
+}) {
+  const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspaceId);
+  try {
+    return readWorkspaceNotebookSelection({
+      workspaceDb,
+      workspaceRoot: f.workspaceRoot,
+      knowledgeBaseId: readDefaultKnowledgeBaseId({
+        dataRoot: f.dataRoot,
+        scope: { kind: 'workspace', workspaceId: f.workspaceId },
+      }),
+    });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+/** Reads the current native Notebook commit through its explicit Workspace owner. */
+export function currentNotebookRevision(f: Owners): string {
+  return currentSelection(f).head.notebookCommit;
+}
+
+/** Reads the actual immutable Proposal path and exact retained Review JSON from Workspace SQL. */
+export function retainedProposalState(f: Owners, proposalId: string) {
+  const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspaceId);
+  try {
+    const retained = readControlKnowledgeProposal(workspaceDb, proposalId);
+    const row = workspaceDb.sqlite
+      .prepare('SELECT reviews_json FROM knowledge_notebook_proposals WHERE proposal_id = ?')
+      .get(proposalId) as { reviews_json: string } | undefined;
+    if (!retained || !row) throw new Error('Fixture Proposal authority is unavailable.');
+    return {
+      proposalPath: join(
+        f.workspaceRoot,
+        'knowledge',
+        'content',
+        retained.proposal.documentContent.reference.locator.path
+      ),
+      reviewsJson: row.reviews_json,
+    };
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+/** Replaces one existing retained Review array to inject a deliberate SQL-row fault. */
+export function replaceRetainedProposalReviews(
+  f: Owners,
+  proposalId: string,
+  reviewsJson: string
+): void {
+  const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspaceId);
+  try {
+    const result = workspaceDb.sqlite
+      .prepare('UPDATE knowledge_notebook_proposals SET reviews_json = ? WHERE proposal_id = ?')
+      .run(reviewsJson, proposalId);
+    if (result.changes !== 1) throw new Error('Fixture Proposal authority is unavailable.');
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
 
 /** Calls the actual native operation and preserves its failure code and status for refusal assertions. */
 export async function call(f: Owners, operation: string, input: Record<string, unknown>) {
@@ -113,7 +183,8 @@ export async function call(f: Owners, operation: string, input: Record<string, u
 
 /** Reads exact bytes from the published tree, independent of materialized projections. */
 export function currentPage(f: Owners, id: string) {
-  return f.notebook.readRevision(f.notebook.publishedRevision()).files[`${id}.md`];
+  const selection = currentSelection(f);
+  return selection.notebook.readRevision(selection.head.notebookCommit).files[`${id}.md`];
 }
 
 /** Drafts through the existing Proposal owner against the actual current Git base. */
@@ -124,11 +195,12 @@ export function draft(
   id: string,
   includeStatus = true
 ) {
+  const selection = currentSelection(f);
   const canonicalPageBytes = candidatePage(f.workspaceId, id, sourceReference, includeStatus);
   return f.store.createKnowledgeProposal({
     workspaceId: f.workspaceId,
     requestId: authorityRequestId(label),
-    baseRevision: f.notebook.publishedRevision(),
+    baseRevision: selection.head.notebookCommit,
     knowledgePageId: id,
     canonicalPageBytes,
     contentDigest: digest(canonicalPageBytes),
@@ -150,7 +222,7 @@ export async function createFixture(
   const f = await createOwners(registerCleanup);
   const publication = await call(f, 'knowledge.notebook.create', {
     requestId: authorityRequestId('human-source'),
-    baseRevision: f.notebook.publishedRevision(),
+    baseRevision: currentNotebookRevision(f),
     path: 'evidence/human-review' + '.md',
     content: serializeKnowledgePageFixture(
       {
@@ -171,16 +243,19 @@ export async function createFixture(
     digest(currentPage(f, source.id)!)
   );
   const knowledgePageId = 'review/review-authority-lesson';
-  const proposal = draft(f, sourceReference, label, knowledgePageId, includeStatus);
+  const proposal = await draft(f, sourceReference, label, knowledgePageId, includeStatus);
+  const { proposalPath } = retainedProposalState(f, proposal.id);
   return {
     ...f,
+    get notebook(): KnowledgeNotebook {
+      return currentSelection(this).notebook;
+    },
     proposal,
     knowledgePageId,
     sourceReference,
     canonicalPageBytes: proposal.canonicalPageBytes,
     contentDigest: proposal.contentDigest,
-    proposalPath: join(f.workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`),
-    reviewPath: join(f.workspaceRoot, 'knowledge', 'reviews', `${proposal.id}.json`),
+    proposalPath,
   };
 }
 export type Fixture = Awaited<ReturnType<typeof createFixture>>;
@@ -191,9 +266,7 @@ export function decisionInput(f: Owners, proposal: Proposal, decision: string, l
     requestId: authorityRequestId(label),
     proposalId: proposal.id,
     decision,
-    proposalDigest: digest(
-      readFileSync(join(f.workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`), 'utf8')
-    ),
+    proposalDigest: f.store.knowledgeProposalDigest(f.workspaceId, proposal.id),
     baseRevision: proposal.baseRevision,
     candidateRevision: proposal.candidateRevision,
   };

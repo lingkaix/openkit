@@ -101,7 +101,7 @@ async function createCheckpointCloseoutFixture(
     workspaceId,
   });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   recordTestNativeRuntimeTarget(coreDb);
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
   admitTestNativeEnvironment(coreDb, setup.manifest);
@@ -712,7 +712,7 @@ async function verifyCloseoutConversationReceipt(
 async function createWorkspaceDb(): Promise<WorkspaceDb> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-'));
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   await openTestNativeWorkspace(workspaceDb);
   return workspaceDb;
 }

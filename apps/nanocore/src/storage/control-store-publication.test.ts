@@ -20,7 +20,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { createTestStore } from '../test-support/store.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { verifyAndMigrateExistingScopedDatabases } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
 import { prepareImmutableProductJson } from './immutable-content.js';
 import {
@@ -28,6 +27,7 @@ import {
   nativeProductScope,
   readNativeProductEntries,
 } from './workspace-file-records.js';
+import { verifyAndMigrateExistingScopedDatabases } from './workspace-storage-migration.js';
 
 const instrumentation = vi.hoisted(() => ({
   trace: undefined as SharedArrayBuffer | undefined,
@@ -469,7 +469,7 @@ describe('native publication cleanup, retained reuse and file cohorts', () => {
     await shutdownControlStoreWorkerClient();
     // Deliberate corruption follows valid owner setup and precedes the real boot verifier.
     writeFileSync(workspaceDbPath(f.root, bad.id), 'Unreadable stopped Workspace database');
-    verifyAndMigrateExistingScopedDatabases(f.root);
+    await verifyAndMigrateExistingScopedDatabases(f.root);
     expect(isScopeAdmitted(f.root, 'workspace', bad.id)).toBe(false);
     expect(isScopeAdmitted(f.root, 'workspace', f.workspace.id)).toBe(true);
     // Inject retained link bytes after boot quarantine; global layout validation still refuses links.

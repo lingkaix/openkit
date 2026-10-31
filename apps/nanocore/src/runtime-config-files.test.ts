@@ -353,7 +353,7 @@ describe('runtime config file API', () => {
         )
       );
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       try {
         const row = workspaceDb.sqlite

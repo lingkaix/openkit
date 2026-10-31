@@ -540,7 +540,7 @@ describe('public durable logical Gateway lineage', () => {
     });
     const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const call = await startCapabilityCall({
         workspaceDb: db,
         workspaceId: f.workspaceId,
@@ -610,7 +610,7 @@ describe('public durable logical Gateway lineage', () => {
     f.primary.setResponses([fauxAssistantMessage('must not run')]);
     const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       await startCapabilityCall({
         workspaceDb: db,
         workspaceId: f.workspaceId,

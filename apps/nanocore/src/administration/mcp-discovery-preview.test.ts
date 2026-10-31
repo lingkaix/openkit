@@ -63,7 +63,7 @@ function fixture() {
   const workspaceDbs: Array<ReturnType<typeof openWorkspaceDb>> = [];
   const repositoryWorkspaceDb = (workspaceId: string) => {
     const db = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(db);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
     workspaceDbs.push(db);
     // This fallback reclaims a failing subject; assertions below prove request closure before teardown.
     cleanup.push(() => {

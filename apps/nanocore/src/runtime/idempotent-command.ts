@@ -19,7 +19,7 @@ import {
   type FsStore,
 } from '../lib/store.js';
 import type { AppDb } from '../storage/app-db.js';
-import { CONTROL_NATIVE_RECEIPT_COMMANDS } from '../storage/control-store-admission.js';
+import { isControlNativeReceiptCommand } from '../storage/control-store-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
@@ -233,7 +233,10 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
       : (options.coreDb ?? options.workspaceDb ?? options.appDb);
   const workerOwned =
     options.store.getDataRoot() !== null &&
-    (CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => command === options.command) ||
+    (isControlNativeReceiptCommand(
+      options.command,
+      options.scope.workspaceId === undefined ? 'core' : 'workspace'
+    ) ||
       (options.command === 'evaluation.judgement-add' &&
         options.input !== null &&
         typeof options.input === 'object' &&

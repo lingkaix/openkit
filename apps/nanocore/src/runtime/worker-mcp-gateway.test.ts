@@ -1057,7 +1057,7 @@ describe('worker MCP gateway', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     workspaceDb.sqlite.exec(`
       CREATE TRIGGER reject_mcp_start_audit
       BEFORE INSERT ON audit_events

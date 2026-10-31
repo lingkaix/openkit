@@ -82,7 +82,7 @@ async function importedStore(
     ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
   });
   const workspaceDb = openWorkspaceDb(dataRoot, demo.workspace.id);
-  applyScopedMigrations(workspaceDb);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const owner = notebook(dataRoot);
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
   const requestActor = { kind: 'local' as const, userId: actor.id };
@@ -1660,7 +1660,7 @@ describe('Knowledge Manager answer operation', () => {
     await expect(conflictRes.json()).resolves.toMatchObject({ code: 'idempotency_key_conflict' });
 
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     workspaceDb.sqlite
       .prepare(
         `DELETE FROM idempotency_requests

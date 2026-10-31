@@ -18,9 +18,10 @@ import {
 import { getSchedulerPreparationClaims } from '../runtime/scheduler-dispatch-loop.js';
 import type { TurnStartRuntimeContext } from '../runtime/types.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, verifyAndMigrateExistingScopedDatabases } from '../storage/db.js';
+import { openCoreDb } from '../storage/db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
@@ -238,7 +239,7 @@ describe('server auth flow', () => {
         expect((await post('/api/auth/sign-out', {}, cookie)).status).toBe(200);
         await shutdownControlStoreWorkerClient();
         rmSync(workspaceDbPath(dataRoot, homeId));
-        verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
+        await verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
           FsStore.validateFileAuthority(dataRoot)
         );
       } else {
