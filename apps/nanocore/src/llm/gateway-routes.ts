@@ -344,7 +344,11 @@ function withGatewayEffort<T extends Record<string, unknown>>(
 function fitGatewayEffort(
   provider: ResolvedLLMProviderConfig,
   model: string,
-  effort: { requested?: ReasoningEffort; recorded?: ReasoningEffort }
+  effort: {
+    requested?: ReasoningEffort;
+    recorded?: ReasoningEffort;
+    binding?: 'primary' | 'auxiliary';
+  }
 ): Pick<
   Extract<GatewayRouteLineageEntry, { kind: 'attempt' }>,
   'requestedEffort' | 'effectiveEffort' | 'effectiveEffortReason'
@@ -360,8 +364,13 @@ function fitGatewayEffort(
     },
     model
   );
-  const chosen = effort.requested ?? effort.recorded;
+  const primaryTurn = effort.binding === 'primary' && effort.recorded !== undefined;
+  const chosen = primaryTurn ? effort.recorded : (effort.requested ?? effort.recorded);
   const requested = effort.requested === undefined ? {} : { requestedEffort: effort.requested };
+  const overrideReason =
+    primaryTurn && effort.requested !== undefined && effort.requested !== effort.recorded
+      ? ({ effectiveEffortReason: 'recorded_turn_effort_overrides_request' } as const)
+      : {};
   if (metadata.reasoning.value !== true)
     return { ...requested, effectiveEffortReason: 'model_without_reasoning' };
   const levels = metadata.reasoningEffortLevels.value;
@@ -373,7 +382,7 @@ function fitGatewayEffort(
     levels.find(
       (level) => REASONING_EFFORT_LEVELS.indexOf(level) >= REASONING_EFFORT_LEVELS.indexOf(chosen)
     ) ?? levels[levels.length - 1]!;
-  return { ...requested, effectiveEffort };
+  return { ...requested, ...overrideReason, effectiveEffort };
 }
 
 /**
@@ -2243,11 +2252,16 @@ export function registerWorkerInferenceRoutes({
             ? (input as z.infer<typeof GatewayChatCompletionRequestSchema>).reasoning_effort
             : (input as z.infer<typeof GatewayResponsesRequestSchema>).reasoning?.effort;
         const recordedEffort = environmentPackage.llm.reasoningEffort;
+        const workerRequestKind = runtimeHint?.requestKind;
         const result = await dispatchLogicalModel<Response>({
           ledger: durableCall,
           reasoningEffort: {
             ...(requestedEffort === undefined ? {} : { requested: requestedEffort }),
             ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
+            binding:
+              workerRequestKind === 'prewarm' || workerRequestKind === 'compaction'
+                ? 'auxiliary'
+                : 'primary',
           },
           logicalModel,
           ...(route.modelParameters
@@ -2729,7 +2743,11 @@ export async function dispatchLogicalModel<T>(input: {
   signal: AbortSignal;
   requiredCapabilities?: readonly string[];
   /** Native request evidence and immutable bound-Turn fallback; absence leaves internal producers unchanged. */
-  reasoningEffort?: { requested?: ReasoningEffort; recorded?: ReasoningEffort };
+  reasoningEffort?: {
+    requested?: ReasoningEffort;
+    recorded?: ReasoningEffort;
+    binding?: 'primary' | 'auxiliary';
+  };
   /** Entry-admitted coherent minimums; absent or unknown limits constrain nothing. */
   pinnedLimits?: Pick<NonNullable<ResolvedLogicalModel['contract']>, 'context' | 'output'>;
   clock?: GatewayClock;
@@ -3381,6 +3399,7 @@ export function registerLlmGatewayRoutes({
           reasoningEffort: {
             ...(input.reasoning_effort === undefined ? {} : { requested: input.reasoning_effort }),
             ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
+            binding: 'auxiliary',
           },
           logicalModel,
           requiredCapabilities: ['chat-completions'],
@@ -3568,6 +3587,7 @@ export function registerLlmGatewayRoutes({
               ? {}
               : { requested: input.reasoning?.effort }),
             ...(recordedEffort === undefined ? {} : { recorded: recordedEffort }),
+            binding: 'auxiliary',
           },
           logicalModel,
           requiredCapabilities: ['responses'],

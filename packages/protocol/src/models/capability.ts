@@ -134,6 +134,7 @@ export const GatewayRouteLineageEntrySchema = z.discriminatedUnion('kind', [
         'model_without_reasoning',
         'provider_default_no_options',
         'provider_default_no_effort',
+        'recorded_turn_effort_overrides_request',
       ])
       .optional(),
   }),
