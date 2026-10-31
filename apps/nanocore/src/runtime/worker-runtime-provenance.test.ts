@@ -1,4 +1,6 @@
 // openkit-test-platform: posix
+
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -6,7 +8,9 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -26,7 +30,10 @@ import {
 } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls, startCapabilityCall } from '../capability/usage-ledger.js';
-import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
+import {
+  compactWorkspaceEvidenceBundles,
+  listWorkspaceEvidenceBundles,
+} from '../evidence-bundles.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -37,6 +44,7 @@ import { openTestNativeWorkspace } from '../test-support/store.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import {
   createWorkerRuntimeOriginRef,
+  createWorkerRuntimeProvenanceBundleId,
   importWorkerRuntimeProvenance,
   remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
@@ -1415,35 +1423,206 @@ const publication = vi.hoisted(() => ({
   fail: undefined as ((path: string, directory: boolean) => boolean) | undefined,
 }));
 
-vi.mock('node:fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>();
+const nativeProvenanceInterception = vi.hoisted(() => ({
+  replaceOneAdmittedStage: undefined as
+    | ((file: {
+        path: string;
+        dev: string;
+        ino: string;
+        byteLength: number;
+        sha256: string;
+      }) => void)
+    | undefined,
+}));
+
+vi.mock('node:worker_threads', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:worker_threads')>();
+  const admittedFiles = (value: unknown) => {
+    if (!value || typeof value !== 'object') return undefined;
+    const request = value as Record<string, unknown>;
+    if (request.operation !== 'provenance' || !request.input || typeof request.input !== 'object')
+      return undefined;
+    const files = (request.input as Record<string, unknown>).files;
+    if (!Array.isArray(files)) return undefined;
+    const valid = files.every(
+      (file) =>
+        file !== null &&
+        typeof file === 'object' &&
+        typeof (file as Record<string, unknown>).path === 'string' &&
+        typeof (file as Record<string, unknown>).dev === 'string' &&
+        /^\d+$/.test((file as Record<string, unknown>).dev as string) &&
+        typeof (file as Record<string, unknown>).ino === 'string' &&
+        /^\d+$/.test((file as Record<string, unknown>).ino as string) &&
+        Number.isSafeInteger((file as Record<string, unknown>).byteLength) &&
+        typeof (file as Record<string, unknown>).sha256 === 'string'
+    );
+    return valid
+      ? (files as Array<{
+          path: string;
+          dev: string;
+          ino: string;
+          byteLength: number;
+          sha256: string;
+        }>)
+      : undefined;
+  };
+
+  class ObservedWorker extends actual.Worker {
+    constructor(
+      filename: ConstructorParameters<typeof actual.Worker>[0],
+      options?: ConstructorParameters<typeof actual.Worker>[1]
+    ) {
+      const gate = new SharedArrayBuffer(8);
+      const observer = new actual.MessageChannel();
+      const entry = options?.eval
+        ? String(filename)
+        : `import(${JSON.stringify(String(filename))});`;
+      const prelude = `
+        const { workerData } = require('node:worker_threads');
+        const { syncBuiltinESMExports } = require('node:module');
+        const promises = require('node:fs/promises');
+        const gate = new Int32Array(workerData.provenancePublicationGate);
+        const observer = workerData.provenancePublicationPort;
+        let sequence = 0;
+        const announce = (event) => {
+          const current = ++sequence;
+          Atomics.store(gate, 0, 0);
+          Atomics.store(gate, 1, 0);
+          observer.postMessage({ ...event, sequence: current });
+          Atomics.wait(gate, 0, 0);
+          if (Atomics.load(gate, 1) === 1)
+            throw new Error('Injected async publication sync failure');
+        };
+        const open = promises.open.bind(promises);
+        promises.open = async (...args) => {
+          const handle = await open(...args);
+          const sync = handle.sync.bind(handle);
+          handle.sync = async () => {
+            const metadata = await handle.stat();
+            announce({
+              op: 'sync',
+              path: String(args[0]),
+              directory: metadata.isDirectory(),
+              mode: metadata.mode & 0o777,
+            });
+            return sync();
+          };
+          return handle;
+        };
+        const rename = promises.rename.bind(promises);
+        promises.rename = async (from, to) => {
+          announce({ op: 'rename', path: String(to), from: String(from) });
+          return rename(from, to);
+        };
+        syncBuiltinESMExports();
+      `;
+      super(`${prelude}${entry}`, {
+        ...options,
+        eval: true,
+        transferList: [...(options?.transferList ?? []), observer.port2],
+        workerData: {
+          ...options?.workerData,
+          provenancePublicationGate: gate,
+          provenancePublicationPort: observer.port2,
+        },
+      });
+      observer.port1.on('message', (message: unknown) => {
+        if (!message || typeof message !== 'object') return;
+        const record = message as Record<string, unknown>;
+        if (record.op !== 'sync' && record.op !== 'rename') return;
+        const observed = {
+          op: record.op,
+          path: String(record.path),
+          ...(typeof record.from === 'string' ? { from: record.from } : {}),
+          ...(typeof record.directory === 'boolean' ? { directory: record.directory } : {}),
+          ...(typeof record.mode === 'number' ? { mode: record.mode } : {}),
+        };
+        publication.events.push(observed);
+        const fail =
+          observed.op === 'sync' &&
+          publication.fail?.(observed.path, observed.directory ?? false) === true;
+        Atomics.store(new Int32Array(gate), 1, fail ? 1 : 0);
+        Atomics.store(new Int32Array(gate), 0, 1);
+        Atomics.notify(new Int32Array(gate), 0);
+      });
+      this.once('exit', () => observer.port1.close());
+      const postMessage = this.postMessage;
+      this.postMessage = ((value: unknown, ...args: unknown[]) => {
+        const files = admittedFiles(value);
+        const replace = nativeProvenanceInterception.replaceOneAdmittedStage;
+        if (files?.[0] && replace) {
+          nativeProvenanceInterception.replaceOneAdmittedStage = undefined;
+          replace(files[0]);
+        }
+        return Reflect.apply(postMessage, this, [value, ...args]);
+      }) as typeof this.postMessage;
+    }
+  }
+
   return {
     ...actual,
-    open: (async (...args: Parameters<typeof actual.open>) => {
-      const handle = await actual.open(...args);
-      const sync = handle.sync.bind(handle);
-      handle.sync = async () => {
-        const metadata = await handle.stat();
-        const path = String(args[0]);
-        const directory = metadata.isDirectory();
-        publication.events.push({ op: 'sync', path, directory, mode: metadata.mode & 0o777 });
-        if (publication.fail?.(path, directory))
-          throw new Error('Injected async publication sync failure');
-        return sync();
-      };
-      return handle;
-    }) as typeof actual.open,
-    rename: (async (
-      from: Parameters<typeof actual.rename>[0],
-      to: Parameters<typeof actual.rename>[1]
-    ) => {
-      publication.events.push({ op: 'rename', path: String(to), from: String(from) });
-      return actual.rename(from, to);
-    }) as typeof actual.rename,
+    Worker: ObservedWorker,
   };
 });
 
 describe('runtime provenance publication durability', () => {
+  it('does not recreate expired raw provenance on public exact replay', async () => {
+    const fixture = await createImportFixture('openkit-provenance-expired-replay-');
+    const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-expired-capture-'));
+    const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+    const input = {
+      backend: { kind: 'openshell' as const, placement: 'local' as const, version: '0.0.80' },
+      capture: {
+        nativeOriginIndexPath: capture.nativeOriginIndexPath,
+        rawStreamsRoot: capture.rawStreamsRoot,
+        streamManifestPath: capture.streamManifestPath,
+      },
+      collectedAt: '2026-07-13T00:00:01.000Z',
+      environmentPackage: fixture.environmentPackage,
+      workspaceDb: fixture.workspaceDb,
+      workspaceRoot: fixture.workspaceRoot,
+    };
+    try {
+      const first = await importWorkerRuntimeProvenance(input);
+      expect(first.complete).toBe(true);
+      const rawRoot = join(fixture.workspaceRoot, 'evidence', 'backend', first.rawBundleId);
+      expect(existsSync(rawRoot)).toBe(true);
+      expect(
+        compactWorkspaceEvidenceBundles({
+          workspaceDb: fixture.workspaceDb,
+          workspaceId: fixture.lineage.workspaceId,
+          olderThan: '2026-07-14T00:00:00.000Z',
+        })
+      ).toEqual({ expiredCount: 1 });
+      expect(existsSync(rawRoot)).toBe(false);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, fixture.lineage.workspaceId).find(
+          (bundle) => bundle.id === first.rawBundleId
+        )
+      ).toMatchObject({ importStatus: 'expired', rawEvidenceRefs: [] });
+
+      let replayError: unknown;
+      try {
+        await importWorkerRuntimeProvenance(input);
+      } catch (error) {
+        replayError = error;
+      }
+      expect(existsSync(rawRoot)).toBe(false);
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, fixture.lineage.workspaceId).find(
+          (bundle) => bundle.id === first.rawBundleId
+        )
+      ).toMatchObject({ importStatus: 'expired', rawEvidenceRefs: [] });
+      expect(replayError).toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+      });
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      fixture.workspaceDb.sqlite.close();
+      rmSync(captureRoot, { recursive: true, force: true });
+    }
+  });
   it('syncs complete retained evidence before each rename and reads the real published bundles', async () => {
     const fixture = await createImportFixture('openkit-provenance-durability-');
     const capture = createRuntimeCaptureFixture(
@@ -1539,7 +1718,10 @@ describe('runtime provenance publication durability', () => {
           workspaceDb: fixture.workspaceDb,
           workspaceRoot: fixture.workspaceRoot,
         })
-      ).rejects.toThrow('Injected async publication sync failure');
+      ).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+      });
       expect(publication.events.some((event) => event.op === 'rename')).toBe(false);
       expect(
         listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
@@ -1574,9 +1756,10 @@ describe('runtime provenance publication durability', () => {
       return true;
     };
     try {
-      await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
-        'Injected async publication sync failure'
-      );
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+      });
       const firstPublication = publication.events.find((event) => event.op === 'rename');
       expect(firstPublication).toBeDefined();
       expect(
@@ -1584,9 +1767,10 @@ describe('runtime provenance publication durability', () => {
       ).toEqual([]);
       publication.events.length = 0;
       publication.fail = (path, directory) => directory && path === failedParent;
-      await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
-        'Injected async publication sync failure'
-      );
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+      });
       expect(
         publication.events.some(
           (event) =>
@@ -1620,6 +1804,177 @@ describe('runtime provenance publication durability', () => {
       fixture.workspaceDb.sqlite.close();
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'recovers exact provenance after SIGKILL between canonical directory sync and native SQL',
+    async () => {
+      const fixture = await createImportFixture('openkit-provenance-native-crash-');
+      const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-native-crash-capture-'));
+      const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+      const rawBundleId = createWorkerRuntimeProvenanceBundleId(
+        'worker-runtime-provenance-raw',
+        fixture.environmentPackage.snapshotId
+      );
+      const indexBundleId = createWorkerRuntimeProvenanceBundleId(
+        'worker-runtime-provenance-index',
+        fixture.environmentPackage.snapshotId
+      );
+      await shutdownControlStoreWorkerClient();
+      fixture.workspaceDb.sqlite.close();
+      try {
+        const exited = runNativeProvenanceCrashChild({ capture, fixture });
+        expect(exited.error).toBeUndefined();
+        expect(exited.stderr).toBe('');
+        expect(exited.signal).toBe('SIGKILL');
+        expect(exited.stdout).toBe('after-directory-sync-before-sql');
+
+        const reopened = openWorkspaceDb(
+          dirname(dirname(fixture.workspaceRoot)),
+          fixture.lineage.workspaceId
+        );
+        try {
+          const rawRoot = join(fixture.workspaceRoot, 'evidence', 'backend', rawBundleId);
+          const normalizedPath = join(
+            fixture.workspaceRoot,
+            'evidence',
+            'bundles',
+            indexBundleId,
+            'runtime-origin-index.jsonl'
+          );
+          expect(readFileSync(join(rawRoot, 'raw-streams.json'))).toEqual(capture.manifestBytes);
+          expect(readFileSync(join(rawRoot, 'native-origin-index.jsonl'))).toEqual(
+            capture.nativeOriginIndexBytes
+          );
+          for (const [streamRef, bytes] of capture.streams)
+            expect(readFileSync(join(rawRoot, 'raw', streamRef))).toEqual(bytes);
+          const normalizedBytes = readFileSync(normalizedPath);
+          expect(normalizedBytes.byteLength).toBeGreaterThan(0);
+          expect(listWorkspaceEvidenceBundles(reopened, fixture.lineage.workspaceId)).toEqual([]);
+          expect(listWorkspaceRuntimeEvidence(reopened, fixture.lineage.workspaceId)).toEqual([]);
+
+          const replay = await importWorkerRuntimeProvenance({
+            backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
+            capture: {
+              nativeOriginIndexPath: capture.nativeOriginIndexPath,
+              rawStreamsRoot: capture.rawStreamsRoot,
+              streamManifestPath: capture.streamManifestPath,
+            },
+            collectedAt: '2026-07-13T00:00:01.000Z',
+            environmentPackage: fixture.environmentPackage,
+            workspaceDb: reopened,
+            workspaceRoot: fixture.workspaceRoot,
+          });
+          expect(replay).toMatchObject({ complete: true, rawBundleId, indexBundleId });
+          expect(readFileSync(normalizedPath)).toEqual(normalizedBytes);
+          expect(
+            new Set(
+              listWorkspaceEvidenceBundles(reopened, fixture.lineage.workspaceId).map(
+                (bundle) => bundle.id
+              )
+            )
+          ).toEqual(new Set([rawBundleId, indexBundleId]));
+          const evidence = listWorkspaceRuntimeEvidence(reopened, fixture.lineage.workspaceId);
+          expect(evidence).toHaveLength(1);
+          expect(evidence[0]).toMatchObject({
+            id: replay.runtimeEvidenceId,
+            evidenceBundleIds: [rawBundleId, indexBundleId],
+          });
+        } finally {
+          await shutdownControlStoreWorkerClient();
+          reopened.sqlite.close();
+        }
+      } finally {
+        rmSync(captureRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('refuses a same-length replaced admitted staging file and releases capacity for retry', async () => {
+    const fixture = await createImportFixture('openkit-provenance-native-identity-');
+    const captureRoot = mkdtempSync(join(tmpdir(), 'openkit-provenance-native-identity-capture-'));
+    const capture = createRuntimeCaptureFixture(captureRoot, fixture.lineage);
+    const rawBundleId = createWorkerRuntimeProvenanceBundleId(
+      'worker-runtime-provenance-raw',
+      fixture.environmentPackage.snapshotId
+    );
+    const indexBundleId = createWorkerRuntimeProvenanceBundleId(
+      'worker-runtime-provenance-index',
+      fixture.environmentPackage.snapshotId
+    );
+    const input = {
+      backend: { kind: 'openshell' as const, placement: 'local' as const, version: '0.0.80' },
+      capture: {
+        nativeOriginIndexPath: capture.nativeOriginIndexPath,
+        rawStreamsRoot: capture.rawStreamsRoot,
+        streamManifestPath: capture.streamManifestPath,
+      },
+      collectedAt: '2026-07-13T00:00:01.000Z',
+      environmentPackage: fixture.environmentPackage,
+      workspaceDb: fixture.workspaceDb,
+      workspaceRoot: fixture.workspaceRoot,
+    };
+    let admitted:
+      | { path: string; dev: string; ino: string; byteLength: number; sha256: string }
+      | undefined;
+    let originalBytes: Buffer | undefined;
+    nativeProvenanceInterception.replaceOneAdmittedStage = (file) => {
+      admitted = file;
+      const before = statSync(file.path, { bigint: true });
+      expect(before.isFile()).toBe(true);
+      expect(String(before.dev)).toBe(file.dev);
+      expect(String(before.ino)).toBe(file.ino);
+      originalBytes = readFileSync(file.path);
+      expect(originalBytes).toHaveLength(file.byteLength);
+      const digest = createHash('sha256').update(originalBytes).digest('hex');
+      expect([digest, `sha256:${digest}`]).toContain(file.sha256);
+      const replacement = `${file.path}.replacement`;
+      writeFileSync(replacement, Buffer.alloc(originalBytes.length, 0xa5));
+      renameSync(replacement, file.path);
+      const after = statSync(file.path, { bigint: true });
+      expect(String(after.ino)).not.toBe(file.ino);
+      expect(after.size).toBe(BigInt(file.byteLength));
+    };
+    try {
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+      });
+      expect(admitted).toBeDefined();
+      expect(originalBytes).toBeDefined();
+      expect(existsSync(join(fixture.workspaceRoot, 'evidence', 'backend', rawBundleId))).toBe(
+        false
+      );
+      expect(existsSync(join(fixture.workspaceRoot, 'evidence', 'bundles', indexBundleId))).toBe(
+        false
+      );
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, fixture.lineage.workspaceId)
+      ).toEqual([]);
+      expect(
+        listWorkspaceRuntimeEvidence(fixture.workspaceDb, fixture.lineage.workspaceId)
+      ).toEqual([]);
+
+      mkdirSync(dirname(admitted!.path), { recursive: true });
+      const restore = `${admitted!.path}.restore`;
+      writeFileSync(restore, originalBytes!);
+      renameSync(restore, admitted!.path);
+      expect(readFileSync(admitted!.path)).toEqual(originalBytes);
+
+      const retry = await importWorkerRuntimeProvenance(input);
+      expect(retry).toMatchObject({ complete: true, rawBundleId, indexBundleId });
+      expect(
+        listWorkspaceEvidenceBundles(fixture.workspaceDb, fixture.lineage.workspaceId)
+      ).toHaveLength(2);
+      expect(
+        listWorkspaceRuntimeEvidence(fixture.workspaceDb, fixture.lineage.workspaceId)
+      ).toHaveLength(1);
+    } finally {
+      nativeProvenanceInterception.replaceOneAdmittedStage = undefined;
+      await shutdownControlStoreWorkerClient();
+      fixture.workspaceDb.sqlite.close();
+      rmSync(captureRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('uncommitted ancestor evidence recovery', () => {
@@ -1641,17 +1996,19 @@ describe('uncommitted ancestor evidence recovery', () => {
     publication.events.length = 0;
     publication.fail = (path, directory) => directory && path === fixture.workspaceRoot;
     try {
-      await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
-        'Injected async publication sync failure'
-      );
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+      });
       expect(existsSync(evidenceRoot)).toBe(true);
       expect(
         listWorkspaceEvidenceBundles(fixture.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([]);
       publication.events.length = 0;
-      await expect(importWorkerRuntimeProvenance(input)).rejects.toThrow(
-        'Injected async publication sync failure'
-      );
+      await expect(importWorkerRuntimeProvenance(input)).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        commit: 'not-committed',
+      });
       expect(
         publication.events.some(
           (event) => event.op === 'sync' && event.directory && event.path === fixture.workspaceRoot
@@ -1683,6 +2040,129 @@ describe('uncommitted ancestor evidence recovery', () => {
     }
   });
 });
+
+/** Runs the real native owner until both published directories are durable and SQL has not begun. */
+function runNativeProvenanceCrashChild(input: {
+  capture: RuntimeCaptureFixture;
+  fixture: ImportFixture;
+}) {
+  const childPath = join(input.fixture.workspaceRoot, 'provenance-crash-child.mjs');
+  writeFileSync(
+    childPath,
+    `import fs from 'node:fs';
+const input = JSON.parse(process.argv[2]);
+const { createRequire, syncBuiltinESMExports } = await import('node:module');
+const require = createRequire(input.clientModule);
+const threads = require('node:worker_threads');
+const RealWorker = threads.Worker;
+threads.Worker = class extends RealWorker {
+  constructor(filename, options) {
+    const boundary = new threads.MessageChannel();
+    const prelude = \`
+      const { workerData } = require('node:worker_threads');
+      const { syncBuiltinESMExports } = require('node:module');
+      const { dirname } = require('node:path');
+      const promises = require('node:fs/promises');
+      const Database = require(workerData.provenanceDatabaseModule);
+      const publishedParents = new Set();
+      const durablePublishedParents = new Set();
+      const open = promises.open.bind(promises);
+      promises.open = async (...args) => {
+        const handle = await open(...args);
+        const sync = handle.sync.bind(handle);
+        handle.sync = async () => {
+          const metadata = await handle.stat();
+          const result = await sync();
+          const path = String(args[0]);
+          if (metadata.isDirectory() && publishedParents.has(path))
+            durablePublishedParents.add(path);
+          return result;
+        };
+        return handle;
+      };
+      const rename = promises.rename.bind(promises);
+      promises.rename = async (from, to) => {
+        const result = await rename(from, to);
+        publishedParents.add(dirname(String(to)));
+        return result;
+      };
+      syncBuiltinESMExports();
+      const prepare = Database.prototype.prepare;
+      Database.prototype.prepare = function(sql) {
+        const statement = prepare.call(this, sql);
+        if (/INSERT\\\\s+INTO\\\\s+evidence_bundles/i.test(sql)) {
+          const run = statement.run.bind(statement);
+          statement.run = (...args) => {
+            if (durablePublishedParents.size !== 2)
+              throw new Error('Provenance SQL preceded both canonical directory syncs.');
+            workerData.provenanceBoundaryPort.postMessage({ provenanceSqlBoundary: true });
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+            return run(...args);
+          };
+        }
+        return statement;
+      };
+    \`;
+    const entry = options?.eval
+      ? String(filename)
+      : 'import(' + JSON.stringify(String(filename)) + ');';
+    super(prelude + entry, {
+      ...options,
+      eval: true,
+      transferList: [...(options?.transferList ?? []), boundary.port2],
+      workerData: {
+        ...options?.workerData,
+        provenanceDatabaseModule: require.resolve('better-sqlite3'),
+        provenanceBoundaryPort: boundary.port2,
+      },
+    });
+    boundary.port1.on('message', (message) => {
+      if (message?.provenanceSqlBoundary) {
+        fs.writeSync(1, 'after-directory-sync-before-sql');
+        process.kill(process.pid, 'SIGKILL');
+      }
+    });
+  }
+};
+syncBuiltinESMExports();
+const { openWorkspaceDb } = await import(input.dbModule);
+const { importWorkerRuntimeProvenance } = await import(input.provenanceModule);
+const db = openWorkspaceDb(input.dataRoot, input.workspaceId);
+await importWorkerRuntimeProvenance({
+  backend: input.backend,
+  capture: input.capture,
+  collectedAt: input.collectedAt,
+  environmentPackage: input.environmentPackage,
+  workspaceDb: db,
+  workspaceRoot: input.workspaceRoot,
+});`
+  );
+  return spawnSync(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      childPath,
+      JSON.stringify({
+        backend: { kind: 'openshell', placement: 'local', version: '0.0.80' },
+        capture: {
+          nativeOriginIndexPath: input.capture.nativeOriginIndexPath,
+          rawStreamsRoot: input.capture.rawStreamsRoot,
+          streamManifestPath: input.capture.streamManifestPath,
+        },
+        collectedAt: '2026-07-13T00:00:01.000Z',
+        environmentPackage: input.fixture.environmentPackage,
+        dataRoot: dirname(dirname(input.fixture.workspaceRoot)),
+        workspaceId: input.fixture.lineage.workspaceId,
+        workspaceRoot: input.fixture.workspaceRoot,
+        dbModule: new URL('../storage/db.ts', import.meta.url).href,
+        provenanceModule: new URL('./worker-runtime-provenance.ts', import.meta.url).href,
+        clientModule: new URL('../storage/control-store-worker-client.ts', import.meta.url).href,
+      }),
+    ],
+    { encoding: 'utf8', timeout: 15_000 }
+  );
+}
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {

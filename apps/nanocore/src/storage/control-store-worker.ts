@@ -57,6 +57,11 @@ import {
 } from '../runtime/worker-backend-cleanup-projection.js';
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
+  prepareWorkerRuntimeProvenance,
+  recordWorkerRuntimeProvenanceMetadata,
+  type WorkerRuntimeProvenanceMetadataInput,
+} from '../runtime/worker-runtime-provenance.js';
+import {
   applyControlMaterialCommand,
   type ControlMaterialCommandInput,
   prepareControlMaterialCommand,
@@ -166,6 +171,7 @@ type WriteCommand = Extract<
       | 'event'
       | 'publication'
       | 'project-cleanup'
+      | 'provenance'
       | 'observation'
       | 'capability'
       | 'pending'
@@ -204,6 +210,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
   readonly preparedRecoveryHistory?: PreparedControlRecoveryHistory | undefined;
   readonly preparedRecoverySafety?: PreparedControlRecoverySafety | undefined;
+  readonly preparedProvenance?: WorkerRuntimeProvenanceMetadataInput | undefined;
   readonly preparedObservation?: ControlWorkObservationInput | undefined;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
   readonly preparedDirectories?: readonly string[];
@@ -276,6 +283,15 @@ function failure(
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
   let domain: ControlWorkerDomainRefusal | undefined;
+  if (
+    operation === 'provenance' &&
+    error instanceof OperationError &&
+    error.code === 'conflict' &&
+    ['Runtime evidence replay conflict.', 'Runtime provenance replay conflict.'].includes(
+      error.message
+    )
+  )
+    return { operation: 'provenance', code: 'conflict', message: error.message, status: 409 };
   if ((operation === 'item' || operation === 'event') && error instanceof ControlItemAppendError)
     return { operation, code: 'conflict', message: error.message, status: 409 };
   if (
@@ -569,6 +585,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'publication':
     case 'observation':
+    case 'provenance':
     case 'project-cleanup':
     case 'maintenance':
       lanes.add(request.input.turnId);
@@ -1430,6 +1447,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'maintenance',
               result,
             };
+          } else if (request.operation === 'provenance') {
+            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedProvenance)
+              throw new ControlProductPreconditionError();
+            const result = recordWorkerRuntimeProvenanceMetadata(
+              owner.scopeDb,
+              request.preparedProvenance
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'provenance',
+              result,
+            };
           } else if (request.operation === 'observation') {
             if (!owner.productOwner || !owner.scopeDb) throw new ControlProductPreconditionError();
             if (!request.preparedObservation) throw new ControlProductPreconditionError();
@@ -1902,6 +1933,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'event' ||
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
+      value.operation === 'provenance' ||
       value.operation === 'observation' ||
       value.operation === 'capability' ||
       value.operation === 'pending' ||
@@ -1972,6 +2004,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedTerminal: PreparedControlTerminal | undefined;
           let preparedRecoveryHistory: PreparedControlRecoveryHistory | undefined;
           let preparedRecoverySafety: PreparedControlRecoverySafety | undefined;
+          let preparedProvenance: WorkerRuntimeProvenanceMetadataInput | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
           try {
             if (value.operation === 'pending' && !value.input.terminal) {
@@ -1994,9 +2027,14 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 'item',
                 'event',
                 'observation',
+                'provenance',
               ].includes(value.operation)
             )
               await prepareAfterPredecessors(owner, queued, earlier);
+            if (value.operation === 'provenance') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              preparedProvenance = await prepareWorkerRuntimeProvenance(owner.scopeDb, value.input);
+            }
             if (value.operation === 'observation') {
               if (!owner.scopeDb) throw new ControlProductPreconditionError();
               preparedObservation = prepareControlWorkObservationCommand(
@@ -2199,6 +2237,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedRecoverySafety,
               preparedRecoveryHistory,
               preparedObservation,
+              preparedProvenance,
               preparedMaterial,
               preparedCapability,
               preparedDirectories: [...newDirectories.directories],

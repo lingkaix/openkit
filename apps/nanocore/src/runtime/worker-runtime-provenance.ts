@@ -17,6 +17,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { RuntimeEvidenceRecord } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { isRecord, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import { copyVerifiedFile, createDirectoryExclusive } from '@openkit/storage';
 import {
   type WorkerLineage,
   WorkerLineageSchema,
@@ -24,21 +25,27 @@ import {
   WorkerRuntimeNativeOriginIndexEntryReaderSchema,
   type WorkerRuntimeRawStreamManifest,
   WorkerRuntimeRawStreamManifestReaderSchema,
+  WorkerRuntimeStreamRefSchema,
 } from '@openkit/worker-protocol';
 import { z } from 'zod';
-
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
+import { OperationError } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import type { ControlProvenanceInput } from '../storage/control-store-worker-protocol.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   ensureCanonicalDirectoryAsync,
+  nativeProductScope,
   publishCanonicalPathAsync,
   syncCanonicalDirectoryAsync,
   syncCanonicalTreeAsync,
 } from '../storage/workspace-file-records.js';
 import { snapshotDigest } from './aep-snapshot-ledger.js';
-import { recordWorkerRuntimeProvenanceEvidence } from './runtime-evidence.js';
+import {
+  createWorkerRuntimeProvenanceEvidenceId,
+  recordWorkerRuntimeProvenanceEvidence,
+} from './runtime-evidence.js';
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_NATIVE_INDEX_BYTES = 64 * 1024 * 1024;
@@ -257,6 +264,75 @@ export async function importWorkerRuntimeProvenance(
 ): Promise<ImportWorkerRuntimeProvenanceResult> {
   assertWorkspaceOwnership(input);
   const lineage = lineageFromPackage(input.environmentPackage);
+  const verified = await verifyRuntimeProvenance(input, lineage);
+  const normalized = normalizedProvenanceBytes(verified);
+  const files: ControlProvenanceInput['files'] = [];
+  for (const [index, [relativePath, path]] of [...verified.rawFiles].entries()) {
+    const metadata = await lstat(path, { bigint: true });
+    if (!metadata.isFile() || metadata.isSymbolicLink())
+      throw new Error('Runtime provenance source must be a regular file.');
+    files.push({
+      path,
+      relativePath,
+      dev: String(metadata.dev),
+      ino: String(metadata.ino),
+      byteLength: Number(metadata.size),
+      sha256: verified.rawDigests[index]!,
+    });
+  }
+  const scope = nativeProductScope(input.workspaceDb.dataRoot, {
+    kind: 'workspace',
+    workspaceId: input.workspaceDb.workspaceId,
+  });
+  const client = getControlStoreWorkerClient();
+  const database = `workspace:${scope.path}`;
+  return (
+    await Promise.all([
+      client.open({
+        database,
+        path: scope.path,
+        dataRoot: input.workspaceDb.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      }),
+      client.provenance(database, {
+        workspaceId: lineage.workspaceId,
+        turnId: lineage.turnId,
+        backend: input.backend,
+        collectedAt: input.collectedAt,
+        environmentPackage: input.environmentPackage,
+        files,
+        normalizedBytes: normalized.byteLength,
+        normalizedDigest: sha256(normalized),
+      }),
+    ])
+  )[1];
+}
+
+/** Uses the existing deterministic row encoder for the exact normalized-byte forecast and publication. */
+function normalizedProvenanceBytes(verified: VerifiedRuntimeProvenance): Buffer {
+  // A known quarantine cannot publish an index and must not reserve its filesystem bytes.
+  if (verified.errors.length > 0) return Buffer.alloc(0);
+  return Buffer.from(
+    `${verified.normalizedRows.map((row) => JSON.stringify(writeRetainedV1(row))).join('\n')}\n`
+  );
+}
+
+/** Prepares the complete provenance family on its native owner before the one metadata transaction. */
+export async function prepareWorkerRuntimeProvenance(
+  workspaceDb: WorkspaceDb,
+  admitted: ControlProvenanceInput
+): Promise<WorkerRuntimeProvenanceMetadataInput> {
+  const lineage = lineageFromPackage(admitted.environmentPackage);
+  if (
+    admitted.workspaceId !== workspaceDb.workspaceId ||
+    lineage.workspaceId !== workspaceDb.workspaceId ||
+    admitted.turnId !== lineage.turnId
+  )
+    throw new Error('Runtime provenance owner mismatch.');
+  const workspaceRoot = resolve(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId);
   const rawBundleId = createWorkerRuntimeProvenanceBundleId(
     'worker-runtime-provenance-raw',
     lineage.packageSnapshotId
@@ -265,137 +341,224 @@ export async function importWorkerRuntimeProvenance(
     'worker-runtime-provenance-index',
     lineage.packageSnapshotId
   );
-  const existingRawBundle = input.workspaceDb.sqlite
+  const existingRawBundle = workspaceDb.sqlite
     .prepare(
-      'SELECT schema_version AS schemaVersion, created_at FROM evidence_bundles WHERE evidence_bundle_id = ?'
+      'SELECT schema_version AS schemaVersion, created_at, import_status FROM evidence_bundles WHERE evidence_bundle_id = ?'
     )
-    .get(rawBundleId) as { schemaVersion: unknown; created_at: string } | undefined;
+    .get(rawBundleId) as
+    | { schemaVersion: unknown; created_at: string; import_status: string }
+    | undefined;
   const recordedAt = existingRawBundle
     ? readRetainedV1(existingRawBundle, () => existingRawBundle.created_at)
-    : input.collectedAt;
-  const verified = await verifyRuntimeProvenance(input, lineage);
-  const gatewayCalls = listWorkspaceCapabilityCalls(input.workspaceDb, lineage.workspaceId).filter(
-    (call) =>
-      call.serviceRef === 'worker-inference-gateway' &&
-      call.packageSnapshotId === lineage.packageSnapshotId
-  );
-  const runtimeOriginRefs = new Set(
-    verified.normalizedRows.flatMap((row) =>
-      row.runtimeOriginRef === null ? [] : [row.runtimeOriginRef]
+    : admitted.collectedAt;
+  if (existingRawBundle?.import_status === 'expired')
+    throw new Error('Runtime provenance has expired.');
+
+  const rawRoot = join(workspaceRoot, 'evidence', 'backend', rawBundleId);
+  const declaration = admitted.environmentPackage.control.transcript?.runtimeProvenance;
+  let streamBytes = 0;
+  for (const file of admitted.files) {
+    if (!Number.isSafeInteger(file.byteLength) || file.byteLength < 0)
+      throw new Error('Runtime provenance source size is invalid.');
+    if (file.relativePath === 'raw-streams.json' && file.byteLength > MAX_MANIFEST_BYTES)
+      throw new Error('Runtime provenance manifest exceeds its bound.');
+    if (
+      file.relativePath === 'native-origin-index.jsonl' &&
+      file.byteLength > MAX_NATIVE_INDEX_BYTES
     )
-  );
-  const reconciledGatewayCallCount = gatewayCalls.filter(
-    (call) =>
-      call.threadId === lineage.threadId &&
-      call.turnId === lineage.turnId &&
-      call.agentSessionId === lineage.agentSessionId &&
-      call.runtimeOriginRef !== null &&
-      runtimeOriginRefs.has(call.runtimeOriginRef)
-  ).length;
-  if (reconciledGatewayCallCount !== gatewayCalls.length) {
-    verified.errors.push('Worker inference calls could not be reconciled with runtime provenance.');
+      throw new Error('Runtime provenance index exceeds its bound.');
+    if (file.relativePath.startsWith('raw/')) streamBytes += file.byteLength;
   }
-  const complete = verified.errors.length === 0;
-  const rawRoot = join(input.workspaceRoot, 'evidence', 'backend', rawBundleId);
-  await adoptEvidenceDirectory(rawRoot, verified.rawFiles);
-  const normalizedBytes = complete
-    ? Buffer.from(
-        `${verified.normalizedRows.map((row) => JSON.stringify(writeRetainedV1(row))).join('\n')}\n`
-      )
-    : null;
-  const normalizedRoot = join(input.workspaceRoot, 'evidence', 'bundles', indexBundleId);
-  if (normalizedBytes) {
-    await adoptEvidenceDirectory(
-      normalizedRoot,
-      new Map([['runtime-origin-index.jsonl', normalizedBytes]])
-    );
-  }
-  const normalizedDigest = normalizedBytes ? sha256(normalizedBytes) : null;
-  const summary = runtimeProvenanceSummary(
-    verified,
-    gatewayCalls.length,
-    reconciledGatewayCallCount,
-    complete,
-    rawBundleId,
-    indexBundleId
-  );
-  const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-    `workspace:${input.workspaceDb.sqlite.name}`
-  );
+  if (streamBytes > (declaration?.maxTotalBytes ?? 256 * 1024 * 1024))
+    throw new Error('Runtime provenance exceeds its AEP byte limit.');
+  await ensureCanonicalDirectoryAsync(dirname(rawRoot));
+  const stagingRoot = `${rawRoot}.tmp-${randomUUID()}`;
   try {
-    return input.workspaceDb.sqlite.transaction(() =>
-      recordWorkerRuntimeProvenanceMetadata(input.workspaceDb, {
-        complete,
-        rawBundle: {
-          id: rawBundleId,
-          workspaceId: lineage.workspaceId,
-          threadId: lineage.threadId,
-          goalId: null,
-          turnId: lineage.turnId,
-          agentSessionId: lineage.agentSessionId,
-          backendType: input.backend.kind,
-          sourceKind: 'worker-runtime-provenance-raw',
-          summary,
-          rawEvidenceRefs: [...verified.rawFiles.keys()].map((ref) => ({
-            kind: rawEvidenceKind(ref),
-            ref,
-          })),
-          redactedEvidenceRefs: [],
-          contentDigests: verified.rawDigests,
-          retentionClass: 'restricted-raw',
-          sensitivityClass: 'restricted',
-          importStatus: complete ? 'promoted' : 'quarantined',
-          requiredFeatures: [PROVENANCE_FEATURE],
-          createdAt: recordedAt,
-        },
-        indexBundle: normalizedDigest
-          ? {
-              id: indexBundleId,
-              workspaceId: lineage.workspaceId,
-              threadId: lineage.threadId,
-              goalId: null,
-              turnId: lineage.turnId,
-              agentSessionId: lineage.agentSessionId,
-              backendType: input.backend.kind,
-              sourceKind: 'worker-runtime-provenance-index',
-              summary,
-              rawEvidenceRefs: [],
-              redactedEvidenceRefs: [
-                { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
-              ],
-              contentDigests: [normalizedDigest],
-              retentionClass: 'turn-evidence',
-              sensitivityClass: 'product-safe',
-              importStatus: 'promoted',
-              requiredFeatures: [PROVENANCE_FEATURE],
-              createdAt: recordedAt,
-            }
+    // Private entries become durable with the existing pre-rename tree sync, not before replay validation.
+    createDirectoryExclusive(stagingRoot, 0o700);
+    if (admitted.files.some((file) => file.relativePath.startsWith('raw/')))
+      createDirectoryExclusive(join(stagingRoot, 'raw'), 0o700);
+    const seen = new Set<string>();
+    const assertSourceIdentity = async (file: ControlProvenanceInput['files'][number]) => {
+      const metadata = await lstat(file.path, { bigint: true });
+      if (
+        !metadata.isFile() ||
+        metadata.isSymbolicLink() ||
+        String(metadata.dev) !== file.dev ||
+        String(metadata.ino) !== file.ino ||
+        metadata.size !== BigInt(file.byteLength)
+      )
+        throw new Error('Runtime provenance source changed after admission.');
+    };
+    for (const file of admitted.files) {
+      if (
+        seen.has(file.relativePath) ||
+        !(
+          file.relativePath === 'raw-streams.json' ||
+          file.relativePath === 'native-origin-index.jsonl' ||
+          (file.relativePath.startsWith('raw/') &&
+            WorkerRuntimeStreamRefSchema.safeParse(file.relativePath.slice(4)).success)
+        )
+      )
+        throw new Error('Runtime provenance source inventory is invalid.');
+      seen.add(file.relativePath);
+      await assertSourceIdentity(file);
+      const destinationPath = safeEvidencePath(stagingRoot, file.relativePath);
+      await copyVerifiedFile({
+        sourcePath: file.path,
+        destinationPath,
+        expectedBytes: file.byteLength,
+        expectedSha256: file.sha256,
+        maxBytes: file.byteLength,
+        mode: 0o600,
+      });
+    }
+    const input: ImportWorkerRuntimeProvenanceInput = {
+      workspaceDb,
+      workspaceRoot,
+      backend: admitted.backend,
+      collectedAt: admitted.collectedAt,
+      environmentPackage: admitted.environmentPackage,
+      capture: {
+        streamManifestPath: seen.has('raw-streams.json')
+          ? join(stagingRoot, 'raw-streams.json')
           : null,
-        runtimeEvidence: {
-          agentSessionId: lineage.agentSessionId,
-          backendType: input.backend.kind,
-          backendVersion: input.backend.version,
-          collectedAt: recordedAt,
-          contentDigests: [...verified.rawDigests, ...(normalizedDigest ? [normalizedDigest] : [])],
-          errorCode: complete ? null : 'worker_runtime_provenance_invalid',
-          errorMessage: complete ? null : 'Worker runtime provenance verification failed.',
-          outcome: complete ? 'succeeded' : 'failed',
-          packageSnapshotId: lineage.packageSnapshotId,
-          policyDigest: `sha256:${snapshotDigest(input.environmentPackage.policy)}`,
-          placement: input.backend.placement,
-          summary,
-          threadId: lineage.threadId,
-          turnId: lineage.turnId,
-          workspaceId: lineage.workspaceId,
-        },
-      })
-    )();
+        nativeOriginIndexPath: seen.has('native-origin-index.jsonl')
+          ? join(stagingRoot, 'native-origin-index.jsonl')
+          : null,
+        rawStreamsRoot: join(stagingRoot, 'raw'),
+      },
+    };
+    const verified = await verifyRuntimeProvenance(input, lineage);
+    const normalized = normalizedProvenanceBytes(verified);
+    if (
+      normalized.byteLength !== admitted.normalizedBytes ||
+      sha256(normalized) !== admitted.normalizedDigest
+    )
+      throw new Error('Runtime provenance normalization changed after admission.');
+    for (const file of admitted.files) {
+      await assertSourceIdentity(file);
+      await copyVerifiedFile({
+        sourcePath: file.path,
+        expectedBytes: file.byteLength,
+        expectedSha256: file.sha256,
+        maxBytes: file.byteLength,
+      });
+      await assertSourceIdentity(file);
+    }
+    const gatewayCalls = listWorkspaceCapabilityCalls(workspaceDb, lineage.workspaceId).filter(
+      (call) =>
+        call.serviceRef === 'worker-inference-gateway' &&
+        call.packageSnapshotId === lineage.packageSnapshotId
+    );
+    const runtimeOriginRefs = new Set(
+      verified.normalizedRows.flatMap((row) =>
+        row.runtimeOriginRef === null ? [] : [row.runtimeOriginRef]
+      )
+    );
+    const reconciledGatewayCallCount = gatewayCalls.filter(
+      (call) =>
+        call.threadId === lineage.threadId &&
+        call.turnId === lineage.turnId &&
+        call.agentSessionId === lineage.agentSessionId &&
+        call.runtimeOriginRef !== null &&
+        runtimeOriginRefs.has(call.runtimeOriginRef)
+    ).length;
+    if (reconciledGatewayCallCount !== gatewayCalls.length) {
+      verified.errors.push(
+        'Worker inference calls could not be reconciled with runtime provenance.'
+      );
+    }
+    const complete = verified.errors.length === 0;
+    await adoptEvidenceDirectory(rawRoot, verified.rawFiles, stagingRoot);
+    const normalizedBytes = complete ? normalized : null;
+    const normalizedRoot = join(input.workspaceRoot, 'evidence', 'bundles', indexBundleId);
+    if (normalizedBytes) {
+      await adoptEvidenceDirectory(
+        normalizedRoot,
+        new Map([['runtime-origin-index.jsonl', normalizedBytes]])
+      );
+    }
+    const normalizedDigest = normalizedBytes ? sha256(normalizedBytes) : null;
+    const summary = runtimeProvenanceSummary(
+      verified,
+      gatewayCalls.length,
+      reconciledGatewayCallCount,
+      complete,
+      rawBundleId,
+      indexBundleId
+    );
+    return {
+      complete,
+      rawBundle: {
+        id: rawBundleId,
+        workspaceId: lineage.workspaceId,
+        threadId: lineage.threadId,
+        goalId: null,
+        turnId: lineage.turnId,
+        agentSessionId: lineage.agentSessionId,
+        backendType: input.backend.kind,
+        sourceKind: 'worker-runtime-provenance-raw',
+        summary,
+        rawEvidenceRefs: [...verified.rawFiles.keys()].map((ref) => ({
+          kind: rawEvidenceKind(ref),
+          ref,
+        })),
+        redactedEvidenceRefs: [],
+        contentDigests: verified.rawDigests,
+        retentionClass: 'restricted-raw',
+        sensitivityClass: 'restricted',
+        importStatus: complete ? 'promoted' : 'quarantined',
+        requiredFeatures: [PROVENANCE_FEATURE],
+        createdAt: recordedAt,
+      },
+      indexBundle: normalizedDigest
+        ? {
+            id: indexBundleId,
+            workspaceId: lineage.workspaceId,
+            threadId: lineage.threadId,
+            goalId: null,
+            turnId: lineage.turnId,
+            agentSessionId: lineage.agentSessionId,
+            backendType: input.backend.kind,
+            sourceKind: 'worker-runtime-provenance-index',
+            summary,
+            rawEvidenceRefs: [],
+            redactedEvidenceRefs: [
+              { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
+            ],
+            contentDigests: [normalizedDigest],
+            retentionClass: 'turn-evidence',
+            sensitivityClass: 'product-safe',
+            importStatus: 'promoted',
+            requiredFeatures: [PROVENANCE_FEATURE],
+            createdAt: recordedAt,
+          }
+        : null,
+      runtimeEvidence: {
+        agentSessionId: lineage.agentSessionId,
+        backendType: input.backend.kind,
+        backendVersion: input.backend.version,
+        collectedAt: recordedAt,
+        contentDigests: [...verified.rawDigests, ...(normalizedDigest ? [normalizedDigest] : [])],
+        errorCode: complete ? null : 'worker_runtime_provenance_invalid',
+        errorMessage: complete ? null : 'Worker runtime provenance verification failed.',
+        outcome: complete ? 'succeeded' : 'failed',
+        packageSnapshotId: lineage.packageSnapshotId,
+        policyDigest: `sha256:${snapshotDigest(input.environmentPackage.policy)}`,
+        placement: input.backend.placement,
+        summary,
+        threadId: lineage.threadId,
+        turnId: lineage.turnId,
+        workspaceId: lineage.workspaceId,
+      },
+    };
   } finally {
-    resume();
+    await removeEvidenceStagingDirectory(stagingRoot);
   }
 }
 
-/** Prepared synchronized evidence metadata; payload publication remains with its independent owner. */
+/** Complete synchronized provenance metadata, applied by the same native owner in its covering savepoint. */
 export interface WorkerRuntimeProvenanceMetadataInput {
   readonly complete: boolean;
   readonly rawBundle: Parameters<typeof recordWorkspaceEvidenceBundle>[1];
@@ -413,20 +576,38 @@ export function recordWorkerRuntimeProvenanceMetadata(
 ): ImportWorkerRuntimeProvenanceResult {
   if (!writer.sqlite.inTransaction)
     throw new Error('Runtime provenance metadata requires its owning transaction.');
-  const rawBundle = recordWorkspaceEvidenceBundle(writer, input.rawBundle);
-  const indexBundle = input.indexBundle
-    ? recordWorkspaceEvidenceBundle(writer, input.indexBundle)
-    : null;
-  const evidence = recordWorkerRuntimeProvenanceEvidence(writer, {
-    ...input.runtimeEvidence,
-    evidenceBundleIds: [rawBundle.id, ...(indexBundle ? [indexBundle.id] : [])],
-  });
-  return {
-    complete: input.complete,
-    indexBundleId: indexBundle?.id ?? null,
-    rawBundleId: rawBundle.id,
-    runtimeEvidenceId: evidence.id,
-  };
+  try {
+    const rawBundle = recordWorkspaceEvidenceBundle(writer, input.rawBundle);
+    const indexBundle = input.indexBundle
+      ? recordWorkspaceEvidenceBundle(writer, input.indexBundle)
+      : null;
+    const evidence = recordWorkerRuntimeProvenanceEvidence(writer, {
+      ...input.runtimeEvidence,
+      evidenceBundleIds: [rawBundle.id, ...(indexBundle ? [indexBundle.id] : [])],
+    });
+    return {
+      complete: input.complete,
+      indexBundleId: indexBundle?.id ?? null,
+      rawBundleId: rawBundle.id,
+      runtimeEvidenceId: evidence.id,
+    };
+  } catch (error) {
+    // These exact deterministic owner refusals are safe; arbitrary SQL/fs diagnostics stay private.
+    if (
+      error instanceof Error &&
+      error.message ===
+        `Runtime evidence replay conflict: ${createWorkerRuntimeProvenanceEvidenceId(input.runtimeEvidence.packageSnapshotId)}`
+    )
+      throw new OperationError('conflict', 'Runtime evidence replay conflict.', 409);
+    if (
+      error instanceof Error &&
+      [input.rawBundle.id, input.indexBundle?.id].some(
+        (id) => id !== undefined && error.message === `Evidence bundle replay conflict: ${id}`
+      )
+    )
+      throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
+    throw error;
+  }
 }
 
 /** Verifies manifest, streams, frame mappings, native graph closure, and capture completeness. */
@@ -820,11 +1001,12 @@ function projectNativeFrame(
 /** Atomically adopts one deterministic evidence directory or accepts exact replay. */
 async function adoptEvidenceDirectory(
   targetRoot: string,
-  files: Map<string, string | Buffer>
+  files: Map<string, string | Buffer>,
+  preparedRoot?: string
 ): Promise<void> {
   if (await pathExists(targetRoot)) {
     if (!(await evidenceDirectoryMatches(targetRoot, files))) {
-      throw new Error('Runtime provenance replay conflict.');
+      throw new OperationError('conflict', 'Runtime provenance replay conflict.', 409);
     }
     // A prior rename can be visible even when its directory synchronization failed.
     await syncCanonicalTreeAsync(targetRoot);
@@ -832,9 +1014,9 @@ async function adoptEvidenceDirectory(
     return;
   }
   await ensureCanonicalDirectoryAsync(dirname(targetRoot));
-  const temporaryRoot = `${targetRoot}.tmp-${randomUUID()}`;
+  const temporaryRoot = preparedRoot ?? `${targetRoot}.tmp-${randomUUID()}`;
   try {
-    for (const [relativePath, source] of files) {
+    for (const [relativePath, source] of preparedRoot ? [] : files) {
       const target = safeEvidencePath(temporaryRoot, relativePath);
       await mkdir(dirname(target), { recursive: true });
       if (typeof source === 'string') {
@@ -849,7 +1031,7 @@ async function adoptEvidenceDirectory(
     }
     await publishCanonicalPathAsync(temporaryRoot, targetRoot);
   } catch (error) {
-    await rm(temporaryRoot, { force: true, recursive: true });
+    await removeEvidenceStagingDirectory(temporaryRoot);
     const code = (error as NodeJS.ErrnoException).code;
     if (
       (code === 'EEXIST' || code === 'ENOTEMPTY') &&
@@ -862,6 +1044,11 @@ async function adoptEvidenceDirectory(
     }
     throw error;
   }
+}
+
+/** Disposes only the existing request-private publication directory on failure or completed adoption. */
+async function removeEvidenceStagingDirectory(temporaryRoot: string): Promise<void> {
+  await rm(temporaryRoot, { force: true, recursive: true });
 }
 
 /** Compares an existing deterministic evidence directory with one replay candidate. */

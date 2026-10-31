@@ -204,3 +204,5 @@ Worker-control restart rebuild reads the retained AEP through the existing admit
 Internal Gateway calls keep an owned admitted readonly Workspace handle through native capability, usage and terminal acknowledgements. The native owner performs the writes; Core-owned calls keep their existing writer, and calls without ledger context keep their borrowed capture handle.
 
 Goal considered markers are committed by the native Goal owner for both admission and execution. The marker records the completed source view revision; later source changes remain pending after reopen, and current Main authority is checked across the awaited commit before execution.
+
+Runtime provenance publication uses one closed native preparation command with exact admitted file identity, length and digest. The existing FIFO synchronizes both deterministic evidence directories and commits the raw/index/RuntimeEvidence tuple before FULL acknowledgement; Main performs only pure admission verification, and expired restricted raw evidence is never recreated.

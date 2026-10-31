@@ -1,11 +1,13 @@
 import { isAbsolute } from 'node:path';
 import { GoalViewSchema } from '@openkit/app-api-schemas';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
   ItemSchema,
   SseEventEnvelopeSchema,
   UserIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
+import { z } from 'zod';
 import {
   type ControlReviewCommandInput,
   ControlReviewCommandInputSchema,
@@ -96,7 +98,51 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 23;
+export const CONTROL_WORKER_VERSION = 24;
+
+/** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
+export const ControlProvenanceInputSchema = z
+  .object({
+    workspaceId: z.string().min(1),
+    turnId: z.string().min(1),
+    backend: z
+      .object({
+        kind: z.string(),
+        placement: z.enum(['local', 'remote', 'unknown']),
+        version: z.string().nullable(),
+      })
+      .strict(),
+    collectedAt: z.string(),
+    environmentPackage: AgentEnvironmentPackageSchema,
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string().refine(isAbsolute),
+            relativePath: z.string().min(1),
+            dev: z.string().regex(/^\d+$/),
+            ino: z.string().regex(/^\d+$/),
+            byteLength: z.number().int().nonnegative(),
+            sha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+          })
+          .strict()
+      )
+      .max(66),
+    normalizedBytes: z.number().int().nonnegative(),
+    normalizedDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  })
+  .strict();
+/** Closed private preparation input for the existing native FIFO. */
+export type ControlProvenanceInput = z.infer<typeof ControlProvenanceInputSchema>;
+/** Metadata acknowledgement is emitted only after its covering FULL commit. */
+export const ControlProvenanceResultSchema = z
+  .object({
+    complete: z.boolean(),
+    indexBundleId: z.string().nullable(),
+    rawBundleId: z.string(),
+    runtimeEvidenceId: z.string(),
+  })
+  .strict();
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -194,6 +240,7 @@ export type ControlWorkerCommand =
           readonly immediate?: boolean;
           readonly content?: ArrayBuffer;
         }
+      | { readonly operation: 'provenance'; readonly input: ControlProvenanceInput }
       | { readonly operation: 'goal'; readonly input: ControlGoalInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
@@ -313,6 +360,7 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 /** Trusted domain refusals preserve the existing public contract; native SQL diagnostics never enter this projection. */
 export interface ControlWorkerDomainRefusal {
   readonly operation:
+    | 'provenance'
     | 'goal'
     | 'capability'
     | 'maintenance'
@@ -358,6 +406,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'recovery-history'; readonly done: boolean }
   | { readonly status: 'ok'; readonly operation: 'recovery-seal'; readonly digest: string | null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'provenance';
+      readonly result: z.infer<typeof ControlProvenanceResultSchema>;
+    }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
       readonly status: 'ok';
@@ -493,9 +546,15 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'goal' || value.operation === 'capability') &&
         value.message === 'Unsupported retained record format.' &&
         value.status === 409)) &&
-    (((value.operation === 'item' || value.operation === 'event') &&
+    ((value.operation === 'provenance' &&
       value.code === 'conflict' &&
-      value.status === 409) ||
+      value.status === 409 &&
+      ['Runtime evidence replay conflict.', 'Runtime provenance replay conflict.'].includes(
+        String(value.message)
+      )) ||
+      ((value.operation === 'item' || value.operation === 'event') &&
+        value.code === 'conflict' &&
+        value.status === 409) ||
       value.operation === 'goal' ||
       value.operation === 'capability' ||
       value.operation === 'pending' ||
@@ -563,6 +622,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
     );
+  if (reply.operation === 'provenance')
+    return ControlProvenanceResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'event') return SseEventEnvelopeSchema.safeParse(reply.result).success;
   if (reply.operation === 'item') return ItemSchema.safeParse(reply.result).success;
   if (
@@ -960,6 +1021,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'provenance')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlProvenanceInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'observation') {
     if (!exactFields(value, [...scoped, 'input'], ['content'])) return false;
     const bytes = controlWorkObservationTransferSize(

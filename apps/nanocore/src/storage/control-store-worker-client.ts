@@ -87,6 +87,7 @@ import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
   type ControlProductCohort,
+  type ControlProvenanceInput,
   type ControlSqlResult,
   type ControlSqlStatement,
   type ControlWorkerCommand,
@@ -284,6 +285,8 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
           isControlCapacityItem(data.item))
       );
     }
+    case 'provenance':
+      return true;
     case 'publication':
       return command.input.category === 'already-decided-publication';
     case 'pending':
@@ -506,7 +509,7 @@ class ControlStoreWorkerClient {
         },
       });
       const contentRoot =
-        command.operation === 'observation'
+        command.operation === 'observation' || command.operation === 'provenance'
           ? join(dirname(dirname(path)), 'evidence', 'backend')
           : command.operation === 'open'
             ? command.contentMount?.root
@@ -531,11 +534,27 @@ class ControlStoreWorkerClient {
             stagingBytes: stagingBytes + BigInt(inputBytes) + BigInt(materialBytes),
             extractionBytes: 0n,
             derivativeBytes: 0n,
-            publicationBytes: observationGrowth,
+            publicationBytes:
+              observationGrowth +
+              (command.operation === 'provenance'
+                ? command.input.files.reduce((total, file) => total + BigInt(file.byteLength), 0n)
+                : 0n),
           },
           priority
         )
       );
+      if (command.operation === 'provenance')
+        reservations.push(
+          admission.forPath(join(dirname(dirname(path)), 'evidence', 'bundles')).reserve(
+            {
+              stagingBytes: BigInt(command.input.normalizedBytes),
+              extractionBytes: 0n,
+              derivativeBytes: 0n,
+              publicationBytes: 0n,
+            },
+            priority
+          )
+        );
       return reservations;
     } catch (error) {
       for (const reservation of reservations) reservation.release();
@@ -639,7 +658,7 @@ class ControlStoreWorkerClient {
     for (const entry of this.pending.values())
       if (
         entry.counted &&
-        entry.command.operation === 'observation' &&
+        (entry.command.operation === 'observation' || entry.command.operation === 'provenance') &&
         this.openings.get(entry.command.database)?.path === physical &&
         entry.command.input.turnId === turn
       )
@@ -1333,6 +1352,21 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'observation' }>).result;
   }
 
+  /** Prepares exact admitted provenance files in the existing native FIFO and acknowledges the whole durable family. */
+  async provenance(
+    database: string,
+    input: ControlProvenanceInput
+  ): Promise<Extract<Success, { operation: 'provenance' }>['result']> {
+    try {
+      const reply = await this.request({ operation: 'provenance', database, input });
+      return (reply as Extract<Success, { operation: 'provenance' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'provenance')
+        throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+      throw error;
+    }
+  }
+
   /** Commits the Pending owner and its complete local publication before returning IDs. */
   async pendingCommand(
     database: string,
@@ -1811,7 +1845,7 @@ class ControlStoreWorkerClient {
       (database !== undefined &&
         (this.outstanding.get(database) ?? 0) - (borrowed ? 1 : 0) >=
           CONTROL_WORKER_LIMITS.pendingTransitions) ||
-      (command.operation === 'observation' &&
+      ((command.operation === 'observation' || command.operation === 'provenance') &&
         opening &&
         !borrowed &&
         this.pendingTurnPublications(JSON.stringify([opening.path, command.input.turnId])) >=
