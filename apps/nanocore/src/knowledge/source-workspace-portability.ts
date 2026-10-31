@@ -63,7 +63,7 @@ export function exportWorkspaceSources(input: {
   )
     throw new Error('Source export selection does not match the pinned Workspace.');
   input.selection.notebook.history({ revision: input.revision, limit: 1 });
-  // The selected SQL head supplies identity; this parent is only the physical locator required by the pointer reader.
+  // Workspace pointer reads use the admitted selection, not this scope owner's data-root ancestry.
   const owner = { dataRoot: dirname(dirname(input.workspaceRoot)), ownerScope: scope };
   const pointers = readSourcePointers(owner, input.revision, input.selection);
   const expected = new Map(

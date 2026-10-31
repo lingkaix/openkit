@@ -9,14 +9,15 @@ import { allocateEntityId } from '@openkit/protocol';
 import { applyEdits, modify } from 'jsonc-parser';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { parseJsoncObject } from '../config/jsonc.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { parseSourcePointer } from '../knowledge/source-pointers.js';
 import { FsStore } from '../lib/store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDbAtRoot } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
 import {
@@ -74,15 +75,15 @@ async function sourceSnapshot() {
     content: original,
   });
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-  });
+  const selection = readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
+  const notebook = selection.notebook;
   const revision = notebook.publishedRevision();
   const pointer = notebook.readSourcePointers(revision)[source.id]!;
   const selected = parseSourcePointer(
     { dataRoot, ownerScope: { kind: 'workspace', workspaceId: workspace.id } },
     source.id,
-    pointer
+    pointer,
+    selection
   );
   expect(selected.fields).toMatchObject({
     byteLength: original.byteLength,
@@ -103,6 +104,7 @@ async function sourceSnapshot() {
     WriteWorkspaceExportTreeInput,
     'sourceWorkspaceRoot' | 'exportRoot' | 'exportId'
   > = {
+    sourceNotebookSelection: selection,
     sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
     createdAt: now,
     workspace: store.getWorkspace(workspace.id),
@@ -124,7 +126,9 @@ async function sourceSnapshot() {
     root,
     dataRoot,
     workspaceRoot,
-    notebook,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
     source,
     pointer,
     revision,
@@ -172,7 +176,8 @@ describe('Source export explicit workspace root', () => {
       parseSourcePointer(
         { dataRoot: snapshot.dataRoot, ownerScope: { kind: 'workspace', workspaceId } },
         snapshot.source.id,
-        candidatePointer
+        candidatePointer,
+        snapshot.captured.sourceNotebookSelection
       ).source
     ).toEqual(sourceMetadata);
     const candidateRevision = snapshot.notebook.prepareSourcePointers({
@@ -266,9 +271,23 @@ describe('Source export explicit workspace root', () => {
     // A trusted snapshot has no DATA_ROOT/workspaces/<id> ancestry requirement.
     const detachedRoot = join(snapshot.root, 'snapshots', 'selected-workspace');
     cpSync(snapshot.workspaceRoot, detachedRoot, { recursive: true });
-    const detachedNotebook = new KnowledgeNotebook({
-      repositoryPath: join(detachedRoot, 'knowledge', 'notebook.git'),
+    const detachedDb = openWorkspaceDbAtRoot({
+      dataRoot: snapshot.dataRoot,
+      workspaceId: snapshot.captured.workspace.id,
+      workspaceRoot: detachedRoot,
     });
+    const detachedSelection = (() => {
+      try {
+        return readWorkspaceNotebookSelection({
+          workspaceDb: detachedDb,
+          workspaceRoot: detachedRoot,
+          knowledgeBaseId: snapshot.captured.sourceNotebookSelection!.head.knowledgeBaseId,
+        });
+      } finally {
+        detachedDb.sqlite.close();
+      }
+    })();
+    const detachedNotebook = detachedSelection.notebook;
     expect(detachedNotebook.publishedRevision()).toBe(snapshot.revision);
     expect(detachedNotebook.readSourcePointers(snapshot.revision)[snapshot.source.id]).toBe(
       snapshot.pointer
@@ -278,6 +297,7 @@ describe('Source export explicit workspace root', () => {
     const detached = writeWorkspaceExportTree({
       ...snapshot.captured,
       sourceWorkspaceRoot: detachedRoot,
+      sourceNotebookSelection: detachedSelection,
       exportRoot: detachedExportRoot,
       exportId: allocateEntityId('wsexp'),
     });
@@ -290,6 +310,7 @@ describe('Source export explicit workspace root', () => {
       writeWorkspaceExportTree({
         ...snapshot.captured,
         sourceWorkspaceRoot: detachedRoot,
+        sourceNotebookSelection: detachedSelection,
         exportRoot: join(snapshot.root, 'changed-original-export'),
         exportId: allocateEntityId('wsexp'),
       })

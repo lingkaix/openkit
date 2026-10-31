@@ -198,14 +198,22 @@ export function readSourcePointers(
   revision?: string,
   workspaceSelection?: WorkspaceNotebookSelection
 ): ReadonlyMap<string, SourcePointer> {
-  const root = lstatSync(sourceNotebookRoot(owner), { throwIfNoEntry: false });
-  if (!root?.isDirectory() || root.isSymbolicLink()) throw new NotebookError('recovery_required');
-  if (owner.ownerScope.kind === 'workspace' && workspaceSelection === undefined)
+  if (
+    owner.ownerScope.kind === 'workspace' &&
+    (!workspaceSelection || workspaceSelection.head.workspaceId !== owner.ownerScope.workspaceId)
+  )
     throw new NotebookError('recovery_required');
+  // A selected Workspace may be a detached snapshot; its admitted root is the physical locator.
+  const notebookRoot =
+    owner.ownerScope.kind === 'workspace'
+      ? join(workspaceSelection!.workspaceRoot, 'knowledge')
+      : sourceNotebookRoot(owner);
+  const root = lstatSync(notebookRoot, { throwIfNoEntry: false });
+  if (!root?.isDirectory() || root.isSymbolicLink()) throw new NotebookError('recovery_required');
   const notebook =
     workspaceSelection?.notebook ??
     new KnowledgeNotebook({
-      repositoryPath: join(sourceNotebookRoot(owner), 'notebook.git'),
+      repositoryPath: join(notebookRoot, 'notebook.git'),
     });
   const selected =
     revision ?? workspaceSelection?.head.notebookCommit ?? notebook.publishedRevision();
