@@ -59,6 +59,9 @@ import {
 import { KnowledgeProposalRow } from './KnowledgeProposalRow';
 import {
   composeUserAuthoredKnowledgePage,
+  isKnowledgePageState,
+  KNOWLEDGE_PAGE_STATES,
+  type KnowledgePageState,
   patchKnowledgePageTitleBody,
   readKnowledgePageDisplay,
 } from './knowledge-okf';
@@ -87,6 +90,19 @@ const EXCLUSION_REASON_LABEL = {
 } as const;
 
 const SOURCE_KIND_ITEMS = Object.entries(SOURCE_KIND_LABEL).map(([id, label]) => ({ id, label }));
+
+/** Human-facing label for one selectable page lifecycle state. */
+const PAGE_STATE_LABEL = {
+  active: 'Active — default retrieval includes it',
+  archived: 'Archived — kept, not retrieved by default',
+  draft: 'Draft — not retrieved by default',
+  superseded: 'Superseded — replaced by another page',
+} satisfies Record<KnowledgePageState, string>;
+
+const PAGE_STATE_OPTIONS = KNOWLEDGE_PAGE_STATES.map((state) => ({
+  id: state,
+  label: PAGE_STATE_LABEL[state],
+}));
 
 function isSourceKind(value: string): value is keyof typeof SOURCE_KIND_LABEL {
   return Object.hasOwn(SOURCE_KIND_LABEL, value);
@@ -168,6 +184,7 @@ type AddDraft = {
   title: string;
   content: string;
   sourceReference: string | null;
+  state: KnowledgePageState;
 };
 
 const EMPTY_ADD_DRAFT: AddDraft = {
@@ -177,6 +194,7 @@ const EMPTY_ADD_DRAFT: AddDraft = {
   title: '',
   content: '',
   sourceReference: null,
+  state: 'active',
 };
 
 type EditDraft = {
@@ -184,9 +202,17 @@ type EditDraft = {
   baseRevision: string | null;
   title: string;
   content: string;
+  /** Page state the edit selects; `null` while the current bytes carry no selectable state. */
+  state: KnowledgePageState | null;
 };
 
-const EMPTY_EDIT_DRAFT: EditDraft = { page: null, baseRevision: null, title: '', content: '' };
+const EMPTY_EDIT_DRAFT: EditDraft = {
+  page: null,
+  baseRevision: null,
+  title: '',
+  content: '',
+  state: null,
+};
 
 /**
  * Knowledge Store slice (WP-6, board 14).
@@ -269,6 +295,7 @@ export function KnowledgeScreen() {
                 path: addDraft.pagePath,
                 title: addDraft.title.trim(),
                 body: addDraft.content.trim(),
+                state: addDraft.state,
                 ...(addDraft.sourceReference ? { sourceRefs: [addDraft.sourceReference] } : {}),
               }),
               summary: `Create ${addDraft.pagePath}`,
@@ -292,6 +319,7 @@ export function KnowledgeScreen() {
       baseRevision: knowledge.data.notebookRevision,
       title: display.title,
       content: display.body,
+      state: display.state,
     });
     update.reset();
   }
@@ -310,10 +338,11 @@ export function KnowledgeScreen() {
       const baseline = readKnowledgePageDisplay(editing.path, editing.content);
       const titleChanged = editDraft.title !== baseline.title;
       const contentChanged = editDraft.content !== baseline.body;
+      const stateChanged = editDraft.state !== null && editDraft.state !== baseline.state;
       const nextTitle = editDraft.title.trim();
       const nextContent = editDraft.content.trim();
       if (
-        (!titleChanged && !contentChanged) ||
+        (!titleChanged && !contentChanged && !stateChanged) ||
         (titleChanged && !nextTitle) ||
         (contentChanged && !nextContent)
       )
@@ -323,6 +352,7 @@ export function KnowledgeScreen() {
         content: editing.content,
         ...(titleChanged ? { title: nextTitle } : {}),
         ...(contentChanged ? { body: nextContent } : {}),
+        ...(stateChanged && editDraft.state !== null ? { state: editDraft.state } : {}),
       });
       next = {
         workspaceId,
@@ -393,9 +423,14 @@ export function KnowledgeScreen() {
       : undefined;
 
   const editingBaseline = editing ? readKnowledgePageDisplay(editing.path, editing.content) : null;
+  const editStateChanged = Boolean(
+    editingBaseline && editDraft.state !== null && editDraft.state !== editingBaseline.state
+  );
   const editCanSave = Boolean(
     editingBaseline &&
-      (editDraft.title !== editingBaseline.title || editDraft.content !== editingBaseline.body) &&
+      (editDraft.title !== editingBaseline.title ||
+        editDraft.content !== editingBaseline.body ||
+        editStateChanged) &&
       (editDraft.title === editingBaseline.title || editDraft.title.trim()) &&
       (editDraft.content === editingBaseline.body || editDraft.content.trim())
   );
@@ -474,6 +509,17 @@ export function KnowledgeScreen() {
                   sourceReference: key === null || key === 'none' ? null : String(key),
                 }))
               }
+            />
+            <Select
+              label="Page state"
+              items={PAGE_STATE_OPTIONS}
+              selectedKey={addDraft.state}
+              isDisabled={entryWriteBlocked}
+              onSelectionChange={(key) => {
+                if (isKnowledgePageState(key)) {
+                  setAddDraft((current) => ({ ...current, state: key }));
+                }
+              }}
             />
             <p className="text-xs text-fg-muted">
               Register a source below, then select it here to keep its reference with this entry.
@@ -565,6 +611,9 @@ export function KnowledgeScreen() {
                             <p className="mt-1 text-xs text-fg-muted">Type: {display.type}</p>
                           ) : null}
                           <p className="mt-1 text-xs text-fg-muted">
+                            State: {display.state ?? 'unstated'}
+                          </p>
+                          <p className="mt-1 text-xs text-fg-muted">
                             Content digest: {page.contentDigest}
                           </p>
                         </div>
@@ -641,6 +690,18 @@ export function KnowledgeScreen() {
                             }
                             isDisabled={entryWriteBlocked}
                           />
+                          <Select
+                            label="Page state"
+                            items={PAGE_STATE_OPTIONS}
+                            selectedKey={editDraft.state}
+                            isDisabled={entryWriteBlocked}
+                            placeholder="Unsupported state in current bytes"
+                            onSelectionChange={(key) => {
+                              if (isKnowledgePageState(key)) {
+                                setEditDraft((current) => ({ ...current, state: key }));
+                              }
+                            }}
+                          />{' '}
                           {failedUpdate ? (
                             <fieldset disabled={entryWriteBlocked} className="contents">
                               <ErrorBanner

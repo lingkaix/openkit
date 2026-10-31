@@ -3677,6 +3677,80 @@ describe('Knowledge (board 14)', () => {
     );
   });
 
+  it('lets an authorized user archive a page by selecting its state', async () => {
+    const user = userEvent.setup();
+    const listKnowledge = vi.fn().mockResolvedValue({
+      knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
+      notebookRevision: 'notebook-fixture-revision',
+      pages: [KNOWLEDGE_LIST_PAGE],
+    });
+    const updateKnowledge = vi.fn().mockResolvedValue({ outcome: 'published' });
+    renderApp(
+      '/knowledge',
+      makeClient({
+        core: {
+          'knowledge.notebook.list': listKnowledge,
+          'knowledge.notebook.update': updateKnowledge,
+        },
+      })
+    );
+
+    await user.click(await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
+    const save = screen.getByRole('button', { name: 'Save changes' });
+    expect(screen.getByText('State: active')).toBeInTheDocument();
+    expect(save).toBeDisabled();
+
+    await selectListedOption(
+      user,
+      document.body,
+      'Page state',
+      'Archived — kept, not retrieved by default'
+    );
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    await waitFor(() =>
+      expect(updateKnowledge).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_A.id,
+        requestId: expect.any(String),
+        baseRevision: 'notebook-fixture-revision',
+        summary: `Edit ${KNOWLEDGE_LIST_PAGE.path}`,
+        changes: [
+          {
+            path: KNOWLEDGE_LIST_PAGE.path,
+            content: patchKnowledgePageTitleBody({
+              path: KNOWLEDGE_LIST_PAGE.path,
+              content: KNOWLEDGE_LIST_PAGE.content,
+              state: 'archived',
+            }),
+          },
+        ],
+      })
+    );
+    const archived = updateKnowledge.mock.calls[0]?.[0]?.changes[0]?.content;
+    expect(archived).toContain('openkit_status: archived');
+    expect(archived).toContain('status: deprecated');
+  });
+
+  it('lets an authorized user create a draft page from the add form', async () => {
+    const user = userEvent.setup();
+    const createKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY);
+    renderApp('/knowledge', makeClient({ core: { 'knowledge.notebook.create': createKnowledge } }));
+    await screen.findByText(/No notebook pages yet/i);
+    await user.click(screen.getByRole('button', { name: /Add knowledge/i }));
+    await user.click(screen.getByRole('textbox', { name: 'Title' }));
+    await user.paste('Unfinished note');
+    await user.click(screen.getByRole('textbox', { name: 'Content' }));
+    await user.paste('Still in progress.');
+    await selectListedOption(user, document.body, 'Page state', 'Draft — not retrieved by default');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(createKnowledge).toHaveBeenCalled());
+    const content = createKnowledge.mock.calls[0]?.[0]?.content;
+    expect(content).toContain('openkit_status: draft');
+    expect(content).toContain('status: draft');
+  });
+
   it('keeps update intent and cached bytes until a failed authoritative refetch is retried', async () => {
     const user = userEvent.setup();
     const mutationResponse = {

@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { composeUserAuthoredKnowledgePage, patchKnowledgePageTitleBody } from './knowledge-okf';
+import {
+  composeUserAuthoredKnowledgePage,
+  type KnowledgePageState,
+  patchKnowledgePageTitleBody,
+} from './knowledge-okf';
 
 /** Computes the canonical page digest for fixtures and assertions. */
 export function knowledgePageContentDigest(content: string): string {
@@ -16,6 +20,7 @@ export function knowledgeNotebookPageFixture(input: {
   path?: string;
   contentDigest?: string;
   extraFrontmatterLine?: string;
+  state?: KnowledgePageState;
 }) {
   const path = input.path ?? `notes/${input.id}.md`;
   let content = composeUserAuthoredKnowledgePage({
@@ -24,6 +29,7 @@ export function knowledgeNotebookPageFixture(input: {
     title: input.title,
     body: input.body,
     timestamp: input.timestamp,
+    ...(input.state ? { state: input.state } : {}),
   });
   if (input.extraFrontmatterLine) {
     content = content.replace(
@@ -42,10 +48,10 @@ export function knowledgeNotebookPageFixture(input: {
   };
 }
 
-/** Returns an updated page fixture with new title/body while retaining other frontmatter. */
+/** Returns an updated page fixture with new title/body/state while retaining other frontmatter. */
 export function knowledgeNotebookPageWithEdits(
   page: { path: string; content: string; id: string; title: string; body: string },
-  edits: { title?: string; body?: string }
+  edits: { title?: string; body?: string; state?: KnowledgePageState }
 ) {
   const content = patchKnowledgePageTitleBody({
     path: page.path,

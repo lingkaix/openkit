@@ -3,12 +3,32 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { TextField as AriaTextField, Label, TextArea } from 'react-aria-components';
 import { useConnection, useCoreClient } from '../../app/core-client';
-import { Button, DiffView, ErrorBanner, TextField } from '../../primitives';
+import { Button, DiffView, ErrorBanner, Select, TextField } from '../../primitives';
 import { workspaceKeys } from './data';
+import {
+  isKnowledgePageState,
+  KNOWLEDGE_PAGE_STATES,
+  type KnowledgePageState,
+  patchKnowledgePageTitleBody,
+  readKnowledgePageDisplay,
+} from './knowledge-okf';
 
 type EditCommand = Parameters<CoreClient['operations']['knowledge.notebook.update']>[0] & {
   requestId: string;
 };
+
+/** Human-facing label for one selectable page state. */
+const PAGE_STATE_LABEL = {
+  active: 'Active — default retrieval includes it',
+  archived: 'Archived — kept, not retrieved by default',
+  draft: 'Draft — not retrieved by default',
+  superseded: 'Superseded — replaced by another page',
+} satisfies Record<KnowledgePageState, string>;
+
+const PAGE_STATE_OPTIONS = KNOWLEDGE_PAGE_STATES.map((state) => ({
+  id: state,
+  label: PAGE_STATE_LABEL[state],
+}));
 
 /** Exact current page selected from a complete currently authorized history diff. */
 interface NotebookPageEditorProps {
@@ -33,8 +53,10 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
     baseRevision: props.baseRevision,
     path: props.path,
     content: props.content,
+    state: readKnowledgePageDisplay(props.path, props.content).state,
   }));
   const [content, setContent] = useState(base.content);
+  const [state, setState] = useState<KnowledgePageState | null>(base.state);
   const [summary, setSummary] = useState('');
   const [intent, setIntent] = useState<EditCommand | null>(null);
   const update = useMutation({
@@ -55,10 +77,16 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
     },
     retry: false,
   });
-  const pageTooLarge = new TextEncoder().encode(content).length > 2 * 1024 * 1024;
+  // Compose the exact published bytes here so the diff shows the state change too.
+  const editedContent =
+    state === null || state === base.state
+      ? content
+      : patchKnowledgePageTitleBody({ path: base.path, content, state });
+  const pageTooLarge = new TextEncoder().encode(editedContent).length > 2 * 1024 * 1024;
   const summaryTooLarge = new TextEncoder().encode(summary).length > 4096;
   const blocked = connection.checking || connection.failed || update.isPending;
   const frozen = intent !== null;
+  const unchanged = editedContent === base.content;
   const unknownResult =
     update.isError &&
     (!(update.error instanceof ApiCallError) ||
@@ -73,20 +101,13 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
 
   /** Save the exact command before dispatch; uncertain retries cannot take current form values. */
   function apply() {
-    if (
-      blocked ||
-      frozen ||
-      pageTooLarge ||
-      summaryTooLarge ||
-      !summary.trim() ||
-      content === base.content
-    )
+    if (blocked || frozen || pageTooLarge || summaryTooLarge || !summary.trim() || unchanged)
       return;
     const command: EditCommand = {
       workspaceId: base.workspaceId,
       requestId: createRequestId(),
       baseRevision: base.baseRevision,
-      changes: [{ path: base.path, content }],
+      changes: [{ path: base.path, content: editedContent }],
       summary,
     };
     setIntent(command);
@@ -97,8 +118,9 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
     <section aria-label={`Edit ${base.path}`} className="flex flex-col gap-3">
       <p className="font-bold text-fg-strong">Edit {base.path}</p>
       <p className="text-sm text-fg-muted">
-        Edit the complete page text. Publication checks the current schema and Source access and
-        keeps the earlier revision.
+        Edit the complete page text and choose its state. Publication checks the current schema and
+        Source access and keeps the earlier revision. Archive keeps the page available without
+        retrieval.
       </p>
       <AriaTextField
         value={content}
@@ -113,6 +135,21 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
           className="rounded-ok border border-border bg-card p-3 font-mono text-sm text-fg outline-none focus:border-accent focus:ring-2 focus:ring-focus disabled:bg-disabled-bg disabled:text-disabled-fg"
         />
       </AriaTextField>
+      <Select
+        label="Page state"
+        items={PAGE_STATE_OPTIONS}
+        selectedKey={state}
+        isDisabled={blocked || frozen}
+        placeholder="Unsupported state in current bytes"
+        onSelectionChange={(key) => {
+          if (isKnowledgePageState(key)) setState(key);
+        }}
+      />
+      {state === null ? (
+        <p className="text-xs text-fg-muted">
+          This page carries no selectable state. Choosing one publishes that state with the edit.
+        </p>
+      ) : null}
       <TextField
         label="Edit summary"
         value={summary}
@@ -129,7 +166,7 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
       {!pageTooLarge ? (
         <DiffView
           before={base.content}
-          after={content}
+          after={editedContent}
           beforeLabel="Current page text"
           afterLabel="Edited page text"
         />
@@ -143,11 +180,7 @@ export function NotebookPageEditor(props: NotebookPageEditorProps) {
             <Button
               size="sm"
               isDisabled={
-                blocked ||
-                pageTooLarge ||
-                summaryTooLarge ||
-                !summary.trim() ||
-                content === base.content
+                blocked || pageTooLarge || summaryTooLarge || !summary.trim() || unchanged
               }
               onPress={apply}
             >
