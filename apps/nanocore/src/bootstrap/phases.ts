@@ -1,5 +1,5 @@
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
-import { computeBootReadinessSnapshot } from './readiness.js';
+import { computeBootReadinessSnapshot, createShutdownReadinessSnapshot } from './readiness.js';
 
 type BootSubsystemName = keyof BootReadinessSnapshot['subsystems'];
 type BootReadinessReason = BootReadinessSnapshot['subsystems']['config']['reasons'][number];
@@ -55,6 +55,8 @@ export interface BootPhaseRunInput {
   bootId: string;
   /** Ordered phase list. */
   phases: BootPhase[];
+  /** Process shutdown cancels later phases without treating the signal as Worker proof. */
+  signal?: AbortSignal;
 }
 
 /** Recorded boot phase outcome. */
@@ -112,6 +114,7 @@ export async function runBootPhases(input: BootPhaseRunInput): Promise<BootPhase
   const outcomes: RecordedBootPhaseOutcome[] = [];
 
   for (const phase of input.phases) {
+    if (input.signal?.aborted) break;
     const outcome = await runBootPhase(phase);
     outcomes.push({
       name: phase.name,
@@ -125,12 +128,13 @@ export async function runBootPhases(input: BootPhaseRunInput): Promise<BootPhase
     }
   }
 
+  const readiness = computeBootReadinessSnapshot({
+    bootId: input.bootId,
+    subsystems: readinessSubsystemsForOutcomes(outcomes),
+  });
   return {
     outcomes,
-    readiness: computeBootReadinessSnapshot({
-      bootId: input.bootId,
-      subsystems: readinessSubsystemsForOutcomes(outcomes),
-    }),
+    readiness: input.signal?.aborted ? createShutdownReadinessSnapshot(readiness) : readiness,
   };
 }
 

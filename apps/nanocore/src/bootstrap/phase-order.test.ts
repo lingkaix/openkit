@@ -36,9 +36,9 @@ function readEntrypointSource(): string {
  */
 function evaluateCloseNanoCoreListeners(bindings: {
   shutdownTelemetry: () => Promise<void>;
-  workerMcpGateway: { close: () => Promise<unknown> };
-  appServer: { close: (callback: () => void) => void };
-  nanoHostServer: { close: (callback: () => void) => void };
+  workerMcpGateway: { close: () => Promise<unknown> } | undefined;
+  appServer: { close: (callback: () => void) => void } | undefined;
+  nanoHostServer: { close: (callback: () => void) => void } | null;
 }): (onClosed: () => void) => void {
   const sourceFile = createSourceFile(
     'index.ts',
@@ -74,6 +74,29 @@ function evaluateCloseNanoCoreListeners(bindings: {
 }
 
 describe('NanoCore boot phase order', () => {
+  it.each(['SIGINT', 'SIGTERM'])('installs %s shutdown before the first boot phase', (signal) => {
+    const source = readEntrypointSource();
+    const registration = source.indexOf(`process.once('${signal}', shutdown)`);
+    const phaseStart = source.indexOf('await runBootPhases(');
+
+    expect(registration).toBeGreaterThan(-1);
+    expect(phaseStart).toBeGreaterThan(-1);
+    expect(registration).toBeLessThan(phaseStart);
+  });
+
+  it('settles listener shutdown when boot has not created optional process owners', async () => {
+    const onClosed = vi.fn();
+    const closeNanoCoreListeners = evaluateCloseNanoCoreListeners({
+      shutdownTelemetry: async () => undefined,
+      workerMcpGateway: undefined,
+      appServer: undefined,
+      nanoHostServer: null,
+    });
+
+    expect(() => closeNanoCoreListeners(onClosed)).not.toThrow();
+    await vi.waitFor(() => expect(onClosed).toHaveBeenCalledTimes(1));
+  });
+
   it('matches the accepted startup phase order', () => {
     expect(readEntrypointBootPhaseNames()).toEqual([
       'config',
@@ -167,7 +190,7 @@ describe('NanoCore boot phase order', () => {
       'const bootstrap = ensureServerBootstrapToken(coreDb)',
       criticalFailureGate
     );
-    const listenerBind = source.indexOf('const appServer = appTlsListen', criticalFailureGate);
+    const listenerBind = source.indexOf('appServer = appTlsListen', criticalFailureGate);
 
     expect(coreIntegrityCheck).toBeGreaterThan(migrationsPhase);
     expect(scopedIntegrityCheck).toBeGreaterThan(coreIntegrityCheck);
@@ -180,8 +203,8 @@ describe('NanoCore boot phase order', () => {
 
   it('starts scheduler recovery maintenance only after constructing the ordinary listener', () => {
     const source = readEntrypointSource();
-    const listenerConstruction = source.indexOf('const appServer = appTlsListen');
-    const nanoHostListenerConstruction = source.indexOf('const nanoHostServer = nanoHostListener');
+    const listenerConstruction = source.indexOf('appServer = appTlsListen');
+    const nanoHostListenerConstruction = source.indexOf('nanoHostServer = nanoHostListener');
     const maintenanceStart = source.indexOf(
       'schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({'
     );

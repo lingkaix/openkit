@@ -35,6 +35,8 @@ import { acquireDataRootLock, type DataRootLock } from './bootstrap/lock.js';
 import { formatBootFailureMessage, runBootPhases } from './bootstrap/phases.js';
 import { loadBootPolicyKernel } from './bootstrap/policy.js';
 import {
+  computeBootReadinessSnapshot,
+  computeCurrentReadiness,
   createBootId,
   createShutdownReadinessSnapshot,
   refuseScope,
@@ -59,6 +61,7 @@ import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
 import { recoverServerKnowledgeManagerTurns } from './knowledge/server-knowledge-maintenance.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
+import { resolveLogicalModelCatalog } from './llm/logical-models.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
@@ -157,6 +160,13 @@ let dataRootLock: DataRootLock | null = null;
 let schedulerDispatchRetry: SchedulerDispatchRetryService | null = null;
 let schedulerAttemptMaintenance: SchedulerAttemptMaintenanceService | null = null;
 let recurringSchedules: RecurringScheduleService | null = null;
+let appServer: ReturnType<typeof serve> | undefined;
+let nanoHostServer: ReturnType<typeof serve> | null = null;
+let workerMcpGateway: ReturnType<typeof createDefaultWorkerMcpGateway> | undefined;
+let codexResetMaintenance: ReturnType<typeof setInterval> | undefined;
+const processShutdownAbort = new AbortController();
+let shutdownCompletion: Promise<void> | undefined;
+let bootReadiness = computeBootReadinessSnapshot({ bootId });
 let releaseIdentity: ReturnType<typeof readReleaseIdentity> | undefined;
 let runtimeConfigSnapshot: RuntimeConfigSnapshot | undefined;
 let mode: ReturnType<typeof resolveMode> | undefined;
@@ -189,9 +199,12 @@ const nanoHostSessionDispatch = createNanoHostSessionDispatch({
 });
 
 process.once('exit', releaseProcessResources);
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
 
 const bootResult = await runBootPhases({
   bootId,
+  signal: processShutdownAbort.signal,
   phases: [
     {
       name: 'config',
@@ -507,7 +520,8 @@ const bootResult = await runBootPhases({
     },
   ],
 });
-let bootReadiness = bootResult.readiness;
+if (shutdownCompletion) await shutdownCompletion;
+bootReadiness = bootResult.readiness;
 
 if (coreDb) {
   try {
@@ -543,6 +557,7 @@ try {
 } catch {
   console.warn('Retrieval service is unavailable; dependent retrieval requests will fail.');
 }
+if (shutdownCompletion) await shutdownCompletion;
 
 runtimeConfigSnapshot = requireBootValue(runtimeConfigSnapshot, 'Runtime config was not loaded.');
 mode = requireBootValue(mode, 'Core mode was not resolved.');
@@ -566,7 +581,7 @@ const providerSubscriptionAccountManager = new ProviderSubscriptionAccountManage
       {
         coreDb: activeCoreDb,
         closeMcpCredentialGrants: async (grantIds) => {
-          if (!workerMcpGateway.closeCredentialGrants)
+          if (!workerMcpGateway?.closeCredentialGrants)
             throw new Error('MCP credential cleanup is unavailable.');
           await workerMcpGateway.closeCredentialGrants(grantIds);
         },
@@ -599,6 +614,7 @@ if (mode === 'local') {
     store: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
     userId,
   });
+  if (shutdownCompletion) await shutdownCompletion;
 }
 if (mode === 'server') {
   const bootstrap = ensureServerBootstrapToken(coreDb);
@@ -621,8 +637,9 @@ const activeWorkerLifecycleRuntime = requireBootValue(
 const workerPlacement = 'local' as const;
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
 const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
-const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
+workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
 await reconcileWorkerMcpItems(coreDb.dataRoot, store);
+if (shutdownCompletion) await shutdownCompletion;
 
 /**
  * Ensures the personal Quick Chat Workspace before Better Auth records a new active session.
@@ -655,7 +672,39 @@ const app = createApp({
   bootReadiness: withScopeAdmissionReadiness(bootReadiness, dataRoot),
   coreDb,
   dataRoot,
-  getBootReadiness: () => withScopeAdmissionReadiness(bootReadiness, dataRoot),
+  getBootReadiness: () => {
+    const snapshot = runtimeConfigManager.current();
+    let llmGatewayAvailable = false;
+    try {
+      const models = resolveLogicalModelCatalog(
+        snapshot.gatewayConfig,
+        snapshot.providerRegistry,
+        providerSubscriptionAccountManager,
+        providerCredentialConfigured
+      );
+      llmGatewayAvailable =
+        snapshot.gatewayConfig.enabled &&
+        models.length > 0 &&
+        models.every(
+          (model) =>
+            model.routes.length > 0 &&
+            model.routes.every(
+              (route) =>
+                route.available &&
+                snapshot.providerRegistry.get(route.providerProfileId)?.readiness?.status !==
+                  'degraded'
+            )
+        );
+    } catch {
+      // Invalid supply is unavailable; public readiness never exposes parser or credential text.
+    }
+    return computeCurrentReadiness({
+      snapshot: bootReadiness,
+      vaultHealth: activeVaultUnlockState.backend().health().state,
+      llmGatewayAvailable,
+      dataRoot,
+    });
+  },
   mode,
   nanoHostSessionDispatch,
   nanohostTransportSessionAuthority,
@@ -707,7 +756,7 @@ startTelemetry({
   serviceVersion: releaseIdentity?.releaseTag ?? releaseIdentity?.sourceCommit ?? undefined,
   deploymentEnvironment: mode,
 });
-const appServer = appTlsListen
+appServer = appTlsListen
   ? serve(
       {
         createServer: createHttpsServer,
@@ -734,7 +783,7 @@ const appServer = appTlsListen
     );
 // Native HTTP/2 sessions have no idle-close timer (timeout = 0), including TLS.
 // Their long-lived h2 clients therefore need no HTTP/1 keep-alive margin options.
-const nanoHostServer = nanoHostListener
+nanoHostServer = nanoHostListener
   ? nanoHostTlsListen
     ? serve(
         {
@@ -831,10 +880,9 @@ schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
 });
 
 /** The account owner joins overlapping enabled-account passes; the process owns timer cancellation. */
-const codexResetMaintenanceAbort = new AbortController();
-const codexResetMaintenance = setInterval(() => {
+codexResetMaintenance = setInterval(() => {
   void providerSubscriptionAccountManager
-    .checkExpiringCodexResets(codexResetMaintenanceAbort.signal)
+    .checkExpiringCodexResets(processShutdownAbort.signal)
     .catch(() => console.warn('Codex reset maintenance requires inspection.'));
 }, 5 * 60_000);
 codexResetMaintenance.unref();
@@ -875,10 +923,11 @@ function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcc
  * @param signal Signal that requested shutdown.
  */
 function shutdown(signal: NodeJS.Signals): void {
+  if (shutdownCompletion) return;
   console.log(`Received ${signal}; shutting down NanoCore.`);
   bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
   clearInterval(codexResetMaintenance);
-  codexResetMaintenanceAbort.abort();
+  processShutdownAbort.abort();
   recurringSchedules?.stop();
   schedulerDispatchRetry?.stop();
   const maintenanceStopped = schedulerAttemptMaintenance?.stop();
@@ -888,7 +937,7 @@ function shutdown(signal: NodeJS.Signals): void {
     'scheduler.dispatch-retry.stop',
     'scheduler.attempt-maintenance.stop',
   ];
-  closeWithDeadline({
+  shutdownCompletion = closeWithDeadline({
     close: (onClosed) => {
       void Promise.allSettled([maintenanceStopped, executionsStopped])
         .then((results) => {
@@ -909,23 +958,24 @@ function shutdown(signal: NodeJS.Signals): void {
 /** Closes both process listeners before completing orderly shutdown. */
 function closeNanoCoreListeners(onClosed: () => void): void {
   void shutdownTelemetry().catch(() => undefined);
-  void Promise.all([workerMcpGateway.close(), closeRetrievalServices()])
+  void Promise.all([workerMcpGateway?.close(), closeRetrievalServices()])
     .catch(() => undefined)
     .then(() => {
-      let remaining = nanoHostServer ? 2 : 1;
+      let remaining = Number(appServer !== undefined) + Number(nanoHostServer !== null);
+      if (remaining === 0) {
+        onClosed();
+        return;
+      }
       const markClosed = () => {
         remaining -= 1;
         if (remaining === 0) {
           onClosed();
         }
       };
-      appServer.close(markClosed);
+      appServer?.close(markClosed);
       nanoHostServer?.close(markClosed);
     });
 }
-
-process.once('SIGINT', shutdown);
-process.once('SIGTERM', shutdown);
 
 /**
  * Returns a required boot value or throws a boot failure.

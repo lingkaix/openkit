@@ -14,25 +14,30 @@ export interface CloseWithDeadlineInput {
  * Closes a resource and runs exactly one terminal shutdown callback.
  *
  * @param input Close and deadline callbacks.
+ * @returns Completion after the single terminal callback returns.
  */
-export function closeWithDeadline(input: CloseWithDeadlineInput): void {
-  let completed = false;
-  const deadline = setTimeout(() => {
-    if (completed) {
-      return;
-    }
+export function closeWithDeadline(input: CloseWithDeadlineInput): Promise<void> {
+  return new Promise((resolve) => {
+    let completed = false;
+    const deadline = setTimeout(() => {
+      if (completed) {
+        return;
+      }
 
-    completed = true;
-    input.onDeadline();
-  }, input.deadlineMs);
+      completed = true;
+      input.onDeadline();
+      resolve();
+    }, input.deadlineMs);
 
-  input.close(() => {
-    if (completed) {
-      return;
-    }
+    input.close(() => {
+      if (completed) {
+        return;
+      }
 
-    completed = true;
-    clearTimeout(deadline);
-    input.onClosed();
+      completed = true;
+      clearTimeout(deadline);
+      input.onClosed();
+      resolve();
+    });
   });
 }

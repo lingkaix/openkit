@@ -36,3 +36,5 @@ An abandoned capture whose original seal still exists remains recovery-quarantin
 An abandoned capture with no visible seal is admitted only after the existing startup owner synchronizes that absence in its canonical parent. A failed parent sync retains exact recovery quarantine; visible absence alone cannot discharge interrupted retirement.
 
 Scope quarantine readiness retains the first unsupported canonical required-feature identifier from envelope admission. It carries no parser text, retained payload or host path; healthy sibling admission stays independent.
+
+Signal handlers register before boot phases. Partial shutdown closes only initialized resources under the same process deadline; cancellation prevents later phases and startup work. Readiness reads current Vault health, current Gateway route eligibility and Provider readiness, and current scoped index admission facts. It does not probe a provider or infer network health. Live non-critical recovery does not clear critical failures or shutdown admission closure.

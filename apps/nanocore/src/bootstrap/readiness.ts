@@ -200,6 +200,58 @@ export function computeBootReadinessSnapshot(input: BootReadinessInput): BootRea
 }
 
 /**
+ * Derives readiness from current subsystem facts without probing or retaining another health state.
+ *
+ * @param input Boot outcomes and current Vault, Gateway supply and scoped index facts.
+ * @returns Current diagnosis preserving critical failures and shutdown admission closure.
+ */
+export function computeCurrentReadiness(input: {
+  readonly snapshot: BootReadinessSnapshot;
+  readonly vaultHealth: 'available' | 'locked' | 'unavailable';
+  readonly llmGatewayAvailable: boolean;
+  readonly dataRoot: string;
+}): BootReadinessSnapshot {
+  const current = computeBootReadinessSnapshot({
+    bootId: input.snapshot.bootId,
+    subsystems: {
+      ...input.snapshot.subsystems,
+      vault:
+        input.vaultHealth === 'available'
+          ? readySubsystem()
+          : {
+              state: 'degraded',
+              reasons: [
+                {
+                  code: input.vaultHealth === 'locked' ? 'vault.locked' : 'vault.unavailable',
+                  message: 'Vault-dependent operations are unavailable.',
+                  blocks: ['vault.read', 'vault.use', 'secret.inject'],
+                },
+              ],
+            },
+      llmGateway: input.llmGatewayAvailable
+        ? readySubsystem()
+        : {
+            state: 'degraded',
+            reasons: [
+              {
+                code: 'llm.gateway_unavailable',
+                message: 'Gateway supply is unavailable or degraded.',
+                blocks: ['llm.inference'],
+              },
+            ],
+          },
+    },
+  });
+  return withScopeAdmissionReadiness(
+    {
+      ...current,
+      acceptingProductWork: input.snapshot.acceptingProductWork && current.acceptingProductWork,
+    },
+    input.dataRoot
+  );
+}
+
+/**
  * Creates the shutdown readiness projection that stops product-work admission.
  *
  * @param snapshot Current boot readiness snapshot.
