@@ -1747,7 +1747,9 @@ class DeepSeekSession implements WorkerResidentSession {
           'result' in message &&
           (!isRecord(message.result) ||
             typeof message.result.stopReason !== 'string' ||
-            !['end_turn', 'cancelled', ...FAILED_STOP_REASONS].includes(message.result.stopReason))
+            !['end_turn', 'max_tokens', 'cancelled', ...FAILED_STOP_REASONS].includes(
+              message.result.stopReason
+            ))
         ) {
           this.poisonNativeEvidence(this.turn);
           return null;

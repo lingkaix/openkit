@@ -922,6 +922,39 @@ describe('deepseek resident adapter', () => {
   );
 
   it(
+    'admits a native max_tokens prompt response as length and closes with retained identity',
+    async () => {
+      const inference = await startSyntheticInference(() => ({
+        finish: 'length',
+        text: 'partial',
+      }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      const active = await session.startTurn(
+        turn(
+          roots,
+          inference,
+          'reach the native output limit',
+          [],
+          'tu_00000000-0000-7e49-8268-e35715b55d0c'
+        )
+      );
+      const result = await active.settled;
+      expect.soft(result).toMatchObject({
+        assistantText: null,
+        status: 'length',
+        stopReason: 'max_tokens',
+      });
+      expect(inference.requests).toHaveLength(1);
+      expect.soft(await session.nativeHandle()).toMatchObject({ state: 'ready' });
+      await expect.soft(session.close()).resolves.toBeUndefined();
+      expect(session.childState()).toBe('absent');
+    },
+    LIVE
+  );
+
+  it(
     'completes, trims once, resumes the same conversation, and keeps credentials out of the runtime',
     async () => {
       const inference = await startSyntheticInference((_request, n) => {
