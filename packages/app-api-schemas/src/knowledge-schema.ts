@@ -17,14 +17,39 @@ export const PreviewKnowledgeSchemaRequestSchema = z
 /** Content-free native validation feedback; authored values and process diagnostics stay private. */
 const SchemaDiagnostic = z.object({ code: z.string(), field: z.string().optional() }).strict();
 
-/** Notebook coverage is preparation, never a complete migration report or permission to activate. */
+/** One admitted observed family; incomplete inventories disclose no digest of hidden records. */
+const DependencyInventory = z
+  .object({
+    family: z.enum(['maintenance', 'proposals', 'indexes', 'trace-references']),
+    complete: z.boolean(),
+    records: z.array(
+      z
+        .object({
+          id: z.string().min(1),
+          status: z.enum(['valid', 'needs-review']),
+          diagnostics: z.array(SchemaDiagnostic),
+        })
+        .strict()
+    ),
+    diagnostics: z.array(SchemaDiagnostic),
+    inventoryDigest: z
+      .string()
+      .regex(/^sha256:[a-f0-9]{64}$/)
+      .optional(),
+  })
+  .strict()
+  .refine((row) => row.complete || row.inventoryDigest === undefined);
+
+/** Observed Workspace coverage grants no migration or activation authority. */
 export const PreviewKnowledgeSchemaResponseSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     notebookRevision: z.string().min(1),
     baseSchemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     candidateSchemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    coverage: z.literal('notebook'),
+    coverage: z.literal('workspace'),
+    inventoryComplete: z.boolean(),
+    dependencyInventory: z.array(DependencyInventory).length(4),
     completeMigration: z.literal(false),
     schemaDiagnostics: z.array(SchemaDiagnostic),
     records: z.array(
@@ -37,8 +62,13 @@ export const PreviewKnowledgeSchemaResponseSchema = z
         .strict()
     ),
   })
-  .strict();
+  .strict()
+  .refine(
+    (report) =>
+      new Set(report.dependencyInventory.map((row) => row.family)).size === 4 &&
+      report.inventoryComplete === report.dependencyInventory.every((row) => row.complete)
+  );
 
-/** Exact draft input and partial, non-authorizing inspection output. */
+/** Exact draft input and observed, non-authorizing inspection output. */
 export type PreviewKnowledgeSchemaRequest = z.infer<typeof PreviewKnowledgeSchemaRequestSchema>;
 export type PreviewKnowledgeSchemaResponse = z.infer<typeof PreviewKnowledgeSchemaResponseSchema>;

@@ -9,6 +9,12 @@ import {
 } from './okf.js';
 import { decodeSourcePointer } from './source-pointers.js';
 
+/** Notebook-only computation composed into the public Workspace inventory by its request owner. */
+type NotebookSchemaPreview = Omit<
+  PreviewKnowledgeSchemaResponse,
+  'coverage' | 'dependencyInventory' | 'inventoryComplete'
+> & { readonly coverage: 'notebook' };
+
 /** Checks every current Notebook member without preparing content, rebuilding indexes or writing history. */
 export function previewNotebookSchema(input: {
   readonly workspaceId: string;
@@ -19,7 +25,7 @@ export function previewNotebookSchema(input: {
   readonly registeredSources: ReadonlyMap<string, string | null>;
   /** Native current read/write and complete Source admission; this check supplies no authority. */
   readonly revalidate: () => void;
-}): PreviewKnowledgeSchemaResponse {
+}): NotebookSchemaPreview {
   input.revalidate();
   const revision = input.notebook.publishedRevision();
   const files = input.notebook.readContent(revision);

@@ -303,7 +303,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description:
-      'Check a draft schema against the complete current Notebook without activation or a complete migration claim.',
+      'Inspect a draft schema against admitted Workspace records and observed dependencies without activation.',
     inputSchema: PreviewKnowledgeSchemaRequestSchema,
     outputSchema: PreviewKnowledgeSchemaResponseSchema,
     credentials: publicCredentials,

@@ -172,7 +172,7 @@ export function projectVerifiedThreadMaterialTraces(input: {
 }
 
 /** Reads and fully verifies every accepted trace file present in one Thread. */
-function readVerifiedThreadWorkerContextTraces(
+export function readVerifiedThreadWorkerContextTraces(
   input: WorkerContextProjectionInput
 ): VerifiedWorkerContextTrace[] {
   const workspaceId = input.workspaceDb.workspaceId;

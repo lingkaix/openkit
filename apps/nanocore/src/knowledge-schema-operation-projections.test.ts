@@ -67,7 +67,7 @@ it('admits only a current human writer and refuses a stale schema preview base w
   expect(await preview.json()).toMatchObject({
     workspaceId: workspace.id,
     notebookRevision: baseRevision,
-    coverage: 'notebook',
+    coverage: 'workspace',
     completeMigration: false,
   });
   expect(notebook.publishedRevision()).toBe(baseRevision);

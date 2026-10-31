@@ -50,7 +50,7 @@ import {
   parseOkfDocument,
   stringFrontmatterField,
 } from './knowledge/okf.js';
-import { previewNotebookSchema } from './knowledge/scope-schema-migration.js';
+import { previewWorkspaceSchema } from './knowledge/schema-dependency-preview.js';
 import { publishCapturedSource } from './knowledge/source-publication.js';
 import {
   checkKnowledgeHealth,
@@ -582,7 +582,37 @@ export function createKnowledgeOperationImplementations(
               throw new NotebookError('conflict');
             for (const id of sources) requireSourceAudience(input.workspaceId, id, context);
           };
-          return previewNotebookSchema({
+          return previewWorkspaceSchema({
+            dataRoot: store.getDataRoot()!,
+            coreDb: coreDb!,
+            store,
+            workspaceDb: owner.workspaceDb,
+            access: access.access,
+            admitProposal: (proposal) => {
+              const candidate = owner.notebook.readRevision(proposal.candidateRevision);
+              const trees = [proposal.baseRevision, proposal.candidateRevision].map((revision) =>
+                owner.notebook.readContent(revision)
+              );
+              const paths = [...new Set(trees.flatMap((files) => Object.keys(files)))];
+              for (const files of trees)
+                readWorkspaceNotebookAdmission({
+                  store,
+                  coreDb: coreDb!,
+                  workspaceDb: owner.workspaceDb,
+                  notebook: owner.notebook,
+                  actor: owner.actor!,
+                  requestActor: publicOperationActor(context),
+                  runtimeConfigManager: dependencies.runtimeConfigManager!,
+                  workspaceMutationAdmission: dependencies.workspaceMutationAdmission!,
+                  request: {
+                    workspaceId: input.workspaceId,
+                    requestId: candidate.metadata.changeRequest.requestId,
+                    baseRevision: proposal.baseRevision,
+                    summary: proposal.rationale,
+                    changes: paths.map((path) => ({ path, content: files[path] ?? null })),
+                  },
+                });
+            },
             workspaceId: input.workspaceId,
             notebook: owner.notebook,
             scopeSchemaText: admission.scopeSchemaText,

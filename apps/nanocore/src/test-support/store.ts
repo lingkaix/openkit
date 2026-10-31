@@ -9,6 +9,7 @@ import {
   type CoreDb,
   openCoreDb,
   openUserDb,
+  openWorkspaceDb,
   type UserDb,
   type WorkspaceDb,
 } from '../storage/db.js';
@@ -71,6 +72,11 @@ export function initializeTestCore(dataRoot: string): void {
 export function createTestCoreDb(dataRoot: string): CoreDb {
   initializeTestCore(dataRoot);
   return openCoreDb(dataRoot);
+}
+
+/** Opens only an already initialized Workspace fixture; creates no records or authority. */
+export function createTestWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
+  return openWorkspaceDb(dataRoot, workspaceId);
 }
 
 /** Closes the exact caller-owned fixture handle after native work has drained. */

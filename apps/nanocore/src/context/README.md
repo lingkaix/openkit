@@ -98,3 +98,5 @@ The fixed LLM projection tuple uses the shared Protocol canonical digest, preser
 Knowledge package-budget exclusions retain the exact selected Notebook commit with the existing page identity and original digest. The retained reader preserves this revision when present and leaves older revision-absent exclusions unchanged; it never infers an old revision from current Notebook state.
 
 Material exclusions keep the first matching S39 predicate. A restricted Material uses `explicit_scope_excluded` when explicitly excluded and otherwise `sensitive_content`; neither exclusion carries its title, content, digest, package path or derived summary into the worker-visible package. The retained reader accepts only those two existing reasons for restricted exclusions.
+
+`worker-context-projection.ts.readVerifiedThreadWorkerContextTraces` supplies the complete strict/imported native trace inventory to admitted readers, including the existing missing-package check for accepted Turns. It supplies integrity, not caller disclosure authority; callers must admit the containing Thread before enumeration and filter their affected domain before target reads.

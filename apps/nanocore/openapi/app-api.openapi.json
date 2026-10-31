@@ -7262,7 +7262,7 @@
         "tags": [
           "knowledge"
         ],
-        "summary": "Check a draft schema against the complete current Notebook without activation or a complete migration claim.",
+        "summary": "Inspect a draft schema against admitted Workspace records and observed dependencies without activation.",
         "security": [
           {
             "bearerAuth": []
@@ -7283,7 +7283,7 @@
         },
         "responses": {
           "200": {
-            "description": "Check a draft schema against the complete current Notebook without activation or a complete migration claim.",
+            "description": "Inspect a draft schema against admitted Workspace records and observed dependencies without activation.",
             "content": {
               "application/json": {
                 "schema": {
@@ -71248,7 +71248,104 @@
           },
           "coverage": {
             "type": "string",
-            "const": "notebook"
+            "const": "workspace"
+          },
+          "inventoryComplete": {
+            "type": "boolean"
+          },
+          "dependencyInventory": {
+            "minItems": 4,
+            "maxItems": 4,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "family": {
+                  "type": "string",
+                  "enum": [
+                    "maintenance",
+                    "proposals",
+                    "indexes",
+                    "trace-references"
+                  ]
+                },
+                "complete": {
+                  "type": "boolean"
+                },
+                "records": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "valid",
+                          "needs-review"
+                        ]
+                      },
+                      "diagnostics": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "code": {
+                              "type": "string"
+                            },
+                            "field": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "code"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "status",
+                      "diagnostics"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "diagnostics": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "code": {
+                        "type": "string"
+                      },
+                      "field": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "inventoryDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "family",
+                "complete",
+                "records",
+                "diagnostics"
+              ],
+              "additionalProperties": false
+            }
           },
           "completeMigration": {
             "type": "boolean",
@@ -71322,6 +71419,8 @@
           "baseSchemaDigest",
           "candidateSchemaDigest",
           "coverage",
+          "inventoryComplete",
+          "dependencyInventory",
           "completeMigration",
           "schemaDiagnostics",
           "records"
@@ -155299,5 +155398,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:985a595b35d6cf912cb1a0e9a05da258a4e5b2fa3302f7aa9981aaad8fc1609a"
+  "x-openkit-source-digest": "sha256:da5ebf5c924636c3ee95e0cee5f54a0eb8d823f9a00f5a1e93df72963354b2ce"
 }
