@@ -14,8 +14,9 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import { corruptTestWorkspaceNotebookCommit } from '../test-support/workspace-notebook-corruption.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { KnowledgeNotebook } from './notebook.js';
 
 const ORIGINAL =
   'Harmless literal original used only to check error disclosure.\r\nUnicode Ω 雪.\n';
@@ -33,7 +34,6 @@ async function fixture() {
   applyScopedMigrations(workspaceDb);
   const app = createApp({ coreDb, dataRoot, store });
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
   const register = (title: string) =>
     app.request(
       ...operationRequest(
@@ -56,7 +56,17 @@ async function fixture() {
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { app, dataRoot, store, workspace, notebook, root, register };
+  return {
+    app,
+    dataRoot,
+    store,
+    workspace,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
+    root,
+    register,
+  };
 }
 
 /** Observes every managed original, including files orphaned by a refused capture. */
@@ -138,7 +148,7 @@ describe('public Source error contract', () => {
       changes: { [source.id]: corrupt },
       metadata: f.notebook.inspectRevision(baseRevision).metadata,
     });
-    f.notebook.publish({ baseRevision, candidateRevision });
+    corruptTestWorkspaceNotebookCommit(f.dataRoot, f.workspace.id, candidateRevision);
     const before = {
       revision: f.notebook.publishedRevision(),
       pointers: f.notebook.readSourcePointers(candidateRevision),

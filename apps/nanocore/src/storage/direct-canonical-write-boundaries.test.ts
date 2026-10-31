@@ -21,18 +21,19 @@ import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore, type KnowledgeSourceRecord } from '../lib/store.js';
 import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from '../runtime/feedback.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import {
   readEncryptedFileVaultText,
   writeEncryptedFileVaultJsonAtomically,
 } from '../vault/vault-encrypted-file-store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { readControlKnowledgeHead } from './control-store-knowledge-heads.js';
 import { writeStorageJsonAtomically } from './data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
@@ -329,10 +330,12 @@ describe('direct canonical write boundaries', () => {
     onTestFinished(() => coreDb.sqlite.close());
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: f.workspace.id, ownerUserId: userId });
     const sourceId = testEntityId('ks', `source-${boundary}-symlink`);
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(f.workspaceRoot, 'knowledge', 'notebook.git'),
-    });
-    const revision = notebook.publishedRevision();
+    const selection = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id);
+    const notebook = selection.notebook;
+    const revision = selection.head.notebookCommit;
+    // Keep an admitted observer across the deliberate path fault; no new scope is admitted afterward.
+    const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
+    onTestFinished(() => workspaceDb.sqlite.close());
     const parent =
       boundary === 'original'
         ? join(f.workspaceRoot, 'knowledge', 'raw', 'sources', sourceId)
@@ -353,7 +356,9 @@ describe('direct canonical write boundaries', () => {
     ).rejects.toThrow();
     expect(readdirSync(outsideRoot)).toEqual(['sentinel.txt']);
     expect(readFileSync(sentinel, 'utf8')).toBe('untouched');
-    expect(notebook.publishedRevision()).toBe(revision);
+    expect(
+      readControlKnowledgeHead(workspaceDb, selection.head.knowledgeBaseId)?.notebookCommit
+    ).toBe(revision);
     expect(notebook.readSourcePointers(revision)).not.toHaveProperty(sourceId);
   });
 
