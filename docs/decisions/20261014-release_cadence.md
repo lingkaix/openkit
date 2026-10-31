@@ -22,11 +22,11 @@ Faithful English translation: "For the eight items you asked me to decide, I say
 7. Defer #193 and #240 from cadence work. Require #225, stable promotion without rebuild, before the first stable release.
 8. Run the deterministic release-gate CI on every push to `main`.
 
-The same-day effect boundary names the dedicated x86_64 machine as development/test infrastructure and `a1` as staging, dogfooding, and persistent test deployment. Production `a2` is excluded from automation. Scripts require one explicit SSH alias or URL target with no default. The ruling does not authorize this builder to publish or exercise deployment effects.
+The same-day effect boundary names the dedicated x86_64 machine as development/test infrastructure and the staging host as staging, dogfooding, and persistent test deployment. Production is excluded from automation. Scripts require one explicit SSH alias or URL target with no default. The ruling does not authorize this builder to publish or exercise deployment effects. Identifying local path and private host aliases in this record were redacted under [Reserved Audit Question Rulings](20261031-reserved_audit_question_rulings.md).
 
 ## Reason
 
-The engineer expects two to three releases daily and wants less time and fewer engineer or external-Agent handoffs from acceptance through publication and update. The WP4 Consultant report at `~/AI/temp/rc6/wp4-release-cadence-report.md` supplies measurements and recommendations, not authority. Its numbered decision table contains seven rows; the coordinator's accepted eighth item is main-push CI. This record preserves that distinction.
+The engineer expects two to three releases daily and wants less time and fewer engineer or external-Agent handoffs from acceptance through publication and update. The WP4 Consultant report at `<working-space>/wp4-release-cadence-report.md` supplies measurements and recommendations, not authority. Its numbered decision table contains seven rows; the coordinator's accepted eighth item is main-push CI. This record preserves that distinction.
 
 The reported exact-P candidate runs took [64m53s for rc.4](https://github.com/lingkaix/openkit/actions/runs/38347889829) and [65m42s for rc.5](https://github.com/lingkaix/openkit/actions/runs/38388878850). Tag runs took [35m23s for rc.4](https://github.com/lingkaix/openkit/actions/runs/38353473628) and [44m56s for rc.5](https://github.com/lingkaix/openkit/actions/runs/38396894772). The [rc.5 L0-L2 job](https://github.com/lingkaix/openkit/actions/runs/38388878850/job/115267665569) reportedly spent 22m39s on unit tests and 35m08s on coverage over overlapping suites.
 

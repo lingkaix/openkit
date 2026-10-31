@@ -13,6 +13,10 @@ This document does not own the content rules inside the body of any single type:
 
 Engineers own current user intent. Documentation durably records interpreted intent and accepted decisions; it does not prove that the interpretation matches its source. Preserve consequential source statements and decision provenance, distinguish agent inference from engineer acceptance, and compare affected authority with those sources during work. Decision records under Decision Records below keep the reason, decider, and rejected alternatives of a durable decision outside the owner that states the rule. Code and running systems establish implementation facts, not permission to redefine intent. Rationale lives in `docs/engineering-doctrine.md`.
 
+## Admitted Rebuild Corpus
+
+The rebuild test uses accepted documents plus admitted contract artifacts. Explicitly owned declarative boundary schemas and standalone conformance fixtures are contract material. Existing generated boundary schemas are eligible under the same explicit ownership requirement. DDL and retained fixtures count only where needed to read supported saved data. Generators, whole packages, and implementation source are not admitted; this ruling introduces no retained-format generator. Accepted prose continues to own authority, lifecycle, failure, and recovery semantics; code drift cannot silently rewrite them. [Documents Pass When A System Can Be Rebuilt From Them](decisions/20260923-documentation_rebuild_test.md) states the test. [Reserved Audit Question Rulings](decisions/20261031-reserved_audit_question_rulings.md) amends the corpus.
+
 ## Document Types
 
 The following types are the complete set at any moment, and a file under `docs/` or the packaged operator-reference directory that does not fit one of them is a validation error. Complete is not the same as final: the set is closed against silent additions, not against growth. How it grows is defined under Type Induction.

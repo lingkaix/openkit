@@ -1,20 +1,19 @@
 # Specifications
 
-Read `README.md` first. This file contains only local agent execution rules for specifications.
+Read `README.md` first. This file contains only local agent execution rules for specifications. The [2026-10-31 rulings](../decisions/20261031-reserved_audit_question_rulings.md) record this editorial boundary.
 
 ## Local Agent Rules
 
 - Keep active specs at the root of `docs/specs/`; keep terminal specs only in the directory matching their canonical status.
 - Do not leave stale, obsolete, or known-wrong information in an active spec in a way that can mislead future implementation or review.
-- Update an obsolete active spec in place only while it remains active or Deprecated. Only the auditor may perform a final `Superseded`, `Retired`, or `Rejected` archive transition, with the lifecycle metadata, evidence, and substantive reasons required by `README.md`.
+- Update an obsolete active spec in place only while it remains active or Deprecated.
 - Do not use specs as task logs, release progress logs, or one-off implementation summaries.
 - If a related design document does not exist and a change has meaningful design trade-offs, create or update a spec before implementation proceeds.
 - Use `Status` for document authority and `Implementation` for implementation alignment. Do not use `Completed` as a spec status.
 
 ## Spec Boundary Rules
 
-Specs are the contract layer between stable core documents and implementation.
-When writing or updating a spec:
+`README.md` owns the contract-layer role of specifications. When writing or updating a spec:
 
 - Link to the relevant `docs/core/` documents instead of redefining their canonical concepts.
 - State what the spec owns and does not own near the top of the document.
@@ -25,8 +24,7 @@ When writing or updating a spec:
 
 ## Required Structure For New Or Material Specs
 
-New important specs and material updates should include these sections unless
-there is a clear reason to omit one:
+New important specs and material updates should include these sections unless there is a clear reason to omit one:
 
 - `Status`
 - `Implementation`
@@ -49,26 +47,17 @@ there is a clear reason to omit one:
 - `Deferred / Future Work`
 - `Links`
 
-Small specs may omit irrelevant sections, but they must still include `Status`,
-`Owns`, `Does Not Own`, `Core References`, `Summary`, and `Decision`.
+Small specs may omit irrelevant sections, but they must still include `Status`, `Owns`, `Does Not Own`, `Core References`, `Summary`, and `Decision`.
 
-Every spec must include `Implementation` using one exact value defined in
-`README.md`.
+Every spec must include `Implementation` using one exact value defined in `README.md`.
 
-Protocol, storage, data model, lifecycle, gateway, permission, identity,
-metering, audit, runtime, or worker-facing specs should include
-`Contract / Expected Behavior` and `Testing Strategy / Acceptance Criteria`.
+Protocol, storage, data model, lifecycle, gateway, permission, identity, metering, audit, runtime, or worker-facing specs should include `Contract / Expected Behavior` and `Testing Strategy / Acceptance Criteria`.
 
-Removal, migration, deprecation, or rollout specs should include
-`Rollout / Migration Plan`.
+Removal, migration, deprecation, or rollout specs should include `Rollout / Migration Plan`.
 
 ## Status And Implementation Rules
 
-`README.md` is the single source of truth for status values, implementation
-values, lifecycle transitions, archive directories, required metadata, and
-evidence. Do not restate or extend its enums in an individual spec.
-
-Rules:
+`README.md` owns status values, implementation values, lifecycle transitions, archive directories, required metadata, and evidence. Do not restate or extend its enums in an individual spec.
 
 - Do not mark a spec `Accepted` only because implementation is complete; mark it `Accepted` when the design contract is approved as current guidance.
 - Do not mark a spec `Superseded` only because implementation has drifted; use `Implementation: Diverged` when the design is still intended to be current.
@@ -95,9 +84,7 @@ Rules:
 
 ## Open Questions Rules
 
-`Open Questions` must be unresolved design decisions related to the current spec
-contract. They are not a place for broad brainstorming, product philosophy,
-general prompts, task lists, or release progress.
+`Open Questions` must be unresolved design decisions related to the current spec contract. They are not a place for broad brainstorming, product philosophy, general prompts, task lists, or release progress.
 
 Use explicit markers:
 
@@ -113,20 +100,8 @@ Rules:
 
 ## Archived Spec Handling
 
-Use `docs/specs/superseded/` only for specs whose contracts or substantive proposals continue under named replacement guidance.
+Terminal archive, directory placement, metadata, and freeze are owned by [Documentation Model](../documentation-model.md#terminal-archive-audit-and-archive-immutability) and [README](README.md#active-and-archived-specs).
 
-Use `docs/specs/retired/` only for specs whose contracts or product capabilities ended without successor contracts.
-
-Use `docs/specs/rejected/` only after a real rejected proposal needs historical retention.
-
-Archived specs are not active guidance. They MUST use the status matching their directory, set terminal implementation alignment to `N/A`, and include the lifecycle metadata, lifecycle reason, retention reason, current-guidance value, and decision evidence required by `README.md`.
-
-When several specs describe one strongly related contract, create one consolidated root-level spec and move absorbed older contracts under `superseded/`.
-
-When a product surface or module is deleted or deliberately reset without contract continuity, move the old specs under `retired/`. A later clean-slate design does not retroactively supersede the retired contract.
-
-Only an auditor may make the final terminal metadata update and archive move, and it must produce the non-authorizing terminal-archive audit record in the same change. After that change lands, never edit, rename, move, or delete the archived file; use a new audit record for later observations and current guidance or a new root-level spec for renewed work.
-
-Do not leave active docs pointing at archived specs as the current entry point. Active docs should link to current guidance first and only link to archived specs when historical detail is explicitly needed.
-
-When moving specs between active and archived locations, update inbound and outbound links and keep the live file layout consistent with `README.md`.
+- When several specs describe one strongly related contract, create one consolidated root-level spec and move absorbed older contracts under `superseded/`.
+- Do not leave active docs pointing at archived specs as the current entry point. Active docs should link to current guidance first and only link to archived specs when historical detail is explicitly needed.
+- When moving specs between active and archived locations, update inbound and outbound links and keep the live file layout consistent with `README.md`.

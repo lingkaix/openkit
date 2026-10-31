@@ -12,7 +12,7 @@ This non-authorizing repository audit records the terminal supersession of Goal 
 - Exact audit path: `docs/audits/20261003-goal_mode_coordination_terminal_archive.md`.
 - Surviving authority: [docs/specs/20261002-goal.md](../specs/20261002-goal.md), `status: Accepted`, `implementation: Partial` at observation. [Pending Requests](../specs/20260930-pending_requests.md) owns Plan approval and completion acceptance. The knowledge owners own the rulings' convention rule.
 - Final lifecycle: `status: Superseded`, `implementation: N/A`, `status-changed: "2026-10-03"`; `current-guidance` names the surviving Goal specification and `decision-evidence` names this audit.
-- Final archived-file SHA-256: `bd492e5a2d92b48f5a25d4fa189bd61c81aea19444ff9c8740a4f9ab517fb7b7`, observed with `shasum -a 256 docs/specs/superseded/20260704-goal_mode_coordination.md` after the move. `git mv` failed with `Unable to create '/Users/m5pro/Documents/AI/openkit/.git/worktrees/archive-goal-mode/index.lock': Operation not permitted`, so the move was a plain filesystem move. The bytes hashed are the archived file.
+- Final archived-file SHA-256: `bd492e5a2d92b48f5a25d4fa189bd61c81aea19444ff9c8740a4f9ab517fb7b7`, observed with `shasum -a 256 docs/specs/superseded/20260704-goal_mode_coordination.md` after the move. `git mv` failed with `Unable to create '<local-worktree>/.git/worktrees/archive-goal-mode/index.lock': Operation not permitted`, so the move was a plain filesystem move. The bytes hashed are the archived file. This path redaction is authorized by [Reserved Audit Question Rulings](../decisions/20261031-reserved_audit_question_rulings.md).
 
 ## Transition Decision And Exit Evidence
 

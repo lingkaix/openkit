@@ -1,6 +1,6 @@
 # Core Docs
 
-Read `README.md` first. This file contains only local agent execution rules for core docs.
+Read `README.md` first. This file contains only local agent execution rules for core docs. Core retirement and archive immutability are owned by [Documentation Model](../documentation-model.md#terminal-archive-audit-and-archive-immutability). The [2026-10-31 rulings](../decisions/20261031-reserved_audit_question_rulings.md) record this editorial boundary.
 
 ## Local Agent Rules
 
@@ -23,7 +23,5 @@ Read `README.md` first. This file contains only local agent execution rules for 
 - Keep adapter-native details out of core docs unless they are examples clearly marked as non-normative.
 - Use README-defined requirement keywords when a sentence expresses a stable requirement.
 - Do not add, remove, split, or merge core aspect documents without updating the README required aspect set, term index, and reading order.
-- Do not retire a Core document unless acting as the auditor on an engineer-approved terminal-archive package. Use `current-guidance: None`, link `decision-evidence` to the same-change audit, write substantive and distinct `Lifecycle Reason` and `Retention Reason` sections, then treat the archived file as immutable.
-- Never edit, rename, move, or delete a file under `docs/core/retired/`; put later observations in a new audit record and renewed authority in a new active Core document.
-- Split knowledge and AgentSession into separate docs. Knowledge and personal Memory are reusable scope-owned understanding and learning; AgentSession is runtime continuity.
-- Split policy and sandbox into separate docs. Policy is governance, authorization and decision semantics; sandbox is execution isolation and runtime environment design.
+- Keep knowledge and AgentSession in separate documents. Knowledge and personal Memory are reusable scope-owned understanding and learning; AgentSession is runtime continuity.
+- Keep policy and sandbox in separate documents. Policy is governance, authorization and decision semantics; sandbox is execution isolation and runtime environment design.

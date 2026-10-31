@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Documentation Writing
 
-This reference states how repository documents are written so that a reader, human or agent, finds the owner quickly, reads only what the task needs, and can rebuild the system from the documents alone. The decision and its reason are recorded in [a decision record](decisions/20260924-documentation_methods.md).
+This reference states how repository documents are written so that a reader, human or agent, finds the owner quickly, reads only what the task needs, and can rebuild the system from the documents and the admitted rebuild corpus. The decision and its reason are recorded in [a decision record](decisions/20260924-documentation_methods.md). The corpus boundary is owned by [Documentation Model](documentation-model.md#admitted-rebuild-corpus) and amended by [Reserved Audit Question Rulings](decisions/20261031-reserved_audit_question_rulings.md).
 
 ## Owns
 
@@ -83,7 +83,7 @@ Structural validators check types, fields, links, and generated projections. Spe
 
 ## Judgments
 
-- Documents are the project's primary source of truth, so their test is whether an agent could rebuild a conforming system from them after the implementation is deleted. Rests on: the engineer's definition of success, recorded in docs/decisions/20260923-documentation_rebuild_test.md. Overturned by: a rebuild probe that succeeds while these rules are ignored, or fails while they are followed.
+- Documents are the project's primary source of truth, so their test is whether an agent could rebuild a conforming system from them and the admitted rebuild corpus after the implementation is deleted. Rests on: the engineer's definition of success, recorded in docs/decisions/20260923-documentation_rebuild_test.md and amended by docs/decisions/20261031-reserved_audit_question_rulings.md. Overturned by: a rebuild probe that succeeds while these rules are ignored, or fails while they are followed.
 - A long document costs every reader its full length even when the task needs one part, and agents read whole files. Organizing by concept with links lets a reader stop early. Rests on: required governance reading of about 20,000 words in September 2026 and specifications of up to 51,229 words. Overturned by: evidence that readers of split documents miss criteria more often than readers of long ones.
 
 ## Related Documents
