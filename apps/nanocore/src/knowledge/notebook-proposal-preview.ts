@@ -10,6 +10,7 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type OperationImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import { NotebookError } from './notebook.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
@@ -55,11 +56,17 @@ export function createKnowledgeProposalPreviewOperationImplementations(
         );
       if (actor.kind !== 'user' || actor.id !== requestActor.userId)
         throw new OperationError('workspace_access_denied', 'Proposal preview access denied.', 403);
-      const proposal = store.getKnowledgeProposal(input.proposalId);
-      if (!proposal || proposal.workspaceId !== input.workspaceId)
-        throw new OperationError('workspace_access_denied', 'Proposal preview access denied.', 403);
-      const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+      let workspaceDb: WorkspaceDb | undefined;
       try {
+        // Keep native Proposal selection inside the same evidence-recovery boundary.
+        const proposal = store.getKnowledgeProposal(input.proposalId);
+        if (!proposal || proposal.workspaceId !== input.workspaceId)
+          throw new OperationError(
+            'workspace_access_denied',
+            'Proposal preview access denied.',
+            403
+          );
+        workspaceDb = repositoryWorkspaceDb(input.workspaceId);
         // This verifier owns the exact saved document, retained candidate ref and fixed-base change set.
         const saved = proposal;
         const proposalDigest = store.knowledgeProposalDigest(input.workspaceId, input.proposalId);
@@ -124,7 +131,7 @@ export function createKnowledgeProposalPreviewOperationImplementations(
           503
         );
       } finally {
-        workspaceDb.sqlite.close();
+        workspaceDb?.sqlite.close();
       }
     },
   };

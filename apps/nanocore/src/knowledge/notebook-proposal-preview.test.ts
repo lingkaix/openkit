@@ -13,8 +13,8 @@ import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { KnowledgeNotebook } from './notebook.js';
 
 it('previews every exact multi-page candidate byte with bounded paging and refuses changed authority or candidate tuples', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'proposal-preview-'));
@@ -66,10 +66,10 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
       { kind: 'workspace', workspaceId: workspace.id }
     );
   const repositoryPath = join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git');
-  const notebook = new KnowledgeNotebook({ repositoryPath });
+  const notebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
   const published = await call('knowledge.notebook.update', {
     requestId: randomUUID(),
-    baseRevision: notebook.publishedRevision(),
+    baseRevision: readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit,
     summary: 'Initial pages',
     changes: [
       { path: 'edit.md', content: page('edit', '😀Original body.'.repeat(220)) },
@@ -77,8 +77,9 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
     ],
   });
   expect(published.status, JSON.stringify(published.body)).toBe(200);
-  const baseRevision = notebook.publishedRevision();
-  const proposal = store.createKnowledgeProposal({
+  const baseRevision = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head
+    .notebookCommit;
+  const proposal = await store.createKnowledgeProposal({
     workspaceId: workspace.id,
     requestId: randomUUID(),
     baseRevision,
@@ -104,8 +105,8 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
     paths: ['add.md', 'edit.md', 'remove.md'],
   };
   expect(inventory.body).toEqual(tuple);
-  const before = notebook.readRevision(baseRevision).files;
-  const after = notebook.readRevision(proposal.candidateRevision).files;
+  const before = notebook().readRevision(baseRevision).files;
+  const after = notebook().readRevision(proposal.candidateRevision).files;
   for (const path of tuple.paths) {
     let offset = 0;
     let oldText: string | null = before[path] === undefined ? null : '';
@@ -179,6 +180,8 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
   const changed = await call('knowledge.proposal.read', request);
   expect(changed.status).toBe(503);
   expect(JSON.stringify(changed.body)).not.toContain(proposal.candidateRevision);
-  expect(notebook.publishedRevision()).toBe(later.body.notebookRevision);
+  expect(readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit).toBe(
+    later.body.notebookRevision
+  );
   expect(store.getKnowledgeProposalReviewDecision(proposal.id)).toBeNull();
 });
