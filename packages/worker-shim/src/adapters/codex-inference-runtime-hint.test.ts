@@ -103,6 +103,99 @@ describe('worker inference runtime hints', () => {
     expect(JSON.stringify(hint)).not.toContain('private-role-name');
   });
 
+  it('reads the 0.166 body-only tool inventory at the 16 KiB bound without retaining it', () => {
+    // responses_metadata.rs keeps the inventory in client_metadata and omits it from headers.
+    const fixture = createCodexRuntimeHintFixture();
+    const inventory = {
+      private_namespace: {
+        name: 'private-namespace',
+        functions: {
+          private_tool: {
+            name: 'private-tool',
+            direct: true,
+            code_mode_name: null,
+            deferred: false,
+            source: { kind: 'mcp', server_name: 'private-server' },
+          },
+        },
+      },
+    };
+    fixture.turnMetadata.tool_namespaces_info = inventory;
+    inventory.private_namespace.functions.private_tool.name += 'x'.repeat(
+      16 * 1024 - JSON.stringify(fixture.turnMetadata).length
+    );
+    fixture.clientMetadata['x-codex-turn-metadata'] = JSON.stringify(fixture.turnMetadata);
+    expect(fixture.clientMetadata['x-codex-turn-metadata']).toHaveLength(16 * 1024);
+
+    const hint = readCodexInferenceRuntimeHint(fixture.headers, {
+      client_metadata: fixture.clientMetadata,
+      prompt_cache_key: 'runtime-native-cache-lineage',
+    });
+
+    // Runtime Call Origin permits only the normalized lineage fields in the ephemeral hint.
+    expect(hint).toEqual({
+      nativeCacheLineageId: 'runtime-native-cache-lineage',
+      nativeSessionId: fixture.turnMetadata.session_id,
+      nativeThreadId: fixture.turnMetadata.thread_id,
+      nativeTurnId: fixture.turnMetadata.turn_id,
+      runtimeFamily: 'codex',
+      requestKind: 'turn',
+    });
+    expect(JSON.stringify(hint)).not.toContain('private-');
+    expect(JSON.stringify(hint)).not.toContain('tool_namespaces_info');
+  });
+
+  it.each([
+    ['session_id', 'different-session'],
+    ['thread_id', 'different-thread'],
+    ['turn_id', 'different-turn'],
+    ['request_kind', 'prewarm'],
+    ['parent_thread_id', 'different-parent'],
+    ['subagent_kind', 'review'],
+    ['sandbox_mode', 'read-only'],
+  ])('rejects a conflicting %s in the direct metadata projection', (field, value) => {
+    const fixture = createCodexRuntimeHintFixture(
+      {
+        parent_thread_id: 'native-parent',
+        subagent_kind: 'thread_spawn',
+        sandbox_mode: 'danger-full-access',
+      },
+      'collab_spawn'
+    );
+    fixture.headers.set(
+      'x-codex-turn-metadata',
+      JSON.stringify({ ...fixture.turnMetadata, [field]: value })
+    );
+    fixture.clientMetadata['x-codex-turn-metadata'] = JSON.stringify({
+      ...fixture.turnMetadata,
+      tool_namespaces_info: {},
+    });
+
+    expect(() =>
+      readCodexInferenceRuntimeHint(fixture.headers, { client_metadata: fixture.clientMetadata })
+    ).toThrow('Worker inference runtime hint is invalid.');
+  });
+
+  it.each([
+    'body',
+    'header',
+  ])('rejects %s metadata above the unchanged 16 KiB bound', (location) => {
+    const fixture = createCodexRuntimeHintFixture();
+    const encoded = JSON.stringify(fixture.turnMetadata);
+    // Legal JSON whitespace makes the input oversized without a parse error masking the bound.
+    const oversized = encoded + ' '.repeat(16 * 1024 + 1 - encoded.length);
+    if (location === 'body') {
+      fixture.clientMetadata['x-codex-turn-metadata'] = oversized;
+    } else {
+      // Headers trim surrounding whitespace, so place it inside the JSON object.
+      fixture.headers.set('x-codex-turn-metadata', `{${' '.repeat(16 * 1024)}${encoded.slice(1)}`);
+    }
+
+    expect(() =>
+      readCodexInferenceRuntimeHint(fixture.headers, { client_metadata: fixture.clientMetadata })
+    ).toThrow('Worker inference runtime hint is invalid.');
+  });
+
   it('rejects malformed or conflicting Codex compatibility projections', () => {
     const malformed = createCodexRuntimeHintFixture();
     malformed.clientMetadata['x-codex-turn-metadata'] = '{';

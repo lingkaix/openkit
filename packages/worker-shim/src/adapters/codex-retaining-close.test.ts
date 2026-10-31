@@ -17,7 +17,7 @@ const frames = [
   {
     ordinal: 0,
     type: 'session_meta',
-    payload: { id: THREAD, history_mode: 'paginated', cli_version: '0.160.0' },
+    payload: { id: THREAD, history_mode: 'paginated', cli_version: '0.166.0' },
   },
   { ordinal: 1, type: 'turn_context', payload: { turn_id: terminal.id } },
   {

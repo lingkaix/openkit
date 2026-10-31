@@ -64,7 +64,7 @@ async function controlDeadline<T>(
 }
 
 /** Deployment pin selected from the npm `latest` dist-tag and proved as App Server v2. */
-export const CODEX_ADAPTER_VERSION = '0.160.0';
+export const CODEX_ADAPTER_VERSION = '0.166.0';
 /** Fixed provider id. An AEP provider id is never copied into Codex. */
 export const CODEX_PROVIDER_ID = 'openkit-worker-inference';
 /** Native assistant text bound. Larger UTF-8 results fail the Turn. */
@@ -86,7 +86,11 @@ export function codexChildEnvironment(
   return { ...environment, CODEX_HOME: stateRoot };
 }
 
-/** Launch controls protect external routing and credential custody without limiting local tools. */
+/**
+ * Launch controls protect external routing and credential custody without limiting local tools.
+ * The pin checks its process provider against the thread provider at turn/start. Declare the
+ * same non-secret provider here; its endpoint and credential stay in thread-local memory.
+ */
 export function codexLaunchArguments(): readonly string[] {
   return [
     'app-server',
@@ -97,7 +101,9 @@ export function codexLaunchArguments(): readonly string[] {
     '-c',
     'cli_auth_credentials_store="ephemeral"',
     '-c',
-    'model_provider="openai"',
+    `model_provider="${CODEX_PROVIDER_ID}"`,
+    '-c',
+    `model_providers.${CODEX_PROVIDER_ID}={name="OpenKit worker inference",wire_api="responses",requires_openai_auth=false}`,
   ];
 }
 
@@ -268,7 +274,7 @@ function decodeThreadId(reference: Uint8Array): string {
   return text;
 }
 
-/** Reads assistant texts from a terminal turn or an `item/completed` agent message. */
+/** Reads final assistant text from terminal Turns or item completions, excluding partial phases. */
 function assistantTexts(value: unknown): string[] {
   if (!value || typeof value !== 'object' || Array.isArray(value))
     throw new Error('Codex assistant item is malformed.');
@@ -286,7 +292,7 @@ function assistantTexts(value: unknown): string[] {
       throw new Error('Codex assistant item type is unknown.');
     if (record.type !== 'agentMessage') continue;
     if (typeof record.text !== 'string') throw new Error('Codex assistant item is malformed.');
-    if (record.phase === 'commentary') continue;
+    if (record.phase === 'commentary' || record.phase === 'partial_answer') continue;
     if (record.text.trim()) texts.push(record.text);
   }
   return texts;

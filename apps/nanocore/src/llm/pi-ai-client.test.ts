@@ -1943,7 +1943,10 @@ describe('PiAiGatewayClient', () => {
     });
   });
 
-  it('preserves the Codex canonical prefix and namespaced custom-tool semantics', async () => {
+  it.each([
+    'at_01234567-89ab-5def-8abc-0123456789ab',
+    'at_01a19111-cab6-7a43-b046-6d06765a54c2',
+  ])('preserves the Codex canonical prefix and namespaced custom-tool semantics (%s)', async (id) => {
     let seenContext: TranscriptContext | undefined;
     let seenPayload: unknown;
     const faux = fauxProvider({
@@ -1954,7 +1957,7 @@ describe('PiAiGatewayClient', () => {
     const models = createModels();
     models.setProvider(faux.provider);
     const additionalTools = {
-      id: 'at_01234567-89ab-5def-8abc-0123456789ab',
+      id,
       role: 'developer',
       tools: [
         {
@@ -3926,6 +3929,45 @@ describe('PiAiGatewayClient', () => {
         input: [
           {
             id: 'at_01234567-89ab-4def-8abc-0123456789ab',
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'an uppercase additional-tools UUIDv7',
+      {
+        input: [
+          {
+            id: 'at_01A19111-cab6-7a43-b046-6d06765a54c2',
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'an additional-tools UUIDv7 with an invalid variant',
+      {
+        input: [
+          {
+            id: 'at_01a19111-cab6-7a43-7046-6d06765a54c2',
+            role: 'developer',
+            tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
+            type: 'additional_tools',
+          },
+        ],
+      },
+    ],
+    [
+      'a truncated additional-tools UUIDv7',
+      {
+        input: [
+          {
+            id: 'at_01a19111-cab6-7a43-b046-6d06765a54c',
             role: 'developer',
             tools: [{ name: 'wait', parameters: { type: 'object' }, type: 'function' }],
             type: 'additional_tools',

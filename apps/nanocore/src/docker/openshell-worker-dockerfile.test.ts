@@ -32,7 +32,7 @@ const workerImageContracts = [
     id: 'worker-runtimes',
     manifest: 'codex.agent.jsonc',
     nativeBinary: '/usr/local/bin/codex',
-    nativeVersion: '0.160.0',
+    nativeVersion: '0.166.0',
     runtime: 'codex',
   },
   {

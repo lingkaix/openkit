@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "codex": {
     "package": "@openai/codex",
-    "version": "0.160.0"
+    "version": "0.166.0"
   },
   "pi": {
     "package": "@earendil-works/pi-coding-agent",

@@ -453,7 +453,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
       const now = new Date().toISOString();
       createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
-        adapterVersion: '0.160.0',
+        adapterVersion: '0.166.0',
         harnessBindingRef: 'diag-harness-binding',
         harnessCompatibilityKey: 'b'.repeat(64),
         harnessInstanceId: 'diag-harness',
