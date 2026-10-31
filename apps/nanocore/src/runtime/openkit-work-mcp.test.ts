@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,7 +16,6 @@ import { prepareMaterialSourceInput } from '../context/material-source-files.js'
 import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import * as visionProcessor from '../context/vision-view.js';
 import * as packageOwner from '../context/worker-context-package.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -38,6 +37,7 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
+import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
 import {
   createWorkspaceMaterial,
   getWorkspaceMaterialRevision,
@@ -1063,40 +1063,30 @@ async function sourceToolFixture(
       );
     },
   });
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-  });
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const userId = 'usr_00000000-0000-7000-8000-000000000001';
   const knowledgeContent = serializeKnowledgePageFixture(
     {
       title: 'Pinned source',
-      content: 'Exact selected Notebook body.\n'.repeat(5000),
+      content: 'Exact selected Notebook body.\n'.repeat(80),
       sourceReferences: [],
       createdAt: '2026-10-17T00:00:00.000Z',
       updatedAt: '2026-10-17T00:00:00.000Z',
     },
     { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) }
   );
-  /** Publishes test-owned bytes through the real commit owner; this fixture does not claim native command admission. */
-  const publishKnowledge = (content: string) => {
-    const baseRevision = notebook.publishedRevision();
-    const candidateRevision = notebook.prepare({
-      baseRevision,
-      changes: { 'selected.md': content },
-      metadata: {
-        summary: 'Pinned read fixture',
-        producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        authority: { kind: 'direct', instructionReference: 'test:worker-selected-notebook' },
-        changeRequest: {
-          requestId: randomUUID(),
-          inputDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-        },
-        sourceReferences: [],
-      },
-    });
-    notebook.publish({ baseRevision, candidateRevision });
-    return candidateRevision;
-  };
-  const notebookRevision = withKnowledge ? publishKnowledge(knowledgeContent) : undefined;
+  const publishKnowledge = async (content: string) =>
+    (
+      await publishTestWorkspaceNotebook({
+        dataRoot: fixture.dataRoot,
+        workspaceId,
+        coreDb: fixture.coreDb,
+        store: fixture.store,
+        userId,
+        changes: { 'selected.md': content },
+      })
+    ).notebookRevision;
+  const notebookRevision = withKnowledge ? await publishKnowledge(knowledgeContent) : undefined;
   const knowledgeDigest = `sha256:${createHash('sha256').update(knowledgeContent).digest('hex')}`;
   const deliveredContent = knowledgeContent.slice(0, 2048);
   const requestItemId = allocateEntityId('it');
@@ -1344,7 +1334,7 @@ it('continues selected Knowledge at its actual commit after later publication an
   expect(page.identity.revision).toBe(f.notebookRevision);
   expect(f.knowledgeContent.startsWith(page.text)).toBe(true);
   expect(page.cursor).toBeTruthy();
-  f.publishKnowledge(
+  await f.publishKnowledge(
     f.knowledgeContent.replace('Exact selected Notebook body.', 'Later current Notebook body.')
   );
   const continued = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {

@@ -32,9 +32,9 @@ import {
   type KnowledgeMaintenanceDependencies,
   prepareKnowledgeMaintenance,
 } from './knowledge-agent-maintenance.js';
-import { KnowledgeNotebook } from './notebook.js';
 import type { NotebookUpdate } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
 
 it('captures native Workspace tell during execution and publishes from the exact Source-containing editor base', async () => {
@@ -58,8 +58,11 @@ it('captures native Workspace tell during execution and publishes from the exact
   const actor = { kind: 'agent' as const, id: 'knowledge-manager', responsibleUserId: userId };
   const scope = { kind: 'workspace' as const, workspaceId: workspace.id };
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
-  const initialRevision = notebook.publishedRevision();
+  const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot, scope });
+  const selection = () =>
+    readWorkspaceNotebookSelection({ workspaceDb, workspaceRoot, knowledgeBaseId });
+  const initialRevision = selection().head.notebookCommit;
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const providerRegistry = new ProviderRegistry([
     {
@@ -118,7 +121,8 @@ it('captures native Workspace tell during execution and publishes from the exact
       store,
       coreDb,
       workspaceDb,
-      notebook,
+      notebook: selection().notebook,
+      scopeSchemaText: selection().scopeSchemaText,
       workspaceMutationAdmission,
       runtimeConfigManager,
       currentAuthority,
@@ -153,9 +157,9 @@ it('captures native Workspace tell during execution and publishes from the exact
     expect(match![2]).toBe(digest);
     const baseRevision = input.inputs!.baseRevision;
     expect(baseRevision).not.toBe(initialRevision);
-    expect(baseRevision).toBe(notebook.publishedRevision());
+    expect(baseRevision).toBe(selection().head.notebookCommit);
     expect(payload.notebookRevision).toBe(baseRevision);
-    expect(notebook.readSourcePointers(baseRevision)).toHaveProperty(sourceId);
+    expect(selection().notebook.readSourcePointers(baseRevision)).toHaveProperty(sourceId);
     expect(store.getTurnById(input.turn.id).internalExecution?.knowledge?.baseRevision).toBe(
       baseRevision
     );
@@ -252,11 +256,15 @@ it('captures native Workspace tell during execution and publishes from the exact
   const retained = store.getTurnById(prepared.turnId);
   expect(retained.internalExecution?.knowledge?.baseRevision).toBe(delivered.baseRevision);
   expect(retained.status).toBe('completed');
-  expect(notebook.inspectRevision(result.notebookRevision).parentRevision).toBe(
+  expect(selection().notebook.inspectRevision(result.notebookRevision).parentRevision).toBe(
     delivered.baseRevision
   );
-  const pointer = notebook.readSourcePointers(delivered.baseRevision)[delivered.sourceId]!;
-  expect(notebook.readSourcePointers(result.notebookRevision)[delivered.sourceId]).toBe(pointer);
+  const pointer = selection().notebook.readSourcePointers(delivered.baseRevision)[
+    delivered.sourceId
+  ]!;
+  expect(selection().notebook.readSourcePointers(result.notebookRevision)[delivered.sourceId]).toBe(
+    pointer
+  );
   const parsed = parseOkfDocument({ path: `sources/${delivered.sourceId}.md`, content: pointer });
   if (!parsed.ok) throw new Error('Expected the published canonical SourceSummary.');
   expect(parsed.document.frontmatter).toMatchObject({
@@ -277,7 +285,9 @@ it('captures native Workspace tell during execution and publishes from the exact
   const confined = relative(rawRoot, rawPath);
   expect(isAbsolute(confined) || confined === '..' || confined.startsWith('../')).toBe(false);
   expect(readFileSync(rawPath)).toEqual(Buffer.from(original));
-  const page = notebook.readRevision(result.notebookRevision).files['release-label.md']!;
+  const page = selection().notebook.readRevision(result.notebookRevision).files[
+    'release-label.md'
+  ]!;
   expect(page).toContain(original);
   const parsedPage = parseOkfDocument({ path: 'release-label.md', content: page });
   expect(stringListFrontmatterField(parsedPage.document!, 'source_refs')).toEqual([
