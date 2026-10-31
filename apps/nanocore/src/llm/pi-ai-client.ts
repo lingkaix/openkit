@@ -2189,7 +2189,6 @@ function applyProviderTransport(
   }
 }
 
-/** Exact stock API families that can carry admitted Responses native semantics. */
 /** Whether stock pi-ai exposes a Responses reasoning summary option for this API family. */
 function responsesReasoningSummaryApi(api: string): boolean {
   return (
@@ -2199,6 +2198,7 @@ function responsesReasoningSummaryApi(api: string): boolean {
   );
 }
 
+/** Exact stock API families that can carry admitted Responses native semantics. */
 function isResponsesApi(api: string): boolean {
   return (
     api === 'openai-responses' ||

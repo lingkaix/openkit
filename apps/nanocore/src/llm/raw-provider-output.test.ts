@@ -238,16 +238,29 @@ describe('source-native Worker output observation', () => {
     observe({ type: 'thinking_delta', contentIndex: 1, delta: 'must-not-count' });
     observe({ type: 'text_end', contentIndex: 0, content: 'text' });
     observe({ type: 'thinking_end', contentIndex: 1, content: 'proved', redacted: false });
-    expect(bytes()).toBe(9);
+    observe({ type: 'toolcall_delta', contentIndex: 2, delta: '{}' });
+    observe({ type: 'toolcall_end', contentIndex: 2 });
+    expect(bytes()).toBe(16);
     expect(positions.filter((p) => p.field === 'reasoning')).toHaveLength(1);
     const { observe: redacted, bytes: redactedBytes } = meter('pi-messages');
     redacted({ type: 'text_delta', contentIndex: 0, delta: 'text' });
     redacted({ type: 'thinking_delta', contentIndex: 1, delta: 'hidden' });
-    redacted({ type: 'text_end', contentIndex: 0, content: 'text' });
     redacted({ type: 'thinking_end', contentIndex: 1, content: 'opaque', redacted: true });
-    expect(redactedBytes()).toBe(4);
+    redacted({ type: 'text_end', contentIndex: 0, content: 'text' });
+    expect(redactedBytes()).toBe(8);
     expect(() =>
       observe({ type: 'toolcall_end', contentIndex: 3, toolCall: { arguments: {} } })
+    ).toThrow('unavailable');
+    const { observe: aborted } = meter('pi-messages');
+    aborted({ type: 'text_delta', contentIndex: 0, delta: 'text' });
+    aborted({ type: 'thinking_delta', contentIndex: 1, delta: 'cut' });
+    aborted({ type: 'text_end', contentIndex: 0, content: 'text' });
+    expect(() =>
+      aborted({
+        type: 'error',
+        reason: 'aborted',
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+      })
     ).toThrow('unavailable');
   });
   it('fails closed for malformed identity, invalid Unicode and unsupported native APIs', () => {
