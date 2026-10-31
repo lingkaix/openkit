@@ -69,6 +69,7 @@ import {
   createNotebookAgentEditing,
   NOTEBOOK_EDITING_LIMITS,
   notebookEditingDeadline,
+  notebookTextExcerpt,
 } from './notebook-agent-editing.js';
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
@@ -414,19 +415,6 @@ export interface KnowledgeMaintenanceDependencies {
   readonly run: (
     input: KnowledgeManagerAgentRun
   ) => Promise<{ readonly turnId: string; readonly text: string }>;
-}
-
-/** Projects a complete UTF-8 prefix with its own delivered digest, distinct from canonical Source identity. */
-function excerpt(text: string, maxBytes: number) {
-  const bytes = Buffer.from(text);
-  let end = Math.min(bytes.length, maxBytes);
-  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
-  const content = bytes.subarray(0, end).toString('utf8');
-  return {
-    content,
-    truncated: end < bytes.length,
-    deliveredDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
-  };
 }
 
 /** Awaits one complete native Workspace admission; only actual Tool outcomes can report publication. */
@@ -1278,7 +1266,7 @@ export async function prepareKnowledgeMaintenance(
         const humanEdits = boundedNotebookDiff(humanChanges, false);
         let remaining = 64 * 1024;
         const selectedSources = [...sources.values()].map((source) => {
-          const delivered = excerpt(sourceFiles[source.id]!, remaining);
+          const delivered = notebookTextExcerpt(sourceFiles[source.id]!, remaining);
           remaining -= Buffer.byteLength(delivered.content);
           return {
             reference: `source:${source.id}@${source.contentDigest}`,
@@ -1315,7 +1303,7 @@ export async function prepareKnowledgeMaintenance(
                     files: Object.keys(files),
                     selectedPageIds: input.pageIds ?? [],
                     humanEdits,
-                    overview: excerpt(files['index.md'] ?? '', 16 * 1024),
+                    overview: notebookTextExcerpt(files['index.md'] ?? '', 16 * 1024),
                     sources: selectedSources,
                     sourceHistory:
                       'Supplied Source content is the authorized retained human input. Source material digests and Turn IDs are not history Item range coordinates. thread.history.read accepts only exact current-run compaction ranges.',

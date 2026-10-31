@@ -1,9 +1,23 @@
+import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import type { Turn } from '@openkit/protocol';
 import { Bash, InMemoryFs, parse } from 'just-bash';
 import type { KnowledgeNotebook } from './notebook.js';
 import { NotebookError, validateNotebookFiles } from './notebook.js';
 import type { NotebookEdit } from './notebook-publication.js';
+
+/** Projects bounded model input; its delivered digest does not replace retained page or Source identity. */
+export function notebookTextExcerpt(text: string, maxBytes: number) {
+  const bytes = Buffer.from(text);
+  let end = Math.min(bytes.length, maxBytes);
+  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
+  const content = bytes.subarray(0, end).toString('utf8');
+  return {
+    content,
+    truncated: end < bytes.length,
+    deliveredDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+  };
+}
 
 /** Fixed owner bounds, shared with native Tool descriptions rather than authored configuration. */
 export const NOTEBOOK_EDITING_LIMITS = {

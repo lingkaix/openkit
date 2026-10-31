@@ -32,6 +32,7 @@ import {
   createNotebookAgentEditing,
   NOTEBOOK_EDITING_LIMITS,
   notebookEditingDeadline,
+  notebookTextExcerpt,
 } from './notebook-agent-editing.js';
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
@@ -192,19 +193,6 @@ export function readUserMemoryNotebookAdmission(
     registeredSources,
     resolvedReferences,
     suppressedPageIds,
-  };
-}
-
-/** Projects a complete UTF-8 prefix while retaining an independent delivered digest. */
-function excerpt(text: string, maximum: number) {
-  const bytes = Buffer.from(text);
-  let end = Math.min(bytes.length, maximum);
-  while (end > 0 && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end--;
-  const content = bytes.subarray(0, end).toString('utf8');
-  return {
-    content,
-    truncated: end < bytes.length,
-    deliveredDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
   };
 }
 
@@ -889,11 +877,11 @@ export async function prepareUserMemoryMaintenance(
                       overview:
                         files['index.md'] === undefined
                           ? { unavailable: true }
-                          : excerpt(files['index.md'], 16 * 1024),
+                          : notebookTextExcerpt(files['index.md'], 16 * 1024),
                       sources: (() => {
                         let remaining = 64 * 1024;
                         return [...sources].map(([id, source]) => {
-                          const delivered = excerpt(source.content, remaining);
+                          const delivered = notebookTextExcerpt(source.content, remaining);
                           remaining -= Buffer.byteLength(delivered.content);
                           return {
                             reference: `source:${id}@${source.contentDigest}`,
