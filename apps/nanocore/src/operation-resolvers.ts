@@ -21,6 +21,10 @@ import {
 import { readAutomationOperationLineage } from './automation-operations.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import { normalizeCapabilityRequestId } from './capability/usage-ledger.js';
+import {
+  coordinatorOperationBindings,
+  resolveCoordinatorWorkspaceCandidates,
+} from './goal-operation-implementations.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import type {
@@ -35,7 +39,6 @@ import { readPendingOperationLineage } from './pending-request-operations.js';
 import { evaluateProductAccess } from './policy/workspace-access.js';
 import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
 import { evaluateThreadAuthorization } from './policy/workspace-resource-access.js';
-import { requireCoordinatorGoal } from './runtime/goal-owner.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
@@ -110,24 +113,18 @@ function bindOperationInput(
       );
   }
   if (context.kind === 'public' || context.kind === 'bootstrap') return input;
-  const bindings =
+  const { identity, bindings } =
     context.kind === 'coordinator'
-      ? {
-          workspaceId: context.workspaceId,
-          threadId: context.threadId,
-          goalId: context.goalId,
-          ...(definition.mutating ? { requestId: context.requestId } : {}),
-        }
-      : context.bindings;
-  const identity =
-    context.kind === 'worker'
-      ? {
-          workspaceId: context.lineage.workspaceId,
-          threadId: context.lineage.threadId,
-          turnId: context.lineage.turnId,
-          requestId: context.requestId,
-        }
-      : { ...bindings, requestId: context.requestId };
+      ? coordinatorOperationBindings(context, definition)
+      : {
+          identity: {
+            workspaceId: context.lineage.workspaceId,
+            threadId: context.lineage.threadId,
+            turnId: context.lineage.turnId,
+            requestId: context.requestId,
+          },
+          bindings: context.bindings,
+        };
   for (const [field, bound] of Object.entries(identity)) {
     if (Object.hasOwn(input, field) && input[field] !== bound)
       throw new OperationError(
@@ -138,15 +135,7 @@ function bindOperationInput(
   }
   const args = { ...input };
   if (context.kind === 'worker' && !Object.hasOwn(bindings, 'requestId')) delete args.requestId;
-  const logicalBindings =
-    context.kind === 'coordinator'
-      ? Object.fromEntries(
-          Object.entries(bindings).filter(([field]) =>
-            Object.hasOwn(definition.inputSchema.shape, field)
-          )
-        )
-      : bindings;
-  return { ...args, ...logicalBindings };
+  return { ...args, ...bindings };
 }
 
 /** Validates complete logical input before request-store selection or native admission; only declared field names may be published. */
@@ -287,29 +276,12 @@ export async function admitOperation(
     case 'authorized-workspace-set':
       if (!coreDb || !admission) throw denied();
       if (entry.kind === 'coordinator') {
-        if (
-          !store ||
-          !dependencies.repositoryWorkspaceDb ||
-          admission.isClosed(entry.workspaceId) ||
-          !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition)
-        )
-          throw denied();
-        const db = dependencies.repositoryWorkspaceDb(entry.workspaceId);
-        try {
-          requireCoordinatorGoal(store, db, entry);
-          requireThreadAudience(
-            store,
-            coreDb,
-            entry,
-            entry.workspaceId,
-            entry.threadId,
-            definition.policyOperation
-          );
-        } finally {
-          db.sqlite.close();
-        }
-        // Restrict candidates before the Agent owner reads content, even for an administrator.
-        scope = { kind: 'authorized-workspace-set', workspaceIds: [entry.workspaceId] };
+        const workspaceIds = resolveCoordinatorWorkspaceCandidates(dependencies, entry, definition);
+        if (!workspaceIds) throw denied();
+        scope = {
+          kind: 'authorized-workspace-set',
+          workspaceIds,
+        };
       } else {
         if (entry.kind !== 'public') throw denied();
         scope = {

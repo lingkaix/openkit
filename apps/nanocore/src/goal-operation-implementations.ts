@@ -1,4 +1,13 @@
-import type { GOAL_OPERATION_DEFINITIONS, OperationInput } from '@openkit/app-api-schemas';
+import type {
+  GOAL_OPERATION_DEFINITIONS,
+  OperationDefinition,
+  OperationInput,
+} from '@openkit/app-api-schemas';
+import {
+  authorizeWorkspace,
+  isCurrentDeploymentAdministrator,
+} from './auth/operation-authorizer.js';
+import { isThreadIdVisible } from './auth/thread-visibility.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import {
   type FamilyImplementations,
@@ -10,8 +19,79 @@ import {
   executeGoalOperation,
   GoalCommandError,
   type GoalOperationId,
+  requireCoordinatorGoal,
 } from './runtime/goal-owner.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+
+/** Supplies exact Goal identity facts and only the bindings declared by the selected operation. */
+export function coordinatorOperationBindings(
+  context: Extract<OperationInvocationContext, { kind: 'coordinator' }>,
+  definition: OperationDefinition
+): {
+  readonly identity: Readonly<Record<string, unknown>>;
+  readonly bindings: Readonly<Record<string, unknown>>;
+} {
+  const bindings = {
+    workspaceId: context.workspaceId,
+    threadId: context.threadId,
+    goalId: context.goalId,
+    ...(definition.mutating ? { requestId: context.requestId } : {}),
+  };
+  return {
+    identity: { ...bindings, requestId: context.requestId },
+    bindings: Object.fromEntries(
+      Object.entries(bindings).filter(([field]) =>
+        Object.hasOwn(definition.inputSchema.shape, field)
+      )
+    ),
+  };
+}
+
+/** Revalidates the live Goal, Thread, credential and mutation fence before collection discovery. */
+export function resolveCoordinatorWorkspaceCandidates(
+  dependencies: Pick<
+    OperationInvocationDependencies,
+    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'workspaceMutationAdmission'
+  >,
+  entry: Extract<OperationInvocationContext, { kind: 'coordinator' }>,
+  definition: OperationDefinition
+): readonly string[] | null {
+  const { coreDb, store, repositoryWorkspaceDb, workspaceMutationAdmission } = dependencies;
+  if (
+    !coreDb ||
+    !store ||
+    !repositoryWorkspaceDb ||
+    !workspaceMutationAdmission ||
+    workspaceMutationAdmission.isClosed(entry.workspaceId) ||
+    !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition)
+  )
+    return null;
+  const db = repositoryWorkspaceDb(entry.workspaceId);
+  try {
+    requireCoordinatorGoal(store, db, entry);
+    try {
+      if (
+        !isThreadIdVisible(
+          store,
+          entry.workspaceId,
+          entry.threadId,
+          entry.actor.userId,
+          isCurrentDeploymentAdministrator(coreDb, entry.actor),
+          definition.policyOperation,
+          { kind: 'user', userId: entry.actor.userId }
+        )
+      )
+        throw new OperationError('not_found', 'Thread not found.', 404);
+    } catch {
+      throw new OperationError('not_found', 'Thread not found.', 404);
+    }
+  } finally {
+    db.sqlite.close();
+  }
+  // Candidate restriction precedes the Agent owner's content reads, including administrator discovery.
+  return [entry.workspaceId];
+}
+
 /** Exact ten-key join to the sole Goal domain owner. */
 export function createGoalOperationImplementations(
   dependencies: Pick<
