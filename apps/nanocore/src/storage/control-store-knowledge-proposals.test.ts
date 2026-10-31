@@ -49,7 +49,11 @@ function storageValue<T>(result: StorageResult<T>): T {
   return result.value;
 }
 
-it('commits original ordered Reviews with the exact head, receipt and Audit or rolls back the whole tuple', async () => {
+// Real Git/SQLite preparation and the full rollback matrix measured 37s with V8 coverage.
+// The 60s per-case harness budget is not a product latency requirement.
+it('commits original ordered Reviews with the exact head, receipt and Audit or rolls back the whole tuple', {
+  timeout: 60_000,
+}, async () => {
   const cleanups: Array<() => void | Promise<void>> = [];
   const root = mkdtempSync(join(tmpdir(), 'control-knowledge-proposals-'));
   const client = getControlStoreWorkerClient();
