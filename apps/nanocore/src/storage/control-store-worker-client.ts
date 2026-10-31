@@ -1543,11 +1543,22 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'reclaim' }>).complete;
   }
 
-  /** Closes a scope only after its previously accepted writes have finished. */
+  /** Joins accepted same-scope preparation before a lifecycle owner closes the native writer. */
+  private async drainScopePublications(opening: Opening | undefined): Promise<void> {
+    // The lifecycle caller excludes new producers; accepted ones may still be waiting to post.
+    const path = opening && realpathSync(opening.path);
+    const accepted = [...this.turnTails].filter(([key]) => JSON.parse(key)[0] === path);
+    const settled = await Promise.allSettled(accepted.map(([, entry]) => entry.tail));
+    const failed = settled.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+  }
+
+  /** Closes a scope only after its previously accepted preparation and writes have finished. */
   async close(database: string, recovery?: ControlRecoveryNativeCall): Promise<void> {
     this.assertFrozenCall({ operation: 'close', database }, recovery);
     const opening = this.openings.get(database);
     try {
+      await this.drainScopePublications(opening);
       // Idle readers must not prevent the writer's final close from checkpointing at rest.
       if (opening) closeWorkspaceProductReadHandles(opening.path);
       await this.request({ operation: 'close', database }, undefined, undefined, false, recovery);
@@ -1565,13 +1576,7 @@ class ControlStoreWorkerClient {
     this.assertFrozenCall({ operation: 'recovery-seal', database }, recovery);
     const opening = this.openings.get(database);
     try {
-      // The caller excludes new publishers. Accepted same-Turn producers can still be waiting
-      // to post, so join their existing tails before the native close/drain boundary.
-      const path = opening && realpathSync(opening.path);
-      const accepted = [...this.turnTails].filter(([key]) => JSON.parse(key)[0] === path);
-      const settled = await Promise.allSettled(accepted.map(([, entry]) => entry.tail));
-      const failed = settled.find((result) => result.status === 'rejected');
-      if (failed?.status === 'rejected') throw failed.reason;
+      await this.drainScopePublications(opening);
       if (opening) closeWorkspaceProductReadHandles(opening.path);
       const reply = await this.request(
         { operation: 'recovery-seal', database },

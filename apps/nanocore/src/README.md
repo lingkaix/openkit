@@ -190,3 +190,5 @@ MCP list-tools verifies retained schema attribution before replay admission and 
 Before a prerelease upgrade from actor-scoped Kernel receipts, finish and record outstanding requests. Earlier receipts remain stored but cannot replay under the corrected actor-free key. Inspect the current app and records before issuing a fresh request identity. Carry this incompatibility into the release record and operator upgrade procedure under the [pre-stable decision](../../../docs/decisions/20261014-pre_stable_data_continuity.md). This change performs no receipt migration or data reset.
 
 `artifact-review-follow-up.ts` owns the single closed Artifact Review follow-up codec, including exact content and Material-range proof. Review commands, retained portability and S39 consume that codec without importing Review mutation orchestration.
+
+Native scope close and recovery sealing join the same accepted publication prefix before closing the writer. The lifecycle caller excludes new producers; accepted preparation retains its original outcome, and explicit reopening starts a later writer lifetime.

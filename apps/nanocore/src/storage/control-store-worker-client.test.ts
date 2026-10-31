@@ -16,7 +16,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
 import type { JsonOperationId } from '@openkit/app-api-schemas';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -432,6 +432,86 @@ describe('control writer parent admission', () => {
     });
     const later = await publish('A new explicit opening can publish after the seal.');
     expect(store.listThreadItems(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual([...items, later]);
+  });
+
+  it('closes only after accepted same-Turn Item publications are durable', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'control-close-publication-'));
+    roots.push(root);
+    interception.gate = new SharedArrayBuffer(8);
+    interception.point = 'after';
+    const gate = new Int32Array(interception.gate);
+    Atomics.store(gate, 0, 1);
+    client = getControlStoreWorkerClient();
+    const store = await createDemoStore({ dataRoot: root });
+    const turn = await store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Private close', {
+      kind: 'user',
+      id: FIXTURE_LOCAL_USER_ID,
+    });
+    const scope = nativeProductScope(root, turn.owner);
+    const database = `workspace:${scope.path}`;
+    const publish = (text: string) =>
+      store.createItem({
+        id: allocateEntityId('it'),
+        owner: turn.owner,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text,
+        createdAt: turn.startedAt!,
+        completedAt: turn.startedAt!,
+      });
+    Atomics.store(gate, 0, 0);
+    const first = publish('Complete immutable close content.\n'.repeat(2048));
+    await waitForHold(gate);
+    const second = publish('Accepted after the first publication, before its acknowledgement.');
+    await nextTurn();
+    let closed = false;
+    const closing = client.close(database).then(() => {
+      closed = true;
+    });
+    let closedWhileHeld: boolean;
+    try {
+      await nextTurn();
+      closedWhileHeld = closed;
+    } finally {
+      release(gate);
+    }
+    const outcomes = await Promise.allSettled([first, second, closing]);
+    expect(closedWhileHeld).toBe(false);
+    expect(outcomes.map((outcome) => outcome.status)).toEqual([
+      'fulfilled',
+      'fulfilled',
+      'fulfilled',
+    ]);
+    const items = await Promise.all([first, second]);
+    await closing;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: root,
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+      create: false,
+      initialize: 'workspace',
+    });
+    expect(store.listThreadItems(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual(items);
+    const reader = new Database(scope.path, { readonly: true, fileMustExist: true });
+    try {
+      reader.pragma('query_only = ON');
+      const retained = reader
+        .prepare(
+          "SELECT content_json FROM control_product_entries WHERE kind='item' AND turn_id=? ORDER BY sequence"
+        )
+        .pluck()
+        .all(turn.id) as string[];
+      expect(retained).toHaveLength(items.length);
+      expect(
+        retained.map((json) => readRetainedBodyBytes(scope.contentMount.root, JSON.parse(json)))
+      ).toEqual(items.map((item) => Buffer.from(JSON.stringify(writeRetainedV1(item)), 'utf8')));
+    } finally {
+      reader.close();
+    }
   });
 
   it('reports a post-close recovery seal refusal and permits an explicit fresh opening', async () => {
