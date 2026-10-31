@@ -15,7 +15,7 @@ import {
   readAuthorizedServerNotebookPages,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
-import { openWorkspaceDb } from '../storage/db.js';
+import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import { KnowledgeNotebook, validateNotebookFiles } from './notebook.js';
 import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import {
@@ -73,7 +73,7 @@ export async function resolveKnowledgeMeaningReference(input: {
     const binding = () => readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
     if (binding() !== scope.knowledgeBaseId) return unavailable;
     const selectWorkspace = () => {
-      const workspaceDb = openWorkspaceDb(dataRoot, input.workspaceId);
+      const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, input.workspaceId);
       try {
         return readWorkspaceNotebookSelection({
           workspaceDb,

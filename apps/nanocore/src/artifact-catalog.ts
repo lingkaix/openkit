@@ -1,8 +1,7 @@
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
-import { type CoreDb, openWorkspaceDb } from './storage/db.js';
-import { applyScopedMigrations } from './storage/migrate.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb } from './storage/db.js';
 
 /**
  * Lists submitted outputs, excluding exact durable Workspace Sync Review backing records.
@@ -26,9 +25,8 @@ export function listOutputArtifacts(
     .listArtifacts(workspaceId)
     .filter((artifact) => isArtifactVisible(store, artifact, userId, administratorEligible));
   if (!coreDb || artifacts.length === 0) return artifacts;
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+  const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, workspaceId);
   try {
-    applyScopedMigrations(workspaceDb);
     const reviewArtifactIds = new Set(
       listWorkspaceSyncReviews(workspaceDb, workspaceId).map((review) => review.artifactId)
     );
