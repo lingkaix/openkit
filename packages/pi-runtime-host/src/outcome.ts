@@ -6,10 +6,29 @@ import { isDeepStrictEqual } from 'node:util';
  */
 export const PI_RESULT_CONTENT_MAX_BYTES = 16 * 1024 * 1024;
 
+/** Closed failure vocabulary shared by the host's typed producer and checked outbound boundary. */
+export const PI_FAILED_REASONS = [
+  'Worker runtime stopped on its own without an OpenKit interrupt request.',
+  'pi-final-message-empty',
+  'pi-identity-failed',
+  'pi-inference-failed',
+  'pi-output-malformed',
+  'pi-output-too-large',
+  'pi-prompt-failed',
+  'pi-route-mismatch',
+  'pi-setup-failed',
+  'pi-terminal-correlation-failed',
+] as const;
+
+/** One failure reason admitted by the private host channel. */
+export type PiFailureReason = (typeof PI_FAILED_REASONS)[number];
+
 /** Settled result of one prompt on the resident session. */
 export type PiTurnOutcome =
   | { readonly status: 'completed'; readonly assistantText: string }
-  | { readonly status: 'length' | 'failed' | 'interrupted'; readonly reason: string };
+  | { readonly status: 'failed'; readonly reason: PiFailureReason }
+  | { readonly status: 'length'; readonly reason: 'pi-length' }
+  | { readonly status: 'interrupted'; readonly reason: 'worker-interrupted' };
 
 /** The admitted route a settled assistant message must name. */
 export interface PiAdmittedRoute {

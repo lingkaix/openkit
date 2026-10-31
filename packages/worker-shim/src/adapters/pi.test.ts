@@ -24,7 +24,10 @@ import { workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 // Test-only composition checks the private host producer and its actual supervising reader.
 import { encodeFrame } from '../../../pi-runtime-host/src/channel.ts';
-import { PiTurnOutcomeTracker } from '../../../pi-runtime-host/src/outcome.ts';
+import {
+  PI_FAILED_REASONS as PI_HOST_FAILED_REASONS,
+  PiTurnOutcomeTracker,
+} from '../../../pi-runtime-host/src/outcome.ts';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import type { RuntimeObservation } from '../runtime-capture.js';
 import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
@@ -112,6 +115,7 @@ import {
 import {
   createPiLineReader,
   PI_CHANNEL_FRAME_MAX_BYTES,
+  PI_FAILED_REASONS,
   PI_RESULT_CONTENT_MAX_BYTES,
   parsePiHostFrame,
   redactPiText,
@@ -447,6 +451,10 @@ it('projects the host native length outcome without establishing a new conversat
     establishes: false,
     validEvidence: true,
   });
+});
+
+it('keeps host producer and supervising reader failure vocabularies equal', () => {
+  expect(new Set(PI_HOST_FAILED_REASONS)).toEqual(new Set(PI_FAILED_REASONS));
 });
 
 describe('Pi frame projection', () => {

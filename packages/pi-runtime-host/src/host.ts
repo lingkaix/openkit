@@ -43,7 +43,12 @@ import {
   provePiSessionHeader,
   requireAbsentPiSession,
 } from './identity.ts';
-import { type PiTurnOutcome, PiTurnOutcomeTracker } from './outcome.ts';
+import {
+  PI_FAILED_REASONS,
+  type PiFailureReason,
+  type PiTurnOutcome,
+  PiTurnOutcomeTracker,
+} from './outcome.ts';
 
 /** The one adapter-owned provider alias every generated model descriptor uses. */
 export const PI_PROVIDER_ALIAS = 'openkit-worker-inference';
@@ -105,7 +110,7 @@ interface Binding {
 interface ActiveTurn {
   readonly done: Promise<PiTurnOutcome>;
   /** Reason the host itself fenced this Turn, such as a failed identity proof. */
-  failure: string | null;
+  failure: PiFailureReason | null;
   interrupted: boolean;
   readonly resolve: (outcome: PiTurnOutcome) => void;
   /** True while the SDK session, resources, and MCP connection are being prepared. */
@@ -370,7 +375,7 @@ export class PiRuntimeHost {
     const route = { model: binding.model.modelId, provider: PI_PROVIDER_ALIAS };
     const tracker = new PiTurnOutcomeTracker();
     let session: AgentSession | null = null;
-    let setupFailure: string | null = null;
+    let setupFailure: PiFailureReason | null = null;
     try {
       session = await this.#prepareTurn(binding, turn);
       if (effort !== undefined && binding.model.reasoningEffortLevels !== undefined)
@@ -413,6 +418,14 @@ export class PiRuntimeHost {
         : setupFailure !== null && !turn.interrupted
           ? { reason: setupFailure, status: 'failed' }
           : tracker.finish({ interrupted: turn.interrupted, promptFailed, route });
+    // Check the component crossing at runtime as well as in types before identity promotion or I/O.
+    if (
+      (outcome.status === 'failed' && !PI_FAILED_REASONS.includes(outcome.reason)) ||
+      (outcome.status === 'length' && outcome.reason !== 'pi-length') ||
+      (outcome.status === 'interrupted' && outcome.reason !== 'worker-interrupted')
+    ) {
+      outcome = { status: 'failed', reason: 'pi-output-malformed' };
+    }
     const compactionEntryIds = session
       ? session.sessionManager
           .getEntries()

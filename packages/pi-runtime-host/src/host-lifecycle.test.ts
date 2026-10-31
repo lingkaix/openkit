@@ -5,6 +5,7 @@ import { AgentSession, SessionManager } from '@earendil-works/pi-coding-agent';
 import { describe, expect, it, vi } from 'vitest';
 import type { HostEvent, HostResponse } from './channel.ts';
 import { PiRuntimeHost } from './host.ts';
+import { PiTurnOutcomeTracker } from './outcome.ts';
 import {
   createHostDirectories,
   type HostDirectories,
@@ -51,6 +52,64 @@ const closing = (id: number) => ({
 });
 
 describe('PiRuntimeHost lifecycle races', () => {
+  it('refuses an unknown producer failure reason while preserving a known inference failure', async () => {
+    const directories = await createHostDirectories();
+    const inference = await startSyntheticInference((_request, n) =>
+      n === 2 ? { status: 400 } : { text: 'settled response' }
+    );
+    const { frames, host } = recorder();
+    try {
+      await host.receive(
+        JSON.stringify({ ...JSON.parse(openLine(1, directories)), inferenceBaseUrl: inference.url })
+      );
+      await host.receive(
+        JSON.stringify({ id: 2, op: 'turn', prompt: 'establish', turnId: 'first' })
+      );
+      const settlements = () =>
+        frames.filter(
+          (frame): frame is Extract<HostEvent, { event: 'turn_settled' }> =>
+            'event' in frame && frame.event === 'turn_settled'
+        );
+      expect(settlements()).toHaveLength(1);
+      expect(settlements()[0]).toMatchObject({
+        nativeHandle: { state: 'ready' },
+        outcome: { status: 'completed' },
+      });
+      await host.receive(
+        JSON.stringify({ id: 3, op: 'turn', prompt: 'known failure', turnId: 'known' })
+      );
+      expect(settlements()).toHaveLength(2);
+      expect(settlements()[1]).toMatchObject({
+        turnId: 'known',
+        outcome: { status: 'failed', reason: 'pi-inference-failed' },
+      });
+      // Fault the tracker-to-host crossing; the public emitted outcome must still be closed.
+      const finish = vi.spyOn(PiTurnOutcomeTracker.prototype, 'finish').mockReturnValueOnce({
+        status: 'failed',
+        reason: 'pi-unrecognized-failure',
+      } as unknown as ReturnType<PiTurnOutcomeTracker['finish']>);
+      await host.receive(
+        JSON.stringify({ id: 4, op: 'turn', prompt: 'producer fault', turnId: 'unknown' })
+      );
+      expect(finish).toHaveBeenCalledTimes(1);
+      expect(settlements()).toHaveLength(3);
+      expect(settlements()[2]).toMatchObject({
+        turnId: 'unknown',
+        outcome: { status: 'failed', reason: 'pi-output-malformed' },
+      });
+      expect(inference.requests).toHaveLength(3);
+      expect(settlements().map((frame) => frame.outcome)).not.toContainEqual({
+        status: 'failed',
+        reason: 'pi-unrecognized-failure',
+      });
+    } finally {
+      await host.abandon();
+      vi.restoreAllMocks();
+      await inference.close();
+      await rm(directories.root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it('does not prompt after native effort selection throws and fences the established binding', async () => {
     const directories = await createHostDirectories();
     const inference = await startSyntheticInference(() => ({ text: 'established' }));
