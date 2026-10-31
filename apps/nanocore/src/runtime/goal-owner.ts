@@ -38,6 +38,7 @@ import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
+  currentWorkspaceAuthority,
   isCurrentDeploymentAdministrator,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
@@ -59,6 +60,7 @@ import {
   assertControlProductWriter,
   type ControlProductContentMount,
   ControlProductEntrySchema,
+  openControlStoreProductReadHandle,
   type PreparedControlEntry,
   prepareControlEntries,
   prepareRetainedControlEntries,
@@ -89,6 +91,7 @@ import {
 import { projectApprovalEffect } from './pending-request-disclosure.js';
 import {
   applyControlPendingCommand,
+  assistantPendingOutcomeSourceHash,
   ControlPendingCommandInputSchema,
   claimCommandIntentGrant,
   denyPendingRequest,
@@ -1843,6 +1846,80 @@ export async function executeGoalOperation<K extends GoalOperationId>(
           'The Assistant handoff source is unavailable.',
           403
         );
+      // The original decider credential and P's execution authority remain separate after open ACK.
+      const sourceWorkspaceId = source.owner.workspaceId;
+      const reader = openControlStoreProductReadHandle(
+        workspaceDbPath(db.dataRoot, sourceWorkspaceId),
+        source.owner
+      );
+      try {
+        reader.sqlite.transaction(() => {
+          const records = listThreadPendingRequests(
+            reader.sqlite,
+            sourceWorkspaceId,
+            source.threadId
+          ).filter(
+            (record) => record.deliveryTurnId === source.id && record.requesterKind === 'assistant'
+          );
+          const turns = store.listThreadTurns(sourceWorkspaceId, source.threadId);
+          const receipts = readCommandRequestRecordsFromSqlite(reader.sqlite);
+          const handoffs = records.filter((record) => record.assistantHandoff);
+          const handoff = handoffs[0];
+          const decider = handoff?.decidingActorContext;
+          if (
+            !services.coreDb ||
+            records.some((record) => validateCanonicalLoad(record, turns, receipts)) ||
+            assistantPendingOutcomeSourceHash(source, records, context.actor.userId) !==
+              context.assistantHandoff!.sourceHash ||
+            handoffs.length !== 1 ||
+            handoff?.assistantHandoff?.kind !== 'goal' ||
+            handoff.assistantHandoff.targetWorkspaceId !== input.workspaceId ||
+            handoff.assistantHandoff.intent !== input.intent ||
+            handoff.resolution !== 'answered' ||
+            handoff.answerMap?.handoff?.[0] !== 'Confirm exact handoff' ||
+            handoff.decidingActor?.kind !== 'user' ||
+            !decider ||
+            decider.userId !== handoff.decidingActor.id ||
+            !(decider.kind === 'local'
+              ? isCurrentDeploymentAdministrator(services.coreDb, decider)
+              : currentWorkspaceAuthority(
+                  services.coreDb,
+                  input.workspaceId,
+                  { kind: 'user', id: handoff.decidingActor.id },
+                  'turn.run',
+                  true,
+                  decider
+                )) ||
+            !currentWorkspaceAuthority(
+              services.coreDb,
+              input.workspaceId,
+              source.triggerActor,
+              'turn.run',
+              true,
+              context.actor
+            ) ||
+            !currentWorkspaceAuthority(
+              services.coreDb,
+              sourceWorkspaceId,
+              source.triggerActor,
+              'turn.run',
+              true,
+              context.actor
+            ) ||
+            !authorizeWorkspace(services.coreDb, context.actor, input.workspaceId, {
+              policyOperation: 'workspace.write',
+              mutating: true,
+            })
+          )
+            throw new GoalCommandError(
+              'origin_authority_denied',
+              'Current Assistant handoff authority is unavailable.',
+              403
+            );
+        })();
+      } finally {
+        reader.close();
+      }
       assistantOrigin = {
         workspaceId: source.owner.workspaceId,
         threadId: source.threadId,

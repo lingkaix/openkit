@@ -33,7 +33,10 @@ import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import { prepareAuditEvent } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
-import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
+import {
+  currentWorkspaceAuthority,
+  isCurrentDeploymentAdministrator,
+} from './auth/operation-authorizer.js';
 import {
   findWorkspaceConfig,
   type RuntimeConfigManager,
@@ -4429,6 +4432,7 @@ export function createConversationService({
       }
       let handoffEffectStarted = false;
       try {
+        const outcomeActor: Actor = { kind: 'session', userId: actorId };
         const proposed = handoffRecord?.assistantHandoff;
         const selected =
           handoffRecord?.resolution === 'answered' &&
@@ -4456,38 +4460,46 @@ export function createConversationService({
           return;
         }
         const selectedActor = handoffRecord?.decidingActorContext;
-        if (
-          proposed &&
-          (!selectedActor ||
-            selectedActor.userId !== actorId ||
-            !currentWorkspaceAuthority(
-              coreDb,
-              proposed.targetWorkspaceId,
-              turn.triggerActor,
-              'turn.run',
-              true,
-              selectedActor
-            ))
-        )
-          throw new TurnStartValidationError(
-            'workspace_access_denied',
-            'Current receiving Workspace execution authority is unavailable.',
-            403
-          );
         const assertCurrentHandoffSource = () => {
+          const receivingAuthorityUnavailable =
+            proposed &&
+            (!selectedActor ||
+              handoffRecord?.decidingActor?.kind !== 'user' ||
+              selectedActor.userId !== handoffRecord.decidingActor.id ||
+              !(selectedActor.kind === 'local'
+                ? isCurrentDeploymentAdministrator(coreDb, selectedActor)
+                : currentWorkspaceAuthority(
+                    coreDb,
+                    proposed.targetWorkspaceId,
+                    { kind: 'user', id: handoffRecord.decidingActor.id },
+                    'turn.run',
+                    true,
+                    selectedActor
+                  )) ||
+              !currentWorkspaceAuthority(
+                coreDb,
+                proposed.targetWorkspaceId,
+                turn.triggerActor,
+                'turn.run',
+                true,
+                outcomeActor
+              ));
           if (
+            receivingAuthorityUnavailable ||
             !currentWorkspaceAuthority(
               coreDb,
               workspaceIdForOwner(turn.owner),
               turn.triggerActor,
               'turn.run',
               true,
-              selectedActor ?? undefined
+              outcomeActor
             )
           )
             throw new TurnStartValidationError(
               'workspace_access_denied',
-              'Current source Workspace authority is unavailable.',
+              receivingAuthorityUnavailable
+                ? 'Current receiving Workspace execution authority is unavailable.'
+                : 'Current source Workspace authority is unavailable.',
               403
             );
           const db = repositoryWorkspaceDb(workspaceIdForOwner(turn.owner));
@@ -4571,7 +4583,7 @@ export function createConversationService({
                 store,
                 coreDb,
                 triggerActor: turn.triggerActor,
-                requestActor: selectedActor!,
+                requestActor: outcomeActor,
                 workspaceDb: taskDb,
                 workspaceId: targetWorkspaceId,
                 threadId: receivingThreadId,
@@ -4591,7 +4603,7 @@ export function createConversationService({
                     triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                     store,
                     triggerActor: turn.triggerActor,
-                    requestActor: selectedActor!,
+                    requestActor: outcomeActor,
                     workspaceId: targetWorkspaceId,
                     threadId: receivingThreadId,
                     prompt: serializeStructuredWorkerDelegationRequest(prepared.delegationRequest),
@@ -4709,7 +4721,7 @@ export function createConversationService({
                 intent: proposed.intent,
               },
               {
-                actor: selectedActor!,
+                actor: outcomeActor,
                 assistantHandoff: {
                   originThreadId: turn.threadId,
                   originTurnId: turn.id,
@@ -4752,7 +4764,6 @@ export function createConversationService({
             409
           );
         const systemPrompt = assembleBuiltInSystemPrompt('quick-chat');
-        const outcomeActor: Actor = { kind: 'session', userId: actorId };
         const history = createAssistantHistory({
           store,
           coreDb,

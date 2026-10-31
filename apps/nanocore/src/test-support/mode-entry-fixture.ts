@@ -16,6 +16,7 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
+import type { FsStore } from '../lib/store.js';
 import type { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
@@ -102,7 +103,14 @@ export async function assistantWiringFixture(
   skillBytes: Buffer = Buffer.from('# Original retained entry guidance.\n'),
   memberCredential = false,
   supportBytes?: Buffer,
-  memoryEnabled = false
+  memoryEnabled = false,
+  agentSetup?: ReturnType<typeof createTestAgentSetup>,
+  preparePending?: (input: {
+    coreDb: ReturnType<typeof openCoreDb>;
+    store: FsStore;
+    actorUserId: string;
+    thread: ReturnType<FsStore['getThread']>;
+  }) => Promise<void>
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-entry-wiring-'));
   const coreDb = openCoreDb(dataRoot);
@@ -207,6 +215,7 @@ export async function assistantWiringFixture(
     dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({
       dataRoot,
+      ...(agentSetup ? { agentManifests: [agentSetup.manifest] } : {}),
       userConfigs: [
         {
           userId: actorUserId,
@@ -256,6 +265,7 @@ export async function assistantWiringFixture(
         expiresAt: '2099-01-01T00:00:00.000Z',
       })
     : undefined;
+  await preparePending?.({ coreDb, store, actorUserId, thread });
   const app = createApp({
     mode: memberCredential ? 'server' : 'local',
     coreDb,

@@ -545,7 +545,21 @@ async function fixture(typed = true, linked = true) {
           }).tokenId
         : null;
       expect(
-        denyPendingRequest(db.sqlite, pendingRequestId, { kind: 'user', id: decidingUserId }, now)
+        denyPendingRequest(
+          db.sqlite,
+          pendingRequestId,
+          { kind: 'user', id: decidingUserId },
+          now,
+          adminTokenId
+            ? {
+                kind: 'token',
+                userId: decidingUserId,
+                tokenId: adminTokenId,
+                tokenScope: 'server-admin',
+                tokenWorkspaceIds: [],
+              }
+            : actor
+        )
       ).not.toBeNull();
       const outcomeSessionId = testEntityId('as', `${root}:outcome`);
       const outcomeInput = 'Receive pending request outcomes.';
@@ -564,7 +578,7 @@ async function fixture(typed = true, linked = true) {
         workspace.id,
         thread.id,
         'Approval outcomes',
-        { kind: 'user', id: decidingUserId },
+        { kind: 'user', id: actor.userId },
         null,
         {
           startedAt: sessionStartedAt,
@@ -582,6 +596,7 @@ async function fixture(typed = true, linked = true) {
           executor: 'worker',
           agentId,
           cause: 'outcome',
+          responsibleUserId: actor.userId,
           now,
         })
       ).toHaveLength(1);
@@ -592,7 +607,7 @@ async function fixture(typed = true, linked = true) {
         turnId: outcomeTurn.id,
         type: 'user-message',
         status: 'completed',
-        actor: pendingRequestSystemActor(decidingUserId),
+        actor: pendingRequestSystemActor(actor.userId),
         text: frozenPendingOutcomeInput(db.sqlite, outcomeTurn.id, outcomeInput),
         createdAt: now,
         completedAt: now,
@@ -607,7 +622,7 @@ async function fixture(typed = true, linked = true) {
         turnId: outcomeTurn.id,
         turnInput: outcomeInput,
         requestedAgentId: agentId,
-        serverAdminTokenId: adminTokenId,
+        serverAdminTokenId: null,
       });
       recordTestExecutionAttempt(coreDb, {
         entry: outcomeAdmission,

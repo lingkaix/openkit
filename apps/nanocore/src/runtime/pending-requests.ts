@@ -1096,8 +1096,32 @@ export function settleUnfinishedClaims(
   return changed;
 }
 
+/** Selects one executor's ready batch; autonomous Workers and Assistants keep one responsible user before the count bound. */
+export function selectReadyOutcomes(
+  records: readonly PendingRequestRecord[],
+  input: {
+    readonly executor: PendingExecutorKind;
+    readonly agentId?: string | null;
+    readonly cause: PendingDeliveryCause;
+    readonly responsibleUserId?: string | null;
+  }
+): PendingRequestRecord[] {
+  const principalBound =
+    input.cause === 'outcome' && (input.executor === 'worker' || input.executor === 'assistant');
+  return records
+    .filter(
+      (record) =>
+        record.requesterKind === input.executor &&
+        (input.executor !== 'worker' || record.agentId === input.agentId) &&
+        (!principalBound || record.responsibleUserId === input.responsibleUserId) &&
+        isReadyOutcome(record)
+    )
+    .sort(compareReadiness)
+    .slice(0, OUTCOME_DELIVERY_BOUND);
+}
+
 /**
- * Freezes ready undelivered outcomes that match one executor, in readiness order, up to the bound.
+ * Freezes one selected ready batch, preserving its responsible principal and readiness order.
  *
  * @param sqlite Workspace database.
  * @param input Admitting Turn.
@@ -1112,22 +1136,18 @@ export function freezeReadyOutcomes(
     readonly executor: PendingExecutorKind;
     readonly agentId?: string | null;
     readonly cause: PendingDeliveryCause;
+    readonly responsibleUserId?: string | null;
     readonly now: string;
     readonly usable?: (record: PendingRequestRecord) => boolean;
   }
 ): PendingRequestRecord[] {
-  const limit = OUTCOME_DELIVERY_BOUND;
   const freeze = sqlite.transaction(() => {
-    const ready = listThreadPendingRequests(sqlite, input.workspaceId, input.threadId)
-      .filter(
-        (record) =>
-          record.requesterKind === input.executor &&
-          (input.executor !== 'worker' || record.agentId === input.agentId) &&
-          isReadyOutcome(record) &&
-          (input.usable?.(record) ?? true)
-      )
-      .sort(compareReadiness);
-    const selected = ready.slice(0, limit);
+    const selected = selectReadyOutcomes(
+      listThreadPendingRequests(sqlite, input.workspaceId, input.threadId).filter(
+        (record) => input.usable?.(record) ?? true
+      ),
+      input
+    );
     for (const record of selected) {
       sqlite
         .prepare(
@@ -1766,6 +1786,14 @@ export function validateCanonicalLoad(
   ) {
     return { requestId: record.requestId, reason: 'delivery-association' };
   }
+  if (
+    deliveryTurn &&
+    record.deliveryCause === 'outcome' &&
+    (record.requesterKind === 'worker' || record.requesterKind === 'assistant') &&
+    (deliveryTurn.triggerActor.kind !== 'user' ||
+      deliveryTurn.triggerActor.id !== record.responsibleUserId)
+  )
+    return { requestId: record.requestId, reason: 'delivery-association' };
   if (
     deliveryTurn &&
     !policyGrant &&
@@ -3182,16 +3210,18 @@ export function applyControlPendingCommand(
         (command.executor === 'worker' && delivering.agentId !== (command.agentId ?? null))
       )
         pendingNativeConflict('The delivering Turn does not match its current native executor.');
-      const selected = listThreadPendingRequests(db.sqlite, command.workspaceId, command.threadId)
-        .filter(
-          (record) =>
-            usable(record) &&
-            record.requesterKind === command.executor &&
-            (command.executor !== 'worker' || record.agentId === command.agentId) &&
-            isReadyOutcome(record)
-        )
-        .sort(compareReadiness)
-        .slice(0, OUTCOME_DELIVERY_BOUND);
+      const responsibleUserId = responsibleUserIdForActor(
+        (delivering as unknown as Turn).triggerActor
+      );
+      const selected = selectReadyOutcomes(
+        listThreadPendingRequests(db.sqlite, command.workspaceId, command.threadId).filter(usable),
+        {
+          executor: command.executor,
+          agentId: command.agentId ?? null,
+          cause: command.cause,
+          responsibleUserId,
+        }
+      );
       if (
         !isDeepStrictEqual(
           selected.map((record) => record.requestId),
@@ -3208,6 +3238,7 @@ export function applyControlPendingCommand(
           executor: command.executor,
           agentId: command.agentId ?? null,
           cause: command.cause,
+          responsibleUserId,
           now: command.now,
           usable,
         })

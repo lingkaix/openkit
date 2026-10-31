@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import type { ActorRef } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { vi } from 'vitest';
 import { collectionTableName, quoteIdent } from '../generative-kernel/native.js';
@@ -166,5 +167,57 @@ export function observeTestAppRecordCount(
   return () => {
     instrumentation.mockRestore();
     if (observer.sqlite.open) observer.sqlite.close();
+  };
+}
+
+/**
+ * Corrupts only a genuine existing Turn principal while its owner excludes SQL writes.
+ * Caller holds the real post-ACK publication return before dispatch, with no concurrent fixture producer.
+ * The short exclusive SQL transaction refuses a competing writer; the Main client lifetime remains active.
+ * Release and settle Main before shutdown and exact restoration. This creates no successful execution.
+ * @param dataRoot Existing private fixture root.
+ * @param workspaceId Exact owning Workspace.
+ * @param turnId Existing genuine frozen delivery Turn.
+ * @param actor Deliberately contradictory retained actor.
+ * @returns Restore callback for exact original bytes under the same SQL-write exclusion.
+ */
+export function setTestTurnTriggerActor(
+  dataRoot: string,
+  workspaceId: string,
+  turnId: string,
+  actor: ActorRef
+): () => void {
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+  const db = new Database(scope.path, { fileMustExist: true });
+  let original: string;
+  try {
+    db.transaction(() => {
+      const row = db.prepare('SELECT record_json FROM control_turns WHERE id=?').get(turnId) as
+        | { record_json: string }
+        | undefined;
+      if (!row) throw new Error('Retained fault requires an existing genuine Turn.');
+      original = row.record_json;
+      const record = JSON.parse(original);
+      db.prepare('UPDATE control_turns SET record_json=? WHERE id=?').run(
+        JSON.stringify({ ...record, triggerActor: actor }),
+        turnId
+      );
+    }).exclusive();
+  } finally {
+    db.close();
+  }
+  return () => {
+    const restore = new Database(scope.path, { fileMustExist: true });
+    try {
+      restore
+        .transaction(() => {
+          restore
+            .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+            .run(original, turnId);
+        })
+        .exclusive();
+    } finally {
+      restore.close();
+    }
   };
 }

@@ -45,6 +45,7 @@ import {
   projectApprovalRequest,
   type RaisePendingRequestInput,
   readPendingRequest,
+  selectReadyOutcomes,
   validateCanonicalLoad,
 } from './pending-requests.js';
 
@@ -191,6 +192,16 @@ export function setPendingRequestAttentionObserver(
 const refusedOutcomeTurns = new Set<string>();
 const outcomeCauses = new Map<string, 'outcome'>();
 
+/** Derives the outcome trigger only from the batch that the admission will freeze. */
+function pendingOutcomeTrigger(records: readonly PendingRequestRecord[]) {
+  const approvals = records.filter((record) => record.kind === 'approval').length;
+  const inputs = records.length - approvals;
+  return {
+    kind: approvals ? ('approval-resolution' as const) : ('user-input' as const),
+    summary: `${approvals} approval outcome${approvals === 1 ? '' : 's'} and ${inputs} user-input outcome${inputs === 1 ? '' : 's'} are ready.`,
+  };
+}
+
 /**
  * Installs freeze-on-admission and terminal-barrier admission for one store.
  *
@@ -210,17 +221,19 @@ export function installPendingRequestAdmission(
       return withWorkspace(dependencies, workspaceId, (sqlite) => {
         const census = listThreadPendingRequests(sqlite, workspaceId, turn.threadId);
         const usable = census.filter((record) => canonicalRecordIsUsable(store, sqlite, record));
-        const selected = usable
-          .filter(
-            (record) =>
-              record.requesterKind === executor &&
-              (executor !== 'worker' || record.agentId === (turn.agentId ?? null)) &&
-              isReadyOutcome(record)
-          )
-          .sort(compareReadiness)
-          .slice(0, 16);
-        const now = new Date().toISOString();
         const cause: 'outcome' | 'carried' = outcomeCauses.get(turn.id) ?? 'carried';
+        const selected = selectReadyOutcomes(usable, {
+          executor,
+          agentId: turn.agentId ?? null,
+          cause,
+          responsibleUserId: turn.triggerActor.kind === 'user' ? turn.triggerActor.id : null,
+        });
+        if (cause === 'outcome') {
+          if (!selected.length) throw associationGap();
+          // Preparation owns the input passed to the same native Turn/freeze transaction.
+          turn.triggerSource = pendingOutcomeTrigger(selected);
+        }
+        const now = new Date().toISOString();
         const frozen = selected.map((record) => ({
           ...record,
           delivery: 'frozen' as const,
@@ -1144,44 +1157,52 @@ async function admitNextOutcome(
   if (await admitInvalidations(store, dependencies, workspaceId, threadId)) return;
   let selected: {
     readonly executor: PendingExecutorKind;
-    readonly approval: boolean;
+    readonly triggerSource: ReturnType<typeof pendingOutcomeTrigger>;
     readonly actorId: string;
     readonly agentId: string | null;
   } | null = null;
   withWorkspace(dependencies, workspaceId, (sqlite) => {
-    const ready = listThreadPendingRequests(sqlite, workspaceId, threadId).filter(
-      (record) => isReadyOutcome(record) && canonicalRecordIsUsable(store, sqlite, record)
-    );
+    const ready = listThreadPendingRequests(sqlite, workspaceId, threadId)
+      .filter((record) => isReadyOutcome(record) && canonicalRecordIsUsable(store, sqlite, record))
+      .sort(compareReadiness);
     const worker = ready.find((record) => record.requesterKind === 'worker');
     const assistant = ready.find((record) => record.requesterKind === 'assistant');
     const person = ready.find((record) => record.requesterKind === 'person');
     const coordinator = ready.find((record) => record.requesterKind === 'coordinator');
     const first = worker ?? assistant ?? coordinator ?? person;
     if (!first) return;
+    const batch = selectReadyOutcomes(ready, {
+      executor: first.requesterKind,
+      agentId: first.agentId,
+      cause: 'outcome',
+      responsibleUserId: first.responsibleUserId,
+    });
     selected = {
       executor: first.requesterKind,
       agentId: first.agentId,
-      approval: ready.some(
-        (record) => record.requesterKind === first.requesterKind && record.kind === 'approval'
-      ),
-      actorId: first.decidingActor?.id ?? first.responsibleUserId,
+      triggerSource: pendingOutcomeTrigger(batch),
+      actorId:
+        first.requesterKind === 'worker' || first.requesterKind === 'assistant'
+          ? first.responsibleUserId
+          : (first.decidingActor?.id ?? first.responsibleUserId),
     };
   });
   if (!selected) return;
   const choice: {
     readonly executor: PendingExecutorKind;
-    readonly approval: boolean;
+    readonly triggerSource: ReturnType<typeof pendingOutcomeTrigger>;
     readonly actorId: string;
     readonly agentId: string | null;
   } = selected;
   const turnId = allocateEntityId('tu');
   if (storeHasTurn(store, turnId)) throw associationGap();
   outcomeCauses.set(turnId, 'outcome');
-  const triggerKind = choice.approval ? 'approval-resolution' : 'user-input';
   const turn = await store.createTurn(
     workspaceId,
     threadId,
-    choice.approval ? 'Approval outcomes' : 'User-input outcomes',
+    choice.triggerSource.kind === 'approval-resolution'
+      ? 'Approval outcomes'
+      : 'User-input outcomes',
     choice.actorId === 'system'
       ? pendingRequestSystemActor(null)
       : { kind: 'user', id: choice.actorId },
@@ -1198,12 +1219,7 @@ async function admitNextOutcome(
             : choice.executor === 'assistant'
               ? 'quick-chat'
               : null,
-      triggerSource: {
-        kind: triggerKind,
-        summary: choice.approval
-          ? 'Approval outcomes are ready.'
-          : 'User-input outcomes are ready.',
-      },
+      triggerSource: choice.triggerSource,
     }
   );
   if (

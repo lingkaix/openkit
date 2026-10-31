@@ -336,6 +336,7 @@ describe('Assistant semantic Task handoff', () => {
         turnId: source.id,
         executor: 'assistant',
         cause: 'outcome',
+        responsibleUserId: source.triggerActor.id,
         now,
       })
     ).toHaveLength(1);

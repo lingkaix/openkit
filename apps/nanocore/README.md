@@ -223,6 +223,8 @@ Outcome-initiated Worker Turns have no Task checkpoint. The governed executor an
 
 Pending requests preserve the originating Task or selected-Worker conversation receipt. Raising a request leaves the Worker Turn running; the worker ends it normally. The request remains actionable after that Turn completes, and its final outcome enters a later matching executor Turn under current authority. [Pending Requests](../../docs/specs/20260930-pending_requests.md) owns execution, publication, native delivery proof, and recovery.
 
+Autonomous Worker and Assistant outcome Turns execute as the first ready request's responsible user. The native freeze selects that user's matching outcomes before applying the existing sixteen-request bound. The request and its decision Items retain the decider; that credential never supplies the responsible user's execution context. Assistant handoffs recheck the original deciding credential separately from current source and destination execution authority, including the Goal owner's post-preparation boundary. Independently admitted Turns keep their admitted principal, and Coordinator outcomes keep Goal authority.
+
 Redacted Agent Environment Package snapshot readback is available at `POST /api/app/operations/environment.snapshot-list` and `POST /api/app/operations/environment.snapshot-read`. These routes return durable workspace-owned package snapshots for diagnostics and evidence without exposing backend-private fields, raw credentials, or host-local runtime references.
 
 Knowledge pages use pinned OKF v0.2 with nested YAML metadata preserved across managed edits and portability. OpenKit lifecycle authority is `openkit_status`; the standard OKF `status` is its draft/stable/deprecated projection.
