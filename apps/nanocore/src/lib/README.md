@@ -128,3 +128,4 @@ Approval refusal and Workspace retirement fixtures share their existing Core wit
 Agent health and Thread dashboard read fixtures use their existing Core-backed App builder without a separate standalone executor override. The builder retains the original Store root, identity, memberships, file admission and cleanup; read fixtures do not establish Worker execution.
 
 Assistant history and semantic-handoff fixtures obtain their unpublished Workspace DTO from the existing Demo builder with explicit project identity, name, kind and empty counts. Only the retained-Personal fixture publishes that Workspace; a discarded rootless Store no longer supplies the DTO.
+Lifecycle and retirement fixtures pass their existing Core to the deterministic executor, including the retained-Core App reconstruction. Native mutation admission, deletion and recovery remain the deciding owners; executor refusal spies and all retained-byte and receipt assertions stay unchanged.

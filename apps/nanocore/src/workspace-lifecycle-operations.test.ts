@@ -224,7 +224,7 @@ async function fixture(
     dataRoot,
     store,
     mode,
-    turnExecutor: new SimulatedTurnExecutor(),
+    turnExecutor: new SimulatedTurnExecutor({ coreDb }),
   });
   return {
     app,
@@ -859,7 +859,7 @@ it('continues the original committed recovery after serving activation fails wit
       mode: 'server',
       auth,
       workspaceMutationAdmission: restartedGate,
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb: f.coreDb }),
       releaseIdentity: readReleaseIdentity(join(f.dataRoot, 'fixture-release-identity.json')),
     });
     expect(restartedGate.isClosed(f.workspaceId)).toBe(true);

@@ -127,7 +127,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
   });
   const admission = new WorkspaceMutationAdmission();
   const gateway = createDefaultWorkerMcpGateway(coreDb);
-  const executor = new SimulatedTurnExecutor();
+  const executor = new SimulatedTurnExecutor({ coreDb });
   const app = createApp({
     coreDb,
     dataRoot,
