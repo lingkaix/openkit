@@ -20,26 +20,41 @@ import {
 } from './operation-resolvers.js';
 
 /** The native engine receives already composed behavior and only the existing admission owners. */
-export function createOperationEngine(
-  implementations: OperationImplementations,
+export type OperationInvoker<Ids extends JsonOperationId = JsonOperationId> = <K extends Ids>(
+  id: K,
+  value: unknown,
+  entry: OperationInvocationContext
+) => Promise<OperationOutput<K>>;
+
+/** The native engine receives already composed behavior and only the existing admission owners. */
+export function createOperationEngine<const T extends Partial<OperationImplementations>>(
+  implementations: T,
   dependencies: OperationAdmissionDependencies
-) {
-  return async <K extends JsonOperationId>(
+): OperationInvoker<Extract<keyof T, JsonOperationId>> {
+  return async <K extends Extract<keyof T, JsonOperationId>>(
     id: K,
     value: unknown,
     entry: OperationInvocationContext
   ): Promise<OperationOutput<K>> => {
-    if (!Object.hasOwn(OPERATION_DEFINITIONS, id))
+    if (!Object.hasOwn(OPERATION_DEFINITIONS, id) || !Object.hasOwn(implementations, id))
       throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
     const definition = OPERATION_DEFINITIONS[id];
     if (definition.binding !== 'json')
       throw new OperationError('unsupported_operation', 'Unknown operation.', 400);
     const admitted = await admitOperation(definition, value, entry, dependencies);
     try {
+      const implementation = implementations[id] as OperationImplementations[K];
+      const context = {
+        ...admitted.context,
+        recheckAdmission: async () => {
+          const current = await admitOperation(definition, admitted.input, entry, dependencies);
+          current.release?.();
+        },
+      };
       return (await invokeDefinedOperation(definition, () =>
-        implementations[id](
+        implementation(
           admitted.input as OperationInput<K>,
-          admitted.context as Parameters<OperationImplementations[K]>[1]
+          context as Parameters<OperationImplementations[K]>[1]
         )
       )) as OperationOutput<K>;
     } finally {

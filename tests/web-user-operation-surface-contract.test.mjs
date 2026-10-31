@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 348;
+const EXPECTED_CATALOG_SIZE = 351;
 const EXPECTED_SERVER_SIZE = 93;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 252;
+const EXPECTED_INCLUDED_SIZE = 255;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -308,6 +308,9 @@ const WEB_OPERATION_GROUPS = {
     'workspace.import': { disposition: 'live', surface: 'Portability' },
   },
   Vault: {
+    'vault.binding-deliver': { disposition: 'workflow', surface: 'Vault' },
+    'vault.binding-replace': { disposition: 'workflow', surface: 'Vault' },
+    'vault.binding-revoke': { disposition: 'workflow', surface: 'Vault' },
     'vault.grant-request': { disposition: 'live', surface: 'Vault' },
     'vault.grant-request-list': { disposition: 'live', surface: 'Vault' },
     'vault.grant-issue': { disposition: 'live', surface: 'Vault' },
@@ -557,6 +560,20 @@ function assertDisposition(operationKey, disposition) {
 }
 
 describe('Web user operation surface contract', () => {
+  it('keeps generic credential lifecycle on the unified Vault and authorized agent surface', () => {
+    for (const id of ['vault.binding-deliver', 'vault.binding-replace', 'vault.binding-revoke']) {
+      const definition = OPERATION_DEFINITIONS[id];
+      assert.ok(definition, 'Vault lifecycle operation is absent');
+      assert.equal(definition.binding, 'json');
+      assert.equal(definition.returnsOneTimeSecret, false);
+      assert.equal(definition.mutating, true);
+      assert.equal(definition.policyOperation, 'vault.use');
+      assert.ok(definition.credentials.includes('worker-package'));
+      assert.ok(definition.credentials.includes('coordinator'));
+      assert.equal(flattenInventory(WEB_OPERATION_GROUPS).operations.get(id)?.surface, 'Vault');
+    }
+  });
+
   it('projects explicit administrative discovery on the published Shared MCP surface', () => {
     const catalog = partitionCatalog(PUBLIC_OPERATION_ACCESS);
     for (const [operationKey, disposition] of Object.entries(SERVER_WEB_OPERATIONS)) {

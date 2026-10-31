@@ -257,14 +257,26 @@ describe('jointly approved Goal-domain publication', () => {
       proposal: {
         operation: 'mcp.call-tool',
         workspaceId: f.key.workspaceId,
-        serverId: 'issues',
-        toolName: 'read',
-        argumentsDigest: policyDigest({}),
-        schemaDigest: null,
+        resource: {
+          kind: 'mcp-tool' as const,
+          workspaceId: f.key.workspaceId,
+          serverId: 'issues',
+          toolName: 'read',
+        },
+        inputReferences: {
+          argumentsDigest: policyDigest({}),
+          schemaDigest: null,
+          packageSnapshotId: 'policy-unit',
+          catalogRevision: 'policy-unit',
+        },
+        inputAttributes: {},
         capabilityCallId: allocateEntityId('cap'),
-        packageDigest: 'policy-unit',
-        catalogRevision: 'policy-unit',
         subject,
+      },
+      resourceSummary: { serverId: 'issues', toolName: 'read' },
+      contextSummary: {
+        packageSnapshotId: 'policy-unit',
+        catalogRevision: 'policy-unit',
       },
       authorizationRevision: policyDigest('current-native-authority'),
       authorizationUses: [

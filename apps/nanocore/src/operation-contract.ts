@@ -54,6 +54,8 @@ export type AdmittedOperationContext = Exclude<
   { kind: 'bootstrap' }
 > & {
   readonly actorRef: ActorRef;
+  /** Trusted invocation rechecks the same bound entry after awaited Policy work, never model input. */
+  readonly recheckAdmission?: () => Promise<void>;
   readonly scope: AdmittedOperationScope;
   readonly resolvedLineage?: {
     readonly workspaceId: string;

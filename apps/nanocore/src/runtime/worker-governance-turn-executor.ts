@@ -10,6 +10,7 @@ import { workspaceSyncReviewPatchBytes } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
   type SessionWorkspaceMaterializationPlan,
+  WorkerCredentialReceiptSchema,
   type WorkerGovernanceBackendCapabilities,
   WorkerGovernanceBackendCapabilitiesSchema,
 } from '@openkit/config-schema';
@@ -74,6 +75,8 @@ import {
   StoreRecordNotFoundError,
   type TerminalTurnPublication,
 } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
+import { createOperationEngine } from '../operation-invocation.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import {
   findSchedulerAdmissionForTurn,
@@ -98,9 +101,15 @@ import {
 } from '../storage/workspace-file-records.js';
 import { withLifecycleStageTelemetry } from '../telemetry.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
+import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
+import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
+import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
+import { getVaultInjectionPlan } from '../vault-injection-plans.js';
 import {
   type CreateVaultInjectionReceiptInput,
   createVaultInjectionReceipt,
+  getVaultInjectionReceipt,
+  listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
 import {
   executeControlMaterialCommand,
@@ -113,9 +122,11 @@ import {
   AgentEnvironmentSnapshotReadError,
   findNamedAgentEnvironmentPackageSnapshot,
   recordAgentEnvironmentPackageSnapshot,
+  requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
 import {
   type AgentEnvironmentPackagePreview,
+  assertCredentialBackendMatchesReference,
   assertCurrentWorkerCredentialAuthority,
   type PreparedWorkerContextPackage,
   type ResolveAgentEnvironmentBackendInput,
@@ -137,6 +148,7 @@ import {
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
+import { requireExecutionCredentialReceipts } from './execution-backend.js';
 import {
   createExecutionStepJournalReader,
   decodeExecutionJournalSpan,
@@ -205,6 +217,7 @@ import {
   type WorkerGovernanceNativeResume,
   type WorkerGovernanceWorkspaceChangeRecord,
   WorkerNativeProofValidationError,
+  workerCredentialFileBinding,
 } from './worker-governance-backend.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import {
@@ -1020,6 +1033,10 @@ export async function acceptPreparedWorkerTurnContextPackage(input: {
  * Options for the worker-governance-backed turn executor.
  */
 export interface WorkerGovernanceTurnExecutorOptions {
+  /** Same current Goal/Task scope reader as other Worker effects. */
+  goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
+  /** Same operation interception owner used by authenticated agent and public callers. */
+  policyInterception?: (() => import('../policy/interception.js').PolicyInterception) | undefined;
   /** App-owned disk reservation shared with upload, capture and package writers. */
   fileAdmission?: FileStorageAdmission | undefined;
   /** Active configuration snapshot for resolution-time public-route admission. */
@@ -1083,6 +1100,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         attemptId: string
       ) => Promise<AcceptedWorkerFinalStatus>)
     | null;
+  private readonly goalTaskPolicy: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
+  private readonly policyInterception:
+    | (() => import('../policy/interception.js').PolicyInterception)
+    | null;
   private readonly readRuntimeConfig: (() => PublicNetworkConfiguration) | null;
   private readonly backend: WorkerGovernanceBackend;
   /** Configured four-operation boundary; the executor retains its existing preparation and closeout responsibility. */
@@ -1111,6 +1132,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.backend = options.backend;
     this.executionBackend = options.backend;
     this.readRuntimeConfig = options.readRuntimeConfig ?? null;
+    this.policyInterception = options.policyInterception ?? null;
+    this.goalTaskPolicy = options.goalTaskPolicy;
     this.capabilities = {
       approvals: false,
       artifacts: true,
@@ -1970,6 +1993,343 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     return this.activeTurnExecutions.has(turnId);
   }
 
+  /** Reference-only Vault lifecycle; grant, generation and exact placement remain mandatory. */
+  public async credentialBindingOperation(
+    store: FsStore,
+    input: Parameters<NonNullable<TurnExecutor['credentialBindingOperation']>>[1],
+    recheckAuthority: () => Promise<void>
+  ): ReturnType<NonNullable<TurnExecutor['credentialBindingOperation']>> {
+    if (!this.coreDb)
+      throw new OperationError(
+        'credential_binding_unavailable',
+        'Credential binding operation is unavailable.',
+        503
+      );
+    await recheckAuthority();
+    const coreDb = this.coreDb;
+    const plan = getVaultInjectionPlan(coreDb, input.planId);
+    if (!plan?.packageSnapshotId || plan.injectionVisibility !== 'runtime-file')
+      throw new OperationError(
+        'credential_binding_not_found',
+        'Credential binding not found.',
+        404
+      );
+    const db = openWorkspaceDb(coreDb.dataRoot, input.workspaceId);
+    let effectAttempt: ReturnType<typeof requireSchedulerExecutionAttempt> | undefined;
+    let effectPackage: AgentEnvironmentPackage | undefined;
+    try {
+      const original = requireAgentEnvironmentPackageSnapshot(
+        db,
+        input.workspaceId,
+        plan.packageSnapshotId
+      ).snapshot;
+      if (
+        original.scope.workspaceId !== input.workspaceId ||
+        original.scope.threadId !== input.threadId
+      )
+        throw new OperationError(
+          'credential_binding_not_found',
+          'Credential binding not found.',
+          404
+        );
+      const declaration = original.credentials.declarations.find(
+        (value) =>
+          value.visibility === 'runtime-file' &&
+          value.vaultGrantId === plan.grantId &&
+          value.targetPath === plan.targetPath
+      );
+      if (!declaration || declaration.visibility !== 'runtime-file')
+        throw new OperationError(
+          'credential_binding_not_found',
+          'Credential binding not found.',
+          404
+        );
+      const candidates = listOpenSchedulerExecutionAttempts(coreDb).filter(
+        (attempt) =>
+          attempt.agentSessionId === original.scope.agentSessionId &&
+          attempt.workspaceId === input.workspaceId &&
+          attempt.threadId === input.threadId &&
+          attempt.backendId === this.executionBackend.id
+      );
+      const residentAttempt =
+        input.action === 'revoke' && candidates.length === 0
+          ? listSchedulerExecutionAttemptsForTurn(coreDb, original.scope)
+              .filter(
+                (value) =>
+                  value.agentSessionId === original.scope.agentSessionId &&
+                  value.backendId === this.executionBackend.id &&
+                  value.inputRef === original.snapshotId
+              )
+              .at(-1)
+          : candidates.length === 1
+            ? candidates[0]
+            : undefined;
+      if (
+        !residentAttempt ||
+        (input.action !== 'revoke' && residentAttempt.phase !== 'open') ||
+        !residentAttempt.inputRef
+      )
+        throw new OperationError(
+          'credential_binding_not_live',
+          'Credential binding has no current live execution.',
+          409
+        );
+      const attempt = residentAttempt;
+      const consumer = requireAgentEnvironmentPackageSnapshot(
+        db,
+        input.workspaceId,
+        attempt.inputRef!
+      ).snapshot;
+      const current = () =>
+        assertCurrentWorkerCredentialAuthority(coreDb, consumer, this.now, declaration);
+      if (input.action !== 'revoke') current();
+      if (plan.status !== 'active')
+        throw new OperationError(
+          'credential_binding_not_live',
+          'Credential binding is not active.',
+          409
+        );
+      // File material is resolved only inside this effect, after the operation's final allow.
+      const resolveMaterial = (
+        grant: ReturnType<typeof current>['grant'],
+        reference: ReturnType<typeof current>['reference'],
+        receiptId: string
+      ) => {
+        if (!this.vaultBackend || grant.ownerScope === 'user')
+          throw new OperationError(
+            'credential_binding_unavailable',
+            'Credential grant scope is not supported.',
+            409
+          );
+        const backend = this.vaultBackend();
+        assertCredentialBackendMatchesReference(backend, reference);
+        return vaultSecretMaterialToString(
+          createVaultUseAuditedBackend({
+            backend,
+            db: grant.ownerScope === 'workspace' ? db : coreDb,
+            ownerScope: grant.ownerScope,
+            ...(grant.ownerScope === 'workspace'
+              ? { workspaceId: input.workspaceId }
+              : { consumerWorkspaceId: input.workspaceId }),
+            actor: consumer.scope.triggerActor,
+            agentSessionId: consumer.scope.agentSessionId,
+            grantId: grant.grantId,
+            planId: plan.planId,
+            receiptId,
+            resolvingPath: 'grant',
+            now: this.now,
+          }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion })
+        );
+      };
+      const active = listVaultInjectionReceipts(coreDb).filter(
+        (receipt) =>
+          receipt.planId === plan.planId &&
+          receipt.agentSessionId === original.scope.agentSessionId &&
+          receipt.revocationStatus === 'active'
+      );
+      if (input.action === 'deliver') {
+        const receiptId = `receipt_${original.snapshotId}_${declaration.id}`;
+        if (
+          input.receiptId !== receiptId ||
+          original.snapshotId !== consumer.snapshotId ||
+          !this.backend.deliverCredentialBinding
+        )
+          throw new OperationError(
+            'credential_binding_unavailable',
+            'Admitted credential delivery is unavailable.',
+            409
+          );
+        await recheckAuthority();
+        const { grant, reference } = current();
+        if (reference.currentVersion !== input.materialVersion)
+          throw new OperationError(
+            'credential_material_changed',
+            'Credential material version changed.',
+            409
+          );
+        const material = resolveMaterial(grant, reference, receiptId);
+        if (current().reference.currentVersion !== reference.currentVersion)
+          throw new Error('Credential generation changed before delivery.');
+        effectAttempt = attempt;
+        effectPackage = consumer;
+        const proof = await this.backend.deliverCredentialBinding(
+          consumer.snapshotId,
+          plan.planId,
+          receiptId,
+          material,
+          reference.currentVersion,
+          recheckAuthority
+        );
+        await recheckAuthority();
+        const binding = workerCredentialFileBinding({
+          declarationId: declaration.id,
+          grantId: grant.grantId,
+          planId: plan.planId,
+          receiptId,
+          vaultReferenceId: reference.referenceId,
+          materialVersion: reference.currentVersion,
+          targetPath: declaration.targetPath,
+        });
+        if (current().reference.currentVersion !== binding.material.version)
+          throw new Error('Credential generation changed during delivery.');
+        return requireExecutionCredentialReceipts([binding], [proof])[0]!;
+      }
+      if (active.length !== 1 || active[0]!.receiptId !== input.expectedReceiptId)
+        throw new OperationError(
+          'credential_binding_changed',
+          'Credential binding changed; inspect its original receipt.',
+          409
+        );
+      const previous = active[0]!;
+      if (input.action === 'revoke') {
+        if (!this.executionBackend.revokeCredentialBinding)
+          throw new OperationError(
+            'credential_binding_unavailable',
+            'Credential binding revocation is unavailable.',
+            503
+          );
+        await recheckAuthority();
+        // Withdraw authority before awaiting physical removal; failure retains the existing stale receipt.
+        coreDb.sqlite.transaction(() => {
+          const changed = coreDb.sqlite
+            .prepare(
+              "UPDATE vault_injection_receipts SET revocation_status='stale-session' WHERE receipt_id=? AND revocation_status='active'"
+            )
+            .run(previous.receiptId);
+          if (changed.changes !== 1)
+            throw new Error('Credential binding changed before revocation.');
+          coreDb.sqlite
+            .prepare(
+              "UPDATE vault_injection_plans SET status='revoked' WHERE plan_id=? AND status='active'"
+            )
+            .run(plan.planId);
+        })();
+        await this.revokeCredentialBindings(store, [original.scope.agentSessionId]);
+        coreDb.sqlite
+          .prepare(
+            "UPDATE vault_injection_receipts SET revocation_status='revoked' WHERE plan_id=?"
+          )
+          .run(plan.planId);
+        coreDb.sqlite
+          .prepare("UPDATE vault_injection_plans SET status='revoked' WHERE plan_id=?")
+          .run(plan.planId);
+        return {
+          planId: plan.planId,
+          receiptId: previous.receiptId,
+          state: 'removed',
+          fenceRef: null,
+        };
+      }
+      if (!this.executionBackend.replaceCredentialBinding || !this.vaultBackend)
+        throw new OperationError(
+          'credential_binding_unavailable',
+          'Credential binding replacement is unavailable.',
+          503
+        );
+      await recheckAuthority();
+      const { grant, reference } = current();
+      if (grant.ownerScope === 'user')
+        throw new OperationError(
+          'credential_binding_unavailable',
+          'Credential grant scope is not supported.',
+          409
+        );
+      if (reference.currentVersion !== input.materialVersion)
+        throw new OperationError(
+          'credential_material_changed',
+          'Credential material version changed.',
+          409
+        );
+      const receiptId = `receipt_${input.requestId}`;
+      if (getVaultInjectionReceipt(coreDb, receiptId))
+        throw new OperationError(
+          'credential_binding_changed',
+          'Inspect the original replacement receipt; replacement will not replay.',
+          409
+        );
+      const material = resolveMaterial(grant, reference, receiptId);
+      if (
+        current().reference.currentVersion !== reference.currentVersion ||
+        getVaultInjectionReceipt(coreDb, previous.receiptId)?.revocationStatus !== 'active' ||
+        getVaultInjectionPlan(coreDb, plan.planId)?.status !== 'active'
+      )
+        throw new OperationError(
+          'credential_binding_changed',
+          'Credential binding changed before replacement.',
+          409
+        );
+      const binding = workerCredentialFileBinding({
+        declarationId: declaration.id,
+        grantId: grant.grantId,
+        planId: plan.planId,
+        receiptId,
+        vaultReferenceId: reference.referenceId,
+        materialVersion: reference.currentVersion,
+        targetPath: declaration.targetPath,
+      });
+      effectAttempt = attempt;
+      effectPackage = consumer;
+      const proof = await this.executionBackend.replaceCredentialBinding(
+        {
+          ...schedulerExecutionCorrelation(attempt),
+          binding,
+          expectedReceiptId: previous.receiptId,
+          credentialValue: material,
+        },
+        recheckAuthority
+      );
+      await recheckAuthority();
+      const [verified] = requireExecutionCredentialReceipts([binding], [proof]);
+      if (current().reference.currentVersion !== binding.material.version)
+        throw new Error('Credential material generation changed during replacement.');
+      coreDb.sqlite.transaction(() => {
+        createVaultInjectionReceipt(coreDb, {
+          receiptId,
+          planId: plan.planId,
+          grantId: grant.grantId,
+          agentSessionId: consumer.scope.agentSessionId,
+          backendSummary: JSON.stringify({ ...verified, replacesReceiptId: previous.receiptId }),
+          injectedAt: this.now(),
+          expiresAt: grant.expiresAt,
+          revocationStatus: 'active',
+        });
+        const changed = coreDb.sqlite
+          .prepare(
+            "UPDATE vault_injection_receipts SET revocation_status='revoked' WHERE receipt_id=? AND revocation_status='active'"
+          )
+          .run(previous.receiptId);
+        if (changed.changes !== 1)
+          throw new Error('Credential replacement lost its original receipt.');
+      })();
+      return verified!;
+    } catch (cause) {
+      if (effectAttempt && effectPackage) {
+        markSchedulerExecutionAttemptClosing(coreDb, {
+          attemptId: effectAttempt.attemptId,
+          cause: 'credential-effect-unproved',
+          now: this.now,
+        });
+        try {
+          await this.backend.cleanupSession(this.backend.planSession(effectPackage), {
+            failedCloseout: true,
+            wholeSandbox: true,
+          });
+        } catch {
+          /* The existing closing attempt retains exclusion until its recovery owner proves absence. */
+        }
+      }
+      if (cause instanceof OperationError) throw cause;
+      throw new OperationError(
+        'recovery_required',
+        'Credential binding requires inspection.',
+        409,
+        { cause }
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  }
+
   /**
    * Fences credential-bearing residency, joins its current execution owners and requests exact Sandbox cleanup.
    *
@@ -2057,6 +2417,72 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             : attempt,
         execution: this.activeTurnExecutions.get(attempt.turnId),
       }));
+    // File removal is a placement-neutral obligation, including an idle resident's closed creator.
+    // The existing Vault receipt and scheduler attempt supply its exact identity; neither authorizes work.
+    const fileRevocations = new Map<
+      string,
+      {
+        declarationId: string;
+        receiptId: string;
+        attemptId: string;
+      }
+    >();
+    for (const receipt of listVaultInjectionReceipts(coreDb)) {
+      if (
+        !receipt.agentSessionId ||
+        !selectedSessions.has(receipt.agentSessionId) ||
+        receipt.revocationStatus === 'revoked'
+      )
+        continue;
+      const plan = getVaultInjectionPlan(coreDb, receipt.planId);
+      if (plan?.injectionVisibility !== 'runtime-file' || !plan.packageSnapshotId) continue;
+      const session = store.getAgentSession(receipt.agentSessionId);
+      const db = openWorkspaceDb(coreDb.dataRoot, session.workspaceId);
+      try {
+        const original = requireAgentEnvironmentPackageSnapshot(
+          db,
+          session.workspaceId,
+          plan.packageSnapshotId
+        ).snapshot;
+        const declaration = original.credentials.declarations.find(
+          (value) =>
+            value.visibility === 'runtime-file' &&
+            value.vaultGrantId === plan.grantId &&
+            value.targetPath === plan.targetPath
+        );
+        const { replacesReceiptId: _previous, ...proof } = JSON.parse(receipt.backendSummary);
+        const realized = WorkerCredentialReceiptSchema.parse(proof);
+        if (
+          !declaration ||
+          realized.declarationId !== declaration.id ||
+          realized.planId !== plan.planId ||
+          realized.receiptId !== receipt.receiptId ||
+          original.scope.agentSessionId !== receipt.agentSessionId
+        )
+          throw new Error('Credential revocation has contradictory receipt lineage.');
+        const live = attempts.find(
+          ({ attempt }) => attempt.agentSessionId === receipt.agentSessionId
+        );
+        const creator =
+          live?.attempt ??
+          listSchedulerExecutionAttemptsForTurn(coreDb, original.scope)
+            .filter(
+              (value) =>
+                value.backendId === this.executionBackend.id &&
+                value.agentSessionId === receipt.agentSessionId &&
+                value.inputRef === original.snapshotId
+            )
+            .at(-1);
+        if (!creator) throw new Error('Credential revocation has no exact placement lineage.');
+        fileRevocations.set(plan.planId, {
+          declarationId: declaration.id,
+          receiptId: receipt.receiptId,
+          attemptId: creator.attemptId,
+        });
+      } finally {
+        db.sqlite.close();
+      }
+    }
     const stopped = await Promise.allSettled([
       ...attempts.map(async ({ attempt, closing, execution }) => {
         if (!execution)
@@ -2082,6 +2508,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     await Promise.all(attempts.map(({ execution }) => execution?.catch(() => undefined)));
     const stopFailure = stopped.find((result) => result.status === 'rejected');
     if (stopFailure?.status === 'rejected') throw stopFailure.reason;
+    for (const [planId, binding] of fileRevocations) {
+      if (!this.executionBackend.revokeCredentialBinding)
+        throw new Error('Placement credential revocation is unavailable.');
+      const result = await this.executionBackend.revokeCredentialBinding({
+        ...schedulerExecutionCorrelation(
+          requireSchedulerExecutionAttempt(coreDb, binding.attemptId)
+        ),
+        declarationId: binding.declarationId,
+        planId,
+        receiptId: binding.receiptId,
+      });
+      if (result.state !== 'removed') throw new Error('Placement credential removal is unproved.');
+    }
     for (const [sandboxBindingRef, anchor] of cleanups) {
       const resident = () =>
         coreDb.sqlite
@@ -2754,6 +3193,54 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
       if (!workspaceDb) throw new Error('Worker launch requires its admitted Workspace owner.');
       await this.backend.prepareLaunch(materialization, workspaceDb);
+      if (!existingAgentSession && runtimeFileCredentials.length > 0) {
+        const dependencies = {
+          coreDb: this.coreDb!,
+          store,
+          turnExecutor: this,
+          ...(this.goalTaskPolicy ? { goalTaskPolicy: this.goalTaskPolicy } : {}),
+          ...(this.policyInterception ? { policyInterception: this.policyInterception() } : {}),
+          ...(this.readRuntimeConfig
+            ? { readRuntimePolicy: () => this.readRuntimeConfig!().openKitConfig.policy?.mediation }
+            : {}),
+          repositoryWorkspaceDb: (workspaceId: string) =>
+            openWorkspaceDb(this.coreDb!.dataRoot, workspaceId),
+          ...(this.workspaceMutationAdmission
+            ? { workspaceMutationAdmission: this.workspaceMutationAdmission }
+            : {}),
+        };
+        const invoke = createOperationEngine(
+          createVaultOperationImplementations(dependencies),
+          dependencies
+        );
+        for (const credential of runtimeFileCredentials) {
+          const operationRequestId = randomUUID();
+          await invoke(
+            'vault.binding-deliver',
+            {
+              workspaceId: environmentPackage.scope.workspaceId,
+              bindingThreadId: environmentPackage.scope.threadId,
+              planId: credential.planId,
+              receiptId: credential.receiptId,
+              materialVersion: credential.materialVersion,
+              requestId: operationRequestId,
+            },
+            {
+              kind: 'worker',
+              actor: environmentPackage.scope.triggerActor,
+              lineage: {
+                ...environmentPackage.scope,
+                packageSnapshotId: environmentPackage.snapshotId,
+              },
+              requestId: operationRequestId,
+              bindings: {
+                workspaceId: environmentPackage.scope.workspaceId,
+                requestId: operationRequestId,
+              },
+            }
+          );
+        }
+      }
       assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
       preparedWorkerContext?.assertCurrentKnowledgeOverview();
       const submission = recordSchedulerExecutionOperation(this.coreDb!, {
@@ -2779,6 +3266,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         observation = await this.executionBackend.submit({
           ...schedulerExecutionCorrelation(submission),
           deadline: submission.deadline!,
+          ...(!existingAgentSession && runtimeFileCredentials.length > 0
+            ? { credentialBindings: runtimeFileCredentials.map(workerCredentialFileBinding) }
+            : {}),
         });
       } finally {
         // The durable attempt holds only its own exclusion after a definite or unknown submission.
@@ -2800,8 +3290,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
       // Credential material is delivered once at `session.open`; a reused binding receives none.
       if (!existingAgentSession) {
+        const realized = requireExecutionCredentialReceipts(
+          runtimeFileCredentials.map(workerCredentialFileBinding),
+          observation.credentialReceipts
+        );
         for (const receipt of credentialReceipts) {
-          createVaultInjectionReceipt(this.coreDb!, { ...receipt, injectedAt: this.now() });
+          const fileReceipt = realized.find((proof) => proof.receiptId === receipt.receiptId);
+          createVaultInjectionReceipt(this.coreDb!, {
+            ...receipt,
+            ...(fileReceipt ? { backendSummary: JSON.stringify(fileReceipt) } : {}),
+            injectedAt: this.now(),
+          });
         }
       }
 

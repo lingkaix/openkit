@@ -45,14 +45,21 @@ const binding = {
 const document: PolicyDocumentV1 = { schemaVersion: 1, statements: [binding] };
 const proposal = {
   operation: 'mcp.call-tool' as const,
-  catalogRevision: 'catalog-fixture',
-  packageDigest: 'package-fixture',
   workspaceId,
-  serverId: 'issues',
-  toolName: 'read',
-  argumentsDigest: `sha256:${'2'.repeat(64)}`,
-  schemaDigest: null,
   capabilityCallId: 'cap_00000000-0000-7000-8000-000000000001',
+  resource: {
+    kind: 'mcp-tool' as const,
+    workspaceId: workspaceId,
+    serverId: 'issues',
+    toolName: 'read',
+  },
+  inputReferences: {
+    argumentsDigest: `sha256:${'2'.repeat(64)}`,
+    catalogRevision: 'catalog-fixture',
+    packageSnapshotId: 'package-fixture',
+    schemaDigest: null,
+  },
+  inputAttributes: {},
   subject: {
     principal,
     onBehalfOf: null,
@@ -175,7 +182,9 @@ describe('native Policy statement owner', () => {
         anchorCurrent: () => true,
       });
     expect(select()).toHaveLength(1);
-    expect(select({ ...proposal, toolName: 'write' })).toEqual([]);
+    expect(select({ ...proposal, resource: { ...proposal.resource, toolName: 'write' } })).toEqual(
+      []
+    );
     expect(select(proposal, false)).toEqual([]);
     expect(
       select({

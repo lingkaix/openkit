@@ -2092,6 +2092,7 @@ pub async fn poll_effect_command(
         let allowed: &[&str] = match kind {
             RuntimeEffectKind::CreateSandbox => &[
                 "backendSessionId",
+                "credentialBindings",
                 "environment",
                 "imageDigest",
                 "leaseId",
@@ -2482,9 +2483,15 @@ async fn poll_reference_import(
                     return Err(terminal("reference.import length mismatch"));
                 }
                 let mut response_body = response.into_body();
-                let mut stage =
+                let mut stage = if matches!(
+                    slot.as_str(),
+                    "runtime-credential" | "runtime-credential-replace"
+                ) {
+                    crate::file_transfer::FileStage::create_memory(byte_length)
+                } else {
                     crate::file_transfer::FileStage::create(staging_root, byte_length, byte_length)
-                        .map_err(|_| terminal("reference.import capacity unavailable"))?;
+                }
+                .map_err(|_| terminal("reference.import capacity unavailable"))?;
                 let mut observed = 0_u64;
                 while let Some(chunk) = response_body.data().await {
                     let chunk = chunk.map_err(|_| reconnect("reference.import response failed"))?;

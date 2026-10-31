@@ -101,6 +101,29 @@ export type ApprovalDecision = 'granted' | 'denied';
  * Abstraction used by the HTTP layer to execute and interrupt turns.
  */
 export interface TurnExecutor {
+  /** Existing Vault operations are the sole caller of reference-only binding lifecycle effects. */
+  credentialBindingOperation?(
+    store: FsStore,
+    input: {
+      readonly action: 'deliver' | 'replace' | 'revoke';
+      readonly workspaceId: string;
+      readonly threadId: string;
+      readonly planId: string;
+      readonly receiptId?: string;
+      readonly expectedReceiptId?: string;
+      readonly materialVersion?: number;
+      readonly requestId: string;
+    },
+    recheckAuthority: () => Promise<void>
+  ): Promise<
+    | import('@openkit/config-schema').WorkerCredentialReceipt
+    | {
+        readonly planId: string;
+        readonly receiptId: string;
+        readonly state: 'removed';
+        readonly fenceRef: string | null;
+      }
+  >;
   /** Configured four-operation execution boundary supplied by runtime composition. */
   readonly executionBackend?: import('./execution-backend.js').ExecutionBackend;
   /**

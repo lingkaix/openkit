@@ -16,6 +16,7 @@ import {
   resolveWorkspaceDataSourceReference,
   resolveWorkspaceMcpServer,
   type SessionWorkspaceMaterializationPlan,
+  WORKER_CREDENTIAL_FILE_REQUIREMENT,
   WORKER_RUNTIME_PROVENANCE_FEATURE,
   type WorkspaceDataSourceCatalog,
   type WorkspaceMcpServerCatalog,
@@ -107,10 +108,21 @@ export interface ResolvedAgentEnvironmentProviderCredential {
   readonly providerType: string;
 }
 
-/** Backend-private runtime file credential material resolved for one sandbox launch. */
+/** Reference-only file supply prepared for the governed private delivery operation. */
 export interface ResolvedAgentEnvironmentRuntimeFileCredential {
-  /** Secret file contents resolved from the vault backend. */
-  readonly credentialValue: string;
+  /** Exact admitted declaration; transient binding identity, never secret material. */
+  readonly declarationId: string;
+  /** Original grant that authorizes delivery. */
+  readonly grantId: string;
+  /** Original immutable injection plan. */
+  readonly planId: string;
+  /** Existing receipt identity, settled only after realized protection is proved. */
+  readonly receiptId: string;
+  /** Original Vault reference for restart collection comparison. */
+  readonly vaultReferenceId: string;
+  /** Exact material generation exposed to this binding. */
+  readonly materialVersion: number;
+
   /** Worker-local path that receives the secret file. */
   readonly targetPath: string;
 }
@@ -1407,17 +1419,20 @@ function resolveWorkerCredentialDeclarations(
       now: input.now,
     });
     const ownerScope = vaultUseOwnerScope(grant);
-    const material = createVaultUseAuditedBackend({
-      agentSessionId: input.agentSessionId,
-      backend: vaultBackend,
-      db: coreDb,
-      grantId: grant.grantId,
-      ownerScope,
-      planId,
-      resolvingPath: 'grant',
-      now: input.now,
-      ...(ownerScope === 'workspace' ? { workspaceId: input.workspaceId } : {}),
-    }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
+    const material =
+      declaration.visibility === 'runtime-file'
+        ? null
+        : createVaultUseAuditedBackend({
+            agentSessionId: input.agentSessionId,
+            backend: vaultBackend,
+            db: coreDb,
+            grantId: grant.grantId,
+            ownerScope,
+            planId,
+            resolvingPath: 'grant',
+            now: input.now,
+            ...(ownerScope === 'workspace' ? { workspaceId: input.workspaceId } : {}),
+          }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
 
     try {
       appendCredentialDeclarationArtifacts({
@@ -1425,7 +1440,7 @@ function resolveWorkerCredentialDeclarations(
         declaration,
         grant,
         input,
-        material: vaultSecretMaterialToString(material),
+        material: material === null ? null : vaultSecretMaterialToString(material),
         planId,
         receiptId,
         reference,
@@ -1721,9 +1736,9 @@ function declarationInjectionTarget(
   }
 
   return {
-    backendCapabilityRequirement: 'file-upload-download',
-    backendSummary: `openshell-runtime-file:${declaration.targetPath}`,
-    revocationBehavior: 'stale-session',
+    backendCapabilityRequirement: JSON.stringify(WORKER_CREDENTIAL_FILE_REQUIREMENT),
+    backendSummary: 'credential-file:pending-placement-proof',
+    revocationBehavior: 'revoke-binding-or-fence-placement',
     targetPath: declaration.targetPath,
     visibility: 'runtime-file',
   };
@@ -1792,18 +1807,21 @@ function appendCredentialDeclarationArtifacts(
     secretRef: `vault://${reference.referenceId}`,
   });
 
-  if (input.material === null) {
-    return;
-  }
-
   if (declaration.visibility === 'runtime-file') {
+    if (input.input.credentialResolution === 'metadata-only') return;
     input.input.runtimeFileCredentialSink?.({
-      credentialValue: input.material,
+      declarationId: declaration.id,
+      grantId: grant.grantId,
+      planId: input.planId,
+      receiptId: input.receiptId,
+      vaultReferenceId: reference.referenceId,
+      materialVersion: reference.currentVersion,
       targetPath: declaration.targetPath,
     });
     return;
   }
 
+  if (input.material === null) return;
   input.input.runtimeEnvCredentialSink?.({
     grantId: grant.grantId,
     planId: input.planId,

@@ -4,6 +4,7 @@
 //! mark responsibility boundaries inside one binary; they are not separate
 //! crates or public interfaces.
 
+mod credential_carrier;
 mod credential_slots;
 mod epoch_coordinator;
 #[cfg(not(test))]
@@ -421,6 +422,7 @@ fn execute_effect_command(
                     object.keys().any(|key| {
                         ![
                             "backendSessionId",
+                            "credentialBindings",
                             "environment",
                             "imageDigest",
                             "leaseId",
@@ -449,6 +451,11 @@ fn execute_effect_command(
                 sandbox_id,
                 kind,
             );
+            let credential_bindings = if command.kind == RuntimeEffectKind::CreateSandbox {
+                credential_carrier::parse_bindings(command.input.get("credentialBindings"))?
+            } else {
+                Vec::new()
+            };
             let create_spec = if command.kind == RuntimeEffectKind::CreateSandbox {
                 Some(SandboxSpec {
                     name: Some(sandbox_id.to_string()),
@@ -476,7 +483,7 @@ fn execute_effect_command(
             } else {
                 None
             };
-            let storage_mounts = if let Some(storage) = &storage_attachment {
+            let mut storage_mounts = if let Some(storage) = &storage_attachment {
                 if !create_policy
                     .as_ref()
                     .is_some_and(|policy| storage_targets_allowed(policy, storage))
@@ -487,6 +494,14 @@ fn execute_effect_command(
             } else {
                 Vec::new()
             };
+            if command.kind == RuntimeEffectKind::CreateSandbox {
+                coordinator.prepare_credentials(
+                    sandbox_id,
+                    string("imageDigest")?,
+                    credential_bindings,
+                    &mut storage_mounts,
+                )?;
+            }
             let state = coordinator
                 .execute_lifecycle_effect(
                     &request,
@@ -729,7 +744,17 @@ fn execute_effect_command(
                 "byteLength": carriage.byte_length(),
                 "reference": carriage.complete()?,
             }));
-            result.map(ExecutedEffectResult::Json)
+            result.map(|mut result| {
+                if matches!(
+                    file_data.slot.as_str(),
+                    "runtime-credential" | "runtime-credential-replace"
+                ) {
+                    result["credentialProtection"] = serde_json::json!({
+                        "ephemeral":true,"outsideRetainedStorage":true,
+                        "excludedFromCapture":true,"excludedFromExport":true});
+                }
+                ExecutedEffectResult::Json(result)
+            })
         }
         RuntimeEffectKind::InspectImage => Ok(ExecutedEffectResult::Json(
             coordinator.inspect_image(string("imageDigest")?)?,
@@ -1416,6 +1441,8 @@ fn main() {
     }
 }
 
+#[cfg(test)]
+mod credential_carrier_acceptance_tests;
 #[cfg(test)]
 mod openshell_upgrade_tests;
 

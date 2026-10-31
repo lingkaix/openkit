@@ -213,7 +213,7 @@ export const CreateWorkspaceVaultGrantRequestSchema = z
   .object({
     referenceId: VaultReferenceIdSchema,
     expiresAt: z.string().datetime().optional(),
-    injectionPath: z.enum(['gateway-only', 'runtime-env']).optional(),
+    injectionPath: z.enum(['gateway-only', 'runtime-env', 'runtime-file']).optional(),
     ...WorkspaceVaultGrantTargets,
   })
   .strict();

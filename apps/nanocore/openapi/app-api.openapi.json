@@ -1554,6 +1554,186 @@
         }
       }
     },
+    "/api/app/operations/vault.binding-deliver": {
+      "post": {
+        "operationId": "vault.binding-deliver",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Deliver one already admitted credential file binding and inspect its realized protection.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.binding-deliver.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Deliver one already admitted credential file binding and inspect its realized protection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.binding-deliver.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.binding-replace": {
+      "post": {
+        "operationId": "vault.binding-replace",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Replace one live credential file binding with a current authorized Vault material version.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.binding-replace.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Replace one live credential file binding with a current authorized Vault material version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.binding-replace.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.binding-revoke": {
+      "post": {
+        "operationId": "vault.binding-revoke",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Close one credential binding through its execution owner while preserving unrelated grant authority.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.binding-revoke.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Close one credential binding through its execution owner while preserving unrelated grant authority.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.binding-revoke.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/vault.server-mcp-injection-plan-list": {
       "post": {
         "operationId": "vault.server-mcp-injection-plan-list",
@@ -27157,6 +27337,281 @@
           }
         ]
       },
+      "vault.binding-deliver.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "bindingThreadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "planId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "receiptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "materialVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "workspaceId",
+          "bindingThreadId",
+          "planId",
+          "receiptId",
+          "materialVersion"
+        ],
+        "additionalProperties": false
+      },
+      "vault.binding-deliver.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "declarationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "planId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "receiptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "materialVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "access": {
+            "type": "string",
+            "const": "read-only"
+          },
+          "realizedProtection": {
+            "type": "object",
+            "properties": {
+              "ephemeral": {
+                "type": "boolean",
+                "const": true
+              },
+              "outsideRetainedStorage": {
+                "type": "boolean",
+                "const": true
+              },
+              "excludedFromCapture": {
+                "type": "boolean",
+                "const": true
+              },
+              "excludedFromExport": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "ephemeral",
+              "outsideRetainedStorage",
+              "excludedFromCapture",
+              "excludedFromExport"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "declarationId",
+          "planId",
+          "receiptId",
+          "materialVersion",
+          "access",
+          "realizedProtection"
+        ],
+        "additionalProperties": false
+      },
+      "vault.binding-replace.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "bindingThreadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "planId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "expectedReceiptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "materialVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "workspaceId",
+          "bindingThreadId",
+          "planId",
+          "expectedReceiptId",
+          "materialVersion"
+        ],
+        "additionalProperties": false
+      },
+      "vault.binding-replace.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "declarationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "planId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "receiptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "materialVersion": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "access": {
+            "type": "string",
+            "const": "read-only"
+          },
+          "realizedProtection": {
+            "type": "object",
+            "properties": {
+              "ephemeral": {
+                "type": "boolean",
+                "const": true
+              },
+              "outsideRetainedStorage": {
+                "type": "boolean",
+                "const": true
+              },
+              "excludedFromCapture": {
+                "type": "boolean",
+                "const": true
+              },
+              "excludedFromExport": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "ephemeral",
+              "outsideRetainedStorage",
+              "excludedFromCapture",
+              "excludedFromExport"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "declarationId",
+          "planId",
+          "receiptId",
+          "materialVersion",
+          "access",
+          "realizedProtection"
+        ],
+        "additionalProperties": false
+      },
+      "vault.binding-revoke.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "bindingThreadId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "planId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "expectedReceiptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "workspaceId",
+          "bindingThreadId",
+          "planId",
+          "expectedReceiptId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.binding-revoke.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "planId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "receiptId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "state": {
+            "type": "string",
+            "const": "removed"
+          },
+          "fenceRef": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "planId",
+          "receiptId",
+          "state",
+          "fenceRef"
+        ],
+        "additionalProperties": false
+      },
       "vault.server-mcp-injection-plan-list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -27429,7 +27884,8 @@
                 "type": "string",
                 "enum": [
                   "gateway-only",
-                  "runtime-env"
+                  "runtime-env",
+                  "runtime-file"
                 ]
               },
               "targetAgentId": {
@@ -27561,7 +28017,8 @@
                 "type": "string",
                 "enum": [
                   "gateway-only",
-                  "runtime-env"
+                  "runtime-env",
+                  "runtime-file"
                 ]
               },
               "targetAgentId": {
@@ -27889,7 +28346,8 @@
                       "type": "string",
                       "enum": [
                         "gateway-only",
-                        "runtime-env"
+                        "runtime-env",
+                        "runtime-file"
                       ]
                     },
                     "targetAgentId": {
@@ -28218,7 +28676,8 @@
                 "type": "string",
                 "enum": [
                   "gateway-only",
-                  "runtime-env"
+                  "runtime-env",
+                  "runtime-file"
                 ]
               },
               "targetAgentId": {
@@ -28913,7 +29372,8 @@
             "type": "string",
             "enum": [
               "gateway-only",
-              "runtime-env"
+              "runtime-env",
+              "runtime-file"
             ]
           },
           "targetAgentId": {
@@ -154745,7 +155205,8 @@
             "type": "string",
             "enum": [
               "gateway-only",
-              "runtime-env"
+              "runtime-env",
+              "runtime-file"
             ]
           },
           "targetAgentId": {
@@ -155677,5 +156138,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:0e3b1cd231368934a483ecf179bfcaf0dba66c805fbfeee65bd1f1d837ed4c27"
+  "x-openkit-source-digest": "sha256:1cc7ca84c75234541ec37585a73f66b4aa8bbc9c4e70741dd63c82f44a2fb8c8"
 }

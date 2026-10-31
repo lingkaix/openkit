@@ -18,7 +18,7 @@ export const VaultGrantRequestTermsSchema = CreateWorkspaceVaultGrantRequestSche
   referenceId: VaultReferenceIdSchema,
   ownerScope: z.enum(['workspace', 'server']),
   lifetime: z.enum(['workspace', 'server']),
-  injectionPath: z.enum(['gateway-only', 'runtime-env']),
+  injectionPath: z.enum(['gateway-only', 'runtime-env', 'runtime-file']),
   mcpSource: z
     .object({
       serverId: z.string().min(1).max(128),
@@ -32,10 +32,10 @@ export const VaultGrantRequestTermsSchema = CreateWorkspaceVaultGrantRequestSche
     ctx.addIssue({ code: 'custom', message: 'Grant lifetime must match its owning scope.' });
   if (value.ownerScope === 'server' && value.injectionPath !== 'gateway-only')
     ctx.addIssue({ code: 'custom', message: 'Server grants require Gateway-only visibility.' });
-  if (value.injectionPath === 'runtime-env' && value.targetCapabilityId !== undefined)
+  if (value.injectionPath !== 'gateway-only' && value.targetCapabilityId !== undefined)
     ctx.addIssue({
       code: 'custom',
-      message: 'Runtime environment grants cannot target a capability.',
+      message: 'Worker-visible credential grants cannot target a capability.',
     });
 });
 

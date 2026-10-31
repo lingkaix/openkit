@@ -19,6 +19,7 @@ import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { preparePolicyConfiguration, readAdmittedPolicyDocument } from './configuration.js';
 import { PolicyInterception } from './interception.js';
+import { selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   listExportableWorkspacePermissionDecisions,
   policyStatementUsedByDecision,
@@ -42,13 +43,20 @@ const scope = {
 const proposal: PolicyProposal = {
   operation: 'mcp.call-tool',
   workspaceId,
-  serverId: 'issues',
-  toolName: 'read',
-  argumentsDigest: policyDigest({ issue: 1 }),
-  catalogRevision: 'catalog-fixture',
-  packageDigest: 'package-fixture',
-  schemaDigest: null,
   capabilityCallId: 'cap_00000000-0000-7000-8000-000000000001',
+  resource: {
+    kind: 'mcp-tool' as const,
+    workspaceId: workspaceId,
+    serverId: 'issues',
+    toolName: 'read',
+  },
+  inputReferences: {
+    argumentsDigest: policyDigest({ issue: 1 }),
+    catalogRevision: 'catalog-fixture',
+    packageSnapshotId: 'package-fixture',
+    schemaDigest: null,
+  },
+  inputAttributes: {},
   subject: {
     principal: human,
     onBehalfOf: null,
@@ -204,6 +212,11 @@ function fixture(document: PolicyDocumentV1) {
     workspaceDb,
     document,
     proposal,
+    resourceSummary: { serverId: 'issues', toolName: 'read' },
+    contextSummary: {
+      packageSnapshotId: proposal.inputReferences.packageSnapshotId,
+      catalogRevision: proposal.inputReferences.catalogRevision,
+    },
     authorizationRevision: policyDigest({ member: userId }),
     authorCurrent: () => true,
     anchorCurrent: () => true,
@@ -552,6 +565,12 @@ describe('agent gate at native I16', () => {
       const input = fixture(agentDocument());
       const binding = admittedBinding(input.document);
       const calls: string[] = [];
+      const document = humanRequired ? withHumanMcpApproval(input) : input.document;
+      const permissions = selectMcpToolPermissions({
+        document,
+        proposal: { ...proposal, serverId: 'issues', toolName: 'read' },
+        authorCurrent: input.authorCurrent,
+      });
       const result = await new PolicyInterception(undefined, {
         id: agentId,
         version: binding.participant.version,
@@ -561,7 +580,8 @@ describe('agent gate at native I16', () => {
         },
       }).decide({
         ...input,
-        document: humanRequired ? withHumanMcpApproval(input) : input.document,
+        document,
+        permissions,
         finalKernel: () => {
           calls.push('kernel');
           return kernel(humanRequired);

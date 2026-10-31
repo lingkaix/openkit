@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { constants } from 'node:fs';
-import { link, lstat, mkdir, open, rename, rmdir, unlink } from 'node:fs/promises';
+import { link, lstat, mkdir, open, readFile, rename, rmdir, unlink } from 'node:fs/promises';
 import { isAbsolute, join, posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -56,7 +56,9 @@ const EXPORT_SLOTS = new Set(['cache', 'main-worktree', 'scratch', 'session', 't
 export async function runFileEffect({ argv, stdin, stdout, stderr, slotRoots }) {
   try {
     const command = parseCommand(argv, slotRoots);
-    if (command.operation === 'reference.import') {
+    if (command.operation === 'credential.verify') {
+      await verifyCredentialMount(command, stdin, stdout);
+    } else if (command.operation === 'reference.import') {
       await importReference(command, stdin, stdout);
     } else {
       const present = await exportFile(command, stdout);
@@ -89,6 +91,28 @@ function parseCommand(argv, slotRoots) {
   }
 
   if (
+    argv.length === 5 &&
+    argv[0] === 'credential.verify' &&
+    argv[1] === '--path' &&
+    argv[3] === '--length'
+  ) {
+    const target = argv[2];
+    if (
+      !target.startsWith('/sandbox/') ||
+      target === '/sandbox/openkit' ||
+      target.startsWith('/sandbox/openkit/')
+    )
+      throw new Error('invalid credential mount');
+    const relativePath = parseRelativePath(target.slice(1));
+    return {
+      operation: 'credential.verify',
+      root: '/',
+      relativePath,
+      length: parseBoundedDecimal(argv[4]),
+    };
+  }
+
+  if (
     argv.length === 7 &&
     argv[0] === 'reference.import' &&
     argv[1] === '--slot' &&
@@ -99,7 +123,13 @@ function parseCommand(argv, slotRoots) {
   ) {
     const relativePath = parseRelativePath(argv[4]);
     const root = resolveWorkerSupplyRoot(slotRoots, relativePath);
-    return { entryKind: 'directory', operation: 'reference.import', relativePath, replace: false, root };
+    return {
+      entryKind: 'directory',
+      operation: 'reference.import',
+      relativePath,
+      replace: false,
+      root,
+    };
   }
 
   if (
@@ -129,7 +159,12 @@ function parseCommand(argv, slotRoots) {
             : replace
               ? resolveRuntimeCredentialRoot(slotRoots, relativePath)
               : resolveSlotRoot(slotRoots, slot, IMPORT_SLOTS);
-    const length = parseBoundedDecimal(argv[6], ['artifact-input', 'turn-inputs', 'context'].includes(slot) ? MAX_SOURCE_FILE_BYTES : MAX_FILE_BYTES);
+    const length = parseBoundedDecimal(
+      argv[6],
+      ['artifact-input', 'turn-inputs', 'context'].includes(slot)
+        ? MAX_SOURCE_FILE_BYTES
+        : MAX_FILE_BYTES
+    );
     const digest = argv[8];
     if (!/^sha256:[0-9a-f]{64}$/.test(digest)) {
       throw new Error('invalid digest');
@@ -159,7 +194,10 @@ function parseCommand(argv, slotRoots) {
     exportArgs[3] === '--path' &&
     exportArgs[5] === '--max-length'
   ) {
-    const maximum = parseBoundedDecimal(exportArgs[6], live ? MAX_SOURCE_FILE_BYTES + 1 : MAX_FILE_BYTES);
+    const maximum = parseBoundedDecimal(
+      exportArgs[6],
+      live ? MAX_SOURCE_FILE_BYTES + 1 : MAX_FILE_BYTES
+    );
     if (
       live
         ? !allowMissing || maximum < 1 || maximum > MAX_SOURCE_FILE_BYTES + 1
@@ -171,7 +209,12 @@ function parseCommand(argv, slotRoots) {
     const relativePath = parseRelativePath(exportArgs[4]);
     if (slot === 'main-worktree') validateMainWorktreeExportPath(relativePath);
     // Core hash-qualified Thread/Turn ids contain literal colons, which do not escape POSIX segments.
-    if (slot === 'session' && !/^[A-Za-z0-9_:-]+\/(?:codex|pi|opencode|deepseek)\/capture\/[A-Za-z0-9_:-]+\/.+$/.test(relativePath)) {
+    if (
+      slot === 'session' &&
+      !/^[A-Za-z0-9_:-]+\/(?:codex|pi|opencode|deepseek)\/capture\/[A-Za-z0-9_:-]+\/.+$/.test(
+        relativePath
+      )
+    ) {
       throw new Error('invalid Turn capture path');
     }
     if (slot === 'turn-output' && !/^[A-Za-z0-9_-]+\/outputs\/.+$/.test(relativePath)) {
@@ -313,6 +356,79 @@ function parseBoundedDecimal(value, maximum = MAX_FILE_BYTES) {
     throw new Error('invalid length');
   }
   return length;
+}
+
+/**
+ * Verifies a read-only single-file mount without writing or exporting its bytes.
+ * @param {{root: string, relativePath: string, length: number}} command Fixed mount target and exact private body bound.
+ * @param {AsyncIterable<Uint8Array | string>} stdin Verified import body, used only for memory comparison.
+ * @param {NodeJS.WritableStream} stdout Fixed value-free acknowledgement.
+ * @returns {Promise<void>}
+ */
+async function verifyCredentialMount(command, stdin, stdout) {
+  const target = `/${command.relativePath}`;
+  const mountinfo = await readFile('/proc/self/mountinfo', 'utf8');
+  const unescape = (value) =>
+    value.replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(Number.parseInt(octal, 8)));
+  const mounts = mountinfo
+    .trim()
+    .split('\n')
+    .map((line) => line.split(' '))
+    .filter((fields) => unescape(fields[4]) === target);
+  if (mounts.length !== 1 || !mounts[0][5].split(',').includes('ro'))
+    throw new Error('credential mount not read-only');
+  const resolved = await resolveExistingTarget(command.root, command.relativePath);
+  let file;
+  try {
+    file = await open(
+      resolved.path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+    );
+    const before = await file.stat();
+    if (!before.isFile() || before.nlink !== 1 || before.size !== command.length)
+      throw new Error('invalid credential inode');
+    const incomingHash = createHash('sha256');
+    let received = 0;
+    for await (const value of stdin) {
+      const bytes = Buffer.from(value);
+      received += bytes.length;
+      if (received > command.length) throw new Error('credential verification length exceeded');
+      incomingHash.update(bytes);
+      if (received === command.length) break;
+    }
+    if (received !== command.length) throw new Error('incomplete credential verification');
+    const actualHash = createHash('sha256');
+    const buffer = Buffer.alloc(IO_CHUNK_BYTES);
+    let count = 0;
+    for (;;) {
+      const { bytesRead } = await file.read(
+        buffer,
+        0,
+        Math.min(buffer.length, command.length + 1 - count),
+        count
+      );
+      if (bytesRead === 0) break;
+      count += bytesRead;
+      if (count > command.length) throw new Error('credential verification changed');
+      actualHash.update(buffer.subarray(0, bytesRead));
+    }
+    const after = await file.stat();
+    if (
+      count !== command.length ||
+      actualHash.digest('hex') !== incomingHash.digest('hex') ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeMs !== after.mtimeMs ||
+      before.ctimeMs !== after.ctimeMs ||
+      after.nlink !== 1
+    )
+      throw new Error('credential mount integrity failed');
+    await writeStream(stdout, 'OPENKIT_CREDENTIAL_MOUNT_V1\n');
+  } finally {
+    await file?.close();
+    await resolved.directory.close();
+  }
 }
 
 /**

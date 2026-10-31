@@ -1954,11 +1954,32 @@ mod tests {
         let stage = include_str!("file_transfer.rs")
             .split_whitespace()
             .collect::<String>();
+        // Retained staging keeps atomic placement; the anonymous credential sink has no path.
+        let completion = stage
+            .split_once("pubfncomplete(")
+            .expect("private staging completion owner")
+            .1
+            .split_once("pubfnlength(")
+            .expect("end of private staging completion owner")
+            .0;
+        let atomic_placement = completion
+            .find("fs::rename(directory.join(\"partial\"),directory.join(\"payload\"))")
+            .expect("atomic retained private placement");
+        let directory_fsync = completion
+            .find("File::open(directory)?.sync_all()?")
+            .expect("durable retained private placement");
         assert!(
-            stage.find("self.file.sync_all()").expect("stream fsync")
-                < stage
-                    .find("fs::rename(self.directory")
-                    .expect("atomic private placement")
+            completion
+                .find("self.file.sync_all()")
+                .expect("stream fsync")
+                < atomic_placement
+        );
+        assert!(atomic_placement < directory_fsync);
+        assert!(
+            directory_fsync
+                < completion
+                    .find("Ok(VerifiedFile{")
+                    .expect("verified publication")
         );
         assert!(stage.contains("hash.update(&buffer[..count])"));
         for bootstrap_rule in [

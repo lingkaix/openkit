@@ -6,6 +6,7 @@ import {
   SubscriptionProviderIdSchema as ConfigSubscriptionProviderIdSchema,
   ProviderSubscriptionAccountSlotIdSchema,
 } from '@openkit/config-schema/provider-subscription';
+import { WorkerCredentialReceiptSchema } from '@openkit/config-schema/worker-credentials';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -249,6 +250,7 @@ const rawSecretShapes = [
 const schemaSourceRoot = new URL('.', import.meta.url);
 const allowedRuntimeNeutralImports = new Set([
   '@openkit/config-schema/mcp-credentials',
+  '@openkit/config-schema/worker-credentials',
   '@openkit/config-schema/native-environment',
   '@openkit/config-schema/provider-subscription',
   '@openkit/config-schema/workspace-export',
@@ -299,6 +301,28 @@ describe('app api schema package boundary', () => {
     });
 
     expect(offenders).toEqual([]);
+  });
+
+  it('uses the pure credential schema entry and the same actual receipt schema at both API consumers', async () => {
+    const source = readFileSync(
+      new URL('../../config-schema/src/worker-credentials.ts', import.meta.url),
+      'utf8'
+    );
+    expect(
+      staticImportSpecifiers(source).filter(
+        (specifier) => !['zod', '@openkit/protocol'].includes(specifier)
+      )
+    ).toEqual([]);
+    const config = await import('@openkit/config-schema');
+    expect(config.WorkerCredentialReceiptSchema).toBe(WorkerCredentialReceiptSchema);
+    for (const operation of ['vault.binding-deliver', 'vault.binding-replace'] as const) {
+      expect(appApiSchemas.VAULT_OPERATION_DEFINITIONS[operation].outputSchema).toBe(
+        WorkerCredentialReceiptSchema
+      );
+    }
+    expect(isRuntimeNeutralSchemaImport('@openkit/config-schema')).toBe(false);
+    expect(isRuntimeNeutralSchemaImport('node:crypto')).toBe(false);
+    expect(isRuntimeNeutralSchemaImport('node:net')).toBe(false);
   });
 
   it('exports the closed provider-subscription identifier schema from the package root', () => {

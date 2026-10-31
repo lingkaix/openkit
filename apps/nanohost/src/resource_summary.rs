@@ -118,20 +118,8 @@ pub(crate) async fn observe_from_sources(
 ) -> Option<serde_json::Value> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
     tokio::time::timeout_at(deadline, async {
-        // OpenShell 8c7dd14 selects these four labels; container names are not Sandbox IDs.
-        // Host bootstrap leaves the pinned driver's namespace at its default, `default`.
-        let id_filter = format!("label=openshell.ai/sandbox-id={sandbox_id}");
-        let name_filter = format!("label=openshell.ai/sandbox-name={sandbox_name}");
-        let ids = docker_metadata(docker_binary, socket, &[
-            "container", "ls", "--all", "--no-trunc", "--filter",
-            "label=openshell.ai/managed-by=openshell", "--filter",
-            "label=openshell.ai/sandbox-namespace=default", "--filter", &id_filter,
-            "--filter", &name_filter, "--format", "{{.ID}}",
-        ]).await?;
-        let id = ids.trim();
-        if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
-            return None;
-        }
+        let id = exact_container_id(docker_binary, socket, sandbox_id, sandbox_name).await?;
+        let id = id.as_str();
         // Project no environment, logs, arbitrary labels or State.Error into private stdout.
         let args = ["container", "inspect", "--format",
             r#"[{"Id":{{json .Id}},"State":{"Pid":{{json .State.Pid}},"Status":{{json .State.Status}},"OOMKilled":{{json .State.OOMKilled}}},"Config":{"Labels":{"openshell.ai/managed-by":{{json (index .Config.Labels "openshell.ai/managed-by")}},"openshell.ai/sandbox-namespace":{{json (index .Config.Labels "openshell.ai/sandbox-namespace")}},"openshell.ai/sandbox-id":{{json (index .Config.Labels "openshell.ai/sandbox-id")}},"openshell.ai/sandbox-name":{{json (index .Config.Labels "openshell.ai/sandbox-name")}}}}}]"#,
@@ -162,6 +150,61 @@ pub(crate) async fn observe_from_sources(
         let summary = summary_from_observation(final_inspect.as_bytes(), fields[0], fields[1], fields[2], fields[3]);
         (!summary.as_object()?.is_empty() && serde_json::to_vec(&summary).ok()?.len() <= 1024
             && tokio::time::Instant::now() < deadline).then_some(summary)
+    }).await.ok().flatten()
+}
+
+/// Resolves one exact stock-driver Sandbox through its four authoritative labels.
+async fn exact_container_id(
+    binary: &std::path::Path,
+    socket: &std::path::Path,
+    sandbox_id: &str,
+    sandbox_name: &str,
+) -> Option<String> {
+    let id_filter = format!("label=openshell.ai/sandbox-id={sandbox_id}");
+    let name_filter = format!("label=openshell.ai/sandbox-name={sandbox_name}");
+    let ids = docker_metadata(
+        binary,
+        socket,
+        &[
+            "container",
+            "ls",
+            "--all",
+            "--no-trunc",
+            "--filter",
+            "label=openshell.ai/managed-by=openshell",
+            "--filter",
+            "label=openshell.ai/sandbox-namespace=default",
+            "--filter",
+            &id_filter,
+            "--filter",
+            &name_filter,
+            "--format",
+            "{{.ID}}",
+        ],
+    )
+    .await?;
+    let id = ids.trim();
+    (id.len() == 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+    .then(|| id.to_string())
+}
+
+/// Observes only mount facts and the same exact native identity used by deletion.
+/// It excludes environment values and logs even from the private command output.
+pub(crate) async fn observe_credential_mounts(
+    socket: &std::path::Path,
+    sandbox_id: &str,
+    sandbox_name: &str,
+) -> Option<serde_json::Value> {
+    let binary = std::path::Path::new("/usr/bin/docker");
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let id = exact_container_id(binary, socket, sandbox_id, sandbox_name).await?;
+        let raw = docker_metadata(binary, socket, &["container", "inspect", "--format",
+            r#"[{"Id":{{json .Id}},"Mounts":{{json .Mounts}},"Config":{"Labels":{"openshell.ai/managed-by":{{json (index .Config.Labels "openshell.ai/managed-by")}},"openshell.ai/sandbox-namespace":{{json (index .Config.Labels "openshell.ai/sandbox-namespace")}},"openshell.ai/sandbox-id":{{json (index .Config.Labels "openshell.ai/sandbox-id")}},"openshell.ai/sandbox-name":{{json (index .Config.Labels "openshell.ai/sandbox-name")}}}}}]"#, &id]).await?;
+        let row = exact_container(&raw, &id, sandbox_id, sandbox_name)?;
+        row.get("Mounts").cloned()
     }).await.ok().flatten()
 }
 

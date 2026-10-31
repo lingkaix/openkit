@@ -7,6 +7,7 @@ import {
   type PolicyDecisionV1,
   type PolicyDocumentV1,
   type PolicyInvocationV1,
+  type PolicyPermissionV1Schema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
@@ -14,7 +15,6 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
 import type { GoalTaskAccessResult } from './goal-task-access.js';
-import { applyMcpToolProhibitions, selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   type RecordProductPermissionDecisionInput,
   readPolicyStatementUseCount,
@@ -23,7 +23,9 @@ import {
 import {
   type PolicyProposal,
   policyDigest,
+  policyOperationDefinition,
   policyProposalDigest,
+  policyResourceWorkspace,
   policyScopeIncludesProposal,
   readPolicyAgentPrincipal,
   selectPolicyBindings,
@@ -58,6 +60,11 @@ export interface InterceptionInput {
   readonly document: PolicyDocumentV1;
   readonly proposal: PolicyProposal;
   readonly authorizationRevision: string;
+  /** Current conditions selected by the operation's existing resource owner. */
+  readonly permissions?: readonly z.infer<typeof PolicyPermissionV1Schema>[];
+  /** Explicit safe evidence projections retained by the existing decision owner. */
+  readonly resourceSummary?: Readonly<Record<string, unknown>>;
+  readonly contextSummary?: Readonly<Record<string, unknown>>;
   /** Current finite grants used by the native mandatory Kernel adapter, not participant results. */
   readonly authorizationUses?: RecordProductPermissionDecisionInput['uses'];
   /** Exact human response context supplied only by the existing captured approval owner. */
@@ -68,8 +75,6 @@ export interface InterceptionInput {
     readonly binding: z.infer<typeof PolicyApprovalBindingV1Schema>;
   };
   readonly authorCurrent: (userId: string) => boolean;
-  /** Tool conditions retain the current authority of their human Policy writer. */
-  readonly permissionAuthorCurrent?: (userId: string) => boolean;
   readonly anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) => boolean;
   /** Kernel-only participant admission: no bindings or investigative recursion. */
   readonly participantAuthorized: (binding: PolicyBindingV1) => boolean;
@@ -107,6 +112,12 @@ export class PolicyInterception {
 
   /** Shares exact invocation validation between synchronous and awaited decision entry points. */
   private prepareDecision(input: InterceptionInput) {
+    const { points } = policyOperationDefinition(input.proposal.operation);
+    if (
+      !points.stages.includes('decide') ||
+      policyResourceWorkspace(input.proposal.resource) !== input.proposal.workspaceId
+    )
+      throw new Error('Policy deciding point or resource is unavailable.');
     if (
       input.document.statements.some(
         (statement) =>
@@ -128,7 +139,7 @@ export class PolicyInterception {
       )
         throw new Error('Finite authorization must match the current Policy statement and limit.');
     }
-    const bindings = selectPolicyBindings({ ...input, now: Date.now() });
+    const bindings = selectPolicyBindings({ ...input, stage: 'decide', now: Date.now() });
     const invocations: InvocationReference[] = [];
     const advice: unknown[] = [];
     const results: PermissionDecisionResult[] = [];
@@ -138,14 +149,8 @@ export class PolicyInterception {
       input.humanApproval.binding.proposalDigest === proposalDigest &&
       input.humanApproval.binding.policyRevision === policyRevision &&
       input.humanApproval.binding.authorizationRevision === input.authorizationRevision;
-    const toolPermissions = selectMcpToolPermissions({
-      ...input,
-      authorCurrent: input.permissionAuthorCurrent ?? input.authorCurrent,
-    });
-    if (
-      toolPermissions.some((statement) => statement.effect === 'require_approval') &&
-      !humanApproved
-    )
+    const conditions = input.permissions ?? [];
+    if (conditions.some((statement) => statement.effect === 'require_approval') && !humanApproved)
       results.push('require_approval');
     return {
       bindings,
@@ -225,13 +230,7 @@ export class PolicyInterception {
     try {
       const evaluated = input.finalKernel({ proposal: input.proposal, advice });
       const goal = 'kernel' in evaluated ? evaluated : undefined;
-      kernel = applyMcpToolProhibitions(
-        'kernel' in evaluated ? evaluated.kernel : evaluated,
-        selectMcpToolPermissions({
-          ...input,
-          authorCurrent: input.permissionAuthorCurrent ?? input.authorCurrent,
-        })
-      );
+      kernel = 'kernel' in evaluated ? evaluated.kernel : evaluated;
       if (
         kernel.reasons.some(({ code }) =>
           ['invalid-policy', 'invalid-request', 'missing-operation'].includes(code)
@@ -338,7 +337,9 @@ export class PolicyInterception {
 
   /** Completed observations cannot change an already settled effect or authorize a retry. */
   async observe(input: InterceptionInput): Promise<void> {
-    const bindings = selectPolicyBindings({ ...input, now: Date.now() });
+    if (!policyOperationDefinition(input.proposal.operation).points.stages.includes('completed'))
+      throw new Error('Policy completed point is unavailable.');
+    const bindings = selectPolicyBindings({ ...input, stage: 'completed', now: Date.now() });
     for (const binding of bindings.filter((value) => value.mode === 'observe'))
       await this.invoke(
         input,
@@ -359,6 +360,16 @@ export class PolicyInterception {
     reference: InvocationReference;
     result: PermissionDecisionResult;
   }> {
+    const { points } = policyOperationDefinition(input.proposal.operation);
+    if (
+      binding.operation !== input.proposal.operation ||
+      !points.stages.includes(binding.stage) ||
+      !points.modes.includes(binding.mode) ||
+      !points.participantKinds.includes(binding.participant.kind) ||
+      (binding.mode === 'gate' &&
+        !points.gateFailures.includes(binding.failure as 'error' | 'escalate-to-human'))
+    )
+      throw new Error('Policy participation is unavailable at this operation point.');
     const startedAt = new Date().toISOString();
     const bindingRef = { id: binding.id, digest: policyDigest(binding) };
     const key = bindingRef.digest;
@@ -434,7 +445,16 @@ export class PolicyInterception {
                 : GateOutput
               ).safeParse(output)
             : ObservationOutput.safeParse(output);
-        if (!parsed.success) outcome = 'malformed';
+        if (
+          !parsed.success ||
+          (binding.mode === 'gate' &&
+            !policyOperationDefinition(input.proposal.operation).points.gateResults.includes(
+              binding.participant.kind === 'agent'
+                ? PolicyAgentGateOutputV1Schema.parse(parsed.data).decision
+                : GateOutput.parse(parsed.data).decision
+            ))
+        )
+          outcome = 'malformed';
         else if (!input.stillCurrent()) outcome = 'stale';
         else {
           if (binding.participant.kind === 'agent') {
@@ -554,7 +574,9 @@ export class PolicyInterception {
           actor: input.proposal.subject.actor,
           category: 'system',
           action: 'policy.participant',
-          capabilityCallId: input.proposal.capabilityCallId,
+          ...(input.proposal.capabilityCallId
+            ? { capabilityCallId: input.proposal.capabilityCallId }
+            : {}),
           ...(input.proposal.subject.process
             ? {
                 threadId: input.proposal.subject.process.threadId,
@@ -602,7 +624,7 @@ function decisionInput(input: InterceptionInput, policyRevision: string) {
     workspaceDb: input.workspaceDb,
     workspaceId: input.proposal.workspaceId,
     ownerScope: 'workspace' as const,
-    action: 'tool.use',
+    action: policyOperationDefinition(input.proposal.operation).policyOperation,
     enforcementPoint: `${input.proposal.operation}@decide`,
     policyEngineVersion: 'nanocore-policy:v1',
     policySnapshotId: policyRevision,
@@ -610,11 +632,10 @@ function decisionInput(input: InterceptionInput, policyRevision: string) {
       principal: input.proposal.subject.principal,
       responsibleHumanId: input.proposal.subject.responsibleHumanId,
     },
-    resourceSummary: { serverId: input.proposal.serverId, toolName: input.proposal.toolName },
+    resourceSummary: input.resourceSummary ?? input.proposal.resource,
     contextSummary: {
       capabilityCallId: input.proposal.capabilityCallId,
-      packageSnapshotId: input.proposal.packageDigest,
-      catalogRevision: input.proposal.catalogRevision,
+      ...input.contextSummary,
       threadId: input.proposal.subject.process?.threadId,
       turnId: input.proposal.subject.process?.turnId,
       ...(input.humanApproval

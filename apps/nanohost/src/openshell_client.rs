@@ -95,7 +95,7 @@ fn classify_ready_observation(
 }
 
 /// Builds the sole NanoHost-generated Docker bind envelope for retained volumes.
-fn storage_driver_config(mounts: &[StorageMount]) -> Result<Option<Struct>, EpochFault> {
+pub(crate) fn storage_driver_config(mounts: &[StorageMount]) -> Result<Option<Struct>, EpochFault> {
     if mounts.is_empty() {
         return Ok(None);
     }
@@ -107,8 +107,14 @@ fn storage_driver_config(mounts: &[StorageMount]) -> Result<Option<Struct>, Epoc
                 .source
                 .to_str()
                 .filter(|source| {
-                    mount.source.starts_with(PERSISTENT_VOLUME_ROOT)
-                        && !source.chars().any(char::is_control)
+                    !source.chars().any(char::is_control)
+                        && match &mount.credential {
+                            None => mount.source.starts_with(PERSISTENT_VOLUME_ROOT),
+                            Some(credential) => {
+                                credential.source().is_ok_and(|path| path == mount.source)
+                                    && credential.target() == mount.target
+                            }
+                        }
                 })
                 .ok_or(EpochFault::IdentityMismatch)?;
             if !mount.target.starts_with('/')
@@ -126,7 +132,7 @@ fn storage_driver_config(mounts: &[StorageMount]) -> Result<Option<Struct>, Epoc
                         (
                             "read_only".to_string(),
                             ProstValue {
-                                kind: Some(Kind::BoolValue(false)),
+                                kind: Some(Kind::BoolValue(mount.credential.is_some())),
                             },
                         ),
                         ("selinux_label".to_string(), prost_string("private")),
@@ -1271,6 +1277,7 @@ mod tests {
         let config = storage_driver_config(&[StorageMount {
             source: PathBuf::from("/var/lib/openkit/nanohost-work/association/volumes/volume"),
             target: "/workspace".into(),
+            credential: None,
         }])
         .unwrap()
         .unwrap();

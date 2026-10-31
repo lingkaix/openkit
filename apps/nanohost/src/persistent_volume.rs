@@ -130,6 +130,8 @@ pub struct StorageAttachmentRequest {
 pub struct StorageMount {
     pub source: PathBuf,
     pub target: String,
+    /// Closed memory-backed source proof; absent for retained volumes.
+    pub credential: Option<crate::credential_carrier::CredentialMount>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -493,9 +495,101 @@ impl PersistentVolumeStore {
                 Ok(StorageMount {
                     source,
                     target: binding.target.clone(),
+                    credential: None,
                 })
             })
             .collect()
+    }
+
+    /// Creates only empty single-file mount points after image seeding.
+    /// Descriptor-relative traversal never follows Worker-controlled symlinks.
+    pub fn prepare_credential_targets(
+        &self,
+        mounts: &[StorageMount],
+        bindings: &[crate::credential_carrier::CredentialBinding],
+        uid: u32,
+        gid: u32,
+    ) -> Result<Vec<File>, &'static str> {
+        let invalid = "credential mount target unavailable";
+        let mut files = Vec::new();
+        for binding in bindings {
+            crate::credential_carrier::validate_target(&binding.target_path)?;
+            let mount = mounts
+                .iter()
+                .filter(|mount| mount.credential.is_none())
+                .find(|mount| Path::new(&binding.target_path).starts_with(&mount.target))
+                .ok_or(invalid)?;
+            let relative = Path::new(&binding.target_path)
+                .strip_prefix(&mount.target)
+                .map_err(|_| invalid)?;
+            let mut directory = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&mount.source)
+                .map_err(|_| invalid)?;
+            let components = relative
+                .components()
+                .map(|part| match part {
+                    Component::Normal(name) => CString::new(name.as_bytes()).map_err(|_| invalid),
+                    _ => Err(invalid),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let (leaf, parents) = components.split_last().ok_or(invalid)?;
+            for parent in parents {
+                let created =
+                    unsafe { libc::mkdirat(directory.as_raw_fd(), parent.as_ptr(), 0o700) } == 0;
+                let raw = unsafe {
+                    libc::openat(
+                        directory.as_raw_fd(),
+                        parent.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )
+                };
+                if raw < 0 {
+                    return Err(invalid);
+                }
+                directory = unsafe { File::from_raw_fd(raw) };
+                if created && unsafe { libc::fchown(directory.as_raw_fd(), uid, gid) } != 0 {
+                    return Err(invalid);
+                }
+            }
+            let mut raw = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    leaf.as_ptr(),
+                    libc::O_RDONLY
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW
+                        | libc::O_NONBLOCK
+                        | libc::O_CLOEXEC,
+                    0o600,
+                )
+            };
+            let created = raw >= 0;
+            if !created && io::Error::last_os_error().kind() == io::ErrorKind::AlreadyExists {
+                raw = unsafe {
+                    libc::openat(
+                        directory.as_raw_fd(),
+                        leaf.as_ptr(),
+                        libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                    )
+                };
+            }
+            if raw < 0 {
+                return Err(invalid);
+            }
+            let file = unsafe { File::from_raw_fd(raw) };
+            let metadata = file.metadata().map_err(|_| invalid)?;
+            if !metadata.is_file() || metadata.len() != 0 || metadata.nlink() != 1 {
+                return Err(invalid);
+            }
+            if created && unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } != 0 {
+                return Err(invalid);
+            }
+            files.push(file);
+        }
+        Ok(files)
     }
 
     /// Releases only the exact current Sandbox attachment after its writer is absent.

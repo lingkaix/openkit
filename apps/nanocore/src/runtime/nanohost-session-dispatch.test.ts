@@ -1511,6 +1511,32 @@ describe('authoritative NanoHost session dispatch', () => {
           target
         )
       ).rejects.toThrow(/physical Epoch changed/i);
+      // A failed final authority readback withdraws this exact unaccepted command.
+      const readbackEntered = Promise.withResolvers<void>();
+      const releaseReadback = Promise.withResolvers<void>();
+      const rejectedId = 'd'.repeat(64);
+      let readbackCalls = 0;
+      const withdrawn = dispatch.effect({
+        kind: 'sandbox.delete',
+        requestId: rejectedId,
+        input: { sandboxId: 'fixture-withdrawn-sandbox' },
+        beforeDelivery: async () => {
+          readbackCalls += 1;
+          readbackEntered.resolve();
+          await releaseReadback.promise;
+          throw new Error('Current effect authority was withdrawn.');
+        },
+      });
+      const withdrawnAssertion = expect(withdrawn).rejects.toThrow(/authority was withdrawn/);
+      const refusedPoll = dispatch.poll(physical, 'sandbox.delete');
+      const pollAssertion = expect(refusedPoll).rejects.toThrow(/authority was withdrawn/);
+      await readbackEntered.promise;
+      releaseReadback.resolve();
+      await pollAssertion;
+      await withdrawnAssertion;
+      expect(readbackCalls).toBe(1);
+      await expect(dispatch.poll(physical, 'sandbox.delete')).resolves.toBeNull();
+      expect(authority.mayCarryWork(physical)).toBe(true);
       const requestId = 'e'.repeat(64);
       const imageSettlement = {
         authoredArtifactId: testEntityId('ar', 'artifact_settlement'),

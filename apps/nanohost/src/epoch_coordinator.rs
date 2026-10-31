@@ -1273,6 +1273,7 @@ pub struct EpochCoordinator {
     image_store: ImageStore,
     image_backend: DockerImageBackend,
     persistent_volumes: PersistentVolumeStore,
+    credential_carrier: Option<crate::credential_carrier::CredentialCarrier>,
     physical_epoch: String,
     /// Ended local startup observation; never a readiness or delivery witness.
     startup_context: opentelemetry::trace::SpanContext,
@@ -1290,6 +1291,7 @@ pub struct EpochCoordinator {
 
 /// Sole owner of Runtime Epoch member handles and whole-group fencing.
 struct EpochMemberMonitor {
+    mount_namespace: Option<Arc<OwnedFd>>,
     fence: mpsc::SyncSender<Option<EpochFault>>,
     member_failure: mpsc::Receiver<EpochFault>,
     worker: Option<JoinHandle<()>>,
@@ -1547,6 +1549,9 @@ impl EpochMemberMonitor {
         readiness: Arc<AtomicU8>,
         inspection: Option<Arc<crate::live_inspection::InspectionState>>,
     ) -> Self {
+        let mount_namespace = private_namespaces
+            .as_ref()
+            .map(|namespaces| Arc::clone(&namespaces.mount));
         let inventory = children
             .iter_mut()
             .enumerate()
@@ -1581,6 +1586,7 @@ impl EpochMemberMonitor {
             }
         });
         Self {
+            mount_namespace,
             fence,
             member_failure,
             worker: Some(worker),
@@ -2079,6 +2085,7 @@ impl EpochCoordinator {
             image_store,
             image_backend,
             persistent_volumes,
+            credential_carrier: None,
             physical_epoch,
             startup_context,
             run_root: plan.run_root().to_path_buf(),
@@ -2162,6 +2169,7 @@ impl EpochCoordinator {
         (
             Self {
                 monitor: EpochMemberMonitor {
+                    mount_namespace: None,
                     fence,
                     member_failure,
                     worker: None,
@@ -2179,6 +2187,7 @@ impl EpochCoordinator {
                     .unwrap(),
                 image_backend: DockerImageBackend::new(root.join("missing-docker")),
                 persistent_volumes,
+                credential_carrier: None,
                 physical_epoch: "a".repeat(64),
                 startup_context: opentelemetry::trace::SpanContext::empty_context(),
                 run_root: root.join("epoch"),
@@ -2247,6 +2256,55 @@ impl EpochCoordinator {
     ) -> Result<Vec<StorageMount>, &'static str> {
         let layout = self.persistent_volumes.inspect_image(image_digest)?;
         self.persistent_volumes.attach(sandbox_id, request, &layout)
+    }
+
+    /// Prepares transient credential sources only after retained image seeding.
+    pub fn prepare_credentials(
+        &mut self,
+        sandbox_id: &str,
+        image_digest: &str,
+        bindings: Vec<crate::credential_carrier::CredentialBinding>,
+        mounts: &mut Vec<StorageMount>,
+    ) -> Result<(), &'static str> {
+        if self.credential_carrier.is_some() || self.current_sandbox.is_some() {
+            return Err("credential carrier already bound");
+        }
+        if bindings.is_empty() {
+            return Ok(());
+        }
+        let layout = self.persistent_volumes.inspect_image(image_digest)?;
+        let points = self
+            .persistent_volumes
+            .prepare_credential_targets(mounts, &bindings, layout.uid, layout.gid)?;
+        let namespace = self
+            .monitor
+            .mount_namespace
+            .clone()
+            .ok_or("credential backend mount domain unavailable")?;
+        let carrier = crate::credential_carrier::CredentialCarrier::create_in_namespace(
+            namespace,
+            &self.run_root,
+            sandbox_id,
+            bindings,
+            layout.uid,
+            layout.gid,
+            points,
+        )?;
+        mounts.extend(carrier.mounts());
+        self.credential_carrier = Some(carrier);
+        Ok(())
+    }
+
+    /// Removal follows exact native absence. A failure enters the existing Epoch fence.
+    fn remove_credentials_after_absence(&mut self) -> Result<(), EpochFault> {
+        if let Some(carrier) = &mut self.credential_carrier {
+            let result = carrier
+                .remove_after_absence()
+                .map_err(|_| EpochFault::IdentityMismatch);
+            self.settle(result)?;
+            self.credential_carrier = None;
+        }
+        Ok(())
     }
 
     /// Inspects one exact association without creating or mounting it.
@@ -2359,6 +2417,7 @@ impl EpochCoordinator {
         if let Some(exec_monitor) = self.worker_bootstrap_monitor.take() {
             exec_monitor.discard_after_sandbox_deletion();
         }
+        self.remove_credentials_after_absence()?;
         self.current_sandbox = None;
         Ok(())
     }
@@ -2532,6 +2591,7 @@ impl EpochCoordinator {
                 if deletion.is_err() {
                     return self.settle(Err(EpochFault::DeleteOutcomeUncertain));
                 }
+                self.remove_credentials_after_absence()?;
                 self.current_sandbox = None;
                 self.worker_bootstrap_monitor = None;
                 return Err(fault);
@@ -2553,6 +2613,23 @@ impl EpochCoordinator {
             LifecycleEffectResult::SandboxCreated(sandbox) => {
                 if self.current_sandbox.replace(sandbox.clone()).is_some() {
                     return self.settle(Err(EpochFault::IdentityMismatch));
+                }
+                if let Some(carrier) = &self.credential_carrier {
+                    if tokio::task::block_in_place(|| {
+                        self.runtime
+                            .block_on(crate::resource_summary::observe_credential_mounts(
+                                self.image_backend.docker_socket(),
+                                &sandbox.id,
+                                &sandbox.name,
+                            ))
+                    })
+                    .ok_or("credential mount proof unavailable")
+                    .and_then(|rows| carrier.verify_mounts(&rows))
+                    .is_err()
+                    {
+                        self.delete_sandbox(&sandbox.name, Duration::from_secs(120))?;
+                        return Err(EpochFault::IdentityMismatch);
+                    }
                 }
                 Ok(sandbox.name)
             }
@@ -2756,6 +2833,20 @@ impl EpochCoordinator {
         relative_path: &Path,
         entry: &crate::sandbox_bridge::ImportEntry,
     ) -> Result<EffectCarriage, &'static str> {
+        if matches!(slot, "runtime-credential" | "runtime-credential-replace") {
+            let result = self.import_credential(request_id, slot, relative_path, entry);
+            return match result {
+                Ok(carriage) => Ok(carriage),
+                Err(_) => {
+                    let name = self
+                        .current_sandbox
+                        .as_ref()
+                        .map(|sandbox| sandbox.name.clone())
+                        .ok_or("credential import has no current Sandbox")?;
+                    Err(self.cleanup_failed_reference_import(&name))
+                }
+            };
+        }
         let (sha256, byte_length, kind) = match entry {
             crate::sandbox_bridge::ImportEntry::File { executable, file } => (
                 file.digest(),
@@ -2844,6 +2935,109 @@ impl EpochCoordinator {
             }
             Err(_) => Err(self.cleanup_failed_reference_import(&sandbox.name)),
         }
+    }
+
+    /// Imports only to an admitted memory inode, then proves the installed mount view.
+    fn import_credential(
+        &mut self,
+        request_id: &str,
+        slot: &str,
+        relative_path: &Path,
+        entry: &crate::sandbox_bridge::ImportEntry,
+    ) -> Result<EffectCarriage, &'static str> {
+        let sandbox = self
+            .current_sandbox
+            .clone()
+            .ok_or("credential import has no current Sandbox")?;
+        let crate::sandbox_bridge::ImportEntry::File {
+            executable: false,
+            file,
+        } = entry
+        else {
+            return Err("credential import requires a non-executable file");
+        };
+        let carrier = self
+            .credential_carrier
+            .as_mut()
+            .ok_or("credential binding unavailable")?;
+        let mount = if slot == "runtime-credential-replace" {
+            let components = relative_path
+                .iter()
+                .map(|value| {
+                    value
+                        .to_str()
+                        .ok_or("credential replacement identity invalid")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if components.len() != 3
+                || components.iter().any(|value| {
+                    value.len() != 64
+                        || !value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                })
+            {
+                return Err("credential replacement identity invalid");
+            }
+            carrier.replace(
+                &sandbox.name,
+                Path::new(components[0]),
+                components[1],
+                components[2],
+                file,
+            )?
+        } else {
+            carrier.import(&sandbox.name, relative_path, file)?
+        };
+        tokio::task::block_in_place(|| {
+            self.runtime
+                .block_on(crate::resource_summary::observe_credential_mounts(
+                    self.image_backend.docker_socket(),
+                    &sandbox.id,
+                    &sandbox.name,
+                ))
+        })
+        .ok_or("credential mount proof unavailable")
+        .and_then(|rows| carrier.verify_mounts(&rows))?;
+        let command = vec![
+            "/usr/local/bin/openkit-file-effect".to_string(),
+            "credential.verify".to_string(),
+            "--path".to_string(),
+            mount.target().to_string(),
+            "--length".to_string(),
+            file.length().to_string(),
+        ];
+        let mut source = file
+            .reader()
+            .map_err(|_| "credential import integrity unavailable")?;
+        let expected = b"OPENKIT_CREDENTIAL_MOUNT_V1\n";
+        let mut acknowledgement = Vec::new();
+        let result = tokio::task::block_in_place(|| {
+            self.runtime.block_on(self.client.exec_sandbox_interactive(
+                &sandbox.id,
+                &command,
+                &mut source,
+                file.length() as usize,
+                &mut acknowledgement,
+                expected.len(),
+            ))
+        })
+        .map_err(|_| "credential mount view unavailable")?;
+        if result.exit_status != 0 || acknowledgement != expected {
+            return Err("credential mount view unavailable");
+        }
+        // Receipt sink proof carries no secret fingerprint or destination.
+        EffectCarriage::reference(
+            request_id,
+            &format!(
+                "sandbox://{}/{}/{}",
+                sandbox.name,
+                slot,
+                relative_path.display()
+            ),
+            file.length(),
+        )
+        .map_err(|_| "credential receipt proof unavailable")
     }
 
     /// Exports one regular file after accepted final status while the Harness may remain live.
@@ -4018,6 +4212,7 @@ mod tests {
             }
         });
         EpochMemberMonitor {
+            mount_namespace: None,
             fence,
             member_failure,
             worker: Some(worker),
@@ -6868,16 +7063,51 @@ mod tests {
         );
         assert_eq!(import.matches("eprintln!(").count(), 1);
         assert!(!import.contains("std::io::stderr"));
+        let (credential_dispatch, retained_import) = import
+            .split_once("let (sha256, byte_length, kind) = match entry")
+            .expect("retained import boundary");
+        let credential_failure = credential_dispatch
+            .split_once("Err(_) => {")
+            .expect("credential import failure branch")
+            .1;
+        assert!(credential_failure.contains(".current_sandbox"));
+        assert!(credential_failure.contains(".map(|sandbox| sandbox.name.clone())"));
+        assert!(credential_failure.contains("Err(self.cleanup_failed_reference_import(&name))"));
+        // Check each original failure obligation, rather than a fixed total of call sites.
+        for (start, end) in [
+            ("let mut source = match entry", "let mut empty_source"),
+            (
+                "let command = match request.helper_command()",
+                "let expected =",
+            ),
+            (
+                "let carriage = EffectCarriage::reference(",
+                "\n            Ok(_) =>",
+            ),
+            ("\n            Ok(_) =>", "\n            Err(_) =>"),
+            ("\n            Err(_) => Err(", "\n        }\n    }"),
+        ] {
+            let failure = retained_import
+                .split_once(start)
+                .expect("import failure owner")
+                .1
+                .split_once(end)
+                .expect("end of import failure owner")
+                .0;
+            assert!(
+                failure.contains("cleanup_failed_reference_import(&sandbox.name)"),
+                "every retained import failure must clean up by public sandbox name"
+            );
+        }
         assert_eq!(
             import.matches("cleanup_failed_reference_import(").count(),
-            5
-        );
-        assert_eq!(
             import
                 .matches("cleanup_failed_reference_import(&sandbox.name)")
-                .count(),
-            5,
-            "every import failure must clean up by public sandbox name"
+                .count()
+                + credential_dispatch
+                    .matches("cleanup_failed_reference_import(&name)")
+                    .count(),
+            "every import cleanup must use the current public sandbox name"
         );
         let import_cleanup = source
             .split_once("fn cleanup_failed_reference_import(")

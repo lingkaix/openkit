@@ -326,6 +326,7 @@ impl RecoveryObservation {
             let runtime_path = run_root.join(name);
             match fs::symlink_metadata(&runtime_path) {
                 Ok(metadata) if metadata.file_type().is_dir() => {
+                    crate::credential_carrier::remove_fenced_epoch_carriers(&runtime_path)?;
                     fs::remove_dir_all(&runtime_path)?;
                 }
                 Ok(_) => return Err(io::Error::other("prior runtime root changed shape")),

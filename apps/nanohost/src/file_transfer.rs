@@ -2,7 +2,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -22,7 +22,7 @@ static RESERVED_BYTES: Mutex<u64> = Mutex::new(0);
 /// A private partial file. Drop removes its complete request directory on every exit.
 pub struct FileStage {
     file: File,
-    directory: PathBuf,
+    directory: Option<PathBuf>,
     length: u64,
     maximum: u64,
     remaining: u64,
@@ -85,7 +85,7 @@ impl FileStage {
         *reserved = next_reserved;
         Ok(Self {
             file,
-            directory,
+            directory: Some(directory),
             length: 0,
             maximum,
             remaining: wanted,
@@ -93,23 +93,58 @@ impl FileStage {
         })
     }
 
+    /// Stages credential carriage only in a sealed anonymous memory inode.
+    /// No disk reservation or pathname is created for this private branch.
+    pub fn create_memory(maximum: u64) -> io::Result<Self> {
+        if maximum > EVIDENCE_BYTES {
+            return Err(invalid());
+        }
+        let raw = unsafe {
+            libc::memfd_create(
+                c"openkit-private-import".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            file: unsafe { File::from_raw_fd(raw) },
+            directory: None,
+            length: 0,
+            maximum,
+            remaining: 0,
+            digest: Sha256::new(),
+        })
+    }
+
     /// Verifies a complete source before a helper or a retained result can use it.
     pub fn complete(mut self, expected: Option<(u64, &str)>) -> io::Result<VerifiedFile> {
         self.file.sync_all()?;
-        require_capacity(
-            &File::open(&self.directory)?,
-            *RESERVED_BYTES.lock().map_err(|_| invalid())?,
-        )?;
+        if let Some(directory) = &self.directory {
+            require_capacity(
+                &File::open(directory)?,
+                *RESERVED_BYTES.lock().map_err(|_| invalid())?,
+            )?;
+        }
         let digest = format!("sha256:{:x}", self.digest.clone().finalize());
         if expected.is_some_and(|(length, hash)| length != self.length || hash != digest) {
             return Err(invalid());
         }
         self.file.seek(SeekFrom::Start(0))?;
-        fs::rename(
-            self.directory.join("partial"),
-            self.directory.join("payload"),
-        )?;
-        File::open(&self.directory)?.sync_all()?;
+        if let Some(directory) = &self.directory {
+            fs::rename(directory.join("partial"), directory.join("payload"))?;
+            File::open(directory)?.sync_all()?;
+        } else if unsafe {
+            libc::fcntl(
+                self.file.as_raw_fd(),
+                libc::F_ADD_SEALS,
+                libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL,
+            )
+        } != 0
+        {
+            return Err(invalid());
+        }
         Ok(VerifiedFile {
             stage: self,
             digest,
@@ -130,8 +165,10 @@ impl Write for FileStage {
         let written = self.file.write(bytes)?;
         self.digest.update(&bytes[..written]);
         self.length += written as u64;
-        self.remaining -= written as u64;
-        *RESERVED_BYTES.lock().map_err(|_| invalid())? -= written as u64;
+        if self.directory.is_some() {
+            self.remaining -= written as u64;
+            *RESERVED_BYTES.lock().map_err(|_| invalid())? -= written as u64;
+        }
         Ok(written)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -142,7 +179,8 @@ impl Write for FileStage {
 impl Drop for FileStage {
     fn drop(&mut self) {
         // Unproved cleanup keeps the remaining reservation. Restart observes occupied disk.
-        if fs::remove_dir_all(&self.directory).is_ok()
+        if let Some(directory) = &self.directory
+            && fs::remove_dir_all(directory).is_ok()
             && let Ok(mut reserved) = RESERVED_BYTES.lock()
         {
             *reserved -= self.remaining;
@@ -159,12 +197,20 @@ pub struct VerifiedFile {
 impl VerifiedFile {
     /// Reopens and rehashes the same single-link regular file before each delivery attempt.
     pub fn reader(&self) -> io::Result<File> {
-        let mut file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(self.stage.directory.join("payload"))?;
+        let mut file = if let Some(directory) = &self.stage.directory {
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(directory.join("payload"))?
+        } else {
+            self.stage.file.try_clone()?
+        };
+        file.seek(SeekFrom::Start(0))?;
         let before = file.metadata()?;
-        if !before.is_file() || before.nlink() != 1 || before.len() != self.length() {
+        if !before.is_file()
+            || before.nlink() != if self.stage.directory.is_some() { 1 } else { 0 }
+            || before.len() != self.length()
+        {
             return Err(invalid());
         }
         let mut hash = Sha256::new();
@@ -183,7 +229,7 @@ impl VerifiedFile {
         if before.dev() != after.dev()
             || before.ino() != after.ino()
             || after.len() != before.len()
-            || after.nlink() != 1
+            || after.nlink() != before.nlink()
             || before.mtime() != after.mtime()
             || before.mtime_nsec() != after.mtime_nsec()
             || before.ctime() != after.ctime()
@@ -291,10 +337,10 @@ mod tests {
         let mut stage = FileStage::create(&root.0, 3, 0).unwrap();
         stage.write_all(b"abc").unwrap();
         let file = stage.complete(None).unwrap();
-        let path = file.stage.directory.join("payload");
-        fs::hard_link(&path, file.stage.directory.join("alias")).unwrap();
+        let path = file.stage.directory.as_ref().unwrap().join("payload");
+        fs::hard_link(&path, file.stage.directory.as_ref().unwrap().join("alias")).unwrap();
         assert!(file.reader().is_err());
-        fs::remove_file(file.stage.directory.join("alias")).unwrap();
+        fs::remove_file(file.stage.directory.as_ref().unwrap().join("alias")).unwrap();
         fs::write(path, b"xyz").unwrap();
         assert!(file.reader().is_err());
     }

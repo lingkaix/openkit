@@ -1,3 +1,4 @@
+import { WorkerCredentialReceiptSchema } from '@openkit/config-schema/worker-credentials';
 import { VaultGrantIdSchema, VaultReferenceIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
@@ -42,6 +43,126 @@ import {
 
 /** Complete Vault contracts expose redacted metadata and request-only sensitive material. */
 export const VAULT_OPERATION_DEFINITIONS = {
+  'vault.binding-deliver': {
+    description:
+      'Deliver one already admitted credential file binding and inspect its realized protection.',
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        bindingThreadId: z.string().min(1),
+        planId: z.string().min(1).max(4096),
+        receiptId: z.string().min(1).max(4096),
+        materialVersion: z.number().int().positive().safe(),
+        requestId: z.uuid(),
+      })
+      .strict(),
+    outputSchema: WorkerCredentialReceiptSchema,
+    credentials: [
+      'local-user',
+      'user-session',
+      'user-bearer',
+      'deployment-administrator',
+      'worker-package',
+      'coordinator',
+    ],
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'bindingThreadId', missing: 'not-found' },
+    policyOperation: 'vault.use',
+    mutating: true,
+    insertionPoints: {
+      crossings: ['admission', 'disclosure', 'mutation'],
+      stages: ['propose', 'decide', 'commit', 'completed'],
+      modes: ['gate', 'observe'],
+      participantKinds: ['deterministic'],
+      gateResults: ['allow', 'deny'],
+      gateFailures: ['error'],
+    },
+  },
+  'vault.binding-replace': {
+    description:
+      'Replace one live credential file binding with a current authorized Vault material version.',
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        bindingThreadId: z.string().min(1),
+        planId: z.string().min(1).max(4096),
+        expectedReceiptId: z.string().min(1).max(4096),
+        materialVersion: z.number().int().positive().safe(),
+        requestId: z.uuid(),
+      })
+      .strict(),
+    outputSchema: WorkerCredentialReceiptSchema,
+    credentials: [
+      'local-user',
+      'user-session',
+      'user-bearer',
+      'deployment-administrator',
+      'worker-package',
+      'coordinator',
+    ],
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'bindingThreadId', missing: 'not-found' },
+    policyOperation: 'vault.use',
+    mutating: true,
+    insertionPoints: {
+      crossings: ['disclosure', 'mutation'],
+      stages: ['propose', 'decide', 'commit', 'completed'],
+      modes: ['gate', 'observe'],
+      participantKinds: ['deterministic'],
+      gateResults: ['allow', 'deny'],
+      gateFailures: ['error'],
+    },
+  },
+  'vault.binding-revoke': {
+    description:
+      'Close one credential binding through its execution owner while preserving unrelated grant authority.',
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        bindingThreadId: z.string().min(1),
+        planId: z.string().min(1).max(4096),
+        expectedReceiptId: z.string().min(1).max(4096),
+        requestId: z.uuid(),
+      })
+      .strict(),
+    outputSchema: z
+      .object({
+        planId: z.string().min(1),
+        receiptId: z.string().min(1),
+        state: z.literal('removed'),
+        fenceRef: z.string().min(1).nullable(),
+      })
+      .strict(),
+    credentials: [
+      'local-user',
+      'user-session',
+      'user-bearer',
+      'deployment-administrator',
+      'worker-package',
+      'coordinator',
+    ],
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'bindingThreadId', missing: 'not-found' },
+    policyOperation: 'vault.use',
+    mutating: true,
+    insertionPoints: {
+      crossings: ['mutation'],
+      stages: ['propose', 'decide', 'commit', 'completed'],
+      modes: ['gate', 'observe'],
+      participantKinds: ['deterministic'],
+      gateResults: ['allow', 'deny'],
+      gateFailures: ['error'],
+    },
+  },
   'vault.server-mcp-injection-plan-list': {
     description: 'List redacted Server shared-MCP planned credential delivery evidence.',
     binding: 'json',
@@ -334,11 +455,26 @@ export const VAULT_OPERATION_DEFINITIONS = {
     successStatus: 200,
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceVaultInjectionPlansResponseSchema,
-    credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
+    credentials: [
+      'local-user',
+      'user-session',
+      'user-bearer',
+      'deployment-administrator',
+      'worker-package',
+      'coordinator',
+    ],
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
     policyOperation: 'vault.admin',
     mutating: false,
+    insertionPoints: {
+      crossings: ['admission', 'disclosure'],
+      stages: ['propose', 'decide', 'commit', 'completed'],
+      modes: ['gate', 'observe'],
+      participantKinds: ['deterministic'],
+      gateResults: ['allow', 'deny'],
+      gateFailures: ['error'],
+    },
   },
   'vault.injection-receipt-list': {
     description: 'List non-secret vault injection receipts for one workspace.',
@@ -347,11 +483,26 @@ export const VAULT_OPERATION_DEFINITIONS = {
     successStatus: 200,
     inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
     outputSchema: ListWorkspaceVaultInjectionReceiptsResponseSchema,
-    credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
+    credentials: [
+      'local-user',
+      'user-session',
+      'user-bearer',
+      'deployment-administrator',
+      'worker-package',
+      'coordinator',
+    ],
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
     policyOperation: 'vault.admin',
     mutating: false,
+    insertionPoints: {
+      crossings: ['admission', 'disclosure'],
+      stages: ['propose', 'decide', 'commit', 'completed'],
+      modes: ['gate', 'observe'],
+      participantKinds: ['deterministic'],
+      gateResults: ['allow', 'deny'],
+      gateFailures: ['error'],
+    },
   },
   'vault.use-list': {
     description: 'List redacted vault use records for one workspace.',

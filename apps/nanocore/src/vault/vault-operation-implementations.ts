@@ -1,14 +1,29 @@
 import { Buffer } from 'node:buffer';
 import type {
   OperationOutput,
-  VAULT_OPERATION_DEFINITIONS,
   VaultAdminWorkspaceReference,
   WorkspaceVaultGrant,
 } from '@openkit/app-api-schemas';
-import { ProviderApiKeyProfileIdSchema } from '@openkit/app-api-schemas';
-import { allocateEntityId, isEntityId } from '@openkit/protocol';
+import {
+  ProviderApiKeyProfileIdSchema,
+  VAULT_OPERATION_DEFINITIONS,
+} from '@openkit/app-api-schemas';
+import {
+  allocateEntityId,
+  isEntityId,
+  isSealedTurnTerminal,
+  POLICY_OPERATION_REFERENCE_INPUT_V1,
+  PolicySubjectV1Schema,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import { z } from 'zod';
+import { recordServerAuditEvent } from '../audit-events.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
+import {
+  currentWorkerLineageWorkspaceAuthority,
+  currentWorkspaceAuthority,
+  type WorkspaceAuthorityEvaluation,
+} from '../auth/operation-authorizer.js';
 import { loadProviderProfiles } from '../config/providers-loader.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -18,12 +33,20 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { readAdmittedPolicyDocument } from '../policy/configuration.js';
+import type { InterceptionDecision, InterceptionInput } from '../policy/interception.js';
+import { type PolicyProposal, policyDigest } from '../policy/statements.js';
 import { readVaultReferenceId } from '../providers/vault-credential-resolver.js';
+import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { requireCoordinatorGoal } from '../runtime/goal-owner.js';
+import { readGoalTaskPolicyContext } from '../runtime/goal-task-policy-context.js';
+import type { WorkspaceDb } from '../storage/db.js';
 import {
   getVaultInjectionPlan,
   listExportableVaultInjectionPlans,
 } from '../vault-injection-plans.js';
 import {
+  getVaultInjectionReceipt,
   listExportableVaultInjectionReceipts,
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
@@ -146,6 +169,9 @@ export function createVaultOperationImplementations(
     | 'vaultUnlockState'
     | 'pendingRequestServices'
     | 'runtimeConfigManager'
+    | 'policyInterception'
+    | 'readRuntimePolicy'
+    | 'goalTaskPolicy'
     | 'closeMcpCredentialGrants'
   >
 ) {
@@ -161,6 +187,526 @@ export function createVaultOperationImplementations(
     if (vaultUnlockState) administrationStates.set(vaultUnlockState, administrationState);
   }
   const { vaultUnlockFailuresByActor, providerApiKeyWrites } = administrationState;
+
+  /** One consumer of the existing operation definition and Policy owner for Vault effects and reads. */
+  async function governedVaultOperation<T>(
+    operation:
+      | 'vault.binding-deliver'
+      | 'vault.binding-replace'
+      | 'vault.binding-revoke'
+      | 'vault.injection-plan-list'
+      | 'vault.injection-receipt-list',
+    input: { workspaceId: string; requestId?: string },
+    context: AdmittedOperationContext,
+    db: WorkspaceDb,
+    readFacts: () => unknown,
+    references: PolicyProposal['inputReferences'],
+    attributes: PolicyProposal['inputAttributes'],
+    run: (recheckAuthority: () => Promise<void>) => Promise<T> | T
+  ): Promise<T> {
+    if (
+      !coreDb ||
+      !dependencies.store ||
+      !dependencies.policyInterception ||
+      !context.recheckAdmission ||
+      (!dependencies.readRuntimePolicy && !dependencies.runtimeConfigManager)
+    )
+      throw new OperationError(
+        'credential_binding_unavailable',
+        'Vault Policy operation is unavailable.',
+        503
+      );
+    const store = dependencies.store;
+    const definition = VAULT_OPERATION_DEFINITIONS[operation];
+    const interception = dependencies.policyInterception;
+    const readPolicy =
+      dependencies.readRuntimePolicy ??
+      (() => dependencies.runtimeConfigManager!.current().openKitConfig.policy?.mediation);
+    let auditActor = context.actorRef;
+    try {
+      const document = readAdmittedPolicyDocument(coreDb, readPolicy());
+      const policyRevision = policyDigest(document);
+      const factsRevision = policyDigest(readFacts());
+      const taskContext =
+        context.kind === 'worker'
+          ? readGoalTaskPolicyContext({
+              coreDb,
+              store,
+              db,
+              lineage: context.lineage,
+            })
+          : null;
+      const responsibleHumanId =
+        taskContext?.responsibleUserId ?? responsibleUserIdForActor(context.actorRef);
+      if (!responsibleHumanId)
+        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      const workerPackage =
+        context.kind === 'worker'
+          ? requireAgentEnvironmentPackageSnapshot(
+              db,
+              input.workspaceId,
+              context.lineage.packageSnapshotId
+            ).snapshot
+          : null;
+      const agentId =
+        taskContext?.agentId ??
+        (context.kind === 'coordinator' ? 'goal-coordinator' : workerPackage?.agent.agentId);
+      const subject = PolicySubjectV1Schema.parse({
+        principal: taskContext
+          ? { kind: 'agent', id: agentId }
+          : { kind: 'human', id: responsibleHumanId },
+        onBehalfOf: null,
+        actor: agentId
+          ? { kind: 'agent', id: agentId, responsibleUserId: responsibleHumanId }
+          : context.actorRef,
+        process:
+          context.kind === 'worker'
+            ? {
+                workspaceId: context.lineage.workspaceId,
+                threadId: context.lineage.threadId,
+                turnId: context.lineage.turnId,
+              }
+            : context.kind === 'coordinator'
+              ? {
+                  workspaceId: context.workspaceId,
+                  threadId: context.threadId,
+                  turnId: context.turnId,
+                }
+              : null,
+        credentialKind: context.kind === 'worker' ? 'worker-package' : context.actor.kind,
+        responsibleHumanId,
+      });
+      auditActor = subject.actor;
+      const resource = {
+        kind: 'container' as const,
+        container: {
+          kind: 'workspace',
+          id: input.workspaceId,
+          owner: { kind: 'workspace' as const, workspaceId: input.workspaceId },
+        },
+      };
+      const proposal: PolicyProposal = {
+        operation,
+        workspaceId: input.workspaceId,
+        resource,
+        capabilityCallId: null,
+        subject,
+        inputReferences: { ...references, selectionDigest: factsRevision },
+        inputAttributes: { contract: POLICY_OPERATION_REFERENCE_INPUT_V1, ...attributes },
+      };
+      const taskPolicy = taskContext ? dependencies.goalTaskPolicy?.(db, responsibleHumanId) : null;
+      if (taskContext && !taskPolicy) throw new Error('Goal Task Policy is unavailable.');
+      let ownDecision: InterceptionDecision | undefined;
+      const currentAuthority = (
+        consumed = false
+      ): {
+        kernel: import('@openkit/policy-kernel').PolicyDecision;
+        goal: import('../policy/goal-task-access.js').GoalTaskAccessResult | null;
+        revision: string;
+        authorizationUses: InterceptionInput['authorizationUses'];
+      } => {
+        let evaluated: WorkspaceAuthorityEvaluation | undefined;
+        const capture = {
+          dependencyFailure: 'throw' as const,
+          mutating: definition.mutating,
+          onEvaluation: (event: WorkspaceAuthorityEvaluation) => {
+            evaluated = event;
+          },
+        };
+        // This argument is current effect-specific eligibility, not mutation posture.
+        // Selection/currentness is supplied by readFacts for reads as well as effects.
+        const authority =
+          context.kind === 'worker'
+            ? currentWorkerLineageWorkspaceAuthority(
+                coreDb,
+                { ...context.lineage, triggerActor: context.actor },
+                definition.policyOperation,
+                true,
+                capture
+              )
+            : currentWorkspaceAuthority(
+                coreDb,
+                input.workspaceId,
+                context.actorRef,
+                definition.policyOperation,
+                true,
+                context.actor,
+                capture
+              );
+        if (!authority || !evaluated)
+          throw new Error('Current credential binding authority is unavailable.');
+        const currentCoordinator =
+          context.kind === 'coordinator' ? requireCoordinatorGoal(store, db, context) : null;
+        const goalInput =
+          context.kind === 'worker'
+            ? {
+                workspaceDb: db,
+                lineage: context.lineage,
+                subject,
+                operation: definition.policyOperation,
+                resource,
+                humanKernel: evaluated.decision,
+              }
+            : null;
+        let goal: import('../policy/goal-task-access.js').GoalTaskAccessResult | null = null;
+        let authorizationUses: InterceptionInput['authorizationUses'] = [];
+        if (taskPolicy && goalInput) {
+          if (consumed && ownDecision)
+            goal = taskPolicy.readTaskDecision({ ...goalInput, decision: ownDecision });
+          else {
+            const evaluatedTask = taskPolicy.evaluateTask(goalInput);
+            goal = evaluatedTask;
+            authorizationUses = evaluatedTask?.authorizationUses ?? [];
+          }
+        }
+        if (taskContext && !goal) throw new Error('Current Goal Task authority is unavailable.');
+        return {
+          kernel: goal?.kernel ?? evaluated.decision,
+          goal,
+          revision: policyDigest({
+            caller: evaluated,
+            goalTask: goal?.authorizationRevision ?? null,
+            coordinator: currentCoordinator,
+          }),
+          authorizationUses,
+        };
+      };
+      const initial = currentAuthority();
+      const authorCurrent = (userId: string) =>
+        !!currentWorkspaceAuthority(
+          coreDb,
+          input.workspaceId,
+          { kind: 'user', id: userId },
+          definition.policyOperation,
+          true,
+          undefined,
+          {
+            retainedPolicyAuthor: true,
+            dependencyFailure: 'throw',
+            mutating: definition.mutating,
+          }
+        );
+      const anchorCurrent: InterceptionInput['anchorCurrent'] = (anchor) => {
+        if (anchor.owner.kind !== 'workspace' || anchor.owner.workspaceId !== input.workspaceId)
+          return false;
+        if (anchor.kind === 'workspace') return anchor.id === input.workspaceId;
+        if (anchor.kind !== 'turn') return false;
+        return !isSealedTurnTerminal(store.getTurnById(anchor.id).status);
+      };
+      const interceptionInput: InterceptionInput = {
+        workspaceDb: db,
+        document,
+        proposal,
+        authorizationRevision: initial.revision,
+        authorizationUses: initial.authorizationUses,
+        resourceSummary: { selectionDigest: factsRevision },
+        contextSummary: { requestId: input.requestId ?? null },
+        authorCurrent,
+        anchorCurrent,
+        participantAuthorized: (binding) =>
+          binding.participant.kind === 'deterministic' &&
+          binding.author.kind === 'human' &&
+          authorCurrent(binding.author.id),
+        stillCurrent: () =>
+          !context.signal?.aborted &&
+          policyDigest(readAdmittedPolicyDocument(coreDb, readPolicy())) === policyRevision &&
+          policyDigest(readFacts()) === factsRevision &&
+          currentAuthority(!!ownDecision).revision === initial.revision,
+        finalKernel: () => {
+          const current = currentAuthority();
+          return current.goal ?? current.kernel;
+        },
+      };
+      ownDecision = await interception.decide(interceptionInput);
+      if (ownDecision.result !== 'allow')
+        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      const recheckAuthority = async () => {
+        await context.recheckAdmission!();
+        if (!interceptionInput.stillCurrent())
+          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      };
+      await recheckAuthority();
+      const result = await run(recheckAuthority);
+      recordServerAuditEvent({
+        coreDb,
+        workspaceId: input.workspaceId,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+        actor: auditActor,
+        action: operation,
+        resource: `workspace:${input.workspaceId}`,
+        outcome: 'succeeded',
+        summary: 'Governed Vault operation completed.',
+      });
+      // Completed observations are non-decisive and cannot make an effect retryable.
+      await interception
+        .observe({
+          ...interceptionInput,
+          stillCurrent: () =>
+            !context.signal?.aborted &&
+            policyDigest(readAdmittedPolicyDocument(coreDb, readPolicy())) === policyRevision &&
+            currentAuthority(true).revision === initial.revision,
+        })
+        .catch(() => undefined);
+      if (!definition.mutating) await recheckAuthority();
+      return result;
+    } catch (cause) {
+      recordServerAuditEvent({
+        coreDb,
+        workspaceId: input.workspaceId,
+        ...(input.requestId ? { requestId: input.requestId } : {}),
+        actor: auditActor,
+        action: operation,
+        resource: `workspace:${input.workspaceId}`,
+        outcome: 'failed',
+        summary: 'Governed Vault operation failed or requires inspection.',
+      });
+      if (cause instanceof OperationError) throw cause;
+      throw new OperationError('recovery_required', 'Vault operation requires inspection.', 409, {
+        cause,
+      });
+    }
+  }
+
+  /** Both automatic admission and agent calls use this reference-only lifecycle handler. */
+  async function bindingOperation(
+    action: 'deliver' | 'replace' | 'revoke',
+    input: {
+      workspaceId: string;
+      bindingThreadId: string;
+      planId: string;
+      requestId: string;
+      receiptId?: string;
+      expectedReceiptId?: string;
+      materialVersion?: number;
+    },
+    context: AdmittedOperationContext
+  ) {
+    if (
+      !coreDb ||
+      !dependencies.store ||
+      !dependencies.repositoryWorkspaceDb ||
+      !dependencies.turnExecutor?.credentialBindingOperation
+    )
+      throw new OperationError(
+        'credential_binding_unavailable',
+        'Credential binding operation is unavailable.',
+        503
+      );
+    const db = dependencies.repositoryWorkspaceDb(input.workspaceId);
+    try {
+      const plan = getVaultInjectionPlan(coreDb, input.planId);
+      if (!plan?.packageSnapshotId || plan.injectionVisibility !== 'runtime-file')
+        throw new OperationError(
+          'credential_binding_not_found',
+          'Credential binding not found.',
+          404
+        );
+      const original = requireAgentEnvironmentPackageSnapshot(
+        db,
+        input.workspaceId,
+        plan.packageSnapshotId
+      ).snapshot;
+      if (
+        original.scope.workspaceId !== input.workspaceId ||
+        original.scope.threadId !== input.bindingThreadId ||
+        (context.kind === 'worker' && context.lineage.threadId !== input.bindingThreadId)
+      )
+        throw new OperationError(
+          'credential_binding_not_found',
+          'Credential binding not found.',
+          404
+        );
+      const receiptId = input.expectedReceiptId ?? input.receiptId ?? null;
+      const readFacts = () => {
+        let target = null;
+        if (context.kind === 'coordinator') {
+          const goal = requireCoordinatorGoal(dependencies.store!, db, context);
+          target = readGoalTaskPolicyContext({
+            coreDb,
+            store: dependencies.store!,
+            db,
+            lineage: { ...original.scope, packageSnapshotId: original.snapshotId },
+          });
+          if (
+            !target ||
+            target.goalId !== goal.goalId ||
+            target.planVersionId !== goal.activePlanVersionId ||
+            target.responsibleUserId !== goal.responsibleUserId ||
+            target.taskThreadId !== input.bindingThreadId
+          )
+            throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        }
+        const currentPlan = getVaultInjectionPlan(coreDb, input.planId);
+        const grant = currentPlan?.grantId ? getVaultGrant(coreDb, currentPlan.grantId) : null;
+        return {
+          plan: currentPlan,
+          grant,
+          target,
+          reference: grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null,
+          receipt: receiptId ? getVaultInjectionReceipt(coreDb, receiptId) : null,
+        };
+      };
+      return await governedVaultOperation(
+        `vault.binding-${action}`,
+        input,
+        context,
+        db,
+        readFacts,
+        {
+          planId: input.planId,
+          grantId: plan.grantId,
+          receiptId,
+          requestId: input.requestId,
+          packageSnapshotId: plan.packageSnapshotId,
+          targetDigest: policyDigest(plan.targetPath),
+        },
+        {
+          materialVersion: input.materialVersion ?? null,
+          format: 'utf8',
+          access: 'read-only',
+          ephemeral: true,
+          outsideRetainedStorage: true,
+          excludedFromCapture: true,
+          excludedFromExport: true,
+        },
+        (recheckAuthority) =>
+          dependencies.turnExecutor!.credentialBindingOperation!(
+            dependencies.store!,
+            {
+              action,
+              workspaceId: input.workspaceId,
+              threadId: input.bindingThreadId,
+              planId: input.planId,
+              requestId: input.requestId,
+              ...(input.receiptId ? { receiptId: input.receiptId } : {}),
+              ...(input.expectedReceiptId ? { expectedReceiptId: input.expectedReceiptId } : {}),
+              ...(input.materialVersion ? { materialVersion: input.materialVersion } : {}),
+            },
+            recheckAuthority
+          )
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  }
+
+  /** Existing read operations retain their public Workspace scope and narrow agent audiences by immutable AEP lineage. */
+  async function inspectBindings(
+    operation: 'vault.injection-plan-list' | 'vault.injection-receipt-list',
+    input: { workspaceId: string },
+    context: AdmittedOperationContext
+  ) {
+    if (!coreDb || !dependencies.store || !dependencies.repositoryWorkspaceDb)
+      throw new OperationError(
+        'credential_binding_unavailable',
+        'Vault inspection is unavailable.',
+        503
+      );
+    dependencies.store.getWorkspace(input.workspaceId);
+    const db = dependencies.repositoryWorkspaceDb(input.workspaceId);
+    try {
+      const select = () => {
+        const grants = listExportableWorkspaceVaultGrants(coreDb, input.workspaceId).map(
+          (grant) => grant.grantId
+        );
+        const caller =
+          context.kind === 'worker'
+            ? requireAgentEnvironmentPackageSnapshot(
+                db,
+                input.workspaceId,
+                context.lineage.packageSnapshotId
+              ).snapshot
+            : null;
+        const goal =
+          context.kind === 'coordinator'
+            ? requireCoordinatorGoal(dependencies.store!, db, context)
+            : null;
+        const scopes = new Map<string, string>();
+        const plans = listExportableVaultInjectionPlans(coreDb, grants).filter((plan) => {
+          if (!caller && !goal) return true;
+          if (!plan.packageSnapshotId) return false;
+          let original: ReturnType<typeof requireAgentEnvironmentPackageSnapshot>['snapshot'];
+          try {
+            original = requireAgentEnvironmentPackageSnapshot(
+              db,
+              input.workspaceId,
+              plan.packageSnapshotId
+            ).snapshot;
+          } catch {
+            return false;
+          }
+          if (original.scope.workspaceId !== input.workspaceId) return false;
+          const selected = (declarations: typeof original.credentials.declarations) =>
+            declarations.some(
+              (declaration) =>
+                declaration.vaultGrantId === plan.grantId &&
+                declaration.visibility === plan.injectionVisibility &&
+                (declaration.visibility !== 'runtime-file' ||
+                  declaration.targetPath === plan.targetPath) &&
+                (declaration.visibility !== 'runtime-env' ||
+                  declaration.targetEnvVarName === plan.targetEnvVarName)
+            );
+          if (!selected(original.credentials.declarations)) return false;
+          if (
+            caller &&
+            context.kind === 'worker' &&
+            (original.scope.agentSessionId !== context.lineage.agentSessionId ||
+              original.scope.threadId !== context.lineage.threadId ||
+              !selected(caller.credentials.declarations))
+          )
+            return false;
+          if (goal) {
+            let target: ReturnType<typeof readGoalTaskPolicyContext>;
+            try {
+              target = readGoalTaskPolicyContext({
+                coreDb,
+                store: dependencies.store!,
+                db,
+                lineage: { ...original.scope, packageSnapshotId: original.snapshotId },
+              });
+            } catch {
+              return false;
+            }
+            if (
+              !target ||
+              target.goalId !== goal.goalId ||
+              target.planVersionId !== goal.activePlanVersionId ||
+              target.responsibleUserId !== goal.responsibleUserId
+            )
+              return false;
+          }
+          scopes.set(plan.planId, original.scope.agentSessionId);
+          return true;
+        });
+        const receipts = listExportableVaultInjectionReceipts(
+          coreDb,
+          plans.map((plan) => plan.planId)
+        ).filter(
+          (receipt) => (!caller && !goal) || receipt.agentSessionId === scopes.get(receipt.planId)
+        );
+        return { plans, receipts };
+      };
+      return await governedVaultOperation(
+        operation,
+        input,
+        context,
+        db,
+        select,
+        {},
+        {},
+        async (recheckAuthority) => {
+          await recheckAuthority();
+          const rows = select();
+          return {
+            workspaceId: input.workspaceId,
+            items: operation === 'vault.injection-plan-list' ? rows.plans : rows.receipts,
+          };
+        }
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  }
 
   /**
    * Returns the redacted vault admin status payload.
@@ -314,7 +860,7 @@ export function createVaultOperationImplementations(
       material?: string;
       secretKind?: string;
       expiresAt?: string | undefined;
-      injectionPath?: 'gateway-only' | 'runtime-env' | undefined;
+      injectionPath?: 'gateway-only' | 'runtime-env' | 'runtime-file' | undefined;
       targetAgentId?: string | undefined;
       targetAgentSessionId?: string | undefined;
       targetCapabilityId?: string | undefined;
@@ -330,7 +876,7 @@ export function createVaultOperationImplementations(
       material?: string;
       secretKind?: string;
       expiresAt?: string | undefined;
-      injectionPath?: 'gateway-only' | 'runtime-env' | undefined;
+      injectionPath?: 'gateway-only' | 'runtime-env' | 'runtime-file' | undefined;
       targetAgentId?: string | undefined;
       targetAgentSessionId?: string | undefined;
       targetCapabilityId?: string | undefined;
@@ -346,7 +892,7 @@ export function createVaultOperationImplementations(
       material?: string;
       secretKind?: string;
       expiresAt?: string | undefined;
-      injectionPath?: 'gateway-only' | 'runtime-env' | undefined;
+      injectionPath?: 'gateway-only' | 'runtime-env' | 'runtime-file' | undefined;
       targetAgentId?: string | undefined;
       targetAgentSessionId?: string | undefined;
       targetCapabilityId?: string | undefined;
@@ -480,10 +1026,11 @@ export function createVaultOperationImplementations(
             'invalid_request',
             400
           );
-        const workerVisible = input.injectionPath === 'runtime-env';
+        const workerVisible =
+          input.injectionPath === 'runtime-env' || input.injectionPath === 'runtime-file';
         if (workerVisible && input.targetCapabilityId !== undefined)
           return vaultFailure(
-            'Runtime environment grants cannot prove a capability target.',
+            'Worker-visible credential grants cannot prove a capability target.',
             'invalid_request',
             400
           );
@@ -497,7 +1044,12 @@ export function createVaultOperationImplementations(
           targetAgentSessionId: input.targetAgentSessionId ?? null,
           targetCapabilityId: input.targetCapabilityId ?? null,
           lifetime: 'workspace',
-          subjectSummary: workerVisible ? 'Worker GitHub CLI' : 'Gateway-only credential',
+          subjectSummary:
+            input.injectionPath === 'runtime-file'
+              ? 'High-risk static Worker file'
+              : workerVisible
+                ? 'Worker GitHub CLI'
+                : 'Gateway-only credential',
           expiresAt: input.expiresAt ? new Date(input.expiresAt).toISOString() : null,
         });
         audit('succeeded');
@@ -542,6 +1094,36 @@ export function createVaultOperationImplementations(
 
   return {
     ...createVaultGrantRequestImplementations(dependencies),
+    'vault.binding-deliver': async (input, context) => {
+      const result = await bindingOperation('deliver', input, context);
+      if (!('realizedProtection' in result))
+        throw new OperationError(
+          'recovery_required',
+          'Credential binding requires inspection.',
+          409
+        );
+      return result;
+    },
+    'vault.binding-replace': async (input, context) => {
+      const result = await bindingOperation('replace', input, context);
+      if (!('realizedProtection' in result))
+        throw new OperationError(
+          'recovery_required',
+          'Credential binding requires inspection.',
+          409
+        );
+      return result;
+    },
+    'vault.binding-revoke': async (input, context) => {
+      const result = await bindingOperation('revoke', input, context);
+      if (!('state' in result))
+        throw new OperationError(
+          'recovery_required',
+          'Credential binding requires inspection.',
+          409
+        );
+      return result;
+    },
     'vault.server-mcp-injection-plan-list': () => ({
       items: listExportableVaultInjectionPlans(coreDb!, serverMcpGrantIds()),
     }),
@@ -1116,49 +1698,14 @@ export function createVaultOperationImplementations(
         vaultReadFailure(error);
       }
     },
-    'vault.injection-plan-list': (input) => {
-      try {
-        const workspaceId = input.workspaceId;
-        dependencies.store!.getWorkspace(workspaceId);
-
-        if (!coreDb) {
-          return vaultFailure('Core DB is not available.', 'not_found', 404);
-        }
-
-        const grantIds = listExportableWorkspaceVaultGrants(coreDb, workspaceId).map(
-          (grant) => grant.grantId
-        );
-        return {
-          workspaceId,
-          items: listExportableVaultInjectionPlans(coreDb, grantIds),
-        } as OperationOutput<'vault.injection-plan-list'>;
-      } catch (error) {
-        vaultReadFailure(error);
-      }
-    },
-    'vault.injection-receipt-list': (input) => {
-      try {
-        const workspaceId = input.workspaceId;
-        dependencies.store!.getWorkspace(workspaceId);
-
-        if (!coreDb) {
-          return vaultFailure('Core DB is not available.', 'not_found', 404);
-        }
-
-        const grantIds = listExportableWorkspaceVaultGrants(coreDb, workspaceId).map(
-          (grant) => grant.grantId
-        );
-        const planIds = listExportableVaultInjectionPlans(coreDb, grantIds).map(
-          (plan) => plan.planId
-        );
-        return {
-          workspaceId,
-          items: listExportableVaultInjectionReceipts(coreDb, planIds),
-        } as OperationOutput<'vault.injection-receipt-list'>;
-      } catch (error) {
-        vaultReadFailure(error);
-      }
-    },
+    'vault.injection-plan-list': (input, context) =>
+      inspectBindings('vault.injection-plan-list', input, context) as Promise<
+        OperationOutput<'vault.injection-plan-list'>
+      >,
+    'vault.injection-receipt-list': (input, context) =>
+      inspectBindings('vault.injection-receipt-list', input, context) as Promise<
+        OperationOutput<'vault.injection-receipt-list'>
+      >,
     'vault.secret-create': (input, c) => mutate(input, c, 'create'),
     'vault.secret-rotate': (input, c) => mutate(input, c, 'rotate'),
     'vault.secret-revoke': (input, c) => mutate(input, c, 'revoke'),
@@ -1184,10 +1731,15 @@ export function createVaultOperationImplementations(
         source.lifetime !== 'workspace' ||
         source.userId !== null ||
         source.allowedInjectionPaths.length !== 1 ||
-        !['gateway-only', 'runtime-env'].includes(source.allowedInjectionPaths[0]!) ||
+        !['gateway-only', 'runtime-env', 'runtime-file'].includes(
+          source.allowedInjectionPaths[0]!
+        ) ||
         (source.allowedInjectionPaths[0] === 'runtime-env' &&
           (reference.secretKind !== 'github-token' ||
             input.constraints.targetCapabilityId !== undefined ||
+            source.targetCapabilityId !== null)) ||
+        (source.allowedInjectionPaths[0] === 'runtime-file' &&
+          (input.constraints.targetCapabilityId !== undefined ||
             source.targetCapabilityId !== null)) ||
         (source.targetCapabilityId !== null &&
           !['mcp.list-tools', 'mcp.call-tool'].includes(source.targetCapabilityId))

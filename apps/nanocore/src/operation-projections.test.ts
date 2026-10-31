@@ -1858,6 +1858,11 @@ describe('Goal definition projections', () => {
               'agent.list',
               'knowledge.ask',
               'knowledge.tell',
+              'vault.injection-plan-list',
+              'vault.injection-receipt-list',
+              'vault.binding-deliver',
+              'vault.binding-replace',
+              'vault.binding-revoke',
             ],
           ].sort()
         );

@@ -16,7 +16,9 @@ import type { CoreDb } from '../storage/db.js';
 export function withHumanMcpApproval(
   input: Pick<InterceptionInput, 'document' | 'proposal'>
 ): PolicyDocumentV1 {
-  const { workspaceId, serverId, toolName, subject } = input.proposal;
+  const { workspaceId, resource, subject } = input.proposal;
+  if (resource.kind !== 'mcp-tool') throw new Error('MCP Tool condition requires an MCP resource.');
+  const { serverId, toolName } = resource;
   return {
     ...input.document,
     statements: [

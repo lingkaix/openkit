@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -32,6 +32,79 @@ const skillRoot = join(repoRoot, 'skills', 'openkit-ops');
 const cliPath = join(skillRoot, 'scripts', 'openkit');
 const sourceCliPath = join(repoRoot, 'skills', 'openkit-cli.mjs');
 const protocolExports = new Map(Object.entries(protocol));
+
+test('Vault credential lifecycle forwards only admitted references through the uniform operation client', async () => {
+  const { operationCatalog } = await operations();
+  for (const id of ['vault.binding-deliver', 'vault.binding-replace', 'vault.binding-revoke']) {
+    const operation = operationCatalog.find((entry) => entry.id === id);
+    assert.ok(operation, 'Vault lifecycle is missing from the agent operation catalog');
+    assert.equal(operation.appOperationId, id);
+    assert.equal(operation.mutating, true);
+    const input = {
+      workspaceId: protocol.allocateEntityId('ws'),
+      bindingThreadId: protocol.allocateEntityId('th'),
+      planId: randomUUID(),
+      requestId: randomUUID(),
+      ...(id === 'vault.binding-deliver'
+        ? { receiptId: randomUUID(), materialVersion: 1 }
+        : { expectedReceiptId: randomUUID() }),
+      ...(id === 'vault.binding-replace' ? { materialVersion: 2 } : {}),
+    };
+    assert.deepEqual(operation.inputSchema.parse(input), input);
+    for (const field of [
+      'material',
+      'credentialValue',
+      'hostPath',
+      'targetPath',
+      'policyDecisionId',
+      'realizedProtection',
+    ])
+      assert.equal(
+        operation.inputSchema.safeParse({ ...input, [field]: randomUUID() }).success,
+        false,
+        'agent operation admitted bytes or fabricated authority'
+      );
+    const result =
+      id === 'vault.binding-revoke'
+        ? {
+            planId: input.planId,
+            receiptId: input.expectedReceiptId,
+            state: 'removed',
+            fenceRef: null,
+          }
+        : {
+            declarationId: randomUUID(),
+            planId: input.planId,
+            receiptId: input.receiptId ?? input.expectedReceiptId,
+            materialVersion: id === 'vault.binding-replace' ? 2 : 1,
+            access: 'read-only',
+            realizedProtection: {
+              ephemeral: true,
+              outsideRetainedStorage: true,
+              excludedFromCapture: true,
+              excludedFromExport: true,
+            },
+          };
+    const calls = [];
+    assert.equal(
+      await operation.handler(
+        {
+          client: {
+            operations: {
+              [id]: async (command) => {
+                calls.push(command);
+                return result;
+              },
+            },
+          },
+        },
+        input
+      ),
+      result
+    );
+    assert.deepEqual(calls, [input]);
+  }
+});
 
 test('App update CLI admits only exact release requests and strips retained status annotations', async () => {
   const { operationCatalog } = await operations();

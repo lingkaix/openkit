@@ -2516,14 +2516,20 @@ function mcpInterceptionInput(
   const proposal = {
     operation: 'mcp.call-tool' as const,
     workspaceId: scope.workspaceId,
-    serverId: input.serverId,
-    toolName: input.toolName,
-    argumentsDigest: policyDigest(input.arguments),
-    catalogRevision: input.resolved.catalogDigest,
-    packageDigest: input.environmentPackage.snapshotId,
-    // This pilot's contract is schema-independent. The exact Turn schema remains
-    // a mandatory post-allow dispatch precondition under its existing owner.
-    schemaDigest: null,
+    resource: {
+      kind: 'mcp-tool' as const,
+      workspaceId: scope.workspaceId,
+      serverId: input.serverId,
+      toolName: input.toolName,
+    },
+    inputReferences: {
+      argumentsDigest: policyDigest(input.arguments),
+      catalogRevision: input.resolved.catalogDigest,
+      packageSnapshotId: input.environmentPackage.snapshotId,
+      // Exact Turn schema remains a mandatory post-allow dispatch precondition.
+      schemaDigest: null,
+    },
+    inputAttributes: { contract: 'mcp-tool-summary-v1' },
     capabilityCallId: call.id,
     subject: authority.subject,
   };
@@ -2550,6 +2556,17 @@ function mcpInterceptionInput(
   };
   const permissionAuthorCurrent = (userId: string) =>
     isCurrentServerPolicyAuthor(input.input.coreDb!, userId);
+  const currentPermissions = () =>
+    selectMcpToolPermissions({
+      document,
+      proposal: {
+        workspaceId: scope.workspaceId,
+        serverId: input.serverId,
+        toolName: input.toolName,
+        subject: proposal.subject,
+      },
+      authorCurrent: permissionAuthorCurrent,
+    });
   const currentBindingRefs = () =>
     [
       ...selectPolicyBindings({
@@ -2559,7 +2576,7 @@ function mcpInterceptionInput(
         anchorCurrent,
         now: Date.now(),
       }),
-      ...selectMcpToolPermissions({ document, proposal, authorCurrent: permissionAuthorCurrent }),
+      ...currentPermissions(),
     ].map((statement) => ({ id: statement.id, digest: policyDigest(statement) }));
   const participantAuthorized: InterceptionInput['participantAuthorized'] = (binding) => {
     if (binding.author.kind !== 'human' || !currentMcpBindingAuthor(input, binding.author.id, true))
@@ -2639,18 +2656,24 @@ function mcpInterceptionInput(
       ownDecision = decision;
     },
     authorCurrent,
-    permissionAuthorCurrent,
+    permissions: currentPermissions(),
+    resourceSummary: { serverId: input.serverId, toolName: input.toolName },
+    contextSummary: {
+      packageSnapshotId: input.environmentPackage.snapshotId,
+      catalogRevision: input.resolved.catalogDigest,
+    },
     anchorCurrent,
     participantAuthorized,
     finalKernel: () => {
       const current = currentMcpPolicyAuthority(input);
-      return current.goalTask ?? current.kernel;
+      const kernel = applyMcpToolProhibitions(current.kernel, currentPermissions());
+      return current.goalTask ? { ...current.goalTask, kernel } : kernel;
     },
     stillCurrent: () =>
       !input.signal.aborted &&
       lifecycleCurrent() &&
       agentBindingsCurrent() &&
-      currentCatalogRevision() === proposal.catalogRevision &&
+      currentCatalogRevision() === proposal.inputReferences.catalogRevision &&
       policyDigest({
         caller: currentMcpPolicyAuthority(input, ownDecision).revision,
         bindings: currentBindingRefs(),
@@ -2661,7 +2684,7 @@ function mcpInterceptionInput(
           input.input.runtimeConfig().openKitConfig.policy?.mediation
         )
       ) === policyRevision &&
-      policyDigest(input.arguments) === proposal.argumentsDigest,
+      policyDigest(input.arguments) === proposal.inputReferences.argumentsDigest,
   };
 }
 

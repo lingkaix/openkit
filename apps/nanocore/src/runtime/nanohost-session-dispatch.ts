@@ -6,6 +6,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
   AgentEnvironmentDockerfileInputSchema,
   DOCKERFILE_INPUT_MAX_BYTES,
+  WorkerCredentialBindingsSchema,
 } from '@openkit/config-schema';
 import { type ActorRef, ActorRefSchema } from '@openkit/protocol';
 import type { Context as TelemetryContext } from '@opentelemetry/api';
@@ -163,6 +164,7 @@ export const NANO_HOST_EFFECT_OPERATIONS = [
 /** Complete owned key set for the authority-bearing sandbox create instruction. */
 const SANDBOX_CREATE_INPUT_KEYS = [
   'backendSessionId',
+  'credentialBindings',
   'environment',
   'imageDigest',
   'leaseId',
@@ -1111,7 +1113,20 @@ export function createNanoHostSessionDispatch(
         }
       }
       if (pending.beforeDelivery) {
-        await pending.beforeDelivery();
+        try {
+          await pending.beforeDelivery();
+        } catch (cause) {
+          // Reject only this unaccepted command. It must never become deliverable on a later poll.
+          if (pendingEffects.get(operation) === pending && !pending.accepted) {
+            removePendingEffectGroup(pendingEffects, operation, pending);
+            pending.reject(
+              cause instanceof Error
+                ? cause
+                : new Error('Effect delivery authority is unavailable.')
+            );
+          }
+          throw cause;
+        }
         requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
         requireCurrentReadiness(pollingReadiness);
         if (pendingEffects.get(operation) !== pending || pending.accepted || !pending.command)
@@ -2415,6 +2430,12 @@ function requireEffectRequest(request: NanoHostSessionEffectRequest): {
     ) {
       throw effectTransportError(400, 'NanoHost effect command contains an unowned field.');
     }
+    if (
+      request.input.credentialBindings !== undefined &&
+      !WorkerCredentialBindingsSchema.safeParse(request.input.credentialBindings).success
+    ) {
+      throw effectTransportError(400, 'NanoHost credential binding intent is invalid.');
+    }
     const intent = WorkerSandboxPolicyIntentSchema.safeParse(request.input.policyIntent);
     if (!intent.success) {
       throw effectTransportError(400, 'NanoHost sandbox policy intent is invalid.');
@@ -3559,7 +3580,7 @@ function readNanoHostEffectResult(
     case 'bridge.open':
       return resultFields(result, ['requestId', 'accepted', 'integrationReady', 'state']);
     case 'reference.import':
-      return resultFields(result, ['requestId', 'byteLength', 'reference']);
+      return resultFields(result, ['requestId', 'byteLength', 'reference', 'credentialProtection']);
     case 'file.export':
       return resultFields(result, ['requestId', 'state', 'reasonCode']);
     case 'storage.purge':

@@ -134,21 +134,30 @@ export type OperationCrossing =
 /** Closed modes accepted by the native owner's participant contract. */
 export type OperationParticipationMode = z.infer<typeof PolicyModeV1Schema>;
 /** Core-mediated native contracts have no implicit HTTP, CLI or model projection. */
-export interface NativeOperationDefinition {
+export interface OperationInsertionPoints {
+  readonly crossings: readonly OperationCrossing[];
+  readonly stages: readonly OperationStage[];
+  readonly modes: readonly OperationParticipationMode[];
+  readonly participantKinds: readonly ('deterministic' | 'agent')[];
+  /** Supported deciding outputs and failure dispositions at this operation's actual owner. */
+  readonly gateResults: readonly ('allow' | 'deny' | 'escalate')[];
+  readonly gateFailures: readonly ('error' | 'escalate-to-human')[];
+}
+
+/** Core-mediated native contracts have no implicit HTTP, CLI or model projection. */
+export interface NativeOperationDefinition extends OperationInsertionPoints {
   readonly binding: 'native';
   readonly description: string;
   /** Native variants may select between closed object forms without adding a public route. */
   readonly inputSchema: z.ZodObject | z.ZodUnion;
   readonly outputSchema: z.ZodType;
   readonly policyOperation: OperationPolicy;
-  readonly crossings: readonly OperationCrossing[];
-  readonly stages: readonly OperationStage[];
-  readonly modes: readonly OperationParticipationMode[];
-  readonly participantKinds: readonly ('deterministic' | 'agent')[];
 }
 
 /** Browser-safe declaration vocabulary; no live dependencies or authority facts. */
 export interface OperationDefinition extends OperationProjectionFacts {
+  /** Existing Policy-owned stage semantics, when implemented by this operation's native owner. */
+  readonly insertionPoints?: OperationInsertionPoints;
   readonly description: string;
   readonly inputSchema: z.ZodObject;
   readonly outputSchema: z.ZodType;

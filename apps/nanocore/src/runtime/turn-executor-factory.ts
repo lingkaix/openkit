@@ -9,6 +9,10 @@ import {
   planSessionWorkspaceMaterialization,
   sessionStaticControl,
   validateAgentEnvironmentPackageForBackend,
+  WORKER_CREDENTIAL_FILE_REQUIREMENT,
+  WorkerCredentialBindingsSchema,
+  type WorkerCredentialFileBinding,
+  WorkerCredentialProtectionSchema,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import {
@@ -93,8 +97,10 @@ import {
 import type {
   ExecutionBackendCorrelation,
   ExecutionBackendObservation,
+  ExecutionCredentialReceipt,
   ExecutionReleaseProof,
 } from './execution-backend.js';
+import { requireExecutionCredentialReceipts } from './execution-backend.js';
 import {
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   createExecutionStepJournalReader,
@@ -201,6 +207,7 @@ import {
   type WorkerArtifactCapture,
   WorkerGovernanceCapacityUnavailableError,
   WorkerNativeProofValidationError,
+  workerCredentialFileBinding,
 } from './worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
@@ -273,6 +280,10 @@ export interface TurnExecutorFactoryEnv {
 
 /** Options for creating the configured NanoCore turn executor. */
 export interface CreateConfiguredTurnExecutorOptions {
+  /** Existing app Goal/Task scope reader, consulted only for linked Tasks. */
+  goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
+  /** Deferred reference to the same app-owned operation interception instance. */
+  policyInterception?: (() => import('../policy/interception.js').PolicyInterception) | undefined;
   /** Shared file capacity owner used by self-check Artifact publication. */
   fileAdmission?: FileStorageAdmission | undefined;
   /** Reads active configuration for resolution-time public-route admission. */
@@ -378,7 +389,9 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.store,
     options.workspaceMutationAdmission,
     options.readRuntimeConfig,
-    options.fileAdmission
+    options.fileAdmission,
+    options.policyInterception,
+    options.goalTaskPolicy
   );
 }
 
@@ -403,7 +416,9 @@ function createNanoHostWorkerLifecycleRuntime(
   sharedStore?: FsStore | undefined,
   workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined,
   readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined,
-  fileAdmission?: FileStorageAdmission | undefined
+  fileAdmission?: FileStorageAdmission | undefined,
+  policyInterception?: (() => import('../policy/interception.js').PolicyInterception) | undefined,
+  goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy']
 ): ConfiguredWorkerLifecycleRuntime {
   let executionReconciler: ExecutionReconciler;
   const backend = new NanoHostWorkerGovernanceBackend(
@@ -454,6 +469,8 @@ function createNanoHostWorkerLifecycleRuntime(
           backend,
           coreDb,
           ...(readRuntimeConfig ? { readRuntimeConfig } : {}),
+          ...(policyInterception ? { policyInterception } : {}),
+          ...(goalTaskPolicy ? { goalTaskPolicy } : {}),
           resolveResidentWorkerStorageWorkSlotRef: (environmentPackage) =>
             backend.resolveResidentWorkerStorageWorkSlotRef(environmentPackage),
           ...(vaultBackend ? { vaultBackend } : {}),
@@ -572,17 +589,20 @@ function createNanoHostWorkerLifecycleRuntime(
 
 /** One materialized Turn awaiting operations on the shared private Harness. */
 interface NanoHostBackendTurnSession {
+  /** Actual private delivery attestations; absent after restart until independently proved. */
+  credentialReceipts: ExecutionCredentialReceipt[];
   /** Verified Turn input bytes awaiting exact session admission; never restored or replayed. */
   pendingImports: NanoHostContextPackageImport[];
   /**
    * Original session-static Vault material used at open and collection; never persisted.
    * Reuse and restart collection resolve the binding's recorded versions, because the resident host's environment was fixed when it started.
    */
-  runtimeEnvironment: Record<string, string> | null;
+  runtimeCredentialValues: Record<string, string> | null;
   /** Original dispatch tokens retained only until closeout; restart uses their durable hashes. */
   liveRouteTokens: [string, string, string] | null;
   runtimeCheckVersions: Array<{
-    targetEnvVarName: string;
+    targetEnvVarName?: string;
+    targetPath?: string;
     vaultReferenceId: string;
     materialVersion: number;
     grantId: string;
@@ -666,7 +686,7 @@ interface NanoHostSharedHarness {
       readonly agentSessionRuntimeBindingId: string;
       nativeHandleDigest: string | null;
       nextTurnSequence: number;
-      runtimeEnvironment: Record<string, string> | null;
+      runtimeCredentialValues: Record<string, string> | null;
     }
   >;
   readonly adapterId: string;
@@ -925,7 +945,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const journal = pending.journal;
     if (!journal?.child || !journal.prepared)
       throw new Error('NanoHost dispatched operation has no exact admitted native child.');
-    const runtimeEnvironment = session?.runtimeEnvironment;
+    const runtimeEnvironment = session?.runtimeCredentialValues
+      ? nanoHostProcessEnvironment(session.runtimeCredentialValues)
+      : undefined;
     const expectedWire = {
       ...journal.prepared.command,
       body:
@@ -1024,7 +1046,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     )
       throw new Error('NanoHost dispatched execution no longer has current resident admission.');
     command = { ...command, body: journal.prepared.wireBody };
-    if (command.operation === 'session.open' && session?.runtimeEnvironment === null) {
+    if (command.operation === 'session.open' && session?.runtimeCredentialValues === null) {
       throw new Error('NanoHost AgentSession credential material is unavailable.');
     }
     if (command.operation === 'turn.start') {
@@ -1099,7 +1121,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     pending.operationId = command.operationId;
     if (command.operation === 'session.open' && session) {
-      const runtimeEnvironment = session.runtimeEnvironment!;
+      const runtimeEnvironment = nanoHostProcessEnvironment(session.runtimeCredentialValues!);
       return Object.keys(runtimeEnvironment).length === 0
         ? command
         : { ...command, body: { ...command.body, runtimeEnvironment } };
@@ -1575,7 +1597,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionRuntimeBindingId: binding.agentSessionRuntimeBindingId,
         nativeHandleDigest: binding.nativeHandleDigest,
         nextTurnSequence: binding.nextTurnSequence,
-        runtimeEnvironment: null,
+        runtimeCredentialValues: null,
       });
     }
     this.sharedHarnesses.set(mapKey, sharedHarness);
@@ -1611,6 +1633,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       agentSessionRuntimeBindingId: binding.agentSessionRuntimeBindingId,
       environmentPackage,
       evidence: [],
+      credentialReceipts: [],
       harnessBindingRef: sharedHarness.harnessBindingRef,
       harnessInstanceId: sharedHarness.harnessInstanceId,
       identity,
@@ -1619,7 +1642,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       nativeSessionReusable: false,
       recordNativeHandleDigest: null,
       pendingImports: [],
-      runtimeEnvironment: null,
+      runtimeCredentialValues: null,
       liveRouteTokens: null,
       runtimeCheckVersions: null,
       pendingHarnessOperation: null,
@@ -1666,13 +1689,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
     if (
       environmentPackage.credentials.declarations.some(
-        (declaration) => declaration.visibility !== 'runtime-env'
+        (declaration) =>
+          declaration.visibility !== 'runtime-env' && declaration.visibility !== 'runtime-file'
       )
     )
       diagnostics.push({
         code: 'backend_missing_required_capability',
         path: '$.credentials.declarations',
-        message: 'NanoHost persistent Worker images admit only runtime-env credentials.',
+        message: 'NanoHost admits only runtime-env and verified runtime-file credentials.',
       });
     return diagnostics;
   }
@@ -3705,9 +3729,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if ((context.providerCredentials?.length ?? 0) > 0) {
       throw new Error('NanoHost Provider credential materialization is not supported.');
     }
-    const runtimeEnvironment = nanoHostRuntimeEnvironment(context.runtimeEnvCredentials ?? []);
-    const runtimeCredentialImports = nanoHostRuntimeCredentialImports(
-      context.runtimeFileCredentials ?? []
+    const runtimeCredentialValues = nanoHostRuntimeEnvironment(context.runtimeEnvCredentials ?? []);
+    const runtimeCredentialBindings = nanoHostRuntimeCredentialBindings(
+      context.runtimeFileCredentials ?? [],
+      environmentPackage
     );
     const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
     if (!responsibleUserId) {
@@ -3959,7 +3984,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const sandboxId = nanoHostSandboxId(sandboxCompatibilityKey);
       let sandboxResult: Record<string, unknown>;
       try {
+        if (
+          environmentPackage.credentials.declarations.filter(
+            (item) => item.visibility === 'runtime-file'
+          ).length !== runtimeCredentialBindings.length
+        )
+          throw new Error('New Sandbox requires every declared credential file binding.');
         sandboxResult = await this.effect(identity, attemptId, 'sandbox.create', {
+          credentialBindings: runtimeCredentialBindings,
           environment: {},
           imageDigest,
           attemptId: attemptId,
@@ -4059,6 +4091,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     this.sessions.set(environmentPackage.snapshotId, {
       environmentPackage,
       evidence,
+      credentialReceipts: [],
       agentSessionCompatibilityKey,
       agentSessionRuntimeBindingId,
       harnessBindingRef: sharedHarness.harnessBindingRef,
@@ -4069,9 +4102,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       nativeSessionReusable: false,
       recordNativeHandleDigest: null,
       pendingImports: [],
-      runtimeEnvironment,
+      runtimeCredentialValues,
       liveRouteTokens: null,
-      runtimeCheckVersions: (context.runtimeEnvCredentials ?? []).every(
+      runtimeCheckVersions: [
+        ...(context.runtimeEnvCredentials ?? []),
+        ...(context.runtimeFileCredentials ?? []),
+      ].every(
         (item) =>
           item.grantId &&
           item.planId &&
@@ -4080,14 +4116,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           Number.isSafeInteger(item.materialVersion) &&
           item.materialVersion! > 0
       )
-        ? (context.runtimeEnvCredentials ?? []).map((item) => ({
-            targetEnvVarName: item.targetEnvVarName,
-            vaultReferenceId: item.vaultReferenceId!,
-            materialVersion: item.materialVersion!,
-            grantId: item.grantId!,
-            planId: item.planId!,
-            receiptId: item.receiptId!,
-          }))
+        ? [...(context.runtimeEnvCredentials ?? []), ...(context.runtimeFileCredentials ?? [])].map(
+            (item) => ({
+              ...('targetPath' in item
+                ? { targetPath: item.targetPath }
+                : { targetEnvVarName: item.targetEnvVarName }),
+              vaultReferenceId: item.vaultReferenceId!,
+              materialVersion: item.materialVersion!,
+              grantId: item.grantId!,
+              planId: item.planId!,
+              receiptId: item.receiptId!,
+            })
+          )
         : null,
       pendingHarnessOperation: null,
       turnStopSettlement: null,
@@ -4122,10 +4162,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
     }
     this.livePartialMaterializations.delete(identity.packageSnapshotId);
-    this.requireSession(environmentPackage.snapshotId).pendingImports = [
-      ...preparedImports,
-      ...runtimeCredentialImports,
-    ];
+    this.requireSession(environmentPackage.snapshotId).pendingImports = preparedImports;
     const harnessMapKey = nanoHostSharedHarnessMapKey(
       sandboxCompatibilityKey,
       harnessCompatibilityKey
@@ -4259,25 +4296,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     session.sharedHarness.sandbox.bridgeOpen = true;
     const pendingImports = session.pendingImports;
     session.pendingImports = [];
-    for (const file of pendingImports) {
-      const imported = await this.effect(session.identity, session.attemptId, 'reference.import', {
-        entryKind: file.entryKind,
-        relativePath: file.relativePath,
-        sandboxId: session.sharedHarness.sandbox.sandboxId,
-        slot: file.slot,
-        ...(file.entryKind === 'file'
-          ? {
-              ...(file.source ? { source: file.source } : { body: file.body }),
-              byteLength: file.byteLength,
-              executable: file.executable,
-              sha256: file.contentDigest,
-            }
-          : {}),
-      });
-      session.evidence.push(
-        nanoHostEffectEvidence(session.environmentPackage.createdAt, imported, 'reference-import')
-      );
-    }
+    for (const file of pendingImports) await this.importPreparedReference(session, file);
     let binding = session.sharedHarness.bindings.get(
       session.environmentPackage.scope.agentSessionId
     );
@@ -4370,7 +4389,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
         nativeHandleDigest: openedReady ? (opened.nativeHandleDigest as string) : null,
         nextTurnSequence: 0,
-        runtimeEnvironment: session.runtimeEnvironment,
+        runtimeCredentialValues: session.runtimeCredentialValues,
       };
       session.sharedHarness.bindings.set(session.environmentPackage.scope.agentSessionId, binding);
       if (binding.nativeHandleDigest !== null) {
@@ -4383,12 +4402,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: new Date().toISOString(),
       });
       // The resident host fixed its environment at open; resolve its recorded versions for collection.
-      session.runtimeEnvironment = binding.runtimeEnvironment ?? null;
-      session.runtimeEnvironment = await this.restoreCollectionRuntimeEnvironment(
+      session.runtimeCredentialValues = binding.runtimeCredentialValues ?? null;
+      session.runtimeCredentialValues = await this.restoreCollectionRuntimeCredentials(
         session,
         workspaceDb
       );
-      binding.runtimeEnvironment = session.runtimeEnvironment;
+      binding.runtimeCredentialValues = session.runtimeCredentialValues;
       await withLifecycleStageTelemetry(
         {
           ...session.environmentPackage.scope,
@@ -4419,9 +4438,316 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
   }
 
+  /** The existing supply owner realizes the exact admitted file under its Vault operation. */
+  public async deliverCredentialBinding(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string,
+    credentialValue: string,
+    materialVersion: number,
+    recheckAuthority: () => Promise<void>
+  ): Promise<ExecutionCredentialReceipt> {
+    const session = this.requireSession(packageSnapshotId);
+    assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
+    if (
+      session.credentialReceipts.some(
+        (proof) => proof.planId === planId && proof.receiptId === receiptId
+      )
+    )
+      throw new Error(
+        'Inspect the original credential delivery receipt; delivery will not replay.'
+      );
+    const prepared = session.runtimeCheckVersions?.find(
+      (value) => value.planId === planId && value.receiptId === receiptId
+    );
+    const declaration = session.environmentPackage.credentials.declarations.find(
+      (value) =>
+        value.visibility === 'runtime-file' &&
+        value.vaultGrantId === prepared?.grantId &&
+        value.targetPath === prepared?.targetPath
+    );
+    if (
+      !prepared?.targetPath ||
+      prepared.materialVersion !== materialVersion ||
+      declaration?.visibility !== 'runtime-file'
+    )
+      throw new Error('Admitted credential supply or generation is unavailable.');
+    const binding = workerCredentialFileBinding({
+      ...prepared,
+      declarationId: declaration.id,
+      targetPath: prepared.targetPath,
+    });
+    const body = Buffer.from(credentialValue, 'utf8');
+    if (body.length === 0 || body.length > NANO_HOST_FILE_EXPORT_MAX_BYTES)
+      throw new Error('Credential binding content bound is invalid.');
+    // Retain comparison evidence before an attempted import, including uncertain completion.
+    if (!session.runtimeCredentialValues)
+      throw new Error('Credential comparison owner is unavailable.');
+    session.runtimeCredentialValues[prepared.targetPath] = credentialValue;
+    const resident = session.sharedHarness.bindings.get(
+      session.environmentPackage.scope.agentSessionId
+    );
+    if (resident) resident.runtimeCredentialValues = session.runtimeCredentialValues;
+    assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
+    const proof = await this.importPreparedReference(
+      session,
+      {
+        credentialBinding: binding,
+        relativePath: createHash('sha256')
+          .update(JSON.stringify([binding.declarationId, planId, receiptId]))
+          .digest('hex'),
+        slot: 'runtime-credential',
+        entryKind: 'file',
+        executable: false,
+        body,
+        byteLength: body.length,
+        contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+      },
+      recheckAuthority
+    );
+    if (!proof) throw new Error('Placement credential protection is unproved.');
+    session.credentialReceipts.push(proof);
+    return proof;
+  }
+
+  /** A single private import implementation serves ordinary supply, delivery and replacement. */
+  private async importPreparedReference(
+    session: NanoHostBackendTurnSession,
+    file: NanoHostContextPackageImport,
+    recheckAuthority?: () => Promise<void>
+  ): Promise<ExecutionCredentialReceipt | undefined> {
+    if (file.credentialBinding && !recheckAuthority)
+      throw new Error('Credential effect admission readback is unavailable.');
+    const imported = await this.effect(
+      session.identity,
+      session.attemptId,
+      'reference.import',
+      {
+        entryKind: file.entryKind,
+        relativePath: file.relativePath,
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
+        slot: file.slot,
+        ...(file.entryKind === 'file'
+          ? {
+              ...(file.source ? { source: file.source } : { body: file.body }),
+              byteLength: file.byteLength,
+              executable: file.executable,
+              sha256: file.contentDigest,
+            }
+          : {}),
+      },
+      undefined,
+      undefined,
+      undefined,
+      recheckAuthority
+    );
+    session.evidence.push(
+      nanoHostEffectEvidence(session.environmentPackage.createdAt, imported, 'reference-import')
+    );
+    if (!file.credentialBinding) return undefined;
+    return {
+      declarationId: file.credentialBinding.declarationId,
+      planId: file.credentialBinding.planId,
+      receiptId: file.credentialBinding.receiptId,
+      materialVersion: file.credentialBinding.material.version,
+      access: 'read-only',
+      realizedProtection: WorkerCredentialProtectionSchema.parse(imported.credentialProtection),
+    };
+  }
+
+  /** Replacement realizes the same file binding; it does not claim application reload. */
+  public async replaceCredentialBinding(
+    input: Parameters<NonNullable<WorkerGovernanceBackend['replaceCredentialBinding']>>[0],
+    recheckAuthority: () => Promise<void>
+  ): Promise<ExecutionCredentialReceipt> {
+    const session = this.requireSession(input.inputRef!);
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
+    if (
+      attempt.phase !== 'open' ||
+      attempt.backendId !== this.id ||
+      attempt.inputRef !== input.inputRef ||
+      attempt.bindingRef !== input.bindingRef ||
+      session.attemptId !== input.attemptId ||
+      !session.turnStarted ||
+      (attempt.deadline !== null && attempt.deadline <= new Date().toISOString())
+    )
+      throw new Error('Credential replacement has no exact live execution authority.');
+    WorkerCredentialBindingsSchema.parse([input.binding]);
+    const declaration = session.environmentPackage.credentials.declarations.find(
+      (value) => value.id === input.binding.declarationId
+    );
+    if (
+      declaration?.visibility !== 'runtime-file' ||
+      declaration.targetPath !== input.binding.target.path
+    )
+      throw new Error('Credential replacement contradicts its admitted declaration.');
+    const { reference } = assertCurrentWorkerCredentialAuthority(
+      this.coreDb,
+      session.environmentPackage,
+      () => new Date().toISOString(),
+      declaration
+    );
+    if (
+      reference.referenceId !== input.binding.material.referenceId ||
+      reference.currentVersion !== input.binding.material.version
+    )
+      throw new Error('Credential replacement material generation changed.');
+    const body = Buffer.from(input.credentialValue, 'utf8');
+    if (body.length === 0 || body.length > 256 * 1024 * 1024)
+      throw new Error('Credential binding content bound is invalid.');
+    const db = openWorkspaceDb(this.coreDb.dataRoot, session.environmentPackage.scope.workspaceId);
+    try {
+      const values = await this.restoreCollectionRuntimeCredentials(session, db);
+      const row = this.coreDb.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,
+        runtime_env_check_versions_json AS versions FROM agent_session_runtime_bindings
+        WHERE agent_session_runtime_binding_id=? AND harness_instance_id=? AND agent_session_id=?`)
+        .get(
+          session.agentSessionRuntimeBindingId,
+          session.harnessInstanceId,
+          session.environmentPackage.scope.agentSessionId
+        ) as { schemaVersion: unknown; versions: string } | undefined;
+      if (!row) throw new Error('Original credential binding lineage is unavailable.');
+      readRetainedV1(row, () => row);
+      const versions = JSON.parse(row.versions) as NonNullable<
+        NanoHostBackendTurnSession['runtimeCheckVersions']
+      >;
+      const original = versions.find(
+        (version) =>
+          version.targetPath === input.binding.target.path &&
+          version.planId === input.binding.planId
+      );
+      if (!original || original.vaultReferenceId !== reference.referenceId)
+        throw new Error('Original credential binding lineage is unavailable.');
+      const address = createHash('sha256')
+        .update(JSON.stringify([input.binding.declarationId, original.planId, original.receiptId]))
+        .digest('hex');
+      const invocation = createHash('sha256').update(input.binding.receiptId).digest('hex');
+      const predecessor = createHash('sha256').update(input.expectedReceiptId).digest('hex');
+      const current = assertCurrentWorkerCredentialAuthority(
+        this.coreDb,
+        session.environmentPackage,
+        () => new Date().toISOString(),
+        declaration
+      );
+      if (
+        current.reference.referenceId !== input.binding.material.referenceId ||
+        current.reference.currentVersion !== input.binding.material.version
+      )
+        throw new Error('Credential material generation changed before replacement.');
+      // Persist comparison lineage and retain its value BEFORE a possibly partial/unknown rewrite.
+      // This is not a completed receipt: a restart without that receipt must refuse collection.
+      versions.push({
+        targetPath: input.binding.target.path,
+        vaultReferenceId: reference.referenceId,
+        materialVersion: input.binding.material.version,
+        grantId: declaration.vaultGrantId,
+        planId: input.binding.planId,
+        receiptId: input.binding.receiptId,
+      });
+      const changed = this.coreDb.sqlite
+        .prepare(`UPDATE agent_session_runtime_bindings SET runtime_env_check_versions_json=?
+        WHERE agent_session_runtime_binding_id=? AND harness_instance_id=? AND agent_session_id=? AND runtime_env_check_versions_json=?`)
+        .run(
+          JSON.stringify(versions),
+          session.agentSessionRuntimeBindingId,
+          session.harnessInstanceId,
+          session.environmentPackage.scope.agentSessionId,
+          row.versions
+        );
+      if (changed.changes !== 1) throw new Error('Credential replacement lineage changed.');
+      values[credentialComparisonKey(input.binding.target.path, input.binding.receiptId)] =
+        input.credentialValue;
+      session.runtimeCredentialValues = values;
+      session.runtimeCheckVersions = versions;
+      const binding = session.sharedHarness.bindings.get(
+        session.environmentPackage.scope.agentSessionId
+      );
+      if (binding) binding.runtimeCredentialValues = values;
+      const proof = await this.importPreparedReference(
+        session,
+        {
+          credentialBinding: input.binding,
+          relativePath: `${address}/${predecessor}/${invocation}`,
+          slot: 'runtime-credential-replace',
+          entryKind: 'file',
+          executable: false,
+          body,
+          byteLength: body.length,
+          contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+        },
+        recheckAuthority
+      );
+      if (!proof) throw new Error('Credential replacement protection is unproved.');
+      session.credentialReceipts = session.credentialReceipts.filter(
+        (value) => value.planId !== proof.planId
+      );
+      session.credentialReceipts.push(proof);
+      return proof;
+    } finally {
+      db.sqlite.close();
+    }
+  }
+
+  /** Native revocation closes the containment domain; unlinking a path is insufficient. */
+  public async revokeCredentialBinding(
+    input: Parameters<NonNullable<WorkerGovernanceBackend['revokeCredentialBinding']>>[0]
+  ): Promise<{ state: 'removed' | 'unknown'; fenceRef: string | null }> {
+    const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
+    const anchor = getWorkerBackendSession(this.coreDb, input.attemptId);
+    if (
+      attempt.backendId !== this.id ||
+      commandInputHash(schedulerExecutionCorrelation(attempt)) !==
+        commandInputHash(inputCorrelation(input)) ||
+      !anchor ||
+      anchor.packageSnapshotId !== input.inputRef ||
+      anchor.agentSessionId !== attempt.agentSessionId ||
+      anchor.workspaceId !== attempt.workspaceId ||
+      anchor.threadId !== attempt.threadId
+    )
+      throw new Error('Credential revocation has no exact placement authority.');
+    const session = this.sessions.get(input.inputRef!);
+    const db = openWorkspaceDb(this.coreDb.dataRoot, attempt.workspaceId);
+    let environmentPackage: AgentEnvironmentPackage;
+    try {
+      environmentPackage =
+        session?.environmentPackage ??
+        requireAgentEnvironmentPackageSnapshot(db, attempt.workspaceId, input.inputRef!).snapshot;
+    } finally {
+      db.sqlite.close();
+    }
+    const declaration = environmentPackage.credentials.declarations.find(
+      (value) => value.id === input.declarationId
+    );
+    const plan = getVaultInjectionPlan(this.coreDb, input.planId);
+    const receipt = getVaultInjectionReceipt(this.coreDb, input.receiptId);
+    if (
+      (session && session.attemptId !== input.attemptId) ||
+      declaration?.visibility !== 'runtime-file' ||
+      !plan ||
+      plan.grantId !== declaration.vaultGrantId ||
+      plan.targetPath !== declaration.targetPath ||
+      receipt?.planId !== plan.planId ||
+      receipt.agentSessionId !== attempt.agentSessionId
+    )
+      throw new Error('Credential revocation contradicts its exact binding.');
+    drainNanoHostSandboxAdmission(this.coreDb, {
+      sandboxBindingRef: anchor.sandboxBindingRef,
+      originPhysicalEpoch: anchor.originPhysicalEpoch,
+    });
+    await this.cleanupSession(session?.identity ?? this.durableBackendSessionIdentity(anchor), {
+      failedCloseout: true,
+      wholeSandbox: true,
+    });
+    return { state: 'removed', fenceRef: null };
+  }
+
   /** Submits once at native turn.start after finalized package, accepted baseline and current authority. */
   public async submit(
-    input: ExecutionBackendCorrelation & { readonly deadline: string }
+    input: ExecutionBackendCorrelation & {
+      readonly deadline: string;
+      readonly credentialBindings?: readonly WorkerCredentialFileBinding[];
+    }
   ): Promise<ExecutionBackendObservation> {
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, input.attemptId);
     if (
@@ -4434,6 +4760,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     )
       throw new Error('Native submit has no current exact attempt authority.');
     const session = this.requireSession(input.inputRef!);
+    const credentialReceipts = requireExecutionCredentialReceipts(
+      input.credentialBindings ?? [],
+      session.credentialReceipts
+    );
     if (
       session.attemptId !== attempt.attemptId ||
       session.environmentPackage.scope.agentSessionId !== attempt.agentSessionId
@@ -4534,6 +4864,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return {
       ...input,
       disposition: 'accepted',
+      credentialReceipts,
       execution: 'pending',
       fenceRef: null,
       outcomeRef: null,
@@ -4812,25 +5143,24 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
     };
     input.signal?.throwIfAborted();
-    let credentialCheckValues: WorkerCredentialCheckValues;
-    try {
-      credentialCheckValues = await this.transcriptCredentialCheckValues(
-        session,
-        input.workspaceDb
-      );
-    } catch (error) {
+    const readCredentialCheckValues = async (): Promise<WorkerCredentialCheckValues> => {
       try {
-        await this.cleanupSession(session.identity, { failedCloseout: true });
-      } catch (cleanupError) {
-        const recovery = new ArtifactAuthorityError(
-          'recovery_required',
-          'Worker credential evidence and backend cleanup require recovery.'
-        );
-        recovery.cause = new AggregateError([error, cleanupError]);
-        throw recovery;
+        return await this.transcriptCredentialCheckValues(session, input.workspaceDb);
+      } catch (error) {
+        try {
+          await this.cleanupSession(session.identity, { failedCloseout: true });
+        } catch (cleanupError) {
+          const recovery = new ArtifactAuthorityError(
+            'recovery_required',
+            'Worker credential evidence and backend cleanup require recovery.'
+          );
+          recovery.cause = new AggregateError([error, cleanupError]);
+          throw recovery;
+        }
+        throw error;
       }
-      throw error;
-    }
+    };
+    await readCredentialCheckValues();
     requireLive();
     const { slot, relativePath } = resolveNanoHostExportPath(
       session.environmentPackage,
@@ -4869,6 +5199,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
     const captured = await openNanoHostStagedExport(result, input.signal);
     try {
+      requireLive();
+      // Bytes are fixed now. Include every generation registered while export was awaited.
+      const credentialCheckValues = await readCredentialCheckValues();
       requireLive();
       return { ...captured, credentialCheckValues };
     } catch (error) {
@@ -5095,7 +5428,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Validates original injection authority even for cached values; each reread audits its exact retained version. */
-  private async restoreCollectionRuntimeEnvironment(
+  private async restoreCollectionRuntimeCredentials(
     session: NanoHostBackendTurnSession,
     workspaceDb: WorkspaceDb
   ): Promise<Record<string, string>> {
@@ -5120,7 +5453,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         throw new Error('Credential evidence requires its admitted Workspace owner.');
       const versions = JSON.parse(row?.versions ?? 'null') as Array<{
-        targetEnvVarName: string;
+        targetEnvVarName?: string;
+        targetPath?: string;
         vaultReferenceId: string;
         materialVersion: number;
         grantId: string;
@@ -5128,18 +5462,27 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         receiptId: string;
       }>;
       const declared = consumer.credentials.declarations
-        .filter((item) => item.visibility === 'runtime-env')
-        .map((item) => item.targetEnvVarName)
+        .flatMap((item) =>
+          item.visibility === 'runtime-env'
+            ? [item.targetEnvVarName]
+            : item.visibility === 'runtime-file'
+              ? [item.targetPath]
+              : []
+        )
         .sort();
       if (
         !Array.isArray(versions) ||
-        !isDeepStrictEqual(versions.map((item) => item.targetEnvVarName).sort(), declared)
+        !isDeepStrictEqual(
+          [...new Set(versions.map((item) => item.targetPath ?? item.targetEnvVarName))].sort(),
+          declared
+        ) ||
+        new Set(versions.map((item) => item.receiptId)).size !== versions.length
       )
         throw new WorkspaceCollectionError({
           outcome: 'recovery_required',
           cause: 'check_values_unavailable',
         });
-      const cached = session.runtimeEnvironment;
+      const cached = session.runtimeCredentialValues;
       // Only actual material rereads write VaultUse/Audit. The existing native hold protects Main's
       // Workspace writer; all original authority is rechecked after this await, before resolution.
       if (versions.length && cached === null) {
@@ -5148,8 +5491,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
       }
       const timestamp = new Date().toISOString();
-      return nanoHostRuntimeEnvironment(
+      return Object.fromEntries(
         versions.map((item) => {
+          const file = item.targetPath !== undefined;
+          const target = file ? item.targetPath : item.targetEnvVarName;
+          if (typeof target !== 'string' || (file && item.targetEnvVarName !== undefined))
+            throw new Error('Original credential target is unavailable.');
+          const generations = versions.filter(
+            (value) => (value.targetPath ?? value.targetEnvVarName) === target
+          );
+          const generation = generations.indexOf(item);
+          if (!file && generations.length !== 1)
+            throw new Error('Environment comparison lineage is contradictory.');
+          const comparisonKey =
+            generation === 0 ? target : credentialComparisonKey(target, item.receiptId);
           if (
             typeof item.vaultReferenceId !== 'string' ||
             !item.vaultReferenceId ||
@@ -5169,11 +5524,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             !plan ||
             plan.grantId !== item.grantId ||
             plan.status !== 'active' ||
-            plan.injectionVisibility !== 'runtime-env' ||
-            plan.targetEnvVarName !== item.targetEnvVarName ||
-            plan.targetPath !== null ||
+            plan.injectionVisibility !== (file ? 'runtime-file' : 'runtime-env') ||
+            plan.targetEnvVarName !== (file ? null : target) ||
+            plan.targetPath !== (file ? target : null) ||
             plan.capabilityId !== null ||
-            plan.backendCapabilityRequirement !== 'runtime-env' ||
+            plan.backendCapabilityRequirement !==
+              (file ? JSON.stringify(WORKER_CREDENTIAL_FILE_REQUIREMENT) : 'runtime-env') ||
             !plan.packageSnapshotId
           )
             throw new Error('Original Vault injection plan is unavailable.');
@@ -5184,8 +5540,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           ).snapshot;
           const declarations = original.credentials.declarations.filter(
             (declaration) =>
-              declaration.visibility === 'runtime-env' &&
-              declaration.targetEnvVarName === item.targetEnvVarName &&
+              (file
+                ? declaration.visibility === 'runtime-file' && declaration.targetPath === target
+                : declaration.visibility === 'runtime-env' &&
+                  declaration.targetEnvVarName === target) &&
               declaration.vaultGrantId === item.grantId
           );
           if (
@@ -5203,10 +5561,36 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             receipt.grantId !== item.grantId ||
             receipt.agentSessionId !== consumer.scope.agentSessionId ||
             receipt.capabilityCallId !== null ||
-            receipt.revocationStatus !== 'active' ||
+            receipt.revocationStatus !==
+              (file && generation < generations.length - 1 ? 'revoked' : 'active') ||
             (receipt.expiresAt !== null && receipt.expiresAt <= timestamp)
           )
             throw new Error('Original successful Vault injection receipt is unavailable.');
+          if (file) {
+            const { replacesReceiptId, ...proof } = JSON.parse(receipt.backendSummary) as Record<
+              string,
+              unknown
+            >;
+            if (
+              replacesReceiptId !==
+              (generation === 0 ? undefined : generations[generation - 1]!.receiptId)
+            )
+              throw new Error('Credential replacement receipt chain is contradictory.');
+            requireExecutionCredentialReceipts(
+              [
+                workerCredentialFileBinding({
+                  declarationId: declarations[0]!.id,
+                  grantId: item.grantId,
+                  planId: item.planId,
+                  receiptId: item.receiptId,
+                  vaultReferenceId: item.vaultReferenceId,
+                  materialVersion: item.materialVersion,
+                  targetPath: target,
+                }),
+              ],
+              [proof as ExecutionCredentialReceipt]
+            );
+          }
           const { grant, reference } = assertCurrentWorkerCredentialAuthority(
             this.coreDb,
             consumer,
@@ -5227,32 +5611,39 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             throw new Error('Original Vault lifetime does not authorize this consumer.');
           const backend = this.collectionVaultBackend();
           assertCredentialBackendMatchesReference(backend, reference);
-          return {
-            targetEnvVarName: item.targetEnvVarName,
-            credentialValue:
-              cached !== null
-                ? cached[item.targetEnvVarName]!
-                : vaultSecretMaterialToString(
-                    createVaultUseAuditedBackend({
-                      backend,
-                      db: grant.ownerScope === 'workspace' ? workspaceDb : this.coreDb,
-                      ownerScope: grant.ownerScope,
-                      ...(grant.ownerScope === 'workspace'
-                        ? { workspaceId: consumer.scope.workspaceId }
-                        : { consumerWorkspaceId: consumer.scope.workspaceId }),
-                      actor: consumer.scope.triggerActor,
-                      agentSessionId: consumer.scope.agentSessionId,
-                      grantId: item.grantId,
-                      planId: item.planId,
-                      receiptId: item.receiptId,
-                      resolvingPath: 'grant',
-                      now: () => timestamp,
-                    }).resolve({
-                      referenceId: item.vaultReferenceId,
-                      version: item.materialVersion,
-                    })
-                  ),
-          };
+          const value =
+            cached !== null
+              ? cached[comparisonKey]
+              : vaultSecretMaterialToString(
+                  createVaultUseAuditedBackend({
+                    backend,
+                    db: grant.ownerScope === 'workspace' ? workspaceDb : this.coreDb,
+                    ownerScope: grant.ownerScope,
+                    ...(grant.ownerScope === 'workspace'
+                      ? { workspaceId: consumer.scope.workspaceId }
+                      : { consumerWorkspaceId: consumer.scope.workspaceId }),
+                    actor: consumer.scope.triggerActor,
+                    agentSessionId: consumer.scope.agentSessionId,
+                    grantId: item.grantId,
+                    planId: item.planId,
+                    receiptId: item.receiptId,
+                    resolvingPath: 'grant',
+                    now: () => timestamp,
+                  }).resolve({
+                    referenceId: item.vaultReferenceId,
+                    version: item.materialVersion,
+                  })
+                );
+          if (
+            typeof value !== 'string' ||
+            value.length === 0 ||
+            (!file &&
+              (!NANO_HOST_RUNTIME_ENV_NAME_PATTERN.test(target) ||
+                value.includes('\0') ||
+                Buffer.byteLength(value) > NANO_HOST_RUNTIME_ENV_VALUE_MAX_BYTES))
+          )
+            throw new Error('Original credential comparison value is unavailable.');
+          return [comparisonKey, value];
         })
       );
     } catch {
@@ -5323,10 +5714,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // Already-exposed values remain a confidentiality deny-list during revocation cleanup.
     // Reuse admission and uncached resolution still validate current original authority.
     const values =
-      session.runtimeEnvironment ??
-      (await this.restoreCollectionRuntimeEnvironment(session, workspaceDb));
+      session.runtimeCredentialValues ??
+      (await this.restoreCollectionRuntimeCredentials(session, workspaceDb));
     return {
-      runtimeEnv: Object.values(values).filter((value) => value.length > 0),
+      runtimeEnv: Object.values(values),
       loopbackDigests: [digests?.inference, digests?.capability],
     };
   }
@@ -6015,7 +6406,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     input: Readonly<Record<string, unknown>>,
     retiringSandboxOrigin?: string,
     signal?: AbortSignal,
-    predecessor?: ExecutionCandidate
+    predecessor?: ExecutionCandidate,
+    recheckAuthority?: () => Promise<void>
   ): Promise<Record<string, unknown>> {
     if (!this.sessionDispatch) {
       throw new Error('NanoHost fixed-effect dispatcher is not configured.');
@@ -6198,6 +6590,26 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
         effectSignal.throwIfAborted();
         this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
+      }
+      // The same accepted decision is read back after journal work; no second decision or use.
+      if (recheckAuthority) await recheckAuthority();
+      effectSignal.throwIfAborted();
+      this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
+      if (recheckAuthority) {
+        const live = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
+        if (
+          live.phase !== 'open' ||
+          live.backendId !== attempt.backendId ||
+          live.agentSessionId !== attempt.agentSessionId ||
+          live.workspaceId !== attempt.workspaceId ||
+          live.threadId !== attempt.threadId ||
+          live.turnId !== attempt.turnId ||
+          live.inputRef !== attempt.inputRef ||
+          live.bindingRef !== attempt.bindingRef ||
+          live.deadline !== attempt.deadline ||
+          (live.deadline !== null && Date.parse(live.deadline) <= Date.now())
+        )
+          throw new Error('Credential fixed-effect execution lineage changed.');
       }
       if (current.state !== 'intent' || current.remainingMs - (performance.now() - started) <= 0)
         throw new Error('NanoHost fixed-effect original native allowance is unavailable.');
@@ -7780,16 +8192,40 @@ function nanoHostRuntimeEnvironment(
   return environment;
 }
 
-/** Projects runtime credential files into the existing private reference-import effect. */
-function nanoHostRuntimeCredentialImports(
-  credentials: readonly WorkerGovernanceRuntimeFileCredential[]
-): NanoHostContextPackageImport[] {
-  if (credentials.length > 0) {
-    throw new Error(
-      'NanoHost persistent Worker images do not admit runtime-file credential materialization.'
-    );
-  }
-  return [];
+/** Selects only process environment keys from the same private comparison-value owner. */
+function nanoHostProcessEnvironment(values: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([target]) => NANO_HOST_RUNTIME_ENV_NAME_PATTERN.test(target))
+  );
+}
+
+/** Original and replacement generations share the existing private comparison map. */
+function credentialComparisonKey(target: string, receiptId: string): string {
+  return `${target}#${receiptId}`;
+}
+
+/** Projects admitted file identities into memory-only private reference-import carriage. */
+function nanoHostRuntimeCredentialBindings(
+  credentials: readonly WorkerGovernanceRuntimeFileCredential[],
+  environmentPackage: AgentEnvironmentPackage
+): WorkerCredentialFileBinding[] {
+  return WorkerCredentialBindingsSchema.parse(
+    credentials.map((credential) => {
+      const declaration = environmentPackage.credentials.declarations.find(
+        (item) => item.id === credential.declarationId
+      );
+      if (
+        !declaration ||
+        declaration.visibility !== 'runtime-file' ||
+        declaration.targetPath !== credential.targetPath ||
+        declaration.vaultGrantId !== credential.grantId ||
+        credential.planId !== `plan_${environmentPackage.snapshotId}_${declaration.id}` ||
+        credential.receiptId !== `receipt_${environmentPackage.snapshotId}_${declaration.id}`
+      )
+        throw new Error('Credential binding lineage is invalid.');
+      return workerCredentialFileBinding(credential);
+    })
+  );
 }
 
 /** Hashes only the exact inputs that decide physical Sandbox reuse. */
@@ -7810,6 +8246,11 @@ function nanoHostSandboxCompatibilityKey(
       stableNanoHostEffectJson({
         backend: environmentPackage.backend,
         credentials: environmentPackage.credentials,
+        ...(environmentPackage.credentials.declarations.some(
+          (item) => item.visibility === 'runtime-file'
+        )
+          ? { credentialAgentSessionId: environmentPackage.scope.agentSessionId }
+          : {}),
         policy: {
           ...environmentPackage.policy,
           ...(filesystem

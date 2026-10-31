@@ -156,6 +156,15 @@ export interface OperationInvocationDependencies {
   >;
   readonly goalServices?: GoalOwnerServices;
   readonly runtimeConfigManager?: RuntimeConfigManager;
+  /** The app-owned operation interception owner, shared with MCP and default callers. */
+  readonly policyInterception?: import('./policy/interception.js').PolicyInterception;
+  /** Current loaded Policy, supplied by the existing runtime configuration owner. */
+  readonly readRuntimePolicy?: () => unknown;
+  /** Existing current Goal/Task Policy reader, shared with other Worker effects. */
+  readonly goalTaskPolicy?: (
+    db: WorkspaceDb,
+    responsibleUserId: string
+  ) => import('./policy/goal-task-policy.js').GoalTaskPolicyService;
   /** Existing app-owned process-local Vault backend unlock state. */
   readonly vaultUnlockState?: VaultUnlockState;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;

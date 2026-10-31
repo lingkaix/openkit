@@ -69,7 +69,7 @@ import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/
 import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
-import { listWorkspaceAuditEvents } from '../audit-events.js';
+import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -79,16 +79,17 @@ import { isThreadVisible } from '../auth/thread-visibility.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
+import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { loadRuntimeConfig } from '../config/runtime-config.js';
+import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime-config.js';
+import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import * as materialSourceReader from '../context/material-source-files.js';
 import { admitModelRequest } from '../context/model-request-admission.js';
 import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   commandRequestExpiresAt,
   commandRequestKey,
@@ -99,6 +100,9 @@ import type {
   LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
 } from '../llm/provider-dispatcher.js';
+import { createOperationEngine } from '../operation-invocation.js';
+import { type DeterministicPolicyParticipant, PolicyInterception } from '../policy/interception.js';
+import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -148,9 +152,15 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
+import { closeTestCoreDb, createTestWorkspaceDb } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
-import { createVaultGrant } from '../vault/vault-grants.js';
-import { createVaultReference } from '../vault/vault-references.js';
+import { createVaultGrant, getVaultGrant } from '../vault/vault-grants.js';
+import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
+import {
+  advanceActiveVaultReferenceVersion,
+  createVaultReference,
+} from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
@@ -792,6 +802,9 @@ async function createWorkerContextExecutorFixture(
     agentSessionId,
     contextItemId,
     coreDb,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspaceIdForOwner(turn.owner)).notebook;
+    },
     material,
     materialContentDigest,
     packageRoot,
@@ -9001,18 +9014,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     coreDb.sqlite.close();
   }, 60_000);
 
-  it('refuses an overview revoked during awaited source verification before package publication', async () => {
+  it('refuses an overview whose selected evidence becomes unavailable during awaited source verification before package publication', async () => {
     const fixture = await createWorkerContextExecutorFixture('overview-revoked-publication');
     const workspaceId = workspaceIdForOwner(fixture.turn.owner);
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(
-        fixture.coreDb.dataRoot,
-        'workspaces',
-        workspaceId,
-        'knowledge',
-        'notebook.git'
-      ),
-    });
+    const notebook = fixture.notebook;
     const baseRevision = notebook.publishedRevision();
     const admitted = knowledgeOverviewReader.prepareKnowledgeOverview({
       coreDb: fixture.coreDb,
@@ -9033,20 +9038,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       })
     );
     expect(() => admitted.assertCurrent()).not.toThrow();
-    const candidateRevision = notebook.prepare({
-      baseRevision,
-      changes: {
-        'index.md':
-          '---\nokf_version: "0.2"\nsensitivity: restricted\n---\n# Restricted overview\n',
-      },
-      metadata: {
-        summary: 'Restrict the overview during source verification',
-        producer: fixture.turn.triggerActor,
-        authority: { kind: 'direct', instructionReference: 'test:overview-publication-revocation' },
-        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'a'.repeat(64)}` },
-        sourceReferences: [],
-      },
-    });
     const manifestPath = join(fixture.packageRoot, 'package.json');
     let revoked = false;
     const prepareMaterial = materialSourceReader.prepareMaterialSourceInput;
@@ -9064,7 +9055,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
                 if (!revoked) {
                   expect(existsSync(fixture.packageRoot)).toBe(true);
                   expect(existsSync(manifestPath)).toBe(false);
-                  notebook.publish({ baseRevision, candidateRevision });
+                  // Deliberate loss after valid owner setup: the selected immutable Notebook
+                  // is unavailable. Reserved Index metadata cannot carry a sensitivity label.
+                  rmSync(
+                    join(
+                      fixture.coreDb.dataRoot,
+                      'workspaces',
+                      workspaceId,
+                      'knowledge',
+                      'notebook.git'
+                    ),
+                    {
+                      recursive: true,
+                      force: true,
+                    }
+                  );
                   revoked = true;
                 }
                 yield chunk;
@@ -9163,15 +9168,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it('prepares the bounded scope overview and tells the Worker where to read it', async () => {
     const fixture = await createWorkerContextExecutorFixture('knowledge-overview');
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(
-        fixture.coreDb.dataRoot,
-        'workspaces',
-        workspaceIdForOwner(fixture.turn.owner),
-        'knowledge',
-        'notebook.git'
-      ),
-    });
+    const notebook = fixture.notebook;
     const revision = notebook.publishedRevision();
     const index = notebook.readRevision(revision).files['index.md']!;
     const backend = new FakeWorkerGovernanceBackend();
@@ -10151,15 +10148,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
     try {
-      const notebook = new KnowledgeNotebook({
-        repositoryPath: join(
-          fixture.coreDb.dataRoot,
-          'workspaces',
-          workspaceId,
-          'knowledge',
-          'notebook.git'
-        ),
-      });
+      const notebook = fixture.notebook;
       const notebookRevision = notebook.publishedRevision();
       const prepared = await prepareWorkerTurnContextPackage(
         fixture.coreDb,
@@ -10263,7 +10252,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     let completed: {
       fixture: Awaited<ReturnType<typeof createWorkerContextExecutorFixture>>;
       app: ReturnType<typeof createApp>;
-      notebook: KnowledgeNotebook;
       launchSpy: MockInstance<FakeWorkerGovernanceBackend['submit']>;
     };
     beforeAll(async () => {
@@ -10276,15 +10264,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         dataRoot: fixture.coreDb.dataRoot,
         mode: 'local',
         store: fixture.store,
-      });
-      const notebook = new KnowledgeNotebook({
-        repositoryPath: join(
-          fixture.coreDb.dataRoot,
-          'workspaces',
-          workspaceIdForOwner(fixture.turn.owner),
-          'knowledge',
-          'notebook.git'
-        ),
       });
       const knowledge = {
         id: 'worker-guidance',
@@ -10305,7 +10284,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           {
             body: JSON.stringify({
               requestId: randomUUID(),
-              baseRevision: notebook.publishedRevision(),
+              baseRevision: fixture.notebook.publishedRevision(),
               changes: [knowledge, oversizedKnowledge].map((entry) => ({
                 path: `${entry.id}.md`,
                 content: serializeKnowledgePageFixture(
@@ -10344,7 +10323,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         traceId: retrievalTraceId,
         workspaceId: workspaceIdForOwner(fixture.turn.owner),
       });
-      const publishedNotebook = notebook.readRevision(notebook.publishedRevision());
+      const publishedNotebook = fixture.notebook.readRevision(fixture.notebook.publishedRevision());
       expect(publishedNotebook.metadata.producer).toEqual({ kind: 'user', id: LOCAL_USER_ID });
       const publishedPages = publishedNotebook.files;
       const knowledgePageBytes = publishedPages[`${knowledge.id}.md`]!;
@@ -10421,7 +10400,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
                 dataRoot: fixture.coreDb.dataRoot,
                 scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
               }),
-              notebookRevision: notebook.publishedRevision(),
+              notebookRevision: fixture.notebook.publishedRevision(),
               packagePath: `knowledge/pages/${knowledge.id}.md`,
               sourceRefs: [],
               projection: expect.objectContaining({ kind: 'body', truncated: false }),
@@ -10433,11 +10412,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
                 dataRoot: fixture.coreDb.dataRoot,
                 scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
               }),
-              notebookRevision: notebook.publishedRevision(),
+              notebookRevision: fixture.notebook.publishedRevision(),
               projection: expect.objectContaining({
                 kind: 'excerpt',
                 representationDigest: oversizedKnowledgePageDigest,
-                sourceRevision: notebook.publishedRevision(),
+                sourceRevision: fixture.notebook.publishedRevision(),
                 truncated: true,
                 availability: 'incomplete',
               }),
@@ -10459,7 +10438,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         expect(oversizedKnowledgePageBytes.startsWith(excerpt)).toBe(true);
         expect(excerpt).not.toBe(oversizedKnowledgePageBytes);
         expect(
-          notebook.readRevision(notebook.publishedRevision()).files[`${oversizedKnowledge.id}.md`]
+          fixture.notebook.readRevision(fixture.notebook.publishedRevision()).files[
+            `${oversizedKnowledge.id}.md`
+          ]
         ).toBe(oversizedKnowledgePageBytes);
         return launch(...args);
       });
@@ -10474,7 +10455,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         now: () => '2026-07-15T00:00:03.000Z',
       });
 
-      completed = { fixture, app, notebook, launchSpy };
+      completed = { fixture, app, launchSpy };
       await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
         attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
         agentSessionId: fixture.agentSessionId,
@@ -10496,7 +10477,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(launchSpy).toHaveBeenCalledTimes(1);
     }, 60_000);
     it('proves exact completed-work proposal lineage and refuses unavailable recovery evidence', async () => {
-      const { fixture, app, notebook } = completed;
+      const { fixture, app } = completed;
 
       const completedTurn = fixture.store.getTurn(
         workspaceIdForOwner(fixture.turn.owner),
@@ -10554,7 +10535,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ].join('\n');
       const draftRequest = {
         requestId: '00000000-0000-4000-8000-000000000639',
-        baseRevision: notebook.publishedRevision(),
+        baseRevision: fixture.notebook.publishedRevision(),
         knowledgePageId: 'direct-task-lesson',
         canonicalPageBytes: candidatePageBytes,
         contentDigest: turnRuntimeSha256(Buffer.from(candidatePageBytes, 'utf8')),
@@ -10621,17 +10602,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         decision: 'accepted',
         baseRevision: drafted.proposal.baseRevision,
         candidateRevision: drafted.proposal.candidateRevision,
-        proposalDigest: turnRuntimeSha256(
-          readFileSync(
-            join(
-              fixture.coreDb.dataRoot,
-              'workspaces',
-              workspaceIdForOwner(fixture.turn.owner),
-              'knowledge',
-              'proposals',
-              `${drafted.proposal.id}.md`
-            )
-          )
+        proposalDigest: fixture.store.knowledgeProposalDigest(
+          workspaceIdForOwner(fixture.turn.owner),
+          drafted.proposal.id
         ),
       };
       const acceptedDecision = await app.request(
@@ -10688,7 +10661,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           {
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000642',
-              baseRevision: notebook.publishedRevision(),
+              baseRevision: fixture.notebook.publishedRevision(),
               changes: [{ path: 'direct-task-lesson.md', content: changedPageBytes }],
               summary: 'Intervening human edit',
             }),
@@ -10753,7 +10726,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         code: 'recovery_required',
       });
       expect(
-        notebook.readRevision(notebook.publishedRevision()).files['direct-task-lesson.md']
+        fixture.notebook.readRevision(fixture.notebook.publishedRevision()).files[
+          'direct-task-lesson.md'
+        ]
       ).toBe(changedPageBytes);
     }, 60_000);
     // This harness covers real Kernel, Git, S39 launch and Review recovery; it is not a product latency oracle.
@@ -11757,6 +11732,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('admits backend credential support before resolving material: %s', async (mode) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-runtime-file-'));
     const coreDb = openCoreDb(dataRoot);
+    const fileMaterial = randomUUID() + randomUUID();
+    const fileTarget = `/sandbox/${randomUUID()}`;
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
       storeDir: join(dataRoot, 'server', 'vault'),
@@ -11767,7 +11744,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 10) });
     vaultUnlockState.backend().store({
-      material: '{"tokens":{"openai":"codex_executor_secret"}}',
+      material: fileMaterial,
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
     });
@@ -11806,10 +11783,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Run Codex auth runtime file'
     );
     const backend = new FakeWorkerGovernanceBackend();
+    const admission = new WorkspaceMutationAdmission();
+    store.setWorkspaceMutationAdmission(admission);
+    const interception = new PolicyInterception();
+    const supply = vi.spyOn(backend, 'deliverCredentialBinding');
     const fixtureExecutor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
+      workspaceMutationAdmission: admission,
+      policyInterception: () => interception,
+      readRuntimeConfig: () => loadRuntimeConfig(dataRoot),
       createAgentSessionId: () => testEntityId('as', 'as_governance_runtime_file_1'),
       environmentBackend: {
         kind: 'openshell',
@@ -11878,7 +11862,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           : [
               {
                 id: 'codex_auth_json',
-                targetPath: '/sandbox/.codex/auth.json',
+                targetPath: fileTarget,
                 vaultGrantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
                 visibility: 'runtime-file' as const,
               },
@@ -11916,12 +11900,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
       await run;
 
-      expect(backend.lastContext?.runtimeFileCredentials).toEqual([
-        {
-          credentialValue: '{"tokens":{"openai":"codex_executor_secret"}}',
-          targetPath: '/sandbox/.codex/auth.json',
-        },
-      ]);
+      expect(supply.mock.calls.length).toBe(1);
+      const delivered = supply.mock.calls[0];
+      expect(delivered?.[3] === fileMaterial && delivered?.[4] === 1).toBe(true);
+      expect(backend.lastContext?.runtimeFileCredentials?.length).toBe(1);
+      expect(
+        backend.lastContext?.runtimeFileCredentials?.[0]?.targetPath === fileTarget &&
+          !Object.hasOwn(backend.lastContext.runtimeFileCredentials[0], 'credentialValue')
+      ).toBe(true);
       expect(listVaultUseRecords(coreDb)).toEqual([
         expect.objectContaining({
           grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
@@ -11935,8 +11921,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
           grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
         }),
       ]);
-      expect(JSON.stringify(backend.lastPackage)).not.toContain('codex_executor_secret');
+      expect(JSON.stringify(backend.lastPackage).includes(fileMaterial)).toBe(false);
     } finally {
+      supply.mockRestore();
       resolve.mockRestore();
       vaultUnlockState.lock();
       coreDb.sqlite.close();
@@ -12463,6 +12450,8 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public teardownFailuresRemaining = 0;
   public lastContext: Parameters<WorkerGovernanceBackend['materialize']>[1] | null = null;
   public lastPackage: AgentEnvironmentPackage | null = null;
+  /** Private comparison evidence acquired only after admitted file delivery. */
+  public readonly fileCredentialCheckValues: string[] = [];
   /** Optional canonical event transcript factory used by reconciliation tests. */
   public eventsJsonlFactory: ((environmentPackage: AgentEnvironmentPackage) => string) | null =
     null;
@@ -12578,6 +12567,38 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
+  /** Realizes reference-only file supply after the same admitted authority readback. */
+  public async deliverCredentialBinding(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string,
+    credentialValue: string,
+    materialVersion: number,
+    recheckAuthority: () => Promise<void>
+  ) {
+    await recheckAuthority();
+    const supplied = this.lastContext?.runtimeFileCredentials?.find(
+      (item) => item.planId === planId && item.receiptId === receiptId
+    );
+    expect(this.lastPackage?.snapshotId === packageSnapshotId).toBe(true);
+    expect(supplied?.materialVersion === materialVersion).toBe(true);
+    if (!supplied) throw new Error('Admitted private file supply missing.');
+    this.fileCredentialCheckValues.push(credentialValue);
+    return {
+      declarationId: supplied.declarationId,
+      planId,
+      receiptId,
+      materialVersion,
+      access: 'read-only' as const,
+      realizedProtection: {
+        ephemeral: true as const,
+        outsideRetainedStorage: true as const,
+        excludedFromCapture: true as const,
+        excludedFromExport: true as const,
+      },
+    };
+  }
+
   public async submit(input: Parameters<WorkerGovernanceBackend['submit']>[0]) {
     this.calls.push('submit');
     return {
@@ -12586,6 +12607,14 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
       execution: 'pending' as const,
       fenceRef: null,
       outcomeRef: null,
+      credentialReceipts: input.credentialBindings?.map((binding) => ({
+        declarationId: binding.declarationId,
+        planId: binding.planId,
+        receiptId: binding.receiptId,
+        materialVersion: binding.material.version,
+        access: binding.access,
+        realizedProtection: binding.requiredProtection,
+      })),
     };
   }
 
@@ -12622,7 +12651,7 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
         sensitiveValues: [
           ...(this.lastContext?.providerCredentials ?? []).map((item) => item.credentialValue),
           ...(this.lastContext?.runtimeEnvCredentials ?? []).map((item) => item.credentialValue),
-          ...(this.lastContext?.runtimeFileCredentials ?? []).map((item) => item.credentialValue),
+          ...this.fileCredentialCheckValues,
           ...(this.lastContext?.sandboxBindingRef ? [this.lastContext.sandboxBindingRef] : []),
         ],
         loopbackDigests: [
@@ -12713,6 +12742,1363 @@ vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
   return withTestPreparedNativeEnvironment(actual);
 });
 
+// Independent acceptance: ENGINEER EMPHASIS requires the existing fake placement, not a new harness.
+describe('credential carrier neutral placement acceptance', () => {
+  it.each([
+    'exact',
+    'missing',
+    'surplus',
+    'declarationId',
+    'planId',
+    'receiptId',
+    'materialVersion',
+    'access',
+    'ephemeral',
+    'outsideRetainedStorage',
+    'excludedFromCapture',
+    'excludedFromExport',
+    'policy-deny',
+    'rotated-before-deliver',
+  ] as const)('accepts a static file only with exact actual-protection evidence (%s)', async (fault) => {
+    const fixture = await createWorkerContextExecutorFixture(`carrier-neutral-${fault}`);
+    const timestamp = '2026-07-15T00:00:03.000Z';
+    let deliveryGateCalls = 0;
+    let deliveryGateSettled = false;
+    let resolveCountAtGate: number | undefined;
+    const interception = new PolicyInterception({
+      id: 'synthetic-delivery-deny',
+      version: `sha256:${'1'.repeat(64)}`,
+      invoke: async ({ proposal }) => {
+        deliveryGateCalls += 1;
+        resolveCountAtGate = resolveMaterial.mock.calls.length;
+        expect(proposal.operation === 'vault.binding-deliver').toBe(true);
+        expect(JSON.stringify(proposal).includes(material)).toBe(false);
+        if (fault === 'rotated-before-deliver') {
+          const rotated = vault
+            .backend()
+            .rotate({ referenceId, material: randomUUID() + randomUUID() });
+          advanceActiveVaultReferenceVersion(fixture.coreDb, {
+            referenceId,
+            currentVersion: rotated.currentVersion,
+            now: () => timestamp,
+          });
+        }
+        deliveryGateSettled = true;
+        return { decision: fault === 'policy-deny' ? 'deny' : 'allow' };
+      },
+    });
+    let readConfiguration = () => loadRuntimeConfig(fixture.coreDb.dataRoot);
+    const material = randomUUID() + randomUUID();
+    const targetPath = `/sandbox/${randomUUID()}`;
+    const referenceId = testEntityId('vault', randomUUID());
+    const grantId = testEntityId('grant', randomUUID());
+    const vault = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(fixture.coreDb.dataRoot, 'vault'),
+    });
+    vault.unlock({
+      masterKey: Buffer.from((randomUUID() + randomUUID()).replaceAll('-', '').slice(0, 64), 'hex'),
+    });
+    vault.backend().store({ referenceId, material, metadata: { ownerScope: 'server' } });
+    createVaultReference(fixture.coreDb, {
+      referenceId,
+      ownerScope: 'server',
+      displayName: 'Synthetic static file',
+      secretKind: 'opaque',
+      backendKind: 'encrypted-file',
+      backendLocator: `encrypted-file://server/vault/${referenceId}`,
+      now: () => timestamp,
+    });
+    createVaultGrant(fixture.coreDb, {
+      grantId,
+      vaultReferenceId: referenceId,
+      ownerScope: 'server',
+      lifetime: 'agent-session',
+      targetAgentSessionId: fixture.agentSessionId,
+      allowedInjectionPaths: ['runtime-file'],
+      now: () => timestamp,
+    });
+    const resolveMaterial = vi.spyOn(vault.backend(), 'resolve');
+    if (fault === 'policy-deny' || fault === 'rotated-before-deliver') {
+      const workspaceId = workspaceIdForOwner(fixture.turn.owner);
+      const userId = LOCAL_USER_ID;
+      const personal = await fixture.store.ensureQuickChatWorkspace(userId);
+      const reviewThread = await fixture.store.createThread(
+        personal.id,
+        'Delivery Policy review',
+        allocateEntityId('th'),
+        'administration',
+        { visibility: 'private', privateOwnerUserId: userId }
+      );
+      const reviewTurn = await fixture.store.createTurn(
+        personal.id,
+        reviewThread.id,
+        'Deny this delivery before any material resolution.',
+        { kind: 'user', id: userId },
+        null
+      );
+      mkdirSync(join(fixture.coreDb.dataRoot, 'config'), { recursive: true });
+      const configFile = join(fixture.coreDb.dataRoot, 'config/server.jsonc');
+      if (!existsSync(configFile)) writeFileSync(configFile, JSON.stringify({ schemaVersion: 1 }));
+      const manager = createRuntimeConfigManager({ dataRoot: fixture.coreDb.dataRoot });
+      const files = new RuntimeConfigFileService({
+        dataRoot: fixture.coreDb.dataRoot,
+        userId,
+        workspaceIds: [workspaceId, personal.id],
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      });
+      const handles: ReturnType<typeof createTestWorkspaceDb>[] = [];
+      try {
+        const configuration = createAdministrationConfiguration({
+          actor: { kind: 'local', userId },
+          coreDb: fixture.coreDb,
+          store: fixture.store,
+          files,
+          runtimeConfig: () => manager.current(),
+          reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+          repositoryWorkspaceDb: (id) => {
+            const db = createTestWorkspaceDb(fixture.coreDb.dataRoot, id);
+            handles.push(db);
+            return db;
+          },
+          inflightCommands: new WeakMap(),
+        });
+        const principal = { kind: 'human' as const, id: userId };
+        const anchor = {
+          owner: { kind: 'workspace' as const, workspaceId },
+          kind: 'workspace',
+          id: workspaceId,
+        };
+        const scope = {
+          subjects: [principal],
+          actions: ['vault.use'],
+          resources: [{ kind: 'container' as const, container: anchor }],
+        };
+        const proposed = await configuration.propose(
+          {
+            targetFamily: 'policy',
+            targetId: 'server',
+            expectedRevision: files.readFile('server.jsonc').file.revision!,
+            changes: {
+              rationale: 'Deny default delivery before private material resolution.',
+              proposed: {
+                schemaVersion: 1,
+                statements: [
+                  {
+                    id: 'synthetic-delivery-deny',
+                    kind: 'binding',
+                    author: principal,
+                    authority: { kind: 'human', userId },
+                    authoredAt: new Date().toISOString(),
+                    state: 'active',
+                    scope,
+                    lifetime: { anchor },
+                    operation: 'vault.binding-deliver',
+                    stage: 'decide',
+                    mode: 'gate',
+                    participant: {
+                      kind: 'deterministic',
+                      id: 'synthetic-delivery-deny',
+                      version: `sha256:${'1'.repeat(64)}`,
+                    },
+                    inputDisclosure: scope,
+                    order: 0,
+                    timeoutMs: 5000,
+                    failure: 'error',
+                    circuit: { failures: 1, recoveryAfterMs: 60000 },
+                  },
+                ],
+              },
+            },
+          },
+          { threadId: reviewThread.id, turnId: reviewTurn.id, requestId: randomUUID() }
+        );
+        const applied = await configuration.apply({
+          requestId: randomUUID(),
+          candidate: proposed.candidate,
+          confirmation: proposed.confirmation,
+        });
+        expect(
+          applied.persisted && applied.reload === 'applied',
+          'real default-delivery denial was not activated'
+        ).toBe(true);
+        readConfiguration = () => manager.current();
+      } finally {
+        for (const db of handles) closeTestCoreDb(db);
+      }
+    }
+    const mutationAdmission = new WorkspaceMutationAdmission();
+    fixture.store.setWorkspaceMutationAdmission(mutationAdmission);
+    let delivered = false;
+    let deliveredOriginal = false;
+    const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
+      async deliverCredentialBinding(
+        packageSnapshotId: string,
+        planId: string,
+        receiptId: string,
+        credentialValue: string,
+        materialVersion: number,
+        recheckAuthority: () => Promise<void>
+      ) {
+        await recheckAuthority();
+        expect(listVaultInjectionReceipts(fixture.coreDb).length).toBe(0);
+        const supplied = backend.lastContext?.runtimeFileCredentials?.[0];
+        expect(
+          credentialValue === material,
+          'private delivery lost the exact original material'
+        ).toBe(true);
+        expect(
+          materialVersion === supplied?.materialVersion && materialVersion === 1,
+          'private delivery lost the exact admitted material generation'
+        ).toBe(true);
+        expect(
+          supplied !== undefined && !Object.hasOwn(supplied, 'credentialValue'),
+          'preparation carried material before deciding Policy'
+        ).toBe(true);
+        expect(
+          JSON.stringify(backend.lastContext).includes(material),
+          'preparation context contains material'
+        ).toBe(false);
+        expect(backend.lastPackage?.snapshotId === packageSnapshotId).toBe(true);
+        expect(supplied?.planId === planId && supplied?.receiptId === receiptId).toBe(true);
+        if (!supplied) throw new Error('Admitted private file supply missing.');
+        backend.fileCredentialCheckValues.push(credentialValue);
+        deliveredOriginal = credentialValue === material && materialVersion === 1;
+        delivered = true;
+        return {
+          declarationId: supplied.declarationId,
+          planId,
+          receiptId,
+          materialVersion: supplied.materialVersion,
+          access: 'read-only' as const,
+          realizedProtection: {
+            ephemeral: true as const,
+            outsideRetainedStorage: true as const,
+            excludedFromCapture: true as const,
+            excludedFromExport: true as const,
+          },
+        };
+      },
+    });
+    const submit = backend.submit.bind(backend);
+    let crossedSubmission = false;
+    let returnedEvidence = false;
+    const submission = vi.spyOn(backend, 'submit').mockImplementation(async (input) => {
+      crossedSubmission = true;
+      expect(delivered, 'submission preceded ordinary Vault delivery').toBe(true);
+      expect(
+        listVaultInjectionReceipts(fixture.coreDb).length,
+        'receipt preceded placement proof'
+      ).toBe(0);
+      const binding = input.credentialBindings?.[0];
+      expect(input.credentialBindings?.length, 'neutral admitted supply missing').toBe(1);
+      expect(binding !== undefined).toBe(true);
+      if (!binding) throw new Error('Neutral binding was not submitted.');
+      expect(
+        binding.material.referenceId === referenceId &&
+          binding.material.version === 1 &&
+          binding.material.format === 'utf8'
+      ).toBe(true);
+      expect(
+        binding.target.kind === 'file' &&
+          binding.target.path === targetPath &&
+          binding.access === 'read-only'
+      ).toBe(true);
+      expect(binding.requiredProtection).toEqual({
+        ephemeral: true,
+        outsideRetainedStorage: true,
+        excludedFromCapture: true,
+        excludedFromExport: true,
+      });
+      expect(
+        JSON.stringify(input).includes(material),
+        'material entered reference-only submission'
+      ).toBe(false);
+      expect(deliveredOriginal, 'private supply lost the admitted original').toBe(true);
+      expect(
+        /nanohost|openshell|tmpfs|mountflags|driver_?config|epochroot|epoch_root/i.test(
+          JSON.stringify(binding)
+        ),
+        'neutral credential binding contains native realization details'
+      ).toBe(false);
+      const realizedProtection: Record<string, unknown> = {
+        ephemeral: true,
+        outsideRetainedStorage: true,
+        excludedFromCapture: true,
+        excludedFromExport: true,
+      };
+      const proof: Record<string, unknown> = {
+        declarationId: binding.declarationId,
+        planId: binding.planId,
+        receiptId: binding.receiptId,
+        materialVersion: 1,
+        access: 'read-only',
+        realizedProtection,
+      };
+      if (
+        [
+          'ephemeral',
+          'outsideRetainedStorage',
+          'excludedFromCapture',
+          'excludedFromExport',
+        ].includes(fault)
+      )
+        realizedProtection[fault] = false;
+      else if (fault === 'materialVersion') proof.materialVersion = 2;
+      else if (fault === 'access') proof.access = 'read-write';
+      else if (['declarationId', 'planId', 'receiptId'].includes(fault))
+        proof[fault] = randomUUID();
+      const evidence =
+        fault === 'missing' ? undefined : fault === 'surplus' ? [proof, proof] : [proof];
+      const observation = await submit(input);
+      returnedEvidence = true;
+      return {
+        ...observation,
+        credentialReceipts: evidence as unknown as
+          | import('./execution-backend.js').ExecutionCredentialReceipt[]
+          | undefined,
+      };
+    });
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      backend,
+      workspaceMutationAdmission: mutationAdmission,
+      coreDb: fixture.coreDb,
+      policyInterception: () => interception,
+      readRuntimeConfig: () => readConfiguration(),
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => timestamp,
+      vaultBackend: () => vault.backend(),
+    });
+    const agentSetup = createTestAgentSetup({
+      credentialDeclarations: [
+        { id: 'static_file', vaultGrantId: grantId, visibility: 'runtime-file', targetPath },
+      ],
+    });
+    admitTestNativeEnvironment(fixture.coreDb, agentSetup.manifest);
+    try {
+      let failed = false;
+      await executor
+        .startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+          attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+          agentSessionId: fixture.agentSessionId,
+          agentSetup,
+          requestId: fixture.requestId,
+          sandboxBindingRef: fixture.sandboxBindingRef,
+          triggerActor: fixture.turn.triggerActor,
+          workspaceRoots: [],
+        })
+        .catch(() => {
+          failed = true;
+        });
+      if (fault === 'rotated-before-deliver') {
+        expect(
+          deliveryGateCalls === 1 && deliveryGateSettled,
+          'version changed before reaching the actual deciding gate'
+        ).toBe(true);
+        expect(
+          failed && !delivered && !crossedSubmission && !returnedEvidence,
+          'rotated initial generation reached placement'
+        ).toBe(true);
+        expect(resolveCountAtGate).toBe(0);
+        expect(
+          resolveMaterial,
+          'rotated initial generation resolved material'
+        ).not.toHaveBeenCalled();
+        expect(listVaultInjectionReceipts(fixture.coreDb)).toEqual([]);
+        expect(listVaultUseRecords(fixture.coreDb)).toEqual([]);
+        const workspaceId = workspaceIdForOwner(fixture.turn.owner);
+        const db = createTestWorkspaceDb(fixture.coreDb.dataRoot, workspaceId);
+        try {
+          const decision = listExportableWorkspacePermissionDecisions(db, workspaceId).find(
+            (row) =>
+              row.mediation?.operation === 'vault.binding-deliver' && row.mediation.role === 'final'
+          );
+          // Policy / Commit Semantics records failed currentness as evaluation error.
+          // The exact admitted generation changed while the deciding participant awaited.
+          expect(decision).toMatchObject({ result: 'error', reasonCode: 'evaluation_error' });
+          expect(decision?.mediation?.kernel).toMatchObject({ effect: 'allow' });
+          expect(decision?.mediation?.consumedStatements).toEqual([]);
+          expect(
+            listWorkspaceAuditEvents(db, workspaceId).some(
+              (event) => event.id === decision?.auditEventId
+            ),
+            'failed-currentness delivery lost linked Audit'
+          ).toBe(true);
+        } finally {
+          closeTestCoreDb(db);
+        }
+        return;
+      }
+      if (fault === 'policy-deny') {
+        expect(
+          deliveryGateCalls === 1 && deliveryGateSettled,
+          'default delivery did not settle the actual deciding participant'
+        ).toBe(true);
+        const db = createTestWorkspaceDb(
+          fixture.coreDb.dataRoot,
+          workspaceIdForOwner(fixture.turn.owner)
+        );
+        try {
+          const decision = listExportableWorkspacePermissionDecisions(
+            db,
+            workspaceIdForOwner(fixture.turn.owner)
+          ).find(
+            (row) =>
+              row.mediation?.operation === 'vault.binding-deliver' && row.mediation.role === 'final'
+          );
+          expect(
+            decision?.result === (fault === 'policy-deny' ? 'deny' : 'allow') &&
+              decision.mediation?.kernel?.effect === 'allow',
+            'assessment was not combined with the actual final Kernel'
+          ).toBe(true);
+          expect(
+            listWorkspaceAuditEvents(db, workspaceIdForOwner(fixture.turn.owner)).some(
+              (event) => event.id === decision?.auditEventId
+            ),
+            'deciding delivery lost linked Audit'
+          ).toBe(true);
+        } finally {
+          closeTestCoreDb(db);
+        }
+        expect(failed, 'refused delivery admitted launch').toBe(true);
+        expect(resolveCountAtGate, 'material was resolved before deciding Policy').toBe(0);
+        expect(resolveMaterial, 'refused delivery resolved material').not.toHaveBeenCalled();
+        expect(
+          delivered || crossedSubmission || returnedEvidence,
+          'refused delivery reached placement'
+        ).toBe(false);
+        expect(listVaultInjectionReceipts(fixture.coreDb).length).toBe(0);
+        expect(
+          listVaultUseRecords(fixture.coreDb).length,
+          'refused preparation used Vault material'
+        ).toBe(0);
+        return;
+      }
+      expect(crossedSubmission, 'test never reached placement protection attestation').toBe(true);
+      expect(returnedEvidence, 'fixture failed before the intended protection result').toBe(true);
+      const receipts = listVaultInjectionReceipts(fixture.coreDb);
+      expect(failed, 'placement protection did not control Core acceptance').toBe(
+        fault !== 'exact'
+      );
+      expect(receipts.length).toBe(fault === 'exact' ? 1 : 0);
+      if (fault === 'exact') {
+        const proof: unknown = JSON.parse(receipts[0]!.backendSummary);
+        expect(
+          typeof proof === 'object' && proof !== null && 'realizedProtection' in proof,
+          'durable receipt lost actual protection'
+        ).toBe(true);
+      }
+      const retained = [
+        backend.lastPackage?.credentials,
+        listVaultInjectionPlans(fixture.coreDb),
+        receipts,
+        listVaultUseRecords(fixture.coreDb),
+      ];
+      expect(
+        JSON.stringify(retained).includes(material),
+        'material entered retained credential evidence'
+      ).toBe(false);
+      expect(
+        /nanohost|openshell|tmpfs|mountflags|driver_?config|epochroot|epoch_root/i.test(
+          JSON.stringify(retained)
+        ),
+        'retained credential contract depends on a native realization'
+      ).toBe(false);
+    } finally {
+      submission.mockRestore();
+      resolveMaterial.mockRestore();
+      vault.lock();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+});
+// Independent acceptance through the existing operation engine, fixture and fake placement.
+describe('credential carrier unified Vault operation acceptance', () => {
+  it.each([
+    'removed',
+    'unknown',
+    'weak-replace',
+    'external-removed',
+    'external-unknown',
+    'policy-deny',
+    'policy-allow',
+    'policy-authority-change',
+    'policy-effect-authority-change',
+    'policy-stale',
+    'policy-observe',
+  ] as const)('uses current authority, generations, Policy, Audit and the shared mutation fence (%s)', async (ending) => {
+    const fixture = await createWorkerContextExecutorFixture(`carrier-operations-${ending}`);
+    const timestamp = '2026-07-15T00:00:03.000Z';
+    const removalUnknown = ending === 'unknown' || ending === 'external-unknown';
+    const workspaceId = workspaceIdForOwner(fixture.turn.owner);
+    const threadId = fixture.turn.threadId;
+    const material = randomUUID() + randomUUID();
+    const replacement = randomUUID() + randomUUID();
+    const targetPath = `/sandbox/${randomUUID()}`;
+    const referenceId = testEntityId('vault', randomUUID());
+    const grantId = testEntityId('grant', randomUUID());
+    const admission = new WorkspaceMutationAdmission();
+    fixture.store.setWorkspaceMutationAdmission(admission);
+    const vault = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(fixture.coreDb.dataRoot, 'vault'),
+    });
+    vault.unlock({
+      masterKey: Buffer.from((randomUUID() + randomUUID()).replaceAll('-', '').slice(0, 64), 'hex'),
+    });
+    vault
+      .backend()
+      .store({ referenceId, material, metadata: { ownerScope: 'workspace', workspaceId } });
+    createVaultReference(fixture.coreDb, {
+      referenceId,
+      ownerScope: 'workspace',
+      workspaceId,
+      displayName: 'Synthetic static file',
+      secretKind: 'opaque',
+      backendKind: 'encrypted-file',
+      backendLocator: `encrypted-file://workspace/${workspaceId}/vault/${referenceId}`,
+      now: () => timestamp,
+    });
+    createVaultGrant(fixture.coreDb, {
+      grantId,
+      vaultReferenceId: referenceId,
+      ownerScope: 'workspace',
+      workspaceId,
+      lifetime: 'workspace',
+      allowedInjectionPaths: ['runtime-file'],
+      now: () => timestamp,
+    });
+    const ready = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const effectEntered = Promise.withResolvers<void>();
+    const effectRelease = Promise.withResolvers<void>();
+    let effectReadbackRejected = false;
+    let activeReceipt: string | undefined;
+    let replacementCalls = 0;
+    let revokeCalls = 0;
+    let weakReplacement = false;
+    let cancelled = false;
+    const proof = (binding: import('@openkit/config-schema').WorkerCredentialFileBinding) => ({
+      declarationId: binding.declarationId,
+      planId: binding.planId,
+      receiptId: binding.receiptId,
+      materialVersion: binding.material.version,
+      access: 'read-only' as const,
+      realizedProtection: {
+        ephemeral: true as const,
+        outsideRetainedStorage: true as const,
+        excludedFromCapture: true as const,
+        excludedFromExport: true as const,
+      },
+    });
+    const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
+      async deliverCredentialBinding(
+        packageSnapshotId: string,
+        planId: string,
+        receiptId: string,
+        credentialValue: string,
+        materialVersion: number,
+        recheckAuthority: () => Promise<void>
+      ) {
+        await recheckAuthority();
+        const supplied = backend.lastContext?.runtimeFileCredentials?.[0];
+        expect(
+          supplied !== undefined && !Object.hasOwn(supplied, 'credentialValue'),
+          'preparation carried material before deciding Policy'
+        ).toBe(true);
+        expect(
+          JSON.stringify(backend.lastContext).includes(material),
+          'preparation context contains material'
+        ).toBe(false);
+        expect(backend.lastPackage?.snapshotId === packageSnapshotId).toBe(true);
+        expect(
+          credentialValue === material &&
+            materialVersion === supplied?.materialVersion &&
+            materialVersion === 1 &&
+            supplied?.planId === planId &&
+            supplied?.receiptId === receiptId
+        ).toBe(true);
+        expect(
+          listVaultInjectionReceipts(fixture.coreDb).length,
+          'receipt preceded actual delivery'
+        ).toBe(0);
+        if (!supplied) throw new Error('Admitted private file supply missing.');
+        backend.fileCredentialCheckValues.push(credentialValue);
+        activeReceipt = receiptId;
+        return {
+          declarationId: supplied.declarationId,
+          planId,
+          receiptId,
+          materialVersion: supplied.materialVersion,
+          access: 'read-only' as const,
+          realizedProtection: {
+            ephemeral: true as const,
+            outsideRetainedStorage: true as const,
+            excludedFromCapture: true as const,
+            excludedFromExport: true as const,
+          },
+        };
+      },
+      async replaceCredentialBinding(
+        input: Parameters<NonNullable<WorkerGovernanceBackend['replaceCredentialBinding']>>[0],
+        recheckAuthority: () => Promise<void>
+      ) {
+        if (ending === 'policy-effect-authority-change') {
+          effectEntered.resolve();
+          await effectRelease.promise;
+        }
+        try {
+          await recheckAuthority();
+        } catch (error) {
+          effectReadbackRejected = true;
+          throw error;
+        }
+        replacementCalls += 1;
+        expect(
+          input.expectedReceiptId === activeReceipt,
+          'placement received stale replacement authority'
+        ).toBe(true);
+        expect(
+          input.credentialValue === replacement,
+          'private replacement lost current Vault generation'
+        ).toBe(true);
+        expect(
+          input.binding.material.referenceId === referenceId && input.binding.material.version === 2
+        ).toBe(true);
+        backend.fileCredentialCheckValues.push(input.credentialValue);
+        activeReceipt = input.binding.receiptId;
+        const result = proof(input.binding);
+        return weakReplacement
+          ? ({
+              ...result,
+              realizedProtection: { ...result.realizedProtection, excludedFromExport: false },
+            } as unknown as typeof result)
+          : result;
+      },
+      async cancel(input: Parameters<WorkerGovernanceBackend['cancel']>[0]) {
+        cancelled = true;
+        release.resolve();
+        return {
+          ...input,
+          disposition: 'accepted' as const,
+          execution: 'terminal' as const,
+          fenceRef: 'fixture-cancel-proof',
+          outcomeRef: null,
+        };
+      },
+      async revokeCredentialBinding(
+        input: Parameters<NonNullable<WorkerGovernanceBackend['revokeCredentialBinding']>>[0]
+      ) {
+        revokeCalls += 1;
+        expect(cancelled, 'removal preceded existing cancellation/join').toBe(true);
+        const pending = listVaultInjectionReceipts(fixture.coreDb).find(
+          (row) => row.receiptId === input.receiptId
+        );
+        expect(
+          pending?.revocationStatus === 'stale-session',
+          'revocation published removal before placement proof'
+        ).toBe(true);
+        expect(
+          listVaultInjectionPlans(fixture.coreDb).find((row) => row.planId === input.planId)
+            ?.status === 'revoked',
+          'binding authority survived into removal await'
+        ).toBe(true);
+        expect(input.receiptId === activeReceipt, 'revocation addressed another generation').toBe(
+          true
+        );
+        return {
+          state: removalUnknown ? ('unknown' as const) : ('removed' as const),
+          fenceRef: removalUnknown ? null : 'fixture-removal-proof',
+        };
+      },
+    });
+    mkdirSync(join(fixture.coreDb.dataRoot, 'config'), { recursive: true });
+    const serverConfig = join(fixture.coreDb.dataRoot, 'config/server.jsonc');
+    if (!existsSync(serverConfig))
+      writeFileSync(serverConfig, JSON.stringify({ schemaVersion: 1 }));
+    const manager = createRuntimeConfigManager({ dataRoot: fixture.coreDb.dataRoot });
+    let participantInvoke: DeterministicPolicyParticipant['invoke'] | undefined;
+    const interception = new PolicyInterception({
+      id: 'synthetic-carrier-participant',
+      version: `sha256:${'1'.repeat(64)}`,
+      invoke: (input) => {
+        if (!participantInvoke) throw new Error('No participant was activated for this fixture.');
+        return participantInvoke(input);
+      },
+    });
+    const originalSubmit = backend.submit.bind(backend);
+    const submission = vi.spyOn(backend, 'submit').mockImplementation(async (input) => ({
+      ...(await originalSubmit(input)),
+      credentialReceipts: input.credentialBindings?.map(proof),
+    }));
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      workspaceMutationAdmission: admission,
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      policyInterception: () => interception,
+      readRuntimeConfig: () => manager.current(),
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => timestamp,
+      vaultBackend: () => vault.backend(),
+      awaitWorkerCompletion: async () => {
+        ready.resolve();
+        await release.promise;
+        return cancelled
+          ? { acceptedAt: timestamp, status: 'interrupted', stopReason: 'interrupted' }
+          : { acceptedAt: timestamp, status: 'completed', stopReason: 'completed' };
+      },
+    });
+    const agentSetup = createTestAgentSetup({
+      credentialDeclarations: [
+        // Workspace grants enter this seam after reusable requirement composition.
+        {
+          id: 'static_file',
+          requirementId: 'static_file',
+          vaultGrantId: grantId,
+          visibility: 'runtime-file',
+          targetPath,
+        },
+      ],
+    });
+    admitTestNativeEnvironment(fixture.coreDb, agentSetup.manifest);
+    let execution: Promise<void> | undefined;
+    try {
+      execution = executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+        agentSessionId: fixture.agentSessionId,
+        agentSetup,
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      });
+      void execution.catch(() => {});
+      await Promise.race([
+        ready.promise,
+        execution.then(
+          () => {
+            throw new Error('Execution ended before the live-operation crossing.');
+          },
+          (error: unknown) => {
+            const frame =
+              error instanceof Error
+                ? error.stack?.match(/src\/[\w./-]+\.ts:\d+:\d+/)?.[0]
+                : undefined;
+            throw new Error(
+              `Execution refused before the live-operation crossing (${frame ?? 'source unavailable'}).`
+            );
+          }
+        ),
+      ]);
+      const initial = listVaultInjectionReceipts(fixture.coreDb);
+      expect(initial.length, 'accepted submit did not publish one receipt').toBe(1);
+      const first = initial[0]!;
+      const pkg = backend.lastPackage!;
+      const dependencies = {
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.coreDb.dataRoot,
+        store: fixture.store,
+        turnExecutor: executor,
+        policyInterception: interception,
+        readRuntimePolicy: () => manager.current().openKitConfig.policy?.mediation,
+        workspaceMutationAdmission: admission,
+        repositoryWorkspaceDb: (id: string) => openWorkspaceDb(fixture.coreDb.dataRoot, id),
+      };
+      const invoke = createOperationEngine(
+        createVaultOperationImplementations(dependencies),
+        dependencies
+      );
+      const worker = (requestId: string) => ({
+        kind: 'worker' as const,
+        actor: pkg.scope.triggerActor,
+        lineage: { ...pkg.scope, packageSnapshotId: pkg.snapshotId },
+        requestId,
+        bindings: { workspaceId, bindingThreadId: threadId, requestId },
+      });
+      const observations = () => {
+        const db = openTestWorkspaceDb(fixture.coreDb);
+        try {
+          return {
+            decisions: listExportableWorkspacePermissionDecisions(db, workspaceId).filter((row) =>
+              row.enforcementPoint.startsWith('vault.binding-')
+            ),
+            audit: listWorkspaceAuditEvents(db, workspaceId),
+          };
+        } finally {
+          db.sqlite.close();
+        }
+      };
+      const assertPolicyAndAudit = (
+        operation: string,
+        requestId?: string,
+        outcome = 'succeeded'
+      ) => {
+        const observed = observations();
+        const decisions = observed.decisions.filter(
+          (row) =>
+            row.enforcementPoint === `${operation}@decide` &&
+            row.result === 'allow' &&
+            row.action === 'vault.use'
+        );
+        expect(decisions.length > 0, 'operation bypassed current PermissionDecision').toBe(true);
+        expect(
+          decisions.every((row) => observed.audit.some((event) => event.id === row.auditEventId)),
+          'PermissionDecision lost linked Audit'
+        ).toBe(true);
+        expect(
+          listServerAuditEvents(fixture.coreDb).some(
+            (event) =>
+              event.action === operation &&
+              event.outcome === outcome &&
+              (!requestId || event.requestId === requestId)
+          ),
+          'operation lost canonical Audit result'
+        ).toBe(true);
+      };
+      assertPolicyAndAudit('vault.binding-deliver');
+      if (ending.startsWith('policy-')) {
+        const userId =
+          pkg.scope.triggerActor.kind === 'user' ? pkg.scope.triggerActor.id : LOCAL_USER_ID;
+        const administrator = { kind: 'local' as const, userId };
+        const personal = await fixture.store.ensureQuickChatWorkspace(userId);
+        const reviewThread = await fixture.store.createThread(
+          personal.id,
+          'Synthetic Policy review',
+          allocateEntityId('th'),
+          'administration',
+          { visibility: 'private', privateOwnerUserId: userId }
+        );
+        const reviewTurn = await fixture.store.createTurn(
+          personal.id,
+          reviewThread.id,
+          'Review this exact reference-only gate.',
+          { kind: 'user', id: userId },
+          null
+        );
+        const files = new RuntimeConfigFileService({
+          dataRoot: fixture.coreDb.dataRoot,
+          userId,
+          workspaceIds: [workspaceId, personal.id],
+          runtimeConfigManager: manager,
+          readRuntimeConfigStatus: () => manager.status(),
+        });
+        const handles: ReturnType<typeof createTestWorkspaceDb>[] = [];
+        try {
+          const configuration = createAdministrationConfiguration({
+            actor: administrator,
+            coreDb: fixture.coreDb,
+            store: fixture.store,
+            files,
+            runtimeConfig: () => manager.current(),
+            reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+            repositoryWorkspaceDb: (id) => {
+              const db = createTestWorkspaceDb(fixture.coreDb.dataRoot, id);
+              handles.push(db);
+              return db;
+            },
+            inflightCommands: new WeakMap(),
+          });
+          const propose = (proposed: import('@openkit/protocol').PolicyDocumentV1) =>
+            configuration.propose(
+              {
+                targetFamily: 'policy',
+                targetId: 'server',
+                expectedRevision: files.readFile('server.jsonc').file.revision!,
+                changes: {
+                  proposed,
+                  rationale: 'Synthetic acceptance of this exact reference-only operation.',
+                },
+              },
+              { threadId: reviewThread.id, turnId: reviewTurn.id, requestId: randomUUID() }
+            );
+          const principal = { kind: 'human' as const, id: userId };
+          const anchor = {
+            owner: { kind: 'workspace' as const, workspaceId },
+            kind: 'workspace',
+            id: workspaceId,
+          };
+          const scope = {
+            subjects: [principal],
+            actions: ['vault.use'],
+            resources: [{ kind: 'container' as const, container: anchor }],
+          };
+          const document: import('@openkit/protocol').PolicyDocumentV1 = {
+            schemaVersion: 1,
+            statements: [
+              {
+                id: 'synthetic-vault-participant',
+                kind: 'binding',
+                author: principal,
+                authority: { kind: 'human', userId },
+                authoredAt: new Date().toISOString(),
+                state: 'active',
+                scope,
+                lifetime: { anchor },
+                operation: 'vault.binding-replace',
+                stage: ending === 'policy-observe' ? 'completed' : 'decide',
+                mode: ending === 'policy-observe' ? 'observe' : 'gate',
+                participant: {
+                  kind: 'deterministic',
+                  id: 'synthetic-carrier-participant',
+                  version: `sha256:${'1'.repeat(64)}`,
+                },
+                inputDisclosure: scope,
+                order: 0,
+                timeoutMs: 5000,
+                failure: 'error',
+                circuit: { failures: 1, recoveryAfterMs: 60000 },
+              },
+            ],
+          };
+          const proposed = await propose(document);
+          expect(
+            manager
+              .current()
+              .openKitConfig.policy?.mediation?.statements.some(
+                (row) => row.id === 'synthetic-vault-participant'
+              ) ?? false,
+            'candidate creation activated participant authority'
+          ).toBe(false);
+          let refused = false;
+          await configuration
+            .apply({
+              requestId: randomUUID(),
+              candidate: proposed.candidate,
+              confirmation: { ...proposed.confirmation, contentDigest: `sha256:${'0'.repeat(64)}` },
+            })
+            .catch(() => {
+              refused = true;
+            });
+          expect(refused, 'unconfirmed candidate changed Policy').toBe(true);
+          const applied = await configuration.apply({
+            requestId: randomUUID(),
+            candidate: proposed.candidate,
+            confirmation: proposed.confirmation,
+          });
+          expect(
+            applied.persisted && applied.reload === 'applied',
+            'real candidate did not activate'
+          ).toBe(true);
+          let participantSettled = false;
+          let staleChangeApplied = false;
+          const participant = {
+            id: 'synthetic-carrier-participant',
+            version: `sha256:${'1'.repeat(64)}`,
+            invoke: vi.fn(async ({ proposal }: { proposal: unknown }) => {
+              const encoded = JSON.stringify(proposal);
+              const safe = proposal as import('../policy/statements.js').PolicyProposal;
+              expect(
+                safe.operation === 'vault.binding-replace' &&
+                  safe.workspaceId === workspaceId &&
+                  safe.capabilityCallId === null &&
+                  typeof safe.resource === 'object' &&
+                  typeof safe.inputReferences === 'object' &&
+                  Object.values(safe.inputReferences).includes(first.planId) &&
+                  Object.values(safe.inputReferences).includes(first.receiptId) &&
+                  safe.inputAttributes.contract === 'operation-reference-summary-v1' &&
+                  safe.inputAttributes.materialVersion === 2 &&
+                  safe.inputAttributes.access === 'read-only' &&
+                  !('serverId' in safe) &&
+                  !('toolName' in safe),
+                'participant was given the wrong operation contract'
+              ).toBe(true);
+              expect(
+                [material, replacement, targetPath].some((value) => encoded.includes(value)),
+                'participant received material or a credential destination'
+              ).toBe(false);
+              if (ending === 'policy-observe') {
+                expect(replacementCalls > 0, 'completed observation preceded the effect').toBe(
+                  true
+                );
+                participantSettled = true;
+                return { observed: true };
+              }
+              if (ending === 'policy-authority-change')
+                fixture.coreDb.sqlite.transaction(() => {
+                  disableCanonicalUser(fixture.coreDb, userId);
+                })();
+              if (ending === 'policy-stale') {
+                const changed = await propose({ schemaVersion: 1, statements: [] });
+                await configuration.apply({
+                  requestId: randomUUID(),
+                  candidate: changed.candidate,
+                  confirmation: changed.confirmation,
+                });
+                staleChangeApplied = true;
+              }
+              participantSettled = true;
+              return { decision: ending === 'policy-deny' ? 'deny' : 'allow' };
+            }),
+          };
+          participantInvoke = participant.invoke;
+          const app = createApp({
+            coreDb: fixture.coreDb,
+            dataRoot: fixture.coreDb.dataRoot,
+            store: fixture.store,
+            workspaceMutationAdmission: admission,
+            turnExecutor: executor,
+            vaultUnlockState: vault,
+            runtimeConfigManager: manager,
+            policyInterception: interception,
+          });
+          const rotated = vault.backend().rotate({ referenceId, material: replacement });
+          advanceActiveVaultReferenceVersion(fixture.coreDb, {
+            referenceId,
+            currentVersion: rotated.currentVersion,
+            now: () => timestamp,
+          });
+          const requestId = randomUUID();
+          const pendingResponse = app.request(
+            ...operationRequest(
+              'vault.binding-replace',
+              {},
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  workspaceId,
+                  bindingThreadId: threadId,
+                  planId: first.planId,
+                  expectedReceiptId: first.receiptId,
+                  materialVersion: 2,
+                  requestId,
+                }),
+              }
+            )
+          );
+          if (ending === 'policy-effect-authority-change') {
+            await effectEntered.promise;
+            fixture.coreDb.sqlite.transaction(() => disableCanonicalUser(fixture.coreDb, userId))();
+            effectRelease.resolve();
+          }
+          const response = await pendingResponse;
+          const outcome = await response.json();
+          expect(
+            participant.invoke.mock.calls.length,
+            'real admitted operation bypassed its Policy participant'
+          ).toBe(1);
+          expect(participantSettled, 'participant did not return its intended assessment').toBe(
+            true
+          );
+          if (ending === 'policy-stale')
+            expect(staleChangeApplied, 'stale-Policy control did not activate its successor').toBe(
+              true
+            );
+          const permits = ending === 'policy-allow' || ending === 'policy-observe';
+          expect(
+            response.status === 200,
+            'participant or current Policy did not control effect release'
+          ).toBe(permits);
+          expect(replacementCalls, 'Policy released the wrong number of effects').toBe(
+            permits ? 1 : 0
+          );
+          expect(
+            listVaultInjectionReceipts(fixture.coreDb).length,
+            'Policy refusal created a delivery receipt'
+          ).toBe(permits ? 2 : 1);
+          const db = createTestWorkspaceDb(fixture.coreDb.dataRoot, workspaceId);
+          handles.push(db);
+          const decisions = listExportableWorkspacePermissionDecisions(db, workspaceId).filter(
+            (row) => row.mediation?.operation === 'vault.binding-replace'
+          );
+          if (ending === 'policy-effect-authority-change') {
+            expect(effectReadbackRejected, 'held effect did not recheck current authority').toBe(
+              true
+            );
+            const final = decisions.filter((row) => row.mediation?.role === 'final');
+            expect(final.length, 'same-effect readback decided or consumed again').toBe(1);
+            expect(
+              final[0]?.result,
+              'authority control did not first reach actual Policy allow'
+            ).toBe('allow');
+          }
+          if (permits || ending === 'policy-deny')
+            expect(
+              decisions.some(
+                (row) => row.mediation?.role === 'final' && row.mediation.kernel !== null
+              ),
+              'participant replaced the final real Kernel decision'
+            ).toBe(true);
+          expect(
+            [material, replacement].some((value) =>
+              JSON.stringify([
+                outcome,
+                decisions,
+                listServerAuditEvents(fixture.coreDb),
+                listWorkspaceAuditEvents(db, workspaceId),
+              ]).includes(value)
+            ),
+            'Policy or operation evidence exposed material'
+          ).toBe(false);
+        } finally {
+          for (const db of handles) closeTestCoreDb(db);
+        }
+        return;
+      }
+      // Inspect uses the same existing Vault operations available to an authorized agent.
+      const inspect = await invoke(
+        'vault.injection-receipt-list',
+        { workspaceId },
+        { ...worker(randomUUID()), bindings: { workspaceId } }
+      );
+      expect(
+        inspect.items.some((row) => row.receiptId === first.receiptId),
+        'agent cannot inspect its admitted binding receipt'
+      ).toBe(true);
+      const plans = await invoke(
+        'vault.injection-plan-list',
+        { workspaceId },
+        { ...worker(randomUUID()), bindings: { workspaceId } }
+      );
+      expect(
+        plans.items.some((row) => row.planId === first.planId),
+        'agent cannot inspect its admitted binding plan'
+      ).toBe(true);
+      const rotated = vault.backend().rotate({ referenceId, material: replacement });
+      advanceActiveVaultReferenceVersion(fixture.coreDb, {
+        referenceId,
+        currentVersion: rotated.currentVersion,
+        now: () => timestamp,
+      });
+      const requestId = randomUUID();
+      const replaceInput = {
+        workspaceId,
+        bindingThreadId: threadId,
+        planId: first.planId,
+        expectedReceiptId: first.receiptId,
+        materialVersion: 2,
+        requestId,
+      };
+      let rejected = false;
+      await invoke(
+        'vault.binding-replace',
+        { ...replaceInput, expectedReceiptId: randomUUID() },
+        worker(requestId)
+      ).catch(() => {
+        rejected = true;
+      });
+      expect(rejected && replacementCalls === 0, 'stale receipt reached placement effect').toBe(
+        true
+      );
+      assertPolicyAndAudit('vault.binding-replace', requestId, 'failed');
+      rejected = false;
+      const staleVersionId = randomUUID();
+      await invoke(
+        'vault.binding-replace',
+        { ...replaceInput, materialVersion: 1, requestId: staleVersionId },
+        worker(staleVersionId)
+      ).catch(() => {
+        rejected = true;
+      });
+      expect(
+        rejected && replacementCalls === 0,
+        'stale Vault generation reached placement effect'
+      ).toBe(true);
+      const unauthorizedId = randomUUID();
+      const unauthorized = {
+        ...worker(unauthorizedId),
+        actor: { kind: 'user' as const, id: testEntityId('usr', randomUUID()) },
+      };
+      rejected = false;
+      await invoke(
+        'vault.binding-replace',
+        { ...replaceInput, requestId: unauthorizedId },
+        unauthorized
+      ).catch(() => {
+        rejected = true;
+      });
+      expect(
+        rejected && replacementCalls === 0,
+        'forged Worker authority reached placement effect'
+      ).toBe(true);
+      // The existing application fence applies to the same operation path.
+      const frozenId = randomUUID();
+      await admission.close(workspaceId);
+      try {
+        rejected = false;
+        await invoke(
+          'vault.binding-replace',
+          { ...replaceInput, requestId: frozenId },
+          worker(frozenId)
+        ).catch(() => {
+          rejected = true;
+        });
+        expect(
+          rejected && replacementCalls === 0,
+          'binding effect bypassed Workspace mutation closure'
+        ).toBe(true);
+      } finally {
+        admission.reopen(workspaceId);
+      }
+      weakReplacement = ending === 'weak-replace';
+      const replacementId = randomUUID();
+      let result: unknown;
+      rejected = false;
+      await invoke(
+        'vault.binding-replace',
+        { ...replaceInput, requestId: replacementId },
+        worker(replacementId)
+      ).then(
+        (value) => {
+          result = value;
+        },
+        () => {
+          rejected = true;
+        }
+      );
+      expect(replacementCalls, 'replacement did not reach the live placement').toBe(1);
+      const after = listVaultInjectionReceipts(fixture.coreDb);
+      if (ending === 'weak-replace') {
+        expect(rejected, 'weaker realized protection admitted').toBe(true);
+        expect(after.length, 'unproved replacement created a durable receipt').toBe(1);
+        expect(
+          attempts.requireSchedulerExecutionAttempt(
+            fixture.coreDb,
+            testEntityId('attempt', `lease_${fixture.turn.id}`)
+          ).phase === 'closing',
+          'unproved replacement left execution usable'
+        ).toBe(true);
+        assertPolicyAndAudit('vault.binding-replace', replacementId, 'failed');
+      } else {
+        expect(rejected, 'exact placement proof refused').toBe(false);
+        expect(after.length).toBe(2);
+        const successor = after.find((row) => row.receiptId !== first.receiptId)!;
+        expect(
+          successor.revocationStatus === 'active' &&
+            after.find((row) => row.receiptId === first.receiptId)?.revocationStatus === 'revoked',
+          'replacement did not advance the exact receipt generation'
+        ).toBe(true);
+        const actual = JSON.parse(successor.backendSummary);
+        expect(
+          actual.materialVersion === 2 &&
+            actual.replacesReceiptId === first.receiptId &&
+            actual.realizedProtection.excludedFromExport === true
+        ).toBe(true);
+        assertPolicyAndAudit('vault.binding-replace', replacementId);
+        rejected = false;
+        await invoke(
+          'vault.binding-replace',
+          { ...replaceInput, requestId: replacementId },
+          worker(replacementId)
+        ).catch(() => {
+          rejected = true;
+        });
+        expect(
+          rejected && replacementCalls === 1,
+          'duplicate replacement overwrote its successor'
+        ).toBe(true);
+        const revokeId = randomUUID();
+        let removed: unknown;
+        rejected = false;
+        await invoke(
+          'vault.binding-revoke',
+          {
+            workspaceId,
+            bindingThreadId: threadId,
+            planId: first.planId,
+            expectedReceiptId: successor.receiptId,
+            requestId: revokeId,
+          },
+          ending.startsWith('external-')
+            ? { kind: 'public', actor: { kind: 'local', userId: LOCAL_USER_ID } }
+            : worker(revokeId)
+        ).then(
+          (value) => {
+            removed = value;
+          },
+          () => {
+            rejected = true;
+          }
+        );
+        expect(revokeCalls).toBe(1);
+        expect(rejected === removalUnknown, 'unproved removal was reported as completed').toBe(
+          true
+        );
+        expect(
+          getVaultGrant(fixture.coreDb, grantId)?.status === 'active',
+          'binding revoke incorrectly revoked the reusable grant'
+        ).toBe(true);
+        if (removalUnknown) {
+          expect(
+            attempts.requireSchedulerExecutionAttempt(
+              fixture.coreDb,
+              testEntityId('attempt', `lease_${fixture.turn.id}`)
+            ).phase === 'closing',
+            'unknown removal left execution usable'
+          ).toBe(true);
+        } else {
+          expect(
+            listVaultInjectionReceipts(fixture.coreDb).every(
+              (row) => row.revocationStatus === 'revoked'
+            ),
+            'removed binding retained active receipts'
+          ).toBe(true);
+          expect(
+            listVaultInjectionPlans(fixture.coreDb).find((row) => row.planId === first.planId)
+              ?.status === 'revoked'
+          ).toBe(true);
+        }
+        assertPolicyAndAudit(
+          'vault.binding-revoke',
+          revokeId,
+          removalUnknown ? 'failed' : 'succeeded'
+        );
+        if (ending === 'external-removed') {
+          const historyResolution = vi.spyOn(vault.backend(), 'resolve');
+          try {
+            const history = await invoke(
+              'vault.injection-receipt-list',
+              { workspaceId },
+              {
+                kind: 'public',
+                actor: { kind: 'local', userId: LOCAL_USER_ID },
+              }
+            );
+            expect(
+              history.items.some(
+                (row) => row.receiptId === successor.receiptId && row.revocationStatus === 'revoked'
+              ),
+              'proved removal erased authorized inspection history'
+            ).toBe(true);
+            expect(
+              historyResolution,
+              'history inspection resolved material'
+            ).not.toHaveBeenCalled();
+            expect(revokeCalls, 'history inspection contacted placement cleanup').toBe(1);
+          } finally {
+            historyResolution.mockRestore();
+          }
+        }
+        result = [result, removed];
+      }
+      const retained = [
+        result,
+        inspect,
+        plans,
+        listServerAuditEvents(fixture.coreDb),
+        observations(),
+        listVaultInjectionPlans(fixture.coreDb),
+        listVaultInjectionReceipts(fixture.coreDb),
+        listVaultUseRecords(fixture.coreDb),
+      ];
+      expect(
+        [material, replacement].some((value) => JSON.stringify(retained).includes(value)),
+        'material crossed operation or retained evidence surface'
+      ).toBe(false);
+    } finally {
+      release.resolve();
+      await execution?.catch(() => {});
+      submission.mockRestore();
+      vault.lock();
+      fixture.coreDb.sqlite.close();
+    }
+  });
+});
 describe('retained-record failure publication', () => {
   it('terminalizes forced snapshot preparation failure with fixed text before backend effects', async () => {
     const marker = 'ROW_SECRET_X9';
