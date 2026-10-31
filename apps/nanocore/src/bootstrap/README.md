@@ -34,3 +34,5 @@ A single valid active SQL capture without a competing Core recovery restores its
 An abandoned capture whose original seal still exists remains recovery-quarantined. The existing SQL decision and seal presence identify interrupted retirement without a new durable state. Explicit recovery must retire that exposure before source readmission.
 
 An abandoned capture with no visible seal is admitted only after the existing startup owner synchronizes that absence in its canonical parent. A failed parent sync retains exact recovery quarantine; visible absence alone cannot discharge interrupted retirement.
+
+Scope quarantine readiness retains the first unsupported canonical required-feature identifier from envelope admission. It carries no parser text, retained payload or host path; healthy sibling admission stays independent.

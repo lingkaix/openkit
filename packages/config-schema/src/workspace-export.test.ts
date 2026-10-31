@@ -50,6 +50,26 @@ describe('workspace export manifest schema', () => {
     );
   });
 
+  it('rejects an unsupported envelope major before decoding family payload fields', () => {
+    let payloadRead = false;
+    const candidate = { ...manifest(), schemaVersion: 2 };
+    Object.defineProperty(candidate, 'contentInventory', {
+      enumerable: true,
+      get: () => {
+        payloadRead = true;
+        return [];
+      },
+    });
+    expect(() => parseWorkspaceExportManifest(candidate)).toThrow();
+    expect(payloadRead).toBe(false);
+  });
+
+  it('refuses a manifest requiring an unmet minimum Core version', () => {
+    expect(() =>
+      parseWorkspaceExportManifest({ ...manifest(), minCoreVersion: '999.0.0' })
+    ).toThrow();
+  });
+
   it('rejects unsupported required features by name', () => {
     const candidate = {
       ...manifest(),
@@ -137,6 +157,26 @@ describe('data-root backup manifest schema', () => {
     expect(parseDataRootBackupManifest(backupManifest()).contentInventory[0]?.path).toBe(
       'server/layout.json'
     );
+  });
+
+  it('rejects an unsupported envelope major before decoding family payload fields', () => {
+    let payloadRead = false;
+    const candidate = { ...backupManifest(), schemaVersion: 2 };
+    Object.defineProperty(candidate, 'contentInventory', {
+      enumerable: true,
+      get: () => {
+        payloadRead = true;
+        return [];
+      },
+    });
+    expect(() => parseDataRootBackupManifest(candidate)).toThrow();
+    expect(payloadRead).toBe(false);
+  });
+
+  it('refuses a manifest requiring an unmet minimum Core version', () => {
+    expect(() =>
+      parseDataRootBackupManifest({ ...backupManifest(), minCoreVersion: '999.0.0' })
+    ).toThrow();
   });
 
   it('rejects unsupported required features by name', () => {

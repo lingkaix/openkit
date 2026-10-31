@@ -12,6 +12,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  isRegisteredRequiredFeature,
   parseRecordEnvelope,
   REQUIRED_FEATURE_REGISTRY,
   type RequiredFeatureId,
@@ -685,10 +686,21 @@ function verifyCanonicalRecordEnvelopeSupport(root: string): void {
           `DATA_ROOT unsupported requiredFeatures or canonical record family in ${reportPath}: ${errorMessage(error)}`
         );
       }
+      // Carry only a canonical feature identifier, never parser text or other retained content.
+      const requiredFeature =
+        isRecordEnvelopeCandidate(record) && Array.isArray(record.requiredFeatures)
+          ? record.requiredFeatures.find(
+              (feature): feature is string =>
+                typeof feature === 'string' &&
+                /^[a-z][a-z0-9-]*(?:\.[a-z0-9-]+)+$/.test(feature) &&
+                !isRegisteredRequiredFeature(feature)
+            )
+          : undefined;
       refuseScope(root, {
         scope: owner[1] === 'workspaces' ? 'workspace' : 'user',
         id: owner[2]!,
         check: 'layout',
+        ...(requiredFeature === undefined ? {} : { requiredFeature }),
       });
     }
   }
@@ -714,7 +726,7 @@ function readJsonRecord(path: string): unknown {
  * @param value Parsed JSON value.
  * @returns True when the value should be handled as a canonical record envelope.
  */
-function isRecordEnvelopeCandidate(value: unknown): boolean {
+function isRecordEnvelopeCandidate(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === 'object' &&
     value !== null &&

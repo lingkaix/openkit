@@ -140,9 +140,8 @@ export function parseWorkspaceExportManifest(
   input: unknown,
   options: ParseRecordEnvelopeOptions = {}
 ): WorkspaceExportManifest {
-  const manifest = WorkspaceExportManifestSchema.parse(input);
-  parseRecordEnvelope(manifest, options);
-  return manifest;
+  parseRecordEnvelope(input, options);
+  return WorkspaceExportManifestSchema.parse(input);
 }
 
 /**
@@ -156,7 +155,6 @@ export function parseDataRootBackupManifest(
   input: unknown,
   options: ParseRecordEnvelopeOptions = {}
 ): DataRootBackupManifest {
-  const manifest = DataRootBackupManifestSchema.parse(input);
-  parseRecordEnvelope(manifest, options);
-  return manifest;
+  parseRecordEnvelope(input, options);
+  return DataRootBackupManifestSchema.parse(input);
 }

@@ -9,6 +9,7 @@ import { AutomationStore } from '../lib/automation-store.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { verifyWorkspaceDeletionClosure } from '../workspace-deletion-evidence.js';
 import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -102,9 +103,20 @@ it('seals the complete recurring graph before deletion removes its Core rows and
       request.closureId!
     );
     const manifest = JSON.parse(readFileSync(join(root, 'workspace-closure.json'), 'utf8'));
-    expect(manifest.requiredFeatures).toContain('recurring-history-v1');
+    expect.soft(manifest.requiredFeatures).toContain('workspace.recurring-history.v1');
     // The next boot scans every canonical envelope under the data root, including this closure.
     expect(() => ensureLayout(dataRoot)).not.toThrow();
+    const verified = verifyWorkspaceDeletionClosure({
+      closureRoot: root,
+      workspaceId: workspace.id,
+      requestId,
+      originalOwnerUserId: request.originalOwnerUserId,
+      sourceRegistryRevision: manifest.sourceRegistryRevision,
+      closureId: request.closureId!,
+      recoveryExportId: request.recoveryExportId!,
+      recoveryExportManifestDigest: request.recoveryExportManifestDigest!,
+    });
+    expect.soft(verified.requiredFeatures).toContain('workspace.recurring-history.v1');
     const history = JSON.parse(
       readFileSync(join(root, 'records', 'recurring-history.jsonl'), 'utf8')
     );

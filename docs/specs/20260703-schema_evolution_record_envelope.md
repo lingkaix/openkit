@@ -268,7 +268,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 | `workspace.generative-kernel.v1` | active | Workspace export includes Light App identity, admitted definitions, native records, and app-local audit. |
 | `workspace.generative-ui.native-v1` | active | Workspace export includes immutable native Generative UI presentations and their Item references. |
 | `workspace.recurring-triggers.v1` | active | Workspace export includes inert recurring definitions and exact occurrence and expired-range history. |
-| `recurring-history-v1` | active | Workspace deletion closures retain the inert recurring definitions and exact occurrence and expired-range history. |
+| `workspace.recurring-history.v1` | active | Workspace deletion closures retain the inert recurring definitions and exact occurrence and expired-range history. |
 | `workspace.mount.fuse` | active | Workspace input requires a FUSE-style mount implementation. |
 | `workspace.writeback.external` | active | Workspace writes are committed through an external writeback mechanism. |
 

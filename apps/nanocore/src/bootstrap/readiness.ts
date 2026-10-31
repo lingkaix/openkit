@@ -14,6 +14,8 @@ export interface ScopeAdmissionFailure {
   readonly scope: 'workspace' | 'user';
   readonly id: string;
   readonly check: 'layout' | 'database' | 'records' | 'recovery' | 'index' | 'retired';
+  /** First unsupported canonical feature identifier; excludes arbitrary record or parser content. */
+  readonly requiredFeature?: string;
 }
 
 // Boot and ordinary callers share refusal until restart or exact-target recovery revalidates authority.
@@ -119,7 +121,7 @@ export function withScopeAdmissionReadiness(
       )
       .map((failure) => ({
         code: failure.check === 'index' ? 'storage.index-unavailable' : 'storage.scope-quarantined',
-        message: `storage: ${failure.scope} ${failure.id}; check=${failure.check}; stage=scope-admission.`,
+        message: `storage: ${failure.scope} ${failure.id}; check=${failure.check}; stage=scope-admission.${failure.requiredFeature ? ` requiredFeature=${failure.requiredFeature}.` : ''}`,
         blocks: [`${failure.scope}:${failure.id}${failure.check === 'index' ? ':index' : ''}`],
       }));
     if (reasons.length > 0)

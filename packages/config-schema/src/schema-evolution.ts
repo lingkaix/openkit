@@ -5,6 +5,7 @@ import {
   compareCodeUnits,
   ItemIdSchema,
   PermissionDecisionIdSchema,
+  readRetainedV1,
   ThreadIdSchema,
   TurnIdSchema,
   VaultGrantIdSchema,
@@ -137,8 +138,8 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Workspace export includes inert recurring definitions and exact occurrence and expired-range history.',
   },
-  'recurring-history-v1': {
-    id: 'recurring-history-v1',
+  'workspace.recurring-history.v1': {
+    id: 'workspace.recurring-history.v1',
     status: 'active',
     description:
       'Workspace deletion closures retain the inert recurring definitions and exact occurrence and expired-range history.',
@@ -194,7 +195,9 @@ export const RecordLineageSchema = z
  */
 export const RecordEnvelopeSchema = z
   .object({
-    schemaVersion: z.number().int().positive(),
+    schemaVersion: z.literal(1),
+    // No current writer admits a version-coupled requirement; refuse it rather than ignore it.
+    minCoreVersion: z.never().optional(),
     recordType: z.string().min(1),
     id: z.string().min(1),
     ownerScope: RecordOwnerScopeSchema,
@@ -304,7 +307,7 @@ export function parseRecordEnvelope(
   input: unknown,
   options: ParseRecordEnvelopeOptions = {}
 ): RecordEnvelope {
-  const parsed = RecordEnvelopeSchema.parse(input);
+  const parsed = readRetainedV1(input, (record) => RecordEnvelopeSchema.parse(record));
   const supported = new Set(options.supportedFeatures ?? []);
 
   for (const feature of parsed.requiredFeatures) {

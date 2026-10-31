@@ -59,6 +59,18 @@ describe('scoped runtime config schemas', () => {
     }
   });
 
+  it('fails closed for unsupported required Gateway semantics', () => {
+    expect(
+      GatewayConfigSchema.parse({ schemaVersion: 1, requiredFeatures: [] }).logicalModels
+    ).toEqual([]);
+    expect(() =>
+      GatewayConfigSchema.parse({
+        schemaVersion: 1,
+        requiredFeatures: ['gateway.routing.future-authority'],
+      })
+    ).toThrow(/gateway\.routing\.future-authority/);
+  });
+
   it('validates personal per-Workspace preferences without accepting duplicate owners', () => {
     expect(
       UserConfigSchema.parse({

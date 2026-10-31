@@ -63,6 +63,26 @@ describe('schema evolution record envelope', () => {
     ).toThrow('Unsupported required feature: workspace.mount.fuse');
   });
 
+  it('rejects an unsupported major version before decoding the envelope payload', () => {
+    let payloadRead = false;
+    const candidate = { ...(envelopeFixture() as object), schemaVersion: 2 };
+    Object.defineProperty(candidate, 'contentDigest', {
+      enumerable: true,
+      get: () => {
+        payloadRead = true;
+        return 'sha256:unread-payload';
+      },
+    });
+    expect(() => parseRecordEnvelope(candidate)).toThrow();
+    expect(payloadRead).toBe(false);
+  });
+
+  it('refuses an unmet minimum Core version rather than treating it as descriptive data', () => {
+    expect(() =>
+      parseRecordEnvelope({ ...(envelopeFixture() as object), minCoreVersion: '999.0.0' })
+    ).toThrow();
+  });
+
   it('rejects writer-required features that are not in the registry', () => {
     expect(() => assertRegisteredRequiredFeatures(['workspace.mount.telepathy'])).toThrow(
       'Unregistered required feature: workspace.mount.telepathy'
@@ -91,6 +111,28 @@ describe('schema evolution record envelope', () => {
     expect(
       parseRecordEnvelope(envelope, { supportedFeatures: [feature] }).requiredFeatures
     ).toEqual([feature]);
+  });
+
+  it('registers recurring closure history and requires explicit reader support', () => {
+    const feature = 'workspace.recurring-history.v1';
+    expect(() => assertRegisteredRequiredFeatures([feature])).not.toThrow();
+    const envelope = { ...envelopeFixture(), requiredFeatures: [feature] };
+    expect(() => parseRecordEnvelope(envelope)).toThrow(`Unsupported required feature: ${feature}`);
+    expect(
+      parseRecordEnvelope(envelope, { supportedFeatures: [feature] }).requiredFeatures
+    ).toEqual([feature]);
+  });
+
+  it('refuses the pre-release unnamespaced recurring closure feature', () => {
+    expect(() => assertRegisteredRequiredFeatures(['recurring-history-v1'])).toThrow(
+      'Unregistered required feature: recurring-history-v1'
+    );
+    expect(() =>
+      parseRecordEnvelope(
+        { ...envelopeFixture(), requiredFeatures: ['recurring-history-v1'] },
+        { supportedFeatures: ['workspace.recurring-history.v1'] }
+      )
+    ).toThrow('Unregistered required feature: recurring-history-v1');
   });
 
   it.each([

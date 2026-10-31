@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** One private Provider route member behind a worker-visible logical model. */
 export const GatewayRouteMemberSchema = z
@@ -39,7 +40,7 @@ export const GatewayConfigSchema = z
     enabled: z.boolean().default(true),
     defaultLogicalModelId: z.string().min(1).optional(),
     logicalModels: z.array(GatewayLogicalModelSchema).default([]),
-    requiredFeatures: z.array(z.string().min(1)).default([]),
+    requiredFeatures: AuthoredConfigRequiredFeaturesSchema.default([]),
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })
   .strip()

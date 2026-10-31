@@ -44,7 +44,7 @@ import {
 import { listExportableWorkspaceVaultUseRecords } from './vault/vault-use-records.js';
 
 const DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
-const RECURRING_HISTORY_FEATURE = 'recurring-history-v1';
+const RECURRING_HISTORY_FEATURE = 'workspace.recurring-history.v1';
 const RECURRING_HISTORY_PATH = 'records/recurring-history.jsonl';
 const CLOSURE_RECORD_PATHS = [
   'records/core-workspace-registry.jsonl',

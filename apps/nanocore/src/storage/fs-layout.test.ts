@@ -14,6 +14,12 @@ import { join, relative } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import {
+  createBootReadinessSnapshot,
+  isScopeAdmitted,
+  withScopeAdmissionReadiness,
+} from '../bootstrap/readiness.js';
+
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import {
   coreDbPath,
@@ -415,6 +421,47 @@ describe('ensureLayout', () => {
     }
     expect(readFileSync(recordPath)).toEqual(originalBytes);
     expect(readdirSync(join(root, 'workspaces', workspaceId))).toEqual(['evidence']);
+  });
+
+  it('names an unsupported feature in scoped boot readiness without exposing retained payload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'openkit-layout-feature-'));
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    const siblingId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
+    const directory = join(root, 'workspaces', workspaceId, 'sources', 'registry');
+    try {
+      const sibling = openWorkspaceDb(root, siblingId);
+      sibling.sqlite.close();
+      mkdirSync(directory, { recursive: true });
+      const path = join(directory, 'ks_00000000-0000-7000-8000-000000000001.json');
+      const originalBytes = JSON.stringify({
+        schemaVersion: 1,
+        recordType: 'source',
+        id: 'ks_00000000-0000-7000-8000-000000000001',
+        ownerScope: 'workspace',
+        lineage: { workspaceId },
+        createdAt: '2026-07-07T00:00:00.000Z',
+        updatedAt: '2026-07-07T00:00:00.000Z',
+        contentDigest: 'sha256:source',
+        redactionLevel: 'none',
+        sensitivity: 'internal',
+        requiredFeatures: ['workspace.mount.future'],
+        futureOptionalField: 'retained-payload-must-not-be-diagnostic',
+      });
+      writeFileSync(path, originalBytes);
+      expect(() => ensureLayout(root)).not.toThrow();
+      expect(isScopeAdmitted(root, 'workspace', workspaceId)).toBe(false);
+      expect(isScopeAdmitted(root, 'workspace', siblingId)).toBe(true);
+      const readiness = withScopeAdmissionReadiness(createBootReadinessSnapshot(), root);
+      expect(readiness.acceptingProductWork).toBe(true);
+      expect(readiness.overall).toBe('degraded');
+      const diagnostics = JSON.stringify(readiness.subsystems.storage.reasons);
+      expect(diagnostics).toContain('workspace.mount.future');
+      expect(diagnostics).not.toContain('retained-payload-must-not-be-diagnostic');
+      expect(diagnostics).not.toContain(root);
+      expect(readFileSync(path, 'utf8')).toBe(originalBytes);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('fails closed when a canonical record envelope requires unsupported features', async () => {

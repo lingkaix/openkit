@@ -154,3 +154,7 @@ The Session workspace planner keeps every Turn-cleared slot beneath the disposab
 Version-four Agent Environment Package LLM sections admit only Gateway inference with placeholder visibility, an OpenAI-compatible endpoint and a NanoCore Gateway upstream. Coherent direct-provider and backend-local alternatives are refused rather than supplied through a fallback.
 
 Session Workspace planning rejects Turn-cleared slots that equal, contain, or descend from the retained root, including read-only input slots. Cleanup admission therefore keeps the disposable subtree separate from retained working bytes.
+
+The recurring deletion-closure feature is `workspace.recurring-history.v1`. The pre-v0.1.0 reset replaces its former unnamespaced identifier; readers do not admit that predecessor.
+
+Envelope readers check the retained major marker before payload decoding and refuse any `minCoreVersion` requirement until that requirement has an admitted reader. Gateway configuration uses the same registered-feature refusal as other authored configuration.
