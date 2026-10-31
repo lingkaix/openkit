@@ -20,11 +20,11 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
 import { readSourcePointers } from './source-pointers.js';
 
@@ -136,9 +136,6 @@ async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = '
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
   const runtimeConfigManager = createRuntimeConfigManager({
     dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
@@ -197,7 +194,18 @@ async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = '
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { dataRoot, store, workspace, notebook, run, finish, invoke, context };
+  return {
+    dataRoot,
+    store,
+    workspace,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
+    run,
+    finish,
+    invoke,
+    context,
+  };
 }
 
 describe('public Workspace tell intake framing', () => {
@@ -273,7 +281,8 @@ describe('public Workspace tell intake framing', () => {
         dataRoot: f.dataRoot,
         ownerScope: { kind: 'workspace', workspaceId: f.workspace.id },
       },
-      base
+      base,
+      readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
     ).get(sources[0]!.id)!;
     expect(pointer.fields.byteLength).toBe(Buffer.byteLength(original));
     expect(

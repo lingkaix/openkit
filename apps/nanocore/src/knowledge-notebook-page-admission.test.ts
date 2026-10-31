@@ -14,6 +14,7 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const fixtures: Array<Awaited<ReturnType<typeof fixture>>> = [];
@@ -113,7 +114,7 @@ function page(f: Awaited<ReturnType<typeof fixture>>, sourceReferences: string[]
 async function createPage(f: Awaited<ReturnType<typeof fixture>>, sourceReferences: string[] = []) {
   const request = {
     requestId: randomUUID(),
-    baseRevision: git(f, 'rev-parse', 'refs/heads/published').trim(),
+    baseRevision: readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head.notebookCommit,
     path: 'notes/admission.md',
     content: page(f, sourceReferences),
     summary: 'Create admission note',
@@ -276,7 +277,9 @@ describe('Notebook page commands retain current Source and request identity admi
     expect(denied.status, JSON.stringify(denied.body)).toBe(403);
     expect(denied.body).toMatchObject({ code: 'workspace_access_denied' });
     expect(JSON.stringify(denied.body)).not.toContain('SOURCE-BACKED-PAGE-MARKER');
-    expect(git(f, 'rev-parse', 'refs/heads/published').trim()).toBe(expectedRevision);
+    expect(readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head.notebookCommit).toBe(
+      expectedRevision
+    );
     expect(git(f, 'show', `${created.revision}:pages/${request.path}`)).toBe(created.content);
   });
 
@@ -290,7 +293,9 @@ describe('Notebook page commands retain current Source and request identity admi
     });
     expect(collision.status, JSON.stringify(collision.body)).toBe(409);
     expect(collision.body).toMatchObject({ code: 'idempotency_key_conflict' });
-    expect(git(f, 'rev-parse', 'refs/heads/published').trim()).toBe(created.revision);
+    expect(readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head.notebookCommit).toBe(
+      created.revision
+    );
     expect(await call(f, 'knowledge.notebook.create', created.request)).toEqual(created.result);
   });
 
@@ -307,7 +312,9 @@ describe('Notebook page commands retain current Source and request identity admi
     });
     expect(collision.status, JSON.stringify(collision.body)).toBe(409);
     expect(collision.body).toMatchObject({ code: 'idempotency_key_conflict' });
-    expect(git(f, 'rev-parse', 'refs/heads/published').trim()).toBe(removed.body.notebookRevision);
+    expect(readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head.notebookCommit).toBe(
+      removed.body.notebookRevision
+    );
     expect(await call(f, 'knowledge.notebook.delete', request)).toEqual(removed);
   });
 });

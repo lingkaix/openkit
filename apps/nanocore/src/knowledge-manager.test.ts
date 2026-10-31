@@ -17,15 +17,16 @@ import {
   RegisterKnowledgeSourceResponseSchema,
 } from '@openkit/app-api-schemas';
 import { formatReferenceUri } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
+import type { KnowledgeNotebook } from './knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import { parseOkfDocument } from './knowledge/okf.js';
 import { parseSourcePointer } from './knowledge/source-pointers.js';
 import { publishCapturedSource } from './knowledge/source-publication.js';
 import { readManagedSourceText } from './knowledge/source-reading.js';
+import * as knowledgeManager from './knowledge-manager.js';
 import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -47,6 +48,8 @@ import {
 import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
+import { corruptTestWorkspaceNotebookCommit } from './test-support/workspace-notebook-corruption.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -56,9 +59,7 @@ const SYNTACTIC_PROPOSAL_SOURCE_REFERENCE =
 
 /** Reads exact Git content and revisions independently of the public read projection. */
 function notebook(dataRoot: string, workspaceId = DEMO_WORKSPACE_ID): KnowledgeNotebook {
-  return new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
-  });
+  return readTestWorkspaceNotebookSelection(dataRoot, workspaceId).notebook;
 }
 
 /** Imports a healthy notebook, captures actual Sources, then publishes test-owned page or validation-fault bytes. */
@@ -83,7 +84,6 @@ async function importedStore(
   });
   const workspaceDb = openWorkspaceDb(dataRoot, demo.workspace.id);
   applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-  const owner = notebook(dataRoot);
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
   const requestActor = { kind: 'local' as const, userId: actor.id };
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
@@ -105,7 +105,9 @@ async function importedStore(
               store,
               coreDb,
               workspaceDb,
-              notebook: owner,
+              notebook: notebook(dataRoot),
+              scopeSchemaText: readTestWorkspaceNotebookSelection(dataRoot, demo.workspace.id)
+                .scopeSchemaText,
               actor,
               requestActor,
               runtimeConfigManager: { current: () => snapshot },
@@ -113,7 +115,7 @@ async function importedStore(
               request: {
                 workspaceId: demo.workspace.id,
                 requestId: sourceRequestId,
-                baseRevision: owner.publishedRevision(),
+                baseRevision: notebook(dataRoot).publishedRevision(),
                 changes: [],
                 summary: 'Capture the actual fixture Source.',
               },
@@ -129,6 +131,7 @@ async function importedStore(
   }
   const files = notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: entries })
     .initialNotebookFiles!;
+  const owner = notebook(dataRoot);
   const baseRevision = owner.publishedRevision();
   const candidateRevision = owner.prepare({
     baseRevision,
@@ -144,7 +147,7 @@ async function importedStore(
       sourceReferences: [],
     },
   });
-  owner.publish({ baseRevision, candidateRevision });
+  corruptTestWorkspaceNotebookCommit(dataRoot, demo.workspace.id, candidateRevision);
   return store;
 }
 
@@ -281,7 +284,9 @@ describe('Knowledge proposal decision lineage', () => {
                 store,
                 coreDb,
                 workspaceDb,
-                notebook: owner,
+                notebook: notebook(dataRoot, foreignWorkspace.id),
+                scopeSchemaText: readTestWorkspaceNotebookSelection(dataRoot, foreignWorkspace.id)
+                  .scopeSchemaText,
                 actor,
                 requestActor,
                 runtimeConfigManager: { current: () => snapshot },
@@ -310,7 +315,7 @@ describe('Knowledge proposal decision lineage', () => {
       sourceReference,
       'Foreign Workspace knowledge.'
     ).replace(DEMO_WORKSPACE_ID, foreignWorkspace.id);
-    const proposal = store.createKnowledgeProposal({
+    const proposal = await store.createKnowledgeProposal({
       createdAt: '2026-07-19T00:00:00.000Z',
       requestId: '00000000-0000-4000-8000-000000000115',
       workspaceId: foreignWorkspace.id,
@@ -336,20 +341,7 @@ describe('Knowledge proposal decision lineage', () => {
               decision: 'rejected',
               baseRevision: proposal.baseRevision,
               candidateRevision: proposal.candidateRevision,
-              proposalDigest: `sha256:${createHash('sha256')
-                .update(
-                  readFileSync(
-                    join(
-                      dataRoot,
-                      'workspaces',
-                      foreignWorkspace.id,
-                      'knowledge',
-                      'proposals',
-                      `${proposal.id}.md`
-                    )
-                  )
-                )
-                .digest('hex')}`,
+              proposalDigest: store.knowledgeProposalDigest(foreignWorkspace.id, proposal.id),
               requestId: '00000000-0000-4000-8000-000000000116',
             }),
             headers: { 'content-type': 'application/json' },
@@ -486,7 +478,7 @@ describe('Knowledge Store save-time validation', () => {
 
       expect(updateResponse.status, await updateResponse.clone().text()).toBe(400);
       await expect(updateResponse.json()).resolves.toMatchObject({ code: 'invalid_request' });
-      expect(owner.publishedRevision()).toBe(baseRevision);
+      expect(notebook(dataRoot).publishedRevision()).toBe(baseRevision);
       expect(owner.readRevision(baseRevision).files[`${pageId}.md`]).toBe(activePageBytes);
     } finally {
       coreDb.sqlite.close();
@@ -548,7 +540,12 @@ describe('Knowledge Manager answer operation', () => {
     };
     const book = notebook(dataRoot);
     const pointerBytes = book.readSourcePointers(book.publishedRevision())[registered.source.id]!;
-    const pointer = parseSourcePointer(owner, registered.source.id, pointerBytes);
+    const pointer = parseSourcePointer(
+      owner,
+      registered.source.id,
+      pointerBytes,
+      readTestWorkspaceNotebookSelection(dataRoot, DEMO_WORKSPACE_ID)
+    );
     expect({ ...pointer.source, workspaceId: DEMO_WORKSPACE_ID }).toEqual(registered.source);
     expect(pointer.fields).toMatchObject({
       byteLength: Buffer.byteLength(sourceContent),
@@ -739,7 +736,7 @@ describe('Knowledge Manager answer operation', () => {
         sourceReferences: [],
       },
     });
-    importedNotebook.publish({ baseRevision: importedRevision, candidateRevision });
+    corruptTestWorkspaceNotebookCommit(dataRoot, DEMO_WORKSPACE_ID, candidateRevision);
     const app = createApp({ coreDb, dataRoot, store });
     try {
       const workspaceRoot = join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID);
@@ -801,7 +798,7 @@ describe('Knowledge Manager answer operation', () => {
       expect(existsSync(join(workspaceRoot, 'indexes', 'knowledge-fts.json'))).toBe(false);
       expect(existsSync(join(workspaceRoot, 'indexes', 'search.json'))).toBe(false);
       // Established pointer loss is storage corruption, distinct from a never-admitted reference.
-      const revision = importedNotebook.publishedRevision();
+      const revision = notebook(dataRoot).publishedRevision();
       const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
       const object = execFileSync(
         'git',
@@ -813,7 +810,7 @@ describe('Knowledge Manager answer operation', () => {
       expect(() =>
         rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: DEMO_WORKSPACE_ID })
       ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
-      expect(importedNotebook.publishedRevision()).toBe(revision);
+      expect(notebook(dataRoot).publishedRevision()).toBe(revision);
       expect(existsSync(objectPath)).toBe(false);
     } finally {
       coreDb.sqlite.close();
@@ -2076,11 +2073,22 @@ describe('Knowledge Manager answer operation', () => {
   it('redacts unexpected Knowledge Manager failures', async () => {
     const unsafeMessage =
       'ENOENT /Users/private/openkit-data/knowledge/pages/secret.md token=private-secret';
-    const readStore = await createDemoStore();
+    const readRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-read-redaction-'));
+    const readStore = await createDemoStore({ dataRoot: readRoot });
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(readRoot, { recursive: true, force: true });
+    });
     vi.spyOn(readStore, 'listKnowledge').mockImplementation(() => {
       throw new Error(unsafeMessage);
     });
     const readApp = createAppWithWorkspaceAuthority({ store: readStore });
+    // The native context owner bypasses the former RAM page snapshot. Fault its
+    // actual operation dependency; the HTTP boundary must still redact the same error.
+    const contextFailure = vi
+      .spyOn(knowledgeManager, 'prepareKnowledgeContext')
+      .mockRejectedValue(new Error(unsafeMessage));
+    onTestFinished(() => contextFailure.mockRestore());
     const readCases = [
       {
         id: 'knowledge.context.prepare',
@@ -2121,13 +2129,18 @@ describe('Knowledge Manager answer operation', () => {
       expect(text).not.toContain('private-secret');
     }
 
+    contextFailure.mockRestore();
+
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-proposal-redaction-'));
     const proposalStore = await createDemoStore({ dataRoot });
+    // The native draft uses prepared SQL publication; this case faults the actual
+    // Knowledge Manager result projection and retains its exact HTTP redaction oracle.
     const proposalFailure = vi
-      .spyOn(proposalStore, 'createKnowledgeProposal')
+      .spyOn(knowledgeManager, 'draftKnowledgeProposal')
       .mockImplementation(() => {
         throw new Error(unsafeMessage);
       });
+    onTestFinished(() => proposalFailure.mockRestore());
     const proposalCoreDb = openCoreDb(dataRoot);
     applyMigrations(proposalCoreDb);
     authorizeDemoWorkspace(proposalCoreDb);
@@ -2178,7 +2191,7 @@ describe('Knowledge Manager answer operation', () => {
           }
         )
       );
-      expect(proposalFailure).toHaveBeenCalledTimes(1);
+      expect(proposalFailure, await proposalResponse.clone().text()).toHaveBeenCalledTimes(1);
       expect(proposalResponse.status, await proposalResponse.clone().text()).toBe(500);
       const proposalText = await proposalResponse.text();
       expect(JSON.parse(proposalText)).toMatchObject({

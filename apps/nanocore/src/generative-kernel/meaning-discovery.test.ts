@@ -8,12 +8,10 @@ import { applyEdits, modify } from 'jsonc-parser';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import type { OperationInvocationContext } from '../operation-contract.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
@@ -24,6 +22,9 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import { corruptTestWorkspaceNotebookCommit } from '../test-support/workspace-notebook-corruption.js';
+import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -62,9 +63,6 @@ async function fixture() {
     inflightCommands: new WeakMap(),
     workspaceMutationAdmission: new WorkspaceMutationAdmission(),
   });
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
   onTestFinished(async () => {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
@@ -81,25 +79,19 @@ async function fixture() {
     context,
     command,
     invoke,
-    notebook,
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
   };
 }
 
 /** Publish genuine governed page bytes; exact content pins come from the external owner. */
-function publish(f: Awaited<ReturnType<typeof fixture>>, content: string) {
-  const baseRevision = f.notebook.publishedRevision();
-  const candidateRevision = f.notebook.prepare({
-    baseRevision,
+async function publish(f: Awaited<ReturnType<typeof fixture>>, content: string) {
+  await publishTestWorkspaceNotebook({
+    ...f,
+    workspaceId: f.workspace.id,
     changes: { 'domain.md': content },
-    metadata: {
-      summary: 'Publish domain meaning',
-      producer: f.actor,
-      authority: { kind: 'direct', instructionReference: 'test:app-meaning' },
-      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(content) },
-      sourceReferences: [],
-    },
   });
-  f.notebook.publish({ baseRevision, candidateRevision });
   const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: f.ownerScope });
   return formatReferenceUri(
     { scopeId: `page/workspace/${f.workspace.id}/${knowledgeBaseId}`, objectId: 'domain' },
@@ -150,7 +142,7 @@ describe('native Light App meaning discovery', () => {
   it('returns exact published page and Skill versions after both current targets advance', async () => {
     const f = await fixture();
     const content = page(f);
-    const pageReference = publish(f, content);
+    const pageReference = await publish(f, content);
     const skillContent =
       '---\nname: domain\ndescription: Interpret case state.\n---\nOriginal procedure.\n';
     const skillInput = {
@@ -186,7 +178,7 @@ describe('native Light App meaning discovery', () => {
       ],
     };
     expect.soft(await f.invoke('kernel.apps.get', selector, f.context)).toEqual(expected);
-    publish(f, content.replace('Original domain meaning.', 'Later domain meaning.'));
+    await publish(f, content.replace('Original domain meaning.', 'Later domain meaning.'));
     importWorkspaceSkill({
       ...skillInput,
       id: first.version.entryId,
@@ -208,7 +200,7 @@ describe('native Light App meaning discovery', () => {
   it('reports current denial, wrong scope and unsupported targets without blocking retained app records', async () => {
     const f = await fixture();
     const content = page(f);
-    const pageReference = publish(f, content);
+    const pageReference = await publish(f, content);
     const references = [
       pageReference,
       pageReference.replace(f.workspace.id, allocateEntityId('ws')),
@@ -221,7 +213,7 @@ describe('native Light App meaning discovery', () => {
     ];
     const app = await createApp(f, references);
     const record = await createRecord(f.command(), app.appId, 'cases', 1, { state: 'Open' });
-    publish(
+    await publish(
       f,
       updateOkfFrontmatter({ path: 'domain.md', content, updates: { sensitivity: 'confidential' } })
     );
@@ -291,7 +283,30 @@ describe('native Light App meaning discovery', () => {
       content: material,
     });
     const content = page(f, [`source:${source.id}@${digest(material)}`]);
-    const reference = publish(f, content);
+    await publish(f, page(f));
+    // Shared publication correctly rejects this private Source. Inject retained-content
+    // corruption explicitly so the native read owner still proves both audience outcomes.
+    const notebook = f.notebook;
+    const candidateRevision = notebook.prepare({
+      baseRevision: notebook.publishedRevision(),
+      changes: { 'domain.md': content },
+      metadata: {
+        summary: 'Retained private Source boundary fault',
+        producer: f.actor,
+        authority: { kind: 'direct', instructionReference: 'test:retained-private-source-fault' },
+        changeRequest: { requestId: randomUUID(), inputDigest: digest(content) },
+        sourceReferences: [],
+      },
+    });
+    corruptTestWorkspaceNotebookCommit(f.dataRoot, f.workspace.id, candidateRevision);
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: f.ownerScope,
+    });
+    const reference = formatReferenceUri(
+      { scopeId: `page/workspace/${f.workspace.id}/${knowledgeBaseId}`, objectId: 'domain' },
+      digest(content)
+    );
     const app = await createApp(f, [reference]);
     const selector = { workspaceId: f.workspace.id, appId: app.appId };
     expect
@@ -400,7 +415,7 @@ describe('native Light App meaning discovery', () => {
       content: material,
     });
     const content = page(f, [`source:${source.id}@${digest(material)}`]);
-    const reference = publish(f, content);
+    const reference = await publish(f, content);
     const app = await createApp(f, [reference]);
     const configDirectory = join(f.dataRoot, 'workspaces', f.workspace.id, 'config');
     mkdirSync(configDirectory, { recursive: true });
