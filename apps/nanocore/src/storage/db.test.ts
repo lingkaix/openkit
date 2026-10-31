@@ -32,6 +32,7 @@ import {
   openCoreDbWithIntegrityCheck,
   openExistingCoreDbWithIntegrityCheck,
   openUserDb,
+  openUserReadDb,
   openWorkspaceDb,
   openWorkspaceDbAtRoot,
   openWorkspaceReadDb,
@@ -116,6 +117,55 @@ function initializeWorkspaceKnowledgePredecessor(dataRoot: string, workspaceId: 
 }
 
 describe('scoped storage databases', () => {
+  it('opens only the canonical physical User reader scope', () => {
+    const root = createDataRoot();
+    const linkedFileRoot = createDataRoot();
+    const linkedAncestorRoot = createDataRoot();
+    const userId = 'usr_00000000-0000-700b-b58e-9990ce93a2d2';
+    const path = userDbPath(root, userId);
+    try {
+      const writer = openUserDb(root, userId);
+      try {
+        writer.sqlite.exec(
+          "CREATE TABLE user_reader_marker (value TEXT NOT NULL); INSERT INTO user_reader_marker VALUES ('canonical')"
+        );
+      } finally {
+        writer.sqlite.close();
+      }
+      const reader = openUserReadDb(root, userId);
+      try {
+        expect(reader).toMatchObject({ scope: 'user', dataRoot: root, userId });
+        expect(reader.sqlite.readonly).toBe(true);
+        expect(reader.sqlite.pragma('query_only', { simple: true })).toBe(1);
+        expect(reader.sqlite.pragma('busy_timeout', { simple: true })).toBe(5);
+        expect(reader.sqlite.prepare('SELECT value FROM user_reader_marker').pluck().get()).toBe(
+          'canonical'
+        );
+      } finally {
+        reader.sqlite.close();
+      }
+
+      const linkedFile = userDbPath(linkedFileRoot, userId);
+      mkdirSync(dirname(linkedFile), { recursive: true });
+      symlinkSync(path, linkedFile, 'file');
+      mkdirSync(join(linkedAncestorRoot, 'users'), { recursive: true });
+      symlinkSync(join(root, 'users', userId), join(linkedAncestorRoot, 'users', userId), 'dir');
+      const readAlias = (dataRoot: string) => {
+        const alias = openUserReadDb(dataRoot, userId);
+        try {
+          return alias.sqlite.prepare('SELECT value FROM user_reader_marker').pluck().get();
+        } finally {
+          alias.sqlite.close();
+        }
+      };
+      expect.soft(() => readAlias(linkedFileRoot)).toThrow();
+      expect.soft(() => readAlias(linkedAncestorRoot)).toThrow();
+    } finally {
+      for (const dataRoot of [root, linkedFileRoot, linkedAncestorRoot])
+        rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('opens an existing Workspace reader as query-only with the bounded Main lock wait', () => {
     const root = createDataRoot();
     const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';

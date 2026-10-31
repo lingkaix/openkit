@@ -192,3 +192,5 @@ Before a prerelease upgrade from actor-scoped Kernel receipts, finish and record
 `artifact-review-follow-up.ts` owns the single closed Artifact Review follow-up codec, including exact content and Material-range proof. Review commands, retained portability and S39 consume that codec without importing Review mutation orchestration.
 
 Native scope close and recovery sealing join the same accepted publication prefix before closing the writer. The lifecycle caller excludes new producers; accepted preparation retains its original outcome, and explicit reopening starts a later writer lifetime.
+
+The User readonly opener verifies the existing database is a regular file under its canonical parent before SQLite opens it. Recovery inventory retains its separate admission boundary; a linked file or ancestor grants no alternate physical scope.

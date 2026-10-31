@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
@@ -228,7 +228,10 @@ export function openUserDb(dataRoot: string, userId: string): UserDb {
  * @returns Read-only, query-only User connection under the existing Main busy policy.
  */
 export function openUserReadDb(dataRoot: string, userId: string): UserDb {
-  const sqlite = openOwnedSqlite(userDbPath(dataRoot, userId), {
+  const path = userDbPath(dataRoot, userId);
+  if (!lstatSync(path).isFile() || realpathSync(dirname(path)) !== dirname(path))
+    throw new Error('User database path is not canonical.');
+  const sqlite = openOwnedSqlite(path, {
     readonly: true,
     fileMustExist: true,
   });
