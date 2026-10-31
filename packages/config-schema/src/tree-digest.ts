@@ -118,8 +118,11 @@ function walkTree(
       collected.push({ kind: 0, path: relative });
     }
     const depth = relative.length === 0 ? 0 : relative.split('/').length;
-    if (depth >= (bounds.maxDepth ?? DEFAULT_BOUNDS.maxDepth ?? 32)) {
-      throw new Error(`Resource tree exceeds ${bounds.maxDepth ?? 32} directory levels.`);
+    // `maxDepth` is inclusive, matching `validateTreePath`, so both input forms admit
+    // exactly this many directory levels and refuse one more.
+    const maxDepth = bounds.maxDepth ?? DEFAULT_BOUNDS.maxDepth ?? 32;
+    if (depth > maxDepth) {
+      throw new Error(`Resource tree exceeds ${maxDepth} directory levels.`);
     }
     for (const name of readdirSync(absolute).sort()) {
       if (name === GIT_SEGMENT) {

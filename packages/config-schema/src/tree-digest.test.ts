@@ -122,4 +122,29 @@ describe('openkit-tree-v1', () => {
       hashOpenKitTreeEntries([{ content: Buffer.from('x'), kind: 1, path: 'foo/.git/config' }])
     ).toThrow(/\.git/);
   });
+
+  it('admits exactly 32 directory levels and refuses 33 in an entry list', () => {
+    const depth32 = Array.from({ length: 32 }, (_, index) => `d${index}`).join('/');
+    expect(hashOpenKitTreeEntries([{ kind: 0, path: depth32 }])).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(() => hashOpenKitTreeEntries([{ kind: 0, path: `${depth32}/d32` }])).toThrow(
+      /32 directory levels/
+    );
+  });
+
+  it('admits exactly 32 directory levels and refuses 33 while walking a filesystem tree', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-depth-'));
+    try {
+      const depth32 = Array.from({ length: 32 }, (_, index) => `d${index}`).join('/');
+      mkdirSync(join(root, depth32), { recursive: true });
+      expect(collectBoundedTree(root).map((entry) => entry.path)).toEqual(
+        Array.from({ length: 32 }, (_, index) =>
+          Array.from({ length: index + 1 }, (_, inner) => `d${inner}`).join('/')
+        )
+      );
+      mkdirSync(join(root, depth32, 'd32'));
+      expect(() => collectBoundedTree(root)).toThrow(/32 directory levels/);
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
 });

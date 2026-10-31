@@ -68,7 +68,7 @@ The session workspace planner consumes the pure Worker protocol path projection 
 
 Optional `server.jsonc.appUpdate` fixes one SSH host, user, port, identity file and known-hosts file. It is deployment configuration requiring App restart, not a Workspace capability or editable request destination. NanoCore checks that the protected files remain outside Data Root; host installation owns the forced command and fixed deployment target.
 
-[`src/tree-digest.ts`](src/tree-digest.ts) owns openkit-tree-v1 framing and validation; its path ordering uses unsigned UTF-8 byte comparison through Node Buffer.compare, not locale or UTF-16 ordering.
+[`src/tree-digest.ts`](src/tree-digest.ts) owns openkit-tree-v1 framing and validation; its path ordering uses unsigned UTF-8 byte comparison through Node Buffer.compare, not locale or UTF-16 ordering. `OpenKitTreeBounds.maxDepth` counts directory levels inclusively, so a filesystem walk and an entry list both admit exactly 32 levels and refuse 33.
 
 AEP `observability.captureCoverage` uses the shared Worker protocol schema as a required admission-bound pair without a default. Runtime construction reads the persisted Turn setting; the shim never resolves configuration precedence. `openkit.work-observations.v1` registers the observation family for explicit reader support and portable reference handling, independently of optional full runtime provenance.
 
