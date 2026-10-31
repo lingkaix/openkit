@@ -1170,7 +1170,12 @@ describe('thread dashboard app API', () => {
   });
 
   it('returns product work status for the thread workbench', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-http-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Routed worker thread'
@@ -1213,6 +1218,8 @@ describe('thread dashboard app API', () => {
       completedAt: timestamp,
     });
     await store.updateTurn(approvalTurn.id, { agentId: 'agent_codex_host' });
+    // Retained pending requests can outlive their producer; native Threads admit one active Turn.
+    await store.completeTurn(approvalTurn.id, { status: 'completed', completedAt: timestamp });
     const questionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
@@ -1308,9 +1315,10 @@ describe('thread dashboard app API', () => {
       itemLog: { href: '/api/app/operations/thread.items' },
       taskInputs: [],
       pendingRequests: [],
+      // Native admission records capture-off; unknown belongs to imported history without evidence.
       runtimeActivity: [approvalTurn, questionTurn].map((turn) => ({
         turnId: turn.id,
-        contentCapture: 'unknown',
+        contentCapture: 'off',
         coverage: 'unavailable',
         entries: [],
         omittedEntryCount: 0,
@@ -1319,7 +1327,12 @@ describe('thread dashboard app API', () => {
   });
 
   it('does not count ungated or duplicate-question decision items', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-http-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Invalid decision items'
@@ -1359,6 +1372,10 @@ describe('thread dashboard app API', () => {
       kind: approval.kind,
       createdAt: timestamp,
       completedAt: timestamp,
+    });
+    await store.completeTurn(approvalTurn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
     });
     const duplicateTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',

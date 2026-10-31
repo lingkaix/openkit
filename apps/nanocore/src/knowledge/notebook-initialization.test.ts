@@ -5,17 +5,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RequestIdSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { createTestStore } from '../test-support/store.js';
-import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
+import { closeTestCoreDb, createTestStore, createTestWorkspaceDb } from '../test-support/store.js';
+import { DEFAULT_NOTEBOOK_INDEX } from './notebook.js';
 import { initializeWorkspaceNotebook } from './notebook-initialization.js';
+import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseScopeKnowledgeSchema } from './okf.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const producer = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
+const knowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
 
 /** Actual fresh-scope database and bare Git; the caller owns this unpublished staging directory. */
 function fixture() {
@@ -30,6 +33,7 @@ function fixture() {
     instructionReference: 'creation:test',
   };
   const revalidate = vi.fn(() => ({
+    pageScopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`,
     scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
     reviewRequiredPageIds: [] as string[],
     registeredSources: new Map<string, string | null>(),
@@ -37,15 +41,16 @@ function fixture() {
   }));
   const input = { workspaceRoot, workspaceId, workspaceDb, initialization, revalidate };
   onTestFinished(async () => {
-    workspaceDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
+    workspaceDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {
     ...input,
     repositoryPath,
     initialize: () => initializeWorkspaceNotebook(input),
-    notebook: () => new KnowledgeNotebook({ repositoryPath }),
+    notebook: () =>
+      readWorkspaceNotebookSelection({ workspaceDb, workspaceRoot, knowledgeBaseId }).notebook,
     rows: () =>
       workspaceDb.sqlite
         .prepare(
@@ -66,9 +71,22 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
     const creationStarted = Date.now();
     const workspace = await store.createWorkspace('Empty service seed');
     const creationFinished = Date.now();
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-    });
+    const notebookFor = (id: string) => {
+      const db = createTestWorkspaceDb(dataRoot, id);
+      try {
+        return readWorkspaceNotebookSelection({
+          workspaceDb: db,
+          workspaceRoot: join(dataRoot, 'workspaces', id),
+          knowledgeBaseId: readDefaultKnowledgeBaseId({
+            dataRoot,
+            scope: { kind: 'workspace', workspaceId: id },
+          }),
+        }).notebook;
+      } finally {
+        closeTestCoreDb(db);
+      }
+    };
+    const notebook = notebookFor(workspace.id);
     const revision = notebook.publishedRevision();
     const retained = notebook.readRevision(revision);
     const schemaPath = join(
@@ -146,9 +164,7 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
       workspaceDb.sqlite.close();
     }
     const second = await store.createWorkspace('Another empty service seed');
-    const secondNotebook = new KnowledgeNotebook({
-      repositoryPath: join(dataRoot, 'workspaces', second.id, 'knowledge', 'notebook.git'),
-    });
+    const secondNotebook = notebookFor(second.id);
     expect(
       secondNotebook.readRevision(secondNotebook.publishedRevision()).metadata.changeRequest
         .requestId
@@ -158,29 +174,27 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
       producer,
       instructionReference: 'workspace.create:actual-user',
     });
-    const explicitNotebook = new KnowledgeNotebook({
-      repositoryPath: join(dataRoot, 'workspaces', explicit.id, 'knowledge', 'notebook.git'),
-    });
+    const explicitNotebook = notebookFor(explicit.id);
     expect(
       explicitNotebook.readRevision(explicitNotebook.publishedRevision()).metadata.producer
     ).toEqual(producer);
   });
 
-  it('preserves supplied schema metadata and authored bytes during fresh initialization', () => {
+  it('preserves supplied schema metadata and authored bytes during fresh initialization', async () => {
     const f = fixture();
     const schemaText = `${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT}maintainer: Imported author\ncreated_at: "2020-01-01T00:00:00.000Z"\nupdated_at: "2021-01-01T00:00:00.000Z"\n# Exact imported schema annotation.\n`;
     f.revalidate.mockReturnValue({ ...f.revalidate(), scopeSchemaText: schemaText });
-    f.initialize();
+    await f.initialize();
     expect(
       readFileSync(join(f.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')
     ).toBe(schemaText);
   });
 
-  it('creates initial root navigation from imported files and preserves valid reserved bytes', () => {
+  it('creates initial root navigation from imported files and preserves valid reserved bytes', async () => {
     const f = fixture();
     const topicIndex = '# Topic\n\nKeep authored navigation.\n';
     const topicLog = '# Topic history\n\n## 2026-10-16\n* Keep authored history.\n';
-    const revision = initializeWorkspaceNotebook({
+    const revision = await initializeWorkspaceNotebook({
       ...f,
       files: {
         'topic/index.md': topicIndex,
@@ -200,15 +214,17 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
       name: 'horizontal rule',
       body: '----\n# Human navigation\n\nKeep every original body byte.\n',
     },
-  ])('adds only the required version block to a fresh body-only root index ($name)', ({ body }) => {
+  ])('adds only the required version block to a fresh body-only root index ($name)', async ({
+    body,
+  }) => {
     const f = fixture();
-    const revision = initializeWorkspaceNotebook({ ...f, files: { 'index.md': body } });
+    const revision = await initializeWorkspaceNotebook({ ...f, files: { 'index.md': body } });
     expect(f.notebook().readRevision(revision).files['index.md']).toBe(
       `---\nokf_version: "0.2"\n---\n${body}`
     );
   });
 
-  it('refuses service attribution for authored initial content before creating Git or Audit evidence', () => {
+  it('refuses service attribution for authored initial content before creating Git or Audit evidence', async () => {
     for (const files of [
       { 'index.md': '---\nokf_version: "0.2"\n---\n# Authored navigation\n' },
       {
@@ -233,7 +249,7 @@ User-authored note.
       },
     ]) {
       const f = fixture();
-      expect(() =>
+      await expect(
         initializeWorkspaceNotebook({
           ...f,
           files,
@@ -243,7 +259,7 @@ User-authored note.
             instructionReference: 'workspace.create:empty-notebook-seed',
           },
         })
-      ).toThrow('Notebook invalid request.');
+      ).rejects.toThrow('Notebook invalid request.');
       expect(existsSync(f.repositoryPath)).toBe(false);
       expect(f.rows()).toEqual([]);
     }
@@ -283,9 +299,9 @@ User-authored note.
     expect(target.listWorkspaces()).toEqual([]);
   });
 
-  it('publishes one parentless revision with exact responsible actor and both Audit facts', () => {
+  it('publishes one parentless revision with exact responsible actor and both Audit facts', async () => {
     const f = fixture();
-    const revision = f.initialize();
+    const revision = await f.initialize();
     const retained = f.notebook().readRevision(revision);
     expect(retained.parentRevision).toBeNull();
     expect(retained.metadata).toMatchObject({
@@ -308,18 +324,21 @@ User-authored note.
         inputDigest: retained.metadata.changeRequest.inputDigest,
       });
     expect(f.notebook().publishedRevision()).toBe(revision);
-    expect(f.revalidate).toHaveBeenCalledTimes(2);
-    expect(() => f.initialize()).toThrow();
+    expect(f.revalidate).toHaveBeenCalledTimes(3);
+    await expect(f.initialize()).rejects.toThrow();
     expect(f.notebook().publishedRevision()).toBe(revision);
     expect(f.rows()).toHaveLength(2);
   });
 
-  it('refuses publication when required admission Audit fails', () => {
+  it('refuses publication when required admission Audit fails', async () => {
     const f = fixture();
     f.workspaceDb.sqlite.exec(
       "CREATE TRIGGER fail_notebook_admission BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.admit' BEGIN SELECT RAISE(ABORT, 'admission fault'); END"
     );
-    expect(f.initialize).toThrow('admission fault');
+    await expect(f.initialize()).rejects.toMatchObject({
+      code: 'migration_failed',
+      message: expect.stringContaining('SQLITE_CONSTRAINT_TRIGGER'),
+    });
     expect(f.rows()).toEqual([]);
     expect(() => f.notebook().publishedRevision()).toThrow();
     const refs = execFileSync(
@@ -334,24 +353,27 @@ User-authored note.
     expect(refs).toBe('');
   });
 
-  it('does not fabricate completion after a post-ref Audit fault', () => {
+  it('does not fabricate completion after a post-ref Audit fault', async () => {
     const f = fixture();
     f.workspaceDb.sqlite.exec(
       "CREATE TRIGGER fail_notebook_completion BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.initialize' BEGIN SELECT RAISE(ABORT, 'completion fault'); END"
     );
-    expect(f.initialize).toThrow('completion fault');
-    expect(f.notebook().publishedRevision()).toBe(
-      f.rows().map(({ evidence }) => JSON.parse(evidence))[0].candidateRevision
-    );
-    expect(f.rows().map(({ action }) => action)).toEqual(['knowledge.notebook.admit']);
-    expect(() => f.initialize()).toThrow();
-    expect(f.rows()).toHaveLength(1);
+    // SQL selection and both Audits now commit together; no legacy partial ref is authority.
+    await expect(f.initialize()).rejects.toMatchObject({
+      code: 'migration_failed',
+      message: expect.stringContaining('SQLITE_CONSTRAINT_TRIGGER'),
+    });
+    expect(() => f.notebook().publishedRevision()).toThrow();
+    expect(f.rows().map(({ action }) => action)).toEqual([]);
+    await expect(f.initialize()).rejects.toThrow();
+    expect(f.rows()).toHaveLength(0);
   });
 
-  it('rechecks current creation authority before publishing the first ref', () => {
+  it('rechecks current creation authority before publishing the first ref', async () => {
     const f = fixture();
     f.revalidate
       .mockImplementationOnce(() => ({
+        pageScopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`,
         scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
         reviewRequiredPageIds: [] as string[],
         registeredSources: new Map(),
@@ -360,7 +382,7 @@ User-authored note.
       .mockImplementationOnce(() => {
         throw new Error('creation authority revoked');
       });
-    expect(f.initialize).toThrow('creation authority revoked');
+    await expect(f.initialize()).rejects.toThrow('creation authority revoked');
     expect(f.rows()).toEqual([]);
     expect(() => f.notebook().publishedRevision()).toThrow();
   });

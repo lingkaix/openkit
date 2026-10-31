@@ -13,6 +13,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { FsStore } from '../lib/store.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
@@ -79,6 +80,9 @@ async function retainCompletedTaskFixture(
     'goal_plan_versions',
     'goal_card_tasks',
     'task_turn_terminal_facts',
+    // Retained Git/schema bytes must keep their exact native SQL selection and Proposal lineage.
+    'knowledge_notebook_heads',
+    'knowledge_notebook_proposals',
     'pending_requests',
     'worker_turn_checkpoints',
     'idempotency_requests',
@@ -97,6 +101,8 @@ async function retainCompletedTaskFixture(
   const workspaceRoot = join(dataRoot, 'workspaces', db.workspaceId);
   const retainedRoot = join(dataRoot, `.fixture-history-${randomUUID()}`);
   db.sqlite.close();
+  // Loading the retained records reopened native readers; stop them before replacing this inode.
+  closeWorkspaceProductReadHandles(dataRoot);
   renameSync(workspaceRoot, retainedRoot);
   try {
     await store.importWorkspaceSnapshot({

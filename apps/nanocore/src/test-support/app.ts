@@ -127,6 +127,7 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
 const workspaceAuthorityFixtures: Array<{
   coreDb: ReturnType<typeof openCoreDb>;
   dataRoot: string;
+  ownsRoot: boolean;
 }> = [];
 
 afterEach(async () => {
@@ -134,7 +135,7 @@ afterEach(async () => {
   fixtureNativeOwner = undefined;
   for (const fixture of workspaceAuthorityFixtures.splice(0)) {
     if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
-    rmSync(fixture.dataRoot, { recursive: true, force: true });
+    if (fixture.ownsRoot) rmSync(fixture.dataRoot, { recursive: true, force: true });
   }
 });
 
@@ -143,9 +144,12 @@ export function createAppWithWorkspaceAuthority(
   options: CreateAppOptions = {}
 ): ReturnType<typeof createNanoCoreApp> {
   if (options.coreDb || options.mode === 'server' || !options.store) return createApp(options);
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-test-workspace-authority-'));
+  // A file-backed Store already owns its prepared Workspace scopes. Keep Core relationships
+  // in that exact root; a second empty root cannot stand in for native Knowledge authority.
+  const storeRoot = options.store.getDataRoot();
+  const dataRoot = storeRoot ?? mkdtempSync(join(tmpdir(), 'openkit-test-workspace-authority-'));
   const coreDb = openCoreDb(dataRoot);
-  workspaceAuthorityFixtures.push({ coreDb, dataRoot });
+  workspaceAuthorityFixtures.push({ coreDb, dataRoot, ownsRoot: !storeRoot });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   for (const workspace of options.store.listWorkspaces()) {

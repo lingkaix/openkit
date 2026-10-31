@@ -10,6 +10,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
 import { recordTestAgentEnvironmentPackage as recordBaseTestAgentEnvironmentPackage } from '../test-support/agent-environment';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import {
@@ -41,10 +42,11 @@ import {
 import { listBackendWorkspaceHandles } from './workspace-sync-records.js';
 
 /** Creates an isolated migrated Core database for scheduler maintenance tests. */
-function createMigratedCoreDb() {
+async function createMigratedCoreDb() {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-maintenance-')));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  await createDemoStore({ dataRoot: coreDb.dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -322,7 +324,7 @@ function expectUnprovedWorkspaceReconciliation(
 
 describe('scheduler lease maintenance service', () => {
   it('records workspace reconciliation triggers for stale Native attempts with pending backend handles', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
@@ -360,7 +362,7 @@ describe('scheduler lease maintenance service', () => {
   });
 
   it('opens the owner-independent workspace for a non-local scheduler admission', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const triggerActor = {
       kind: 'automation',
@@ -404,7 +406,7 @@ describe('scheduler lease maintenance service', () => {
   });
 
   it('rejects workspace recovery when the package trigger actor differs from admission', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const errors: unknown[] = [];
 
@@ -457,7 +459,7 @@ describe('scheduler lease maintenance service', () => {
   });
 
   it('preserves closing exclusion after physical cleanup without terminal barrier proof', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
@@ -496,7 +498,7 @@ describe('scheduler lease maintenance service', () => {
   });
 
   it('converges recovery explicitly for an AEP with no workspace inputs', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
@@ -540,7 +542,7 @@ describe('scheduler lease maintenance service', () => {
   });
 
   it('keeps recovery retryable until every AEP workspace input has a handle', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
@@ -607,7 +609,7 @@ describe('scheduler lease maintenance service', () => {
   });
 
   it('does not reinterpret retained handles as pending scheduler cleanup', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
@@ -672,7 +674,7 @@ describe('scheduler lease maintenance service', () => {
   });
 
   it('preserves closing exclusion when finalization times out before backend cleanup', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {

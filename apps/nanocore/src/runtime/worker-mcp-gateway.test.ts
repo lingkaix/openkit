@@ -8,8 +8,10 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
 import { mcpToolSchemaContentDigest } from './mcp-tool-schema-snapshots.js';
 import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
@@ -17,7 +19,7 @@ import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
 describe('worker MCP gateway', () => {
   it('sends exactly one SDK bearer Authorization value over a mixed-case fixed header', async () => {
     const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = httpTestServer(upstream.url, 2_000);
     server.transport = {
       kind: 'http',
@@ -43,6 +45,7 @@ describe('worker MCP gateway', () => {
       ).toBe('inactive');
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(coreDb.dataRoot, { force: true, recursive: true });
       await upstream.close();
@@ -54,7 +57,7 @@ describe('worker MCP gateway', () => {
     'X-API-Key',
   ])('replaces a mixed-case ordinary %s header with exact raw Vault bytes', async (name) => {
     const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = httpTestServer(upstream.url, 2_000);
     server.transport = {
       kind: 'http',
@@ -75,6 +78,7 @@ describe('worker MCP gateway', () => {
       ).toBe(true);
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(coreDb.dataRoot, { force: true, recursive: true });
       await upstream.close();
@@ -90,7 +94,7 @@ describe('worker MCP gateway', () => {
     const encoded = new URLSearchParams({ token: canary }).toString().slice('token='.length);
     const echo = form === 'raw' ? canary : form === 'complete' ? `Bearer ${canary}` : encoded;
     const upstream = await createMcpHttpStub({ credentialListEcho: echo });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     try {
       await expect(
         gateway.listTools({
@@ -104,6 +108,7 @@ describe('worker MCP gateway', () => {
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable' });
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(coreDb.dataRoot, { force: true, recursive: true });
       await upstream.close();
@@ -123,7 +128,7 @@ describe('worker MCP gateway', () => {
           ? `Bearer ${canary}`
           : new URLSearchParams({ token: canary }).toString().slice('token='.length);
     const upstream = await createMcpHttpStub({ credentialEcho: echo });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     try {
       for (const message of ['leak', 'key-leak']) {
         await expect(
@@ -152,6 +157,7 @@ describe('worker MCP gateway', () => {
         expect(upstream.observed.every((request) => request.split('|')[1] === canary)).toBe(true);
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(coreDb.dataRoot, { force: true, recursive: true });
       await upstream.close();
@@ -166,7 +172,7 @@ describe('worker MCP gateway', () => {
     'canary ',
   ])('refuses invalid bearer material %j before upstream contact', async (bearer) => {
     const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     try {
       await expect(
         gateway.listTools({
@@ -178,6 +184,7 @@ describe('worker MCP gateway', () => {
       expect(upstream.observed).toEqual([]);
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(coreDb.dataRoot, { force: true, recursive: true });
       await upstream.close();
@@ -200,7 +207,7 @@ describe('worker MCP gateway', () => {
     const address = http.address();
     if (!address || typeof address === 'string')
       throw new Error('Synthetic HTTP server did not bind.');
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     try {
       await expect(
         gateway.listTools({
@@ -215,6 +222,7 @@ describe('worker MCP gateway', () => {
       expect(requests).toEqual([{ authorization: 'Bearer static-auth-canary', url: '/mcp' }]);
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(coreDb.dataRoot, { force: true, recursive: true });
       await new Promise<void>((resolve, reject) =>
@@ -550,7 +558,7 @@ describe('worker MCP gateway', () => {
   });
 
   it('bounds initialization and drains gateway-private stdio stderr', async () => {
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const floodServer = stdioTestServer(2_000);
     const floodCredential = 'flood-enabled-private-value';
 
@@ -573,6 +581,7 @@ describe('worker MCP gateway', () => {
       expect(performance.now() - startedAt).toBeLessThan(6_000);
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -683,7 +692,7 @@ describe('worker MCP gateway', () => {
 
   it('closes a bearer HTTP session instead of health-pinging it', async () => {
     const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const input = {
       credentials: { bearer: 'revoked-private-value' },
       server: httpTestServer(upstream.url, 2_000),
@@ -720,7 +729,7 @@ describe('worker MCP gateway', () => {
 
   it('retains a failed credential HTTP teardown for exact retry', async () => {
     const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const input = {
       credentials: { headers: { authorization: 'retry-private-value' } },
       server: httpTestServer(upstream.url, 2_000),
@@ -760,7 +769,7 @@ describe('worker MCP gateway', () => {
   it('bounds a hanging credential HTTP teardown and retains its retry fence', async () => {
     const upstreamOptions = { hangDelete: true };
     const upstream = await createMcpHttpStub(upstreamOptions);
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const input = {
       credentials: { headers: { authorization: 'bounded-private-value' } },
       server: httpTestServer(upstream.url, 50),
@@ -830,7 +839,7 @@ describe('worker MCP gateway', () => {
 
   it('retains initialization cleanup ownership until an exact retry succeeds', async () => {
     const upstream = await createMcpHttpStub();
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const input = {
       credentials: { headers: { authorization: 'init-retry-private-value' } },
       server: httpTestServer(upstream.url, 2_000),
@@ -903,6 +912,8 @@ describe('worker MCP gateway', () => {
     const pidFile = join(dataRoot, 'descendant.pid');
     const requestFile = join(dataRoot, 'tool-requests');
     const credential = 'stdio-descendant-private-value';
+    await createDemoStore({ dataRoot });
+    await shutdownControlStoreWorkerClient();
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const gateway = createDefaultWorkerMcpGateway(coreDb);
@@ -957,6 +968,7 @@ describe('worker MCP gateway', () => {
     } finally {
       vi.useRealTimers();
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -965,6 +977,8 @@ describe('worker MCP gateway', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-group-refusal-'));
     const pidFile = join(dataRoot, 'descendant.pid');
     const credential = 'stdio-refusal-private-value';
+    await createDemoStore({ dataRoot });
+    await shutdownControlStoreWorkerClient();
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const gateway = createDefaultWorkerMcpGateway(coreDb);
@@ -1020,6 +1034,7 @@ describe('worker MCP gateway', () => {
     } finally {
       killed.mockRestore();
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1027,7 +1042,7 @@ describe('worker MCP gateway', () => {
   it('reaps a credential-bearing descendant when stdio initialization exits', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-init-exit-'));
     const pidFile = join(dataRoot, 'descendant.pid');
-    const { coreDb, gateway } = createAuditedGateway(dataRoot);
+    const { coreDb, gateway } = await createAuditedGateway(dataRoot);
 
     try {
       await expect(
@@ -1047,6 +1062,7 @@ describe('worker MCP gateway', () => {
       await expect(waitForProcessExit(descendantPid)).resolves.toBe(true);
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1054,6 +1070,7 @@ describe('worker MCP gateway', () => {
   it('does not spawn a credential-bearing stdio server when its starting audit fails', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-audit-failure-'));
     const pidFile = join(dataRoot, 'descendant.pid');
+    await createDemoStore({ dataRoot });
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -1085,12 +1102,15 @@ describe('worker MCP gateway', () => {
       expect(existsSync(pidFile)).toBe(false);
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
   it('reaps the stdio server and credential-bearing descendant after NanoCore process death', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-parent-death-'));
+    await createDemoStore({ dataRoot });
+    await shutdownControlStoreWorkerClient();
     const pidFile = join(dataRoot, 'descendant.pid');
     const child = spawn(
       process.execPath,
@@ -1183,7 +1203,7 @@ describe('worker MCP gateway', () => {
 
   it('does not let an idle cleanup terminate a concurrent credential call', async () => {
     const upstream = await createMcpHttpStub({ delayMs: 100 });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = httpTestServer(upstream.url, 2_000);
     const input = { server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
     const call = gateway.callTool({
@@ -1215,7 +1235,7 @@ describe('worker MCP gateway', () => {
       credentialEcho: credential,
       delayedResult: response.promise,
     });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = httpTestServer(upstream.url, 2_000);
     const credentials = { headers: { authorization: credential } };
 
@@ -1264,7 +1284,7 @@ describe('worker MCP gateway', () => {
       credentialEcho: credential,
       delayedResult: response.promise,
     });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = httpTestServer(upstream.url, 2_000);
     const input = {
       credentials: { headers: { authorization: credential } },
@@ -1427,7 +1447,7 @@ describe('worker MCP gateway', () => {
 
   it('retains proven credential materialization on an HTTP protocol error', async () => {
     const upstream = await createMcpHttpStub({ listError: true });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = httpTestServer(upstream.url, 2_000);
 
     try {
@@ -1452,7 +1472,7 @@ describe('worker MCP gateway', () => {
   it('uses gateway-only HTTP credentials and rejects an exact credential echo', async () => {
     const credential = 'Bearer exact-"quoted\\slash';
     const upstream = await createMcpHttpStub({ credentialEcho: credential });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = resolveWorkspaceMcpServer({
       catalog: {
         schemaVersion: 1,
@@ -1526,7 +1546,7 @@ describe('worker MCP gateway', () => {
     const credential = 'query value/+?&=';
     const encoded = new URLSearchParams({ token: credential }).toString().slice('token='.length);
     const upstream = await createMcpHttpStub({ credentialEcho: encoded });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
 
     try {
       await expect(
@@ -1551,7 +1571,7 @@ describe('worker MCP gateway', () => {
   });
 
   it('rejects credentials on a plaintext remote endpoint before transport', async () => {
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = {
       ...resolveWorkspaceMcpServer({
         catalog: {
@@ -1590,6 +1610,7 @@ describe('worker MCP gateway', () => {
       ).rejects.toMatchObject({ code: 'mcp-server-unavailable', upstreamEffect: 'not-contacted' });
     } finally {
       await gateway.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1597,7 +1618,7 @@ describe('worker MCP gateway', () => {
   it('rejects credentials in live tool metadata before returning it', async () => {
     const credential = 'Bearer schema-"quoted\\slash';
     const upstream = await createMcpHttpStub({ credentialListEcho: credential });
-    const { coreDb, gateway } = createAuditedGateway();
+    const { coreDb, gateway } = await createAuditedGateway();
     const server = resolveWorkspaceMcpServer({
       catalog: {
         schemaVersion: 1,
@@ -1637,7 +1658,8 @@ describe('worker MCP gateway', () => {
 });
 
 /** Creates one disposable durable Audit owner for credential-bearing gateway tests. */
-function createAuditedGateway(dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-audit-'))) {
+async function createAuditedGateway(dataRoot = mkdtempSync(join(tmpdir(), 'worker-tool-audit-'))) {
+  await createDemoStore({ dataRoot });
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   return { coreDb, gateway: createDefaultWorkerMcpGateway(coreDb) };

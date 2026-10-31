@@ -8,6 +8,7 @@ import * as storage from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -37,11 +38,12 @@ import {
 } from './worker-backend-sessions.js';
 
 /** Creates real authorized attempts; it supplies no backend acceptance or cleanup proof. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-watch-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -150,7 +152,7 @@ function fixture() {
 // D103 leaves heartbeat, startup and adoption with Native; D111 requires proof before exclusion ends.
 describe('Native attempt liveness and recovery', () => {
   it('identifies real scheduler inspection failure without a native item and continues later stages', async () => {
-    const f = fixture();
+    const f = await fixture();
     const binding = f.seed('scheduler_diagnostic');
     const fault = new Error('/private/scheduler-canary secret-scheduler-canary');
     const inspect = vi.spyOn(f.recovery.executionBackend, 'inspect').mockRejectedValue(fault);
@@ -211,7 +213,7 @@ describe('Native attempt liveness and recovery', () => {
     'native',
     'checkpoints',
   ] as const)('identifies uncaught %s scan-boundary failure with private exceptions', async (boundary) => {
-    const f = fixture();
+    const f = await fixture();
     const fault = new Error('/private/scan-canary secret-scan-canary');
     const scan =
       boundary === 'native'
@@ -267,7 +269,7 @@ describe('Native attempt liveness and recovery', () => {
     'open',
     'closed',
   ] as const)('logs each failed native recovery item with fixed safe diagnostics and exact product correlation: %s', async (phase) => {
-    const f = fixture();
+    const f = await fixture();
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const secret = 'native-maintenance-secret-canary';
     const path = '/private/native-maintenance-path-canary';
@@ -336,7 +338,7 @@ describe('Native attempt liveness and recovery', () => {
   });
 
   it('classifies checkpoints in the same maintenance pass after a real native item failure', async () => {
-    const f = fixture();
+    const f = await fixture();
     const checkpoints = vi.fn(async () => 0);
     const failures: unknown[] = [];
     f.seed('independent_stage', true, true);
@@ -371,7 +373,7 @@ describe('Native attempt liveness and recovery', () => {
   });
 
   it('keeps a pre-heartbeat attempt live until its startup deadline', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const binding = f.seed('materializing', true, true);
       await runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
@@ -414,7 +416,7 @@ describe('Native attempt liveness and recovery', () => {
   });
 
   it('closes proven pre-effect startup work while expired submitted heartbeat authority retains exclusion', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const startup = f.seed('startup', false);
       const heartbeat = f.seed('heartbeat');
@@ -466,7 +468,7 @@ describe('Native attempt liveness and recovery', () => {
   });
 
   it('routes anchored startup timeouts to exact physical recovery without releasing exclusion', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const binding = f.seed('anchored_startup', true, true);
       await expect(
@@ -502,7 +504,7 @@ describe('Native attempt liveness and recovery', () => {
   });
 
   it('retains an awaiting reconnect attempt until its recovery deadline while refusing routes', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const binding = f.seed('awaiting_reconnect', true, true);
       acceptNanoHostAttemptHeartbeat(f.coreDb, {

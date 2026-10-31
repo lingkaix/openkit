@@ -7,7 +7,8 @@ describe('host repository release cutover', () => {
   it('drops retired host records while preserving shared tables and the native ledger', () => {
     const sqlite = new Database(':memory:');
     try {
-      applyNativeScopeMigrations(sqlite, 'workspace');
+      // This raw SQL fixture tests the retired Host tables, not Knowledge activation.
+      applyNativeScopeMigrations(sqlite, 'workspace', undefined, undefined, 'pre-knowledge');
       const setup = readFileSync('drizzle/workspace/0000_setup.sql', 'utf8');
       for (const name of ['workspace_repository_resources', 'git_push_records']) {
         sqlite.exec(`DROP TABLE IF EXISTS ${name}`);
@@ -29,7 +30,7 @@ describe('host repository release cutover', () => {
       const before = tables();
       const beforeLedger = sqlite.prepare('SELECT * FROM __drizzle_migrations').all();
       // Seed the native ledger through its real migration, then verify exact replay and shared ownership.
-      applyNativeScopeMigrations(sqlite, 'workspace');
+      applyNativeScopeMigrations(sqlite, 'workspace', undefined, undefined, 'pre-knowledge');
       expect(tables()).not.toContain('workspace_repository_resources');
       expect(tables()).not.toContain('git_push_records');
       for (const name of before.filter(
@@ -38,7 +39,7 @@ describe('host repository release cutover', () => {
         expect(tables()).toContain(name);
       const ledger = sqlite.prepare('SELECT * FROM __drizzle_migrations').all();
       expect(ledger).toEqual(beforeLedger);
-      applyNativeScopeMigrations(sqlite, 'workspace');
+      applyNativeScopeMigrations(sqlite, 'workspace', undefined, undefined, 'pre-knowledge');
       expect(sqlite.prepare('SELECT * FROM __drizzle_migrations').all()).toEqual(ledger);
     } finally {
       sqlite.close();

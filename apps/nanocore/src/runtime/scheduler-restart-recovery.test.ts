@@ -174,18 +174,20 @@ afterEach(async () => {
   }
 });
 
-/** Keeps SQL-only membership setup while native Demo fixtures defer it until publication. */
-function createMigratedCoreDb(registerDemoMembership = true) {
+/** Publishes native Demo storage before membership; explicit import fixtures retain their own publication. */
+async function createMigratedCoreDb(registerDemoMembership = true) {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-restart-')));
   fixtureDatabases.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  if (registerDemoMembership)
+  if (registerDemoMembership) {
+    await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: LOCAL_USER_ID,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+  }
   return coreDb;
 }
 
@@ -226,7 +228,7 @@ async function createFailedStartFixture(
   finalized = true,
   workspaceInputIds: readonly string[] = []
 ) {
-  const coreDb = createMigratedCoreDb(false);
+  const coreDb = await createMigratedCoreDb(false);
   const dataRoot = coreDb.dataRoot;
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
@@ -768,8 +770,8 @@ function recordRecoverySiblingBinding(
 }
 
 describe('failed-start busy-history proof cost (#164)', () => {
-  it('counts executions of already prepared SQLite reads', () => {
-    const coreDb = createMigratedCoreDb();
+  it('counts executions of already prepared SQLite reads', async () => {
+    const coreDb = await createMigratedCoreDb();
     const cached = coreDb.sqlite.prepare('SELECT 1');
     const counter = countRecoverySqlExecutions(coreDb);
     try {
@@ -2954,7 +2956,7 @@ class RejectRecoveredTurnExecutor implements TurnExecutor {
 
 describe('scheduler restart recovery', () => {
   it('retains a poll-first unknown fence while re-deriving only exact read-only expectations until fresh-ready cleanup', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'result_only_unknown_fence';
     const leaseId = testEntityId('attempt', `lease_${suffix}`);
     const runtimeTargetId = `target_${suffix}`;
@@ -3189,7 +3191,7 @@ describe('scheduler restart recovery', () => {
       'sequence',
       'epoch',
     ] as const) {
-      const coreDb = createMigratedCoreDb();
+      const coreDb = await createMigratedCoreDb();
       try {
         const suffix = `lineage_${mismatch}`;
         const fixture = await prepareReconnectLease(coreDb, suffix);
@@ -3241,7 +3243,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('fails pre-anchor acquired leases and cancels their admission entries', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
 
     try {
       dispatchLease(coreDb, 'prelaunch', { kind: 'user', id: LOCAL_USER_ID }, false);
@@ -3700,7 +3702,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('retains a closed no-effect attempt and retries its failed product projection after listen', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'prelaunch_projection_retry';
     let projectionAttempts = 0;
 
@@ -3747,7 +3749,7 @@ describe('scheduler restart recovery', () => {
     ['restart_workspace', ['repo']],
     ['restart_zero_input', []],
   ] as const)('projects %s cleanup once after its recovery decision permits teardown', async (suffix, workspaceInputIds) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
@@ -3837,7 +3839,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('repairs a pending exact handoff without changing physical cleanup evidence time', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const suffix = 'restart_handoff_marker_repair';
     let timestamp = '2026-07-05T00:01:00.000Z';
@@ -3916,7 +3918,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('preserves exclusion when Core claims a handoff whose Workspace rows are missing', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const suffix = 'restart_missing_workspace_handle';
     let cleanupCalls = 0;
@@ -3999,7 +4001,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('rejects a workspace handle owned by a different physical backend session', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const suffix = 'restart_mismatched_workspace_handle';
 
@@ -4065,7 +4067,7 @@ describe('scheduler restart recovery', () => {
     ['before heartbeat', false, 'materializing'],
     ['after heartbeat', true, 'launching'],
   ] as const)('cleans and terminalizes an anchored lease %s before releasing capacity', async (_description, heartbeat, anchorState) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = heartbeat ? 'restart_anchor_live' : 'restart_anchor_acquired';
     const leaseId = testEntityId('attempt', `lease_${suffix}`);
     const cleanupObservations: unknown[] = [];
@@ -4117,7 +4119,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('prepares exact result-only cleanup lineage before post-listener maintenance', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const suffix = 'restart_cleanup_retry';
     let cleanupAttempts = 0;
@@ -4229,7 +4231,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('terminalizes a cleaned releasing anchor without cleanup, redispatch, or adoption', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_already_cleaned';
     let cleanupCalls = 0;
 
@@ -4268,7 +4270,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('cleans a stale exact anchored session while preserving exclusion until cleanup', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_stale_anchor';
 
     try {
@@ -4302,7 +4304,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('preserves terminal handoff before closing an expired physically cleaned attempt', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_cleaned_expired_release';
     const projectionStates: unknown[] = [];
     let cleanupCalls = 0;
@@ -4358,7 +4360,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('keeps a physically cleaned attempt closing until product terminal projection succeeds', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_projection_retry';
     let projectionAttempts = 0;
     let cleanupCalls = 0;
@@ -4420,7 +4422,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('replays a cleaned zero-input teardown at a later time without duplicating evidence', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const suffix = 'restart_cleaned_evidence_replay';
     let cleanupCalls = 0;
@@ -4633,7 +4635,7 @@ describe('scheduler restart recovery', () => {
     ['closing', 'unknown'],
     ['closing', 'accepted'],
   ] as const)('retains the original %s/%s operation without a durable backend anchor', async (phase, disposition) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = `restart_missing_anchor_${phase}_${disposition}`;
     const cleanup = vi.fn(async () => {});
     const project = vi.fn(async () => ({ status: 'failed' as const }));
@@ -4676,7 +4678,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('fails a stale pre-anchor lease that has no accepted launch heartbeat', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_missing_anchor_stale_prelaunch';
 
     try {
@@ -4703,7 +4705,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('preserves exclusion for a stale post-launch attempt without a durable backend anchor', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_missing_anchor_stale_launched';
 
     try {
@@ -4745,7 +4747,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('does not treat a stale starting lease without a heartbeat as proven pre-anchor', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_missing_anchor_stale_starting';
 
     try {
@@ -4781,7 +4783,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('fails closed for an expired closing attempt without authoritative cleanup proof', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = 'restart_missing_anchor_expired_releasing';
 
     try {
@@ -4817,7 +4819,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('projects recovery into the owner-independent workspace for a non-local admission user', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const suffix = 'restart_owner_workspace';
     const triggerActor = {
@@ -4854,7 +4856,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('rejects restart recovery when the package trigger actor differs from admission', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const suffix = 'restart_actor_mismatch';
     let cleanupCalls = 0;
@@ -4914,7 +4916,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('attempts every anchored cleanup before reporting aggregated restart failure', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const cleanupCalls: string[] = [];
 
     try {
@@ -4963,7 +4965,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('fences mismatched product lineage before any physical cleanup', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     let cleanupCalls = 0;
 
     try {
@@ -5002,7 +5004,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('boots with an unowned backend anchor and retires it after definite cleanup', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     let cleanupCalls = 0;
 
     try {
@@ -5073,7 +5075,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('keeps an unowned effect-capable binding fenced when physical cleanup fails', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     try {
       dispatchLease(coreDb, 'orphan_cleanup_failure');
       recordBackendSession(coreDb, 'orphan_cleanup_failure', 'launching');
@@ -5124,7 +5126,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('finishes retirement of an orphan already physically cleaned before restart', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     try {
       dispatchLease(coreDb, 'orphan_physical_cleaned');
       recordBackendSession(coreDb, 'orphan_physical_cleaned', 'physical-cleaned');
@@ -5175,7 +5177,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('retires a terminal lease backend anchor without changing that lease', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     let cleanupCalls = 0;
 
     try {
@@ -5238,7 +5240,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('records each unowned effect-capable binding cleanup independently', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     try {
       for (const suffix of ['shared_first', 'shared_second']) {
         dispatchLease(coreDb, suffix);
@@ -5309,7 +5311,7 @@ describe('scheduler restart recovery', () => {
   });
 
   it('records one exact cleanup independently while the other failed boundary stays fenced', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     try {
       for (const suffix of ['failed_shared_first', 'failed_shared_second']) {
         dispatchLease(coreDb, suffix);
@@ -5410,7 +5412,7 @@ describe('scheduler restart recovery', () => {
 
 describe('minimal scheduler reconnect contract', () => {
   it('cleans a sequence-zero-only process without claiming it launched work', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     let cleanupCalls = 0;
 
     try {
@@ -5435,7 +5437,7 @@ describe('minimal scheduler reconnect contract', () => {
   });
 
   it('arms one bounded awaiting-reconnect lease without extending its deadline on replay', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     let projectionCalls = 0;
 
     try {
@@ -5488,7 +5490,7 @@ describe('minimal scheduler reconnect contract', () => {
   });
 
   it('hydrates one same-Epoch survivor while readiness is absent and rejects a different Epoch', async () => {
-    const coreDb = createMigratedCoreDb(false);
+    const coreDb = await createMigratedCoreDb(false);
     const suffix = 'graceful_same_epoch_reconnect';
     const epochShift = Date.now() - Date.parse('2026-07-05T00:00:00.000Z');
     const at = (value: string) => new Date(Date.parse(value) + epochShift).toISOString();
@@ -5907,7 +5909,7 @@ describe('minimal scheduler reconnect contract', () => {
   });
 
   it('uses existing cleanup when read-only backend restoration fails before arming', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     let cleanupCalls = 0;
 
     try {
@@ -5941,7 +5943,7 @@ describe('minimal scheduler reconnect contract', () => {
   });
 
   it('adopts only the original process at the exact next sequence', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
 
     try {
       const fixture = await prepareReconnectLease(coreDb, 'exact_reconnect');
@@ -5988,7 +5990,7 @@ describe('minimal scheduler reconnect contract', () => {
     'sequence',
     'deadline',
   ] as const)('rejects reconnect when %s does not match the armed lease', async (mismatch) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
 
     try {
       const suffix = `reject_${mismatch}`;
@@ -6312,7 +6314,7 @@ describe('minimal scheduler reconnect contract', () => {
   });
 
   it('keeps retained private recovery history scoped to members and current administrators', async () => {
-    const coreDb = createMigratedCoreDb(false);
+    const coreDb = await createMigratedCoreDb(false);
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
     const auth = createBetterAuth(coreDb, { env: {} });
     const email = [randomUUID(), 'example.invalid'].join('@');
@@ -6715,7 +6717,7 @@ describe('minimal scheduler reconnect contract', () => {
     'physical-cleaned',
     'cleaned',
   ] as const)('defers %s to a live lifecycle owner and delegates accepted final-status closeout after it exits', async (state) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     const suffix = `live_owner_${state}`;
     const leaseId = testEntityId('attempt', `lease_${suffix}`);
     let active = true;
@@ -6777,7 +6779,7 @@ describe('minimal scheduler reconnect contract', () => {
   });
 
   it('keeps an accepted completed final-status closeout with its owner before listen', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     let cleanupCalls = 0;
     let closeoutCalls = 0;
     let fallbackProjectionCalls = 0;
@@ -6857,7 +6859,7 @@ describe('minimal scheduler reconnect contract', () => {
   });
 
   it('keeps an accepted ask-user final-status closeout with its owner before listen', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = await createMigratedCoreDb();
     let cleanupCalls = 0;
     let closeoutCalls = 0;
     let fallbackProjectionCalls = 0;
@@ -6951,7 +6953,7 @@ async function createFinalReviewRecoveryFixture(
   boundary: 'running' | 'completed' | 'failed-start' | 'failed-preparation',
   retainedOriginal?: { coreDb: ReturnType<typeof openCoreDb>; store: FsStore; threadId: string }
 ) {
-  const coreDb = retainedOriginal?.coreDb ?? createMigratedCoreDb(false);
+  const coreDb = retainedOriginal?.coreDb ?? (await createMigratedCoreDb(false));
   const store = retainedOriginal?.store ?? (await createDemoStore({ dataRoot: coreDb.dataRoot }));
   if (retainedOriginal && boundary !== 'running') throw new Error('Expected running origin.');
   if (store.getDataRoot() !== coreDb.dataRoot) throw new Error('Original Store and Core differ.');

@@ -639,13 +639,28 @@ describe('generic turn routes', () => {
   });
 
   it('omits AgentSession identity from ordinary turn reads while the durable Turn retains it', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-http-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Hide AgentSession identity',
       LOCAL_ACTOR
     );
+    await store.createAgentSession({
+      id: 'as_00000000-0000-7271-8ba3-bea82b217022',
+      agentId: 'agent_codex_host',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      status: 'ready',
+      message: null,
+      createdAt: turn.startedAt!,
+      updatedAt: turn.startedAt!,
+    });
     await store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7271-8ba3-bea82b217022' });
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 

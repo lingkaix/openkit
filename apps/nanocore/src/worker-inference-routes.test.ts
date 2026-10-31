@@ -66,7 +66,6 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { notebookImportFixture } from './test-support/notebook-import.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -383,15 +382,17 @@ async function createWorkerInferenceRouteFixture(
     applyMigrations(appCoreDb);
     ownedCoreDatabases.push(appCoreDb);
   }
+  if (appCoreDb) ensureLocalUser(appCoreDb);
+  // Publish the real native Workspace before Core relationships classify it as an existing home.
+  // The route and its capability/Audit writer then share that exact prepared scope.
+  const store = await createDemoStore(appCoreDb ? { dataRoot: appCoreDb.dataRoot } : {});
   if (appCoreDb) {
-    ensureLocalUser(appCoreDb);
     recordWorkspaceOwnerMembership({
       coreDb: appCoreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   }
-  const store = await createDemoStore();
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -405,21 +406,10 @@ async function createWorkerInferenceRouteFixture(
   );
   if (options.persistedTurn && appCoreDb) {
     const persisted = new FsStore({ dataRoot: appCoreDb.dataRoot });
-    await persisted.importWorkspaceSnapshot({
-      ...notebookImportFixture({
-        workspaceId: store.getWorkspace(workspaceIdForOwner(turn.owner)).id,
-        knowledge: [],
-      }),
-      workspace: store.getWorkspace(workspaceIdForOwner(turn.owner)),
-      threads: [store.getThread(workspaceIdForOwner(turn.owner), turn.threadId)],
-      turns: [turn],
-      knowledge: [],
-      itemRevisions: store.listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId),
-      artifacts: [],
-      agentSessions: [],
-      turnEvents: [],
-      turnCaptureCoverage: new Map([[turn.id, store.getTurnCaptureCoverage(turn.id)!]]),
-    });
+    // Native Demo setup already persisted this Turn; a second import would replace its authority.
+    expect(persisted.getTurn(workspaceIdForOwner(turn.owner), turn.threadId, turn.id)).toEqual(
+      turn
+    );
   }
   const agentSetup = createTestAgentSetup({
     logicalModelId: WORKER_LOGICAL_MODEL_ID,

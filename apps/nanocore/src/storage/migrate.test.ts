@@ -18,10 +18,11 @@ import { formatBootFailureMessage, runBootPhases } from '../bootstrap/phases.js'
 import { BootConfigError } from '../config/mode';
 import { readNanoHostThreadAgentSessionBinding } from '../runtime/nanohost-harness-records.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
-
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser as ensureFixtureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './db';
 import { coreDbPath, workspaceDbPath } from './fs-layout';
 import {
@@ -208,6 +209,8 @@ function listColumnNames(
     .map((row) => (row as { name: string }).name);
 }
 
+// Raw schema checks stop before Knowledge authority transfer. The real SQL selection,
+// immutable transfer, replay and cold-reopen boundaries run in knowledge-authority-cutover.test.ts.
 describe('database setup', () => {
   it('T1 applies the real Workspace journal exactly once and preserves native bytes on repeat', ({
     skip,
@@ -215,7 +218,7 @@ describe('database setup', () => {
     const root = createDataRoot();
     const db = openWorkspaceDb(root, testEntityId('ws', 'journal-migration-workspace'));
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const tables = listTableNames(db).filter((name) =>
         ['control_execution_steps', 'control_executions'].includes(name)
       );
@@ -237,7 +240,7 @@ describe('database setup', () => {
       ]);
       const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
       const before = db.sqlite.serialize();
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       expect(db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
         ledger
       );
@@ -258,7 +261,13 @@ describe('database setup', () => {
   ] as const)('requires an explicit Audit and Policy retained version in a fresh %s database', (scope) => {
     const sqlite = new Database(':memory:');
     try {
-      applyNativeScopeMigrations(sqlite, scope);
+      applyNativeScopeMigrations(
+        sqlite,
+        scope,
+        undefined,
+        undefined,
+        scope === 'workspace' ? 'pre-knowledge' : 'full'
+      );
       const tables =
         scope === 'core' || scope === 'workspace'
           ? ['audit_events', 'permission_decisions']
@@ -783,10 +792,10 @@ describe('database setup', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, testEntityId('ws', 'workspace_1'));
 
     try {
-      applyScopedMigrations(userDb);
-      applyScopedMigrations(userDb);
-      applyScopedMigrations(workspaceDb);
-      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(userDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(userDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
       expect(listMigrationIds(userDb, 'user')).toEqual([
         'user_0000_setup',
@@ -1125,10 +1134,13 @@ describe('database setup', () => {
 describe('native Drizzle migrate', () => {
   it('reapplies a fully migrated Workspace journal through the 5 ms Main handle while a writer holds its lock', async () => {
     const root = createDataRoot();
-    const db = openWorkspaceDb(root, testEntityId('ws', 'repeat-migration-lock'));
+    const store = createTestStore({ dataRoot: root });
+    const workspace = await store.createWorkspace('Complete native journal lock fixture');
+    await shutdownControlStoreWorkerClient();
+    const db = openWorkspaceDb(root, workspace.id);
     let blocker: Worker | undefined;
     try {
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       const journal = JSON.parse(
         readFileSync(new URL('../../drizzle/workspace/meta/_journal.json', import.meta.url), 'utf8')
       ) as { entries: Array<{ tag: string }> };
@@ -1237,13 +1249,25 @@ describe('native Drizzle migrate', () => {
       >;
       const retainedCall = sqlite.prepare('SELECT * FROM capability_calls').get();
       expect(retained).not.toHaveProperty('provider_model');
-      applyNativeScopeMigrations(sqlite, scope);
+      applyNativeScopeMigrations(
+        sqlite,
+        scope,
+        undefined,
+        undefined,
+        scope === 'workspace' ? 'pre-knowledge' : 'full'
+      );
       const migrated = sqlite.prepare('SELECT * FROM usage_records').get();
       // #447 preserves every historical fact and adds no inferred physical-model attribution.
       expect(migrated).toEqual({ ...retained, provider_model: null });
       expect(sqlite.prepare('SELECT * FROM capability_calls').get()).toEqual(retainedCall);
       const migratedBytes = sqlite.serialize();
-      applyNativeScopeMigrations(sqlite, scope);
+      applyNativeScopeMigrations(
+        sqlite,
+        scope,
+        undefined,
+        undefined,
+        scope === 'workspace' ? 'pre-knowledge' : 'full'
+      );
       expect(sqlite.prepare('SELECT * FROM usage_records').get()).toEqual(migrated);
       expect(sqlite.serialize().equals(migratedBytes)).toBe(true);
       expect(sqlite.pragma('foreign_key_check')).toEqual([]);
@@ -1327,7 +1351,7 @@ describe('native Drizzle migrate', () => {
         string,
         unknown
       >;
-      applyScopedMigrations(db);
+      applyScopedMigrations(db, undefined, 'pre-knowledge');
       expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').get()).toEqual({
         ...before,
         range_feedback: null,
@@ -1914,7 +1938,7 @@ describe('Assistant handoff descriptor migration', () => {
         string,
         unknown
       >;
-      applyNativeScopeMigrations(db, 'workspace');
+      applyNativeScopeMigrations(db, 'workspace', undefined, undefined, 'pre-knowledge');
       const current = db.prepare('SELECT * FROM pending_requests').get() as Record<string, unknown>;
       expect(current).toEqual({ ...retained, assistant_handoff_json: null, schema_version: 1 });
       expect(readPendingRequest(db, 'retained-question')).toMatchObject({
@@ -1922,7 +1946,7 @@ describe('Assistant handoff descriptor migration', () => {
         state: 'pending',
         assistantHandoff: null,
       });
-      applyNativeScopeMigrations(db, 'workspace');
+      applyNativeScopeMigrations(db, 'workspace', undefined, undefined, 'pre-knowledge');
       expect(db.prepare('SELECT * FROM pending_requests').get()).toEqual(current);
     } finally {
       db.close();

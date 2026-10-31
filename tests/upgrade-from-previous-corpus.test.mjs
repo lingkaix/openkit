@@ -114,7 +114,8 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
   }
   for (const [family, observed] of Object.entries(first)) {
     assert.ok(observed.values.length > 0, `${family}: no native reader result`);
-    if (NATIVE_METADATA_FAMILIES.includes(family)) {
+    // Native Review rows are domain records, not the four mutable metadata snapshot envelopes.
+    if (NATIVE_METADATA_FAMILIES.includes(family) && family !== 'Knowledge Proposal Review') {
       for (const snapshot of observed.values) {
         assert.deepEqual(snapshot.owner, { kind: 'workspace', workspaceId: selectors.workspaceId });
         assert.ok(Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0);
@@ -134,7 +135,7 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
           assert.ok(snapshot.record.updatedAt);
         }
       }
-    } else {
+    } else if (!NATIVE_METADATA_FAMILIES.includes(family)) {
       assert.ok(observed.bytes.length > 0, `${family}: no retained bytes`);
     }
     for (const entry of observed.bytes) {

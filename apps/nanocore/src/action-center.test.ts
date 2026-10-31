@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import { recordWorkspaceReconciliationRecord } from './runtime/workspace-reconciliation-records.js';
@@ -124,22 +124,26 @@ function createKnowledgeProposalFixture(
   rationale: string
 ) {
   const source = store.getWorkspaceResources(workspaceId).knowledge[0]!;
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(
-      store.getDataRoot()!,
-      'workspaces',
-      workspaceId,
-      'knowledge',
-      'notebook.git'
-    ),
-  });
-  const baseRevision = notebook.publishedRevision();
-  const sourceBytes = notebook.readRevision(baseRevision).files[`${source.id}.md`];
-  if (!sourceBytes) throw new Error('The Action Center source page is missing from its Git base.');
+  const dataRoot = store.getDataRoot()!;
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
-    dataRoot: store.getDataRoot()!,
+    dataRoot,
     scope: { kind: 'workspace', workspaceId },
   });
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  let selection: ReturnType<typeof readWorkspaceNotebookSelection>;
+  try {
+    selection = readWorkspaceNotebookSelection({
+      workspaceDb,
+      workspaceRoot: join(dataRoot, 'workspaces', workspaceId),
+      knowledgeBaseId,
+    });
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+  const { notebook } = selection;
+  const baseRevision = selection.head.notebookCommit;
+  const sourceBytes = notebook.readRevision(baseRevision).files[`${source.id}.md`];
+  if (!sourceBytes) throw new Error('The Action Center source page is missing from its Git base.');
   const sourceReference = formatReferenceUri(
     { scopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`, objectId: source.id },
     `sha256:${createHash('sha256').update(sourceBytes, 'utf8').digest('hex')}`
@@ -373,14 +377,14 @@ describe('action center app API', () => {
       rmSync(coreDb.dataRoot, { recursive: true, force: true });
     });
     const workspaceId = DEMO_WORKSPACE_ID;
-    const single = createKnowledgeProposalFixture(
+    const single = await createKnowledgeProposalFixture(
       store,
       workspaceId,
       'preview-title',
       'Review exact pages.'
     );
     const secondId = 'action-center/second';
-    const proposal = store.createKnowledgeProposal({
+    const proposal = await store.createKnowledgeProposal({
       workspaceId,
       requestId: randomUUID(),
       baseRevision: single.baseRevision,
@@ -778,7 +782,7 @@ describe('action center app API', () => {
     } finally {
       questionDb.sqlite.close();
     }
-    const knowledgeProposal = createKnowledgeProposalFixture(
+    const knowledgeProposal = await createKnowledgeProposalFixture(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'actor-scoped',
@@ -1167,7 +1171,12 @@ describe('action center app API', () => {
   });
 
   it('omits approval and question requests without an exact completed Gate tuple', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-attention-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Invalid human input gates'
@@ -1181,9 +1190,13 @@ describe('action center app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
+    const questionThread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Independent ungated question'
+    );
     const questionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
+      questionThread.id,
       'Ungated question request',
       {
         kind: 'user',
@@ -1219,7 +1232,7 @@ describe('action center app API', () => {
     await store.createItem({
       id: 'it_00000000-0000-7c05-8065-c7352ae9fde5',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      threadId: thread.id,
+      threadId: questionThread.id,
       turnId: questionTurn.id,
       type: 'user-input-request',
       status: 'completed',
@@ -1253,7 +1266,12 @@ describe('action center app API', () => {
   });
 
   it('omits approval and question rows after matching decisions and answers exist', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-attention-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Resolved human input'

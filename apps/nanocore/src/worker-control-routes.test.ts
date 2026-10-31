@@ -437,6 +437,7 @@ describe('worker control routes', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-heartbeat-gap-')));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -749,6 +750,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -929,6 +931,7 @@ describe('worker control routes', () => {
 
     try {
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1064,6 +1067,7 @@ describe('worker control routes', () => {
 
     try {
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1156,6 +1160,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1321,6 +1326,7 @@ describe('worker control routes', () => {
 
     try {
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1519,6 +1525,7 @@ describe('worker control routes', () => {
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1735,6 +1742,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1777,6 +1785,7 @@ describe('worker control routes', () => {
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1957,6 +1966,7 @@ describe('worker control routes', () => {
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2277,6 +2287,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2366,6 +2377,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2487,11 +2499,14 @@ describe('worker control routes', () => {
           workerPath: '/workspace/repo',
         },
       ]);
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
+    let preparedWorkspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
 
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
+      preparedWorkspaceDb = workspaceDb;
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2672,7 +2687,7 @@ describe('worker control routes', () => {
         )?.phase
       ).toBe('closed');
     } finally {
-      workspaceDb.sqlite.close();
+      preparedWorkspaceDb?.sqlite.close();
       coreDb.sqlite.close();
     }
   });
@@ -2685,6 +2700,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2891,6 +2907,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3141,6 +3158,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: fixture.lineage.workspaceId,
@@ -3249,6 +3267,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: lineage.workspaceId,
@@ -3376,6 +3395,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
+      await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',

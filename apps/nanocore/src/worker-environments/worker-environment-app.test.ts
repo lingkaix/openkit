@@ -427,7 +427,7 @@ describe('Worker environment App composition', () => {
           `INSERT INTO users (id, display_name, email, email_verified, image, created_at, updated_at, kind, last_seen_at) VALUES (?, 'Foreign Administrator', 'foreign@example.test', false, NULL, ?, ?, 'human', NULL)`
         )
         .run(foreignUserId, Date.now(), Date.now());
-      ensureUserQuickChatWorkspace({ coreDb, store, userId: foreignUserId });
+      await ensureUserQuickChatWorkspace({ coreDb, store, userId: foreignUserId });
       const foreignHome = await store.ensureQuickChatWorkspace(foreignUserId);
       const foreignThread = await store.createThread(
         foreignHome.id,

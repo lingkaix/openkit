@@ -9,7 +9,7 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -710,7 +710,12 @@ describe('conversation.submit worker storage choice', () => {
   });
 
   it('rejects a supplied choice on an inapplicable target before effects', async () => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-http-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const workerSetup = createTestAgentSetup();
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',

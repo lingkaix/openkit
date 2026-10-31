@@ -28,6 +28,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { readDefaultKnowledgeBaseId } from './knowledge-base.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
@@ -128,7 +129,14 @@ async function fixture(withOtherWorkspace = false) {
     'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc',
     JSON.stringify({
       schemaVersion: RETAINED_FORMAT_VERSION,
-      workspace: { name: 'Team', roots: [] },
+      workspace: {
+        name: 'Team',
+        roots: [],
+        defaultKnowledgeBaseId: readDefaultKnowledgeBaseId({
+          dataRoot,
+          scope: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        }),
+      },
     })
   );
   const manager = createRuntimeConfigManager({ initialSnapshot: loadRuntimeConfig(dataRoot) });
@@ -442,6 +450,9 @@ describe('configuration-stage work-slot source refusal', () => {
         schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Team',
+          ...(mode === 'update'
+            ? { defaultKnowledgeBaseId: JSON.parse(previous).workspace.defaultKnowledgeBaseId }
+            : {}),
           roots: [{ id: 'files', kind: 'host-dir', path: 'files/contracts', access: 'read-write' }],
         },
       }),

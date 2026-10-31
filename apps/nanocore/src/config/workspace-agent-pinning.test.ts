@@ -19,6 +19,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { readDefaultKnowledgeBaseId } from './knowledge-base.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
 
 const cleanups: (() => void)[] = [];
@@ -88,6 +89,10 @@ async function fixture() {
     schemaVersion: 1,
     workspace: {
       name: 'Pin conformance',
+      defaultKnowledgeBaseId: readDefaultKnowledgeBaseId({
+        dataRoot,
+        scope: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+      }),
       defaultAgentId: 'agent_default',
       agents: [unrelatedBinding, { agentId: 'agent_unavailable' }],
       roots: [],

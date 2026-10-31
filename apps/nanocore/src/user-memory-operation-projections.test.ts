@@ -23,7 +23,7 @@ async function fixture() {
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  ensureUserQuickChatWorkspace({ coreDb, store, userId });
+  await ensureUserQuickChatWorkspace({ coreDb, store, userId });
   const workspace = await store.ensureQuickChatWorkspace(userId);
   const timeline = await openAssistantTimeline(store, workspace.id, userId, 'Private question');
   const turn = await store.createTurn(

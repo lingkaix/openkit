@@ -48,6 +48,7 @@ import {
   skillSnapshotPath,
   updateMcpBinding,
 } from '../catalog/resource-catalog.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -6006,7 +6007,13 @@ describe('createConfiguredTurnExecutor', () => {
           JSON.stringify(
             WorkspaceConfigSchema.parse({
               schemaVersion: 1,
-              workspace: { name: 'Admission recovery fixture' },
+              workspace: {
+                name: 'Admission recovery fixture',
+                defaultKnowledgeBaseId: readDefaultKnowledgeBaseId({
+                  dataRoot: coreDb.dataRoot,
+                  scope: { kind: 'workspace', workspaceId: environmentPackage.scope.workspaceId },
+                }),
+              },
             })
           )
         );
@@ -6037,7 +6044,13 @@ describe('createConfiguredTurnExecutor', () => {
         JSON.stringify(
           WorkspaceConfigSchema.parse({
             schemaVersion: 1,
-            workspace: { name: 'Independent admission fixture' },
+            workspace: {
+              name: 'Independent admission fixture',
+              defaultKnowledgeBaseId: readDefaultKnowledgeBaseId({
+                dataRoot: coreDb.dataRoot,
+                scope: { kind: 'workspace', workspaceId: independent.scope.workspaceId },
+              }),
+            },
           })
         )
       );

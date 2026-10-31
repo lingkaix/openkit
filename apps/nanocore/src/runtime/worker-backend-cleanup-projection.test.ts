@@ -7,8 +7,8 @@ import {
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import {
   listWorkspaceRuntimeEvidence,
   recordWorkerBackendTeardownEvidence,
@@ -30,12 +30,12 @@ import {
 } from './workspace-sync-records.js';
 
 /** Creates one workspace database with a retained package handle. */
-function createFixture(options: { omitBackendStatus?: boolean } = {}) {
-  const workspaceDb = openWorkspaceDb(
-    mkdtempSync(join(tmpdir(), 'openkit-cleanup-projection-')),
-    'ws_00000000-0000-7000-8000-000000000001'
-  );
-  applyScopedMigrations(workspaceDb);
+async function createFixture(options: { omitBackendStatus?: boolean } = {}) {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cleanup-projection-'));
+  await createDemoStore({ dataRoot });
+  // The cases open their own exact native-client database identity after stopped setup.
+  await shutdownControlStoreWorkerClient();
+  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
     suffix: 'cleanup_projection',
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
@@ -213,7 +213,7 @@ const exactHandoffTamperCases: ReadonlyArray<
 
 describe('worker backend cleanup projection', () => {
   it('refuses changed native package lineage before any cleanup SQL effect', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
     const beforeHandles = listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId);
     const beforeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId);
     const client = getControlStoreWorkerClient();
@@ -250,7 +250,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('acknowledges the complete native cleanup body on its exact scoped SQLite and ORM handle', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
     const beforeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId);
     const client = getControlStoreWorkerClient();
     try {
@@ -289,7 +289,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('rolls back native handle updates together with rejected cleanup evidence', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
     const before = listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId);
     const beforeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId);
     workspaceDb.sqlite.exec(
@@ -326,7 +326,7 @@ describe('worker backend cleanup projection', () => {
     'pending',
     'complete',
   ] as const)('replays exact no-materialization proof with a %s handoff', async (workspaceHandoffState) => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
     try {
       workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
       workspaceDb.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
@@ -363,7 +363,7 @@ describe('worker backend cleanup projection', () => {
     'pending',
     'complete',
   ] as const)('rejects partial rows despite no-materialization proof with a %s handoff', async (workspaceHandoffState) => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
     try {
       expect(
         workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run().changes
@@ -389,7 +389,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('accepts a complete Workspace handoff whose accepted materialization omitted optional backendStatus', async () => {
-    const { environmentPackage, workspaceDb } = createFixture({ omitBackendStatus: true });
+    const { environmentPackage, workspaceDb } = await createFixture({ omitBackendStatus: true });
     const sandboxOnlyReadiness = [
       { kind: 'sandbox.created', ref: 'openkit-as_cleanup_projection' },
     ];
@@ -426,7 +426,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('projects successful physical cleanup over a retained transport status', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
 
     try {
       updateBackendWorkspaceHandleCleanupStatus(
@@ -468,7 +468,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('rolls back handle updates when teardown evidence conflicts, then retries atomically', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
 
     try {
       recordWorkerBackendTeardownEvidence(workspaceDb, {
@@ -514,7 +514,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('projects evidence without handles only while the durable handoff is pending', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
 
     try {
       workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
@@ -533,7 +533,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('rejects a missing handoff after Core marked it complete', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
 
     try {
       workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
@@ -556,7 +556,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('rejects and rolls back a pending partial handoff', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
 
     try {
       workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
@@ -581,7 +581,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it('rejects a tampered physical worker-session join inside the projection transaction', async () => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
 
     try {
       const row = workspaceDb.sqlite
@@ -615,7 +615,7 @@ describe('worker backend cleanup projection', () => {
   });
 
   it.each(exactHandoffTamperCases)('rejects tampered %s', async (_description, tamper) => {
-    const { environmentPackage, workspaceDb } = createFixture();
+    const { environmentPackage, workspaceDb } = await createFixture();
 
     try {
       tamper(workspaceDb);
