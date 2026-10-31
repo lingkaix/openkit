@@ -48,10 +48,6 @@ runtime_env=(
   "no_proxy=${no_proxy:-}"
 )
 
-if [[ -f /usr/local/lib/openkit/allow-anthropic-api-key ]]; then
-  runtime_env+=("ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}")
-fi
-
 if (( $# != 0 )); then
   printf '%s\n' 'Worker Harness accepts no arguments.' >&2
   exit 64

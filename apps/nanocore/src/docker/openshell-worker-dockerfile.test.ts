@@ -438,6 +438,7 @@ describe('governed worker image contracts', () => {
       encoding: 'utf8',
       env: {
         ...inherited,
+        ANTHROPIC_API_KEY: 'must-not-cross-static-bootstrap',
         OPENKIT_AGENT_SESSION_ID: 'must-not-cross-static-bootstrap',
         OPENKIT_WORKER_CAPABILITY_TOKEN: 'must-not-cross-static-bootstrap',
         OPENKIT_WORKER_INFERENCE_TOKEN: 'must-not-cross-static-bootstrap',
@@ -500,6 +501,8 @@ describe('governed worker image contracts', () => {
     expect(rejected.stderr).toBe('Worker Harness accepts no arguments.\n');
     expect(`${rejected.stdout}${rejected.stderr}`).not.toContain(childLaunchMarker);
     expect(launcher).toContain('NODE_USE_ENV_PROXY=1');
+    // The image owner excludes API-key carriers; declared runtime-env injection owns credentials.
+    expect(launcher).not.toContain('ANTHROPIC_API_KEY');
     expect(launcher).not.toContain(`\${OPENKIT_CONTROL_TOKEN:-}`);
     expect(launcher).not.toContain(`\${OPENKIT_WORKER_INFERENCE_TOKEN:-}`);
     expect(launcher).not.toContain(`\${OPENKIT_WORKER_CAPABILITY_TOKEN:-}`);
