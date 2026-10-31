@@ -12,6 +12,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { readAuditEventRowV1 } from './policy/retained-records-v1.js';
+import type { ControlSqlStatement } from './storage/control-store-worker-protocol.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './storage/db.js';
 
 /** Input for recording one server-owned audit event. */
@@ -475,6 +476,25 @@ export function prepareAuditEvent(
  * @param event Protocol audit event to insert.
  */
 function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
+  const statement = prepareAuditEventStatement(event);
+  sqlite.prepare(statement.sql).run(...statement.parameters);
+}
+
+/**
+ * Serializes one validated Audit through its existing row owner without writing it.
+ *
+ * The caller must join this statement to the actual effect, original receipt and
+ * current authority checks on the owning native database. This function supplies
+ * no authority or command outcome and does not allocate a replacement event.
+ *
+ * @param input Original prepared Audit, including its identity and attribution.
+ * @returns Trusted insertion for the existing savepoint and covering FULL ACK.
+ */
+export function prepareAuditEventStatement(
+  input: AuditEvent
+): Extract<ControlSqlStatement, { mode: 'run' }> {
+  assertNoUnsafeAuditValue(input);
+  const event = AuditEventSchema.parse(input);
   // Omit unknown optional authentication so snapshot rollback keeps its captured native format.
   const values = {
     audit_event_id: event.id,
@@ -513,11 +533,12 @@ function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
     occurred_at: event.occurredAt,
   };
   const columns = Object.keys(values);
-  sqlite
-    .prepare(
-      `INSERT INTO audit_events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
-    )
-    .run(...Object.values(values));
+  return {
+    mode: 'run',
+    sql: `INSERT INTO audit_events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+    parameters: Object.values(values).map((value) => value ?? null),
+    expectChanges: 1,
+  };
 }
 
 /** Projects the frozen retained Audit core after validating its independent format marker. */

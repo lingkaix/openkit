@@ -44,6 +44,7 @@ import {
   assertControlProductWriter,
   openControlStoreProductReadHandle,
 } from './control-store-products.js';
+import type { ControlSqlStatement } from './control-store-worker-protocol.js';
 import {
   bindWorkspaceSqlite,
   type CoreDb,
@@ -340,35 +341,71 @@ function writeCommandRequestRecordInDb(db: CommandRequestDb, record: CommandRequ
     if (JSON.stringify(retained.response) === JSON.stringify(response))
       responseJson = previous.responseJson;
   }
+  const values = commandRequestValues(record);
+  values.response_json = responseJson;
+  const columns = Object.keys(values).filter(
+    (column) => db.scope !== 'app' || column !== 'schema_version'
+  ) as (keyof typeof values)[];
   db.sqlite
     .prepare(
-      `INSERT OR REPLACE INTO idempotency_requests (
-        ${db.scope === 'app' ? '' : 'schema_version,'}
-        request_key,
-        command_name,
-        request_id,
-        scope_json,
-        input_hash,
-        response_kind,
-        response_id,
-        response_json,
-        created_at,
-        expires_at
-      ) VALUES (${db.scope === 'app' ? '' : '?,'} ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO idempotency_requests (${columns.join(', ')})
+       VALUES (${columns.map(() => '?').join(', ')})`
     )
-    .run(
-      ...(db.scope === 'app' ? [] : [writeRetainedV1({}).schemaVersion]),
-      record.key,
-      record.command,
-      record.requestId,
-      JSON.stringify(scope),
-      record.inputHash,
-      response.kind,
-      response.id,
-      responseJson,
-      record.createdAt,
-      record.expiresAt
-    );
+    .run(...columns.map((column) => values[column]));
+}
+
+/** One serialization owner for current scoped writes and later native command composition. */
+function commandRequestValues(record: CommandRequestRecord) {
+  const scope = StoredCommandScopeV1Schema.parse(record.scope);
+  const response = normalizeCommandRequestResponse(record.command, record.response);
+  return {
+    schema_version: writeRetainedV1({}).schemaVersion,
+    request_key: record.key,
+    command_name: record.command,
+    request_id: record.requestId,
+    scope_json: JSON.stringify(scope),
+    input_hash: record.inputHash,
+    response_kind: response.kind,
+    response_id: response.id,
+    response_json:
+      response.conversationMetadata === undefined
+        ? null
+        : JSON.stringify(response.conversationMetadata),
+    created_at: record.createdAt,
+    expires_at: record.expiresAt,
+  };
+}
+
+/**
+ * Prepares the original Workspace receipt for its caller's complete native tuple.
+ *
+ * This pure operation neither activates a command nor grants admission. The caller
+ * retains the original key, input, scope, clock and response facts and must select
+ * the matching physical Workspace writer. An existing key refuses the transaction;
+ * replay must use the original receipt before attempting a fresh effect. Unlike
+ * the legacy writer, this insertion cannot replace another command outcome.
+ *
+ * @param workspaceId Explicit Workspace owning the native transition.
+ * @param record Original command completion, never a reconstructed success.
+ * @returns One trusted statement for the existing native savepoint and FULL ACK.
+ */
+export function prepareControlCommandRequestStatement(
+  workspaceId: string,
+  record: CommandRequestRecord
+): Extract<ControlSqlStatement, { mode: 'run' }> {
+  WorkspaceIdSchema.parse(workspaceId);
+  const owner = commandRequestOwner(StoredCommandScopeV1Schema.parse(record.scope));
+  if (owner.scope !== 'workspace' || owner.workspaceId !== workspaceId)
+    throw new Error('Native command receipt requires its exact Workspace owner.');
+  const values = commandRequestValues(record);
+  const columns = Object.keys(values);
+  return {
+    mode: 'run',
+    sql: `INSERT INTO idempotency_requests (${columns.join(', ')})
+          VALUES (${columns.map(() => '?').join(', ')})`,
+    parameters: Object.values(values),
+    expectChanges: 1,
+  };
 }
 
 /**
