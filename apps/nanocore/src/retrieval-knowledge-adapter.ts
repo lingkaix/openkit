@@ -685,16 +685,20 @@ function selectWorkspaceNotebook(
   workspaceId: string,
   knowledgeBaseId: string
 ): WorkspaceNotebookSelection {
-  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  let workspaceDb: WorkspaceDb | undefined;
   try {
+    workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     return readCurrentWorkspaceNotebookSelection({
       workspaceDb,
       dataRoot,
       workspaceId,
       expectedKnowledgeBaseId: knowledgeBaseId,
     });
+  } catch (error) {
+    if (error instanceof NotebookError || error instanceof OperationError) throw error;
+    throw new NotebookError('recovery_required');
   } finally {
-    workspaceDb.sqlite.close();
+    workspaceDb?.sqlite.close();
   }
 }
 

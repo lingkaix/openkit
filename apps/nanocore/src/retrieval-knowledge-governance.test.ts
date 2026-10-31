@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
+import type { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
@@ -35,6 +35,7 @@ import {
 } from './test-support/knowledge-page.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { writeManagedThreadPolicyFixture } from './test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import * as workspaceMembership from './workspace-membership.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -721,9 +722,9 @@ async function createFixture(
     workspaceRoot,
     store,
     userId,
-    notebook: new KnowledgeNotebook({
-      repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-    }),
+    get notebook() {
+      return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    },
     app: createApp({ coreDb, dataRoot, store, runtimeConfigManager }),
     runtimeConfigManager,
     access: {
