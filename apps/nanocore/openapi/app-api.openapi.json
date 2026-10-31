@@ -103289,7 +103289,6 @@
             "type": "object",
             "properties": {
               "itemIds": {
-                "maxItems": 100,
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -103297,7 +103296,6 @@
                 }
               },
               "artifactIds": {
-                "maxItems": 100,
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -103306,7 +103304,6 @@
               },
               "reviewIds": {
                 "default": [],
-                "maxItems": 100,
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -156138,5 +156135,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:1cc7ca84c75234541ec37585a73f66b4aa8bbc9c4e70741dd63c82f44a2fb8c8"
+  "x-openkit-source-digest": "sha256:8f720218e3668f6419c3193a46150a6a3635507c7ecf0de475d0dd3d3db4be11"
 }

@@ -74,11 +74,11 @@ export const TaskModeCompletionSchema = z.object({
   text: z.string(),
 });
 
-/** Existing thread and artifact records that evidence a Task Mode attempt. */
+/** Complete retained evidence references for one Task Mode attempt; cardinality follows its owners. */
 export const TaskModeEvidenceSchema = z.object({
-  itemIds: z.array(ItemIdSchema).max(100),
-  artifactIds: z.array(ArtifactIdSchema).max(100),
-  reviewIds: z.array(z.string().min(1)).max(100).default([]),
+  itemIds: z.array(ItemIdSchema),
+  artifactIds: z.array(ArtifactIdSchema),
+  reviewIds: z.array(z.string().min(1)).default([]),
 });
 
 /** Response returned after Task Mode accepts one bounded worker attempt. */
