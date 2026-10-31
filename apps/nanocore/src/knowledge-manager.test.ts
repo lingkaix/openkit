@@ -28,6 +28,7 @@ import { publishCapturedSource } from './knowledge/source-publication.js';
 import { readManagedSourceText } from './knowledge/source-reading.js';
 import * as knowledgeManager from './knowledge-manager.js';
 import { FsStore } from './lib/store.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { rebuildWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
@@ -1961,7 +1962,13 @@ describe('Knowledge Manager answer operation', () => {
   });
 
   it('rejects public semantic caller overrides', async () => {
-    const app = createApp({ store: await createDemoStore() });
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-manager-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const app = createApp({ store: await createDemoStore({ dataRoot }) });
     const proposalBytes = proposalPageBytes(
       'caller-override',
       'Caller override',
