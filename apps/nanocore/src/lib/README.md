@@ -129,3 +129,5 @@ Agent health and Thread dashboard read fixtures use their existing Core-backed A
 
 Assistant history and semantic-handoff fixtures obtain their unpublished Workspace DTO from the existing Demo builder with explicit project identity, name, kind and empty counts. Only the retained-Personal fixture publishes that Workspace; a discarded rootless Store no longer supplies the DTO.
 Lifecycle and retirement fixtures pass their existing Core to the deterministic executor, including the retained-Core App reconstruction. Native mutation admission, deletion and recovery remain the deciding owners; executor refusal spies and all retained-byte and receipt assertions stay unchanged.
+
+Catalog projection fixtures use their existing same-root Workspace-authority App builder without a separate standalone executor. Current manifests, stale stored Agent inputs, health and disclosure checks retain their original owners.

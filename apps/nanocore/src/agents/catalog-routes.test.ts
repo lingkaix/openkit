@@ -9,7 +9,6 @@ import {
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
-import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import * as goalCoordinator from '../runtime/goal-coordinator.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -447,7 +446,6 @@ describe('agent.list and agent.read operations', () => {
     const app = createApp({
       agentManifests: [configured, unready],
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
     });
 
     const resourcesRes = await app.request('/api/app/operations/workspace.resources', {
