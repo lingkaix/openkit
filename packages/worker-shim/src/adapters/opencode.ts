@@ -547,7 +547,7 @@ async function supervise(
   ): WorkerResidentSession {
     let boundSupply: string | null = null;
     let boundRoutes: string | null = null;
-    let publishedBoundary: NativeMessage[] | null = null;
+    let publishedBoundary: { promptId: string; terminals: NativeMessage[] } | null = null;
     const sessionId = proved.sessionId;
     // A resumed get already read the row from disk. A new id stays pending until that select matches.
     let durable = input.resumeReference !== null && proved.sessionId !== null;
@@ -639,7 +639,6 @@ async function supervise(
 
         let nativeWarnings = '';
         let nativeModels: string[] = [];
-        let before = new Set<string>();
         let promptStartedAt = 0;
         let promptId = '';
         let promptAttempted = false;
@@ -854,9 +853,16 @@ async function supervise(
             ) {
               throw new Error('OpenCode native preferred model selection was not proved.');
             }
-            const previous = await listMessages(client, sessionId, rpc);
-            if (publishedBoundary) assertPublishedBoundary(publishedBoundary, previous);
-            before = new Set(previous.map((message) => message.id));
+            if (publishedBoundary) {
+              const previous = await listMessages(
+                client,
+                sessionId,
+                rpc,
+                publishedBoundary.promptId,
+                false
+              );
+              assertPublishedBoundary(publishedBoundary.terminals, previous);
+            }
             await nativeDeadline(
               'child source preparation',
               children.prepare(rpc),
@@ -985,7 +991,6 @@ async function supervise(
         const observeNative = async (row: unknown): Promise<void> => {
           if (captureAbandoned) return;
           const id = row && typeof row === 'object' && 'id' in row ? String(row.id) : '';
-          if (before.has(id)) return;
           const snapshot = JSON.stringify(row);
           if (rawSnapshots.get(id) === snapshot) return;
           await native.write(`${sourceRef}:native`, Buffer.from(snapshot), {
@@ -999,7 +1004,6 @@ async function supervise(
         const observeMessages = async (messages: NativeMessage[]): Promise<void> => {
           if (captureAbandoned) return;
           for (const message of messages) {
-            if (before.has(message.id)) continue;
             const snapshot = JSON.stringify(message);
             if (capturedSnapshots.get(message.id) === snapshot) continue;
             await captureOpenCodeMessage(
@@ -1025,7 +1029,6 @@ async function supervise(
           resolveStoppedCollection = resolve;
         });
         const collection = settleTurn({
-          before,
           promptId,
           child,
           client,
@@ -1065,11 +1068,9 @@ async function supervise(
                 : outcome === 'interrupted'
                   ? 'interrupted'
                   : 'failed';
-            publishedBoundary = messages;
-            for (const message of messages) {
-              if (!before.has(message.id)) {
-                recordLifecycleFact?.({ label: 'native_event' });
-              }
+            publishedBoundary = { promptId, terminals: messages.filter(isTerminalMessage) };
+            for (const _message of messages) {
+              recordLifecycleFact?.({ label: 'native_event' });
             }
             if (captureAbandoned) return;
             await observeMessages(messages);
@@ -1964,7 +1965,6 @@ class OpenCodeChildCapture {
 async function settleTurn(options: {
   nativeObserved?: (row: unknown) => Promise<void>;
   childrenObserved?: (rpc: NativeRpc) => Promise<void>;
-  before: Set<string>;
   promptId: string;
   child: ChildProcess;
   client: OpenCodeClient;
@@ -2021,6 +2021,8 @@ async function settleTurn(options: {
         options.client,
         options.sessionId,
         options.rpc,
+        options.promptId,
+        true,
         options.nativeObserved
       );
       try {
@@ -2032,21 +2034,22 @@ async function settleTurn(options: {
       // Four primary read RPCs per poll must leave CPU time for twenty resident bindings to prepare.
       await delay(1_000);
     }
-    const all = await listMessages(
+    const messages = await listMessages(
       options.client,
       options.sessionId,
       options.rpc,
+      options.promptId,
+      true,
       options.nativeObserved
     );
     await options.childrenObserved?.(options.rpc);
-    const messages = all.filter((message) => !options.before.has(message.id));
     // Correlate and freeze provenance before structural publication or capture finalization.
     const result = {
       ...interpretMessages(messages, options.promptId, options.secrets, outcome),
       interruptRequested: options.interruptRequested(),
     };
     try {
-      await options.published(all);
+      await options.published(messages);
     } catch (error) {
       if (!options.captureStopped(error)) throw error;
     }
@@ -2109,11 +2112,13 @@ interface NativeMessage {
   tools?: Record<string, unknown>[];
 }
 
-/** Collects bounded native pages, validating cursor cores and identities before any Turn projection. */
+/** Reads descending pages to the admitted user, bounding only this Turn's result. */
 async function listMessages(
   client: OpenCodeClient,
   sessionId: string,
   rpc: NativeRpc,
+  promptId: string,
+  accountResult: boolean,
   observeNative?: (row: unknown) => Promise<void>
 ): Promise<NativeMessage[]> {
   const rows: NativeMessage[] = [];
@@ -2126,25 +2131,11 @@ async function listMessages(
       'message.list',
       client.message.list({
         sessionID: sessionId,
-        ...(cursor ? { cursor } : { order: 'asc' as const }),
+        ...(cursor ? { cursor } : { order: 'desc' as const }),
       })
     );
     if (!Array.isArray(response.data)) {
       throw new Error('OpenCode message list has an unknown shape.');
-    }
-    for (const row of response.data) {
-      await observeNative?.(row);
-      const { content, ...envelope } = row as Record<string, unknown>;
-      contentBytes += nativeBytes(content);
-      envelopeBytes += nativeBytes(envelope);
-      if (contentBytes > RESULT_BYTE_LIMIT || envelopeBytes > RESULT_BYTE_LIMIT)
-        throw new Error('OpenCode native result exceeded 16 MiB.');
-      const message = readMessage(row);
-      if (identities.has(message.id)) {
-        throw new Error('OpenCode repeated one native message identity.');
-      }
-      identities.add(message.id);
-      rows.push(message);
     }
     const envelope: unknown = response.cursor;
     if (typeof envelope !== 'object' || envelope === null || Array.isArray(envelope)) {
@@ -2153,10 +2144,35 @@ async function listMessages(
     const next = (envelope as { next?: unknown }).next;
     if (next !== undefined && next !== null && (typeof next !== 'string' || next.length === 0))
       throw new Error('OpenCode pagination cursor is unknown.');
-    if (next === undefined || next === null) return rows;
+    // Check the complete fetched page before stopping at its anchor, including older rows.
+    for (const row of response.data) {
+      if (!row || typeof row.id !== 'string' || !row.id)
+        throw new Error('OpenCode message identity is missing.');
+      if (identities.has(row.id)) throw new Error('OpenCode repeated one native message identity.');
+      identities.add(row.id);
+    }
+    for (const row of response.data) {
+      await observeNative?.(row);
+      if (accountResult) {
+        const { content, ...envelope } = row as Record<string, unknown>;
+        contentBytes += nativeBytes(content);
+        envelopeBytes += nativeBytes(envelope);
+        if (contentBytes > RESULT_BYTE_LIMIT || envelopeBytes > RESULT_BYTE_LIMIT)
+          throw new Error('OpenCode native result exceeded 16 MiB.');
+      }
+      const message = readMessage(row);
+      rows.push(message);
+      if (message.id === promptId) {
+        if (message.type !== 'user')
+          throw new Error('OpenCode terminal evidence is not correlated to the admitted prompt.');
+        return rows.reverse();
+      }
+    }
+    if (next === undefined || next === null)
+      throw new Error('OpenCode admitted prompt anchor disappeared.');
     cursor = next;
   }
-  throw new Error('OpenCode message list did not end.');
+  throw new Error('OpenCode message list did not reach the admitted prompt.');
 }
 
 /** Counts content as UTF-8 bytes before accumulating parts or pages; stops at the bound. */
@@ -2172,24 +2188,31 @@ function nativeBytes(value: unknown): number {
   return bytes;
 }
 
-/** Detects new or changed already-published terminals before the next native prompt. */
+/** Selects settled evidence without retaining nonterminal native history. */
+function isTerminalMessage(row: NativeMessage): boolean {
+  return (
+    row.type === 'idle' ||
+    (row.type === 'assistant' && row.finish !== undefined && row.finish !== 'tool-calls')
+  );
+}
+
+/** Revalidates only the immediately preceding Turn's published terminal evidence. */
 function assertPublishedBoundary(
   previous: readonly NativeMessage[],
   current: readonly NativeMessage[]
 ): void {
   const old = new Map(previous.map((row) => [row.id, row]));
-  for (const row of current) {
+  const terminals = current.filter(isTerminalMessage);
+  for (const row of terminals) {
     const prior = old.get(row.id);
-    if (prior && JSON.stringify(prior) !== JSON.stringify(row))
+    if (!prior) throw new Error('OpenCode received late terminal evidence after publication.');
+    if (JSON.stringify(prior) !== JSON.stringify(row))
       throw new Error('OpenCode published terminal boundary changed.');
-    if (
-      !prior &&
-      (row.type === 'idle' || (row.type === 'assistant' && row.finish !== 'tool-calls'))
-    )
-      throw new Error('OpenCode received late terminal evidence after publication.');
   }
-  if (previous.some((row) => !current.some((candidate) => candidate.id === row.id)))
+  if (previous.some((row) => !terminals.some((candidate) => candidate.id === row.id)))
     throw new Error('OpenCode published terminal boundary disappeared.');
+  if (terminals.some((row, index) => row.id !== previous[index]?.id))
+    throw new Error('OpenCode published terminal boundary changed.');
 }
 
 function readMessage(value: unknown): NativeMessage {
@@ -2388,7 +2411,7 @@ function interpretMessages(
   outcome: string | undefined
 ): WorkerAdapterResult {
   // This pin has no assistant parent id. The admitted user message and the next idle
-  // delimit the Turn in its ordered conversation; prior ids were removed above.
+  // delimit the Turn in its ordered conversation, read from that user anchor.
   const promptIndex = messages.findIndex(
     (message) => message.id === promptId && message.type === 'user'
   );

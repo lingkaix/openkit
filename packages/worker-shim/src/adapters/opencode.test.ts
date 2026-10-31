@@ -17,6 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { ReasoningEffort } from '@openkit/protocol';
 
@@ -86,7 +87,7 @@ afterEach(async () => {
 
 describe('OpenCode resident adapter', () => {
   /** Uses the existing SDK-shaped double and child peer to observe retained conversation collection. */
-  function timelineFixture(second: 'new' | 'empty' | 'failed', parts: object[] = []) {
+  function timelineFixture(second: 'new' | 'empty' | 'failed' | 'completed', parts: object[] = []) {
     const layout = makeRoots();
     const creds = loopback('timeline-history', 'http://127.0.0.1:9');
     const child = stubbornChild([]);
@@ -94,26 +95,44 @@ describe('OpenCode resident adapter', () => {
     child.kill = () => {
       Object.assign(child, { exitCode: 0 });
       child.emit('exit', 0, null);
+      child.stdout?.emit('end');
+      child.stderr?.emit('end');
       child.emit('close', 0, null);
       return true;
     };
+    if (second === 'completed') {
+      // This valid peer exits normally from stdin EOF; a signal is not persistence-flush proof.
+      const stdin = new PassThrough();
+      Object.assign(child, { stdin });
+      stdin.once('finish', () => {
+        Object.assign(child, { exitCode: 0 });
+        child.emit('exit', 0, null);
+        child.stdout?.emit('end');
+        child.stderr?.emit('end');
+        child.emit('close', 0, null);
+      });
+    }
     const module = failingModule('prompt');
     const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
     let turn = 0;
     let history: object[] = [];
     client.session.prompt = async () => {
       turn += 1;
-      if (turn === 1 || second === 'new')
+      if (turn === 1 || second === 'new' || second === 'completed')
         history = [
           ...history,
           { id: `user-${turn}`, type: 'user' },
           {
             id: `answer-${turn}`,
             type: 'assistant',
-            finish: turn === 1 ? 'stop' : 'error',
+            finish: turn === 1 || second === 'completed' ? 'stop' : 'error',
             content: [{ type: 'text', text: 'answer' }, ...parts],
           },
-          { id: `idle-${turn}`, type: 'idle', outcome: turn === 1 ? 'succeeded' : 'failed' },
+          {
+            id: `idle-${turn}`,
+            type: 'idle',
+            outcome: turn === 1 || second === 'completed' ? 'succeeded' : 'failed',
+          },
         ];
       if (turn === 1 && second === 'failed')
         history = [
@@ -126,9 +145,14 @@ describe('OpenCode resident adapter', () => {
       id: 'sess-1',
       model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
       time: { idle: Number.MAX_SAFE_INTEGER },
-      outcome: turn === 1 && second !== 'failed' ? 'succeeded' : 'failed',
+      outcome:
+        (turn === 1 && second !== 'failed') || second === 'completed' ? 'succeeded' : 'failed',
     });
-    client.message.list = async () => ({ cursor: {}, data: history }) as never;
+    client.message.list = async (input) =>
+      ({
+        cursor: {},
+        data: input.order === 'desc' ? [...history].reverse() : [...history],
+      }) as never;
     module.OpenCode.make = () => client;
     const adapter = createOpenCodeAdapter({
       loadClient: async () => module,
@@ -139,6 +163,77 @@ describe('OpenCode resident adapter', () => {
       },
     });
     return { adapter, child, client, layout, creds, environment: () => environment };
+  }
+
+  // #529 consensus ruling scopes the boundary to the immediately preceding admitted Turn.
+  for (const corruption of ['changed terminal', 'missing terminal', 'missing anchor'] as const) {
+    it(`#529 fences ${corruption} inside the preceding published Turn before another prompt`, async () => {
+      const f = timelineFixture('completed');
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      await complete(session, turnInput(f.layout, f.creds, 'boundary-first', 'prompt-model'));
+      await complete(session, turnInput(f.layout, f.creds, 'boundary-second', 'prompt-model'));
+      const list = f.client.message.list;
+      f.client.message.list = async (...args) => {
+        const response = await list(...args);
+        return {
+          ...response,
+          data: response.data
+            .filter((row) =>
+              corruption === 'missing terminal'
+                ? row.id !== 'answer-2'
+                : corruption === 'missing anchor'
+                  ? row.id !== 'user-2'
+                  : true
+            )
+            .map((row) =>
+              corruption === 'changed terminal' && row.id === 'answer-2'
+                ? { ...row, finish: 'length' }
+                : row
+            ),
+        } as never;
+      };
+      const prompt = vi.spyOn(f.client.session, 'prompt');
+      await expect(
+        session.startTurn(turnInput(f.layout, f.creds, 'boundary-refused', 'prompt-model'))
+      ).rejects.toThrow();
+      expect(prompt).not.toHaveBeenCalled();
+      expect(session.childState()).toBe('absent');
+      expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+    });
+  }
+
+  for (const olderChange of ['changed', 'removed'] as const) {
+    it(`#529 allows ${olderChange} older history after the next Turn was published`, async () => {
+      const f = timelineFixture('completed');
+      const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+      sessions.push(session);
+      await complete(session, turnInput(f.layout, f.creds, 'older-first', 'prompt-model'));
+      await complete(session, turnInput(f.layout, f.creds, 'older-second', 'prompt-model'));
+      const list = f.client.message.list;
+      f.client.message.list = async (...args) => {
+        const response = await list(...args);
+        return {
+          ...response,
+          data: response.data
+            .filter(
+              (row) =>
+                olderChange !== 'removed' || !['user-1', 'answer-1', 'idle-1'].includes(row.id)
+            )
+            .map((row) =>
+              olderChange === 'changed' && row.id === 'answer-1'
+                ? { ...row, content: [{ type: 'text', text: 'native-owned older revision' }] }
+                : row
+            ),
+        } as never;
+      };
+      const result = await complete(
+        session,
+        turnInput(f.layout, f.creds, 'older-followup', 'prompt-model')
+      );
+      expect(result.assistantText).toBe('answer');
+      expect(session.childState()).toBe('running');
+    });
   }
 
   it('installs explicit supported V2 bounded-output controls in both native configuration layers', async () => {
@@ -211,7 +306,8 @@ describe('OpenCode resident adapter', () => {
       Buffer.from('{"id":"idle-1","type":"idle","outcome":"succeeded"}'),
     ].map((bytes) => retained.indexOf(bytes));
     expect(positions.every((position) => position >= 0)).toBe(true);
-    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    // RET E5 retains the original DESC response order before chronological interpretation.
+    expect(positions).toEqual([...positions].sort((a, b) => b - a));
     expect(
       native.every(
         ({ record }) =>
@@ -828,24 +924,21 @@ describe('OpenCode resident adapter', () => {
         ...(nativeInterrupted ? { outcome: 'interrupted' } : {}),
       };
     };
-    f.client.message.list = async () =>
-      ({
-        cursor: {},
-        data: !prompted
-          ? []
-          : [
-              { id: 'user-1', type: 'user' },
-              {
-                id: 'answer-1',
-                type: 'assistant',
-                content: [{ type: 'text', text: 'Partial native evidence.' }],
-                ...(nativeInterrupted ? { finish: 'error' } : {}),
-              },
-              ...(nativeInterrupted
-                ? [{ id: 'idle-1', type: 'idle', outcome: 'interrupted' }]
-                : []),
-            ],
-      }) as never;
+    f.client.message.list = async (input) => {
+      const data = !prompted
+        ? []
+        : [
+            { id: 'user-1', type: 'user' },
+            {
+              id: 'answer-1',
+              type: 'assistant',
+              content: [{ type: 'text', text: 'Partial native evidence.' }],
+              ...(nativeInterrupted ? { finish: 'error' } : {}),
+            },
+            ...(nativeInterrupted ? [{ id: 'idle-1', type: 'idle', outcome: 'interrupted' }] : []),
+          ];
+      return { cursor: {}, data: input.order === 'desc' ? data.reverse() : data } as never;
+    };
     const nativeInterrupt = vi.spyOn(f.client.session, 'interrupt').mockImplementation(async () => {
       nativeInterrupted = true;
       observedInterrupt();
@@ -1146,7 +1239,7 @@ describe('OpenCode resident adapter', () => {
           controller.abort();
           data =
             options.malformed === 'duplicate idle'
-              ? [...data, { ...data.at(-1), id: 'unrelated-idle' }]
+              ? [{ ...data.find((row) => row.type === 'idle'), id: 'unrelated-idle' }, ...data]
               : data.map((row) => (row.type === 'user' ? { ...row, id: 'wrong-prompt' } : row));
         }
         return { ...response, data } as never;
@@ -2227,7 +2320,14 @@ describe('OpenCode resident adapter', () => {
     };
     const originalModule = failingModule('prompt');
     const client = originalModule.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
-    client.session.prompt = async () => ({ id: 'user-1' });
+    let prompted = false;
+    client.session.prompt = async () => {
+      prompted = true;
+      return { id: 'user-1' };
+    };
+    // A live admitted prompt remains readable while interruption proof is withheld.
+    client.message.list = async () =>
+      ({ cursor: {}, data: prompted ? [{ id: 'user-1', type: 'user' }] : [] }) as never;
     client.session.get = async () => ({
       id: 'sess-1',
       time: { idle: 0 },
@@ -2764,12 +2864,12 @@ describe('OpenCode resident adapter', () => {
               ? {
                   ...response,
                   data: [
-                    ...response.data,
                     {
                       ...terminal,
                       id: 'msg_conflicting-final',
                       content: [{ type: 'text', text: 'contradiction' }],
                     },
+                    ...response.data,
                   ],
                 }
               : response;
@@ -3642,7 +3742,7 @@ describe('W4 round-five proof regressions', () => {
                 };
               if (corruption === 'duplicate idle') {
                 const idle = response.data.findLast((row) => row.type === 'idle');
-                return { ...response, data: [...response.data, { ...idle, id: 'duplicate-idle' }] };
+                return { ...response, data: [{ ...idle, id: 'duplicate-idle' }, ...response.data] };
               }
               if (corruption === 'invalid cursor') return { ...response, cursor: { next: 7 } };
               return response;
@@ -3676,7 +3776,7 @@ describe('W4 round-five proof regressions', () => {
               (row) => row.type === 'assistant' && row.finish === 'stop'
             );
             return published && final
-              ? { ...response, data: [...response.data, { ...final, id: 'late-final' }] }
+              ? { ...response, data: [{ ...final, id: 'late-final' }, ...response.data] }
               : response;
           },
         }),
@@ -3847,7 +3947,14 @@ describe('W4 round-five proof regressions', () => {
     const child = stubbornChild([]);
     const module = failingModule('prompt');
     const client = module.OpenCode.make({ baseUrl: 'http://127.0.0.1:9' });
-    client.session.prompt = async () => ({ id: 'user-1' });
+    let prompted = false;
+    client.session.prompt = async () => {
+      prompted = true;
+      return { id: 'user-1' };
+    };
+    // A live admitted prompt remains readable while interruption proof is withheld.
+    client.message.list = async () =>
+      ({ cursor: {}, data: prompted ? [{ id: 'user-1', type: 'user' }] : [] }) as never;
     client.session.get = async () => ({
       id: 'sess-1',
       time: { idle: 0 },
@@ -4109,6 +4216,120 @@ describe('W4 round-five proof regressions', () => {
       adapter.openSession(openInput(makeRoots(), loopback('incomplete', 'http://127.0.0.1:9')))
     ).rejects.toThrow('�');
   });
+
+  // #529 consensus: result budgets apply independently to the current admitted Turn.
+  it('R6 #529 admits successive genuine native results above the cumulative history bound', async () => {
+    const size = 9 * 1024 * 1024;
+    const firstText = 'a'.repeat(size);
+    const secondText = 'b'.repeat(size);
+    const markers = ['history-budget-first', 'history-budget-second', 'history-budget-third'];
+    const inference = await startSyntheticInference((request) => {
+      if (!request.body.tools?.length) return { text: 'bounded-history-title' };
+      const marker = latestMarker(requestTexts(request).join('\n'), markers);
+      return {
+        text:
+          marker === markers[0] ? firstText : marker === markers[1] ? secondText : 'third-small',
+      };
+    });
+    servers.push(inference);
+    const layout = makeRoots();
+    const creds = loopback('history-current-budget', inference.url);
+    const route: WorkerAdapterLlmRoute = {
+      ...acceptedRoute(creds, 'history-budget-model'),
+      modelParameters: {
+        contextWindow: 32 * 1024 * 1024,
+        maxOutputTokens: 4 * 1024 * 1024,
+        inputModalities: ['text'],
+        reasoning: false,
+      },
+    };
+    const session = await opencodeAdapter.openSession(openInput(layout, creds));
+    sessions.push(session);
+    const handle = await session.nativeHandle();
+    expect(handle.state).toBe('ready');
+    expect(Buffer.byteLength(firstText)).toBeLessThan(RESULT_LIMIT);
+    expect(Buffer.byteLength(secondText)).toBeLessThan(RESULT_LIMIT);
+    expect(Buffer.byteLength(firstText) + Buffer.byteLength(secondText)).toBeGreaterThan(
+      RESULT_LIMIT
+    );
+    const first = await complete(
+      session,
+      turnInput(layout, creds, markers[0]!, route.model, route)
+    );
+    expect(first.assistantText === firstText).toBe(true);
+    const second = await complete(
+      session,
+      turnInput(layout, creds, markers[1]!, route.model, route)
+    );
+    expect(second.assistantText === secondText).toBe(true);
+    const third = await complete(
+      session,
+      turnInput(layout, creds, markers[2]!, route.model, route)
+    );
+    expect(third.assistantText).toBe('third-small');
+    expect(await session.nativeHandle()).toEqual(handle);
+    // Actual native history must still carry both results; compaction is not the explanation.
+    const carried = inference.requests.findLast(
+      (request) =>
+        request.body.tools?.length &&
+        latestMarker(requestTexts(request).join('\n'), markers) === markers[2]
+    );
+    expect(carried !== undefined).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(carried!.body))).toBeGreaterThan(RESULT_LIMIT);
+    expect(requestTexts(carried!).some((text) => text === firstText)).toBe(true);
+    expect(requestTexts(carried!).some((text) => text === secondText)).toBe(true);
+  }, 180_000);
+
+  // Supported native limit=1 yields genuine opaque cursors and >20 retained pages.
+  it('R6 #529 admits current results with more than twenty retained native pages', async () => {
+    const inference = await startSyntheticInference(() => ({ text: 'small-current-result' }));
+    servers.push(inference);
+    const layout = makeRoots();
+    const creds = loopback('history-native-pages', inference.url);
+    let native!: import('@opencode/client').OpenCodeClient;
+    let retainedRead!: import('@opencode/client').OpenCodeClient['message']['list'];
+    const adapter = createOpenCodeAdapter({
+      async loadClient() {
+        const actual = await import('@opencode/client');
+        return {
+          OpenCode: {
+            make(options) {
+              native = actual.OpenCode.make(options);
+              retainedRead = native.message.list.bind(native.message);
+              // Narrow only an existing supported native page-size input; rows/cursors stay native.
+              native.message.list = (input) => retainedRead({ ...input, limit: 1 });
+              return native;
+            },
+          },
+        };
+      },
+    });
+    const session = await adapter.openSession(openInput(layout, creds));
+    sessions.push(session);
+    const handle = await session.nativeHandle();
+    expect(handle.state).toBe('ready');
+    for (let index = 0; index < 8; index += 1) {
+      const result = await complete(
+        session,
+        turnInput(layout, creds, `history-native-${index}`, 'model')
+      );
+      expect(result.assistantText).toBe('small-current-result');
+    }
+    const listed = await native.session.list({});
+    expect(listed.data).toHaveLength(1);
+    const retained = await retainedRead({
+      sessionID: listed.data[0]!.id,
+      order: 'asc',
+      limit: 100,
+    });
+    expect(retained.data.length).toBeGreaterThan(20);
+    const result = await complete(
+      session,
+      turnInput(layout, creds, 'history-native-final', 'model')
+    );
+    expect(result.assistantText).toBe('small-current-result');
+    expect(await session.nativeHandle()).toEqual(handle);
+  }, 180_000);
 
   it('R6 rejects a real provider Unicode result above 16 MiB', async () => {
     const layout = makeRoots();
@@ -4739,7 +4960,7 @@ async function realModuleRejecting(
                             (row as { finish?: unknown }).finish === 'length')
                       );
                       return terminal
-                        ? { ...response, data: [...response.data, terminal] }
+                        ? { ...response, data: [terminal, ...response.data] }
                         : response;
                     };
                   }
@@ -5046,6 +5267,7 @@ describe('W4 round-six admitted catalog', () => {
 });
 
 describe('W4 round-seven collection proof', () => {
+  // #529 consensus ruling: these late arrivals are at the head of the descending native view.
   it('r7: fences a same-id late final before a later prompt or attachment', async () => {
     const layout = makeRoots();
     const inference = await startSyntheticInference(() => ({ text: 'published-final' }));
@@ -5062,7 +5284,7 @@ describe('W4 round-seven collection proof', () => {
               (row) => row.type === 'assistant' && row.finish === 'stop'
             );
             return published && final
-              ? { ...response, data: [...response.data, { ...final }] }
+              ? { ...response, data: [{ ...final }, ...response.data] }
               : response;
           },
         }),
@@ -5100,7 +5322,8 @@ describe('W4 round-seven collection proof', () => {
     ).toBe(false);
   }, 60000);
 
-  it('r7: rejects a duplicated prior id in settlement before prior-id filtering', async () => {
+  // #529 consensus ruling: uniqueness covers fetched current-result rows, not all prior history.
+  it('r7: rejects a duplicated fetched current id in settlement', async () => {
     const layout = makeRoots();
     const inference = await startSyntheticInference(() => ({ text: 'native-final' }));
     servers.push(inference);
@@ -5118,7 +5341,7 @@ describe('W4 round-seven collection proof', () => {
               (row) => row.type === 'assistant' && row.finish === 'stop'
             );
             return prompts === 2 && final
-              ? { ...response, data: [...response.data, { ...final }] }
+              ? { ...response, data: [{ ...final }, ...response.data] }
               : response;
           },
         }),
@@ -5135,7 +5358,8 @@ describe('W4 round-seven collection proof', () => {
     }).toEqual({ status: 'failed', text: null, child: 'absent' });
   }, 60000);
 
-  it('r7: rejects a duplicated prior identity across native pages', async () => {
+  // #529 consensus ruling: a duplicate spanning fetched pages must fail before anchor slicing.
+  it('r7: rejects a duplicated fetched identity across native pages', async () => {
     const layout = makeRoots();
     const inference = await startSyntheticInference(() => ({ text: 'page-final' }));
     servers.push(inference);
@@ -5156,7 +5380,7 @@ describe('W4 round-seven collection proof', () => {
               const list = client.message.list;
               client.message.list = async (input) => {
                 if (prompts !== 2) return list(input);
-                const response = await list({ sessionID: input.sessionID, order: 'asc' });
+                const response = await list({ sessionID: input.sessionID, order: 'desc' });
                 let page = response;
                 for (let count = 0; page.cursor.next && count < 20; count += 1) {
                   page = await list({ sessionID: input.sessionID, cursor: page.cursor.next });
@@ -5170,7 +5394,7 @@ describe('W4 round-seven collection proof', () => {
                 return input.cursor === 'r7-test-page'
                   ? {
                       ...response,
-                      data: [...response.data.slice(index + 1), response.data[index]!],
+                      data: [response.data[index]!, ...response.data.slice(index + 1)],
                       cursor: { next: null, additive: true },
                     }
                   : {

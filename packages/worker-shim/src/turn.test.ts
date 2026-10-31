@@ -566,9 +566,8 @@ async function captureBoundaryResident(
       remove: async () => undefined,
     },
     message: {
-      list: async () => ({
-        cursor: {},
-        data: prompted
+      list: async (input: { order?: 'asc' | 'desc' }) => {
+        const data = prompted
           ? [
               { id: 'native-user', type: 'user' },
               ...(timing === 'collection'
@@ -583,8 +582,9 @@ async function captureBoundaryResident(
                 : []),
               { id: 'native-idle', type: 'idle', outcome: 'interrupted' },
             ]
-          : [],
-      }),
+          : [];
+        return { cursor: {}, data: input.order === 'desc' ? data.reverse() : data };
+      },
     },
     permission: { list: async () => [] },
     session: {
