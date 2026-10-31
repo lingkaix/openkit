@@ -21,6 +21,7 @@ import {
   isResourcePolicyRequest,
   ResourcePolicyChangeSchema,
   type ResourcePolicyRequestDependencies,
+  ResourcePolicyRequestIntentSchema,
   raiseResourcePolicyRequest,
 } from './resource-policy-requests.js';
 
@@ -203,7 +204,25 @@ export function createResourcePolicyOperationImplementations(
           agentSessionId: turn?.agentSessionId ?? null,
           now,
         };
-        preflightPendingRequest(db.sqlite, { ...raised, kind: 'approval' });
+        const duplicate = preflightPendingRequest(db.sqlite, {
+          ...raised,
+          kind: 'approval',
+          governedIntent: ResourcePolicyRequestIntentSchema.parse({
+            operation: 'workspace.resource-access-change',
+            change,
+            origin,
+          }),
+        });
+        if (duplicate)
+          return resourcePolicyRequestView(
+            requireUsableRecord(
+              services.store,
+              db.sqlite,
+              duplicate.requestId,
+              duplicate.workspaceId,
+              duplicate.threadId
+            )
+          );
         if (!worker)
           await services.store.createTurn(
             input.workspaceId,

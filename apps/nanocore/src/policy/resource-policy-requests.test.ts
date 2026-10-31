@@ -133,6 +133,123 @@ async function fixture() {
 }
 
 describe('resource Policy Pending Request commands', () => {
+  it.each([
+    1, 16,
+  ])('deduplicates public resource Policy requests before publication and the bound with %i pending', async (pendingCount) => {
+    const f = await fixture();
+    try {
+      const handlers = createResourcePolicyOperationImplementations({
+        coreDb: f.coreDb,
+        store: f.store,
+        runtimeConfigOperations: { manager: f.manager, filesForActor: () => f.files },
+        repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(f.coreDb.dataRoot, workspaceId),
+      });
+      const context: AdmittedOperationContext = {
+        kind: 'public',
+        actor: f.actor,
+        actorRef: { kind: 'user', id: f.actor.userId },
+        scope: { kind: 'workspace', workspaceId: f.workspace.id },
+      };
+      const inputs: Parameters<(typeof handlers)['workspace.resource-access-request']>[0][] = [];
+      const requests: Awaited<
+        ReturnType<(typeof handlers)['workspace.resource-access-request']>
+      >[] = [];
+      const configBefore = readFileSync(f.configPath, 'utf8');
+      const revision = f.files.readFile(`workspaces/${f.workspace.id}/workspace.jsonc`).file
+        .revision;
+      for (let index = 0; index <= pendingCount; index += 1) {
+        const target = await f.store.createThread(f.workspace.id, `Requested target ${index}`);
+        const input: Parameters<(typeof handlers)['workspace.resource-access-request']>[0] = {
+          workspaceId: f.workspace.id,
+          threadId: f.thread.id,
+          requestId: randomUUID(),
+          change: {
+            resource: { family: 'thread', id: target.id },
+            replacement: {
+              schemaVersion: 1,
+              statements: [
+                {
+                  ...f.boundary,
+                  scope: {
+                    ...f.boundary.scope,
+                    resources: [
+                      {
+                        kind: 'container',
+                        container: {
+                          owner: { kind: 'workspace', workspaceId: f.workspace.id },
+                          kind: 'thread',
+                          id: target.id,
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        };
+        inputs.push(input);
+        if (index < pendingCount) {
+          const request = await handlers['workspace.resource-access-request'](input, context);
+          expect(request).toMatchObject({
+            status: 'pending',
+            change: { expectedRevision: revision },
+          });
+          requests.push(request);
+        }
+      }
+      const beforeTurns = f.store.listThreadTurns(f.workspace.id, f.thread.id);
+      const beforeItems = f.store.listThreadItems(f.workspace.id, f.thread.id);
+      const beforeApprovals = requests.map((request) => f.store.getApproval(request.id!));
+      expect(beforeTurns).toHaveLength(pendingCount);
+      expect(beforeItems).toHaveLength(pendingCount);
+      const repeatId = randomUUID();
+      await expect
+        .soft(
+          handlers['workspace.resource-access-request'](
+            { ...inputs[0]!, requestId: repeatId },
+            context
+          )
+        )
+        .resolves.toEqual(requests[0]);
+      expect.soft(f.store.listThreadTurns(f.workspace.id, f.thread.id)).toEqual(beforeTurns);
+      expect.soft(f.store.listThreadItems(f.workspace.id, f.thread.id)).toEqual(beforeItems);
+      expect(requests.map((request) => f.store.getApproval(request.id!))).toEqual(beforeApprovals);
+      expect(() => f.store.getApproval(repeatId)).toThrow(/not found/i);
+      const beforeDistinctTurns = f.store.listThreadTurns(f.workspace.id, f.thread.id);
+      const beforeDistinctItems = f.store.listThreadItems(f.workspace.id, f.thread.id);
+      const distinctInput = inputs[pendingCount]!;
+      if (pendingCount === 16) {
+        await expect(
+          handlers['workspace.resource-access-request'](distinctInput, context)
+        ).rejects.toMatchObject({ code: 'request_limit_reached', status: 409 });
+        expect(f.store.listThreadTurns(f.workspace.id, f.thread.id)).toEqual(beforeDistinctTurns);
+        expect(f.store.listThreadItems(f.workspace.id, f.thread.id)).toEqual(beforeDistinctItems);
+        expect(() => f.store.getApproval(distinctInput.requestId)).toThrow(/not found/i);
+      } else {
+        const distinct = await handlers['workspace.resource-access-request'](
+          distinctInput,
+          context
+        );
+        expect(distinct.status).toBe('pending');
+        expect(distinct.id).not.toBe(requests[0]!.id);
+        expect(f.store.getApproval(distinct.id!).status).toBe('pending');
+        expect(f.store.listThreadTurns(f.workspace.id, f.thread.id)).toHaveLength(
+          beforeDistinctTurns.length + 1
+        );
+        expect(f.store.listThreadItems(f.workspace.id, f.thread.id)).toHaveLength(
+          beforeDistinctItems.length + 1
+        );
+      }
+      expect(readFileSync(f.configPath, 'utf8')).toBe(configBefore);
+      expect(f.files.readFile(`workspaces/${f.workspace.id}/workspace.jsonc`).file.revision).toBe(
+        revision
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
   it('rolls back failed native Item publication and keeps retained missing lineage inspect-only', async () => {
     const f = await fixture();
     try {

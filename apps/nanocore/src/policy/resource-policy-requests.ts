@@ -75,7 +75,8 @@ export const ResourcePolicyRequestOriginSchema = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 
-const IntentSchema = z
+/** Closed captured intent reused before Pending allocation and during later requester checks. */
+export const ResourcePolicyRequestIntentSchema = z
   .object({
     operation: z.literal('workspace.resource-access-change'),
     origin: ResourcePolicyRequestOriginSchema,
@@ -111,7 +112,7 @@ export async function raiseResourcePolicyRequest(
   const raisedInput: RaisePendingRequestInput = {
     ...input,
     kind: 'approval',
-    governedIntent: IntentSchema.parse({
+    governedIntent: ResourcePolicyRequestIntentSchema.parse({
       operation: 'workspace.resource-access-change',
       change,
       origin,
@@ -149,7 +150,7 @@ export function isResourcePolicyRequesterCurrent(
 ): boolean {
   if (!isResourcePolicyRequest(record)) return false;
   try {
-    const { origin } = IntentSchema.parse(record.governedIntent);
+    const { origin } = ResourcePolicyRequestIntentSchema.parse(record.governedIntent);
     if (origin.kind === 'public') {
       const actor: Actor = {
         kind: origin.actor.kind,
@@ -253,7 +254,7 @@ export function checkResourcePolicyCommandIntent(
       403
     );
   }
-  const { change } = IntentSchema.parse(record.governedIntent);
+  const { change } = ResourcePolicyRequestIntentSchema.parse(record.governedIntent);
   let thread: ReturnType<FsStore['getThread']>;
   try {
     thread = dependencies.store.getThread(record.workspaceId, change.resource.id);
@@ -340,7 +341,7 @@ export async function applyResourcePolicyRequest(
   }
   checkResourcePolicyCommandIntent(dependencies, record, input.actor);
   checkResourcePolicyCommandIntent(dependencies, record, record.decidingActorContext);
-  const { change } = IntentSchema.parse(record.governedIntent);
+  const { change } = ResourcePolicyRequestIntentSchema.parse(record.governedIntent);
   const id = `workspaces/${record.workspaceId}/workspace.jsonc`;
   const file = dependencies.files.readFile(id);
   const config = WorkspaceConfigSchema.parse(parse(file.content));

@@ -60,6 +60,102 @@ import { createDefaultWorkerMcpGateway, type WorkerMcpGateway } from './worker-m
 
 const NOW = '2026-09-30T00:00:00.000Z';
 
+it.each([
+  'person',
+  'coordinator',
+] as const)('deduplicates the same canonical command intent from a %s before recording another approval', async (requesterKind) => {
+  const { coreDb, store, dataRoot } = await openPendingApp();
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
+  const responsibleUserId = 'usr_00000000-0000-7000-8000-000000000001';
+  const agentId = requesterKind === 'coordinator' ? 'goal-coordinator' : null;
+  const turn = await store.createTurn(
+    workspaceId,
+    threadId,
+    'One exact command intent',
+    { kind: 'user', id: responsibleUserId },
+    null,
+    agentId ? { executorKind: 'coordinator', agentId } : { executorKind: 'person' }
+  );
+  const db = openWorkspaceDb(dataRoot, workspaceId);
+  applyScopedMigrations(db);
+  try {
+    const requestId = '00000000-0000-4000-8000-000000000473';
+    const repeatId = '00000000-0000-4000-8000-000000000474';
+    const input: RaisePendingRequestInput = {
+      requestId,
+      requestItemId: pendingRequestItemId(requestId, 'request'),
+      workspaceId,
+      threadId,
+      raisingTurnId: turn.id,
+      kind: 'approval',
+      requesterKind,
+      agentId,
+      responsibleUserId,
+      governedIntent: { operation: 'canonical-test', expectedRevision: 1 },
+      approval: {
+        kind: 'permission',
+        title: 'Canonical request',
+        description: 'One exact command.',
+      },
+      now: NOW,
+    };
+    const first = await raiseRecordedPendingRequest(store, db.sqlite, input);
+    const beforeItems = store.listThreadItems(workspaceId, threadId);
+    const beforeApproval = store.getApproval(requestId);
+    expect(validateCanonicalLoad(first, store.listThreadTurns(workspaceId, threadId))).toBeNull();
+    const repeat = await raiseRecordedPendingRequest(store, db.sqlite, {
+      ...input,
+      requestId: repeatId,
+      requestItemId: pendingRequestItemId(repeatId, 'request'),
+      governedIntent: { expectedRevision: 1, operation: 'canonical-test' },
+    });
+    expect.soft(repeat).toEqual(first);
+    expect.soft(readPendingRequest(db.sqlite, repeatId)).toBeNull();
+    expect.soft(store.listThreadItems(workspaceId, threadId)).toEqual(beforeItems);
+    expect(store.getApproval(requestId)).toEqual(beforeApproval);
+    expect.soft(() => store.getApproval(repeatId)).toThrow(/not found/i);
+    const changedId = '00000000-0000-4000-8000-000000000475';
+    const changed = await raiseRecordedPendingRequest(store, db.sqlite, {
+      ...input,
+      requestId: changedId,
+      requestItemId: pendingRequestItemId(changedId, 'request'),
+      governedIntent: { operation: 'canonical-test', expectedRevision: 2 },
+    });
+    expect(changed.requestId).toBe(changedId);
+    expect(changed.requestId).not.toBe(first.requestId);
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: NOW });
+    const otherUserId = 'usr_00000000-0000-7000-8000-000000000002';
+    const otherAgentId = requesterKind === 'coordinator' ? 'goal-coordinator' : null;
+    const otherTurn = await store.createTurn(
+      workspaceId,
+      threadId,
+      'A different requester',
+      { kind: 'user', id: otherUserId },
+      null,
+      otherAgentId
+        ? { executorKind: 'coordinator', agentId: otherAgentId }
+        : { executorKind: 'person' }
+    );
+    const otherId = '00000000-0000-4000-8000-000000000476';
+    const other = await raiseRecordedPendingRequest(store, db.sqlite, {
+      ...input,
+      requestId: otherId,
+      requestItemId: pendingRequestItemId(otherId, 'request'),
+      raisingTurnId: otherTurn.id,
+      agentId: otherAgentId,
+      responsibleUserId: otherUserId,
+    });
+    expect(other.requestId).toBe(otherId);
+    expect(other.requestId).not.toBe(first.requestId);
+    expect(validateCanonicalLoad(other, store.listThreadTurns(workspaceId, threadId))).toBeNull();
+    expect(store.getApproval(otherId).status).toBe('pending');
+  } finally {
+    db.sqlite.close();
+    coreDb.sqlite.close();
+  }
+});
+
 it('permits denial of a person command intent whose exact detail is unavailable', async () => {
   const { store, coreDb, dataRoot } = await openPendingApp();
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';

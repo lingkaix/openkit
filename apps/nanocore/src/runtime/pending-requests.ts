@@ -2149,7 +2149,12 @@ function sameQualifiedBinding(
   record: PendingRequestRecord,
   input: RaisePendingRequestInput
 ): boolean {
-  if (record.threadId !== input.threadId || record.kind !== input.kind) return false;
+  if (
+    record.workspaceId !== input.workspaceId ||
+    record.threadId !== input.threadId ||
+    record.kind !== input.kind
+  )
+    return false;
   if (input.kind === 'user-input') {
     return (
       record.agentId === (input.agentId ?? null) &&
@@ -2157,7 +2162,19 @@ function sameQualifiedBinding(
       record.argumentsDigest === (input.questionDigest ?? null)
     );
   }
-  if (!input.call || !record.serverId) return false;
+  if (!input.call) {
+    // Command intents deduplicate across request ids only for the exact same requester and effect.
+    return (
+      record.serverId === null &&
+      record.governedIntent !== null &&
+      input.governedIntent != null &&
+      record.requesterKind === input.requesterKind &&
+      record.agentId === (input.agentId ?? null) &&
+      record.responsibleUserId === input.responsibleUserId &&
+      canonicalJsonText(record.governedIntent) === canonicalJsonText(input.governedIntent)
+    );
+  }
+  if (!record.serverId) return false;
   return (
     record.serverId === input.call.serverId &&
     record.catalogRevision === input.call.catalogRevision &&
