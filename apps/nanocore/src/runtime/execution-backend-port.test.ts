@@ -85,7 +85,12 @@ function attempts(db: ReturnType<typeof openCoreDb>): Record<string, unknown>[] 
 async function fixture(
   disposition: Observation['disposition'] = 'accepted',
   _placement: 'local' | 'remote' = 'local',
-  holdSubmitResponse = false
+  holdSubmitResponse = false,
+  options: {
+    readonly emptyInspectList?: boolean;
+    readonly cancelWithoutFence?: boolean;
+    readonly lateCreate?: boolean;
+  } = {}
 ) {
   const db = openCoreDb(mkdtempSync(join(tmpdir(), 'route-b-port-')));
   applyMigrations(db);
@@ -105,6 +110,7 @@ async function fixture(
   let physicalCapacityAvailable = true;
   let observed: Observation | null = null;
   let submitted = Promise.withResolvers<void>();
+  let lostSubmitHeld = false;
   const submitResponse = Promise.withResolvers<void>();
   const dispatchErrors: unknown[] = [];
   const observations = new Map<string, Observation | null>();
@@ -125,17 +131,22 @@ async function fixture(
       observations.set(input.attemptId, observed);
       // A held external response leaves the real before-call unknown intent open.
       submitted.resolve();
-      if (holdSubmitResponse) await submitResponse.promise;
+      if (holdSubmitResponse && !(options.lateCreate && lostSubmitHeld)) {
+        lostSubmitHeld = true;
+        await submitResponse.promise;
+      }
       return observed;
     }),
     inspect: vi.fn(
       async (input: Correlation): Promise<Observation | null> =>
-        observations.get(input.attemptId) ?? null
+        options.emptyInspectList
+          ? ([] as unknown as Observation)
+          : (observations.get(input.attemptId) ?? null)
     ),
     cancel: vi.fn(
       async (input: Correlation): Promise<Observation> => ({
         ...input,
-        disposition: 'accepted',
+        disposition: options.cancelWithoutFence ? 'unknown' : 'accepted',
         execution: 'unknown',
         fenceRef: null,
         outcomeRef: null,
@@ -1080,6 +1091,101 @@ describe('execution backend port through real Core coordination', () => {
       ).not.toBe('closed');
       expect(f.store.getTurnById(entry.turnId).status).not.toBe('completed');
     } finally {
+      f.db.sqlite.close();
+    }
+  });
+
+  it('keeps a lost submit unknown and closing after an empty inspect list, a fenceless kill ack, and a late create on another thread', async () => {
+    const f = await fixture('accepted', 'local', true, {
+      cancelWithoutFence: true,
+      emptyInspectList: true,
+      lateCreate: true,
+    });
+    try {
+      await f.queue('lost-reply');
+      await f.dispatch();
+      expect(f.port.submit).toHaveBeenCalledOnce();
+      const original = f.effectCalls[0]!;
+      const lost = attempts(f.db).find((row) => row.attempt_id === original.attemptId)!;
+      expect(lost.disposition).toBe('unknown');
+      expect(lost.phase).toBe('open');
+      const deadline = String(lost.deadline);
+      await runSchedulerRecoveryMaintenance(f.db, {
+        ...f.recoveryInput,
+        now: () => new Date(Date.parse(deadline) + 1).toISOString(),
+      });
+      expect(f.port.cancel).toHaveBeenCalledOnce();
+      expect(f.port.cancel.mock.calls[0]![0]).toMatchObject({
+        attemptId: original.attemptId,
+        operationId: original.operationId,
+        bindingRef: original.bindingRef,
+      });
+      await expect(f.port.cancel.mock.results[0]!.value).resolves.toMatchObject({
+        disposition: 'unknown',
+        fenceRef: null,
+      });
+      expect(f.port.inspect).toHaveBeenCalled();
+      const inspectResults = await Promise.all(
+        f.port.inspect.mock.results.map((result) => result.value)
+      );
+      expect(inspectResults).toContainEqual([]);
+      const afterKill = attempts(f.db).find((row) => row.attempt_id === original.attemptId)!;
+      expect(afterKill).toMatchObject({
+        attempt_id: original.attemptId,
+        binding_ref: original.bindingRef,
+        disposition: 'unknown',
+        fence_ref: null,
+        operation_id: original.operationId,
+        phase: 'closing',
+      });
+      expect(afterKill.disposition).not.toBe('not_accepted');
+      expect(afterKill.phase).not.toBe('closed');
+      const siblingThread = 'th_00000000-0000-7c17-8000-000000000171';
+      const sibling = await f.queue('late-create', siblingThread);
+      await f.dispatch();
+      await vi.waitFor(() =>
+        expect(f.effectCalls.some((call) => call.attemptId !== original.attemptId)).toBe(true)
+      );
+      const late = f.effectCalls.find((call) => call.attemptId !== original.attemptId)!;
+      expect(late.attemptId).not.toBe(original.attemptId);
+      expect(late.bindingRef).not.toBe(original.bindingRef);
+      expect(late.operationId).not.toBe(original.operationId);
+      const siblingAttempt = attempts(f.db).find((row) => row.turn_id === sibling.turnId)!;
+      expect(siblingAttempt).toMatchObject({
+        attempt_id: late.attemptId,
+        disposition: 'accepted',
+        turn_id: sibling.turnId,
+      });
+      expect(siblingAttempt.phase).not.toBe('closed');
+      expect(siblingAttempt.terminal_cause).not.toBe('backend-busy');
+      const stillLost = attempts(f.db).find((row) => row.attempt_id === original.attemptId)!;
+      expect(stillLost).toMatchObject({
+        attempt_id: original.attemptId,
+        binding_ref: original.bindingRef,
+        disposition: 'unknown',
+        operation_id: original.operationId,
+        phase: 'closing',
+      });
+      expect(f.effectCalls.filter((call) => call.attemptId === original.attemptId)).toHaveLength(1);
+      expect(f.nativeStarts.filter((call) => call.attemptId === original.attemptId)).toHaveLength(
+        1
+      );
+      await runSchedulerRestartRecovery(f.db, f.recoveryInput);
+      await runSchedulerRecoveryMaintenance(f.db, {
+        ...f.recoveryInput,
+        now: () => new Date(Date.parse(deadline) + 1).toISOString(),
+      });
+      expect(f.effectCalls.filter((call) => call.attemptId === original.attemptId)).toHaveLength(1);
+      expect(f.nativeStarts.filter((call) => call.attemptId === original.attemptId)).toHaveLength(
+        1
+      );
+      expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)).toMatchObject({
+        disposition: 'unknown',
+        phase: 'closing',
+      });
+    } finally {
+      f.settleSubmitResponse();
+      await new Promise((resolve) => setImmediate(resolve));
       f.db.sqlite.close();
     }
   });

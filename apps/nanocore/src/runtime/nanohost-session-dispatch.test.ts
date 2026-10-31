@@ -2462,4 +2462,134 @@ describe('authoritative NanoHost session dispatch', () => {
       coreDb.sqlite.close();
     }
   });
+
+  it('retries one image.acquire mutation on the same receiver key and runs the host body once', async () => {
+    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-acquire-retry-')));
+    applyMigrations(coreDb);
+    const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createServerThread('Image acquire retry', undefined, 'conversation');
+    const publicationTurn = await store.createServerTurn(thread.id, 'Acquire one image.', actor);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({
+      coreDb,
+      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+      sessionAuthority: authority,
+    });
+    const target = {
+      deploymentId: 'deployment-image-retry',
+      identityId: 'host-image-retry',
+      targetId: 'host-image-retry',
+    };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: '2026-08-10T00:00:00.000Z',
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionEffectRoutes({ app, dispatch });
+    const listener = getRequestListener(app.fetch);
+    let admitted = false;
+    const server = createHttp2Server((request, response) => {
+      if (!admitted) {
+        authority.admit({
+          connectionGeneration: 1,
+          identityId: target.identityId,
+          physicalConnection: readNanoHostPhysicalConnectionContext(request)!,
+        });
+        admitted = true;
+      }
+      void listener(request, response);
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      const post = async (path: string, body: unknown) => {
+        const stream = client!.request({
+          ':method': 'POST',
+          ':path': path,
+          'content-type': 'application/json',
+        });
+        const received = once(stream, 'response');
+        stream.end(JSON.stringify(body));
+        const [headers] = await received;
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        return {
+          body: Buffer.concat(chunks).toString(),
+          status: Number(headers[':status']),
+        };
+      };
+      expect(
+        (await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'a'.repeat(64) }))
+          .status
+      ).toBe(204);
+      const requestId = 'e'.repeat(64);
+      const digest = `sha256:${'c'.repeat(64)}`;
+      const imageSettlement = {
+        authoredArtifactId: testEntityId('ar', 'artifact_image_retry'),
+        authoredArtifactVersion: 1,
+        authoredContentDigest: `sha256:${'a'.repeat(64)}`,
+        inputDigest: `sha256:${'b'.repeat(64)}`,
+      };
+      const imageExecution = { actor, authorize: () => true, workId: publicationTurn.id };
+      const input = { imageReference: 'openkit:test' };
+      const pending = dispatch.effect({
+        imageExecution,
+        imageSettlement,
+        input,
+        kind: 'image.acquire',
+        requestId,
+      });
+      const delivered = await post('/api/nanohost/transport/effects/image.acquire', {});
+      expect(delivered.status).toBe(200);
+      expect(JSON.parse(delivered.body)).toMatchObject({
+        imageReference: 'openkit:test',
+        requestId,
+      });
+      expect(
+        (await post('/api/nanohost/transport/effects/image.acquire/result', { digest, requestId }))
+          .status
+      ).toBe(204);
+      await expect(pending).resolves.toEqual({ digest });
+      await expect(
+        dispatch.effect({
+          imageExecution,
+          imageSettlement,
+          input,
+          kind: 'image.acquire',
+          requestId,
+        })
+      ).resolves.toEqual({ digest });
+      const idle = await post('/api/nanohost/transport/effects/image.acquire', {});
+      expect(idle.status).toBe(204);
+      expect(idle.body).toBe('');
+      await expect(
+        dispatch.effect({
+          imageExecution,
+          imageSettlement: {
+            ...imageSettlement,
+            inputDigest: `sha256:${'d'.repeat(64)}`,
+          },
+          input,
+          kind: 'image.acquire',
+          requestId,
+        })
+      ).rejects.toThrow(/conflicts/i);
+      const afterConflict = await post('/api/nanohost/transport/effects/image.acquire', {});
+      expect(afterConflict.status).toBe(204);
+      expect(afterConflict.body).toBe('');
+      expect(
+        [delivered, idle, afterConflict].filter((response) => response.status === 200)
+      ).toEqual([delivered]);
+    } finally {
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+    }
+  });
 });
