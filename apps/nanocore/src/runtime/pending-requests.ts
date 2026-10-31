@@ -1474,6 +1474,50 @@ export function loadApprovalProjectionsFromSqlite(
   return approvals;
 }
 
+/**
+ * Reads original Pending provenance before evaluating the complete Workspace Turn census and receipts.
+ * The synchronous census is lazy so an unreadable or foreign request fails before history is read.
+ */
+export function requireUsablePendingRequest(
+  sqlite: Database.Database,
+  requestId: string,
+  workspaceId: string,
+  threadId: string,
+  readWorkspaceTurns: () => readonly Turn[]
+): PendingRequestRecord {
+  let record: PendingRequestRecord | null;
+  try {
+    record = readPendingRequest(sqlite, requestId);
+  } catch (error) {
+    if (error instanceof PendingRequestCommandError) throw error;
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'The pending request cannot be read.',
+      409
+    );
+  }
+  if (!record || record.workspaceId !== workspaceId || record.threadId !== threadId) {
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'The pending request is missing.',
+      409
+    );
+  }
+  const failure = validateCanonicalLoad(
+    record,
+    readWorkspaceTurns(),
+    readCommandRequestRecordsFromSqlite(sqlite)
+  );
+  if (failure) {
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'The pending request is contradictory.',
+      409
+    );
+  }
+  return record;
+}
+
 /** Canonical-load failure. */
 export interface CanonicalLoadFailure {
   /** Request that failed. */

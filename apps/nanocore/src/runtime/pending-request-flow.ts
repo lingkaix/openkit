@@ -46,6 +46,7 @@ import {
   projectApprovalRequest,
   type RaisePendingRequestInput,
   readPendingRequest,
+  requireUsablePendingRequest,
   selectReadyOutcomes,
   validateCanonicalLoad,
 } from './pending-requests.js';
@@ -1383,6 +1384,7 @@ function syncApproval(store: FsStore, record: PendingRequestRecord): void {
   }
 }
 
+/** Checks original Pending provenance with the Store's complete Workspace Turn census. */
 export function requireUsableRecord(
   store: FsStore,
   sqlite: import('better-sqlite3').Database,
@@ -1390,39 +1392,11 @@ export function requireUsableRecord(
   workspaceId: string,
   threadId: string
 ): PendingRequestRecord {
-  let record: PendingRequestRecord | null;
-  try {
-    record = readPendingRequest(sqlite, requestId);
-  } catch (error) {
-    if (error instanceof PendingRequestCommandError) throw error;
-    throw new PendingRequestCommandError(
-      'recovery_required',
-      'The pending request cannot be read.',
-      409
-    );
-  }
-  if (!record || record.workspaceId !== workspaceId || record.threadId !== threadId) {
-    throw new PendingRequestCommandError(
-      'recovery_required',
-      'The pending request is missing.',
-      409
-    );
-  }
-  const failure = validateCanonicalLoad(
-    record,
+  return requireUsablePendingRequest(sqlite, requestId, workspaceId, threadId, () =>
     store
       .listThreads(workspaceId)
-      .flatMap((thread) => store.listThreadTurns(workspaceId, thread.id)),
-    readCommandRequestRecordsFromSqlite(sqlite)
+      .flatMap((thread) => store.listThreadTurns(workspaceId, thread.id))
   );
-  if (failure) {
-    throw new PendingRequestCommandError(
-      'recovery_required',
-      'The pending request is contradictory.',
-      409
-    );
-  }
-  return record;
 }
 
 function assertResponsibleActor(

@@ -468,3 +468,5 @@ Worker Context Package Material selection applies the existing explicit, sensiti
 MCP Tool listings use `mcp-result-too-large` with the existing bulk-output hint when either the parsed list or its native response exceeds its bound. Oversized initialization retains server-unavailable classification and does not establish Tool contact.
 
 Recovery hydration fixtures preserve the explicitly authored AEP request ID and closed actor-kind literals in strict test-inclusive type checks. Their type annotations do not change retained inputs, mismatch cases or restart assertions.
+
+The Pending domain validates original record, complete Workspace Turn provenance and command receipts through `requireUsablePendingRequest`. Its synchronous census is evaluated only after the owned row is readable and matched. Main Flow gathers Store facts at that boundary; Assistant handoff uses the same domain check without importing Flow.

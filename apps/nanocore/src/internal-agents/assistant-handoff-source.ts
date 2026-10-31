@@ -1,13 +1,13 @@
 import { type ActorRef, responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import { requireUsableRecord } from '../runtime/pending-request-flow.js';
 import {
   assistantPendingHandoffIds,
   assistantPendingHandoffResultItemId,
   assistantPendingOutcomeSource,
   assistantPendingOutcomeSourceHash,
   listThreadPendingRequests,
+  requireUsablePendingRequest,
 } from '../runtime/pending-requests.js';
 import { openWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 
@@ -99,12 +99,15 @@ export function readAssistantTaskHandoffSource(
           candidate.deliveryTurnId === source.id && candidate.requesterKind === 'assistant'
       );
       for (const candidate of associated)
-        requireUsableRecord(
-          store,
+        requireUsablePendingRequest(
           sourceDb.sqlite,
           candidate.requestId,
           sourceWorkspace.id,
-          thread.parentThreadId
+          thread.parentThreadId,
+          () =>
+            store
+              .listThreads(sourceWorkspace.id)
+              .flatMap((thread) => store.listThreadTurns(sourceWorkspace.id, thread.id))
         );
       const sourceInputHash = assistantPendingOutcomeSourceHash(source, associated, userId);
       const ids = assistantPendingHandoffIds(
