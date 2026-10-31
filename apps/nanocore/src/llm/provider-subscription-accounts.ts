@@ -1,6 +1,16 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
-import { lstatSync, readdirSync, readFileSync, rmdirSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  unlinkSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual, TextDecoder, toUSVString } from 'node:util';
 import {
@@ -19,6 +29,7 @@ import {
   SubscriptionProviderIdSchema,
 } from '@openkit/config-schema';
 import { allocateEntityId, isEntityId } from '@openkit/protocol';
+import { createDirectoryExclusive } from '@openkit/storage';
 
 import { type RecordServerAuditEventInput, recordServerAuditEvent } from '../audit-events.js';
 import type { CoreDb } from '../storage/db.js';
@@ -521,7 +532,7 @@ export class ProviderSubscriptionAccountManager {
             updatedAt: timestamp,
           };
 
-          this.writeAccount(record);
+          this.writeAccount(record, true);
           return snapshot(record, 'logged_out');
         }),
       audit
@@ -2208,33 +2219,56 @@ export class ProviderSubscriptionAccountManager {
    * Atomically replaces one strict account record through a same-directory temp file.
    *
    * @param record Strict durable account authority.
+   * @param create Whether this attempt must exclusively create its account directory.
    */
-  private writeAccount(record: ProviderSubscriptionAccountRecord): void {
+  private writeAccount(record: ProviderSubscriptionAccountRecord, create = false): void {
     const pair = this.requirePair(record);
     const validated = parseAccountRecord(record, pair);
     const directory = this.accountDirectory(pair);
     const path = join(directory, 'account.json');
+    let createdDirectory: number | undefined;
     try {
-      this.ensureAccountDirectory(pair);
+      createdDirectory = this.ensureAccountDirectory(pair, create);
       writeFileAtomic(path, `${JSON.stringify(validated, null, 2)}\n`);
     } catch {
+      if (createdDirectory !== undefined) {
+        try {
+          this.removeAccount(validated, createdDirectory);
+        } catch {
+          // Unproved, nonempty or credential-bearing residue keeps the recovery boundary.
+        }
+      }
       throw persistenceError();
+    } finally {
+      if (createdDirectory !== undefined) closeSync(createdDirectory);
     }
   }
 
   /**
-   * Removes one already validated account file and its now-empty exact directory.
+   * Removes validated account authority or this attempt's proved unpublished empty directory.
    *
-   * @param record Strict durable account authority.
+   * @param record Strict account identity and authority.
+   * @param unpublishedDirectory Held descriptor proving this attempt's directory identity.
    */
-  private removeAccount(record: ProviderSubscriptionAccountRecord): void {
+  private removeAccount(
+    record: ProviderSubscriptionAccountRecord,
+    unpublishedDirectory?: number
+  ): void {
     const directory = this.accountDirectory(record);
-    const names = readdirSync(directory).sort();
-    if (names.length !== 1 || names[0] !== 'account.json') {
-      throw persistenceError();
+    if (unpublishedDirectory === undefined) {
+      const names = readdirSync(directory).sort();
+      if (names.length !== 1 || names[0] !== 'account.json') throw persistenceError();
+    } else {
+      this.assertSafeAncestors(directory);
+      const owned = fstatSync(unpublishedDirectory);
+      const current = lstatOrNull(directory);
+      if (!current?.isDirectory() || current.dev !== owned.dev || current.ino !== owned.ino)
+        throw persistenceError();
+      this.classifyPair(record, null, this.listInventory());
     }
     try {
-      unlinkSync(join(directory, 'account.json'));
+      if (unpublishedDirectory === undefined) unlinkSync(join(directory, 'account.json'));
+      // The held descriptor prevents inode reuse; rmdir refuses any published or unknown file.
       rmdirSync(directory);
     } catch {
       throw persistenceError();
@@ -2245,20 +2279,27 @@ export class ProviderSubscriptionAccountManager {
    * Ensures one account directory and every managed ancestor are real directories.
    *
    * @param pair Provider-slot identity.
+   * @param create Whether to prove exclusive creation of the exact account directory.
+   * @returns Held descriptor only for this attempt's newly created directory.
    */
-  private ensureAccountDirectory(pair: ProviderSubscriptionAccountPair): void {
+  private ensureAccountDirectory(
+    pair: ProviderSubscriptionAccountPair,
+    create = false
+  ): number | undefined {
     const root = join(this.coreDb.dataRoot, 'server', 'files', 'provider-subscriptions');
     const providerDirectory = join(root, pair.subscriptionProviderId);
-    const managed = [
-      root,
-      providerDirectory,
-      join(providerDirectory, 'accounts'),
-      this.accountDirectory(pair),
-    ];
+    const managed = [root, providerDirectory, join(providerDirectory, 'accounts')];
 
     for (const directory of managed) {
       ensureCanonicalDirectory(directory, 0o777);
     }
+    const directory = this.accountDirectory(pair);
+    if (!create) {
+      ensureCanonicalDirectory(directory, 0o777);
+      return;
+    }
+    createDirectoryExclusive(directory, 0o777);
+    return openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   }
 
   /**

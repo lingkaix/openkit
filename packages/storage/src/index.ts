@@ -2,6 +2,7 @@ export * from './contract.js';
 export {
   copyFileForCut,
   copyVerifiedFile,
+  createDirectoryExclusive,
   LocalStorage,
   publishDurableFile,
   removeDurableFile,

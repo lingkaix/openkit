@@ -5546,6 +5546,103 @@ describe('subscription auth attribution isolation', () => {
 });
 
 describe('subscription account publication durability', () => {
+  it('removes only its own unpublished empty directory after a failed account create', async () => {
+    const fixture = createFixture();
+    const pair = accountPair('failed_empty_create');
+    const directory = accountDirectory(fixture.dataRoot, pair);
+    durability.fail = (candidate, isDirectory) => !isDirectory && dirname(candidate) === directory;
+    try {
+      await expect(fixture.manager.createAccount(pair)).rejects.toMatchObject(PERSISTENCE_ERROR);
+      expect(existsSync(accountPath(fixture.dataRoot, pair))).toBe(false);
+      // Owner507 permits only this current attempt's proved empty pre-publication residue.
+      expect(existsSync(directory)).toBe(false);
+      durability.fail = undefined;
+      expect(await fixture.createManager().createAccount(pair)).toMatchObject({
+        ...pair,
+        status: 'logged_out',
+      });
+    } finally {
+      durability.fail = undefined;
+    }
+  });
+
+  it('preserves a pre-existing empty account directory and refuses ordinary recovery', async () => {
+    const fixture = createFixture();
+    const pair = accountPair('preexisting_empty_create');
+    const directory = accountDirectory(fixture.dataRoot, pair);
+    mkdirSync(directory, { recursive: true });
+    await expect(fixture.manager.createAccount(pair)).rejects.toMatchObject(PERSISTENCE_ERROR);
+    expect(existsSync(directory)).toBe(true);
+    expect(readdirSync(directory)).toEqual([]);
+    await expect(fixture.createManager().getStatus(pair)).rejects.toMatchObject(PERSISTENCE_ERROR);
+  });
+
+  it.each([
+    'nonempty',
+    'replaced',
+  ] as const)('preserves %s account-directory residue after a failed unpublished create', async (residue) => {
+    const fixture = createFixture();
+    const pair = accountPair(`failed_${residue}_create`);
+    const directory = accountDirectory(fixture.dataRoot, pair);
+    const preserved = join(fixture.dataRoot, 'preserved-create-attempt');
+    durability.fail = (candidate, isDirectory) => {
+      if (isDirectory || dirname(candidate) !== directory) return false;
+      if (residue === 'nonempty') {
+        writeFileSync(join(directory, 'unknown-artifact'), 'Preserve this foreign artifact.');
+      } else {
+        renameSync(directory, preserved);
+        mkdirSync(directory, { mode: 0o700 });
+      }
+      return true;
+    };
+    try {
+      await expect(fixture.manager.createAccount(pair)).rejects.toMatchObject(PERSISTENCE_ERROR);
+      durability.fail = undefined;
+      expect(existsSync(directory)).toBe(true);
+      if (residue === 'nonempty') {
+        expect(
+          readFileSync(join(directory, 'unknown-artifact'), 'utf8') ===
+            'Preserve this foreign artifact.'
+        ).toBe(true);
+      } else {
+        expect(readdirSync(directory)).toEqual([]);
+        expect(existsSync(preserved)).toBe(true);
+      }
+      await expect(fixture.createManager().getStatus(pair)).rejects.toMatchObject(
+        PERSISTENCE_ERROR
+      );
+    } finally {
+      durability.fail = undefined;
+    }
+  });
+
+  it('preserves published account authority when fresh-create acknowledgement fails', async () => {
+    const fixture = createFixture();
+    const pair = accountPair('published_failed_create');
+    const path = accountPath(fixture.dataRoot, pair);
+    durability.events.length = 0;
+    durability.fail = (candidate, isDirectory) =>
+      isDirectory &&
+      candidate === dirname(path) &&
+      durability.events.some((event) => event.op === 'rename' && event.path === path);
+    try {
+      await expect(fixture.manager.createAccount(pair)).rejects.toMatchObject(PERSISTENCE_ERROR);
+      durability.fail = undefined;
+      expect(existsSync(path)).toBe(true);
+      const published = readFileSync(path);
+      expect(await fixture.createManager().getStatus(pair)).toMatchObject({
+        ...pair,
+        status: 'logged_out',
+      });
+      await expect(fixture.createManager().createAccount(pair)).rejects.toMatchObject(
+        ACCOUNT_EXISTS_ERROR
+      );
+      expect(readFileSync(path).equals(published)).toBe(true);
+    } finally {
+      durability.fail = undefined;
+    }
+  });
+
   it('syncs account authority before rename and its exact parent after rename, then reopens the manager', async () => {
     const fixture = createFixture();
     const pair = accountPair('durable_slot');

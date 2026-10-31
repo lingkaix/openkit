@@ -15,7 +15,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { copyFileForCut, copyVerifiedFile, publishDurableFile } from './local.js';
+import {
+  copyFileForCut,
+  copyVerifiedFile,
+  createDirectoryExclusive,
+  publishDurableFile,
+} from './local.js';
 
 const faults = vi.hoisted(() => ({
   sync: false,
@@ -76,6 +81,28 @@ afterEach(async () => {
 });
 
 describe('snapshot Storage byte primitives', () => {
+  it('creates only one absent directory and preserves exclusive-create errors', async () => {
+    const f = await fixture();
+    createDirectoryExclusive(f.destinationPath, 0o700);
+    expect((await stat(f.destinationPath)).mode & 0o777).toBe(0o700);
+    expect(await readdir(f.destinationPath)).toEqual([]);
+    expect(() => createDirectoryExclusive(f.destinationPath, 0o700)).toThrow(
+      expect.objectContaining({ code: 'EEXIST' })
+    );
+    expect(() => createDirectoryExclusive(f.sourcePath, 0o700)).toThrow(
+      expect.objectContaining({ code: 'EEXIST' })
+    );
+    expect(await readFile(f.sourcePath)).toEqual(original);
+    await symlink(f.destinationPath, join(f.root, 'link'));
+    expect(() => createDirectoryExclusive(join(f.root, 'link'), 0o700)).toThrow(
+      expect.objectContaining({ code: 'EEXIST' })
+    );
+    expect(() => createDirectoryExclusive(join(f.root, 'missing', 'child'), 0o700)).toThrow(
+      expect.objectContaining({ code: 'ENOENT' })
+    );
+    expect((await readdir(f.root)).sort()).toEqual(['destination', 'link', 'source']);
+  });
+
   it('copies exact original bytes and mode into an independent durable file', async () => {
     const f = await fixture();
     const result = await copyVerifiedFile({

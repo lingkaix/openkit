@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, mkdirSync } from 'node:fs';
 import {
   type FileHandle,
   link,
@@ -864,4 +864,9 @@ export async function removeDurableFile(input: {
   } finally {
     await directory.close();
   }
+}
+
+/** Creates one exact directory exclusively; existing entries and missing parents remain errors. */
+export function createDirectoryExclusive(path: string, mode: number): void {
+  mkdirSync(path, { mode });
 }
