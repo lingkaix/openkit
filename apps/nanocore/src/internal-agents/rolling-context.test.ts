@@ -6,6 +6,7 @@ import type { Item } from '@openkit/protocol';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestStore } from '../test-support/store.js';
 import {
@@ -46,11 +47,14 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   vi.useRealTimers();
   await shutdownControlStoreWorkerClient();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    closeWorkspaceProductReadHandles(root);
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
-/** Uses real canonical records with equal timestamps and deliberately reverse-sorted Item ids. */
-async function fixture(historyTurns = 8, durable = false, failedSource = false) {
+/** Uses native history except in the original controlled deadline-domain cases. */
+async function fixture(historyTurns = 8, durable = true, failedSource = false) {
   const dataRoot = durable ? mkdtempSync(join(tmpdir(), 'internal-rolling-context-')) : '';
   if (dataRoot) roots.push(dataRoot);
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
@@ -210,7 +214,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('uses complete canonical history in first-seen order when it fits, including after restart', async () => {
-    const f = await fixture(1, true);
+    const f = await fixture(1);
     const before = f.store.listThreadItems(f.workspace.id, f.thread.id);
     const request = input(f);
     const prepared = await prepareInternalAgentContext(request);
@@ -265,7 +269,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('keeps canonical failure outcomes visible beside retained source Items', async () => {
-    const f = await fixture(1, false, true);
+    const f = await fixture(1, true, true);
     const request = input(f);
     const prepared = await prepareInternalAgentContext(request);
     expect(request.callProvider).not.toHaveBeenCalled();
@@ -276,7 +280,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('bootstraps large legacy history in bounded advancing batches and reuses canonical summaries after restart', async () => {
-    const f = await fixture(8, true);
+    const f = await fixture(8);
     const paths = files(f.dataRoot);
     const nativePayloadPrefix = `${join('workspaces', f.workspace.id, 'evidence', 'backend', 'sha256')}${sep}`;
     const retainedPayloads = paths
@@ -514,7 +518,7 @@ describe('source-bound internal rolling context', () => {
   });
 
   it('ends a stalled summary at the same admitted deadline without accepting output', async () => {
-    const f = await fixture();
+    const f = await fixture(8, false);
     const request = input(f, {
       limits: { ...limits, deadlineMs: 25 },
       callProvider: async () => new Promise<InternalAgentProviderResponse>(() => {}),
@@ -595,7 +599,7 @@ describe('source-bound internal rolling context', () => {
 
   it('passes only the remaining absolute deadline to the ordinary answer run', async () => {
     vi.useFakeTimers();
-    const f = await fixture(4);
+    const f = await fixture(4, false);
     const request = input(f, {
       limits: { ...limits, deadlineMs: 100 },
       callProvider: vi.fn(async () => {
@@ -621,7 +625,7 @@ it.each([
   'ordinary',
 ] as const)('labels the shared %s deadline without inventing a phase', async (phase) => {
   vi.useFakeTimers();
-  const f = await fixture(phase === 'summary' ? 8 : 0);
+  const f = await fixture(phase === 'summary' ? 8 : 0, false);
   let release!: (value: InternalAgentProviderResponse) => void;
   const request = input(f, {
     limits: { ...limits, deadlineMs: 25 },

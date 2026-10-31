@@ -84,3 +84,5 @@ The Goal Coordinator uses current native Policy facts, explicit bounded Task dis
 The bounded loop can return its deadline before an independent Gateway call finishes cancellation. The Gateway retains its own ledger handle through terminal acknowledgement, classifies proved timeout/caller abort from the actual error, and never relabels an independently settled Provider failure from a later signal.
 
 The internal Agent loop uses the Protocol `isRecord` guard for non-null, non-array object access. Its own JSON Schema, Tool content, result, correlation and execution checks still decide accepted input; the shared guard does not establish schema validity or authority.
+
+Rolling-context history and source fixtures use explicit private native roots and drain their owners before root removal. Four deadline cases retain their original rootless Store and clock setup: their small run budgets include native metadata and summary acknowledgements. Canonical first-seen Item order, source checks and all original model and deadline budgets remain unchanged; native timing is not qualified by those four cases.
