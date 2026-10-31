@@ -151,7 +151,12 @@ export function createInternalAgentGatewayProvider(
         requiredCapabilities: request.model.capabilities,
         ...(options.reasoningEffort === undefined
           ? {}
-          : { reasoningEffort: { requested: options.reasoningEffort } }),
+          : {
+              reasoningEffort: {
+                requested: options.reasoningEffort,
+                binding: 'auxiliary',
+              },
+            }),
         ...(options.logicalModel.contract ? { pinnedLimits: options.logicalModel.contract } : {}),
         signal: request.signal,
         onAttemptStart: (correlation) => {

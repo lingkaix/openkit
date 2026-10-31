@@ -3110,7 +3110,7 @@ describe('slice 3c Worker native effort and immutable package', () => {
   });
 
   it.each([
-    ['high', 'low', 'low'],
+    ['high', 'low', 'high'],
     ['high', undefined, 'high'],
     [undefined, 'low', 'low'],
     [undefined, undefined, undefined],

@@ -139,6 +139,7 @@ describe('CapabilityCall route-lineage extension', () => {
     { effectiveEffortReason: 'model_without_reasoning' },
     { effectiveEffortReason: 'provider_default_no_options' },
     { effectiveEffortReason: 'provider_default_no_effort' },
+    { effectiveEffortReason: 'recorded_turn_effort_overrides_request' },
     {},
   ])('retains each optional attempt effort fact: %j', (facts) => {
     const parsed = CapabilityCallSchema.parse({
