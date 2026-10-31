@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { connect, createServer, type ServerHttp2Session } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { getNanoHostTransportSessionAuthority } from './app.js';
 import transportRevision from './auth/nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
@@ -302,7 +302,7 @@ describe('runtime config reload API', () => {
       'config',
       'workspace.jsonc'
     );
-    const app = createApp({ dataRoot, store, turnExecutor: new SimulatedTurnExecutor() });
+    const app = createApp({ dataRoot, store });
 
     writeFileSync(
       workspaceConfigPath,
@@ -331,10 +331,14 @@ describe('runtime config reload API', () => {
 
   it('keeps provider changes pending restart and exposes the live runtime status', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+    });
     const app = createApp({
       dataRoot,
       runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
-      turnExecutor: new SimulatedTurnExecutor(),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
 
     writeServerConfig(dataRoot, 'openai/gpt-5.2');

@@ -131,3 +131,5 @@ Assistant history and semantic-handoff fixtures obtain their unpublished Workspa
 Lifecycle and retirement fixtures pass their existing Core to the deterministic executor, including the retained-Core App reconstruction. Native mutation admission, deletion and recovery remain the deciding owners; executor refusal spies and all retained-byte and receipt assertions stay unchanged.
 
 Catalog projection fixtures use their existing same-root Workspace-authority App builder without a separate standalone executor. Current manifests, stale stored Agent inputs, health and disclosure checks retain their original owners.
+
+Reload fixtures preserve their original App authority inputs. The config-only executor reads the already initialized Core through an explicit test-owned handle, closed at test finish; Workspace reload uses its existing Core-backed App builder.
