@@ -7,6 +7,7 @@ import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
 import { BootConfigError } from '../config/mode.js';
 import { configureOwnedSqlite } from './control-store.js';
+import type { PreparedKnowledgeAuthorityTransfer } from './control-store-knowledge.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { applyGoalCutover, removeGoalSandboxPin } from './goal-cutover.js';
 import { applyHostRepositoryCutover } from './host-repository-cutover.js';
@@ -21,6 +22,8 @@ type SetupDb = {
 };
 
 const NATIVE_LEDGER_TABLE = '__drizzle_migrations';
+// Installed only by the complete Workspace reader/writer/capture switch.
+const KNOWLEDGE_AUTHORITY_TAG = '0019_knowledge_authority';
 
 /**
  * Applies the native Core Drizzle journal.
@@ -36,12 +39,14 @@ export function applyMigrations(coreDb: CoreDb): void {
  * Applies the native User, Workspace, or App Drizzle journal.
  *
  * @param scopedDb Open User, Workspace, or App database.
+ * @param knowledgeTransfer Exact prepared Workspace carry, only at the one-way activation entry.
  * @throws BootConfigError when the journal is missing or fails to apply.
  */
 export function applyScopedMigrations(
-  scopedDb: UserDb | WorkspaceDb | { readonly scope: 'app'; readonly sqlite: SetupDb['sqlite'] }
+  scopedDb: UserDb | WorkspaceDb | { readonly scope: 'app'; readonly sqlite: SetupDb['sqlite'] },
+  knowledgeTransfer?: PreparedKnowledgeAuthorityTransfer
 ): void {
-  applyNativeScopeMigrations(scopedDb.sqlite, scopedDb.scope);
+  applyNativeScopeMigrations(scopedDb.sqlite, scopedDb.scope, undefined, knowledgeTransfer);
 }
 
 /**
@@ -83,12 +88,14 @@ export function listAppliedMigrationIds(coreDb: CoreDb): string[] {
  * @param sqlite Open SQLite connection.
  * @param scope Journal scope.
  * @param migrationsFolder Optional explicit journal folder; product paths are discovered when omitted.
+ * @param knowledgeTransfer Prepared immutable facts bound to this exact Workspace connection.
  * @throws BootConfigError when the journal or a referenced SQL file is missing, or apply fails.
  */
 export function applyNativeScopeMigrations(
   sqlite: Database.Database,
   scope: StorageMigrationScope,
-  migrationsFolder = findMigrationsFolder(scope)
+  migrationsFolder = findMigrationsFolder(scope),
+  knowledgeTransfer?: PreparedKnowledgeAuthorityTransfer
 ): void {
   let failure: string | undefined;
   let rollbackCode: string | undefined;
@@ -117,6 +124,24 @@ export function applyNativeScopeMigrations(
           }))
         : []
     );
+    const knowledgePending = statements.some((step) => step.tag === KNOWLEDGE_AUTHORITY_TAG);
+    if (
+      knowledgePending &&
+      (!knowledgeTransfer ||
+        scope !== 'workspace' ||
+        knowledgeTransfer.workspaceDb.scope !== 'workspace' ||
+        knowledgeTransfer.workspaceDb.sqlite !== sqlite ||
+        knowledgeTransfer.heads.length === 0 ||
+        !sqlite.open ||
+        sqlite.inTransaction)
+    ) {
+      failure = 'Knowledge authority transfer requires the exact prepared Workspace connection.';
+      throw new BootConfigError('migration_failed', failure);
+    }
+    if (knowledgeTransfer && !knowledgePending) {
+      failure = 'Knowledge authority transfer has no pending activation entry.';
+      throw new BootConfigError('migration_failed', failure);
+    }
     const dialect = new SQLiteSyncDialect();
     const session = new BetterSQLiteSession(sqlite, dialect, undefined);
     const run = session.run.bind(session);
@@ -133,6 +158,52 @@ export function applyNativeScopeMigrations(
       if (statement) statementIndex += 1;
       try {
         const result = run(query);
+        if (
+          statement?.tag === KNOWLEDGE_AUTHORITY_TAG &&
+          statements[statementIndex]?.tag !== KNOWLEDGE_AUTHORITY_TAG
+        ) {
+          // Drizzle has run this entry's DDL, but has not inserted its ledger row.
+          // No asynchronous work, separate transaction or file mutation is allowed.
+          if (!sqlite.inTransaction || !knowledgeTransfer)
+            throw new TypeError('Knowledge authority transfer is outside its native transaction.');
+          const existing = sqlite
+            .prepare(`SELECT 1 FROM knowledge_notebook_heads
+                      UNION ALL SELECT 1 FROM knowledge_notebook_proposals LIMIT 1`)
+            .get();
+          if (existing)
+            throw new TypeError(
+              'Knowledge authority transfer cannot replace existing native authority.'
+            );
+          const insertHead = sqlite.prepare(
+            `INSERT INTO knowledge_notebook_heads (workspace_id, knowledge_base_id, record_json)
+             VALUES (?, ?, ?)`
+          );
+          const insertProposal = sqlite.prepare(
+            `INSERT INTO knowledge_notebook_proposals
+               (workspace_id, knowledge_base_id, proposal_id, record_json, reviews_json)
+             VALUES (?, ?, ?, ?, ?)`
+          );
+          for (const head of knowledgeTransfer.heads) {
+            const applied = insertHead.run(
+              knowledgeTransfer.workspaceDb.workspaceId,
+              head.knowledgeBaseId,
+              head.recordJson
+            );
+            if (applied.changes !== 1)
+              throw new TypeError('Knowledge authority transfer refused its original head.');
+          }
+          for (const proposal of knowledgeTransfer.proposals) {
+            const applied = insertProposal.run(
+              knowledgeTransfer.workspaceDb.workspaceId,
+              proposal.knowledgeBaseId,
+              proposal.proposalId,
+              proposal.recordJson,
+              proposal.reviewsJson
+            );
+            if (applied.changes !== 1)
+              throw new TypeError('Knowledge authority transfer refused its original Proposal.');
+          }
+        }
         if (!started && text === 'BEGIN') started = true;
         return result;
       } catch (error) {
@@ -177,6 +248,7 @@ export function applyNativeScopeMigrations(
  * @param sqlite Open SQLite connection.
  * @param scope Journal scope used as the id prefix.
  * @param migrationsFolder Optional explicit journal folder; product paths are discovered when omitted.
+ * @param knowledgeTransfer Prepared immutable facts bound to this exact Workspace connection.
  * @returns Applied ids in stable order.
  */
 export function listAppliedNativeMigrationIds(

@@ -227,7 +227,7 @@ export function readControlKnowledgeHead(
 export function controlKnowledgeHeadStatements(
   next: ControlKnowledgeHead,
   expected: ControlKnowledgeHead | null
-): readonly ControlSqlStatement[] {
+): readonly Extract<ControlSqlStatement, { mode: 'run' }>[] {
   const head = decodeHead({ ...next, requiredFeatures: [] });
   const record = JSON.stringify(writeRetainedV1({ ...head, requiredFeatures: [] }));
   if (expected === null) {
@@ -610,4 +610,86 @@ export function controlKnowledgeReviewStatement(
     ],
     expectChanges: 1,
   };
+}
+
+/** Prepared one-way carry on the exact pre-serving Workspace connection; not a live publication grant. */
+export interface PreparedKnowledgeAuthorityTransfer {
+  readonly workspaceDb: WorkspaceDb;
+  readonly heads: readonly { readonly knowledgeBaseId: string; readonly recordJson: string }[];
+  readonly proposals: readonly {
+    readonly knowledgeBaseId: string;
+    readonly proposalId: string;
+    readonly recordJson: string;
+    readonly reviewsJson: string;
+  }[];
+}
+
+/**
+ * Captures verified predecessor selections for the native activation transaction.
+ *
+ * The boot/staging owner must exclude serving, validate the complete old inventory
+ * and synchronize referenced Git and Storage bytes before calling this function.
+ * Original command receipts and Audit already belong to this database and remain
+ * unchanged. This does not infer ownership, recover split outcomes or seed a
+ * missing admitted head. The final live switch alone installs the activation tag.
+ *
+ * @param input Actual Workspace connection, exact prepared heads and original ordered Reviews.
+ * @returns Bound row facts for the specific migration's fixed SQL, transaction and ledger.
+ */
+export function prepareControlKnowledgeAuthorityTransfer(input: {
+  readonly db: WorkspaceDb;
+  readonly heads: readonly ControlKnowledgeHead[];
+  readonly proposals: readonly {
+    readonly proposal: ControlKnowledgeProposal;
+    readonly reviews: readonly unknown[];
+  }[];
+}): PreparedKnowledgeAuthorityTransfer {
+  const { db } = input;
+  if (db.scope !== 'workspace' || !db.sqlite.open || db.sqlite.inTransaction || !input.heads.length)
+    throw new TypeError(
+      'Knowledge authority transfer requires its open Workspace and exact heads.'
+    );
+  const heads = new Set<string>();
+  const headRows: PreparedKnowledgeAuthorityTransfer['heads'][number][] = [];
+  const proposalRows: PreparedKnowledgeAuthorityTransfer['proposals'][number][] = [];
+  for (const head of input.heads) {
+    if (head.workspaceId !== db.workspaceId || heads.has(head.knowledgeBaseId))
+      throw new TypeError('Knowledge authority transfer has inconsistent head ownership.');
+    heads.add(head.knowledgeBaseId);
+    const selection = decodeHead({ ...head, requiredFeatures: [] });
+    headRows.push({
+      knowledgeBaseId: selection.knowledgeBaseId,
+      recordJson: JSON.stringify(writeRetainedV1({ ...selection, requiredFeatures: [] })),
+    });
+  }
+  const proposals = new Set<string>();
+  for (const { proposal, reviews } of input.proposals) {
+    if (
+      proposal.workspaceId !== db.workspaceId ||
+      !heads.has(proposal.knowledgeBaseId) ||
+      proposals.has(proposal.proposalId)
+    )
+      throw new TypeError('Knowledge authority transfer has inconsistent Proposal ownership.');
+    proposals.add(proposal.proposalId);
+    // Legacy decisions are inside the retained Review-file envelope. Preserve
+    // every descriptive field while validating any already-present core markers.
+    const rawReviews = reviews.map((review) => {
+      if (!review || typeof review !== 'object' || Array.isArray(review))
+        throw new TypeError('Knowledge authority transfer has invalid Review metadata.');
+      const record = review as Record<string, unknown>;
+      if ('schemaVersion' in record) readRetainedV1(record, (value) => value);
+      if ('requiredFeatures' in record)
+        headSchema.shape.requiredFeatures.parse(record.requiredFeatures);
+      return writeRetainedV1({ ...record, requiredFeatures: [] });
+    });
+    validateProposalReviews(proposal, rawReviews);
+    const selection = decodeProposal({ ...proposal, requiredFeatures: [] });
+    proposalRows.push({
+      knowledgeBaseId: selection.knowledgeBaseId,
+      proposalId: selection.proposalId,
+      recordJson: JSON.stringify(writeRetainedV1({ ...selection, requiredFeatures: [] })),
+      reviewsJson: JSON.stringify(rawReviews),
+    });
+  }
+  return { workspaceDb: db, heads: headRows, proposals: proposalRows };
 }
