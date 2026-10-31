@@ -1485,15 +1485,58 @@ describe('internal Agent Gateway provider', () => {
     expect(faux.state.callCount).toBe(1);
   });
 
-  it('fails before provider contact when Tool image content cannot be preserved', async () => {
-    const createResponses = vi.fn();
+  it('preserves ordered Tool text and images through the Gateway round trip', async () => {
+    const firstImage =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+    const secondImage =
+      '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAEDAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAb/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAB//2Q==';
+    const execute = vi.fn(async () => ({
+      content: [
+        { type: 'text' as const, text: 'First image:' },
+        { type: 'image' as const, mimeType: 'image/png', data: firstImage },
+        { type: 'text' as const, text: 'Second image:' },
+        { type: 'image' as const, mimeType: 'image/jpeg', data: secondImage },
+        { type: 'text' as const, text: 'Both images returned.' },
+      ],
+    }));
+    const createResponses = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: 'response_tool',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'function_call',
+            call_id: 'call_image',
+            name: 'environment_status',
+            arguments: '{}',
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        id: 'response_answer',
+        object: 'response',
+        status: 'completed',
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'Both images received.' }],
+          },
+        ],
+      });
     const provider = createInternalAgentGatewayProvider({
-      resolveLogicalModel(): ResolvedLogicalModel {
-        return this.logicalModel;
-      },
+      resolveLogicalModel: () => logicalModel,
       logicalModel,
-      dispatcher: { createResponses } as Pick<LLMGatewayProviderDispatcher, 'createResponses'>,
-      resolveGatewayProvider: () => ({}) as never,
+      dispatcher: { createResponses },
+      resolveGatewayProvider: () =>
+        ({
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true, limit: { context: 64_000, output: 8_000 } } },
+        }) as never,
       promptCacheScope: {
         sessionId: 'administration:th_00000000-0000-7915-b626-0b698e2552dc',
         workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
@@ -1501,23 +1544,43 @@ describe('internal Agent Gateway provider', () => {
       usageEndpoint: 'responses',
       capture: await captureBinding(),
     });
-    const input = request();
-
-    await expect(
-      provider({
-        ...input,
-        messages: [
-          ...input.messages,
-          {
-            role: 'tool',
-            callId: 'call_image',
-            isError: false,
-            content: [{ type: 'image', mimeType: 'image/png', data: 'private-image-bytes' }],
-          },
+    const result = await runInternalAgentLoop(
+      {
+        ...request(),
+        tools: [{ ...request().tools[0]!, execute }],
+        limits: { maxModelTurns: 2, maxToolCalls: 1, deadlineMs: 10_000 },
+      },
+      provider
+    );
+    // Internal Runtime owner:203/336 requires ordered Tool image round trips.
+    expect.soft(result.kind).toBe('quiescent');
+    expect(createResponses).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledExactlyOnceWith(
+      {},
+      {
+        callId: 'call_image',
+        toolOccurrence: 1,
+        signal: expect.any(AbortSignal),
+      }
+    );
+    expect(createResponses.mock.calls[1]![1].input.slice(-2)).toEqual([
+      { type: 'function_call', call_id: 'call_image', name: 'environment_status', arguments: '{}' },
+      {
+        type: 'function_call_output',
+        call_id: 'call_image',
+        output: [
+          { type: 'input_text', text: 'First image:' },
+          { type: 'input_image', image_url: `data:image/png;base64,${firstImage}` },
+          { type: 'input_text', text: 'Second image:' },
+          { type: 'input_image', image_url: `data:image/jpeg;base64,${secondImage}` },
+          { type: 'input_text', text: 'Both images returned.' },
         ],
-      })
-    ).rejects.toMatchObject({ code: 'tool_image_content_unavailable' });
-    expect(createResponses).not.toHaveBeenCalled();
+      },
+    ]);
+    expect(result.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'Both images received.' }],
+    });
   });
 });
 

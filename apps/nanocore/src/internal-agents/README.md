@@ -33,6 +33,8 @@ Knowledge Manager continuation verifies retrieval evidence against the trusted a
 The internal Gateway keeps a call-owned connection to the same scoped ledger until its terminal write finishes. A role deadline may release the separate capture connection while Provider cancellation is still unwinding. This connection prevents a contacted call from remaining `running` after that release; it closes on success, failure and start refusal. Routing, cancellation, partial-usage and late-callback rules remain with the existing Gateway owners. `gateway-provider.test.ts` composes the actual loop, dispatcher, PiAi client and capture-owned connection against a stalled upstream stream.
 
 
+Tool results with images retain their exact text/image order and inline bytes in the existing Responses function-output content array. Text-only Tool results keep the existing string representation; selected-model image admission remains at the Gateway.
+
 ## Verification
 
 `compacting-context.test.ts` publishes Workspace and Server Items through caller-owned rooted `createTestStore` fixtures. It drains the native owner before removing each root; fake Providers supply only inference output.

@@ -436,17 +436,17 @@ function toResponsesInput(
     ];
   }
   if (message.role === 'tool') {
-    if (message.content.some((part) => part.type === 'image')) {
-      throw new InternalAgentProviderError(
-        'tool_image_content_unavailable',
-        'The current Responses adapter cannot preserve Tool image content.'
-      );
-    }
     return [
       {
         type: 'function_call_output',
         call_id: message.callId,
-        output: message.content.map((part) => (part.type === 'text' ? part.text : '')).join(''),
+        output: message.content.some((part) => part.type === 'image')
+          ? message.content.map((part) =>
+              part.type === 'image'
+                ? { type: 'input_image', image_url: `data:${part.mimeType};base64,${part.data}` }
+                : { type: 'input_text', text: part.text }
+            )
+          : message.content.map((part) => (part.type === 'text' ? part.text : '')).join(''),
       },
     ];
   }
