@@ -37,6 +37,7 @@ export function createRawProviderOutputObserver(
     throw new RawOutputObservationUnavailableError();
   const parts = new Map<string, { id: number; text: string; bytes: number; sequence?: number }>();
   const toolParts = new Set<number>();
+  const unclosedThinking = new Set<number>();
   let generation = '';
   let nextPartId = 0;
   const setGeneration = (value: unknown) => {
@@ -284,9 +285,15 @@ export function createRawProviderOutputObserver(
     }
     // pi-messages already carries original field deltas before stock conversion.
     const index = event.contentIndex === undefined ? 0 : ordinal(event.contentIndex);
+    if (event.type === 'done' || event.type === 'error') {
+      if (unclosedThinking.size > 0) throw new RawOutputObservationUnavailableError();
+      return;
+    }
+    if (event.type === 'thinking_start' || event.type === 'thinking_delta') {
+      unclosedThinking.add(index);
+      return;
+    }
     if (event.type === 'text_delta') field([index], 'text', event.delta);
-    // This API declares redaction only at completion. Ignore unproved reasoning deltas without refusing the stream.
-    if (event.type === 'thinking_delta') return;
     if (event.type === 'toolcall_delta') field([index], 'tool-arguments', event.delta);
     if (
       event.type === 'toolcall_end' &&
@@ -294,8 +301,10 @@ export function createRawProviderOutputObserver(
     )
       throw new RawOutputObservationUnavailableError();
     if (event.type === 'text_end') field([index], 'text', event.content, true);
-    if (event.type === 'thinking_end' && event.redacted !== true)
-      field([index], 'reasoning', event.content, true);
+    if (event.type === 'thinking_end') {
+      unclosedThinking.delete(index);
+      if (event.redacted !== true) field([index], 'reasoning', event.content, true);
+    }
   };
 }
 

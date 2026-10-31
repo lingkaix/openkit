@@ -217,6 +217,7 @@ export function createInternalAgentGatewayProvider(
               },
               {
                 ...(subscriptionModels ? { models: subscriptionModels } : {}),
+                openkitGatewayDispatch: 'internal_agent',
                 capture: {
                   ...options.capture,
                   ...(call ? { capabilityCallId: call.id } : {}),

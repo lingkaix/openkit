@@ -110,11 +110,12 @@ export interface LLMGatewayDispatchContext {
   readonly onUsage?: GatewayUsageRecordInput['onUsage'];
   /** Optional provider transport state for cancellation and Codex continuity. */
   readonly transport?: LLMGatewayTransportContext;
+  /** Trusted route origin for OpenKit-owned Responses defaults; public `/v1/...` omits this. */
+  readonly openkitGatewayDispatch?: 'worker_inference' | 'internal_agent';
 }
 
-/** Worker lineage and internal-agent dispatch; public Gateway routes stay passthrough. */
 function openKitOriginatedDispatch(context: LLMGatewayDispatchContext): boolean {
-  return Boolean(context.transport?.rawOutput ?? context.usageEndpoint);
+  return context.openkitGatewayDispatch !== undefined;
 }
 
 /**

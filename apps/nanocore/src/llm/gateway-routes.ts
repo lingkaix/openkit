@@ -2321,6 +2321,7 @@ export function registerWorkerInferenceRoutes({
                 assertAuthority();
               };
               const dispatchContext: LLMGatewayDispatchContext = {
+                openkitGatewayDispatch: 'worker_inference',
                 capture: captureForCall(durableCall, corr, attempt),
                 onUsage: async (usage: unknown) =>
                   execution.addUsageRecordIds(
