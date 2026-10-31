@@ -39,12 +39,10 @@ import {
 import { validateAppOpenApiDocument } from './openapi-validation.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { openCoreDb } from './storage/db.js';
-import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { createTestStore } from './test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
 import { listActiveWorkspaceIds, recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
@@ -2439,8 +2437,7 @@ function retiredOrdinaryImport(
 describe('ordinary portable import removal', () => {
   it('refuses JSON import and a valid archive import without creating a Workspace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-removal-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const coreDb = createTestCoreDb(dataRoot);
     const userId = ensureLocalUser(coreDb);
     try {
       const store = new FsStore({ dataRoot });
@@ -2506,7 +2503,7 @@ describe('ordinary portable import removal', () => {
       });
     } finally {
       await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
+      closeTestCoreDb(coreDb);
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
