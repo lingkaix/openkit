@@ -34,6 +34,7 @@ import {
   openUserDb,
   openWorkspaceDb,
   openWorkspaceDbAtRoot,
+  openWorkspaceReadDb,
   type UserDb,
   type WorkspaceDb,
 } from './db.js';
@@ -115,6 +116,25 @@ function initializeWorkspaceKnowledgePredecessor(dataRoot: string, workspaceId: 
 }
 
 describe('scoped storage databases', () => {
+  it('opens an existing Workspace reader as query-only with the bounded Main lock wait', () => {
+    const root = createDataRoot();
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    const writer = openWorkspaceDb(root, workspaceId);
+    let reader: WorkspaceDb | undefined;
+    try {
+      applyScopedMigrations(writer, undefined, 'pre-knowledge');
+      reader = openWorkspaceReadDb(root, workspaceId);
+      expect(reader).toMatchObject({ scope: 'workspace', dataRoot: root, workspaceId });
+      expect(reader.sqlite.readonly).toBe(true);
+      expect(reader.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      expect(reader.sqlite.pragma('busy_timeout', { simple: true })).toBe(5);
+    } finally {
+      reader?.sqlite.close();
+      writer.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('binds Workspace ORM reads and transactions to the supplied connection without hiding raw writes', () => {
     const root = createDataRoot();
     const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';

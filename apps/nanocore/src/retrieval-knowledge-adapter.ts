@@ -62,8 +62,8 @@ import type { ResourcePolicyActor } from './policy/workspace-resource-access.js'
 import type { RetrievalDocument, RetrievalScope } from './retrieval-service.js';
 import {
   type CoreDb,
+  openAdmittedWorkspaceReadDb,
   openUserReadDb,
-  openWorkspaceDb,
   type UserDb,
   type WorkspaceDb,
 } from './storage/db.js';
@@ -657,7 +657,9 @@ export function currentKnowledgeReferenceProofs(
   input: Pick<Target, 'workspaceId' | 'access' | 'notebookRevision' | 'pageIds' | 'notebookRead'>
 ): ReadonlyMap<string, KnowledgePageReferenceProof> {
   const { access, workspaceId } = input;
-  const db = access.coreDb ? openWorkspaceDb(access.coreDb.dataRoot, workspaceId) : undefined;
+  const db = access.coreDb
+    ? openAdmittedWorkspaceReadDb(access.coreDb.dataRoot, workspaceId)
+    : undefined;
   try {
     return resolveWorkspaceKnowledgeReferenceProofs({
       coreDb: access.coreDb,
@@ -692,7 +694,7 @@ function selectWorkspaceNotebook(
 ): WorkspaceNotebookSelection {
   let workspaceDb: WorkspaceDb | undefined;
   try {
-    workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
     return readCurrentWorkspaceNotebookSelection({
       workspaceDb,
       dataRoot,
@@ -832,7 +834,7 @@ function pinnedSourcesReadable(
   const workspaceDb =
     input.access.coreDb &&
     refs.some((reference) => /^(?:turn|item|context-package):/.test(reference))
-      ? openWorkspaceDb(input.access.coreDb.dataRoot, input.workspaceId)
+      ? openAdmittedWorkspaceReadDb(input.access.coreDb.dataRoot, input.workspaceId)
       : undefined;
   try {
     verifyKnowledgeProposalWorkHistory({

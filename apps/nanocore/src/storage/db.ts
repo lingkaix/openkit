@@ -252,7 +252,7 @@ export function openWorkspaceDb(dataRoot: string, workspaceId: string): Workspac
 
 /**
  * Opens an existing Workspace through the native product owner's read-only, query-only connection.
- * No layout or schema is created. Callers own closure; synchronous reads leave no transaction across an await.
+ * No layout or schema is created. Main lock waiting is bounded to 5 ms. Callers own closure; synchronous reads leave no transaction across an await.
  * @param dataRoot Data root that owns the existing Workspace.
  * @param workspaceId Exact Workspace owner.
  * @returns Scoped raw SQLite and ORM read views on the same connection.
@@ -262,7 +262,19 @@ export function openWorkspaceReadDb(dataRoot: string, workspaceId: string): Work
     kind: 'workspace',
     workspaceId,
   });
-  return bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
+  try {
+    reader.sqlite.pragma('busy_timeout = 5');
+    return bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
+  } catch (error) {
+    reader.close();
+    throw error;
+  }
+}
+
+/** Opens a current admitted Workspace for observation, without layout creation or migration. */
+export function openAdmittedWorkspaceReadDb(dataRoot: string, workspaceId: string): WorkspaceDb {
+  assertScopeAdmitted(dataRoot, 'workspace', workspaceId);
+  return openWorkspaceReadDb(dataRoot, workspaceId);
 }
 
 /** Opens an existing Workspace database after the current boot already verified its layout. */

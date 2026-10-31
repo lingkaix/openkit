@@ -20,7 +20,7 @@ import {
   type RetrievalResult,
   type RetrievalScope,
 } from './retrieval-service.js';
-import { type CoreDb, openWorkspaceDb } from './storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb } from './storage/db.js';
 import { getWorkspaceMaterialRevision, listWorkspaceMaterials } from './workspace-materials.js';
 
 /** Trusted request facts; no model selects an actor, source root, or destination audience. */
@@ -212,7 +212,7 @@ export function collectProductRetrievalScopes(
   if (input.families.includes('material')) {
     requireRead(input, 'workspace.read');
     partition('material', null);
-    const db = openWorkspaceDb(dataRoot, workspaceId);
+    const db = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
     try {
       for (const material of listWorkspaceMaterials(db)) {
         if (input.outputThreadId && material.sensitivity === 'restricted') continue;
