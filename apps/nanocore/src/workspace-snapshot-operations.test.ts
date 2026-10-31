@@ -93,7 +93,7 @@ async function fixture(
     store,
     coreDb,
     workspaceMutationAdmission: admission,
-    turnExecutor: new SimulatedTurnExecutor(),
+    turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     fileAdmission,
     releaseIdentity,
   };
