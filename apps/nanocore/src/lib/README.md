@@ -116,3 +116,5 @@ The effort admission and catalog fixtures in `../mode-entry-effort.test.ts` use 
 The public caller-override case in `../knowledge-manager.test.ts` uses a private native Store root. Its syntactic Source and Proposal inputs remain invalid requests; no native Knowledge admission or successful effect is inferred from their setup.
 
 Worker recovery fixtures open handles after actual Demo Workspace publication in the same root. Provenance fixtures keep running Turns without assigned Sessions; human-approval fixtures use atomic terminal publication with the original response request ID before exact replay.
+
+Server history tests read current Items through canonical Turn projections and complete events through the canonical transcript. The unused Item-list and bounded-event convenience methods are removed; live append, reload and Workspace cursor bounds keep their existing owners.

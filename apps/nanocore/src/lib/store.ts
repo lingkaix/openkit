@@ -4214,11 +4214,6 @@ export class FsStore {
       : this.createServerItemPublication(updated);
   }
 
-  /** Lists current Server Item projections in chronological order. */
-  public listServerThreadItems(threadId: string): Item[] {
-    return this.listServerThreadTurns(threadId).flatMap((turn) => turn.items);
-  }
-
   /** Publishes an existing transcript event family under a Server Turn without a Workspace selector. */
   public async persistServerTurnEvent(
     ...args: Parameters<FsStore['persistServerTurnEventPublication']>
@@ -4327,11 +4322,6 @@ export class FsStore {
     for (const listener of this.serverTurnStream(turnId).listeners)
       listener(structuredClone(envelope));
     return envelope;
-  }
-
-  /** Returns the bounded Server transcript window used for current streaming. */
-  public getServerTurnEvents(turnId: string): ServerTurnEventEnvelope[] {
-    return this.getServerTurnTranscript(turnId).slice(-TURN_STREAM_EVENT_WINDOW_SIZE);
   }
 
   /** Returns the complete canonical Server transcript after current Server authority admission. */

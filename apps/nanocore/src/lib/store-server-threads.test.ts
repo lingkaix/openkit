@@ -51,10 +51,10 @@ describe('Server-owned canonical history', () => {
         updatedAt: turn.startedAt,
       });
       expect(reopened.getServerTurn(thread.id, turn.id).status).toBe('completed');
-      expect(reopened.listServerThreadItems(thread.id)).toEqual([
+      expect(reopened.listServerThreadTurns(thread.id).flatMap((turn) => turn.items)).toEqual([
         expect.objectContaining({ text: 'Retained' }),
       ]);
-      expect(reopened.getServerTurnEvents(turn.id)).toEqual([
+      expect(reopened.getServerTurnTranscript(turn.id)).toEqual([
         event,
         expect.objectContaining({
           event: 'turn.completed',
@@ -325,7 +325,7 @@ it.each([
     expect(threads.map((entry) => entry.id)).toEqual([thread.id]);
     const items =
       scope === 'server'
-        ? reopened.listServerThreadItems(thread.id)
+        ? reopened.listServerThreadTurns(thread.id).flatMap((turn) => turn.items)
         : reopened.listThreadItems(workspace.id, thread.id);
     expect(items).toEqual([item]);
   } finally {
