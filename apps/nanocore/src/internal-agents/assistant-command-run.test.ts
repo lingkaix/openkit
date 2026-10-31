@@ -16,7 +16,6 @@ import {
   publishWorkspaceResourceCatalog,
   setWorkspaceSkillPin,
 } from '../catalog/resource-catalog.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import type { ResolvedLogicalModel } from '../llm/logical-models.js';
 import { ModelCaptureError, withTurnModelCapture } from '../llm/model-capture.js';
@@ -29,6 +28,7 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { assembleAssistantCommandRun, runAssistantCommand } from './assistant-command-run.js';
 import {
@@ -388,10 +388,8 @@ describe('ordinary Assistant command assembly', () => {
 describe('ordinary Assistant command capture and Gateway composition', () => {
   it('delivers the scope overview to the actual Provider without changing canonical messages or Tools', async () => {
     const f = await fixture(false);
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(f.dataRoot, 'workspaces', f.workspaceId, 'knowledge', 'notebook.git'),
-    });
-    const revision = notebook.publishedRevision();
+    const revision = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspaceId).head
+      .notebookCommit;
     f.createResponses.mockImplementation(async (_provider, request) => {
       const delivered = JSON.stringify(request.input);
       expect(delivered).toContain('knowledge_overviews');

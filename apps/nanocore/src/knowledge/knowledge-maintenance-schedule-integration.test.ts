@@ -15,8 +15,8 @@ import { createApp } from '../test-support/app.js';
 import { createKnowledgeAnswerApp } from '../test-support/knowledge-agent.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { currentServerMaintenanceActor } from './server-knowledge-maintenance.js';
 
 it('never borrows a stored administrator credential for scheduled Server maintenance', async () => {
@@ -184,10 +184,8 @@ it('stops bounded maintenance through the public Turn command before a late Prov
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Interruptible maintenance');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
-  const baseRevision = notebook.publishedRevision();
+  const baseRevision = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head
+    .notebookCommit;
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, []);
@@ -253,7 +251,9 @@ it('stops bounded maintenance through the public Turn command before a late Prov
     const response = await pending;
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ outcome: 'failed', turnId: turn.id });
-    expect(notebook.publishedRevision()).toBe(baseRevision);
+    expect(readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit).toBe(
+      baseRevision
+    );
     expect(store.getTurnById(turn.id).items.some((item) => item.type === 'tool-call')).toBe(false);
     expect(createResponses).toHaveBeenCalledTimes(1);
   } finally {

@@ -4,13 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
 import { FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   assertPortableKnowledgeOverview,
@@ -30,9 +32,7 @@ async function fixture() {
   const thread = await store.createThread(workspace.id, 'Working agent');
   const actor = { kind: 'user' as const, id: userId };
   const turn = await store.createTurn(workspace.id, thread.id, 'Ask about Knowledge', actor);
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
+  const app = createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
@@ -46,32 +46,36 @@ async function fixture() {
     turnId: turn.id,
     actor,
     userId,
-    notebook,
+    app,
   };
 }
 
-/** Publishes a real human root revision through the existing Git owner. */
-function publishIndex(f: Awaited<ReturnType<typeof fixture>>, content: string) {
-  const baseRevision = f.notebook.publishedRevision();
-  const candidateRevision = f.notebook.prepare({
-    baseRevision,
-    changes: { 'index.md': content },
-    metadata: {
-      summary: 'Update overview',
-      producer: f.actor,
-      authority: { kind: 'direct', instructionReference: 'test:overview' },
-      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'a'.repeat(64)}` },
-      sourceReferences: [],
-    },
-  });
-  f.notebook.publish({ baseRevision, candidateRevision });
-  return candidateRevision;
+/** Publishes a real human root revision through the public Notebook update operation. */
+async function publishIndex(f: Awaited<ReturnType<typeof fixture>>, content: string) {
+  const baseRevision = readTestWorkspaceNotebookSelection(f.coreDb.dataRoot, f.workspaceId).head
+    .notebookCommit;
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.notebook.update',
+      { workspaceId: f.workspaceId },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          baseRevision,
+          changes: [{ path: 'index.md', content }],
+          summary: 'Update overview',
+        }),
+      }
+    )
+  );
+  expect(response.status, await response.clone().text()).toBe(200);
+  return (await response.json()).notebookRevision as string;
 }
 
 it('delivers a bounded UTF-8 overview at its source revision, stays pinned after publication and rechecks current authority', async () => {
   const f = await fixture();
   const content = `---\nokf_version: "0.2"\n---\n# Admissions\n${'€'.repeat(2000)}`;
-  const revision = publishIndex(f, content);
+  const revision = await publishIndex(f, content);
   const result = prepareKnowledgeOverview(f);
   const payload = JSON.parse(
     result.text.split('<knowledge_overviews>')[1]!.split('</knowledge_overviews>')[0]!
@@ -95,15 +99,22 @@ it('delivers a bounded UTF-8 overview at its source revision, stays pinned after
   expect(overview.deliveredDigest).toBe(
     `sha256:${createHash('sha256').update(overview.content).digest('hex')}`
   );
-  publishIndex(f, '---\nokf_version: "0.2"\n---\n# Later overview\n');
+  await publishIndex(f, '---\nokf_version: "0.2"\n---\n# Later overview\n');
   expect(() => result.assertCurrent()).not.toThrow();
   expect(result.text).not.toContain('Later overview');
-  publishIndex(f, '---\nokf_version: "0.2"\nsensitivity: restricted\n---\n# Restricted\n');
+  // Bundle-root index.md admits only okf_version; recheck current actor authority instead of invalid sensitivity frontmatter.
+  f.coreDb.sqlite
+    .prepare(
+      "UPDATE users SET status = 'disabled', disabled_at = '2026-10-17T00:00:00.000Z' WHERE id = ?"
+    )
+    .run(f.userId);
   expect(() => result.assertCurrent()).toThrow();
   expect(prepareKnowledgeOverview(f).text).not.toContain('# Restricted');
   expect(prepareKnowledgeOverview(f).text).toContain('"unavailable":true');
-  publishIndex(f, '---\nokf_version: "0.2"\n---\n# Readable again\n');
-  // A disabled actor cannot reuse the pinned projection.
+  f.coreDb.sqlite
+    .prepare("UPDATE users SET status = 'active', disabled_at = NULL WHERE id = ?")
+    .run(f.userId);
+  await publishIndex(f, '---\nokf_version: "0.2"\n---\n# Readable again\n');
   f.coreDb.sqlite
     .prepare(
       "UPDATE users SET status = 'disabled', disabled_at = '2026-10-17T00:00:00.000Z' WHERE id = ?"
