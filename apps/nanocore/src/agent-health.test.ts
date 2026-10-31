@@ -6,7 +6,6 @@ import {
   ListAgentCatalogResponseSchema,
 } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
-import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -24,7 +23,6 @@ describe('Agent inventory and health operations', () => {
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
     });
     const listRes = await app.request(
       ...operationRequest(
@@ -75,7 +73,6 @@ describe('Agent inventory and health operations', () => {
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
     });
     const res = await app.request(
       ...operationRequest(

@@ -6,7 +6,6 @@ import { ProductTurnSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import * as evidenceBundles from './evidence-bundles.js';
-import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -795,7 +794,7 @@ describe('thread dashboard app API', () => {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
+    const app = createApp({ store });
 
     const res = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',
@@ -868,7 +867,7 @@ describe('thread dashboard app API', () => {
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
     });
-    const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
+    const app = createApp({ store });
 
     const res = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',
@@ -946,7 +945,7 @@ describe('thread dashboard app API', () => {
       });
     }
     const inventory = store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
-    const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
+    const app = createApp({ store });
     const res = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1120,7 +1119,6 @@ describe('thread dashboard app API', () => {
       dataRoot,
       mode: 'server',
       store,
-      turnExecutor: new SimulatedTurnExecutor(),
     });
 
     try {
@@ -1277,7 +1275,7 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
+    const app = createApp({ store });
     const res = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1418,7 +1416,7 @@ describe('thread dashboard app API', () => {
       completedAt: timestamp,
     });
     await store.updateTurn(duplicateTurn.id, { agentId: 'agent_codex_host' });
-    const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
+    const app = createApp({ store });
 
     const response = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',

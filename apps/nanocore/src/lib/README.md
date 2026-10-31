@@ -124,3 +124,5 @@ Four direct Core-owned Worker-control fixtures use those same native roots befor
 RuntimeTarget refusal, conversation navigation and member-management fixtures give the deterministic executor their existing Core handle. Their App authority inputs and all read, refusal and recovery assertions stay unchanged; these fixtures do not claim Worker execution.
 
 Approval refusal and Workspace retirement fixtures share their existing Core with the deterministic executor. Original person-grant receipts, no-executor refusals, quarantine and restart assertions retain their existing setup and owners; no Worker execution is inferred.
+
+Agent health and Thread dashboard read fixtures use their existing Core-backed App builder without a separate standalone executor override. The builder retains the original Store root, identity, memberships, file admission and cleanup; read fixtures do not establish Worker execution.
