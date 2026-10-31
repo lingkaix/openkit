@@ -60,7 +60,10 @@ import { applyMigrations } from './storage/migrate.js';
 import { allocateRetrievalTraceId, readTurnRetrievalTraces } from './storage/retrieval-traces.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
-import { seedRetainedPersonalWorkspace } from './test-support/demo-store.js';
+import {
+  createDemoWorkspaceForUser,
+  seedRetainedPersonalWorkspace,
+} from './test-support/demo-store.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -103,7 +106,13 @@ async function fixture(
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = await new FsStore().createWorkspace('Semantic Task handoff');
+  const workspace = {
+    ...createDemoWorkspaceForUser(LOCAL_USER_ID).workspace,
+    id: allocateEntityId('ws'),
+    name: 'Semantic Task handoff',
+    kind: 'general' as const,
+    counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+  };
   const { timeline: thread } = await seedRetainedPersonalWorkspace(
     store,
     LOCAL_USER_ID,

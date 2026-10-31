@@ -21,7 +21,10 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { seedRetainedPersonalWorkspace } from './test-support/demo-store.js';
+import {
+  createDemoWorkspaceForUser,
+  seedRetainedPersonalWorkspace,
+} from './test-support/demo-store.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -102,7 +105,13 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = await new FsStore().createWorkspace('History integration');
+  const workspace = {
+    ...createDemoWorkspaceForUser(LOCAL_USER_ID).workspace,
+    id: allocateEntityId('ws'),
+    name: 'History integration',
+    kind: 'general' as const,
+    counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+  };
   const retained = await seedRetainedPersonalWorkspace(store, LOCAL_USER_ID, workspace);
   const past = retained.retained!;
   const otherWorkspace = await store.createWorkspace('Other history ownership');

@@ -126,3 +126,5 @@ RuntimeTarget refusal, conversation navigation and member-management fixtures gi
 Approval refusal and Workspace retirement fixtures share their existing Core with the deterministic executor. Original person-grant receipts, no-executor refusals, quarantine and restart assertions retain their existing setup and owners; no Worker execution is inferred.
 
 Agent health and Thread dashboard read fixtures use their existing Core-backed App builder without a separate standalone executor override. The builder retains the original Store root, identity, memberships, file admission and cleanup; read fixtures do not establish Worker execution.
+
+Assistant history and semantic-handoff fixtures obtain their unpublished Workspace DTO from the existing Demo builder with explicit project identity, name, kind and empty counts. Only the retained-Personal fixture publishes that Workspace; a discarded rootless Store no longer supplies the DTO.
