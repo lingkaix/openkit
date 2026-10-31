@@ -127,6 +127,48 @@ export type ScopedNotebookPublicationDependencies = Omit<
 /** Owner-free edit bytes; the trusted native adapter supplies the owner separately. */
 export type NotebookEdit = Omit<NotebookUpdate, 'workspaceId'>;
 
+/** Prepares one fixed-base scoped Proposal; native callers retain current admission, identity and retention. */
+export function prepareNotebookProposalChanges(input: {
+  readonly notebook: KnowledgeNotebook;
+  readonly ownerScope: Extract<KnowledgeOwnerScope, { kind: 'server' | 'user' }>;
+  readonly edit: NotebookEdit;
+  readonly revalidate: (
+    files: Readonly<Record<string, string>>,
+    changedPaths: readonly string[]
+  ) => NotebookPublicationAdmission;
+}) {
+  const { notebook, edit, ownerScope } = input;
+  if (notebook.publishedRevision() !== edit.baseRevision)
+    throw new NotebookError('conflict', notebook.publishedRevision());
+  const base = notebook.readRevision(edit.baseRevision);
+  const changes = edit.changes
+    .map(({ path, content }) => ({
+      path,
+      content:
+        content === null || base.files[path] === content
+          ? content
+          : // Freeze final reviewed bytes; this candidate stays unpublished until human acceptance.
+            attributedNotebookPageBytes(path, content, ownerScope, 'accepted'),
+    }))
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const files = { ...base.files };
+  for (const { path, content } of changes) {
+    if (content === null) delete files[path];
+    else files[path] = content;
+  }
+  const report = validateNotebookCandidate({
+    ownerScope,
+    base,
+    candidate: { files },
+    ...input.revalidate(
+      files,
+      changes.map(({ path }) => path)
+    ),
+  });
+  if (report.errors.length) throw new NotebookError('invalid_request');
+  return changes;
+}
+
 /** Derives the exact durable owner from the existing database handle. */
 function notebookOwnerScope(owner: NotebookPublicationOwner): KnowledgeOwnerScope {
   return owner.kind === 'workspace'

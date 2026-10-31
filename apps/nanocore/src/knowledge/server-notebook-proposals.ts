@@ -25,10 +25,10 @@ import { projectKnowledgeProposalPreview } from './notebook-proposal-preview.js'
 import {
   type NotebookEdit,
   type NotebookPublicationAdmission,
+  prepareNotebookProposalChanges,
   publishNotebook,
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
-import { attributedNotebookPageBytes } from './okf.js';
 
 type Proposal = z.infer<typeof ServerKnowledgeProposalSchema>;
 type Review = z.infer<typeof ServerKnowledgeReviewSchema>;
@@ -86,31 +86,12 @@ export function createServerNotebookProposal(
     'knowledge'
   );
   const git = notebook(context.coreDb);
-  if (git.publishedRevision() !== edit.baseRevision)
-    throw new NotebookError('conflict', git.publishedRevision());
-  const base = git.readRevision(edit.baseRevision);
-  const changes = edit.changes
-    .map(({ path, content }) => ({
-      path,
-      content:
-        content === null || base.files[path] === content
-          ? content
-          : // Freeze final reviewed bytes; this candidate stays unpublished until human acceptance.
-            attributedNotebookPageBytes(path, content, { kind: 'server' }, 'accepted'),
-    }))
-    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const files = { ...base.files };
-  for (const { path, content } of changes) {
-    if (content === null) delete files[path];
-    else files[path] = content;
-  }
-  const report = validateNotebookCandidate({
+  const changes = prepareNotebookProposalChanges({
+    notebook: git,
     ownerScope: { kind: 'server' },
-    base,
-    candidate: { files },
-    ...context.revalidate(files),
+    edit,
+    revalidate: (files) => context.revalidate(files),
   });
-  if (report.errors.length) throw new NotebookError('invalid_request');
   const id = knowledgeAuthorityId('kp_', { ownerScope: 'server', requestId: edit.requestId });
   if (existsSync(proposalPath(context.coreDb, id))) throw new NotebookError('conflict');
   const candidateRevision = git.prepare({
