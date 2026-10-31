@@ -24,8 +24,11 @@ export default {
     });
     await ctx.session.hook('model.request', async (evt) => {
       evt.baseURL = read('inference-base');
-      if (!evt.headers) evt.headers = {};
-      evt.headers.authorization = 'Bearer ' + read('inference-bearer');
+    });
+    // The native SDK adds stored provider credentials after model.request.
+    // Replace its final HTTP header with this binding's current relay bearer.
+    await ctx.session.hook('http.request', async (evt) => {
+      evt.request.headers.set('authorization', 'Bearer ' + read('inference-bearer'));
     });
     if (ctx.permission && typeof ctx.permission.hook === 'function') {
       await ctx.permission.hook('evaluate', async (evt) => {

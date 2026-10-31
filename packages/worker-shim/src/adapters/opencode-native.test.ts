@@ -183,7 +183,22 @@ it.each([
   });
   writeFileSync(join(work, 'opencode.json'), config);
   const before = snapshot(home);
-  const f = await fixture();
+  let nativeClient: import('@opencode/client').OpenCodeClient | undefined;
+  const f = await fixture(
+    createOpenCodeAdapter({
+      async loadClient() {
+        const actual = await import('@opencode/client');
+        return {
+          OpenCode: {
+            make(options) {
+              nativeClient = actual.OpenCode.make(options);
+              return nativeClient;
+            },
+          },
+        };
+      },
+    })
+  );
   const result = await (
     await f.session.startTurn(f.turn(managed ? [managedPath] : [], managed ? ['selected'] : []))
   ).settled;
@@ -201,6 +216,46 @@ it.each([
   expect(tools + text).toContain('echo-local');
   expect((tools + text).includes('echo-selected')).toBe(managed);
   expect(existsSync(marker)).toBe(true);
+  if (!nativeClient) throw new Error('missing actual native client');
+  const nativePlugins = (await nativeClient.plugin.list({ location: { directory: work } })).data;
+  // The pin bundles its defaults. This fixture configures only two local plugins;
+  // a package source would expose an unexpected default/external installation path.
+  // This provenance check does not claim global absence of network activity.
+  expect(
+    nativePlugins.some(
+      (entry) => entry.source.type === 'builtin' && entry.state.status === 'active'
+    )
+  ).toBe(true);
+  expect(
+    nativePlugins.some(
+      (entry) =>
+        entry.id === 'native-local' &&
+        entry.source.type === 'local' &&
+        entry.state.status === 'active'
+    )
+  ).toBe(true);
+  expect(
+    nativePlugins.some(
+      (entry) =>
+        entry.id === 'openkit-loopback' &&
+        entry.source.type === 'local' &&
+        entry.state.status === 'active'
+    )
+  ).toBe(true);
+  expect(nativePlugins.some((entry) => entry.source.type === 'package')).toBe(false);
+  // Native Config entries are ordered from lowest to highest priority. Each
+  // single-valued control uses its last defined entry (Config.latest), while
+  // the existing marker proves this overlay still permits authored plugins.
+  const entries = await nativeClient.config.get({ location: { directory: work } });
+  const last = (key: 'share' | 'update' | 'lsp') =>
+    entries.findLast((entry) => entry.type === 'document' && entry.info[key] !== undefined)?.info[
+      key
+    ];
+  expect({ share: last('share'), update: last('update'), lsp: last('lsp') }).toEqual({
+    share: 'disabled',
+    update: 'disable',
+    lsp: false,
+  });
   expect(local.hits.some((hit) => hit.method === 'tools/list')).toBe(true);
   expect(local.hits.every((hit) => hit.authorization === null)).toBe(true);
   if (managed)
@@ -959,4 +1014,275 @@ it('cancels a native typed-answer form without inventing an answer', async () =>
   expect(result.status).toBe('failed');
   expect(result.diagnostics?.native).toContain('native drain was not proved');
   expect(f.session.childState()).toBe('absent');
+}, 60000);
+
+// #497 Session Operations: a real crashed Tool claim must not run before admission.
+// This is qualified together with the pinned stdio startup source: stdio supplies no
+// managed-service lifecycle and therefore installs no restart sweep. An idle timeout
+// alone would not prove that, especially with the successor's empty admitted AEP.
+it('keeps a genuinely orphaned native execution inert through stdio startup', async () => {
+  type Client = import('@opencode/client').OpenCodeClient;
+  const clients: Client[] = [];
+  const children: ReturnType<typeof spawn>[] = [];
+  const adapter = createOpenCodeAdapter({
+    async loadClient() {
+      const actual = await import('@opencode/client');
+      return {
+        OpenCode: {
+          make(options) {
+            const client = actual.OpenCode.make(options);
+            clients.push(client);
+            return client;
+          },
+        },
+      };
+    },
+    spawnServer(binary, args, options) {
+      expect(args).toEqual(['serve', '--stdio', '--hostname', '127.0.0.1', '--port', '0']);
+      expect(options.env.OPENCODE_DISABLE_AUTOUPDATE).toBe('1');
+      expect(options.env.OPENCODE_DISABLE_MODELS_FETCH).toBe('1');
+      const child = spawn(binary, [...args], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+      children.push(child);
+      return child;
+    },
+  });
+  let called = false;
+  const serverId = 'p497-orphan';
+  const f = await fixture(
+    adapter,
+    null,
+    (request) => {
+      const tool = requestTexts(request)
+        .join(' ')
+        .match(/\b(tools(?:\.[A-Za-z_]\w*|\["[^"]+"\])\.sis_schema)\(\)/)?.[1];
+      if (
+        !called &&
+        tool &&
+        request.body.tools?.some((entry) => entry.function?.name === 'execute')
+      ) {
+        called = true;
+        return { toolCall: { name: 'execute', arguments: { code: `return await ${tool}({});` } } };
+      }
+      return { text: 'after-explicit-admission' };
+    },
+    [{ name: 'sis.schema', inputSchema: { type: 'object' } }]
+  );
+  f.capability.hangCalls = true;
+  const run = await f.session.startTurn(f.turn([], [serverId]));
+  // Preserve a real owner-produced pending operation, not an invented durable row.
+  await vi.waitFor(
+    () => {
+      expect(f.capability.hits.filter((hit) => hit.method === 'tools/call')).toHaveLength(1);
+    },
+    { timeout: 15000 }
+  );
+  expect(called).toBe(true);
+  expect(clients).toHaveLength(1);
+  const rows = await clients[0]!.session.list({});
+  expect(rows.data).toHaveLength(1);
+  const sessionID = rows.data[0]!.id;
+  const pending = async (client: Client) => {
+    const messages: import('@opencode/client').SessionMessageInfo[] = [];
+    const cursors = new Set<string>();
+    const identities = new Set<string>();
+    let cursor: string | undefined;
+    let complete = false;
+    // Native pages may publish a forward anchor even when the next page is empty.
+    // Follow the supported cursor until the owner actually reports completion.
+    for (let page = 0; page < 20; page += 1) {
+      const response = await client.message.list({
+        sessionID,
+        limit: 100,
+        ...(cursor ? { cursor } : { order: 'asc' as const }),
+      });
+      for (const message of response.data) {
+        expect(identities.has(message.id)).toBe(false);
+        identities.add(message.id);
+        messages.push(message);
+      }
+      const next = response.cursor.next;
+      if (next === undefined || next === null) {
+        complete = true;
+        break;
+      }
+      expect(typeof next === 'string' && next.length > 0).toBe(true);
+      expect(cursors.has(next)).toBe(false);
+      cursors.add(next);
+      cursor = next;
+    }
+    expect(complete).toBe(true);
+    return messages.flatMap((message) =>
+      message.type !== 'assistant'
+        ? []
+        : message.content
+            .filter((part) => part.type === 'tool' && part.name === 'execute')
+            .map((part) => {
+              if (part.type !== 'tool') throw new Error('unexpected native Tool projection');
+              return {
+                messageID: message.id,
+                toolID: part.id,
+                name: part.name,
+                status: part.state.status,
+                completed: part.time.completed,
+                digest: createHash('sha256').update(JSON.stringify(part)).digest('hex'),
+              };
+            })
+    );
+  };
+  const before = await pending(clients[0]!);
+  expect(before).toHaveLength(1);
+  expect(before[0]!.status).toBe('running');
+  expect(before[0]!.completed).toBeUndefined();
+  // The actual MCP contact follows the awaited coordinator started hook, which
+  // commits the execution claim before any drain or Tool. Its still-running
+  // Tool cannot settle while the actual MCP response remains held at the barrier.
+  const handle = await f.session.nativeHandle();
+  expect(handle.state).toBe('ready');
+  if (handle.state !== 'ready') throw new Error('missing retained native session');
+  const child = children[0]!;
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  expect(child.kill('SIGKILL')).toBe(true);
+  await exited;
+  expect((await run.settled).status).toBe('failed');
+  const oldCounts = { model: f.inference.requests.length, mcp: f.capability.hits.length };
+  control = join(root, 'orphan-successor-control');
+  mkdirSync(control);
+  const successor = await fixture(adapter, handle.reference);
+  expect(clients).toHaveLength(2);
+  // The actual message.list application route requires completed native boot.
+  // It reads persisted native messages without marking idle or starting recovery.
+  // Retain both original effect endpoints and exact pending Tool identity/bytes.
+  const retained = await pending(clients[1]!);
+  expect(retained).toEqual(before);
+  expect(f.inference.requests).toHaveLength(oldCounts.model);
+  expect(f.capability.hits).toHaveLength(oldCounts.mcp);
+  expect(successor.inference.requests).toHaveLength(0);
+  expect(successor.capability.hits).toHaveLength(0);
+  expect(await successor.session.nativeHandle()).toEqual(handle);
+  expect(await pending(clients[1]!)).toEqual(before);
+  // A later explicitly admitted prompt proves the observer and live relay work;
+  // it makes no claim that the prior effect is safe to retry automatically.
+  expect((await (await successor.session.startTurn(successor.turn())).settled).status).toBe(
+    'completed'
+  );
+  expect(successor.inference.requests.length).toBeGreaterThan(0);
+}, 60000);
+
+// #497 Tests: stored native provider credentials cannot replace the current
+// admitted private relay bearer. All native credential records are produced
+// and observed through their public native API, never a native file or SQL.
+it('preserves native credentials across a cold restart without replacing the managed relay bearer', async () => {
+  type Client = import('@opencode/client').OpenCodeClient;
+  const clients: Client[] = [];
+  const adapter = createOpenCodeAdapter({
+    async loadClient() {
+      const actual = await import('@opencode/client');
+      return {
+        OpenCode: {
+          make(options) {
+            const client = actual.OpenCode.make(options);
+            clients.push(client);
+            return client;
+          },
+        },
+      };
+    },
+  });
+  const config = JSON.stringify({
+    providers: {
+      'retained-unrelated': {
+        name: 'Retained unrelated test provider',
+        canonical: 'openai',
+        package: '@ai-sdk/openai-compatible',
+        models: {},
+      },
+    },
+  });
+  writeFileSync(join(work, 'opencode.json'), config);
+  const first = await fixture(adapter);
+  expect((await (await first.session.startTurn(first.turn())).settled).status).toBe('completed');
+  expect(clients).toHaveLength(1);
+  const client = clients[0]!;
+  const providers = (await client.provider.list({ location: { directory: work } })).data;
+  const managed = providers.find((provider) => provider.id === OPENCODE_PROVIDER_ID);
+  const unrelated = providers.find(
+    (provider) => provider.name === 'Retained unrelated test provider'
+  );
+  if (!managed || !unrelated) throw new Error('missing owner-produced native provider');
+  // The native configured-provider owner creates a same-id integration when no
+  // explicit binding exists. Resolve and verify it instead of guessing a row id.
+  const managedIntegrationID = managed.integrationID ?? managed.id;
+  const unrelatedIntegrationID = unrelated.integrationID ?? unrelated.id;
+  expect(managedIntegrationID === unrelatedIntegrationID).toBe(false);
+  const integration = await client.integration.get({
+    integrationID: managedIntegrationID,
+    location: { directory: work },
+  });
+  const otherIntegration = await client.integration.get({
+    integrationID: unrelatedIntegrationID,
+    location: { directory: work },
+  });
+  expect(integration.data.id === managedIntegrationID).toBe(true);
+  expect(otherIntegration.data.id === unrelatedIntegrationID).toBe(true);
+  expect(integration.data.methods.some((method) => method.type === 'key')).toBe(true);
+  expect(otherIntegration.data.methods.some((method) => method.type === 'key')).toBe(true);
+  const syntheticStoredValue = createHash('sha256')
+    .update('isolated-native-precedence-fixture')
+    .digest('hex');
+  const { id: managedCredentialID } = await client.credential.create({
+    integrationID: managedIntegrationID,
+    value: { type: 'key', key: syntheticStoredValue },
+    activate: true,
+  });
+  const { id: unrelatedCredentialID } = await client.credential.create({
+    integrationID: unrelatedIntegrationID,
+    value: {
+      type: 'key',
+      key: createHash('sha256').update('isolated-unrelated-fixture').digest('hex'),
+    },
+    activate: true,
+  });
+  const metadata = async (native: Client) =>
+    (await native.credential.list())
+      .filter((entry) => entry.id === managedCredentialID || entry.id === unrelatedCredentialID)
+      .map(({ id, integrationID, active }) => ({ id, integrationID, active }))
+      .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  const before = await metadata(client);
+  expect(before).toHaveLength(2);
+  expect(before.every((entry) => entry.active)).toBe(true);
+  const handle = await first.session.nativeHandle();
+  if (handle.state !== 'ready') throw new Error('missing retained native session');
+  await first.session.close();
+  control = join(root, 'credential-successor-control');
+  mkdirSync(control);
+  const successor = await fixture(adapter, handle.reference);
+  expect(clients).toHaveLength(2);
+  const resumed = clients[1]!;
+  expect(await metadata(resumed)).toEqual(before);
+  // Retained credential metadata is available before admission. Location-bound
+  // integration services are rebuilt by the ordinary catalog reload and drained
+  // session.move in startTurn; inspect that admitted registry after it exists.
+  expect((await (await successor.session.startTurn(successor.turn())).settled).status).toBe(
+    'completed'
+  );
+  const connection = (
+    await resumed.integration.get({
+      integrationID: managedIntegrationID,
+      location: { directory: work },
+    })
+  ).data.connections;
+  expect(
+    connection.some((entry) => entry.type === 'credential' && entry.id === managedCredentialID)
+  ).toBe(true);
+  const request = successor.inference.requests.findLast((entry) =>
+    requestTexts(entry).join(' ').includes('native-user')
+  );
+  expect(request !== undefined).toBe(true);
+  if (!request) throw new Error('missing actual managed relay request');
+  // Boolean oracles never print either credential value on assertion failure.
+  expect(request.headers.authorization === 'Bearer synthetic-inference-credential').toBe(true);
+  expect(request.headers.authorization === `Bearer ${syntheticStoredValue}`).toBe(false);
+  expect(request.body.model).toBe('native-model');
+  expect(await metadata(resumed)).toEqual(before);
+  expect(readFileSync(join(work, 'opencode.json'), 'utf8')).toBe(config);
 }, 60000);
