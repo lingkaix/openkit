@@ -98,3 +98,5 @@ Ordinary Core-minted Item and live event appends address their supplied owner an
 `FsStore.getTurnMetadata` reuses the product owner's Workspace read connection and prepared statements. Every call still reads current committed metadata in its own short snapshot, validates the actual owner and Thread, and retains the original selector-miss and storage-refusal behavior. Connection reuse retains no canonical row.
 
 The target recovery owner may settle only its restored Workspace publication marker after placement and complete scoped Store/config validation. It keeps readiness refused until its separate final synchronous settlement and does not clear sibling markers.
+
+`conversation-write-policy.ts` owns the existing pure sealed-Turn field and replay predicates and their refusal constructors. Exact publication equality remains distinct from the named display-field refresh; callers still own native reads, admission, the complete transaction and acknowledgement.
