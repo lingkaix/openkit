@@ -1,6 +1,7 @@
 import {
   PolicyAgentGateOutputV1Schema,
   type PolicyBindingV1,
+  PolicyResourceV1Schema,
   PolicySubjectV1Schema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -47,12 +48,13 @@ export async function runPolicyAgentGate(
   const proposal = {
     operation: input.proposal.operation,
     workspaceId: input.proposal.workspaceId,
-    serverId: input.proposal.serverId,
-    toolName: input.proposal.toolName,
-    argumentsDigest: input.proposal.argumentsDigest,
-    catalogRevision: input.proposal.catalogRevision,
-    packageDigest: input.proposal.packageDigest,
-    schemaDigest: input.proposal.schemaDigest,
+    resource: PolicyResourceV1Schema.parse(input.proposal.resource),
+    inputReferences: z
+      .record(z.string(), z.string().nullable())
+      .parse(input.proposal.inputReferences),
+    inputAttributes: z
+      .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+      .parse(input.proposal.inputAttributes),
     capabilityCallId: input.proposal.capabilityCallId,
     subject: PolicySubjectV1Schema.parse(input.proposal.subject),
   };

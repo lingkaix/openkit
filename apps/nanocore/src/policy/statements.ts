@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { type NativeOperationDefinition, OPERATION_REGISTRY } from '@openkit/app-api-schemas';
+import {
+  type NativeOperationDefinition,
+  OPERATION_REGISTRY,
+  type OperationDefinition,
+} from '@openkit/app-api-schemas';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import {
@@ -8,23 +12,52 @@ import {
   type PolicyBindingV1,
   type PolicyDocumentV1,
   PolicyDocumentV1Schema,
+  type PolicyResourceV1Schema,
+  type PolicyStageV1Schema,
   type PolicySubjectV1Schema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 
-/** Safe current proposal identity supplied by the native operation owner. */
+/** Safe current references supplied by each native operation owner, never caller material. */
 export interface PolicyProposal {
-  readonly operation: 'mcp.call-tool';
+  readonly operation: string;
   readonly workspaceId: string;
-  readonly serverId: string;
-  readonly toolName: string;
-  readonly argumentsDigest: string;
-  readonly catalogRevision: string;
-  readonly packageDigest: string;
-  /** Null means no exact Turn schema was observed; it does not mean an empty schema. */
-  readonly schemaDigest: string | null;
-  readonly capabilityCallId: string;
+  readonly resource: z.infer<typeof PolicyResourceV1Schema>;
+  readonly inputReferences: Readonly<Record<string, string | null>>;
+  readonly inputAttributes: Readonly<Record<string, string | number | boolean | null>>;
+  readonly capabilityCallId: string | null;
   readonly subject: z.infer<typeof PolicySubjectV1Schema>;
+}
+
+/** Derives supported points from the same operation definition, without another registry. */
+export function policyOperationDefinition(operation: string): {
+  readonly policyOperation: NativeOperationDefinition['policyOperation'];
+  readonly points: Pick<
+    NativeOperationDefinition,
+    'stages' | 'modes' | 'participantKinds' | 'gateResults' | 'gateFailures'
+  >;
+} {
+  if (!Object.hasOwn(OPERATION_REGISTRY, operation))
+    throw new Error('Policy operation is unavailable.');
+  const definition = (
+    OPERATION_REGISTRY as Readonly<Record<string, OperationDefinition | NativeOperationDefinition>>
+  )[operation]!;
+  const points = definition.binding === 'native' ? definition : definition.insertionPoints;
+  if (!points) throw new Error('Policy insertion points are unavailable.');
+  return { policyOperation: definition.policyOperation, points };
+}
+
+/** The currently supported exact selectors share one Workspace transaction owner. */
+export function policyResourceWorkspace(
+  resource: z.infer<typeof PolicyResourceV1Schema>
+): string | null {
+  if (resource.kind === 'mcp-tool') return resource.workspaceId;
+  const container = resource.container;
+  return container.kind === 'workspace' &&
+    container.owner.kind === 'workspace' &&
+    container.id === container.owner.workspaceId
+    ? container.owner.workspaceId
+    : null;
 }
 
 /** Uses the existing canonical JSON primitive without allocating another identity family. */
@@ -203,10 +236,8 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     }
     // Other forms stay declarations until their native authority consumer exists.
     if (statement.kind !== 'binding') throw new Error('This Policy form must remain inactive.');
-    const definition = OPERATION_REGISTRY[statement.operation as keyof typeof OPERATION_REGISTRY];
-    if (!definition || definition.binding !== 'native' || statement.operation !== 'mcp.call-tool')
-      throw new Error('Policy binding operation is unavailable.');
-    const native: NativeOperationDefinition = definition;
+    const { points: native, policyOperation } = policyOperationDefinition(statement.operation);
+    if (native.modes.length === 0) throw new Error('Policy binding operation is unavailable.');
     if (!native.stages.includes(statement.stage) || !native.modes.includes(statement.mode))
       throw new Error('Policy binding stage or mode is unavailable.');
     const stage = { observe: 'completed', advise: 'propose', transform: 'propose', gate: 'decide' };
@@ -230,12 +261,18 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       statement.author.id !== statement.authority.userId
     )
       throw new Error('Active participant authority requires its admitted human author.');
-    if (statement.scope.subjects.some((subject) => subject.kind !== 'human'))
+    if (
+      native.participantKinds.includes('agent') &&
+      statement.scope.subjects.some((subject) => subject.kind !== 'human')
+    )
       throw new Error('Agent principal authority is not active.');
+    if (
+      statement.mode === 'gate' &&
+      !native.gateFailures.includes(statement.failure as 'error' | 'escalate-to-human')
+    )
+      throw new Error('Policy gate failure disposition is unavailable.');
     const resources = statement.scope.resources;
-    const workspaceIds = new Set(
-      resources.map((resource) => (resource.kind === 'mcp-tool' ? resource.workspaceId : null))
-    );
+    const workspaceIds = new Set(resources.map(policyResourceWorkspace));
     const anchor = statement.lifetime.anchor;
     if (
       workspaceIds.size !== 1 ||
@@ -248,8 +285,8 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       throw new Error(
         'Active binding requires one Workspace transaction owner and a current Workspace or Turn anchor.'
       );
-    if (statement.scope.actions.some((action) => action !== 'tool.use'))
-      throw new Error('I16 binding requires the existing Tool-use action.');
+    if (statement.scope.actions.some((action) => action !== policyOperation))
+      throw new Error('Policy binding requires its registered action.');
     if (!policyScopeContains(statement.scope, statement.inputDisclosure))
       throw new Error('Participant input disclosure exceeds its admitted binding scope.');
     const position = JSON.stringify([
@@ -455,14 +492,9 @@ export function policyScopeIncludesProposal(
     scope.subjects.some(
       (principal) => policyDigest(principal) === policyDigest(proposal.subject.principal)
     ) &&
-    scope.actions.includes('tool.use') &&
-    scope.resources.some(
-      (resource) =>
-        resource.kind === 'mcp-tool' &&
-        resource.workspaceId === proposal.workspaceId &&
-        resource.serverId === proposal.serverId &&
-        resource.toolName === proposal.toolName
-    )
+    scope.actions.includes(policyOperationDefinition(proposal.operation).policyOperation) &&
+    policyResourceWorkspace(proposal.resource) === proposal.workspaceId &&
+    scope.resources.some((resource) => policyDigest(resource) === policyDigest(proposal.resource))
   );
 }
 
@@ -470,6 +502,7 @@ export function policyScopeIncludesProposal(
 export function selectPolicyBindings(input: {
   readonly document: PolicyDocumentV1;
   readonly proposal: PolicyProposal;
+  readonly stage?: z.infer<typeof PolicyStageV1Schema>;
   readonly now: number;
   readonly authorCurrent: (authorId: string) => boolean;
   readonly anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) => boolean;
@@ -480,7 +513,8 @@ export function selectPolicyBindings(input: {
       if (
         statement.kind !== 'binding' ||
         statement.state === 'inactive' ||
-        statement.operation !== proposal.operation
+        statement.operation !== proposal.operation ||
+        (input.stage !== undefined && statement.stage !== input.stage)
       )
         return false;
       const lifetime = statement.lifetime;
@@ -556,12 +590,8 @@ export function readPolicyAgentPrincipal(input: {
     )
       throw new Error('Current agent accountability is unavailable.');
     seen.add(current.agentId);
-    const resource = {
-      kind: 'mcp-tool',
-      workspaceId: proposal.workspaceId,
-      serverId: proposal.serverId,
-      toolName: proposal.toolName,
-    };
+    const resource = proposal.resource;
+    const operation = policyOperationDefinition(proposal.operation).policyOperation;
     const policy: PolicyState = {
       elements: [
         { id: 'agent', kind: 'user' },
@@ -576,25 +606,22 @@ export function readPolicyAgentPrincipal(input: {
         { child: 'target', parent: 'resources' },
         { child: 'resources', parent: 'scope' },
       ],
-      operations: [{ id: 'tool.use', accessRights: ['tool.use'] }],
+      operations: [{ id: operation, accessRights: [operation] }],
       associations:
         current.scope.subjects.some((s) => s.kind === 'agent' && s.id === current.agentId) &&
         current.scope.resources.some((r) => policyDigest(r) === policyDigest(resource)) &&
-        current.scope.actions.includes('tool.use')
+        current.scope.actions.includes(operation)
           ? [
               {
                 id: current.id,
                 userAttribute: 'domain',
                 targetAttribute: 'resources',
-                accessRights: ['tool.use'],
+                accessRights: [operation],
               },
             ]
           : [],
     };
-    if (
-      evaluateAccess(policy, { user: 'agent', operation: 'tool.use', target: 'target' }).effect !==
-      'allow'
-    )
+    if (evaluateAccess(policy, { user: 'agent', operation, target: 'target' }).effect !== 'allow')
       throw new Error('Current agent domain does not cover the proposal.');
     if (current.responsibility.kind === 'human') {
       if (current.responsibility.id !== root.responsibleHumanId)

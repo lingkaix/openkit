@@ -16,6 +16,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { evaluateGoalTaskAccess, type GoalTaskAccessInput } from './goal-task-access.js';
 import { PolicyInterception } from './interception.js';
+import { selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   listExportableWorkspacePermissionDecisions,
   readPolicyStatementUseCount,
@@ -54,13 +55,20 @@ const domain = PolicyDelegationV1Schema.parse({
 const proposal: PolicyProposal = {
   operation: 'mcp.call-tool',
   workspaceId,
-  serverId: resource.serverId,
-  toolName: resource.toolName,
-  catalogRevision: 'current-catalog',
-  packageDigest: 'current-package',
-  argumentsDigest: policyDigest({ issue: 1 }),
-  schemaDigest: null,
   capabilityCallId: testEntityId('cap', 'goal-classification'),
+  resource: {
+    kind: 'mcp-tool' as const,
+    workspaceId: workspaceId,
+    serverId: resource.serverId,
+    toolName: resource.toolName,
+  },
+  inputReferences: {
+    argumentsDigest: policyDigest({ issue: 1 }),
+    catalogRevision: 'current-catalog',
+    packageSnapshotId: 'current-package',
+    schemaDigest: null,
+  },
+  inputAttributes: {},
   subject: {
     principal: { kind: 'agent', id: 'task-worker' },
     actor: { kind: 'agent', id: 'task-worker', responsibleUserId: humanId },
@@ -160,6 +168,11 @@ function fixture(bindings: PolicyBindingV1[] = []) {
     workspaceDb,
     document,
     proposal,
+    resourceSummary: { serverId: 'issues', toolName: 'read' },
+    contextSummary: {
+      packageSnapshotId: proposal.inputReferences.packageSnapshotId,
+      catalogRevision: proposal.inputReferences.catalogRevision,
+    },
     authorizationRevision: policyDigest('current-authorization'),
     authorizationUses: [{ statement, limit: 1 }],
     authorCurrent: () => true,
@@ -324,9 +337,16 @@ describe('Goal Task classification at the final Policy interception seam', () =>
 
   it('keeps a human-only approval condition as the destination of the same missing Task association', async () => {
     const input = fixture();
+    const document = withHumanMcpApproval(input);
+    const permissions = selectMcpToolPermissions({
+      document,
+      proposal: { ...proposal, serverId: 'issues', toolName: 'read' },
+      authorCurrent: input.authorCurrent,
+    });
     const decision = await new PolicyInterception().decide({
       ...input,
-      document: withHumanMcpApproval(input),
+      document,
+      permissions,
       finalKernel: () => evaluate(),
     });
     expect(decision.result).toBe('require_approval');

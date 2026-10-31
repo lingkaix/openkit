@@ -704,8 +704,8 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             kind: 'permission' as const,
             title: 'Credential-use grant requested',
             description:
-              terms.injectionPath === 'runtime-env'
-                ? 'Review exact terms. This grant permits Worker-visible material.'
+              terms.injectionPath !== 'gateway-only'
+                ? 'Review exact terms. This high-risk grant permits Worker-visible material.'
                 : 'Review exact terms. This grant permits Gateway-only credential use.',
           },
           now,

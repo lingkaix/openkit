@@ -220,6 +220,8 @@ const NATIVE_OPERATION_DEFINITIONS = {
     stages: ['propose', 'decide', 'commit', 'completed'],
     modes: [],
     participantKinds: [],
+    gateResults: [],
+    gateFailures: [],
   } satisfies NativeOperationDefinition,
   'mcp.call-tool': {
     binding: 'native',
@@ -238,6 +240,8 @@ const NATIVE_OPERATION_DEFINITIONS = {
     stages: ['propose', 'decide', 'commit', 'completed'],
     modes: ['observe', 'advise', 'gate', 'transform'],
     participantKinds: ['deterministic', 'agent'],
+    gateResults: ['allow', 'deny', 'escalate'],
+    gateFailures: ['error', 'escalate-to-human'],
   } satisfies NativeOperationDefinition,
 } as const;
 

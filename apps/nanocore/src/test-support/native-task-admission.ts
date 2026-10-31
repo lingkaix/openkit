@@ -45,7 +45,11 @@ export function createNativeTaskAdmissionFixture(
   store: FsStore,
   options: Pick<
     NonNullable<Parameters<typeof createConfiguredWorkerLifecycleRuntime>[0]>,
-    'readRuntimeConfig' | 'vaultBackend'
+    | 'readRuntimeConfig'
+    | 'vaultBackend'
+    | 'workspaceMutationAdmission'
+    | 'policyInterception'
+    | 'goalTaskPolicy'
   > & {
     /** Outside checkout HEAD/tree; Core verifies its commit against the admitted source pin. */
     workspaceGitBaseline?: { commit: string; tree: string };
@@ -138,7 +142,12 @@ export function createNativeTaskAdmissionFixture(
     store,
     fileAdmission,
     workerControlGateway,
+    ...(options.goalTaskPolicy ? { goalTaskPolicy: options.goalTaskPolicy } : {}),
+    ...(options.policyInterception ? { policyInterception: options.policyInterception } : {}),
     ...(options.vaultBackend ? { vaultBackend: options.vaultBackend } : {}),
+    ...(options.workspaceMutationAdmission
+      ? { workspaceMutationAdmission: options.workspaceMutationAdmission }
+      : {}),
     env: {},
     readRuntimeConfig:
       options.readRuntimeConfig ??
@@ -188,7 +197,21 @@ export function createNativeTaskAdmissionFixture(
           outside.integrationBindingRef = ref;
           return { accepted: true, integrationReady: true, state: 'open' };
         }
-        if (request.kind === 'reference.import') return { state: 'imported' };
+        if (request.kind === 'reference.import')
+          return {
+            state: 'imported',
+            ...(request.input.slot === 'runtime-credential' ||
+            request.input.slot === 'runtime-credential-replace'
+              ? {
+                  credentialProtection: {
+                    ephemeral: true,
+                    outsideRetainedStorage: true,
+                    excludedFromCapture: true,
+                    excludedFromExport: true,
+                  },
+                }
+              : {}),
+          };
         if (request.kind === 'workspace.collect')
           return request.input.mode === 'baseline'
             ? {

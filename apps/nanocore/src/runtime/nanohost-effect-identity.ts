@@ -30,11 +30,23 @@ export function createNanoHostEffectRequest(
           packageSnapshotId: identity.packageSnapshotId,
           ...carriedInput,
         };
+  // Request lineage is retained; credential integrity and comparison material
+  // stays in private carriage and must not become a secret fingerprint.
+  const privateKeys =
+    operation === 'reference.import' &&
+    ['runtime-credential', 'runtime-credential-replace'].includes(String(commandInput.slot))
+      ? new Set(['body', 'source', 'sha256', 'byteLength'])
+      : operation === 'workspace.collect'
+        ? new Set(['checkValues'])
+        : null;
+  const identityInput = privateKeys
+    ? Object.fromEntries(Object.entries(commandInput).filter(([key]) => !privateKeys.has(key)))
+    : commandInput;
   const requestId = createHash('sha256')
     .update(
       stableNanoHostEffectJson({
         backendSessionId: identity.backendSessionId,
-        input: commandInput,
+        input: identityInput,
         leaseId: attemptId,
         operation,
         packageSnapshotId: identity.packageSnapshotId,

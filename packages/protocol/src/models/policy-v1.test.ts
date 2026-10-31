@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import * as protocol from '../index.js';
 import {
   POLICY_MODE_CONTRACTS_V1,
   PolicyBindingV1Schema,
@@ -171,6 +172,16 @@ describe('retained Policy version-one contracts', () => {
     expect(PolicyDocumentV1Schema.safeParse({ schemaVersion: 2, statements: [] }).success).toBe(
       false
     );
+  });
+
+  it('labels reference-only operation proposals without changing the original I16 mode contracts', () => {
+    const exported = protocol as unknown as Record<string, unknown>;
+    expect(exported.POLICY_OPERATION_REFERENCE_INPUT_V1).toBe('operation-reference-summary-v1');
+    expect(exported.POLICY_MODE_CONTRACTS_V1).toEqual({
+      observe: { input: 'mcp-tool-summary-v1', output: 'observation-v1' },
+      advise: { input: 'mcp-tool-summary-v1', output: 'advice-v1' },
+      gate: { input: 'mcp-tool-summary-v1', output: 'gate-v1' },
+    });
   });
 
   it('fixes the v1 contracts by mode without retained independent selectors', () => {

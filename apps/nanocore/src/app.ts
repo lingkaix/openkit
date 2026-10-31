@@ -465,6 +465,8 @@ function workerCoordinatorCandidates(
 export interface CreateAppOptions {
   /** One deterministic mediation participant; production has no vendor adapter. */
   policyParticipant?: DeterministicPolicyParticipant;
+  /** Optional embedded owner shared with a supplied Worker executor. */
+  policyInterception?: PolicyInterception;
   /** Optional private Discord send boundary; deterministic tests supply a fake. */
   discordAttentionTransport?: DiscordAttentionTransport;
   /** Boot joins this finite preparation callback to the existing recurring scanner. */
@@ -1208,6 +1210,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         })
       : null;
   nanoHostTransportSessionAuthorities.set(app, nanohostTransportSessionAuthority);
+  let policyInterception: PolicyInterception;
   const configuredWorkerRuntime =
     options.workerLifecycleRuntime ??
     (options.turnExecutor || process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR === '1'
@@ -1215,6 +1218,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       : createConfiguredWorkerLifecycleRuntime({
           fileAdmission,
           readRuntimeConfig: () => runtimeConfigManager.current(),
+          policyInterception: () => policyInterception,
+          goalTaskPolicy,
           coreDb: options.coreDb,
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
           nanoHostSessionDispatch,
@@ -1915,18 +1920,20 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   app.use('/api/worker-capabilities/*', browserCors);
-  const policyInterception = new PolicyInterception(
-    options.policyParticipant,
-    createAgentPolicyParticipant({
-      ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-      store: sharedStore,
-      runtimeConfig,
-      dispatcher: llmGatewayDispatcher,
-      resolveGatewayProvider,
-      ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
-      providerCredentialConfigured,
-    })
-  );
+  policyInterception =
+    options.policyInterception ??
+    new PolicyInterception(
+      options.policyParticipant,
+      createAgentPolicyParticipant({
+        ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+        store: sharedStore,
+        runtimeConfig,
+        dispatcher: llmGatewayDispatcher,
+        resolveGatewayProvider,
+        ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+        providerCredentialConfigured,
+      })
+    );
   const workerMcpRouteInput: RegisterWorkerMcpRoutesInput = {
     interception: policyInterception,
     goalTaskPolicy,
@@ -2234,6 +2241,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
   });
   const goalCoordinator = createGoalCoordinator({
+    policyInterception,
+    goalTaskPolicy,
+    turnExecutor,
     knowledgeAgent,
     workspaceMutationAdmission,
     store: sharedStore,
@@ -2593,6 +2603,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerOperationJsonRoutes({
+    policyInterception,
+    goalTaskPolicy,
     knowledgeAgent,
     ...(serverKnowledgeMaintenance ? { serverKnowledgeMaintenance } : {}),
     fileAdmission,
@@ -2657,6 +2669,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    policyInterception,
+    goalTaskPolicy,
     knowledgeAgent,
     ...(serverKnowledgeMaintenance ? { serverKnowledgeMaintenance } : {}),
     fileAdmission,

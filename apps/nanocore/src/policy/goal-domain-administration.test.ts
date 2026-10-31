@@ -57,6 +57,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService } from './goal-domains.js';
 import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import { PolicyInterception } from './interception.js';
+import { selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   listServerPermissionDecisions,
   readPolicyStatementUseCount,
@@ -553,14 +554,26 @@ async function fixture() {
       proposal: {
         operation: 'mcp.call-tool' as const,
         workspaceId: workspace.id,
-        serverId: 'issues',
-        toolName: 'read',
-        argumentsDigest: policyDigest({ issue: 1 }),
-        schemaDigest: null,
+        resource: {
+          kind: 'mcp-tool' as const,
+          workspaceId: workspace.id,
+          serverId: 'issues',
+          toolName: 'read',
+        },
+        inputReferences: {
+          argumentsDigest: policyDigest({ issue: 1 }),
+          schemaDigest: null,
+          packageSnapshotId: 'issue-package',
+          catalogRevision: 'issue-catalog',
+        },
+        inputAttributes: {},
         capabilityCallId: allocateEntityId('cap'),
-        packageDigest: 'issue-package',
-        catalogRevision: 'issue-catalog',
         subject,
+      },
+      resourceSummary: { serverId: 'issues', toolName: 'read' },
+      contextSummary: {
+        packageSnapshotId: 'issue-package',
+        catalogRevision: 'issue-catalog',
       },
       authorizationRevision: evaluation.authorizationRevision,
       authorizationUses: evaluation.authorizationUses,
@@ -854,9 +867,16 @@ describe('bounded native Goal-domain administration', () => {
     expect(humanKernel.effect).toBe('deny');
     expect(humanKernel.trace.matchedProhibitions).toContain('human-prohibition');
     expect(f.tasks.evaluateTask({ ...f.effect, humanKernel })!.kernel).toEqual(humanKernel);
+    const approvalInput = f.pipeline();
+    const document = withHumanMcpApproval(approvalInput);
     const decision = await new PolicyInterception().decide({
-      ...f.pipeline(),
-      document: withHumanMcpApproval(f.pipeline()),
+      ...approvalInput,
+      document,
+      permissions: selectMcpToolPermissions({
+        document,
+        proposal: { ...approvalInput.proposal, ...approvalInput.proposal.resource },
+        authorCurrent: approvalInput.authorCurrent,
+      }),
     });
     expect(decision.result).toBe('require_approval');
     expect(f.tasks.evaluateTask(f.effect)!.kernel.effect).toBe('allow');
@@ -870,9 +890,16 @@ describe('bounded native Goal-domain administration', () => {
     const reference = { id: result.statement.id, digest: policyDigest(result.statement) };
     const evaluation = f.tasks.evaluateTask(f.effect)!;
     expect(evaluation.authorizationUses).toContainEqual({ statement: reference, limit: 1 });
+    const approvalInput = f.pipeline();
+    const document = withHumanMcpApproval(approvalInput);
     const pending = await new PolicyInterception().decide({
-      ...f.pipeline(),
-      document: withHumanMcpApproval(f.pipeline()),
+      ...approvalInput,
+      document,
+      permissions: selectMcpToolPermissions({
+        document,
+        proposal: { ...approvalInput.proposal, ...approvalInput.proposal.resource },
+        authorCurrent: approvalInput.authorCurrent,
+      }),
     });
     expect(pending.result).toBe('require_approval');
     expect(readPolicyStatementUseCount(f.db, reference)).toBe(0);
