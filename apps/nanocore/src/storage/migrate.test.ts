@@ -97,6 +97,7 @@ const WORKSPACE_TABLES = [
   'goal_plan_versions',
   'goals',
   'idempotency_requests',
+  'knowledge_notebook_heads',
   'mcp_tool_schema_snapshots',
   'pending_requests',
   'permission_decisions',
@@ -223,13 +224,14 @@ describe('database setup', () => {
       )
         skip('schema-pending: Workspace0012 execution journal');
       expect(tables).toEqual(['control_execution_steps', 'control_executions']);
-      expect(listMigrationIds(db, 'workspace').slice(-6)).toEqual([
+      expect(listMigrationIds(db, 'workspace').slice(-7)).toEqual([
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
         'workspace_0014_usage_provider_model',
         'workspace_0015_capability_call_turn_lookup',
         'workspace_0016_capture_origin',
+        'workspace_0017_knowledge_heads',
       ]);
       const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
       const before = db.sqlite.serialize();
@@ -816,6 +818,7 @@ describe('database setup', () => {
         'workspace_0014_usage_provider_model',
         'workspace_0015_capability_call_turn_lookup',
         'workspace_0016_capture_origin',
+        'workspace_0017_knowledge_heads',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1346,6 +1349,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0014_usage_provider_model',
         'workspace_0015_capability_call_turn_lookup',
         'workspace_0016_capture_origin',
+        'workspace_0017_knowledge_heads',
       ]);
     } finally {
       db.sqlite.close();

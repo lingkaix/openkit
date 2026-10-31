@@ -27,6 +27,8 @@ Run the focused repository tests for the changed record family, then the storage
 
 Workspace migrations drop retired host repository and Git push tables after replaying unchanged historical setup DDL. No schema module or live repository store remains; archive codecs validate historical metadata without restoring authority.
 
+Workspace `0017_knowledge_heads.sql` adds the dormant `knowledge_notebook_heads` tuple. Its explicit Workspace and unique Knowledge Base bind one retained-v1 Git/schema selection; the row owner validates whole-content schema identity and rejects unknown required semantics. This DDL is preparation only. It does not import previous authority, activate live readers, grant creation or mark the later authority-transfer migration complete.
+
 Core `0004_equal_workspace_members.sql` carries retained membership and invitation identities, lifecycle facts, links and revisions forward without editor/viewer columns. The earlier journals stay unchanged. The replacement owner guards require active membership without a higher access tier. `storage/migrate.test.ts` applies the committed journal twice and verifies the current Core columns. `equal-workspace-members.test.ts` verifies the required actual initiator and admitted member deletion with private recovery ownership.
 
 Vault grants require the closed `issuance` discriminator with no default. The Core baseline and Drizzle projection enforce `target` or `imported-history`; the importer cannot choose target issuance. This identifier cutover uses the accepted pre-stable clean-scope procedure and supplies no legacy provenance inference or data conversion.
