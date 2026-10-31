@@ -137,3 +137,5 @@ Reload fixtures preserve their original App authority inputs. The config-only ex
 Deletion route fixtures share their existing App Core with the executor. Current actor rechecks, native quiescence, cleanup fences, crash recovery and exact operational backups retain their original owners and assertions.
 
 Snapshot operation fixtures pass their existing Core to the executor and retain that same instance when rebuilding App options. Native capture pauses, mutation admission, incomplete-source refusals and recovery remain with their original owners.
+
+Scheduler recovery fixtures give the dormant Worker executor their existing App Core when admitting an Assistant continuation. Unknown delivery, distinct Turn and Session lineage, provider calls and no-redelivery assertions remain with the original recovery and Assistant owners.

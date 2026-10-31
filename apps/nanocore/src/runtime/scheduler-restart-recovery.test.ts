@@ -1733,7 +1733,7 @@ describe('terminal failed-start product recovery', () => {
             ['completed', 'failed', 'cancelled', 'interrupted'].includes(turn.status)
           )
       ).toBe(true);
-      const executor = new SimulatedTurnExecutor();
+      const executor = new SimulatedTurnExecutor({ coreDb: f.coreDb });
       const createResponses = vi.fn<PiAiGatewayClient['createResponses']>().mockResolvedValue({
         id: 'response_recovered_thread',
         object: 'response',
