@@ -127,7 +127,7 @@ async function createRestorableWorkerControlFixture(
     queueEntryId: 'queue_restore_1',
     requestId:
       options.admissionRequestId === undefined
-        ? environmentPackage.scope.requestId
+        ? environmentPackage.scope.requestId!
         : options.admissionRequestId,
     requestedAgentId: environmentPackage.agent.agentId,
     threadId: environmentPackage.scope.threadId,
@@ -260,7 +260,7 @@ describe('worker control gateway restart hydration', () => {
       { admissionRequestId: 'req_wrong_owner' },
       {
         admissionTriggerActor: {
-          kind: 'automation',
+          kind: 'automation' as const,
           id: 'auto_00000000-0000-7c0a-84d1-ecc00dfd92fa',
           responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
         },
