@@ -3020,47 +3020,6 @@ export class FsStore {
     }));
   }
 
-  /**
-   * Update one agent health record.
-   *
-   * @param workspaceId Workspace that owns the agent.
-   * @param agentId Agent whose health should be updated.
-   * @param health Agent health patch.
-   * @returns Updated agent.
-   */
-  public updateAgentHealth(
-    workspaceId: string,
-    agentId: string,
-    health: Partial<Agent['health']>
-  ): Agent {
-    const resources = this.storedWorkspaceResources(workspaceId);
-    let updatedAgent: Agent | null = null;
-    const agents = resources.agents.map((agent) => {
-      if (agent.id !== agentId) {
-        return agent;
-      }
-
-      updatedAgent = {
-        ...agent,
-        health: {
-          ...agent.health,
-          ...health,
-        },
-      };
-      return updatedAgent;
-    });
-
-    if (!updatedAgent) {
-      throw new StoreRecordNotFoundError(`Agent not found: ${agentId}`);
-    }
-
-    this.workspaceResources.set(workspaceId, {
-      ...resources,
-      agents,
-    });
-    return updatedAgent;
-  }
-
   /** Joins every native publisher to the same application-owned Workspace gate, including background admissions. */
   public setWorkspaceMutationAdmission(admission: WorkspaceMutationAdmission): void {
     if (this.workspaceMutationAdmission && this.workspaceMutationAdmission !== admission)
