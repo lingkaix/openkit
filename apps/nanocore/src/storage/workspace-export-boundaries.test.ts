@@ -37,7 +37,6 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   parseOkfDocument,
@@ -51,6 +50,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
@@ -1027,16 +1027,8 @@ describe('workspace import route handles', () => {
 
     expect(response.status, await response.clone().text()).toBe(200);
     const result = (await response.json()) as { importedWorkspaceId: string };
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(
-        dataRoot,
-        'workspaces',
-        result.importedWorkspaceId,
-        'knowledge',
-        'notebook.git'
-      ),
-    });
-    const published = notebook.readRevision(notebook.publishedRevision()).files;
+    const imported = readTestWorkspaceNotebookSelection(dataRoot, result.importedWorkspaceId);
+    const published = imported.notebook.readRevision(imported.head.notebookCommit).files;
     expect(published['topic/index.md']).toBe(nestedIndex);
     expect(published['topic/log.md']).toBe(nestedLog);
     expect(published['index.md']).toBe(

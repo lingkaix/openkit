@@ -7,6 +7,7 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { publishNotebook } from './knowledge/notebook-publication.js';
+import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from './knowledge/okf.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
 import {
@@ -31,6 +32,7 @@ import {
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
+import { corruptTestWorkspaceNotebookCommit } from './test-support/workspace-notebook-corruption.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real current administrator, Workspace query owner and separately published Server notebook. */
@@ -267,19 +269,30 @@ describe('Server Knowledge through the existing retrieval source', () => {
     const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     onTestFinished(() => workspaceDb.sqlite.close());
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(f.dataRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git'),
+    const workspaceRoot = join(f.dataRoot, 'workspaces', f.workspace.id);
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'workspace', workspaceId: f.workspace.id },
     });
+    const selected = () =>
+      readWorkspaceNotebookSelection({ workspaceDb, workspaceRoot, knowledgeBaseId });
     const producer = {
       kind: 'agent' as const,
       id: 'knowledge-manager',
       responsibleUserId: f.actor.userId,
     };
+    const admit = (pageIds: readonly string[]) => ({
+      pageScopeId: `page/workspace/${f.workspace.id}/${knowledgeBaseId}`,
+      scopeSchemaText: selected().scopeSchemaText,
+      reviewRequiredPageIds: [] as string[],
+      registeredSources: new Map<string, string | null>(),
+      resolvedReferences: new Map(pageIds.map((id) => [id, new Set<string>()])),
+    });
     await publishNotebook(
       {
         store: f.store,
         owner: { kind: 'workspace', workspaceDb },
-        notebook,
+        notebook: selected().notebook,
         producer,
         actor: f.access.actor,
         publicationAuthority: {
@@ -288,16 +301,11 @@ describe('Server Knowledge through the existing retrieval source', () => {
           settingDigest: commandInputHash({ enabled: true }),
         },
         inflightCommands: new WeakMap(),
-        revalidate: () => ({
-          scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
-          reviewRequiredPageIds: [],
-          registeredSources: new Map(),
-          resolvedReferences: new Map([['generated', new Set()]]),
-        }),
+        revalidate: () => admit(['generated']),
       },
       {
         requestId: randomUUID(),
-        baseRevision: notebook.publishedRevision(),
+        baseRevision: selected().head.notebookCommit,
         summary: 'Generated guide',
         changes: [
           {
@@ -307,9 +315,9 @@ describe('Server Knowledge through the existing retrieval source', () => {
         ],
       }
     );
-    expect(notebook.readRevision(notebook.publishedRevision()).files['generated.md']).toContain(
-      'review_state: delegated'
-    );
+    expect(
+      selected().notebook.readRevision(selected().head.notebookCommit).files['generated.md']
+    ).toContain('review_state: delegated');
     const selection = await retrieveWorkspaceKnowledge({
       ...f,
       workspaceId: f.workspace.id,
@@ -326,8 +334,9 @@ describe('Server Knowledge through the existing retrieval source', () => {
       })?.[0]?.knowledgePageId
     ).toBe('generated');
     // An independent human-authored commit cannot turn a page label into native delegation.
-    const candidateRevision = notebook.prepare({
-      baseRevision: notebook.publishedRevision(),
+    const current = selected();
+    const candidateRevision = current.notebook.prepare({
+      baseRevision: current.head.notebookCommit,
       changes: {
         'forged.md': page(`{kind: workspace, workspaceId: ${f.workspace.id}}`).replace(
           'review_state: user-authored',
@@ -342,7 +351,7 @@ describe('Server Knowledge through the existing retrieval source', () => {
         sourceReferences: [],
       },
     });
-    notebook.publish({ baseRevision: notebook.publishedRevision(), candidateRevision });
+    corruptTestWorkspaceNotebookCommit(f.dataRoot, f.workspace.id, candidateRevision);
     const later = await retrieveWorkspaceKnowledge({
       ...f,
       workspaceId: f.workspace.id,

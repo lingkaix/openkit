@@ -5,12 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
@@ -224,9 +224,7 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
     workspaceId: f.workspace.id,
   });
   try {
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(f.workspaceRoot, 'knowledge', 'notebook.git'),
-    });
+    const selected = () => readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id);
     const app = createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
     const timestamp = new Date().toISOString();
     const page = knowledgePageFixture(
@@ -247,7 +245,7 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
         {
           body: JSON.stringify({
             requestId: randomUUID(),
-            baseRevision: notebook.publishedRevision(),
+            baseRevision: selected().head.notebookCommit,
             path: page.path,
             content: page.content,
             summary: 'Create the canonical page before record persistence.',
@@ -256,9 +254,9 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
       )
     );
     expect(response.status, await response.clone().text()).toBe(200);
-    const revision = notebook.publishedRevision();
+    const revision = selected().head.notebookCommit;
     const path = page.path;
-    const before = Buffer.from(notebook.readRevision(revision, [path]).files[path]!);
+    const before = Buffer.from(selected().notebook.readRevision(revision, [path]).files[path]!);
     const digest = createHash('sha256').update(before).digest('hex');
     const records = loadWorkspaceFileRecords(f.dataRoot).find(
       (r) => r.workspace.id === f.workspace.id
@@ -279,10 +277,8 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
         writeWorkspaceFileRecords(f.workspaceRoot, records)
       )
     ).not.toThrow();
-    expect(notebook.publishedRevision()).toBe(revision);
-    const after = Buffer.from(
-      notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!
-    );
+    expect(selected().head.notebookCommit).toBe(revision);
+    const after = Buffer.from(selected().notebook.readRevision(revision, [path]).files[path]!);
     expect(after).toEqual(before);
     expect(createHash('sha256').update(after).digest('hex')).toBe(digest);
   } finally {
