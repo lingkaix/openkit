@@ -1,4 +1,5 @@
 import type { CredentialStore } from '@earendil-works/pi-ai';
+import { isRecord } from '@openkit/protocol';
 import { z } from 'zod';
 
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
@@ -493,16 +494,6 @@ function parseWindow(value: unknown, id: CodexQuotaWindow['id']): CodexQuotaWind
     resetsAt,
     usedPercent: value.used_percent,
   };
-}
-
-/**
- * Checks whether a value is a non-array object.
- *
- * @param value Candidate value.
- * @returns True when the value supports named field access.
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

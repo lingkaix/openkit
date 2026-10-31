@@ -5,6 +5,7 @@ export * from './common/ids.js';
 export * from './common/item-delta.js';
 export * from './common/object-reference.js';
 export * from './common/reasoning-effort.js';
+export { isRecord } from './common/record.js';
 export * from './common/retained-format.js';
 export { compareCodeUnits } from './common/string-order.js';
 export * from './common/timestamps.js';

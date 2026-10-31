@@ -1,4 +1,5 @@
 import type { Models } from '@earendil-works/pi-ai';
+import { isRecord } from '@openkit/protocol';
 import { z } from 'zod';
 
 const XAI_USER_URL = 'https://cli-chat-proxy.grok.com/v1/user?include=subscription';
@@ -581,14 +582,4 @@ function parseOptionalBoolean(value: unknown): boolean | undefined {
     throw new Error('xAI quota response is invalid.');
   }
   return value;
-}
-
-/**
- * Checks whether a value is a non-array object.
- *
- * @param value Candidate value.
- * @returns True when the value supports named field access.
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isRecord } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
 import { redactInternalAgentText } from './redaction.js';
@@ -425,10 +426,6 @@ function sanitizeToolContent(content: readonly AgentContent[]): readonly AgentCo
 
 function toolError(callId: string, text: string): AgentMessage {
   return { role: 'tool', callId, content: [{ type: 'text', text }], isError: true };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Bounds an already owned asynchronous effect by its existing cancellation and deadline signal. */

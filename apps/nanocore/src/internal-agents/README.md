@@ -80,3 +80,5 @@ Internal Chat and Knowledge Manager interruption forward the original command ca
 The Goal Coordinator uses current native Policy facts, explicit bounded Task dispatch, and Knowledge queries for specific missing facts. Captured inactive domains are approval candidates. Publication failures use the existing exact approval retry; unsupported candidates require a corrected proposal and new approval. Shared deadline errors do not assign a failure phase.
 
 The bounded loop can return its deadline before an independent Gateway call finishes cancellation. The Gateway retains its own ledger handle through terminal acknowledgement, classifies proved timeout/caller abort from the actual error, and never relabels an independently settled Provider failure from a later signal.
+
+The internal Agent loop uses the Protocol `isRecord` guard for non-null, non-array object access. Its own JSON Schema, Tool content, result, correlation and execution checks still decide accepted input; the shared guard does not establish schema validity or authority.

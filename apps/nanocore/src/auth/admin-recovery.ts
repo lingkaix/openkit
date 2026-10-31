@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
-import { deriveEntityId, isEntityId } from '@openkit/protocol';
+import { deriveEntityId, isEntityId, isRecord } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
@@ -658,11 +658,6 @@ function isExactActor(json: string | null, kind: 'system' | 'user', id: string):
   } catch {
     return false;
   }
-}
-
-/** Checks one unknown parsed JSON value for record access. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Checks one Node filesystem error code. */

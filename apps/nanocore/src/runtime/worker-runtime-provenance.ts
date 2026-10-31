@@ -16,7 +16,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { RuntimeEvidenceRecord } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import { isRecord, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import {
   type WorkerLineage,
   WorkerLineageSchema,
@@ -1071,11 +1071,6 @@ function numberValue(value: unknown): number | null {
 /** Returns one array value or an empty array. */
 function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
-}
-
-/** Returns whether one value is a non-array object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Returns whether an unknown error carries a Node error code. */

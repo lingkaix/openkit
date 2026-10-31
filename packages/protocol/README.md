@@ -96,3 +96,5 @@ Node callers use `@openkit/protocol/digest`: `sha256CanonicalJson` hashes new st
 `compareCodeUnits` orders current projection strings by UTF-16 code units, without locale or normalization. Retained digest and ordered-history producers remain with their named owners until the coordinated #532 END correction; this comparator does not rewrite historical bytes or identities.
 
 The current live wire identity is `0.7.0`. Release-coupled Core Client admission compares that exact identity through the existing metadata response before sending effects; retained format markers and historical record values are independent.
+
+`isRecord` is a browser-safe non-null, non-array object guard for named-field access. It accepts class instances and does not replace schema, prototype, or authority validation.
