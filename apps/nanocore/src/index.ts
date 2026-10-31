@@ -483,6 +483,7 @@ const bootResult = await runBootPhases({
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
         const pendingWorkspace = {
           coreDb: recoveryCoreDb,
+          workspaceMutationAdmission,
           agentAuthority: (record: import('./runtime/pending-requests.js').PendingRequestRecord) =>
             runtimeConfigSnapshot!.agentManifests.some(
               (manifest) => manifest.id === record.agentId
