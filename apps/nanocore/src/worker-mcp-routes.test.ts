@@ -6358,6 +6358,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
   };
   let app = register();
   let requestId = 0;
+  let httpStatus = 0;
   const trace = nativeTrace;
   trace.start();
   return {
@@ -6414,7 +6415,11 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
           }),
         }
       );
+      httpStatus = response.status;
       return response.json();
+    },
+    httpStatus() {
+      return httpStatus;
     },
     async listServers() {
       await openTestNativeWorkspace(db);
@@ -7834,6 +7839,63 @@ describe('MCP current permission at commit acknowledgement', () => {
       );
     } finally {
       release?.();
+      await f.close();
+    }
+  });
+
+  it('refuses a stale Turn A tool call after Turn B is current without running the tool body', async () => {
+    const f = await createMcpCommitFixture();
+    let knowledgeBodies = 0;
+    f.knowledge(() => {
+      knowledgeBodies += 1;
+    });
+    try {
+      const turnA = f.environmentPackage.scope.turnId;
+      const threadId = f.environmentPackage.scope.threadId;
+      const admitted = await f.call(41, 'knowledge');
+      expect(admitted).toMatchObject({ result: { isError: false } });
+      expect(knowledgeBodies).toBe(1);
+      const admittedCalls = listWorkspaceCapabilityCalls(f.db, f.workspaceId).filter(
+        (call) => call.turnId === turnA
+      );
+      expect(admittedCalls.some((call) => call.operation === 'mcp.call-tool')).toBe(true);
+      const itemsAfterAdmit = f.store.listAllItems();
+      await f.store.updateTurn(turnA, {
+        status: 'completed',
+        completedAt: '2026-11-01T15:00:00.000Z',
+      });
+      expect(f.store.getTurnById(turnA).status).toBe('completed');
+      const turnB = await f.store.createTurn(
+        f.workspaceId,
+        threadId,
+        'Current Turn after Turn A',
+        f.environmentPackage.scope.triggerActor
+      );
+      expect(turnB.id).not.toBe(turnA);
+      expect(f.store.getTurnById(turnB.id).status).toBe('running');
+      expect(f.store.listThreadTurns(f.workspaceId, threadId).map((turn) => turn.id)).toEqual([
+        turnA,
+        turnB.id,
+      ]);
+      const callsBeforeStale = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
+      const itemsBeforeStale = f.store.listAllItems();
+      const stale = await f.call(42, 'knowledge');
+      expect(knowledgeBodies).toBe(1);
+      expect(stale).toMatchObject({
+        error: { code: -32603, message: 'MCP tool call was denied.' },
+      });
+      expect(stale).not.toHaveProperty('result');
+      expect(f.httpStatus()).toBe(200);
+      expect(f.contacts()).toBe(0);
+      expect(f.gateway.callTool).not.toHaveBeenCalled();
+      expect(f.store.getTurnById(turnA).status).toBe('completed');
+      expect(f.store.getTurnById(turnB.id).status).toBe('running');
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toEqual(callsBeforeStale);
+      expect(f.store.listAllItems()).toEqual(itemsBeforeStale);
+      expect(itemsBeforeStale.filter((item) => item.turnId === turnB.id)).toEqual([]);
+      expect(callsBeforeStale.filter((call) => call.turnId === turnB.id)).toEqual([]);
+      expect(itemsAfterAdmit.every((item) => item.turnId !== turnB.id)).toBe(true);
+    } finally {
       await f.close();
     }
   });
