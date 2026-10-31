@@ -82,3 +82,5 @@ The HTTP MCP fixture exposes server-observed header snapshots for exact bearer a
 `store.ts.createTestWorkspaceDb` opens an already initialized Workspace through its storage owner. Tests pass the opaque handle to native domain operations, drain their work, and close it through `closeTestCoreDb`; the opener supplies no records, migrations or authority.
 
 `workspace-notebook.ts` reads an already admitted Workspace Notebook from its explicit data root and Workspace id through the native SQL/schema/Git selector, closes its temporary read handle, and creates no content, schema, membership, receipt or publication authority. Callers reselect after mutations.
+
+`knowledge-page-reference.ts` admits a real private Workspace and supplies complete scoped pages for source-proof tests. Its explicit retained-content corruption changes only the selected immutable commit in the existing SQL head, creates no success, Audit, receipt or Git-ref authority, and restores the complete original row before closing the owner.

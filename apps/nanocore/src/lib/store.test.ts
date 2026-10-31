@@ -22,8 +22,9 @@ import {
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { prepareAuditEvent } from '../audit-events.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import type { ControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -1133,9 +1134,20 @@ describe('FsStore persistence', () => {
     );
     expect(readFileSync(artifactContentPath, 'utf8')).toBe('History survived restart.');
     expect(existsSync(knowledgeProjectionPath)).toBe(false);
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-    });
+    const notebookDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    let notebook: ReturnType<typeof readWorkspaceNotebookSelection>['notebook'];
+    try {
+      notebook = readWorkspaceNotebookSelection({
+        workspaceDb: notebookDb,
+        workspaceRoot,
+        knowledgeBaseId: readDefaultKnowledgeBaseId({
+          dataRoot,
+          scope: { kind: 'workspace', workspaceId: notebookDb.workspaceId },
+        }),
+      }).notebook;
+    } finally {
+      notebookDb.sqlite.close();
+    }
     expect(
       notebook.readRevision(notebook.publishedRevision()).files[`${knowledgePage.id}.md`]
     ).toBe(knowledgePage.content);

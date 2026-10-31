@@ -7,6 +7,7 @@ import { formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parse, stringify } from 'yaml';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
+import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -110,6 +111,18 @@ function git(f: ReturnType<typeof fixture>, ...args: string[]): string {
   });
 }
 
+/** Selects the current immutable commit through the admitted Workspace SQL owner. */
+function selectedRevision(f: ReturnType<typeof fixture>): string {
+  return readWorkspaceNotebookSelection({
+    workspaceDb: f.workspaceDb,
+    workspaceRoot: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID),
+    knowledgeBaseId: readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+    }),
+  }).head.notebookCommit;
+}
+
 /** Public list supplies the request's immutable publication base. */
 async function revision(f: ReturnType<typeof fixture>): Promise<string> {
   return (await ok(f, 'knowledge.notebook.list')).notebookRevision;
@@ -162,7 +175,7 @@ async function source(f: ReturnType<typeof fixture>, title = 'Release evidence')
 
 /** Only current canonical notebook bytes supply the frontmatter observation. */
 function metadata(f: ReturnType<typeof fixture>, id: string) {
-  const bytes = git(f, 'show', `refs/heads/published:pages/${id}.md`);
+  const bytes = git(f, 'show', `${selectedRevision(f)}:pages/${id}.md`);
   return parse(bytes.split('---\n')[1]!);
 }
 
@@ -319,7 +332,7 @@ describe('C01/C02 public canonical Knowledge consolidation', () => {
         source_refs: [reference],
       }),
     });
-    const evidenceBytes = git(f, 'show', 'refs/heads/published:pages/existing-evidence.md');
+    const evidenceBytes = git(f, 'show', `${selectedRevision(f)}:pages/existing-evidence.md`);
     const evidencePin = formatReferenceUri(
       { scopeId: f.pageScopeId, objectId: 'existing-evidence' },
       `sha256:${createHash('sha256').update(evidenceBytes).digest('hex')}`

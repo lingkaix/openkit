@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import { parseOkfDocument, updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -250,9 +252,21 @@ function edit(baseRevision: string, body = 'Alpha version one.'): Edit {
   };
 }
 
-/** Count only immutable commits reachable from the sole published ref. */
+/** Selects current authority from SQL; Git supplies only immutable content and ancestry. */
+function selectedRevision(f: ReturnType<typeof fixture>): string {
+  return readWorkspaceNotebookSelection({
+    workspaceDb: f.workspaceDb,
+    workspaceRoot: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID),
+    knowledgeBaseId: readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: OWNER_SCOPE,
+    }),
+  }).head.notebookCommit;
+}
+
+/** Count immutable commits reachable from the exact native SQL selection. */
 function publishedCount(f: ReturnType<typeof fixture>): number {
-  return Number(git(f, ['rev-list', '--count', 'refs/heads/published']).trim());
+  return Number(git(f, ['rev-list', '--count', selectedRevision(f)]).trim());
 }
 
 afterEach(async () => {
@@ -430,7 +444,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     const denied = await command(f, 'knowledge.notebook.update', requestId, input);
     expect(denied.status, JSON.stringify(denied.body)).toBe(403);
     expect(JSON.stringify(denied.body)).not.toContain('Updated historical bytes.');
-    expect(git(f, ['rev-parse', 'refs/heads/published']).trim()).toBe(removedRevision);
+    expect(selectedRevision(f)).toBe(removedRevision);
   });
 
   it('preserves unknown nested OKF metadata through the native full-page update and restart', async () => {
@@ -533,7 +547,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   it('publishes the initial notebook inside fresh Workspace creation before any notebook read', async () => {
     const f = await fixture();
     expect(existsSync(f.repositoryPath)).toBe(true);
-    const revision = git(f, ['rev-parse', 'refs/heads/published']).trim();
+    const revision = selectedRevision(f);
     expect(git(f, ['rev-list', '--parents', '-1', revision]).trim()).toBe(revision);
     expect(git(f, ['show', `${revision}:pages/index.md`])).toContain('# Knowledge');
     const metadata = JSON.parse(git(f, ['show', '-s', '--format=%B', revision]));
@@ -543,7 +557,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       sourceReferences: [],
     });
     reopen(f);
-    expect(git(f, ['rev-parse', 'refs/heads/published']).trim()).toBe(revision);
+    expect(selectedRevision(f)).toBe(revision);
   });
 
   it('publishes two pages once and replays the exact old receipt after a later edit and reopen', async () => {
@@ -707,7 +721,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     const count = publishedCount(f);
     const failed = await submit(f, request);
     expect(failed.status).toBeGreaterThanOrEqual(400);
-    expect(git(f, ['rev-parse', 'refs/heads/published']).trim()).toBe(initial.notebookRevision);
+    expect(selectedRevision(f)).toBe(initial.notebookRevision);
     expect(publishedCount(f)).toBe(count);
     expect(
       f.workspaceDb.sqlite
@@ -724,22 +738,23 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect((await listing(f)).notebookRevision).toBe(completed.notebookRevision);
   });
 
-  it('retains committed admission and the old published ref when actual Git ref publication fails', async () => {
+  it('rolls back the native head, admission and receipt when the actual SQL head update fails', async () => {
     const f = await fixture();
     const initial = await listing(f);
     const request = edit(initial.notebookRevision);
     const count = publishedCount(f);
-    const lockPath = join(f.repositoryPath, 'refs', 'heads', 'published.lock');
-    writeFileSync(lockPath, 'Test-owned ref lock.\n', { flag: 'wx' });
+    f.workspaceDb.sqlite.exec(
+      "CREATE TRIGGER reject_notebook_head BEFORE UPDATE ON knowledge_notebook_heads BEGIN SELECT RAISE(ABORT, 'test head failure'); END"
+    );
     const failed = await submit(f, request);
     expect(failed.status).toBeGreaterThanOrEqual(400);
-    expect(git(f, ['rev-parse', 'refs/heads/published']).trim()).toBe(initial.notebookRevision);
+    expect(selectedRevision(f)).toBe(initial.notebookRevision);
     expect(publishedCount(f)).toBe(count);
     expect(
       f.workspaceDb.sqlite
         .prepare('SELECT count(*) AS count FROM audit_events WHERE request_id = ? AND action = ?')
         .get(request.requestId, 'knowledge.notebook.admit')
-    ).toEqual({ count: 1 });
+    ).toEqual({ count: 0 });
     expect(
       f.workspaceDb.sqlite
         .prepare(
@@ -747,7 +762,17 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
         )
         .get(OPERATION, request.requestId)
     ).toEqual({ count: 0 });
-    rmSync(lockPath);
+    expect(
+      f.workspaceDb.sqlite
+        .prepare('SELECT count(*) AS count FROM audit_events WHERE request_id = ?')
+        .get(request.requestId)
+    ).toEqual({ count: 0 });
+    f.workspaceDb.sqlite.exec('DROP TRIGGER reject_notebook_head');
+    const completed = await publish(f, request);
+    expect(publishedCount(f)).toBe(count + 1);
+    reopen(f);
+    expect((await listing(f)).notebookRevision).toBe(completed.notebookRevision);
+    expect(await publish(f, request)).toEqual(completed);
   });
 
   it.each([
@@ -772,7 +797,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     const replay = await submit(f, request);
     expect(replay.status).toBeGreaterThanOrEqual(400);
     expect(replay.body).toMatchObject({ code: 'recovery_required' });
-    expect(git(f, ['rev-parse', 'refs/heads/published']).trim()).toBe(published.notebookRevision);
+    expect(selectedRevision(f)).toBe(published.notebookRevision);
     expect(publishedCount(f)).toBe(count);
     expect(git(f, ['show', `${published.notebookRevision}:pages/alpha.md`])).toBe(bytes);
     if (missing === 'receipt')
