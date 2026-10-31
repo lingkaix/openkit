@@ -127,6 +127,8 @@ export const POLICY_MODE_CONTRACTS_V1 = {
   advise: { input: 'mcp-tool-summary-v1', output: 'advice-v1' },
   gate: { input: 'mcp-tool-summary-v1', output: 'gate-v1' },
 } as const;
+/** Reference-only input for joined Core operations; material and material fingerprints are excluded. */
+export const POLICY_OPERATION_REFERENCE_INPUT_V1 = 'operation-reference-summary-v1' as const;
 /** A binding is a Policy statement, not a participant-owned registration. */
 export const PolicyBindingV1Schema = z
   .object({

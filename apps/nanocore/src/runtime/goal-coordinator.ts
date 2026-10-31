@@ -3,6 +3,7 @@ import {
   GOAL_OPERATION_DEFINITIONS,
   GoalTaskPolicyWriteInputSchema,
   GoalTaskPolicyWriteOutputSchema,
+  type JsonOperationId,
   OPERATION_DEFINITIONS,
   operationModelInput,
 } from '@openkit/app-api-schemas';
@@ -121,6 +122,10 @@ export interface GoalCoordinatorOptions {
   readonly services: () => GoalOwnerServices;
   /** Existing bounded KM service; Goal Tools retain the responsible actor and shared audience. */
   readonly knowledgeAgent?: OperationInvocationDependencies['knowledgeAgent'];
+  /** Existing Vault effect and Policy owners; missing dependencies refuse use. */
+  readonly turnExecutor?: OperationInvocationDependencies['turnExecutor'];
+  readonly policyInterception?: OperationInvocationDependencies['policyInterception'];
+  readonly goalTaskPolicy?: OperationInvocationDependencies['goalTaskPolicy'];
   /** Reuses ordinary Task setup and live readiness, without a reusable conversation pin. */
   readonly workerCandidates: (
     workspaceId: string,
@@ -138,6 +143,15 @@ export interface GoalWorkerCandidate {
   /** Bounded safe explanations without authored configuration or native diagnostics. */
   readonly reasons: readonly string[];
 }
+/** Exact role supply only; contracts and handlers remain in the unified operation owners. */
+const COORDINATOR_VAULT_OPERATIONS = [
+  'vault.injection-plan-list',
+  'vault.injection-receipt-list',
+  'vault.binding-deliver',
+  'vault.binding-replace',
+  'vault.binding-revoke',
+] as const satisfies readonly JsonOperationId[];
+
 /** Table-derived Goal Tools and linked Task reads bind authority to the admitted Coordinator Turn. */
 export function createGoalTools(input: {
   readonly store: FsStore;
@@ -150,7 +164,10 @@ export function createGoalTools(input: {
   readonly workerCandidates?: GoalCoordinatorOptions['workerCandidates'];
 }): AgentTool[] {
   const goal = readGoalView(input.store, input.db, input.goalId).goal!;
-  const goalTools: AgentTool[] = Object.entries(GOAL_OPERATION_DEFINITIONS)
+  const goalTools: AgentTool[] = [
+    ...Object.entries(GOAL_OPERATION_DEFINITIONS),
+    ...COORDINATOR_VAULT_OPERATIONS.map((id) => [id, OPERATION_DEFINITIONS[id]] as const),
+  ]
     .filter(([, definition]) =>
       (definition.credentials as readonly string[]).includes('coordinator')
     )
@@ -172,7 +189,7 @@ export function createGoalTools(input: {
         inputSchema: schema,
         execute: async (args) => {
           try {
-            const result = await input.invoke(key as GoalOperationId, args, {
+            const result = await input.invoke(key as JsonOperationId, args, {
               kind: 'coordinator',
               actor: input.actor,
               workspaceId: goal.workspaceId,
@@ -688,6 +705,12 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             inflightCommands: options.services().inflightCommands!,
             workspaceMutationAdmission: options.workspaceMutationAdmission,
             knowledgeAgent: options.knowledgeAgent,
+            ...(options.turnExecutor ? { turnExecutor: options.turnExecutor } : {}),
+            ...(options.policyInterception
+              ? { policyInterception: options.policyInterception }
+              : {}),
+            ...(options.goalTaskPolicy ? { goalTaskPolicy: options.goalTaskPolicy } : {}),
+            readRuntimePolicy: () => options.runtimeConfig().openKitConfig.policy?.mediation,
           }),
         }),
         options.taskTool(goal.goalId, turnId),

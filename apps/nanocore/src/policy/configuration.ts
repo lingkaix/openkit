@@ -42,6 +42,8 @@ import {
 import {
   EMPTY_POLICY_DOCUMENT,
   policyDigest,
+  policyOperationDefinition,
+  policyResourceWorkspace,
   preparePolicyDocument,
   validatePolicyDocument,
 } from './statements.js';
@@ -119,11 +121,12 @@ export function preparePolicyConfiguration(input: {
     // Recheck the input contract's sole Workspace at apply to prevent stale candidate authority.
 
     const resource = statement.inputDisclosure.resources[0];
+    const workspaceId = resource ? policyResourceWorkspace(resource) : null;
     if (
-      resource?.kind !== 'mcp-tool' ||
-      !authorizeWorkspace(input.coreDb, input.actor, resource.workspaceId, {
+      !workspaceId ||
+      !authorizeWorkspace(input.coreDb, input.actor, workspaceId, {
         mutating: true,
-        policyOperation: 'tool.use',
+        policyOperation: policyOperationDefinition(statement.operation).policyOperation,
       })
     )
       throw new Error('Policy binding input authority is unavailable.');

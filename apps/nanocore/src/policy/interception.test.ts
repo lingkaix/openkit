@@ -15,6 +15,7 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { PolicyInterception } from './interception.js';
+import { selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   listExportableWorkspacePermissionDecisions,
   policyStatementUsedByDecision,
@@ -33,14 +34,21 @@ const scope = {
 };
 const proposal: PolicyProposal = {
   operation: 'mcp.call-tool',
-  catalogRevision: 'catalog-fixture',
-  packageDigest: 'package-fixture',
   workspaceId,
-  serverId: 'issues',
-  toolName: 'read',
-  argumentsDigest: policyDigest({ issue: 1 }),
-  schemaDigest: null,
   capabilityCallId: 'cap_00000000-0000-7000-8000-000000000001',
+  resource: {
+    kind: 'mcp-tool' as const,
+    workspaceId: workspaceId,
+    serverId: 'issues',
+    toolName: 'read',
+  },
+  inputReferences: {
+    argumentsDigest: policyDigest({ issue: 1 }),
+    catalogRevision: 'catalog-fixture',
+    packageSnapshotId: 'package-fixture',
+    schemaDigest: null,
+  },
+  inputAttributes: {},
   subject: {
     principal,
     onBehalfOf: null,
@@ -120,6 +128,11 @@ function fixture(bindings: PolicyDocumentV1['statements']) {
     workspaceDb,
     document,
     proposal,
+    resourceSummary: { serverId: 'issues', toolName: 'read' },
+    contextSummary: {
+      packageSnapshotId: proposal.inputReferences.packageSnapshotId,
+      catalogRevision: proposal.inputReferences.catalogRevision,
+    },
     authorizationRevision: policyDigest({ member: userId }),
     authorCurrent: () => true,
     anchorCurrent: () => true,
@@ -323,8 +336,8 @@ describe('bounded native Policy pipeline', () => {
     expect(gate.contextSummary).not.toHaveProperty('kernelTrace');
     expect(final.contextSummary).toEqual({
       capabilityCallId: proposal.capabilityCallId,
-      packageSnapshotId: proposal.packageDigest,
-      catalogRevision: proposal.catalogRevision,
+      packageSnapshotId: proposal.inputReferences.packageSnapshotId,
+      catalogRevision: proposal.inputReferences.catalogRevision,
       threadId: proposal.subject.process!.threadId,
       turnId: proposal.subject.process!.turnId,
       kernelTrace: {
@@ -446,7 +459,16 @@ describe('bounded native Policy pipeline', () => {
 
   it('rechecks the current Policy approval against the exact logical proposal and revisions', async () => {
     const base = fixture([]);
-    const input = { ...base, document: withHumanMcpApproval(base) };
+    const document = withHumanMcpApproval(base);
+    const input = {
+      ...base,
+      document,
+      permissions: selectMcpToolPermissions({
+        document,
+        proposal: { ...proposal, serverId: 'issues', toolName: 'read' },
+        authorCurrent: base.authorCurrent,
+      }),
+    };
     const pipeline = new PolicyInterception();
     const pending = await pipeline.decide(input);
     expect(pending.result).toBe('require_approval');

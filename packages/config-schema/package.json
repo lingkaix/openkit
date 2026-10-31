@@ -27,6 +27,10 @@
     "./workspace-resource-policy": {
       "types": "./dist/workspace-resource-policy.d.ts",
       "default": "./dist/workspace-resource-policy.js"
+    },
+    "./worker-credentials": {
+      "types": "./dist/worker-credentials.d.ts",
+      "default": "./dist/worker-credentials.js"
     }
   },
   "scripts": {

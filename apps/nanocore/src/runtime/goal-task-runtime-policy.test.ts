@@ -72,7 +72,16 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
-import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import {
+  resolveAgentEnvironmentPackage,
+  resolveAgentEnvironmentPackageMetadata,
+} from '../test-support/prepared-agent-environment.js';
+import { createVaultGrant } from '../vault/vault-grants.js';
+import { createVaultReference } from '../vault/vault-references.js';
+import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
+import { listVaultUseRecords } from '../vault/vault-use-records.js';
+import { listVaultInjectionPlans } from '../vault-injection-plans.js';
+import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { registerWorkerMcpRoutes, reviewCapturedMcpPolicy } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -94,7 +103,7 @@ import {
   recordSchedulerExecutionOperation,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
-import { createGoalCoordinator } from './goal-coordinator.js';
+import { createGoalCoordinator, createGoalTools } from './goal-coordinator.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
@@ -272,6 +281,8 @@ async function fixture(
     approval?: boolean;
     taskGrant?: boolean;
     activation?: 'pending' | 'granted';
+    /** Adds a real reference-only file plan to the existing linked Task AEP. */
+    credentialFile?: boolean;
   } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'goal-consumer-'));
@@ -352,6 +363,52 @@ async function fixture(
     serverId: 'issues',
     toolName: 'read',
   };
+  const fileResource = {
+    kind: 'container' as const,
+    container: {
+      owner: { kind: 'workspace' as const, workspaceId: workspace.id },
+      kind: 'workspace',
+      id: workspace.id,
+    },
+  };
+  const fileMaterial = randomUUID() + randomUUID();
+  const fileTarget = `/sandbox/${randomUUID()}`;
+  const fileReferenceId = allocateEntityId('vault');
+  const fileGrantId = allocateEntityId('grant');
+  const fileVault = options.credentialFile
+    ? createVaultUnlockState({ backendKind: 'encrypted-file', storeDir: join(dataRoot, 'vault') })
+    : null;
+  if (fileVault) {
+    fileVault.unlock({
+      masterKey: Buffer.from(
+        randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', ''),
+        'hex'
+      ),
+    });
+    cleanup.push(() => fileVault.lock());
+    fileVault.backend().store({
+      referenceId: fileReferenceId,
+      material: fileMaterial,
+      metadata: { ownerScope: 'workspace', workspaceId: workspace.id },
+    });
+    createVaultReference(coreDb, {
+      referenceId: fileReferenceId,
+      ownerScope: 'workspace',
+      workspaceId: workspace.id,
+      displayName: 'Synthetic file fixture',
+      secretKind: 'opaque',
+      backendKind: 'encrypted-file',
+      backendLocator: `encrypted-file://workspace/${workspace.id}/vault/${fileReferenceId}`,
+    });
+    createVaultGrant(coreDb, {
+      grantId: fileGrantId,
+      vaultReferenceId: fileReferenceId,
+      ownerScope: 'workspace',
+      workspaceId: workspace.id,
+      lifetime: 'workspace',
+      allowedInjectionPaths: ['runtime-file'],
+    });
+  }
   const proposed = await executeGoalOperation(
     'goal.plan.propose',
     {
@@ -376,8 +433,8 @@ async function fixture(
         id: 'issue-domain',
         scope: {
           subjects: [{ kind: 'agent', id: agentId }],
-          actions: ['tool.use'],
-          resources: [resource],
+          actions: options.credentialFile ? ['tool.use', 'vault.admin', 'vault.use'] : ['tool.use'],
+          resources: options.credentialFile ? [resource, fileResource] : [resource],
         },
         lifetime: {
           ...(options.uses === undefined ? {} : { uses: options.uses }),
@@ -429,7 +486,18 @@ async function fixture(
     resources:
       options.taskGrant === false
         ? []
-        : [{ kind: 'policy', resource, reason: 'Read the exact selected Tool' }],
+        : [
+            { kind: 'policy', resource, reason: 'Read the exact selected Tool' },
+            ...(options.credentialFile
+              ? [
+                  {
+                    kind: 'policy' as const,
+                    resource: fileResource,
+                    reason: 'Inspect the exact Task binding',
+                  },
+                ]
+              : []),
+          ],
     expectedArtifacts: [],
     constraints: { maxContextTokens: 1000, maxWorkerIterations: 1 },
     verification: [{ kind: 'manual', description: 'Inspect issue' }],
@@ -542,10 +610,34 @@ async function fixture(
         },
       ],
     });
-    let environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentInput: Parameters<typeof resolveAgentEnvironmentPackage>[0] = {
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId,
-      agentSetup: createTestAgentSetup({ agentId, mcpIds: ['issues'] }),
+      agentSetup: createTestAgentSetup({
+        agentId,
+        mcpIds: ['issues'],
+        ...(fileVault
+          ? {
+              credentialDeclarations: [
+                {
+                  id: 'static_file',
+                  requirementId: 'static_file',
+                  vaultGrantId: fileGrantId,
+                  visibility: 'runtime-file' as const,
+                  targetPath: fileTarget,
+                },
+              ],
+            }
+          : {}),
+      }),
+      ...(fileVault
+        ? {
+            coreDb,
+            vaultBackend: () => fileVault.backend(),
+            runtimeFileCredentialSink: () => {},
+            credentialReceiptSink: () => {},
+          }
+        : {}),
       backend: { kind: 'openshell' },
       createdAt: new Date().toISOString(),
       requestId,
@@ -554,7 +646,7 @@ async function fixture(
       workspaceCwd: '/workspace',
       workspaceRoots: [],
       workspaceMcpServerCatalog: catalog,
-    });
+    };
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue_${requestId}`,
@@ -566,16 +658,18 @@ async function fixture(
       turnInput: prompt,
       requestedAgentId: agentId,
     });
+    const planned = resolveAgentEnvironmentPackageMetadata(environmentInput);
     const attempt = recordTestExecutionAttempt(coreDb, {
       entry,
       attemptId: testEntityId('attempt', requestId),
       agentSessionId,
-      inputRef: environmentPackage.snapshotId,
+      inputRef: planned.snapshotId,
       bindingRef: `binding_${requestId}`,
       sessionCompatibilityKey: 'fixture',
       now: () => new Date().toISOString(),
       operationId: `operation_${requestId}`,
     });
+    let environmentPackage = resolveAgentEnvironmentPackage(environmentInput);
     expect(
       acceptSchedulerExecutionObservation(coreDb, {
         ...schedulerExecutionCorrelation(attempt),
@@ -752,7 +846,12 @@ async function fixture(
       goalId: goal.goalId,
       agentId,
       responsibleUserId: userId,
-      resources: options.taskGrant === false ? [] : [resource],
+      resources:
+        options.taskGrant === false
+          ? []
+          : options.credentialFile
+            ? [resource, fileResource]
+            : [resource],
     });
     const gateway: WorkerMcpGateway = {
       listTools: vi.fn(async () => ({
@@ -850,6 +949,7 @@ async function fixture(
       interception,
       administrator,
       packageSnapshotId: environmentPackage.snapshotId,
+      environmentPackage,
     };
   };
   return {
@@ -877,6 +977,9 @@ async function fixture(
     resource,
     services,
     goalWake,
+    fileMaterial,
+    fileTarget,
+    fileVault,
   };
 }
 
@@ -2200,4 +2303,333 @@ it.each([
     taskExecute.mockRestore();
     vi.useRealTimers();
   }
+});
+
+// Ruling Emphasis 2: actual Goal Tools reuse operation admission and immutable Task AEP scope.
+describe('credential carrier Goal Tools and Task scope acceptance', () => {
+  it.each([
+    'scope',
+    'active-plan-loss',
+    'finite-use',
+  ] as const)('uses real Goal Tools, linked Task plans and current Policy (%s)', async (mode) => {
+    const f = await fixture({
+      credentialFile: true,
+      ...(mode === 'finite-use' ? { uses: 2 } : {}),
+    });
+    const first = await f.setupMcp();
+    const sibling = mode === 'scope' ? await f.setupMcp() : null;
+    const admission = new WorkspaceMutationAdmission();
+    f.store.setWorkspaceMutationAdmission(admission);
+    const interception = new PolicyInterception();
+    const resolve = vi.spyOn(f.fileVault!.backend(), 'resolve');
+    const invoke = createOperationInvocation({
+      coreDb: f.coreDb,
+      store: f.store,
+      repositoryWorkspaceDb: (id) => openWorkspaceDb(f.dataRoot, id),
+      inflightCommands: new WeakMap(),
+      workspaceMutationAdmission: admission,
+      policyInterception: interception,
+      readRuntimePolicy: () => f.manager.current().openKitConfig.policy?.mediation,
+      goalTaskPolicy: f.goalTaskPolicy,
+      vaultUnlockState: f.fileVault!,
+      goalServices: f.services,
+    });
+    const tools = createGoalTools({
+      store: f.store,
+      db: f.db,
+      actor: f.actor,
+      goalId: f.goal.goalId,
+      turnId: f.coordinator.id,
+      services: f.services,
+      invoke,
+    });
+    const ids = [
+      'vault.injection-plan-list',
+      'vault.injection-receipt-list',
+      'vault.binding-deliver',
+      'vault.binding-replace',
+      'vault.binding-revoke',
+    ];
+    expect(ids.every((id) => tools.some((tool) => tool.name === id))).toBe(true);
+    const tool = tools.find((entry) => entry.name === 'vault.injection-plan-list')!;
+    const execution = {
+      callId: randomUUID(),
+      toolOccurrence: 1,
+      signal: new AbortController().signal,
+    };
+    const listed = await tool.execute({}, execution);
+    expect(listed.isError).not.toBe(true);
+    const body = JSON.parse((listed.content[0] as { text: string }).text) as {
+      items: { planId: string }[];
+    };
+    const plans = listVaultInjectionPlans(f.coreDb);
+    const own = plans.find((plan) => plan.packageSnapshotId === first.packageSnapshotId)!;
+    expect(own !== undefined && body.items.some((plan) => plan.planId === own.planId)).toBe(true);
+    expect(listVaultInjectionReceipts(f.coreDb)).toEqual([]);
+    expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+    const worker = (prepared: typeof first) => ({
+      kind: 'worker' as const,
+      actor: prepared.environmentPackage.scope.triggerActor,
+      lineage: {
+        ...prepared.environmentPackage.scope,
+        packageSnapshotId: prepared.packageSnapshotId,
+      },
+      requestId: randomUUID(),
+      bindings: { workspaceId: f.scope.workspaceId },
+    });
+    const read = () =>
+      invoke('vault.injection-plan-list', { workspaceId: f.scope.workspaceId }, worker(first));
+    const decisions = () =>
+      listExportableWorkspacePermissionDecisions(f.db, f.scope.workspaceId).filter(
+        (row) => row.enforcementPoint === 'vault.injection-plan-list@decide'
+      );
+    try {
+      if (mode === 'scope') {
+        const other = plans.find((plan) => plan.packageSnapshotId === sibling!.packageSnapshotId)!;
+        expect(other !== undefined && body.items.some((plan) => plan.planId === other.planId)).toBe(
+          true
+        );
+        const ownRead = await read();
+        expect(ownRead.items.some((plan) => plan.planId === own.planId)).toBe(true);
+        expect(ownRead.items.some((plan) => plan.planId === other.planId)).toBe(false);
+        const siblingRead = await invoke(
+          'vault.injection-plan-list',
+          { workspaceId: f.scope.workspaceId },
+          worker(sibling!)
+        );
+        expect(siblingRead.items.some((plan) => plan.planId === own.planId)).toBe(false);
+        expect(siblingRead.items.some((plan) => plan.planId === other.planId)).toBe(true);
+        const outside = (
+          await executeGoalOperation(
+            'goal.create',
+            {
+              workspaceId: f.scope.workspaceId,
+              requestId: randomUUID(),
+              intent: 'Separate Goal',
+            },
+            { actor: f.actor },
+            f.store,
+            f.db,
+            f.services
+          )
+        ).goal!;
+        const outsideScope = {
+          workspaceId: f.scope.workspaceId,
+          threadId: outside.threadId,
+          goalId: outside.goalId,
+        };
+        const outsideCardView = await executeGoalOperation(
+          'goal.card.create',
+          {
+            ...outsideScope,
+            requestId: randomUUID(),
+            description: 'Separate work',
+            priority: 1,
+          },
+          { actor: f.actor },
+          f.store,
+          f.db,
+          f.services
+        );
+        const card = outsideCardView.cards[0]!;
+        const outsideCoordinator = await f.store.createTurn(
+          f.scope.workspaceId,
+          outside.threadId,
+          'Plan separate Goal',
+          { kind: 'user', id: f.actor.userId },
+          null,
+          { executorKind: 'coordinator', agentId: 'goal-coordinator' }
+        );
+        const outsideProposal = await executeGoalOperation(
+          'goal.plan.propose',
+          {
+            ...outsideScope,
+            requestId: randomUUID(),
+            expectedRevision: outsideCardView.goal!.changeRevision,
+            commitment: {
+              intentBasis: { revision: 0, intent: outside.intent },
+              cards: [
+                {
+                  cardId: card.cardId,
+                  revision: card.revision,
+                  description: card.description,
+                  priority: card.priority,
+                },
+              ],
+              permittedAdjustments: 'Inspect only separate work',
+              completionEvidence: ['Separate result'],
+              boundaries: 'Separate Goal',
+            },
+            goalDomain: {
+              id: 'separate-inspection-domain',
+              scope: {
+                subjects: [{ kind: 'agent', id: f.agentId }],
+                actions: ['vault.admin'],
+                resources: [
+                  {
+                    kind: 'container',
+                    container: {
+                      owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
+                      kind: 'workspace',
+                      id: f.scope.workspaceId,
+                    },
+                  },
+                ],
+              },
+              lifetime: {
+                anchor: {
+                  owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
+                  kind: 'goal',
+                  id: outside.goalId,
+                },
+              },
+            },
+          },
+          { actor: f.actor, coordinatorTurnId: outsideCoordinator.id },
+          f.store,
+          f.db,
+          f.services
+        );
+        const outsideTurn = outsideCoordinator;
+        const outsideApproval = {
+          ...outsideScope,
+          pendingRequestId: outsideProposal.versions[0]!.pendingRequestId,
+          decision: 'granted' as const,
+          requestId: randomUUID(),
+        };
+        await executeGoalOperation(
+          'goal.plan.approve',
+          outsideApproval,
+          { actor: f.actor },
+          f.store,
+          f.db,
+          f.services
+        );
+        await executeGoalOperation(
+          'goal.plan.approve',
+          { ...outsideApproval, requestId: randomUUID() },
+          { actor: f.actor, coordinatorTurnId: outsideTurn.id },
+          f.store,
+          f.db,
+          f.services
+        );
+        expect(readGoalView(f.store, f.db, outside.goalId).goal!.activePlanVersionId).toBe(
+          outsideProposal.versions[0]!.planVersionId
+        );
+        const outsideTools = createGoalTools({
+          store: f.store,
+          db: f.db,
+          actor: f.actor,
+          goalId: outside.goalId,
+          turnId: outsideTurn.id,
+          services: f.services,
+          invoke,
+        });
+        const outsideRead = await outsideTools
+          .find((entry) => entry.name === ids[0])!
+          .execute({}, execution);
+        // An active Plan on this other Goal sees only its own linked Task plans.
+        expect(outsideRead.isError).not.toBe(true);
+        expect(JSON.parse((outsideRead.content[0] as { text: string }).text).items).toEqual([]);
+        expect(
+          listVaultInjectionPlans(f.coreDb).find((plan) => plan.planId === own.planId)?.status
+        ).toBe(own.status);
+      } else if (mode === 'finite-use') {
+        const statement = { id: f.domain!.id, digest: policyDigest(f.domain) };
+        expect(readPolicyStatementUseCount(f.db, statement)).toBe(0);
+        expect((await read()).items.some((plan) => plan.planId === own.planId)).toBe(true);
+        expect(readPolicyStatementUseCount(f.db, statement)).toBe(1);
+        const receipts = await invoke(
+          'vault.injection-receipt-list',
+          { workspaceId: f.scope.workspaceId },
+          worker(first)
+        );
+        expect(receipts.items).toEqual([]);
+        expect(readPolicyStatementUseCount(f.db, statement)).toBe(2);
+        await expect(read()).rejects.toBeDefined();
+        expect(readPolicyStatementUseCount(f.db, statement)).toBe(2);
+      } else {
+        const before = readGoalView(f.store, f.db, f.goal.goalId);
+        const proposed = await executeGoalOperation(
+          'goal.plan.propose',
+          {
+            ...f.scope,
+            requestId: randomUUID(),
+            expectedRevision: before.goal!.changeRevision,
+            commitment: f.plan.commitment,
+            goalDomain: {
+              id: 'successor-inspection-domain',
+              scope: f.domain!.scope,
+              lifetime: {
+                anchor: {
+                  owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
+                  kind: 'goal',
+                  id: f.goal.goalId,
+                },
+              },
+            },
+          },
+          f.coordinatorContext,
+          f.store,
+          f.db,
+          f.services
+        );
+        // A proposal alone does not revoke the active Plan.
+        expect((await read()).items.some((plan) => plan.planId === own.planId)).toBe(true);
+        const successor = proposed.versions.at(-1)!;
+        const approval = {
+          ...f.scope,
+          pendingRequestId: successor.pendingRequestId,
+          decision: 'granted' as const,
+          requestId: randomUUID(),
+        };
+        await executeGoalOperation(
+          'goal.plan.approve',
+          approval,
+          { actor: f.actor },
+          f.store,
+          f.db,
+          f.services
+        );
+        await executeGoalOperation(
+          'goal.plan.approve',
+          { ...approval, requestId: randomUUID() },
+          f.coordinatorContext,
+          f.store,
+          f.db,
+          f.services
+        );
+        expect(readGoalView(f.store, f.db, f.goal.goalId).goal!.activePlanVersionId).toBe(
+          successor.planVersionId
+        );
+        expect(successor.planVersionId === before.goal!.activePlanVersionId).toBe(false);
+        await expect(read()).rejects.toBeDefined();
+        const after = await tool.execute({}, execution);
+        expect(after.isError).not.toBe(true);
+        expect(JSON.parse((after.content[0] as { text: string }).text).items).toEqual([]);
+      }
+      const final = decisions().find(
+        (row) => row.mediation?.role === 'final' && row.result === 'allow'
+      );
+      expect(final?.action).toBe('vault.admin');
+      expect(
+        listWorkspaceAuditEvents(f.db, f.scope.workspaceId).some(
+          (event) => event.id === final?.auditEventId
+        )
+      ).toBe(true);
+      expect(resolve).not.toHaveBeenCalled();
+      expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+      expect(
+        [f.fileMaterial].some((value) =>
+          JSON.stringify([
+            listed,
+            decisions(),
+            listWorkspaceAuditEvents(f.db, f.scope.workspaceId),
+          ]).includes(value)
+        )
+      ).toBe(false);
+    } finally {
+      resolve.mockRestore();
+    }
+  });
 });

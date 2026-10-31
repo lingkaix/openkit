@@ -190,6 +190,8 @@ NanoCore-owned provider access shape definitions (credential declaration, endpoi
 
 The NanoHost runtime owner selects the exact official matched OpenShell release set and owns its dependency identity and upgrade gate. No separate OpenShell schema-snapshot package participates in current policy validation.
 
+Static runtime-file delivery uses the [ephemeral carrier contract](20260709-worker_credential_access_declarations.md#runtime-file-visibility). NanoHost alone derives and validates its memory-backed single-file mount sources through the pinned native driver configuration. This closed credential branch preserves retained-source validation and does not enable Provider attachment, delegated refresh or arbitrary host binds. Actual import and read-only mount observations precede the existing injection receipt; unknown removal terminates or fences through the existing lifecycle.
+
 ## Current Implementation Projection
 
 - `apps/nanocore/src/runtime/worker-governance-backend.ts` defines exact typed filesystem and network intent derived from the AEP; `nanohost-session-dispatch.ts` refuses unknown intent fields before carriage. `apps/nanohost/src/openshell_policy.rs` renders the native OpenShell sandbox policy locally and strictly parses it into the current SDK type before launch, refusing unknown intent fields and unsupported enforcement. The V1 path binds worker launch to NanoCore policy snapshot lineage and uses durable permission decisions for the implemented gateway and vault enforcement points; richer NGAC-to-policy-row compilation for every OpenShell policy fragment remains future hardening.

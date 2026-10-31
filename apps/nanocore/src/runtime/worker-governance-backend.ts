@@ -14,6 +14,8 @@ import {
   AgentEnvironmentPackageSchema,
   type AgentEnvironmentValidationDiagnostic,
   type SessionWorkspaceMaterializationPlan,
+  WORKER_CREDENTIAL_FILE_REQUIREMENT,
+  type WorkerCredentialFileBinding,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import { workerSessionInputPaths, workerTurnCapturePaths } from '@openkit/worker-protocol';
@@ -340,6 +342,8 @@ export interface NanoHostFileImportSource {
 
 /** One verified file or directory from the immutable AEP, Skill or Context inputs. */
 export type NanoHostContextPackageImport = {
+  /** Exact admitted credential identity, only for private credential supply. */
+  readonly credentialBinding?: WorkerCredentialFileBinding;
   /** Path relative to the declared package slot. */
   readonly relativePath: string;
   /** Exact declared package slot. */
@@ -962,12 +966,42 @@ export interface WorkerGovernanceProviderCredential {
   providerType: string;
 }
 
-/** Backend-private runtime file credential material used only during materialization. */
+/** Backend-private runtime file credential references prepared before governed delivery. */
 export interface WorkerGovernanceRuntimeFileCredential {
-  /** Secret file content to write into a backend-private upload source. */
-  credentialValue: string;
+  /** Exact admitted declaration; transient binding identity, never secret material. */
+  readonly declarationId: string;
+  /** Original grant that authorizes delivery. */
+  readonly grantId: string;
+  /** Original immutable injection plan. */
+  readonly planId: string;
+  /** Existing receipt identity, settled only after realized protection is proved. */
+  readonly receiptId: string;
+  /** Original Vault reference for restart collection comparison. */
+  readonly vaultReferenceId: string;
+  /** Exact material generation exposed to this binding. */
+  readonly materialVersion: number;
+
   /** Worker-local target path for the uploaded secret file. */
   targetPath: string;
+}
+
+/** The same reference-only binding crosses every execution placement. */
+export function workerCredentialFileBinding(
+  credential: WorkerGovernanceRuntimeFileCredential
+): WorkerCredentialFileBinding {
+  return {
+    declarationId: credential.declarationId,
+    planId: credential.planId,
+    receiptId: credential.receiptId,
+    material: {
+      referenceId: credential.vaultReferenceId,
+      version: credential.materialVersion,
+      format: WORKER_CREDENTIAL_FILE_REQUIREMENT.format,
+    },
+    target: { kind: 'file', path: credential.targetPath },
+    access: WORKER_CREDENTIAL_FILE_REQUIREMENT.access,
+    requiredProtection: WORKER_CREDENTIAL_FILE_REQUIREMENT.requiredProtection,
+  };
 }
 
 /** Backend-private runtime environment credential material used only during materialization. */
@@ -1089,6 +1123,15 @@ export interface WorkerGovernanceWorkspaceChangeRecord {
  * Worker governance backend boundary from NanoCore resolved package to runtime materialization.
  */
 export interface WorkerGovernanceBackend extends ExecutionBackend {
+  /** Realizes admitted file supply during submit preparation; no material enters the operation surface. */
+  deliverCredentialBinding?(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string,
+    credentialValue: string,
+    materialVersion: number,
+    recheckAuthority: () => Promise<void>
+  ): Promise<import('./execution-backend.js').ExecutionCredentialReceipt>;
   /**
    * Describes backend capabilities before package selection.
    *

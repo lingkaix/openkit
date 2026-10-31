@@ -39,13 +39,20 @@ const binding = PolicyBindingV1Schema.parse({
 const proposal: PolicyProposal = {
   operation: 'mcp.call-tool',
   workspaceId,
-  serverId: 'issues',
-  toolName: 'read',
-  argumentsDigest: policyDigest({ issue: 1 }),
-  catalogRevision: 'catalog-fixture',
-  packageDigest: 'package-fixture',
-  schemaDigest: null,
   capabilityCallId: 'cap_00000000-0000-7000-8000-000000000001',
+  resource: {
+    kind: 'mcp-tool' as const,
+    workspaceId: workspaceId,
+    serverId: 'issues',
+    toolName: 'read',
+  },
+  inputReferences: {
+    argumentsDigest: policyDigest({ issue: 1 }),
+    catalogRevision: 'catalog-fixture',
+    packageSnapshotId: 'package-fixture',
+    schemaDigest: null,
+  },
+  inputAttributes: {},
   subject: {
     principal,
     onBehalfOf: null,

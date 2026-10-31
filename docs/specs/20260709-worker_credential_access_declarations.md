@@ -47,7 +47,7 @@ The target is one credential declaration list consumed during Agent Environment 
 
 Each resolved declaration points at an existing `VaultGrant`, chooses one supported visibility class, and supplies only non-secret materialization metadata such as Provider ids, credential key names, target paths, or environment variable names. A reusable Agent Manifest declares a stable credential requirement instead of a concrete Workspace grant, and `workspace.jsonc` binds that requirement to the Workspace's own grant before resolution.
 
-NanoCore resolves the grant before worker launch, writes the existing injection and vault-use records, and passes secret material only through backend-private materialization context.
+NanoCore validates the grant and writes the injection plan before worker launch. File preparation carries references only; the governed binding-deliver operation resolves material through the existing audited VaultUse owner after its final Policy allow and passes it privately to the placement effect. Other channels retain their backend-private materialization context.
 
 `sandbox-provider` is the default for HTTP API credentials because the worker receives a placeholder rather than the real secret, and the selected sandbox backend resolves the placeholder only while forwarding an outbound request.
 
@@ -182,7 +182,7 @@ NanoCore MUST create one `VaultInjectionPlan` before resolution, one `VaultUse` 
 
 NanoCore MUST record failed vault resolution attempts through the audited backend wrapper when the failure occurs after grant lookup.
 
-NanoCore MUST pass resolved secret material only through backend-private materialization context.
+NanoCore MUST pass resolved secret material only through private backend supply. Runtime-file preparation MUST remain reference-only. Its binding-deliver operation MUST obtain final combined Policy allow and recheck the same admitted authority before audited Vault resolution and at the placement effect after asynchronous preparation; credential material and authority callbacks MUST never enter operation inputs, AEP snapshots or retained records. Other channels use their existing backend-private materialization context.
 
 NanoCore MUST keep AEP snapshots and product-safe materialization records redacted.
 
@@ -220,17 +220,17 @@ Custom provider profile import and update remain future work.
 
 `runtime-file` declarations map to the existing vault spec visibility class `runtime-file`.
 
-The selected backend MUST upload a backend-private temporary file to the declared absolute sandbox target path.
+The execution placement MUST realize a placement-neutral file binding admitted by NanoCore. The binding identifies the existing declaration, plan and receipt, the Vault material reference and version, its UTF-8 format, a Worker file target, read-only access and REQUIRED protection: ephemeral, outside retained storage, excluded from capture and excluded from export. Backup inherits the retained-storage exclusion. A placement unable to realize every requirement MUST be refused before native work; it cannot silently downgrade protection. The [credential delivery decision](../decisions/20261031-ephemeral_worker_credential_carrier.md) records the ruling.
 
-The temporary host file MUST be outside normal workspace storage and SHOULD use owner-only file permissions before upload.
+NanoCore owns material resolution, authorization, plans, receipts, use, replacement and revocation. The placement realizes the supplied binding and attests its actual protection. Core accepts a receipt only after verified complete supply and an exact realized-protection attestation matching that binding and material version. Native implementation details belong to the placement adapter; the AEP, Vault records and execution port contain no native storage mechanism or host source paths. The existing plan capability requirement and receipt backend summary retain the neutral requirement and attestation respectively.
 
-A runtime-file declaration MUST not target paths outside the sandbox namespace accepted by the backend.
+Raw static runtime-file delivery MUST require explicit high-risk grant permission for runtime-file, like runtime-env. A generic reference or another injection permission does not authorize delivery. Any credential material a Worker can read, including a raw static file, derived file or environment value, can be copied by that Worker. The explicit grant is the user's acceptance of this risk. Tier 1 channels exist to avoid exposing readable material. This contract adds no mechanism against copying.
 
-Runtime-file materialization MUST override any legacy host-file credential upload for the same target path.
+Deliver is admitted supply under the existing execution port submit boundary. Replace is an effect on the exact live placement. Revoke is part of cancel/release and is also available independently. Replace and revoke apply to every file binding, including static key rotation and user replacement; subscription selection only chooses material. Unproved removal preserves the existing execution fence and stale receipt projection. Inspection never resolves or exposes secret material.
 
-Revocation of an already-running runtime-file credential MUST mark affected receipts and sessions stale when the backend cannot remove or mutate the running process-visible file safely.
+Lifecycle actions use the existing Vault operation family and its unified definitions, operation-stage insertion points, Policy/PermissionDecision, Audit and uniform agent surface. Existing grant-create/narrow/revoke and injection-plan/receipt-list remain the authorization and inspection owners. An automatic caller invokes the same governed operations with no privileged replacement path. Only references, observations and receipts cross that surface.
 
-Adding or changing a runtime-file value never rewrites the active process file view unless the selected runtime and backend prove safe in-place replacement. A declared runtime-file credential is session-static inside a resident binding. A changed declaration or value is installed by a successor AgentSession at the next Turn, which resumes the retained native conversation. Revocation interrupts and closes the binding at once and marks the affected receipts stale. No replacement Thread or product-visible restart action is created. These declared credentials are not the session loopback credentials, whose lifecycle [Worker Agent Capability](20260703-worker_agent_capability.md) owns.
+NanoHost is the only v0.1.0 realization. Its [runtime contract](20260802-nanohost_runtime_and_transport.md) owns private allocation, file presentation, verified import and removal. It must support same-inode in-place host rewrite so the existing Worker file view observes replacement without reallocation. A replacement is not atomic to concurrent readers. Its receipt proves the replacement file view, not application reload. The caller coordinates readers and any consumer-specific reload or restart; the file mechanism adds no consumer profile or additional acceptance gate. Unproved placement completion closes or fences the existing binding before further work. Other placements realize the same required protection and lifecycle without changing NanoCore. Core-level acceptance also uses the existing fake execution backend; a NanoHost peer fixture alone does not prove neutrality.
 
 ### Runtime Environment Visibility
 
@@ -240,7 +240,7 @@ The selected backend MUST merge the resolved secret value into the sandbox proce
 
 This visibility is worker-visible and MUST require explicit grant permission for `runtime-env`.
 
-Runtime-env declarations MUST be treated as higher risk than sandbox-provider and runtime-file declarations.
+Runtime-env and raw static runtime-file declarations MUST be treated as higher risk than sandbox-provider declarations.
 
 Runtime-env values MUST NOT appear in AEP snapshots, sandbox summaries, product logs, command summaries, transcripts, or diagnostics.
 

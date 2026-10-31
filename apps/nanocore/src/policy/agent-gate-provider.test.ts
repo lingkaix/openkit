@@ -216,13 +216,20 @@ it('runs the native agent participant through the default Gateway model with rea
   const proposal: PolicyProposal = {
     operation: 'mcp.call-tool',
     workspaceId: workspace.id,
-    serverId: 'issues',
-    toolName: 'read',
-    argumentsDigest: policyDigest({ issue: 1 }),
-    catalogRevision: 'catalog-fixture',
-    packageDigest: 'package-fixture',
-    schemaDigest: null,
     capabilityCallId: allocateEntityId('cap'),
+    resource: {
+      kind: 'mcp-tool' as const,
+      workspaceId: workspace.id,
+      serverId: 'issues',
+      toolName: 'read',
+    },
+    inputReferences: {
+      argumentsDigest: policyDigest({ issue: 1 }),
+      catalogRevision: 'catalog-fixture',
+      packageSnapshotId: 'package-fixture',
+      schemaDigest: null,
+    },
+    inputAttributes: {},
     subject: {
       principal: human,
       onBehalfOf: null,
@@ -249,7 +256,7 @@ it('runs the native agent participant through the default Gateway model with rea
     )
   ).toEqual(['policy_gate-result']);
   expect(JSON.stringify(received)).not.toContain(rawArgumentMarker);
-  expect(JSON.stringify(received)).toContain(proposal.argumentsDigest);
+  expect(JSON.stringify(received)).toContain(proposal.inputReferences.argumentsDigest);
   const calls = listWorkspaceCapabilityCalls(workspaceDb, workspace.id);
   expect(calls).toHaveLength(1);
   expect(calls[0]).toMatchObject({

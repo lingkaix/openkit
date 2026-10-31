@@ -23,6 +23,17 @@ import {
 import { z } from 'zod';
 import { SECRET_SHAPED_BUILD_ARGUMENT_PATTERN } from './build-argument-pattern.js';
 import { NativeLogMaxBytesSchema } from './server.js';
+import { WORKER_RUNTIME_CREDENTIAL_FILE_PATH_SCHEMA } from './worker-credentials.js';
+
+export {
+  WORKER_CREDENTIAL_FILE_REQUIREMENT,
+  WorkerCredentialBindingsSchema,
+  type WorkerCredentialFileBinding,
+  WorkerCredentialFileBindingSchema,
+  WorkerCredentialProtectionSchema,
+  type WorkerCredentialReceipt,
+  WorkerCredentialReceiptSchema,
+} from './worker-credentials.js';
 
 const RAW_SECRET_FIELD_NAMES = new Set(['apiKey', 'clientSecret', 'secret', 'token', 'password']);
 const BACKEND_PRIVATE_FIELD_NAMES = new Set([
@@ -33,14 +44,6 @@ const BACKEND_PRIVATE_FIELD_NAMES = new Set([
   'vmId',
 ]);
 const WORKER_CREDENTIAL_ENV_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const WORKER_RUNTIME_CREDENTIAL_FILE_PATH_SCHEMA = z
-  .string()
-  .min(1)
-  .startsWith('/sandbox/')
-  .refine(
-    (path) => path !== '/sandbox/openkit' && !path.startsWith('/sandbox/openkit/'),
-    'Runtime credential files cannot target OpenKit-managed sandbox paths.'
-  );
 const WORKER_SANDBOX_ACCESS_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 const WORKER_SANDBOX_FIXED_READ_ONLY_ROOTS = [
   '/usr',

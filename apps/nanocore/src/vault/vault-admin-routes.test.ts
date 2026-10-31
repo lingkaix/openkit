@@ -170,7 +170,7 @@ describe('vault admin app API', () => {
       for (const invalid of [
         { injectionPath: 'runtime-env', targetCapabilityId: 'mcp.call-tool' },
         { targetCapabilityId: 'mcp' },
-        { injectionPath: 'runtime-file' },
+        { injectionPath: 'runtime-file', targetCapabilityId: 'mcp.call-tool' },
       ])
         expect(
           (await send('vault.grant-create', { workspaceId, referenceId, ...invalid })).status
@@ -353,6 +353,28 @@ describe('vault admin app API', () => {
       expect(getVaultGrant(coreDb, workerGrant.grantId)?.allowedInjectionPaths).not.toContain(
         'gateway-only'
       );
+      const fileGrantResponse = await request('vault.grant-create', {
+        workspaceId,
+        referenceId: reference.referenceId,
+        injectionPath: 'runtime-file',
+      });
+      expect(fileGrantResponse.status).toBe(200);
+      const fileGrant = await fileGrantResponse.json();
+      expect(fileGrant).toMatchObject({
+        vaultReferenceId: reference.referenceId,
+        allowedInjectionPaths: ['runtime-file'],
+        targetCapabilityId: null,
+        lifetime: 'workspace',
+        status: 'active',
+      });
+      expect(fileGrant.subjectSummary).toMatch(/high[ -]risk/i);
+      expect(fileGrant.subjectSummary).toMatch(/file/i);
+      expect(fileGrant.grantId).not.toBe(grant.grantId);
+      expect(fileGrant.grantId).not.toBe(workerGrant.grantId);
+      expect(JSON.stringify(fileGrant).includes(secret)).toBe(false);
+      expect(getVaultGrant(coreDb, fileGrant.grantId)?.allowedInjectionPaths).toEqual([
+        'runtime-file',
+      ]);
       const rotated = await request('vault.secret-rotate', {
         workspaceId: workspaceId,
         referenceId: reference.referenceId,
@@ -388,6 +410,7 @@ describe('vault admin app API', () => {
       expect(revoked.status).toBe(200);
       expect(getVaultReference(coreDb, reference.referenceId)?.status).toBe('revoked');
       expect(getVaultGrant(coreDb, secondGrant.grantId)?.status).toBe('revoked');
+      expect(getVaultGrant(coreDb, fileGrant.grantId)?.status).toBe('revoked');
       expect(() =>
         vaultUnlockState.backend().resolve({ referenceId: reference.referenceId })
       ).toThrow();

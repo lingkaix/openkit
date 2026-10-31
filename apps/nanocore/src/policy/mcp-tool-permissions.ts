@@ -6,7 +6,12 @@ import { type PolicyProposal, policyDigest } from './statements.js';
 /** Exact, current human-authored Tool conditions; supply and baseline authority remain separate. */
 export function selectMcpToolPermissions(input: {
   readonly document: PolicyDocumentV1;
-  readonly proposal: Pick<PolicyProposal, 'workspaceId' | 'serverId' | 'toolName' | 'subject'>;
+  readonly proposal: {
+    readonly workspaceId: string;
+    readonly serverId: string;
+    readonly toolName: string;
+    readonly subject: PolicyProposal['subject'];
+  };
   readonly authorCurrent: (userId: string) => boolean;
   readonly now?: number;
 }): z.infer<typeof PolicyPermissionV1Schema>[] {
