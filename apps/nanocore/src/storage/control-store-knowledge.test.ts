@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
@@ -9,12 +10,13 @@ import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import {
   type ControlKnowledgeHead,
   controlKnowledgeHeadStatements,
+  prepareControlKnowledgeHead,
   readControlKnowledgeHead,
 } from './control-store-knowledge.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
-import { publishImmutableContent } from './immutable-content.js';
+import { type ImmutableContentHandoff, publishImmutableContent } from './immutable-content.js';
 import { applyScopedMigrations } from './migrate.js';
 
 /** Requires genuine Storage publication; a refused setup cannot prove a native head. */
@@ -58,7 +60,7 @@ async function fixture() {
     expiresAt: '2099-01-01T00:00:00.000Z',
     revoked: false,
   };
-  const publish = async (text: string) => {
+  const stageContent = async (text: string): Promise<ImmutableContentHandoff> => {
     const bytes = Buffer.from(text);
     const { handle } = storageValue(
       await storage.beginStage({
@@ -69,10 +71,16 @@ async function fixture() {
     );
     storageValue(await storage.writeStage({ access, handle, data: bytes.toString('base64') }));
     const stage = storageValue(await storage.finishStage({ access, handle }));
+    return { storage, access, stage, mountRoot: contentRoot };
+  };
+  const discard = async (content: ImmutableContentHandoff) =>
+    storageValue(await storage.discardStage({ access, handle: content.stage.handle }));
+  const publish = async (text: string) => {
+    const content = await stageContent(text);
     try {
-      return await publishImmutableContent({ storage, access, stage, mountRoot: contentRoot });
+      return await publishImmutableContent(content);
     } finally {
-      storageValue(await storage.discardStage({ access, handle }));
+      await discard(content);
     }
   };
   const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
@@ -102,8 +110,11 @@ async function fixture() {
     client,
     head,
     publish,
+    stageContent,
+    discard,
     notebook,
     metadata,
+    contentEntries: () => readdirSync(contentRoot, { recursive: true }).sort(),
     db: () => db,
     bytes: (value: ControlKnowledgeHead) =>
       readFileSync(join(contentRoot, value.schemaContent.reference.locator.path), 'utf8'),
@@ -236,4 +247,88 @@ it('tolerates inert retained additions and refuses malformed or foreign head aut
   ).toEqual({ record_json: duplicateCore });
   replace(record);
   expect(readControlKnowledgeHead(f.db(), f.head.knowledgeBaseId)).toEqual(f.head);
+});
+
+it('prepares exact original schema bytes without SQL effects and refuses invalid preparation inputs', async () => {
+  const f = await fixture();
+  const schemaText = `# Original schema: précis\r\n${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(/\n/g, '\r\n')}# Retained comment.\r\n`;
+  const content = await f.stageContent(schemaText);
+  const input = {
+    db: f.db(),
+    knowledgeBaseId: f.head.knowledgeBaseId,
+    notebook: f.notebook,
+    notebookCommit: f.head.notebookCommit,
+    schemaText,
+    content,
+  };
+  const before = f.db().sqlite.serialize();
+  try {
+    const prepared = await prepareControlKnowledgeHead(input);
+    // Storage51/DX148: the admitted head retains original bytes, not re-encoded YAML.
+    expect(prepared).toMatchObject({
+      workspaceId: f.head.workspaceId,
+      knowledgeBaseId: f.head.knowledgeBaseId,
+      notebookCommit: f.head.notebookCommit,
+      schemaContent: {
+        byteLength: Buffer.byteLength(schemaText),
+        mediaType: content.stage.content.mediaType,
+        reference: {
+          contentDigest: `sha256:${createHash('sha256').update(schemaText).digest('hex')}`,
+        },
+      },
+    });
+    expect(f.bytes(prepared)).toBe(schemaText);
+    expect(readControlKnowledgeHead(f.db(), f.head.knowledgeBaseId)).toBeNull();
+    const publishedEntries = f.contentEntries();
+
+    const invalidSchema = 'schema_version: openkit-scope-knowledge-schema-v999\r\n';
+    const invalidContent = await f.stageContent(invalidSchema);
+    try {
+      await expect(
+        prepareControlKnowledgeHead({
+          ...input,
+          schemaText: invalidSchema,
+          content: invalidContent,
+        })
+      ).rejects.toThrow();
+    } finally {
+      await f.discard(invalidContent);
+    }
+    // Equal UTF8 lengths make this an independent digest check, not a length-only refusal.
+    await expect(
+      prepareControlKnowledgeHead({
+        ...input,
+        schemaText: schemaText.replace('précis', 'précix'),
+      })
+    ).rejects.toThrow();
+    const foreign = openWorkspaceDb(f.db().dataRoot, allocateEntityId('ws'));
+    try {
+      applyScopedMigrations(foreign);
+      await expect(prepareControlKnowledgeHead({ ...input, db: foreign })).rejects.toThrow();
+    } finally {
+      foreign.sqlite.close();
+    }
+    await expect(
+      prepareControlKnowledgeHead({
+        ...input,
+        knowledgeBaseId: allocateEntityId('kb'),
+      })
+    ).rejects.toThrow();
+    await expect(
+      prepareControlKnowledgeHead({
+        ...input,
+        notebookCommit: 'f'.repeat(40),
+      })
+    ).rejects.toThrow();
+    expect(readControlKnowledgeHead(f.db(), f.head.knowledgeBaseId)).toBeNull();
+    expect(f.contentEntries()).toEqual(publishedEntries);
+    expect(f.db().sqlite.serialize()).toEqual(before);
+    expect(f.notebook.publishedRevision()).toBe(f.head.notebookCommit);
+    await f.client.write('knowledge', controlKnowledgeHeadStatements(prepared, null));
+    await f.reopen();
+    expect(readControlKnowledgeHead(f.db(), f.head.knowledgeBaseId)).toEqual(prepared);
+    expect(f.bytes(prepared)).toBe(schemaText);
+  } finally {
+    await f.discard(content);
+  }
 });

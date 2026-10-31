@@ -5,10 +5,14 @@ import {
   WorkspaceIdSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { STORAGE_LIMITS, type StorageContent } from '@openkit/storage';
 import { z } from 'zod';
+import type { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { parseScopeKnowledgeSchema } from '../knowledge/okf.js';
 import type { ControlSqlStatement } from './control-store-worker-protocol.js';
 import type { WorkspaceDb } from './db.js';
+import { type ImmutableContentHandoff, publishImmutableContent } from './immutable-content.js';
 
 /** Exact selected immutable Notebook tree and original schema bytes, owned by one Workspace KB. */
 export interface ControlKnowledgeHead {
@@ -78,6 +82,73 @@ function decodeHead(record: unknown): ControlKnowledgeHead {
   }
   const { requiredFeatures: _requiredFeatures, ...head } = parsed;
   return head;
+}
+
+/**
+ * Verifies an admitted schema stage and publishes its exact original bytes before later head SQL.
+ *
+ * The caller owns current admission, the existing bounded input/stage lifetime and
+ * the actual private Notebook binding. Fresh Git writes use the Notebook's existing
+ * fsync policy; this inspection is not a synchronization proof for historical carry.
+ * No SQL transaction may span preparation. The returned facts grant no Review,
+ * receipt, access, current-head selection or authority-transfer permission.
+ *
+ * @param input Explicit Workspace/KB, original admitted text and its sealed Storage handoff.
+ * @returns Exact immutable facts for a later complete native conditional transaction.
+ * @throws Before publication on an invalid schema, identity, text/stage mismatch or unavailable commit.
+ */
+export async function prepareControlKnowledgeHead(input: {
+  readonly db: WorkspaceDb;
+  readonly knowledgeBaseId: string;
+  readonly notebook: KnowledgeNotebook;
+  readonly notebookCommit: string;
+  readonly schemaText: string;
+  readonly content: ImmutableContentHandoff;
+}): Promise<ControlKnowledgeHead> {
+  const { db, knowledgeBaseId, notebook, notebookCommit, schemaText } = input;
+  WorkspaceIdSchema.parse(db.workspaceId);
+  KnowledgeBaseIdSchema.parse(knowledgeBaseId);
+  if (db.scope !== 'workspace' || !db.sqlite.open || db.sqlite.inTransaction)
+    throw new TypeError('Knowledge preparation requires an open Workspace outside SQL.');
+  const schemaContent = headSchema.shape.schemaContent.parse(input.content.stage.content);
+  const { reference } = schemaContent;
+  // Capture sealed byte facts before awaits, while retaining the request's live
+  // Storage admission object so an observed revocation is not frozen away.
+  const handoff: ImmutableContentHandoff = {
+    storage: input.content.storage,
+    mountRoot: input.content.mountRoot,
+    access: input.content.access,
+    stage: { handle: input.content.stage.handle, content: schemaContent },
+  };
+  if (
+    reference.knowledgeBaseId !== knowledgeBaseId ||
+    reference.locator.ownerScope.kind !== 'workspace' ||
+    reference.locator.ownerScope.workspaceId !== db.workspaceId ||
+    reference.range !== null ||
+    reference.availability !== 'available' ||
+    handoff.access.knowledgeBaseId !== knowledgeBaseId ||
+    handoff.access.ownerScope.kind !== 'workspace' ||
+    handoff.access.ownerScope.workspaceId !== db.workspaceId ||
+    handoff.access.mode !== 'staged-write' ||
+    handoff.access.mount !== reference.locator.mount ||
+    Buffer.from(schemaText, 'utf8').toString('utf8') !== schemaText ||
+    Buffer.byteLength(schemaText, 'utf8') !== schemaContent.byteLength ||
+    `sha256:${sha256Hex(schemaText)}` !== reference.contentDigest ||
+    !parseScopeKnowledgeSchema(schemaText).ok
+  ) {
+    throw new TypeError('Knowledge schema preparation has inconsistent admitted input.');
+  }
+  await notebook.inspectRevisionAsync(notebookCommit);
+  // The existing publisher rechecks the real sealed bytes and digest, then fsyncs
+  // the create-only object and its directory. It never receives re-encoded YAML.
+  const published = await publishImmutableContent(handoff);
+  return decodeHead({
+    workspaceId: db.workspaceId,
+    knowledgeBaseId,
+    notebookCommit,
+    schemaContent: published,
+    requiredFeatures: [],
+  });
 }
 
 /**
