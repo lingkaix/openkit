@@ -1201,7 +1201,26 @@ export class ProviderSubscriptionAccountManager {
 
     return this.withLifecycleAudit('provider_subscription.reconcile', exactPair, () =>
       this.withPairFence(exactPair, async () => {
-        const account = await this.reconcileAccountInsideFence(exactPair);
+        let account: ProviderSubscriptionAccountSnapshot;
+        try {
+          account = await this.reconcileAccountInsideFence(exactPair);
+        } catch (error) {
+          const failure = normalizeAccountError(error);
+          if (
+            failure.code !== 'provider_subscription_vault_locked' &&
+            failure.code !== 'provider_subscription_vault_unavailable'
+          ) {
+            throw failure;
+          }
+          // Unavailable dependencies cannot attest a credential or change durable account state.
+          const record = this.readAccount(exactPair);
+          if (!record) throw failure;
+          return {
+            ...snapshot(record, 'logged_out'),
+            status: 'unavailable' as const,
+            message: failure.message,
+          };
+        }
         const state = this.pairHandleInsideFence(exactPair);
         if (state.login?.interaction) {
           const { message: _message, ...pending } = account;

@@ -1165,10 +1165,10 @@ describe('provider-subscription app API', () => {
             'provider_subscription_vault_locked',
             'Bearer private locked failure'
           ),
-        spy: 'getStatus',
+        spy: 'logout',
         status: 503,
         message: 'Provider subscription Vault is locked.',
-        path: '/api/app/operations/provider-subscription.account-status',
+        path: '/api/app/operations/provider-subscription.account-logout',
         method: 'POST',
         body: { ...{}, ...{ subscriptionProviderId: 'xai', accountSlotId: 'default' } },
       },

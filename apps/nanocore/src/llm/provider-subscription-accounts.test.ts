@@ -5735,6 +5735,75 @@ function codexManagementTransport(
   return { available, bodies, fetchSpy, quota };
 }
 
+describe('subscription account status dependency projection', () => {
+  it.each([
+    { fault: 'locked', bound: false },
+    { fault: 'locked', bound: true },
+    { fault: 'unavailable', bound: false },
+    { fault: 'unavailable', bound: true },
+  ] as const)('projects $fault Vault as unavailable for bound=$bound without changing authority', async ({
+    fault,
+    bound,
+  }) => {
+    const fixture = createFixture();
+    const pair = accountPair(`status_${fault}_${bound}`);
+    ensureLocalUser(fixture.coreDb);
+    if (bound) {
+      await createStoredPair(fixture, pair, testEntityId('vault', pair.accountSlotId));
+    } else {
+      await fixture.manager.createAccount(pair);
+    }
+    const before = authoritySnapshot(fixture);
+    const app = createApp({
+      coreDb: fixture.coreDb,
+      dataRoot: fixture.dataRoot,
+      providerSubscriptionAccountManager: fixture.createManager(),
+    });
+    const invoke = (operation: string) =>
+      app.request(`/api/app/operations/provider-subscription.${operation}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(pair),
+      });
+    const expectedError = fault === 'locked' ? LOCKED_ERROR : VAULT_UNAVAILABLE_ERROR;
+    const inventoryFailure =
+      fault === 'unavailable'
+        ? vi.spyOn(fixture.backend(), 'listReferences').mockImplementation(() => {
+            throw new VaultBackendError('backend-unavailable', 'Private dependency failure.');
+          })
+        : undefined;
+    if (fault === 'locked') fixture.vaultState.lock();
+    try {
+      // The account owner requires a successful read with a retryable status, not a Vault HTTP error.
+      const status = await invoke('account-status');
+      expect.soft(status.status).toBe(200);
+      const projected = await status.json();
+      expect.soft(projected).toMatchObject({
+        ...pair,
+        status: 'unavailable',
+        message: expectedError.message,
+      });
+      expect.soft(projected).not.toHaveProperty('vaultReferenceId');
+      expect.soft(JSON.stringify(projected)).not.toContain('Private dependency failure.');
+      for (const operation of ['account-logout', 'account-delete']) {
+        const mutation = await invoke(operation);
+        expect(mutation.status).toBe(503);
+        expect(await mutation.json()).toMatchObject(expectedError);
+      }
+    } finally {
+      inventoryFailure?.mockRestore();
+      if (fault === 'locked') fixture.vaultState.unlock({ masterKey: Buffer.alloc(32, 23) });
+    }
+    expect(authoritySnapshot(fixture)).toEqual(before);
+    const recovered = await invoke('account-status');
+    expect(recovered.status).toBe(200);
+    expect(await recovered.json()).toMatchObject({
+      ...pair,
+      status: bound ? 'logged_in' : 'logged_out',
+    });
+  });
+});
+
 describe('Codex settings and manual reset public behavior', () => {
   it('projects defaults and persists partial settings separately from the display label', async () => {
     const fixture = await codexManagementFixture();
