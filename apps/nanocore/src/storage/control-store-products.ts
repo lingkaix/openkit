@@ -2939,6 +2939,7 @@ export function openControlStoreProductReadHandle(
   // Only known metadata and entry queries are prepared; no canonical row survives a read.
   const prepared: ProductReadStatements = new Map();
   try {
+    sqlite.pragma('busy_timeout = 5');
     sqlite.pragma('query_only = ON');
   } catch (error) {
     sqlite.close();

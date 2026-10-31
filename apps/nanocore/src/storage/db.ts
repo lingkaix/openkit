@@ -265,13 +265,7 @@ export function openWorkspaceReadDb(dataRoot: string, workspaceId: string): Work
     kind: 'workspace',
     workspaceId,
   });
-  try {
-    reader.sqlite.pragma('busy_timeout = 5');
-    return bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
-  } catch (error) {
-    reader.close();
-    throw error;
-  }
+  return bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
 }
 
 /** Opens a current admitted Workspace for observation, without layout creation or migration. */

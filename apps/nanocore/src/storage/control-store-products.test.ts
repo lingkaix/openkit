@@ -466,6 +466,7 @@ describe('prepared control product boundaries', () => {
       const sqlite = reader.sqlite;
       expect(sqlite.readonly).toBe(true);
       expect(sqlite.pragma('query_only', { simple: true })).toBe(1);
+      expect(sqlite.pragma('busy_timeout', { simple: true })).toBe(5);
       expect(() => sqlite.prepare('DELETE FROM audit_events').run()).toThrow();
       expect(f.db.sqlite.readonly).toBe(false);
       expect(() => f.db.sqlite.prepare('DELETE FROM audit_events WHERE 0').run()).not.toThrow();

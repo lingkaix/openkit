@@ -194,3 +194,5 @@ Before a prerelease upgrade from actor-scoped Kernel receipts, finish and record
 Native scope close and recovery sealing join the same accepted publication prefix before closing the writer. The lifecycle caller excludes new producers; accepted preparation retains its original outcome, and explicit reopening starts a later writer lifetime.
 
 The User readonly opener verifies the existing database is a regular file under its canonical parent before SQLite opens it. Recovery inventory retains its separate admission boundary; a linked file or ancestor grants no alternate physical scope.
+
+The physical product reader applies the existing 5 ms Main lock wait before serving reads, including direct and cached readers. Workspace read views reuse that policy; native writable connections keep their separate writer policy.
