@@ -1,15 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatReferenceUri } from '@openkit/protocol';
-import { expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, expect, it, onTestFinished, vi } from 'vitest';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { ServerKnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import {
@@ -37,45 +38,78 @@ import {
   readServerNotebookProposalPreview,
 } from './server-notebook-proposals.js';
 
-/** Actual Server notebook, Core receipts, Thread records and publisher surround only a fake bounded role. */
-function fixture(enabled: boolean) {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'server-km-'));
+let initialNotebook: { dataRoot: string; userId: string; human: string } | undefined;
+afterAll(() => {
+  if (initialNotebook) rmSync(initialNotebook.dataRoot, { recursive: true, force: true });
+  if (citationNotebook) rmSync(citationNotebook.dataRoot, { recursive: true, force: true });
+});
+
+/** Freezes only acknowledged initial Notebook/Core bytes; no Store or native writer survives. */
+function closedInitialNotebook() {
+  if (initialNotebook) return initialNotebook;
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-km-baseline-'));
   const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  const userId = ensureLocalUser(coreDb);
+  try {
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    const actor = { kind: 'user' as const, id: userId };
+    const requestActor = { kind: 'local' as const, userId };
+    initializeScopedNotebook({
+      coreDb,
+      actor: requestActor,
+      target: { kind: 'server' },
+      initialization: { requestId: randomUUID(), instructionReference: 'fixture' },
+    });
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(dataRoot, 'server', 'knowledge', 'notebook.git'),
+    });
+    const original = notebook.publishedRevision();
+    const human = notebook.prepare({
+      baseRevision: original,
+      changes: {
+        'index.md':
+          '---\nokf_version: "0.2"\n---\n# Human overview\n\nPreserve this human correction.\n',
+      },
+      metadata: {
+        summary: 'Human correction',
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: commandInputHash('human correction'),
+        },
+        producer: actor,
+        authority: { kind: 'direct', instructionReference: 'fixture' },
+        sourceReferences: [],
+      },
+    });
+    notebook.publish({ baseRevision: original, candidateRevision: human });
+    coreDb.sqlite.close();
+    initialNotebook = { dataRoot, userId, human };
+    return initialNotebook;
+  } finally {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    if (!initialNotebook) rmSync(dataRoot, { recursive: true, force: true });
+  }
+}
+
+/** Actual private Server notebook, Core receipts, Thread records and publisher surround only a fake bounded role. */
+function fixture(enabled: boolean, baseline = closedInitialNotebook()) {
+  // The first case pays preparation within its original bound; later cases copy only closed bytes.
+  const dataRoot = mkdtempSync(join(tmpdir(), 'server-km-'));
+  cpSync(baseline.dataRoot, dataRoot, { recursive: true });
+  const coreDb = openCoreDb(dataRoot);
+  const userId = baseline.userId;
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   onTestFinished(async () => {
-    coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = new FsStore({ dataRoot });
-  initializeScopedNotebook({
-    coreDb,
-    actor: requestActor,
-    target: { kind: 'server' },
-    initialization: { requestId: randomUUID(), instructionReference: 'fixture' },
-  });
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'server', 'knowledge', 'notebook.git'),
   });
-  const original = notebook.publishedRevision();
-  const human = notebook.prepare({
-    baseRevision: original,
-    changes: {
-      'index.md':
-        '---\nokf_version: "0.2"\n---\n# Human overview\n\nPreserve this human correction.\n',
-    },
-    metadata: {
-      summary: 'Human correction',
-      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash('human correction') },
-      producer: actor,
-      authority: { kind: 'direct', instructionReference: 'fixture' },
-      sourceReferences: [],
-    },
-  });
-  notebook.publish({ baseRevision: original, candidateRevision: human });
+  const human = baseline.human;
   const run = vi.fn(async (input: ServerKnowledgeManagerAgentRun) => {
     const payload = JSON.parse(
       input.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join(
@@ -152,6 +186,75 @@ function fixture(enabled: boolean) {
   return { dependencies, input, run, store, notebook, human, coreDb, requestActor };
 }
 
+let citationNotebook:
+  | {
+      dataRoot: string;
+      userId: string;
+      human: string;
+      target: string;
+      baseRevision: string;
+    }
+  | undefined;
+
+/** Captures the acknowledged citation prerequisite once, then admits each case from closed private bytes. */
+async function fixtureWithCitationTarget(enabled: boolean) {
+  if (!citationNotebook) {
+    const f = fixture(enabled);
+    const context = { ...f.dependencies, actor: f.requestActor };
+    const source = await registerServerKnowledgeSource(context, {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Server evidence',
+      content: 'Server evidence remains available.',
+    });
+    const target = serializeKnowledgePageFixture(
+      {
+        title: 'Target',
+        content: 'Server evidence.',
+        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+        createdAt: '2026-10-18T00:00:00Z',
+        updatedAt: '2026-10-18T00:00:00Z',
+      },
+      { kind: 'server' }
+    );
+    const sourceBaseRevision = f.notebook.publishedRevision();
+    const baseRevision = f.notebook.prepare({
+      baseRevision: sourceBaseRevision,
+      changes: { 'target.md': target },
+      metadata: {
+        summary: 'Retain source-backed target',
+        producer: f.input.actor,
+        authority: { kind: 'direct', instructionReference: 'fixture' },
+        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+        changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(target) },
+      },
+    });
+    f.notebook.publish({ baseRevision: sourceBaseRevision, candidateRevision: baseRevision });
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(f.coreDb.dataRoot);
+    f.coreDb.sqlite.close();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'server-km-citation-baseline-'));
+    try {
+      cpSync(f.coreDb.dataRoot, dataRoot, { recursive: true });
+      citationNotebook = {
+        dataRoot,
+        userId: f.requestActor.userId,
+        human: f.human,
+        target,
+        baseRevision,
+      };
+    } catch (error) {
+      rmSync(dataRoot, { recursive: true, force: true });
+      throw error;
+    }
+  }
+  return {
+    f: fixture(enabled, citationNotebook),
+    target: citationNotebook.target,
+    baseRevision: citationNotebook.baseRevision,
+  };
+}
+
 it.each([
   'unpinned',
   'pinned',
@@ -161,37 +264,10 @@ it.each([
   'wrong-pin',
   'missing-target',
 ] as const)('admits only exact Server page citations through maintenance publication: %s', async (kind) => {
-  const f = fixture(kind !== 'reviewed-candidate');
-  const context = { ...f.dependencies, actor: f.requestActor };
-  const source = await registerServerKnowledgeSource(context, {
-    requestId: randomUUID(),
-    kind: 'document',
-    title: 'Server evidence',
-    content: 'Server evidence remains available.',
-  });
-  const target = serializeKnowledgePageFixture(
-    {
-      title: 'Target',
-      content: 'Server evidence.',
-      sourceReferences: [`source:${source.id}@${source.contentDigest}`],
-      createdAt: '2026-10-18T00:00:00Z',
-      updatedAt: '2026-10-18T00:00:00Z',
-    },
-    { kind: 'server' }
+  const { f, target, baseRevision } = await fixtureWithCitationTarget(
+    kind !== 'reviewed-candidate'
   );
-  const sourceBaseRevision = f.notebook.publishedRevision();
-  const baseRevision = f.notebook.prepare({
-    baseRevision: sourceBaseRevision,
-    changes: { 'target.md': target },
-    metadata: {
-      summary: 'Retain source-backed target',
-      producer: f.input.actor,
-      authority: { kind: 'direct', instructionReference: 'fixture' },
-      sourceReferences: [`source:${source.id}@${source.contentDigest}`],
-      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(target) },
-    },
-  });
-  f.notebook.publish({ baseRevision: sourceBaseRevision, candidateRevision: baseRevision });
+  const context = { ...f.dependencies, actor: f.requestActor };
   const pin = pinScopedNotebook({ ...context, target: { kind: 'server' } });
   const changesTarget = kind === 'candidate-pinned' || kind === 'reviewed-candidate';
   const authoredTarget = target.replace('Server evidence.', 'Updated Server evidence.');
