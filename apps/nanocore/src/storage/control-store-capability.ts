@@ -360,10 +360,11 @@ const participantAuditCommand = z
   })
   .strict();
 
+// Checkpoint owners share a value cycle; resolve their strict schemas only when parsing.
 const checkpointCommand = z
   .object({
     kind: z.literal('checkpoint'),
-    input: ControlCheckpointCommandInputSchema,
+    input: z.lazy(() => ControlCheckpointCommandInputSchema),
   })
   .strict();
 const rawObserveCommand = z
@@ -496,7 +497,7 @@ export type ControlCapabilityAdmissionFailure = z.infer<
 /** Closed raw aggregate, actual StartedCapabilityCall or retained usage identifiers. */
 export const ControlCapabilityCommandResultSchema = z.union([
   z.object({ schemaSnapshotId: z.string().min(1), liveSnapshotId: z.string().min(1) }).strict(),
-  ControlCheckpointCommandResultSchema,
+  z.lazy(() => ControlCheckpointCommandResultSchema),
   z.object({ rawOutputBytes: ordinal, exhausted: z.boolean(), chargedBytes: ordinal }).strict(),
   startedCall.extend({
     admissionFailure: ControlCapabilityAdmissionFailureSchema.optional(),

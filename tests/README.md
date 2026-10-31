@@ -6,6 +6,8 @@ Package and app unit, contract, integration, and browser tests remain with their
 
 ## Layout
 
+- `nanocore-storage-esm.test.mjs` imports each compiled storage library owner in a fresh Node process. Worker entrypoints are excluded because they require their native Worker launch context; no library import may depend on a prewarmed module graph.
+
 - `app-image-entrypoint.test.mjs` checks App proxy routing, shared upstream idle keep-alive ordering against NanoCore's configured timeout and socket buffer, and process supervision. Its lifecycle cases require Bash with `wait -n` support.
 
 - `openkit-skill-interface.test.mjs` exercises explicit named-token selection, endpoint isolation, secret redaction, server denials, bundled token creation, rotation, and bootstrap with both macOS and Linux credential paths on either POSIX host. Its isolated minimal-host fixture makes machine-id files and keychain executables unavailable, and uses the child's temporary-home fallback seed for parent readback.
