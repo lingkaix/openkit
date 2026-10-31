@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { call, calls, fixture, latestToolOutput } from '../test-support/knowledge-result.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 
@@ -15,10 +15,8 @@ it.each([
   true,
 ])('exposes a safe notebook Tool failure when the log sink throws=%s', async (sinkThrows) => {
   const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
+  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+    .notebookCommit;
   const contentMarker = 'UNPUBLISHED-CONTENT-MARKER';
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
     if (sinkThrows) throw new Error('Optional diagnostic sink unavailable.');
@@ -64,7 +62,9 @@ it.each([
   expect(JSON.stringify(diagnostics)).not.toContain(contentMarker);
   expect(JSON.stringify(diagnostics)).not.toContain(f.dataRoot);
   expect(JSON.stringify(diagnostics)).not.toContain('stack');
-  expect(notebook.publishedRevision()).toBe(before);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(before);
   expect(f.createResponses).toHaveBeenCalledTimes(2);
 });
 
@@ -129,10 +129,8 @@ it('keeps exception text and paths out of model and process failure diagnostics'
 
 it('makes the actual Claim confidence refusal actionable without publishing', async () => {
   const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
-  });
-  const before = notebook.publishedRevision();
+  const before = readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head
+    .notebookCommit;
   const content = updateOkfFrontmatter({
     path: 'claim.md',
     content: serializeKnowledgePageFixture(
@@ -181,7 +179,9 @@ it('makes the actual Claim confidence refusal actionable without publishing', as
   ]);
   expect(JSON.parse(feedback)).not.toHaveProperty('linkDiagnostics');
   expect(feedback).not.toContain('UNPUBLISHED-CLAIM-CONTENT');
-  expect(notebook.publishedRevision()).toBe(before);
+  expect(
+    readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).head.notebookCommit
+  ).toBe(before);
   expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
   expect(f.createResponses).toHaveBeenCalledTimes(2);
 });

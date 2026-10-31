@@ -26,6 +26,7 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -90,7 +91,11 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
           );
           return join(resolveScopedNotebookOwner(context).notebookRoot, 'notebook.git');
         })();
-  const notebook = new KnowledgeNotebook({ repositoryPath });
+  const selectNotebook = () =>
+    scope === 'workspace'
+      ? readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook
+      : new KnowledgeNotebook({ repositoryPath });
+  const notebook = selectNotebook();
   const baseRevision = notebook.publishedRevision();
   const overview = notebook.readRevision(baseRevision).files['index.md']!;
   const settings = { enabled: true, reviewRequiredPageIds: [] };
@@ -221,7 +226,9 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
     store,
     workspace,
     dependencies,
-    notebook,
+    get notebook() {
+      return selectNotebook();
+    },
     baseRevision,
     overview,
     updateTurn,

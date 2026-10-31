@@ -24,11 +24,11 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 
@@ -59,9 +59,8 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
+  const selectNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
+  const notebook = selectNotebook().notebook;
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const bootstrap = createRuntimeConfigManager({
     dataRoot,
@@ -71,7 +70,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
   const publicationRequest = {
     workspaceId: workspace.id,
     requestId: randomUUID(),
-    baseRevision: notebook.publishedRevision(),
+    baseRevision: selectNotebook().head.notebookCommit,
     summary: 'Record human label note',
     changes: [
       {
@@ -100,7 +99,8 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
           store,
           coreDb,
           workspaceDb,
-          notebook,
+          notebook: selectNotebook().notebook,
+          scopeSchemaText: selectNotebook().scopeSchemaText,
           request: publicationRequest,
           requestActor: { kind: 'local', userId },
           actor,
@@ -110,7 +110,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     },
     publicationRequest
   );
-  const baseRevision = notebook.publishedRevision();
+  const baseRevision = selectNotebook().head.notebookCommit;
   const ordinary = await store.createThread(workspace.id, 'Shared source conversation');
   const sourceTurn = await store.createTurn(
     workspace.id,
@@ -281,7 +281,9 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
   return {
     store,
     workspace,
-    notebook,
+    get notebook() {
+      return selectNotebook().notebook;
+    },
     baseRevision,
     dependencies,
     input,

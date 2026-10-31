@@ -5,6 +5,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createPendingRequestFixture } from '../test-support/pending-request.js';
 import { createTestStore } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
@@ -39,7 +40,6 @@ import {
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import {
   discardAbandonedWorkspaceStaging,
@@ -1062,10 +1062,8 @@ describe('FsStore canonical reload', () => {
     const input = workspaceImportPayload(testEntityId('ws', 'knowledge-writer-boundary'));
     const workspace = await store.importWorkspaceSnapshot(input);
     const knowledge = input.knowledge[0]!;
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-    });
-    const revision = notebook.publishedRevision();
+    const notebook = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
+    const revision = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit;
     const retained = notebook.readRevision(revision);
     const refusal = 'File-backed Knowledge changes require the notebook publisher.';
 
@@ -1088,7 +1086,9 @@ describe('FsStore canonical reload', () => {
     ).toThrow(refusal);
     expect(store).not.toHaveProperty('updateKnowledgeEntry');
     expect(store).not.toHaveProperty('deleteKnowledgeEntry');
-    expect(notebook.publishedRevision()).toBe(revision);
+    expect(readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit).toBe(
+      revision
+    );
     expect(notebook.readRevision(revision)).toEqual(retained);
     expect(new FsStore({ dataRoot }).getWorkspaceResources(workspace.id).knowledge).toEqual(
       input.knowledge

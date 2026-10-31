@@ -7,12 +7,12 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createApp } from './test-support/app.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 it('admits only a current human writer and refuses a stale schema preview base without effects', async () => {
@@ -31,8 +31,8 @@ it('admits only a current human writer and refuses a stale schema preview base w
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
   const schemaPath = join(root, 'schema', 'scope-schema.yaml');
   const schemaText = readFileSync(schemaPath, 'utf8');
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') });
-  const baseRevision = notebook.publishedRevision();
+  const baseRevision = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head
+    .notebookCommit;
   const writer = createOpenKitAccessTokenRecord(coreDb, {
     ownerUserId: userId,
     scope: 'workspace',
@@ -70,7 +70,9 @@ it('admits only a current human writer and refuses a stale schema preview base w
     coverage: 'workspace',
     completeMigration: false,
   });
-  expect(notebook.publishedRevision()).toBe(baseRevision);
+  expect(readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit).toBe(
+    baseRevision
+  );
   expect((await call('knowledge.schema.preview', reader.secret, input)).status).toBe(403);
   const content = serializeKnowledgePageFixture(
     {
@@ -88,7 +90,7 @@ it('admits only a current human writer and refuses a stale schema preview base w
     summary: 'Change the real base.',
   });
   expect(changed.status, await changed.clone().text()).toBe(200);
-  const current = notebook.publishedRevision();
+  const current = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit;
   expect(current).not.toBe(baseRevision);
   expect((await call('knowledge.schema.preview', writer.secret, input)).status).toBe(409);
   revokeOpenKitAccessTokenRecord(coreDb, writer.tokenId);
@@ -96,6 +98,8 @@ it('admits only a current human writer and refuses a stale schema preview base w
     (await call('knowledge.schema.preview', writer.secret, { baseRevision: current, schemaText }))
       .status
   ).toBe(401);
-  expect(notebook.publishedRevision()).toBe(current);
+  expect(readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit).toBe(
+    current
+  );
   expect(readFileSync(schemaPath, 'utf8')).toBe(schemaText);
 });

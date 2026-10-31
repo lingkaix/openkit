@@ -17,10 +17,10 @@ import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { KnowledgeNotebook } from './notebook.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
@@ -126,7 +126,7 @@ async function fixture() {
   applyScopedMigrations(workspaceDb);
   const root = join(dataRoot, 'workspaces', workspace.id);
   const repositoryPath = join(root, 'knowledge', 'notebook.git');
-  const notebook = new KnowledgeNotebook({ repositoryPath });
+  const selectNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
@@ -135,7 +135,9 @@ async function fixture() {
   const dependencies = {
     store,
     workspaceDb,
-    notebook,
+    get notebook() {
+      return selectNotebook().notebook;
+    },
     producer: actor,
     inflightCommands: new WeakMap(),
     admission: (request: Parameters<typeof readWorkspaceNotebookAdmission>[0]['request']) =>
@@ -143,7 +145,8 @@ async function fixture() {
         store,
         coreDb,
         workspaceDb,
-        notebook,
+        notebook: selectNotebook().notebook,
+        scopeSchemaText: selectNotebook().scopeSchemaText,
         request,
         requestActor,
         actor,
@@ -165,13 +168,15 @@ async function fixture() {
     workspace,
     root,
     repositoryPath,
-    notebook,
+    get notebook() {
+      return selectNotebook().notebook;
+    },
     access,
     publish: (changes: { path: string; content: string }[]) => {
       const request = {
         workspaceId: workspace.id,
         requestId: randomUUID(),
-        baseRevision: notebook.publishedRevision(),
+        baseRevision: selectNotebook().head.notebookCommit,
         summary: 'Publish domain meaning',
         changes,
       };
@@ -199,7 +204,7 @@ it('publishes exact typed metadata, reads it after restart and rejects a missing
     content: page(type.toLowerCase(), type, f.workspace.id),
   }));
   const published = await f.publish(changes);
-  const restarted = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
+  const restarted = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id).notebook;
   for (const { path, content } of changes)
     expect(restarted.readRevision(published.notebookRevision).files[path]).toBe(content);
   const invalid = page('rule', 'Rule', f.workspace.id, { applies_to: undefined });

@@ -3,6 +3,7 @@ import {
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import { createTestStore } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -23,7 +24,6 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { listRecoverableWorkerCheckpoints } from '../runtime/worker-checkpoints.js';
 import {
   listExistingWorkspaceDatabaseScopes,
@@ -336,9 +336,7 @@ describe('FsStore workspace persistence scope', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const app = createApp({ coreDb, dataRoot, store });
-    const notebook = new KnowledgeNotebook({
-      repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-    });
+    const notebook = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
     const timestamp = new Date().toISOString();
     const knowledge = knowledgePageFixture(
       {
@@ -355,14 +353,15 @@ describe('FsStore workspace persistence scope', () => {
       headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
       body: JSON.stringify({
         workspaceId: workspace.id,
-        baseRevision: notebook.publishedRevision(),
+        baseRevision: readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head
+          .notebookCommit,
         path: knowledge.path,
         content: knowledge.content,
         summary: 'Create the page for the deletion persistence test.',
       }),
     });
     expect(created.status, await created.clone().text()).toBe(200);
-    const revision = notebook.publishedRevision();
+    const revision = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head.notebookCommit;
     const content = notebook.readRevision(revision).files[`${knowledge.id}.md`]!;
     const deleted = await app.request('/api/app/operations/knowledge.notebook.delete', {
       method: 'POST',
@@ -714,10 +713,12 @@ describe('fresh Workspace database publication', () => {
 function workspaceSql<T>(
   dataRoot: string,
   workspaceId: string,
-  read: (db: Database.Database) => T
+  read: (db: Database.Database) => T,
+  readonly = false
 ): T {
   const db = new Database(join(dataRoot, 'workspaces', workspaceId, 'db', 'workspace.sqlite'), {
     fileMustExist: true,
+    readonly,
   });
   try {
     return read(db);
@@ -1028,6 +1029,14 @@ describe('native Workspace absence classification', () => {
     );
     // Stop the Workspace writer before relocating complete retained authority.
     await shutdownControlStoreWorkerClient();
+    // Establish genuine reader sidecars before freezing the exact absence-fault baseline.
+    for (const workspaceId of [f.workspace.id, healthy.id])
+      workspaceSql(
+        f.dataRoot,
+        workspaceId,
+        (db) => db.prepare('SELECT COUNT(*) FROM control_workspaces').get(),
+        true
+      );
     if (kind === 'retained-registered') renameSync(canonicalRoot, retainedRoot);
     else {
       expect(
