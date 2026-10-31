@@ -207,6 +207,13 @@ export class CodexAppServer {
     this.stderrText = redactDiagnostic(this.stderrText + this.stderrDecoder.decode(), this.secrets);
   }
 
+  /** Starts the addressed Turn's bounded prefix, excluding earlier and idle output. */
+  resetTurnDiagnostics(): void {
+    this.stderrText = '';
+    // Discard any pending code point from the preceding stream interval.
+    this.stderrDecoder.decode();
+  }
+
   /** Bounded stderr prefix for a failed Turn. Protocol stdout is never a diagnostic. */
   stderrDiagnostic(): string {
     return redactDiagnostic(this.stderrText, this.secrets);

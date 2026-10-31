@@ -104,7 +104,7 @@ export function codexLaunchArguments(): readonly string[] {
 /**
  * Normalizes one terminal Codex turn. Cancellation wins over partial assistant text.
  * Request provenance is frozen by the native terminal owner before collection.
- * More than one assistant message, an unknown status, or a result over 16 MiB fails closed.
+ * More than one assistant candidate, an unknown status, or a result over 16 MiB fails closed.
  */
 export function normalizeCodexAssistant(
   status: string,
@@ -281,11 +281,12 @@ function assistantTexts(value: unknown): string[] {
   for (const item of records) {
     if (!item || typeof item !== 'object' || Array.isArray(item))
       throw new Error('Codex assistant item is malformed.');
-    const record = item as { type?: unknown; text?: unknown };
+    const record = item as { type?: unknown; text?: unknown; phase?: unknown };
     if (typeof record.type !== 'string' || !KNOWN_ITEM_TYPES.has(record.type))
       throw new Error('Codex assistant item type is unknown.');
     if (record.type !== 'agentMessage') continue;
     if (typeof record.text !== 'string') throw new Error('Codex assistant item is malformed.');
+    if (record.phase === 'commentary') continue;
     if (record.text.trim()) texts.push(record.text);
   }
   return texts;
@@ -706,6 +707,7 @@ class CodexResidentSession implements WorkerResidentSession {
     this.terminalProofEvaluated = false;
     this.lastTerminal = null;
     this.rpc.permissionRecords.length = 0;
+    this.rpc.resetTurnDiagnostics();
     this.nativeLogs = new NativeRuntimeCapture({
       ...input.runtimeCapture,
       credentialValues: [...input.runtimeCapture.credentialValues, ...this.secrets],

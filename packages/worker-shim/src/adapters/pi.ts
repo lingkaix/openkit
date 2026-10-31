@@ -620,6 +620,10 @@ export class PiResidentBinding implements WorkerResidentSession {
     }
     if (this.#busy) throw new PiAdapterError('A Pi Turn is already active.');
     this.#busy = true;
+    this.#stdoutChunks.length = 0;
+    this.#stdoutBytes = 0;
+    this.#stderrChunks.length = 0;
+    this.#stderrBytes = 0;
     const deadline = new LifecycleDeadline(
       LIFECYCLE_DEFAULTS.nativeOpenMs,
       LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs

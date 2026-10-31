@@ -3735,6 +3735,128 @@ describe('round 4 failure boundaries', () => {
     expect((await second.settled).diagnostics?.nativePermissions).toBeUndefined();
   });
 
+  it('keeps bounded redacted stderr within each addressed resident Turn', async () => {
+    const { roots, child, session } = await fixture();
+    const first = await session.startTurn(turnInput(roots, []));
+    child.stderr.write(`FIRST-TURN ${INFERENCE_SECRET} ${CAPABILITY_SECRET} ${'é'.repeat(10_000)}`);
+    child.stdout.write(terminalFrame());
+    const firstResult = await first.settled;
+    expect(firstResult.status).toBe('completed');
+    expect(firstResult.diagnostics?.stderr).toContain('FIRST-TURN [redacted] [redacted]');
+    expect(Buffer.byteLength(firstResult.diagnostics?.stderr ?? '')).toBeLessThanOrEqual(16_384);
+
+    child.stderr.write('IDLE-HOST-OUTPUT');
+    const second = await session.startTurn(turnInput(roots, [], 'next turn'));
+    child.stderr.write(`SECOND-TURN ${INFERENCE_SECRET} ${CAPABILITY_SECRET} ${'€'.repeat(7_000)}`);
+    child.stdout.write(terminalFrame());
+    const secondResult = await second.settled;
+    expect(secondResult.status).toBe('completed');
+    expect.soft(secondResult.diagnostics?.stderr).toContain('SECOND-TURN [redacted] [redacted]');
+    expect.soft(secondResult.diagnostics?.stderr).not.toContain('FIRST-TURN');
+    expect(secondResult.diagnostics?.stderr).not.toContain('IDLE-HOST-OUTPUT');
+    expect(Buffer.byteLength(secondResult.diagnostics?.stderr ?? '')).toBeLessThanOrEqual(16_384);
+    for (const result of [firstResult, secondResult]) {
+      expect(result.diagnostics?.stderr).not.toContain('�');
+      expect(result.diagnostics?.stdout).toBeUndefined();
+      expect(JSON.stringify(result.diagnostics)).not.toContain(INFERENCE_SECRET);
+      expect(JSON.stringify(result.diagnostics)).not.toContain(CAPABILITY_SECRET);
+      expect(JSON.stringify(result.diagnostics)).not.toContain('turn/completed');
+    }
+  });
+
+  // The pinned TurnCompletedNotification defines commentary, final_answer, and null phase.
+  it.each([
+    {
+      name: 'terminal commentary before its explicit final answer',
+      notificationItems: false,
+      items: [
+        {
+          id: 'commentary',
+          type: 'agentMessage',
+          phase: 'commentary',
+          text: 'I will inspect this.',
+        },
+        { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: '  Final cedar.  ' },
+      ],
+      expected: { status: 'completed', assistantText: 'Final cedar.', stopReason: 'completed' },
+    },
+    {
+      name: 'item-notification commentary before its explicit final answer',
+      notificationItems: true,
+      items: [
+        {
+          id: 'commentary',
+          type: 'agentMessage',
+          phase: 'commentary',
+          text: 'I will inspect this.',
+        },
+        { id: 'answer', type: 'agentMessage', phase: 'final_answer', text: 'Final cedar.' },
+      ],
+      expected: { status: 'completed', assistantText: 'Final cedar.', stopReason: 'completed' },
+    },
+    {
+      name: 'single message with null phase',
+      notificationItems: false,
+      items: [{ id: 'legacy', type: 'agentMessage', phase: null, text: 'Legacy cedar.' }],
+      expected: { status: 'completed', assistantText: 'Legacy cedar.', stopReason: 'completed' },
+    },
+    {
+      name: 'single message with omitted phase',
+      notificationItems: false,
+      items: [{ id: 'legacy', type: 'agentMessage', text: 'Legacy cedar.' }],
+      expected: { status: 'completed', assistantText: 'Legacy cedar.', stopReason: 'completed' },
+    },
+    {
+      name: 'empty completed Turn',
+      notificationItems: false,
+      items: [],
+      expected: { status: 'completed', assistantText: null, stopReason: 'completed' },
+    },
+    {
+      name: 'contradictory multiple explicit final answers',
+      notificationItems: false,
+      items: [
+        { id: 'one', type: 'agentMessage', phase: 'final_answer', text: 'First answer.' },
+        { id: 'two', type: 'agentMessage', phase: 'final_answer', text: 'Different answer.' },
+      ],
+      expected: { status: 'failed', assistantText: null, stopReason: 'malformed-result' },
+    },
+  ])('normalizes correlated native phases: $name', async ({
+    notificationItems,
+    items,
+    expected,
+  }) => {
+    const { roots, child, session } = await fixture();
+    const turn = await session.startTurn(turnInput(roots, []));
+    if (notificationItems) {
+      for (const item of items)
+        child.stdout.write(
+          `${JSON.stringify({
+            method: 'item/completed',
+            params: { threadId: NATIVE_THREAD, turnId: 'controlled-turn', item },
+          })}\n`
+        );
+      // Item completion alone must not settle the addressed Turn.
+      expect(
+        await Promise.race([turn.settled.then(() => 'settled'), delay(5).then(() => 'pending')])
+      ).toBe('pending');
+    }
+    child.stdout.write(
+      `${JSON.stringify({
+        method: 'turn/completed',
+        params: {
+          threadId: NATIVE_THREAD,
+          turn: {
+            id: 'controlled-turn',
+            status: 'completed',
+            items: notificationItems ? [] : items,
+          },
+        },
+      })}\n`
+    );
+    expect(await turn.settled).toMatchObject(expected);
+  });
+
   it('redacts and bounds unknown native method records and UTF-8 diagnostics', async () => {
     const child = controlledPeer();
     const rpc = new CodexAppServer(

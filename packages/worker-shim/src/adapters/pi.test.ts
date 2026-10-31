@@ -2182,6 +2182,56 @@ it(
 
 describe('Pi resident host', () => {
   it(
+    'keeps bounded redacted log pipes within each addressed resident Turn',
+    async () => {
+      const f = await fixture((_request, n) => ({ text: `answer-${n}` }));
+      const extensions = join(f.dirs.stateRoot, 'agent', 'extensions');
+      await mkdir(extensions, { recursive: true });
+      await writeFile(
+        join(extensions, 'turn-diagnostics.ts'),
+        `export default function(pi) {
+        let turn = 0;
+        pi.on('input', () => {
+          turn += 1;
+          const prefix = 'TURN-' + turn + ' ' + ${JSON.stringify(f.inferenceCredential)} + ' ' + ${JSON.stringify(f.capabilityCredential)} + ' ';
+          process.stdout.write(prefix + 'O'.repeat(20_000));
+          process.stderr.write(prefix + 'E'.repeat(20_000));
+          return { action: 'continue' };
+        });
+      }`
+      );
+      f.capability.bound = true;
+      const session = await f.open();
+      const first = await (await session.startTurn(turnInput(f.dirs))).settled;
+      expect(first).toMatchObject({ status: 'completed', assistantText: 'answer-1' });
+      const second = await (
+        await session.startTurn(
+          turnInput(f.dirs, {
+            turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+            prompt: 'next turn',
+          })
+        )
+      ).settled;
+      expect(second).toMatchObject({ status: 'completed', assistantText: 'answer-2' });
+      for (const stream of ['stdout', 'stderr'] as const) {
+        expect(first.diagnostics?.[stream]).toContain('TURN-1 [redacted] [redacted]');
+        expect.soft(second.diagnostics?.[stream]).toContain('TURN-2 [redacted] [redacted]');
+        expect.soft(second.diagnostics?.[stream]).not.toContain('TURN-1');
+        for (const result of [first, second]) {
+          expect(Buffer.byteLength(result.diagnostics?.[stream] ?? '')).toBeLessThanOrEqual(16_384);
+          expect(result.diagnostics?.[stream]).not.toContain(f.inferenceCredential);
+          expect(result.diagnostics?.[stream]).not.toContain(f.capabilityCredential);
+          expect(result.diagnostics?.[stream]).not.toContain('answer-');
+          expect(result.diagnostics?.[stream]).not.toContain('turn_settled');
+        }
+      }
+      expect(f.inference.requests).toHaveLength(2);
+      expect(spawnControl.children).toHaveLength(1);
+    },
+    TIMEOUT
+  );
+
+  it(
     'keeps one conversation across Turns, then resumes that handle in a new host',
     async () => {
       const replies: InferenceReply[] = [
