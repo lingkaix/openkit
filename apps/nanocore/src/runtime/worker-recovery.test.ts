@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -17,7 +17,7 @@ import {
   WorkerRuntimeNativeOriginIndexEntrySchema,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { loadRuntimeConfig } from '../config/runtime-config.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
@@ -27,6 +27,7 @@ import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entr
 import { OperationError } from '../operation-error.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import {
   ControlStoreWorkerError,
   shutdownControlStoreWorkerClient,
@@ -705,14 +706,19 @@ async function verifyCloseoutConversationReceipt(
 }
 
 /**
- * Opens a migrated workspace database for worker recovery tests.
+ * Publishes the real Demo Workspace before opening its existing recovery database.
  *
  * @returns Migrated workspace database handle after native scope acknowledgement.
  */
 async function createWorkspaceDb(): Promise<WorkspaceDb> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(dataRoot);
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  await createDemoStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   await openTestNativeWorkspace(workspaceDb);
   return workspaceDb;
 }
@@ -771,7 +777,7 @@ function createRecoveryRuntimeStream(
  * @returns Outer turn id plus stable raw evidence paths and original stream bytes.
  */
 async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
-  const store = await createDemoStore();
+  const store = await createDemoStore({ dataRoot: workspaceDb.dataRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -1554,7 +1560,13 @@ describe('worker recovery materialization', () => {
     ['granted', 'completed', 'completed'],
     ['denied', 'interrupted', 'aborted'],
   ] as const)('classifies a %s human worker approval after a policy grant and terminal closeout', async (decision, turnStatus, stopReason) => {
-    const store = await createDemoStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-approval-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -1651,10 +1663,17 @@ describe('worker recovery materialization', () => {
       resolvedAt: '2026-09-04T00:01:00.000Z',
       status: decision,
     });
-    const closedTurn = await store.updateTurn(turn.id, {
-      completedAt: '2026-09-04T00:01:00.000Z',
-      status: turnStatus,
-    });
+    const closedTurn = await store.completeTurn(
+      turn.id,
+      {
+        completedAt: '2026-09-04T00:01:00.000Z',
+        status: turnStatus,
+      },
+      {
+        requestId: '00000000-0000-4000-8000-000000000401',
+        stopReason,
+      }
+    );
     const terminalEvent = await store.persistTurnEvent(turn.id, {
       data: { stopReason, turn: closedTurn, type: 'turn-completed' },
       event: 'turn.completed',
@@ -1738,7 +1757,7 @@ describe('worker recovery materialization', () => {
     const workspaceDb = await createWorkspaceDb();
 
     try {
-      const store = await createDemoStore();
+      const store = await createDemoStore({ dataRoot: workspaceDb.dataRoot });
       const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',

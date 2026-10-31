@@ -114,3 +114,5 @@ Workspace Review tests bind each Store operand to its scenario's existing Core r
 The effort admission and catalog fixtures in `../mode-entry-effort.test.ts` use explicit native Store roots. The catalog authority helper reuses those prepared Workspace scopes; invalid effort still refuses before Thread, Turn or receipt effects.
 
 The public caller-override case in `../knowledge-manager.test.ts` uses a private native Store root. Its syntactic Source and Proposal inputs remain invalid requests; no native Knowledge admission or successful effect is inferred from their setup.
+
+Worker recovery fixtures open handles after actual Demo Workspace publication in the same root. Provenance fixtures keep running Turns without assigned Sessions; human-approval fixtures use atomic terminal publication with the original response request ID before exact replay.
