@@ -66,7 +66,7 @@ For R3, the proposed qualification distinguishes actual receiver receipts, scope
 
 Only the paper mechanism-by-platform matrix has been completed. It examined retention, mediation, execution lifetime, storage, Gateway, telemetry, Knowledge and product workflows. Its conclusions are design evidence, not provider qualification.
 
-On commit bc3dca1c3ba497f92d2a7ea416ad7166fd953773, the lost-submit and provider-mutation-retry cases passed; the executor-replacement case is NOT EXPRESSIBLE with the existing fake backend; the withheld-identity case is open as PROD-SUSPECT; the stale-tool-call case is pending execution. The cases are:
+On commit bc3dca1c3ba497f92d2a7ea416ad7166fd953773, the lost-submit and provider-mutation-retry cases passed; the executor-replacement case is NOT EXPRESSIBLE with the existing fake backend; the withheld-identity case is open as PROD-SUSPECT; the stale-tool-call case passed on 5d959aea421ea709a981ff4ae17e5660a269c56c. The cases are:
 
 - Lose a submit reply, return an empty list, acknowledge kill and allow a late create. Expect unknown/closing, no replay or conflicting reattachment, and healthy sibling progress.
 - Preserve an external session across executor replacement. Expect exact native-owner identity and fresh authority, without transcript reconstruction.
