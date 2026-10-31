@@ -20,7 +20,7 @@ export { controlExecutionSteps, controlExecutions } from './execution-journal.js
 export { externalTriggerAdmissions } from './external-trigger-admissions.js';
 export { generativePresentations } from './generative-presentations.js';
 export * from './goals.js';
-export { knowledgeNotebookHeads } from './knowledge.js';
+export { knowledgeNotebookHeads, knowledgeNotebookProposals } from './knowledge.js';
 export type { McpToolSchemaSnapshotSource } from './mcp-tool-schema-snapshots.js';
 export { mcpToolSchemaSnapshots } from './mcp-tool-schema-snapshots.js';
 export {

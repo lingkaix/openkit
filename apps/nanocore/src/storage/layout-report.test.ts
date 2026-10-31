@@ -52,7 +52,7 @@ describe('storage layout report', () => {
       const report = createStorageLayoutReport(root);
       expect(report.workspaces).toHaveLength(1);
       expect(report.workspaces[0]?.workspaceId).toBe(workspaceId);
-      expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-7)).toEqual([
+      expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-8)).toEqual([
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
         'workspace_0013_work_observations',
@@ -60,6 +60,7 @@ describe('storage layout report', () => {
         'workspace_0015_capability_call_turn_lookup',
         'workspace_0016_capture_origin',
         'workspace_0017_knowledge_heads',
+        'workspace_0018_knowledge_proposals',
       ]);
       expect(report.serverDb.appliedMigrations.slice(-7)).toEqual([
         'core_0014_execution_journal',
@@ -159,6 +160,7 @@ describe('storage layout report', () => {
               'workspace_0015_capability_call_turn_lookup',
               'workspace_0016_capture_origin',
               'workspace_0017_knowledge_heads',
+              'workspace_0018_knowledge_proposals',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

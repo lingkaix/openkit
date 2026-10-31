@@ -350,6 +350,7 @@ describe('scoped storage databases', () => {
         'goals',
         'idempotency_requests',
         'knowledge_notebook_heads',
+        'knowledge_notebook_proposals',
         'mcp_tool_schema_snapshots',
         'pending_requests',
         'permission_decisions',
@@ -396,6 +397,7 @@ describe('scoped storage databases', () => {
         'workspace_0015_capability_call_turn_lookup',
         'workspace_0016_capture_origin',
         'workspace_0017_knowledge_heads',
+        'workspace_0018_knowledge_proposals',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -625,6 +627,7 @@ describe('scoped storage databases', () => {
         'workspace_0015_capability_call_turn_lookup',
         'workspace_0016_capture_origin',
         'workspace_0017_knowledge_heads',
+        'workspace_0018_knowledge_proposals',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -984,6 +987,7 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0015_capability_call_turn_lookup',
         'workspace_0016_capture_origin',
         'workspace_0017_knowledge_heads',
+        'workspace_0018_knowledge_proposals',
       ]);
     } finally {
       userDb.sqlite.close();
