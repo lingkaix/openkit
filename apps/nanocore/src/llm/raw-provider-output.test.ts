@@ -232,17 +232,20 @@ describe('source-native Worker output observation', () => {
       ).toThrow('unavailable');
     }
   });
-  it('refuses Pi reasoning without visibility proof and tools without original argument text', () => {
-    const { observe, bytes } = meter('pi-messages');
+  it('ignores unproved Pi reasoning deltas while keeping terminal reasoning and text', () => {
+    const { observe, bytes, positions } = meter('pi-messages');
     observe({ type: 'text_delta', contentIndex: 0, delta: 'text' });
+    observe({ type: 'thinking_delta', contentIndex: 1, delta: 'must-not-count' });
     observe({ type: 'text_end', contentIndex: 0, content: 'text' });
-    observe({ type: 'thinking_end', contentIndex: 1, content: 'opaque', redacted: true });
-    observe({ type: 'toolcall_delta', contentIndex: 2, delta: '{}' });
-    observe({ type: 'toolcall_end', contentIndex: 2 });
-    expect(bytes()).toBe(10); // Snapshot replay is deduplicated by the durable watermark, not this sum helper.
-    expect(() =>
-      observe({ type: 'thinking_delta', contentIndex: 1, delta: 'unknown visibility' })
-    ).toThrow('unavailable');
+    observe({ type: 'thinking_end', contentIndex: 1, content: 'proved', redacted: false });
+    expect(bytes()).toBe(9);
+    expect(positions.filter((p) => p.field === 'reasoning')).toHaveLength(1);
+    const { observe: redacted, bytes: redactedBytes } = meter('pi-messages');
+    redacted({ type: 'text_delta', contentIndex: 0, delta: 'text' });
+    redacted({ type: 'thinking_delta', contentIndex: 1, delta: 'hidden' });
+    redacted({ type: 'text_end', contentIndex: 0, content: 'text' });
+    redacted({ type: 'thinking_end', contentIndex: 1, content: 'opaque', redacted: true });
+    expect(redactedBytes()).toBe(4);
     expect(() =>
       observe({ type: 'toolcall_end', contentIndex: 3, toolCall: { arguments: {} } })
     ).toThrow('unavailable');
