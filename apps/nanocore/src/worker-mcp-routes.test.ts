@@ -5479,7 +5479,7 @@ describe('worker MCP routes', () => {
           coreDb,
           dataRoot,
           store,
-          turnExecutor: new SimulatedTurnExecutor(),
+          turnExecutor: new SimulatedTurnExecutor({ coreDb }),
           workerMcpGateway,
         });
         const exportResponse = await exportApp.request(

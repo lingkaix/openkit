@@ -10,7 +10,12 @@ import {
   StartTaskModeResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import { AgentSessionIdSchema, deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  AgentSessionIdSchema,
+  allocateEntityId,
+  deriveEntityId,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { getArtifactReview } from '../artifact-reviews.js';
@@ -23,6 +28,10 @@ import { readWorkerContextPackageTrace } from '../context/worker-context-package
 import { ProviderRegistry } from '../providers/registry.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import {
+  bindSchedulerExecutionAttemptSession,
+  createSchedulerExecutionAttempt,
+} from '../runtime/execution-attempt-records.js';
+import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
@@ -30,6 +39,7 @@ import {
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import * as productTurnStart from '../runtime/product-turn-start.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import * as filePayload from '../storage/artifacts/file-payload.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
@@ -1514,8 +1524,20 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('uses the resolved manifest agent and default profile', async () => {
-    const store = await createDemoStore();
-    const executor = new SimulatedTurnExecutor();
+    const coreDb = createCoreDb(false);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const executor = new SimulatedTurnExecutor({ coreDb });
     const firstAgentSetup = createTestAgentSetup({
       agentId: 'agent_codex_host',
       provider: null,
@@ -1532,7 +1554,49 @@ describe('SimulatedTurnExecutor', () => {
     );
 
     await store.updateTurn(firstTurn.id, { agentId: 'agent_codex_host' });
+    const firstAdmission = createSchedulerAdmissionEntry(coreDb, {
+      backendId: executor.executionBackend.id,
+      queueEntryId: `simulator:${firstTurn.id}`,
+      requestId: null,
+      requestedAgentId: firstAgentSetup.manifest.id,
+      profileRef: firstAgentSetup.manifest.defaultProfileId ?? null,
+      modelId: firstAgentSetup.logicalModels.preferredLogicalModelId ?? null,
+      workspaceId: workspaceIdForOwner(firstTurn.owner),
+      threadId: firstTurn.threadId,
+      turnId: firstTurn.id,
+      turnInput: 'Use the default agent',
+      triggerActor: firstTurn.triggerActor,
+      workspaceCwd: null,
+      workspaceRoots: [],
+    });
+    const firstAttempt = createSchedulerExecutionAttempt(coreDb, {
+      entry: firstAdmission,
+      preparationInput: { admission: firstAdmission, manifest: firstAgentSetup.manifest },
+    });
+    const firstPreparation = {
+      attemptId: firstAttempt.attemptId,
+      agentSetup: firstAgentSetup,
+      freshAgentSessionId: allocateEntityId('as'),
+      requestId: null,
+      turn: store.getTurnById(firstTurn.id),
+      turnInput: 'Use the default agent',
+      workspaceCwd: null,
+      workspaceRoots: [],
+    };
+    const firstPrepared = await executor.prepareAgentSessionForTurn(store, firstPreparation);
+    bindSchedulerExecutionAttemptSession(coreDb, {
+      attemptId: firstAttempt.attemptId,
+      agentSessionId: firstPrepared.agentSessionId,
+    });
+    await executor.commitPreparedAgentSessionForTurn(store, {
+      attemptId: firstAttempt.attemptId,
+      preparation: firstPreparation,
+      prepared: firstPrepared,
+    });
     await executor.startTurn(store, firstTurn.id, 'Use the default agent', {
+      attemptId: firstAttempt.attemptId,
+      agentSessionId: firstPrepared.agentSessionId,
+      sessionCompatibilityKey: firstPrepared.sessionCompatibilityKey,
       agentSetup: firstAgentSetup,
       triggerActor: firstTurn.triggerActor,
       workspaceRoots: [],
@@ -1565,7 +1629,49 @@ describe('SimulatedTurnExecutor', () => {
     );
 
     await store.updateTurn(turn.id, { agentId: selectedAgentSetup.manifest.id });
+    const selectedAdmission = createSchedulerAdmissionEntry(coreDb, {
+      backendId: executor.executionBackend.id,
+      queueEntryId: `simulator:${turn.id}`,
+      requestId: null,
+      requestedAgentId: selectedAgentSetup.manifest.id,
+      profileRef: selectedAgentSetup.manifest.defaultProfileId ?? null,
+      modelId: selectedAgentSetup.logicalModels.preferredLogicalModelId ?? null,
+      workspaceId: workspaceIdForOwner(turn.owner),
+      threadId: turn.threadId,
+      turnId: turn.id,
+      turnInput: 'Use the selected agent',
+      triggerActor: turn.triggerActor,
+      workspaceCwd: null,
+      workspaceRoots: [],
+    });
+    const selectedAttempt = createSchedulerExecutionAttempt(coreDb, {
+      entry: selectedAdmission,
+      preparationInput: { admission: selectedAdmission, manifest: selectedAgentSetup.manifest },
+    });
+    const selectedPreparation = {
+      attemptId: selectedAttempt.attemptId,
+      agentSetup: selectedAgentSetup,
+      freshAgentSessionId: allocateEntityId('as'),
+      requestId: null,
+      turn: store.getTurnById(turn.id),
+      turnInput: 'Use the selected agent',
+      workspaceCwd: null,
+      workspaceRoots: [],
+    };
+    const selectedPrepared = await executor.prepareAgentSessionForTurn(store, selectedPreparation);
+    bindSchedulerExecutionAttemptSession(coreDb, {
+      attemptId: selectedAttempt.attemptId,
+      agentSessionId: selectedPrepared.agentSessionId,
+    });
+    await executor.commitPreparedAgentSessionForTurn(store, {
+      attemptId: selectedAttempt.attemptId,
+      preparation: selectedPreparation,
+      prepared: selectedPrepared,
+    });
     await executor.startTurn(store, turn.id, 'Use the selected agent', {
+      attemptId: selectedAttempt.attemptId,
+      agentSessionId: selectedPrepared.agentSessionId,
+      sessionCompatibilityKey: selectedPrepared.sessionCompatibilityKey,
       agentSetup: selectedAgentSetup,
       triggerActor: turn.triggerActor,
       workspaceRoots: [],
@@ -1596,13 +1702,16 @@ describe('SimulatedTurnExecutor', () => {
 
   it('fails closed when the resolved agent setup is missing', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-simulator-'));
+    const coreDb = openCoreDb(dataRoot);
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
       closeWorkspaceProductReadHandles(dataRoot);
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
+    applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const executor = new SimulatedTurnExecutor();
+    const executor = new SimulatedTurnExecutor({ coreDb });
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -1615,9 +1724,14 @@ describe('SimulatedTurnExecutor', () => {
 
     await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
 
-    await expect(executor.startTurn(store, turn.id, 'Missing setup')).rejects.toThrow(
-      'Simulator execution requires one resolved agent setup.'
-    );
+    await expect(
+      executor.startTurn(store, turn.id, 'Missing setup', {
+        agentSessionId: allocateEntityId('as'),
+        requestId: null,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      })
+    ).rejects.toThrow('Simulator execution requires one resolved agent setup.');
     expect(store.getTurnById(turn.id).agentSessionId).toBeUndefined();
     expect(
       store.listThreadAgentSessions(
@@ -1628,8 +1742,20 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('commits one ready version-one Artifact with exact turn-output proof', async () => {
-    const store = await createDemoStore();
-    const executor = new SimulatedTurnExecutor();
+    const coreDb = createCoreDb(false);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const executor = new SimulatedTurnExecutor({ coreDb });
     const agentSetup = createTestAgentSetup({ provider: null, requiredCapabilities: [] });
     const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
     const turn = await store.createTurn(
@@ -1642,7 +1768,49 @@ describe('SimulatedTurnExecutor', () => {
     const body = 'Simulator answer: Concise';
 
     await store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
+    const artifactAdmission = createSchedulerAdmissionEntry(coreDb, {
+      backendId: executor.executionBackend.id,
+      queueEntryId: `simulator:${turn.id}`,
+      requestId: artifactRequestId,
+      requestedAgentId: agentSetup.manifest.id,
+      profileRef: agentSetup.manifest.defaultProfileId ?? null,
+      modelId: agentSetup.logicalModels.preferredLogicalModelId ?? null,
+      workspaceId: workspaceIdForOwner(turn.owner),
+      threadId: turn.threadId,
+      turnId: turn.id,
+      turnInput: 'Create one simulator Artifact',
+      triggerActor: actor,
+      workspaceCwd: null,
+      workspaceRoots: [],
+    });
+    const artifactAttempt = createSchedulerExecutionAttempt(coreDb, {
+      entry: artifactAdmission,
+      preparationInput: { admission: artifactAdmission, manifest: agentSetup.manifest },
+    });
+    const artifactPreparation = {
+      attemptId: artifactAttempt.attemptId,
+      agentSetup: agentSetup,
+      freshAgentSessionId: allocateEntityId('as'),
+      requestId: artifactRequestId,
+      turn: store.getTurnById(turn.id),
+      turnInput: 'Create one simulator Artifact',
+      workspaceCwd: null,
+      workspaceRoots: [],
+    };
+    const artifactPrepared = await executor.prepareAgentSessionForTurn(store, artifactPreparation);
+    bindSchedulerExecutionAttemptSession(coreDb, {
+      attemptId: artifactAttempt.attemptId,
+      agentSessionId: artifactPrepared.agentSessionId,
+    });
+    await executor.commitPreparedAgentSessionForTurn(store, {
+      attemptId: artifactAttempt.attemptId,
+      preparation: artifactPreparation,
+      prepared: artifactPrepared,
+    });
     await executor.startTurn(store, turn.id, 'Create one simulator Artifact', {
+      attemptId: artifactAttempt.attemptId,
+      agentSessionId: artifactPrepared.agentSessionId,
+      sessionCompatibilityKey: artifactPrepared.sessionCompatibilityKey,
       agentSetup,
       requestId: artifactRequestId,
       triggerActor: actor,

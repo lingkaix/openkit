@@ -139,3 +139,7 @@ Deletion route fixtures share their existing App Core with the executor. Current
 Snapshot operation fixtures pass their existing Core to the executor and retain that same instance when rebuilding App options. Native capture pauses, mutation admission, incomplete-source refusals and recovery remain with their original owners.
 
 Scheduler recovery fixtures give the dormant Worker executor their existing App Core when admitting an Assistant continuation. Unknown delivery, distinct Turn and Session lineage, provider calls and no-redelivery assertions remain with the original recovery and Assistant owners.
+
+The MCP credential-export fixture passes its existing App Core to the dormant deterministic executor. Real tool admission, credential privacy, export bytes, grant refusal and replacement checks retain their original owners; no Worker execution is inferred.
+
+Direct Simulator lifecycle fixtures prepare their original scheduler admission, attempt and Session through existing owners before execution. The missing-setup case supplies only a deliberately invalid unpublished candidate and still proves refusal without Session or Turn binding; it grants no execution authority.
