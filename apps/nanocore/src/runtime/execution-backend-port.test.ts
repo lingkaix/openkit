@@ -87,7 +87,6 @@ async function fixture(
   _placement: 'local' | 'remote' = 'local',
   holdSubmitResponse = false,
   options: {
-    readonly emptyInspectList?: boolean;
     readonly cancelWithoutFence?: boolean;
     readonly lateCreate?: boolean;
   } = {}
@@ -108,7 +107,6 @@ async function fixture(
   const effectCalls: Correlation[] = [];
   const nativeStarts: Correlation[] = [];
   let physicalCapacityAvailable = true;
-  let observed: Observation | null = null;
   let submitted = Promise.withResolvers<void>();
   let lostSubmitHeld = false;
   const submitResponse = Promise.withResolvers<void>();
@@ -121,28 +119,26 @@ async function fixture(
       effectCalls.push(input);
       const result = physicalCapacityAvailable ? disposition : 'not_accepted';
       if (result !== 'not_accepted') nativeStarts.push(input);
-      observed = {
+      const reply = {
         ...input,
         disposition: result,
         execution: result === 'accepted' ? 'pending' : 'unknown',
         fenceRef: null,
         outcomeRef: null,
       };
-      observations.set(input.attemptId, observed);
       // A held external response leaves the real before-call unknown intent open.
+      // Exact inspect stays null until that reply is delivered.
       submitted.resolve();
       if (holdSubmitResponse && !(options.lateCreate && lostSubmitHeld)) {
         lostSubmitHeld = true;
         await submitResponse.promise;
       }
-      return observed;
+      observations.set(input.attemptId, reply);
+      return reply;
     }),
-    inspect: vi.fn(
-      async (input: Correlation): Promise<Observation | null> =>
-        options.emptyInspectList
-          ? ([] as unknown as Observation)
-          : (observations.get(input.attemptId) ?? null)
-    ),
+    inspect: vi.fn(async (input: Correlation): Promise<Observation | null> => {
+      return observations.get(input.attemptId) ?? null;
+    }),
     cancel: vi.fn(
       async (input: Correlation): Promise<Observation> => ({
         ...input,
@@ -327,7 +323,6 @@ async function fixture(
     dispatchInput,
     recoveryInput,
     observe(value: Observation | null) {
-      observed = value;
       const subject = value?.attemptId ?? effectCalls[0]?.attemptId;
       if (subject) observations.set(subject, value);
     },
@@ -1095,10 +1090,9 @@ describe('execution backend port through real Core coordination', () => {
     }
   });
 
-  it('keeps a lost submit unknown and closing after an empty inspect list, a fenceless kill ack, and a late create on another thread', async () => {
+  it('keeps a lost submit unknown and closing after a null inspect, a fenceless kill ack, and a late create on another thread', async () => {
     const f = await fixture('accepted', 'local', true, {
       cancelWithoutFence: true,
-      emptyInspectList: true,
       lateCreate: true,
     });
     try {
@@ -1128,7 +1122,11 @@ describe('execution backend port through real Core coordination', () => {
       const inspectResults = await Promise.all(
         f.port.inspect.mock.results.map((result) => result.value)
       );
-      expect(inspectResults).toContainEqual([]);
+      const originalInspects = f.port.inspect.mock.calls
+        .map((call, index) => ({ input: call[0], result: inspectResults[index] }))
+        .filter((item) => item.input?.attemptId === original.attemptId);
+      expect(originalInspects.length).toBeGreaterThan(0);
+      for (const item of originalInspects) expect(item.result).toBeNull();
       const afterKill = attempts(f.db).find((row) => row.attempt_id === original.attemptId)!;
       expect(afterKill).toMatchObject({
         attempt_id: original.attemptId,
