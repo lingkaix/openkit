@@ -21,6 +21,7 @@ import {
   responsibleUserIdForActor,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   parseHarnessResultBody,
@@ -4494,15 +4495,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       session,
       {
         credentialBinding: binding,
-        relativePath: createHash('sha256')
-          .update(JSON.stringify([binding.declarationId, planId, receiptId]))
-          .digest('hex'),
+        relativePath: credentialBindingAddress(binding.declarationId, planId, receiptId),
         slot: 'runtime-credential',
         entryKind: 'file',
         executable: false,
         body,
         byteLength: body.length,
-        contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+        contentDigest: `sha256:${sha256Hex(body)}`,
       },
       recheckAuthority
     );
@@ -4620,11 +4619,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
       if (!original || original.vaultReferenceId !== reference.referenceId)
         throw new Error('Original credential binding lineage is unavailable.');
-      const address = createHash('sha256')
-        .update(JSON.stringify([input.binding.declarationId, original.planId, original.receiptId]))
-        .digest('hex');
-      const invocation = createHash('sha256').update(input.binding.receiptId).digest('hex');
-      const predecessor = createHash('sha256').update(input.expectedReceiptId).digest('hex');
+      const address = credentialBindingAddress(
+        input.binding.declarationId,
+        original.planId,
+        original.receiptId
+      );
+      const invocation = sha256Hex(input.binding.receiptId);
+      const predecessor = sha256Hex(input.expectedReceiptId);
       const current = assertCurrentWorkerCredentialAuthority(
         this.coreDb,
         session.environmentPackage,
@@ -4675,7 +4676,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           executable: false,
           body,
           byteLength: body.length,
-          contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+          contentDigest: `sha256:${sha256Hex(body)}`,
         },
         recheckAuthority
       );
@@ -8227,6 +8228,15 @@ function nanoHostRuntimeCredentialBindings(
       return workerCredentialFileBinding(credential);
     })
   );
+}
+
+/** Preserves the exact ordered delivery identity for both initial import and replacement. */
+function credentialBindingAddress(
+  declarationId: string,
+  planId: string,
+  receiptId: string
+): string {
+  return sha256Hex(JSON.stringify([declarationId, planId, receiptId]));
 }
 
 /** Hashes only the exact inputs that decide physical Sandbox reuse. */

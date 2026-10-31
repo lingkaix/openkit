@@ -238,8 +238,7 @@ export function createVaultOperationImplementations(
           : null;
       const responsibleHumanId =
         taskContext?.responsibleUserId ?? responsibleUserIdForActor(context.actorRef);
-      if (!responsibleHumanId)
-        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      if (!responsibleHumanId) vaultWorkspaceAccessDenied();
       const workerPackage =
         context.kind === 'worker'
           ? requireAgentEnvironmentPackageSnapshot(
@@ -418,12 +417,10 @@ export function createVaultOperationImplementations(
         },
       };
       ownDecision = await interception.decide(interceptionInput);
-      if (ownDecision.result !== 'allow')
-        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      if (ownDecision.result !== 'allow') vaultWorkspaceAccessDenied();
       const recheckAuthority = async () => {
         await context.recheckAdmission!();
-        if (!interceptionInput.stillCurrent())
-          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        if (!interceptionInput.stillCurrent()) vaultWorkspaceAccessDenied();
       };
       await recheckAuthority();
       const result = await run(recheckAuthority);
@@ -534,7 +531,7 @@ export function createVaultOperationImplementations(
             target.responsibleUserId !== goal.responsibleUserId ||
             target.taskThreadId !== input.bindingThreadId
           )
-            throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+            vaultWorkspaceAccessDenied();
         }
         const currentPlan = getVaultInjectionPlan(coreDb, input.planId);
         const grant = currentPlan?.grantId ? getVaultGrant(coreDb, currentPlan.grantId) : null;
@@ -1550,8 +1547,7 @@ export function createVaultOperationImplementations(
           404
         );
       }
-      if (reference.workspaceId !== workspaceId)
-        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+      if (reference.workspaceId !== workspaceId) vaultWorkspaceAccessDenied();
       if (reference.ownerScope !== 'workspace' || reference.workspaceId !== workspaceId) {
         return vaultFailure(
           'Workspace vault reference not found.',
@@ -1799,6 +1795,11 @@ function projectReference(reference: NonNullable<ReturnType<typeof getVaultRefer
     status,
     workspaceId,
   } as VaultAdminWorkspaceReference;
+}
+
+/** Uses the existing Vault failure owner for every non-enumerating Workspace access refusal. */
+function vaultWorkspaceAccessDenied(): never {
+  vaultFailure('Workspace access denied.', 'workspace_access_denied', 403);
 }
 
 /** Publishes only fixed Vault refusal fields; backend causes stay inside their existing safe boundary. */
