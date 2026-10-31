@@ -97,7 +97,7 @@ async function fixture(history = false, withPending = true, pendingCount = 1) {
           const requestId = randomUUID();
           pendingIds.push(requestId);
           pendingId ??= requestId;
-          await raiseRecordedPendingRequest(store, db.sqlite, {
+          const admitted = await raiseRecordedPendingRequest(store, db.sqlite, {
             requestId,
             workspaceId,
             threadId: DEMO_THREAD_ID,
@@ -108,7 +108,7 @@ async function fixture(history = false, withPending = true, pendingCount = 1) {
             responsibleUserId: ownerId,
             governedIntent: {
               operation: 'fixture.effect',
-              input: 'Never replay this captured request',
+              input: `Never replay captured effect ${index + 1}`,
             },
             approval: {
               kind: 'destructive-action',
@@ -117,6 +117,7 @@ async function fixture(history = false, withPending = true, pendingCount = 1) {
             },
             now: new Date().toISOString(),
           });
+          expect(admitted.requestId).toBe(requestId);
         }
       }
       await startCapabilityCall({
