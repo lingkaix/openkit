@@ -21,6 +21,7 @@ import { workspaceDbPath } from '../storage/fs-layout.js';
 import { readWorkspaceKnowledgeDerivedIndexes } from '../storage/index-rebuild.js';
 import { DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './demo-store.js';
 import { createTestStore } from './store.js';
+import { readTestWorkspaceNotebookSelection } from './workspace-notebook.js';
 
 const workspaceIds = [DEMO_WORKSPACE_ID, 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28'];
 const roots: string[] = [];
@@ -179,7 +180,13 @@ describe('shared black-box demo fixture contract', () => {
       });
       expect(KnowledgeBaseIdSchema.safeParse(binding).success).toBe(true);
       bindings.set(workspaceId, binding);
-      const source = readWorkspaceNotebookIndexSource(join(root, 'workspaces', workspaceId));
+      const source = readWorkspaceNotebookIndexSource(
+        join(root, 'workspaces', workspaceId),
+        undefined,
+        undefined,
+        undefined,
+        readTestWorkspaceNotebookSelection(root, workspaceId)
+      );
       publications.set(workspaceId, source);
       expect(indexes.validation.notebookRevision).toBe(source.notebookRevision);
       expect(indexes.validation.records.map((record) => record.conceptId)).toEqual(
@@ -216,9 +223,15 @@ describe('shared black-box demo fixture contract', () => {
           scope: { kind: 'workspace', workspaceId },
         })
       ).toBe(bindings.get(workspaceId));
-      expect(readWorkspaceNotebookIndexSource(join(root, 'workspaces', workspaceId))).toEqual(
-        publications.get(workspaceId)
-      );
+      expect(
+        readWorkspaceNotebookIndexSource(
+          join(root, 'workspaces', workspaceId),
+          undefined,
+          undefined,
+          undefined,
+          readTestWorkspaceNotebookSelection(root, workspaceId)
+        )
+      ).toEqual(publications.get(workspaceId));
       expect(
         readWorkspaceKnowledgeDerivedIndexes({ dataRoot: root, workspaceId }).validation
           .notebookRevision
