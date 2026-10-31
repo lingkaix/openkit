@@ -137,7 +137,11 @@ import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } fr
 import { coreDbPath, workspaceDbPath } from './fs-layout.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import { applyNativeScopeMigrations } from './migrate.js';
-import { applyControlWorkObservation } from './work-observations.js';
+import {
+  applyControlWorkObservation,
+  type ControlWorkObservationInput,
+  prepareControlWorkObservationCommand,
+} from './work-observations.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 
 if (isMainThread || parentPort === null) {
@@ -200,6 +204,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
   readonly preparedRecoveryHistory?: PreparedControlRecoveryHistory | undefined;
   readonly preparedRecoverySafety?: PreparedControlRecoverySafety | undefined;
+  readonly preparedObservation?: ControlWorkObservationInput | undefined;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
   readonly preparedDirectories?: readonly string[];
   readonly preparedPublications?: readonly string[];
@@ -1420,7 +1425,12 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'observation') {
             if (!owner.productOwner || !owner.scopeDb) throw new ControlProductPreconditionError();
-            const result = applyControlWorkObservation(sqlite, owner.productOwner, request.input);
+            if (!request.preparedObservation) throw new ControlProductPreconditionError();
+            const result = applyControlWorkObservation(
+              sqlite,
+              owner.productOwner,
+              request.preparedObservation
+            );
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -1955,6 +1965,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedTerminal: PreparedControlTerminal | undefined;
           let preparedRecoveryHistory: PreparedControlRecoveryHistory | undefined;
           let preparedRecoverySafety: PreparedControlRecoverySafety | undefined;
+          let preparedObservation: ControlWorkObservationInput | undefined;
           try {
             if (value.operation === 'pending' && !value.input.terminal) {
               if (!owner.productOwner) throw new ControlProductPreconditionError();
@@ -1968,11 +1979,25 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             }
             // Canonical-dependent preparation observes its admitted predecessor's committed state.
             if (
-              ['terminal', 'publication', 'pending', 'goal', 'item', 'event'].includes(
-                value.operation
-              )
+              [
+                'terminal',
+                'publication',
+                'pending',
+                'goal',
+                'item',
+                'event',
+                'observation',
+              ].includes(value.operation)
             )
               await prepareAfterPredecessors(owner, queued, earlier);
+            if (value.operation === 'observation') {
+              if (!owner.scopeDb) throw new ControlProductPreconditionError();
+              preparedObservation = prepareControlWorkObservationCommand(
+                owner.scopeDb,
+                value.input,
+                value.content
+              );
+            }
             if (value.operation === 'recovery-history') {
               await prepareAfterPredecessors(owner, queued, earlier);
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
@@ -2166,6 +2191,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedTerminal,
               preparedRecoverySafety,
               preparedRecoveryHistory,
+              preparedObservation,
               preparedMaterial,
               preparedCapability,
               preparedDirectories: [...newDirectories.directories],

@@ -1,5 +1,7 @@
 # NanoCore Source
 
+WorkBody ordinary publication and Worker chunk staging use the existing native observation preparation FIFO. The native owner verifies exact binary bytes and the retained declaration, synchronizes evidence files, and independently commits collected or promoted evidence before its publication-reference transaction acknowledges. Main keeps an admitted readonly Workspace handle; original Core receipts follow the native acknowledgement. Existing binary and physical-capacity accounts cover chunk descriptors and possible final adoption; failed publication preserves a durable prefix, and expired content is never recreated.
+
 Kernel discovery exposes the shared fixed admission limits and supported operations. Native revision refusals carry expected and current revisions, and validation refusals identify the relevant input path. These metadata fields add no operation or authority.
 
 Kernel record count and rows share one SQLite read transaction. The Kernel owner checks complete logical mutation input and projected responses against its fixed byte ceilings; mutation projections are checked inside the existing transaction, and expanded meaning responses reuse that same response check.

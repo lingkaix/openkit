@@ -22,13 +22,11 @@ import {
   type WorkerObservationData,
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
-import { stageWorkObservationChunk, workObservationBodyBundleId } from '../evidence-bundles.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import {
   appendWorkObservation,
+  appendWorkObservationChunk,
   readWorkObservations,
   readWorkObservationTurnBinding,
   type WorkObservationDraft,
@@ -400,7 +398,7 @@ async function recordWorkerObservation(
   )
     return;
   const { lineage } = event;
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
+  const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, lineage.workspaceId);
   const owner = { threadId: lineage.threadId, turnId: lineage.turnId };
   const id = workerObservationRecordId(lineage.packageSnapshotId, event.event.data.observationId);
   /** Validate native source evidence and reserve expected unit bytes through existing records. */
@@ -523,7 +521,6 @@ async function recordWorkerObservation(
       throw new Error('Native Turn log collection bound exceeded.');
   };
   try {
-    applyScopedMigrations(workspaceDb);
     const binding = readWorkObservationTurnBinding(workspaceDb, owner);
     if (!binding.coverage)
       throw new Error('recovery_required: observation capture binding is missing');
@@ -616,49 +613,21 @@ async function recordWorkerObservation(
     const bytes = Buffer.from(chunk.data, 'base64');
     if (bytes.toString('base64') !== chunk.data)
       throw new Error('Observation chunk encoding is not canonical');
-    const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-      `workspace:${workspaceDb.sqlite.name}`
+    await appendWorkObservationChunk(
+      workspaceDb,
+      {
+        ...owner,
+        chunk: {
+          observationId: id,
+          totalBytes: expected.bytes,
+          byteLength: bytes.byteLength,
+          chunkIndex: chunk.chunkIndex,
+          byteOffset: chunk.byteOffset,
+          replay,
+        },
+      },
+      bytes
     );
-    let staged: ReturnType<typeof stageWorkObservationChunk>;
-    try {
-      staged = stageWorkObservationChunk(workspaceDb, {
-        ...owner,
-        bundleId: workObservationBodyBundleId(
-          lineage.workspaceId,
-          owner.threadId,
-          owner.turnId,
-          id,
-          'content'
-        ),
-        createdAt: initial.ts,
-        sha256: expected.sha256.replace(/^sha256:/, ''),
-        totalBytes: expected.bytes,
-        chunkCount: expected.chunkCount,
-        chunkIndex: chunk.chunkIndex,
-        byteOffset: chunk.byteOffset,
-        bytes,
-      });
-    } finally {
-      resume();
-    }
-
-    if (staged.state === 'expired' && !replay)
-      throw new Error('Expired observation evidence cannot accept new content');
-    if (staged.state === 'complete') {
-      const { v: _v, seq: _seq, turnId: _turnId, ...observation } = initial;
-      await appendWorkObservation(workspaceDb, {
-        ...owner,
-        observation,
-        bodies: [
-          {
-            id: 'content',
-            bytes: staged.bytes,
-            mediaType: expected.mediaType,
-            boundary: expected.boundary,
-          },
-        ],
-      });
-    }
   } finally {
     workspaceDb.sqlite.close();
   }

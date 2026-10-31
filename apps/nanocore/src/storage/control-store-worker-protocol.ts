@@ -88,14 +88,15 @@ import type {
 } from './control-store-recovery.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
-  type ControlWorkObservationInput,
+  ControlWorkObservationChunkInputSchema,
+  type ControlWorkObservationCommandInput,
   ControlWorkObservationInputSchema,
   type ControlWorkObservationResult,
   parseWorkObservationRecord,
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 21;
+export const CONTROL_WORKER_VERSION = 22;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -182,7 +183,11 @@ export type ControlWorkerCommand =
       | { readonly operation: 'event'; readonly input: ControlEventAppend }
       | { readonly operation: 'publication'; readonly input: ControlPublicationInput }
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
-      | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
+      | {
+          readonly operation: 'observation';
+          readonly input: ControlWorkObservationCommandInput;
+          readonly content?: ArrayBuffer;
+        }
       | {
           readonly operation: 'capability';
           readonly input: ControlCapabilityWireInput;
@@ -233,7 +238,11 @@ export function controlWorkerInputBytes(
         // Scalar/Material binary and range echo share one reservation; other backing is counted.
         if (
           command.operation !== 'material' &&
-          !(command.operation === 'capability' && key === 'content' && this === command)
+          !(
+            (command.operation === 'capability' || command.operation === 'observation') &&
+            key === 'content' &&
+            this === command
+          )
         )
           binaryBytes +=
             original instanceof ArrayBuffer ? original.byteLength : original.buffer.byteLength;
@@ -756,6 +765,22 @@ export function controlMaterialTransferSize(
   };
 }
 
+/** Charges exact transferred WorkBody bytes within the existing per-database binary budget. */
+export function controlWorkObservationTransferSize(
+  input: ControlWorkObservationCommandInput
+): number | undefined {
+  if (input === null || typeof input !== 'object') return undefined;
+  if ('chunk' in input)
+    return ControlWorkObservationChunkInputSchema.safeParse(input).success
+      ? input.chunk.byteLength
+      : undefined;
+  if (!ControlWorkObservationInputSchema.safeParse(input).success) return undefined;
+  const bytes = input.publishBodies ? input.bodies.reduce((sum, body) => sum + body.bytes, 0) : 0;
+  return Number.isSafeInteger(bytes) && bytes <= CONTROL_WORKER_LIMITS.materialPendingBytes
+    ? bytes
+    : undefined;
+}
+
 /**
  * Validates the complete effect-bearing request before posting and again before native admission.
  *
@@ -935,12 +960,24 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'observation') {
+    if (!exactFields(value, [...scoped, 'input'], ['content'])) return false;
+    const bytes = controlWorkObservationTransferSize(
+      value.input as ControlWorkObservationCommandInput
+    );
+    return (
+      bytes !== undefined &&
+      (value.content === undefined
+        ? bytes === 0
+        : controlMaterialArrayBufferByteLength(value.content) === bytes) &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  }
   if (
     value.operation === 'publication' ||
     value.operation === 'pending' ||
     value.operation === 'journal' ||
     value.operation === 'project-cleanup' ||
-    value.operation === 'observation' ||
     value.operation === 'goal' ||
     value.operation === 'maintenance' ||
     value.operation === 'review' ||

@@ -96,13 +96,14 @@ import {
   type ControlWorkerRequest,
   controlMaterialTransferSize,
   controlWorkerInputBytes,
+  controlWorkObservationTransferSize,
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
 import type { WorkspaceDb } from './db.js';
 import type {
-  ControlWorkObservationInput,
+  ControlWorkObservationCommandInput,
   ControlWorkObservationResult,
 } from './work-observations.js';
 import { nativeProductScope } from './workspace-file-records.js';
@@ -504,17 +505,32 @@ class ControlStoreWorkerClient {
         },
       });
       const contentRoot =
-        command.operation === 'open'
-          ? command.contentMount?.root
-          : opening?.command.contentMount?.root;
+        command.operation === 'observation'
+          ? join(dirname(dirname(path)), 'evidence', 'backend')
+          : command.operation === 'open'
+            ? command.contentMount?.root
+            : opening?.command.contentMount?.root;
       // Content may be a separate mount. Same-device forecasts still join the same pool.
+      const observationGrowth =
+        command.operation === 'observation' && 'chunk' in command.input
+          ? BigInt(command.input.chunk.totalBytes) +
+            BigInt(
+              Buffer.byteLength(
+                JSON.stringify({
+                  byteOffset: command.input.chunk.byteOffset,
+                  bytes: command.input.chunk.byteLength,
+                  sha256: '0'.repeat(64),
+                })
+              )
+            )
+          : 0n;
       reservations.push(
         admission.forPath(contentRoot ?? path).reserve(
           {
             stagingBytes: stagingBytes + BigInt(inputBytes) + BigInt(materialBytes),
             extractionBytes: 0n,
             derivativeBytes: 0n,
-            publicationBytes: 0n,
+            publicationBytes: observationGrowth,
           },
           priority
         )
@@ -615,6 +631,21 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Counts the same Turn's accepted preparation and direct native observation slots once. */
+  private pendingTurnPublications(key: string): number {
+    const [physical, turn] = JSON.parse(key) as [string, string];
+    let count = this.turnTails.get(key)?.pending ?? 0;
+    for (const entry of this.pending.values())
+      if (
+        entry.counted &&
+        entry.command.operation === 'observation' &&
+        this.openings.get(entry.command.database)?.path === physical &&
+        entry.command.input.turnId === turn
+      )
+        count += 1;
+    return count;
+  }
+
   /** Owns JSON input before same-Turn head capture through ACK; only an exact terminal Item borrows its invocation credit. */
   async runTurnPublication<I, T>(
     database: string,
@@ -648,8 +679,7 @@ class ControlStoreWorkerClient {
     if (
       !closeout &&
       keys.some(
-        (key) =>
-          (this.turnTails.get(key)?.pending ?? 0) >= CONTROL_WORKER_LIMITS.pendingTurnTransitions
+        (key) => this.pendingTurnPublications(key) >= CONTROL_WORKER_LIMITS.pendingTurnTransitions
       )
     )
       throw new ControlStoreWorkerError('busy', 'not-committed');
@@ -1292,12 +1322,13 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'project-cleanup' }>).result;
   }
 
-  /** Appends native observation order and publication metadata; independently published body bytes are not carried through SQL. */
+  /** Prepares exact WorkBody bytes in the native owner before its covering SQL acknowledgement. */
   async observation(
     database: string,
-    input: ControlWorkObservationInput
+    input: ControlWorkObservationCommandInput,
+    bodies?: readonly Uint8Array[]
   ): Promise<ControlWorkObservationResult> {
-    const reply = await this.request({ operation: 'observation', database, input });
+    const reply = await this.request({ operation: 'observation', database, input }, bodies);
     return (reply as Extract<Success, { operation: 'observation' }>).result;
   }
 
@@ -1723,7 +1754,7 @@ class ControlStoreWorkerClient {
   /** Bounds all scoped messages BEFORE cloning/posting, including native-thread stalls. */
   private request(
     command: ControlWorkerCommand,
-    materialParts?: readonly string[],
+    materialParts?: readonly (string | Uint8Array)[],
     target?: WriterHost,
     deferPost = false,
     recovery?: ControlFrozenNativeCall
@@ -1776,9 +1807,14 @@ class ControlStoreWorkerClient {
         new ControlStoreWorkerError(host ? 'unavailable' : 'not-open', 'not-committed')
       );
     if (
-      database !== undefined &&
-      (this.outstanding.get(database) ?? 0) - (borrowed ? 1 : 0) >=
-        CONTROL_WORKER_LIMITS.pendingTransitions
+      (database !== undefined &&
+        (this.outstanding.get(database) ?? 0) - (borrowed ? 1 : 0) >=
+          CONTROL_WORKER_LIMITS.pendingTransitions) ||
+      (command.operation === 'observation' &&
+        opening &&
+        !borrowed &&
+        this.pendingTurnPublications(JSON.stringify([opening.path, command.input.turnId])) >=
+          CONTROL_WORKER_LIMITS.pendingTurnTransitions)
     ) {
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
     }
@@ -1804,15 +1840,21 @@ class ControlStoreWorkerClient {
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
     let materialBytes = 0;
     let posted = command;
-    if (command.operation === 'material' || command.operation === 'capability') {
+    if (
+      command.operation === 'material' ||
+      command.operation === 'capability' ||
+      command.operation === 'observation'
+    ) {
       const size =
         command.operation === 'material'
           ? controlMaterialTransferSize(command.input)
-          : {
-              byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
-              replyByteLength: 0,
-            };
-      if (!size)
+          : command.operation === 'observation'
+            ? { byteLength: controlWorkObservationTransferSize(command.input), replyByteLength: 0 }
+            : {
+                byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
+                replyByteLength: 0,
+              };
+      if (!size || size.byteLength === undefined)
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       materialBytes = size.byteLength + size.replyByteLength;
       if (
@@ -1829,6 +1871,15 @@ class ControlStoreWorkerClient {
         const content = new ArrayBuffer(size.byteLength);
         let offset = 0;
         for (const text of materialParts) {
+          if (text instanceof Uint8Array) {
+            if (text.byteLength > size.byteLength - offset)
+              return Promise.reject(
+                new ControlStoreWorkerError('invalid-request', 'not-committed')
+              );
+            new Uint8Array(content, offset, text.byteLength).set(text);
+            offset += text.byteLength;
+            continue;
+          }
           const encoded = new TextEncoder().encodeInto(text, new Uint8Array(content, offset));
           if (encoded.read !== text.length)
             return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));

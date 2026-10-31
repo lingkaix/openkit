@@ -20,7 +20,11 @@ import {
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import { retainWorkObservationBody, workObservationBodyBundleId } from '../evidence-bundles.js';
+import {
+  retainWorkObservationBody,
+  stageWorkObservationChunk,
+  workObservationBodyBundleId,
+} from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { ControlProductOwner } from './control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
@@ -457,22 +461,18 @@ export async function appendWorkObservation(
   const expected = await client.observation(database, { ...prepared, publishBodies: false });
   if (!prepared.publishBodies)
     return { disposition: expected.disposition, observation: expected.observation };
-  const resume =
-    workspaceDb.scope === 'workspace' ? await client.pauseForDataRootBackup(database) : undefined;
-  let published: ControlWorkObservationInput;
-  try {
-    published = publishControlWorkObservationBodies(workspaceDb, input);
-  } finally {
-    resume?.();
-  }
-  const result = await client.observation(database, published);
+  const result = await client.observation(
+    database,
+    prepared,
+    input.bodies.map((body) => body.bytes)
+  );
   return { disposition: expected.disposition, observation: result.observation };
 }
 
 /** Exact immutable body identity prepared before the native SQL transition. */
 export type WorkObservationBodyDescriptor = z.infer<typeof bodyDescriptorSchema>;
 
-/** SQL-only input; body bytes and publication effects never enter the database worker. */
+/** SQL-only prepared input; the native preparation owns body publication before this transition. */
 export interface ControlWorkObservationInput {
   readonly threadId: string;
   readonly turnId: string;
@@ -510,6 +510,60 @@ export const ControlWorkObservationInputSchema = controlObservationSelectorSchem
     publishBodies: z.boolean().optional(),
   })
   .strict();
+
+/** Trusted chunk carriage; the native owner rechecks it against the original durable declaration. */
+export const ControlWorkObservationChunkInputSchema = controlObservationSelectorSchema
+  .extend({
+    chunk: z
+      .object({
+        observationId: z.string().min(1),
+        totalBytes: z
+          .number()
+          .int()
+          .min(0)
+          .max(16 * 1024 * 1024),
+        byteLength: z
+          .number()
+          .int()
+          .min(0)
+          .max(48 * 1024),
+        chunkIndex: z.number().int().nonnegative(),
+        byteOffset: z.number().int().nonnegative(),
+        replay: z.boolean(),
+      })
+      .strict(),
+  })
+  .strict();
+
+/** Existing observation command, with either complete body descriptors or an original chunk selector. */
+export type ControlWorkObservationCommandInput =
+  | ControlWorkObservationInput
+  | z.infer<typeof ControlWorkObservationChunkInputSchema>;
+
+/** Publishes one admitted chunk through the same native preparation and covering acknowledgement. */
+export async function appendWorkObservationChunk(
+  workspaceDb: WorkspaceDb,
+  input: z.infer<typeof ControlWorkObservationChunkInputSchema>,
+  bytes: Uint8Array
+): Promise<void> {
+  if (workspaceDb.sqlite.inTransaction)
+    throw new Error('Observation submission cannot span a Main transaction');
+  const owner = { kind: 'workspace' as const, workspaceId: workspaceDb.workspaceId };
+  const scope = nativeProductScope(workspaceDb.dataRoot, owner);
+  const { getControlStoreWorkerClient } = await import('./control-store-worker-client.js');
+  const client = getControlStoreWorkerClient();
+  const database = `workspace:${scope.path}`;
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: workspaceDb.dataRoot,
+    create: false,
+    initialize: workspaceDb.scope,
+    productOwner: owner,
+    contentMount: scope.contentMount,
+  });
+  await client.observation(database, input, [bytes]);
+}
 
 /** Native index fields are checked against their frozen retained payload before use. */
 interface ControlObservationRow {
@@ -908,6 +962,91 @@ export function publishControlWorkObservationBodies(
         throw new Error('recovery_required: unpublished body was lawfully expired');
     }
   return prepared;
+}
+
+/** Prepares the complete WorkBody family outside SQL on the existing native scope and FIFO slot. */
+export function prepareControlWorkObservationCommand(
+  db: WorkspaceDb | CoreDb,
+  input: ControlWorkObservationCommandInput,
+  content: ArrayBuffer | undefined
+): ControlWorkObservationInput {
+  if ('chunk' in input) {
+    const parsed = ControlWorkObservationChunkInputSchema.parse(input);
+    if (db.scope !== 'workspace' || (content?.byteLength ?? 0) !== parsed.chunk.byteLength)
+      throw new Error('Invalid native observation chunk');
+    const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+    const binding = readControlWorkObservationTurnBinding(db.sqlite, owner, parsed);
+    if (binding.coverage?.value !== 'on')
+      throw new Error('Observation content is not admitted by this Turn');
+    const initial = readControlWorkObservation(db.sqlite, owner, {
+      ...parsed,
+      id: parsed.chunk.observationId,
+    });
+    if (!initial || initial.type !== 'runtime.observed')
+      throw new Error('Observation content arrived without durable metadata');
+    const declaration = WorkerObservationDataSchema.parse(initial.payload);
+    if (
+      declaration.content.state !== 'expected' ||
+      declaration.content.bytes !== parsed.chunk.totalBytes
+    )
+      throw new Error('Observation has no matching expected content');
+    const expected = declaration.content;
+    const staged = stageWorkObservationChunk(db, {
+      threadId: parsed.threadId,
+      turnId: parsed.turnId,
+      bundleId: workObservationBodyBundleId(
+        db.workspaceId,
+        parsed.threadId,
+        parsed.turnId,
+        initial.id,
+        'content'
+      ),
+      createdAt: initial.ts,
+      sha256: expected.sha256.replace(/^sha256:/, ''),
+      totalBytes: expected.bytes,
+      chunkCount: expected.chunkCount,
+      chunkIndex: parsed.chunk.chunkIndex,
+      byteOffset: parsed.chunk.byteOffset,
+      bytes: new Uint8Array(content ?? new ArrayBuffer(0)),
+    });
+    if (staged.state === 'expired' && !parsed.chunk.replay)
+      throw new Error('Expired observation evidence cannot accept new content');
+    const { v: _v, seq: _seq, turnId: _turnId, ...observation } = initial;
+    const preparation = {
+      threadId: parsed.threadId,
+      turnId: parsed.turnId,
+      observation,
+      bodies:
+        staged.state === 'complete'
+          ? [
+              {
+                id: 'content',
+                bytes: staged.bytes,
+                mediaType: expected.mediaType,
+                boundary: expected.boundary,
+              },
+            ]
+          : [],
+    };
+    return staged.state === 'complete'
+      ? publishControlWorkObservationBodies(db, preparation)
+      : prepareControlWorkObservation(owner, preparation);
+  }
+  if (!input.publishBodies || !input.bodies.length) return input;
+  let offset = 0;
+  const bodies = input.bodies.map((body) => {
+    const bytes = new Uint8Array(content ?? new ArrayBuffer(0), offset, body.bytes);
+    offset += body.bytes;
+    return { ...body, bytes };
+  });
+  if (offset !== (content?.byteLength ?? 0)) throw new Error('Observation body length mismatch');
+  const preparation = { ...input, bodies };
+  const owner: ControlProductOwner =
+    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId };
+  // Recheck the complete immutable declaration before any independently durable file or row effect.
+  if (!isDeepStrictEqual(prepareControlWorkObservation(owner, preparation), input))
+    throw new Error('Observation body declaration mismatch');
+  return publishControlWorkObservationBodies(db, preparation);
 }
 
 /** Builds the known live DTO while retained descriptive rows remain unchanged on replay. */

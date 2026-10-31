@@ -26,7 +26,7 @@ import {
   ControlStoreWorkerError,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
-import { openWorkspaceDb, type WorkspaceDb } from './db.js';
+import { openAdmittedWorkspaceReadDb, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
   appendWorkObservation,
@@ -663,6 +663,65 @@ describe('durable work observations', () => {
       })[0]?.entries[0]?.text
     ).toBeUndefined();
   });
+  it('publishes a large exact body through the native owner while Main has only a readonly Workspace handle', async () => {
+    const f = await fixture();
+    const workspaceId = f.db.workspaceId;
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite.close();
+    const reader = openAdmittedWorkspaceReadDb(f.dataRoot, workspaceId);
+    databases.push(reader);
+    f.db = reader;
+    expect(reader.sqlite.readonly).toBe(true);
+    expect(reader.sqlite.pragma('query_only', { simple: true })).toBe(1);
+
+    const bytes = Buffer.concat([
+      Buffer.alloc(1024 * 1024, 0xa5),
+      Buffer.from([0, 255, 10, 13, 0xe9, 0x9b, 0xaa]),
+    ]);
+    const input = {
+      ...f.owner,
+      observation: model('native-large-body'),
+      bodies: [
+        {
+          id: 'semantic',
+          bytes,
+          mediaType: 'application/octet-stream',
+          boundary: 'test-binary-v1',
+        },
+      ],
+    };
+    const result = await appendWorkObservation(reader, input);
+    expect(result.observation.refs).toBeUndefined();
+    const committed = readWorkObservations(reader, f.owner);
+    expect(committed.map((row) => row.type)).toEqual(['model.observed', 'content.published']);
+    const ref = committed[1]!.refs![0]!;
+    expect(ref.digest).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(
+      readWorkObservationBody(reader, {
+        ...f.owner,
+        bundleId: ref.locator,
+        createdAt: result.observation.ts,
+        sha256: ref.digest!,
+      })
+    ).toEqual(bytes);
+
+    reader.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    const reopened = openAdmittedWorkspaceReadDb(f.dataRoot, workspaceId);
+    databases.push(reopened);
+    f.db = reopened;
+    expect(reopened.sqlite.readonly).toBe(true);
+    expect(reopened.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    expect(readWorkObservations(reopened, f.owner)).toEqual(committed);
+    expect(
+      readWorkObservationBody(reopened, {
+        ...f.owner,
+        bundleId: ref.locator,
+        createdAt: result.observation.ts,
+        sha256: ref.digest!,
+      })
+    ).toEqual(bytes);
+  });
   it.skipIf(process.platform === 'win32').each(['before-publication', 'after-publication'])(
     'preserves the blob/reference boundary after SIGKILL %s and reopen',
     async (boundary) => {
@@ -688,7 +747,7 @@ describe('durable work observations', () => {
       f.db.sqlite.close();
 
       // Exercise the real writers in a process that cannot run database or filesystem cleanup.
-      // The pre-publication stop is after body retention, before submitting the native publication reference.
+      // The actual Worker stops after its independent evidence commit, before the publication reference.
       // SIGKILL removes process state; it does not discard the kernel cache or emulate power loss.
       // A file entry keeps eval-only input-type flags out of the real native Worker's inherited arguments.
       const childPath = join(f.dataRoot, 'observation-crash-child.mjs');
@@ -696,19 +755,49 @@ describe('durable work observations', () => {
         childPath,
         `import fs from 'node:fs';
 const input = JSON.parse(process.argv[2]);
-const { getControlStoreWorkerClient } = await import(input.clientModule);
-const client = getControlStoreWorkerClient();
-const observation = client.observation.bind(client);
-client.observation = async (database, request) => {
-  if (request.publishBodies && input.boundary === 'before-publication') {
-    fs.writeSync(1, 'before-publication');
-    process.kill(process.pid, 'SIGKILL');
-  }
-  return observation(database, request);
-};
-const { openWorkspaceDb } = await import(input.dbModule);
+const { createRequire, syncBuiltinESMExports } = await import('node:module');
+const require = createRequire(input.clientModule);
+if (input.boundary === 'before-publication') {
+  const threads = require('node:worker_threads');
+  const RealWorker = threads.Worker;
+  threads.Worker = class extends RealWorker {
+    constructor(filename, options) {
+      const prelude = \`
+        const { parentPort, workerData } = require('node:worker_threads');
+        const Database = require(workerData.workBodyDatabaseModule);
+        const prepare = Database.prototype.prepare;
+        Database.prototype.prepare = function(sql) {
+          const statement = prepare.call(this, sql);
+          if (/INSERT INTO evidence_bundles/i.test(sql)) {
+            const run = statement.run.bind(statement);
+            statement.run = (...args) => {
+              const result = run(...args);
+              parentPort.postMessage({ workBodyBoundary: true });
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+              return result;
+            };
+          }
+          return statement;
+        };
+      \`;
+      const entry = options?.eval ? String(filename) : 'import(' + JSON.stringify(String(filename)) + ');';
+      super(prelude + entry, {
+        ...options, eval: true,
+        workerData: { ...options?.workerData, workBodyDatabaseModule: require.resolve('better-sqlite3') },
+      });
+      this.on('message', (message) => {
+        if (message.workBodyBoundary) {
+          fs.writeSync(1, 'before-publication');
+          process.kill(process.pid, 'SIGKILL');
+        }
+      });
+    }
+  };
+  syncBuiltinESMExports();
+}
+const { openAdmittedWorkspaceReadDb } = await import(input.dbModule);
 const { appendWorkObservation } = await import(input.observationModule);
-const db = openWorkspaceDb(input.dataRoot, input.workspaceId);
+const db = openAdmittedWorkspaceReadDb(input.dataRoot, input.workspaceId);
 await appendWorkObservation(db, { ...input.owner, observation: input.observation, bodies: [{ ...input.body, bytes: Buffer.from(input.body.bytes) }] });
 fs.writeSync(1, 'after-publication');
 process.kill(process.pid, 'SIGKILL');`
@@ -910,9 +999,9 @@ process.kill(process.pid, 'SIGKILL');`
         },
       ],
     };
-    await expect(appendWorkObservation(f.db, input)).rejects.toThrow(
-      'injected body commit failure'
-    );
+    const refused = appendWorkObservation(f.db, input);
+    await expect(refused).rejects.toBeInstanceOf(ControlStoreWorkerError);
+    await expect(refused).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
     expect(readWorkObservations(f.db, f.owner)).toHaveLength(1);
     expect(readWorkObservations(f.db, f.owner)[0]?.refs).toBeUndefined();
     await shutdownControlStoreWorkerClient();
