@@ -1,27 +1,74 @@
-import { describe, expect, it } from 'vitest';
-import { FsStore } from '../lib/store.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { allocateEntityId, ThreadSchema } from '@openkit/protocol';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
+import { closeTestCoreDb, createTestCoreDb, createTestStore } from '../test-support/store.js';
 import { findAssistantTimeline, openAssistantTimeline } from './assistant-timeline.js';
+
+/** Creates an explicit native fixture root and drains its owners before removal. */
+function createTimelineStore() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-timeline-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(dataRoot);
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const coreDb = createTestCoreDb(dataRoot);
+  try {
+    ensureLocalUser(coreDb);
+  } finally {
+    closeTestCoreDb(coreDb);
+  }
+  return createTestStore({ dataRoot });
+}
 
 describe('Assistant Timeline selection', () => {
   it('keeps the earliest retained conversation as the Timeline without merging or deleting history', async () => {
-    const store = new FsStore();
-    const workspace = await store.createWorkspace('Retained work');
-    const first = await store.createThread(workspace.id, 'Original', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-7d85-8fbd-e6550e949930',
-    });
-    const later = await store.createThread(
-      workspace.id,
-      'Later history',
-      undefined,
-      'conversation',
-      {
+    const store = createTimelineStore();
+    const demo = createDemoWorkspaceForUser('usr_00000000-0000-7d85-8fbd-e6550e949930');
+    const workspace = {
+      ...demo.workspace,
+      name: 'Retained work',
+      kind: 'general' as const,
+      counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+    };
+    const retained = [
+      { name: 'Original', createdAt: '2026-10-15T00:00:00.000Z' },
+      { name: 'Later history', createdAt: '2026-10-15T00:00:01.000Z' },
+    ].map(({ name, createdAt }) =>
+      ThreadSchema.parse({
+        ...demo.thread,
+        id: allocateEntityId('th'),
+        name,
+        preview: name,
+        status: 'active',
+        entryPath: 'conversation',
+        owner: { kind: 'workspace', workspaceId: workspace.id },
+        threadSource: 'conversation',
         visibility: 'private',
         privateOwnerUserId: 'usr_00000000-0000-7d85-8fbd-e6550e949930',
-      }
+        createdAt,
+      })
     );
-    first.createdAt = '2026-10-15T00:00:00.000Z';
-    later.createdAt = '2026-10-15T00:00:01.000Z';
+    await store.importWorkspaceSnapshot({
+      workspace,
+      threads: retained,
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
+      ...notebookImportFixture({ workspaceId: workspace.id, knowledge: [] }),
+    });
+    const first = store.getThread(workspace.id, retained[0]!.id);
+    const later = store.getThread(workspace.id, retained[1]!.id);
     await store.createThread(workspace.id, 'Administration', undefined, 'administration', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-7d85-8fbd-e6550e949930',
@@ -45,7 +92,7 @@ describe('Assistant Timeline selection', () => {
   });
 
   it('preserves an archived Timeline until an explicit Thread update reopens it', async () => {
-    const store = new FsStore();
+    const store = createTimelineStore();
     const workspace = await store.createWorkspace('Archived work');
     const timeline = await openAssistantTimeline(
       store,

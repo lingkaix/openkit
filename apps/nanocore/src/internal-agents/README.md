@@ -37,6 +37,8 @@ Tool results with images retain their exact text/image order and inline bytes in
 
 ## Verification
 
+`assistant-timeline.test.ts` imports retained private conversations through the native snapshot owner and exercises archive and explicit reopen in caller-owned private data roots.
+
 `compacting-context.test.ts` publishes Workspace and Server Items through caller-owned rooted `createTestStore` fixtures. It drains the native owner before removing each root; fake Providers supply only inference output.
 
 Run `internal-agent-loop.test.ts`, `gateway-provider.test.ts`, `profile-resolver.test.ts`, and the focused entry or Coordinator tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).
