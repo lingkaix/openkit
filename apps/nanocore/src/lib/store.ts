@@ -724,7 +724,6 @@ interface TurnStreamState {
   sequence: number;
   events: SseEventEnvelope[];
   listeners: Set<EventListener>;
-  timers: Set<NodeJS.Timeout>;
 }
 
 /** Default admission-time capture pair when no authored switch is on. */
@@ -1300,7 +1299,6 @@ export class FsStore {
         sequence: events.at(-1)?.sequence ?? 0,
         events: [...events],
         listeners: new Set(),
-        timers: new Set(),
       });
     }
   }
@@ -2567,7 +2565,6 @@ export class FsStore {
         sequence: events.at(-1)?.sequence ?? 0,
         events: events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
         listeners: new Set(),
-        timers: new Set(),
       });
     }
     if (this.dataRoot) {
@@ -2716,13 +2713,7 @@ export class FsStore {
       this.turns.delete(turnId);
       this.turnCaptureCoverage.delete(turnId);
       this.turnExecutors.delete(turnId);
-      const stream = this.streams.get(turnId);
-      if (stream) {
-        for (const timer of stream.timers) {
-          clearTimeout(timer);
-        }
-        this.streams.delete(turnId);
-      }
+      this.streams.delete(turnId);
     }
     for (const [itemId, item] of this.items) {
       if (workspaceIdForOwner(item.owner) === workspaceId) {
@@ -3782,11 +3773,11 @@ export class FsStore {
     return result;
   }
 
-  /** Retains only process-local listeners and timers for native Turns admitted by another owner. */
+  /** Retains process-local listeners for native Turns admitted by another owner. */
   private turnStream(turnId: string): TurnStreamState {
     let stream = this.streams.get(turnId);
     if (!stream) {
-      stream = { sequence: 0, events: [], listeners: new Set(), timers: new Set() };
+      stream = { sequence: 0, events: [], listeners: new Set() };
       this.streams.set(turnId, stream);
     }
     return stream;
@@ -4730,7 +4721,6 @@ export class FsStore {
       sequence: 0,
       events: [],
       listeners: new Set(),
-      timers: new Set(),
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
     await this.turnAdmissionHooks?.onAdmitted?.(turn);
@@ -6300,7 +6290,6 @@ export class FsStore {
       sequence: 0,
       events: [],
       listeners: new Set(),
-      timers: new Set(),
     });
     try {
       this.persist(input.workspaceId);
@@ -6606,7 +6595,6 @@ export class FsStore {
         sequence: 0,
         events: [],
         listeners: new Set(),
-        timers: new Set(),
       });
       this.persist(input.workspaceId);
     } catch (error) {
@@ -7334,23 +7322,5 @@ export class FsStore {
     return this.dataRoot
       ? readWorkspaceTurnEvents(this.workspaceRootPath(workspaceIdForOwner(turn.owner)), turn)
       : this.getTurnEvents(turnId);
-  }
-
-  public addTimer(turnId: string, timer: NodeJS.Timeout): void {
-    this.assertTurnPublicationAcknowledged(turnId);
-    this.streams.get(turnId)?.timers.add(timer);
-  }
-
-  public clearTimers(turnId: string): void {
-    const timers = this.streams.get(turnId)?.timers;
-
-    if (!timers) {
-      return;
-    }
-
-    for (const timer of timers) {
-      clearTimeout(timer);
-    }
-    timers.clear();
   }
 }
