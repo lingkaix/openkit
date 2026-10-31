@@ -101,7 +101,7 @@ function isWorkerInferenceTool(value: unknown, nested: boolean): boolean {
 function isCanonicalAdditionalToolsId(value: unknown): value is string {
   return (
     typeof value === 'string' &&
-    /^at_[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+    /^at_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
   );
 }
 

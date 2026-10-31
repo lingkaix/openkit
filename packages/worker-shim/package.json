@@ -29,7 +29,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.0-rc.2",
-    "@openai/codex": "0.160.0",
+    "@openai/codex": "0.166.0",
     "@opencode/cli": "2.0.22",
     "@opencode/client": "2.0.22",
     "@types/node": "^25.6.0",

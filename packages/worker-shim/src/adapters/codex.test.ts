@@ -307,7 +307,19 @@ describe('Codex App Server adapter', () => {
     expect(compaction.length).toBeGreaterThan(0);
     for (const request of compaction) {
       const input = request.body.input as Array<Record<string, unknown>>;
-      expect(input[0]?.tools).toEqual([]);
+      const ordinaryInput = requests.find((entry) => entry.kind === 'turn')?.body.input as
+        | Array<Record<string, unknown>>
+        | undefined;
+      // Native compaction retains the original history declaration, including its item identity.
+      expect(input[0]).toMatchObject({
+        type: 'additional_tools',
+        role: 'developer',
+        tools: expect.any(Array),
+      });
+      expect(input[0]?.tools).not.toEqual([]);
+      expect(input[0]).toEqual(ordinaryInput?.[0]);
+      // Prompt.tools is empty; the historical input prefix is a separate native field.
+      expect(request.body).not.toHaveProperty('tools');
       expect(
         input.some((item) => item.type === 'function_call' || item.type === 'custom_tool_call')
       ).toBe(true);
@@ -327,7 +339,12 @@ describe('Codex App Server adapter', () => {
       ]);
       expect(admissionFailures).toEqual([]);
       expect(providerBodies[2]?.input).toEqual(compaction[0]?.body.input);
-      expect(providerBodies[2]?.tools ?? []).toEqual([]);
+      const nativeCompactionInput = compaction[0]?.body.input as
+        | Array<Record<string, unknown>>
+        | undefined;
+      // This fixture's namespace and local-tool forms retain their native representation.
+      expect(providerBodies[2]?.tools).toEqual(nativeCompactionInput?.[0]?.tools);
+      expect(providerBodies[2]?.tools).toEqual(providerBodies[0]?.tools);
     }
     for (const body of providerBodies) {
       expect(body).not.toHaveProperty('compaction_trigger');
@@ -351,7 +368,7 @@ describe('Codex App Server adapter', () => {
       {
         ordinal: 0,
         type: 'session_meta',
-        payload: { id: NATIVE_THREAD, history_mode: 'paginated', cli_version: '0.160.0' },
+        payload: { id: NATIVE_THREAD, history_mode: 'paginated', cli_version: '0.166.0' },
       },
       { ordinal: 1, type: 'turn_context', payload: { turn_id: 'controlled-turn' } },
       {
@@ -969,8 +986,12 @@ describe('Codex App Server adapter', () => {
       true
     );
     const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
-    expect(version.stdout).toContain('codex-cli 0.160.0');
+    expect(version.stdout).toContain('codex-cli 0.166.0');
     expect(codexLaunchArguments()[0]).toBe('app-server');
+    expect(codexLaunchArguments()).toContain('model_provider="openkit-worker-inference"');
+    expect(codexLaunchArguments()).toContain(
+      'model_providers.openkit-worker-inference={name="OpenKit worker inference",wire_api="responses",requires_openai_auth=false}'
+    );
     for (const restriction of [
       '--strict-config',
       'plugins',
@@ -1040,7 +1061,12 @@ describe('Codex App Server adapter', () => {
     expect(hooks.data[0]!.errors).toEqual([]);
     expect(hooks.data[0]!.hooks).toHaveLength(2);
     for (const hook of hooks.data[0]!.hooks) {
-      authored += `[hooks.state.${JSON.stringify(hook.key)}]\ntrusted_hash = ${JSON.stringify(hook.currentHash)}\n`;
+      // The pin lists plugin declaration/content hashes together but stores approvals separately.
+      const [declarationHash, contentHash] = hook.currentHash.split('/');
+      authored += `[hooks.state.${JSON.stringify(hook.key)}]\ntrusted_hash = ${JSON.stringify(declarationHash)}\n`;
+      if (contentHash !== undefined) {
+        authored += `trusted_content_hash = ${JSON.stringify(contentHash)}\n`;
+      }
     }
     await discovery.close();
     await writeFile(join(roots.state, 'config.toml'), authored);
@@ -3764,7 +3790,7 @@ describe('round 4 failure boundaries', () => {
     }
   });
 
-  // The pinned TurnCompletedNotification defines commentary, final_answer, and null phase.
+  // The pinned TurnCompletedNotification defines commentary, partial_answer, final_answer, and null phase.
   it.each([
     {
       name: 'terminal commentary before its explicit final answer',
@@ -3811,6 +3837,24 @@ describe('round 4 failure boundaries', () => {
       notificationItems: false,
       items: [],
       expected: { status: 'completed', assistantText: null, stopReason: 'completed' },
+    },
+    {
+      name: 'terminal partial answer before its explicit final answer',
+      notificationItems: false,
+      items: [
+        { id: 'partial', type: 'agentMessage', phase: 'partial_answer', text: 'Partial answer.' },
+        { id: 'final', type: 'agentMessage', phase: 'final_answer', text: 'Final answer.' },
+      ],
+      expected: { status: 'completed', assistantText: 'Final answer.', stopReason: 'completed' },
+    },
+    {
+      name: 'item-notification partial answer before its explicit final answer',
+      notificationItems: true,
+      items: [
+        { id: 'partial', type: 'agentMessage', phase: 'partial_answer', text: 'Partial answer.' },
+        { id: 'final', type: 'agentMessage', phase: 'final_answer', text: 'Final answer.' },
+      ],
+      expected: { status: 'completed', assistantText: 'Final answer.', stopReason: 'completed' },
     },
     {
       name: 'contradictory multiple explicit final answers',
@@ -4817,7 +4861,7 @@ it.each([
     runtimeCapture: {
       ...input.runtimeCapture,
       captureCoverage: { scope: 'task', value: 'on' },
-      ...{ nativeLogMaxBytes: 7, authoredVersion: '0.160.0' },
+      ...{ nativeLogMaxBytes: 7, authoredVersion: '0.166.0' },
       emit: async (record, body) => {
         received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
       },

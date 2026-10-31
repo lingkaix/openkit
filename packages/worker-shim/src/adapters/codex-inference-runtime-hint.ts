@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { WorkerInferenceRuntimeHintMapping } from '../adapter-registry.js';
 
 /** Pinned Codex sub-agent classifications retained without adapter-private labels. */
@@ -14,7 +15,7 @@ const MAX_RUNTIME_HINT_LENGTH = 16 * 1024;
 const CODEX_TURN_METADATA_KEY = 'x-codex-turn-metadata';
 
 /**
- * Reads and cross-checks the pinned Codex 0.160.0 Responses metadata and its native projections.
+ * Reads and cross-checks the pinned Codex 0.166.0 Responses metadata and its native projections.
  *
  * The returned object is intentionally ephemeral.
  * Callers must consume it before shared provider dispatch and must not persist it or forward its raw values upstream.
@@ -43,17 +44,23 @@ function readCodexInferenceRuntimeHint(
   }
 
   const canonical = readBoundedString(clientMetadata[CODEX_TURN_METADATA_KEY]);
-  if (headers.get(CODEX_TURN_METADATA_KEY) !== canonical) {
-    throw invalidRuntimeHint();
-  }
+  const projected = readBoundedString(headers.get(CODEX_TURN_METADATA_KEY));
 
   let parsed: unknown;
+  let headerMetadata: unknown;
   try {
     parsed = JSON.parse(canonical) as unknown;
+    headerMetadata = JSON.parse(projected) as unknown;
   } catch {
     throw invalidRuntimeHint();
   }
-  if (!isRecord(parsed)) {
+  if (!isRecord(parsed) || !isRecord(headerMetadata)) {
+    throw invalidRuntimeHint();
+  }
+  // Codex 0.166 omits its tool inventory from the header; every other field must agree.
+  const headerProjection = { ...parsed };
+  delete headerProjection.tool_namespaces_info;
+  if (!isDeepStrictEqual(headerMetadata, headerProjection)) {
     throw invalidRuntimeHint();
   }
 
@@ -247,7 +254,7 @@ function invalidRuntimeHint(): Error {
   return new Error('Worker inference runtime hint is invalid.');
 }
 
-/** Codex 0.160.0 native inference fields consumed before the generic Core boundary. */
+/** Codex 0.166.0 native inference fields consumed before the generic Core boundary. */
 export const codexInferenceRuntimeHintMapping: WorkerInferenceRuntimeHintMapping = {
   headers: [
     'session-id',

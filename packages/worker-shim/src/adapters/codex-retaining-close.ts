@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 
-/** Native 0.160.0 context marker omitted from thread/read after a requested interruption. */
+/** Native 0.166.0 context marker omitted from thread/read after a requested interruption. */
 const INTERRUPTED_CONTEXT =
   '<turn_aborted>\nThe user interrupted the previous turn on purpose. Any running unified exec processes may still be running in the background. If any tools/commands were aborted, they may have partially executed.\n</turn_aborted>';
 
@@ -45,7 +45,7 @@ export async function readCodexCloseRollout(path: string, threadId: string): Pro
       meta?.type !== 'session_meta' ||
       meta.payload?.id !== threadId ||
       meta.payload?.history_mode !== 'paginated' ||
-      meta.payload?.cli_version !== '0.160.0'
+      meta.payload?.cli_version !== '0.166.0'
     )
       throw new Error('Codex retained close history mode or identity is unqualified.');
     let worldStateReady = false;
