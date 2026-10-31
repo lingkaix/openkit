@@ -449,7 +449,7 @@ export function readWorkspaceDashboard(input: {
       .sort((left, right) => compareCodeUnits(right.updatedAt, left.updatedAt));
     const snapshot = runtimeConfigManager.current();
     const providerCount = snapshot.providerRegistry.list().length;
-    const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId);
+    const defaultAgentId = resolveDefaultAgentId(snapshot, workspaceId, actor.userId);
     const workspaceArtifacts = listOutputArtifacts(
       store,
       coreDb,
@@ -592,7 +592,11 @@ export function readThreadDashboard(input: {
     });
   }
   const latestTurn = turns.at(-1) ?? null;
-  const defaultAgentId = resolveDefaultAgentId(runtimeConfigManager.current(), workspaceId);
+  const defaultAgentId = resolveDefaultAgentId(
+    runtimeConfigManager.current(),
+    workspaceId,
+    actor.userId
+  );
   const selectedAgentId = latestTurn ? (latestTurn.agentId ?? null) : defaultAgentId;
   const threadArtifacts = listOutputArtifacts(
     store,

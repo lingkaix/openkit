@@ -1,9 +1,14 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { applyEdits, modify } from 'jsonc-parser';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from './config/runtime-config.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { readPendingRequest, validateCanonicalLoad } from './runtime/pending-requests.js';
@@ -11,6 +16,7 @@ import { closeWorkspaceProductReadHandles } from './storage/control-store-produc
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -19,6 +25,90 @@ import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('workspace dashboard app API', () => {
+  it('projects the authenticated User Agent preference in Workspace and empty-Thread dashboards', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-dashboard-user-preference-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb?.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = await createDemoStore({ dataRoot });
+    coreDb = openCoreDb(dataRoot);
+    ensureLocalUser(coreDb);
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: FIXTURE_LOCAL_USER_ID, workspaceId });
+    const serverAgent = 'agent_server';
+    const workspaceAgent = 'agent_workspace';
+    const userAgent = 'agent_user';
+    const serverPath = join(dataRoot, 'config', 'server.jsonc');
+    const workspacePath = join(dataRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
+    const userPath = join(dataRoot, 'users', FIXTURE_LOCAL_USER_ID, 'config', 'user.jsonc');
+    const workspaceSource = readFileSync(workspacePath, 'utf8');
+    writeFileSync(
+      workspacePath,
+      applyEdits(
+        workspaceSource,
+        modify(workspaceSource, ['workspace', 'defaultAgentId'], workspaceAgent, {})
+      )
+    );
+    for (const [path, config] of [
+      [serverPath, { schemaVersion: 1, defaults: { defaultAgentId: serverAgent } }],
+      [userPath, { schemaVersion: 1, workspaces: [{ workspaceId, agentId: userAgent }] }],
+    ] as const) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(config));
+    }
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      openKitConfig: JSON.parse(readFileSync(serverPath, 'utf8')),
+      agentManifests: [serverAgent, workspaceAgent, userAgent].map(
+        (agentId) => createTestAgentSetup({ agentId }).manifest
+      ),
+      workspaceConfigs: [
+        {
+          workspaceId,
+          path: workspacePath,
+          config: JSON.parse(readFileSync(workspacePath, 'utf8')),
+        },
+      ],
+      userConfigs: [
+        {
+          userId: FIXTURE_LOCAL_USER_ID,
+          path: userPath,
+          config: JSON.parse(readFileSync(userPath, 'utf8')),
+        },
+      ],
+    });
+    const runtimeConfigManager = createRuntimeConfigManager({
+      dataRoot,
+      initialSnapshot: snapshot,
+    });
+    const app = createApp({ store, coreDb, runtimeConfigManager });
+    const workspaceResponse = await app.request(
+      ...operationRequest('workspace.dashboard', { workspaceId })
+    );
+    expect(workspaceResponse.status).toBe(200);
+    expect
+      .soft(await workspaceResponse.json())
+      .toMatchObject({ defaultContext: { agentId: userAgent } });
+    const thread = await store.createThread(workspaceId, 'No assigned Turn');
+    expect(store.listThreadTurns(workspaceId, thread.id)).toEqual([]);
+    const threadResponse = await app.request(
+      ...operationRequest('thread.dashboard', { workspaceId, threadId: thread.id })
+    );
+    expect(threadResponse.status).toBe(200);
+    const body = await threadResponse.json();
+    expect(body.viewerUserId).toBe(FIXTURE_LOCAL_USER_ID);
+    expect.soft(body).toMatchObject({
+      turns: [],
+      composer: { defaultAgentId: userAgent },
+      workStatus: { selectedAgentId: userAgent },
+    });
+    expect(store.listThreadTurns(workspaceId, thread.id)).toEqual([]);
+  });
+
   it('returns aggregate workspace status and default execution context', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-dashboard-'));
     let coreDb: ReturnType<typeof openCoreDb> | undefined;
