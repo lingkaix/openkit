@@ -66,7 +66,7 @@ For R3, the proposed qualification distinguishes actual receiver receipts, scope
 
 Only the paper mechanism-by-platform matrix has been completed. It examined retention, mediation, execution lifetime, storage, Gateway, telemetry, Knowledge and product workflows. Its conclusions are design evidence, not provider qualification.
 
-The following fake-backend cases are proposed and have not been executed as neutrality validation:
+On commit 8ac177e13a2fb23c63e8344fd6d6aa40f8256899, the lost-submit case and the provider-mutation retry passed; the executor-replacement case stays NOT EXPRESSIBLE, and the withheld-identity and stale-tool-call cases stay PROD-SUSPECT. The cases are:
 
 - Lose a submit reply, return an empty list, acknowledge kill and allow a late create. Expect unknown/closing, no replay or conflicting reattachment, and healthy sibling progress.
 - Preserve an external session across executor replacement. Expect exact native-owner identity and fresh authority, without transcript reconstruction.
