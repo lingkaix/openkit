@@ -33,6 +33,7 @@ import {
   openControlStoreProductReadHandle,
 } from './control-store-products.js';
 import {
+  bindCoreSqlite,
   bindWorkspaceSqlite,
   type CoreDb,
   openCoreDb,
@@ -250,21 +251,37 @@ export function getCommandRequestRecord(
     return null;
   }
 
-  const db = openCommandRequestDb(dataRoot, owner);
+  // commandRequestKey owns the operation prefix; this selects maintenance, never authority.
+  const workerOwnedKey =
+    (owner.scope === 'core' || owner.scope === 'workspace') &&
+    ([
+      ...CONTROL_NATIVE_RECEIPT_COMMANDS,
+      ...(owner.scope === 'workspace' ? CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS : []),
+    ].some((command) => key.startsWith(`${command}|`)) ||
+      key.startsWith('evaluation.judgement-add|'));
+  if (workerOwnedKey && owner.scope === 'workspace')
+    assertScopeAdmitted(dataRoot, 'workspace', owner.workspaceId);
+  // Native admission already owns migration and pruning. Observation must not open another writer.
+  const reader = workerOwnedKey
+    ? openControlStoreProductReadHandle(
+        path,
+        owner.scope === 'workspace'
+          ? { kind: 'workspace', workspaceId: owner.workspaceId }
+          : { kind: 'server' }
+      )
+    : undefined;
+  const db = reader
+    ? owner.scope === 'workspace'
+      ? bindWorkspaceSqlite(reader.sqlite, dataRoot, owner.workspaceId)
+      : bindCoreSqlite(reader.sqlite, dataRoot)
+    : openCommandRequestDb(dataRoot, owner);
 
   try {
-    // commandRequestKey owns the operation prefix; this selects maintenance, never authority.
-    const workerOwnedKey =
-      (db.scope === 'core' || db.scope === 'workspace') &&
-      ([
-        ...CONTROL_NATIVE_RECEIPT_COMMANDS,
-        ...(db.scope === 'workspace' ? CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS : []),
-      ].some((command) => key.startsWith(`${command}|`)) ||
-        key.startsWith('evaluation.judgement-add|'));
     if (!workerOwnedKey) pruneCommandRequestRecords(db, referenceTime);
     return getCommandRequestRecordFromDb(db, key, referenceTime);
   } finally {
-    db.sqlite.close();
+    if (reader) reader.close();
+    else db.sqlite.close();
   }
 }
 
@@ -469,17 +486,18 @@ export function listCommandRequestRecords(
   }
 
   const records = owners.flatMap((owner) => {
+    if (owner.scope === 'workspace') assertScopeAdmitted(dataRoot, 'workspace', owner.workspaceId);
+    const reader =
+      owner.scope === 'workspace'
+        ? openControlStoreProductReadHandle(workspaceDbPath(dataRoot, owner.workspaceId), {
+            kind: 'workspace',
+            workspaceId: owner.workspaceId,
+          })
+        : undefined;
     const db =
-      workspaceId === undefined
-        ? openCommandRequestDb(dataRoot, owner)
-        : bindWorkspaceSqlite(
-            openControlStoreProductReadHandle(workspaceDbPath(dataRoot, workspaceId), {
-              kind: 'workspace',
-              workspaceId,
-            }).sqlite,
-            dataRoot,
-            workspaceId
-          );
+      reader && owner.scope === 'workspace'
+        ? bindWorkspaceSqlite(reader.sqlite, dataRoot, owner.workspaceId)
+        : openCommandRequestDb(dataRoot, owner);
 
     try {
       return (
@@ -494,7 +512,8 @@ export function listCommandRequestRecords(
         })
         .filter((record) => record.expiresAt > referenceTime);
     } finally {
-      db.sqlite.close();
+      if (reader) reader.close();
+      else db.sqlite.close();
     }
   });
 
