@@ -74,4 +74,6 @@ The following fake-backend cases are proposed and have not been executed as neut
 - Send a stale tool call after a new Turn. Expect current Turn and operation checks to refuse it.
 - Retry a provider mutation. Expect receiver-owned deduplication or proved non-execution before replay.
 
+On branch `q171/cases` before landing, all five cases were executed against the existing fake backend fixtures in `execution-backend-port.test.ts`, `worker-governance-turn-executor.test.ts`, `worker-transcript.test.ts`, and `nanohost-harness-records.test.ts`; each new case passed locally. No open PROD-SUSPECT or NOT EXPRESSIBLE items were recorded for this slice.
+
 Use the existing owner tests and fake backend; add no test harness. Real-platform validation remains separately authorized and requires accounts and reachable ingress. No external run or runtime acceptance is claimed here.

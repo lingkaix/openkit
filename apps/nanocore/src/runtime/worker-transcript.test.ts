@@ -404,6 +404,42 @@ describe('worker transcript product-safe diagnostics', () => {
       )
     ).not.toContain(value);
   });
+
+  it('reports unavailable coverage when native transcript and measured harness identity are withheld', async () => {
+    const fixture = await createTranscriptFixture();
+    const value = 'withheldHarnessIdentity';
+    const payload = credentialItemPayload(
+      fixture,
+      { text: `Reply ${value}` },
+      transcriptCredentialChecks([value])
+    );
+    payload.eventsJsonl = `\n${JSON.stringify({
+      schemaVersion: 1,
+      kind: 'event',
+      sequence: 3,
+      lineage: transcriptLineage(fixture),
+      event: { type: 'worker.heartbeat', data: { status: 'running' } },
+    })}\n`;
+    payload.credentialCheckValues = null;
+    const before = transcriptItemHistory(fixture);
+    const result = await importWorkerTranscript(
+      fixture.store,
+      fixture.environmentPackage,
+      payload,
+      transcriptImportOptions
+    );
+    expect(result.itemIds).toEqual([]);
+    expect(result.artifactIds).toEqual([]);
+    expect(transcriptItemHistory(fixture)).toBe(before);
+    expect(result.diagnostics).toEqual([
+      {
+        code: 'worker_transcript_live_event_missing',
+        path: '$.events[2]',
+        message: 'Worker transcript event was not accepted through live worker control.',
+      },
+    ]);
+    expect(JSON.stringify(result.diagnostics)).not.toContain(value);
+  });
 });
 
 describe('worker transcript Item exact-value admission', () => {

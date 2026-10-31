@@ -2381,6 +2381,67 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(prepareContinuity).toHaveBeenCalledWith(expect.objectContaining({ reuseAllowed: true }));
   });
 
+  it('preserves external session identity across executor replacement with fresh authority and no transcript reconstruction', async () => {
+    const coreDb = openCommitFixtureCore();
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const turn = await createAssignedTurn(
+      store,
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Preserve external session'
+    );
+    const nativeOwnerId = 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6';
+    const currentCompatibilityKey = `sha256:${'a'.repeat(64)}`;
+    await store.createAgentSession({
+      agentId: 'agent_codex_host',
+      createdAt: '2026-08-21T00:00:00.000Z',
+      environmentPackageSnapshotId: 'aepsnap-current-continuity',
+      id: nativeOwnerId,
+      message: null,
+      policySnapshotId: 'worker_turn_launch_policy',
+      sessionCompatibilityKey: currentCompatibilityKey,
+      status: 'idle',
+      threadId: turn.threadId,
+      updatedAt: '2026-08-21T00:00:00.000Z',
+      workspaceId: workspaceIdForOwner(turn.owner),
+      workspaceRoots: [],
+    });
+    await recordNativeResumeFixturePackage(coreDb, store, nativeOwnerId);
+    const collectTranscript = vi.fn(async () => {
+      throw new Error('Transcript reconstruction must not run.');
+    });
+    const backend = new FakeWorkerGovernanceBackend();
+    Object.assign(backend, {
+      collectTranscript,
+      prepareAgentSessionContinuity: vi.fn(async () => 'reusable' as const),
+    });
+    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    Object.assign(executor, {
+      previewAgentSessionCompatibilityKey: () => currentCompatibilityKey,
+    });
+    const freshAgentSessionId = 'as_00000000-0000-70e6-b62c-84b76dd2d61f';
+    const prepared = await executor.prepareAgentSessionForTurn(store, {
+      agentSetup: createTestAgentSetup(),
+      freshAgentSessionId,
+      requestId: 'req-preserve-external-session',
+      turn,
+      turnInput: 'Preserve external session',
+      workspaceRoots: [],
+    });
+    expect(prepared).toMatchObject({
+      agentSessionId: nativeOwnerId,
+      replacementRequired: false,
+      sessionCompatibilityKey: currentCompatibilityKey,
+    });
+    expect(prepared.agentSessionId).not.toBe(freshAgentSessionId);
+    expect(collectTranscript).not.toHaveBeenCalled();
+  });
+
   it('previews a fresh target before closing runtime-incompatible continuity', async () => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
