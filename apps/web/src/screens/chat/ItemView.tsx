@@ -333,13 +333,21 @@ export function ItemView({
       const meta = item.summary[0] ?? 'Thinking through the task';
       const detailParts =
         item.summary.length > 1 ? [...item.summary, ...item.content] : [...item.content];
+      const detailPartKeys = (() => {
+        const occurrences = new Map<string, number>();
+        return detailParts.map((part) => {
+          const ordinal = occurrences.get(part) ?? 0;
+          occurrences.set(part, ordinal + 1);
+          return ordinal === 0 ? `${item.id}:${part}` : `${item.id}:${part}@${ordinal}`;
+        });
+      })();
       return (
         <ItemCard kind="neutral" title="Reasoning" meta={meta}>
           {detailParts.length > 0 ? (
             <details className="mt-2">
               <summary>Full reasoning</summary>
               {detailParts.map((part, index) => (
-                <p key={index} className="whitespace-pre-wrap">
+                <p key={detailPartKeys[index]} className="whitespace-pre-wrap">
                   {part}
                 </p>
               ))}
