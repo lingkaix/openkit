@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
+import { constants } from 'node:fs';
 import { type FileHandle, link, lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ContentReferenceSchema } from '@openkit/protocol';
 import {
@@ -20,6 +20,7 @@ import {
   type ControlProductOwner,
   inlineControlContentBytes,
 } from './control-store-products.js';
+import { readImmutableContentBytes } from './immutable-content-read.js';
 import {
   ensureCanonicalDirectoryAsync,
   syncCanonicalDirectoryAsync,
@@ -337,42 +338,13 @@ export function readImmutableProductJson(
   content = ControlProductEntrySchema.shape.content.parse(content);
   const inline = inlineControlContentBytes(owner, content);
   if (inline) return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(inline));
-  const reference = ContentReferenceSchema.parse(content.reference);
-  if (
-    reference.range !== null ||
-    reference.availability !== 'available' ||
-    reference.knowledgeBaseId !== mount.knowledgeBaseId ||
-    reference.locator.mount !== mount.mount ||
-    !isDeepStrictEqual(reference.locator.ownerScope, owner) ||
-    !Number.isSafeInteger(content.byteLength) ||
-    content.byteLength < 0 ||
-    content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes
-  )
-    throw new Error('Control product immutable binding is recovery_required.');
-  const root = realpathSync(mount.root);
-  if (root !== resolve(mount.root))
-    throw new Error('Control product immutable mount is recovery_required.');
-  const path = resolve(root, reference.locator.path);
-  const rel = relative(root, path);
-  if (
-    !rel ||
-    rel.startsWith('..') ||
-    isAbsolute(rel) ||
-    realpathSync(dirname(path)) !== dirname(path)
-  )
-    throw new Error('Control product immutable path is recovery_required.');
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size !== content.byteLength)
-      throw new Error('Control product immutable size is recovery_required.');
-    const bytes = readFileSync(fd);
-    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== reference.contentDigest)
-      throw new Error('Control product immutable digest is recovery_required.');
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  } finally {
-    closeSync(fd);
-  }
+  const bytes = readImmutableContentBytes(
+    mount,
+    owner,
+    content,
+    CONTROL_PRODUCT_LIMITS.payloadBytes
+  );
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
 }
 
 /** Verifies and synchronizes an existing digest winner; equal naming alone is not proof. */
