@@ -3,8 +3,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  type AgentEnvironmentPackage,
+  AgentEnvironmentPackageSchema,
+} from '@openkit/config-schema';
+import {
   type WorkerCanonicalEventRecord,
   WorkerCanonicalEventRecordSchema,
+  type WorkerCapabilityCallSummary,
   type WorkerLineage,
   WorkerObservationDataSchema,
 } from '@openkit/worker-protocol';
@@ -33,7 +38,11 @@ import {
   getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
 } from './worker-backend-sessions.js';
-import { WorkerControlGateway } from './worker-control-gateway.js';
+import {
+  WorkerControlGateway,
+  type WorkerControlGatewayError,
+  type WorkerControlLineage,
+} from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
   createWorkerControlAcceptedRecordRecorder,
@@ -1051,7 +1060,7 @@ it.each([
 it.each([
   'off',
   'unavailable',
-] as const)('RET-2 a sole native %s observation cannot project collecting, partial or progress', async (state) => {
+] as const)('Q171 compute neutrality case 3: withhold native transcript or measured harness identity — sole native %s observation stays unavailable and not complete', async (state) => {
   const f = await nativeReceiver(state === 'off' ? 'off' : 'on');
   const value = nativeMetadata(f, 'sole-source', Buffer.alloc(0));
   const observation = {
@@ -1077,6 +1086,98 @@ it.each([
   expect(activity[0]!.entries).toEqual([]);
   expect(nativeBodies(f)).toEqual([]);
   expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
+});
+
+async function createNeutralityCase4ControlFixture(suffix: string): Promise<{
+  environmentPackage: AgentEnvironmentPackage;
+  lineage: WorkerControlLineage;
+}> {
+  const store = await createDemoStore({});
+  const turn = await store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Control worker',
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    null,
+    { turnId: testEntityId('tu', `tu_control_${suffix}`) }
+  );
+  const agentSetup = createTestAgentSetup({ adapter: 'codex' });
+  agentSetup.manifest.runtime.version = '0.153.4';
+  const environmentPackage = resolveAgentEnvironmentPackage({
+    captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
+    agentSetup,
+    agentSessionId: testEntityId('as', `as_control_${suffix}`),
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    backend: { kind: 'openshell' },
+    createdAt: '2026-06-16T00:00:00.000Z',
+    requestId: `req_control_${suffix}`,
+    turn,
+    workspaceCwd: '/workspace/repo',
+    workspaceRoots: [],
+  });
+  return {
+    environmentPackage: AgentEnvironmentPackageSchema.parse(environmentPackage),
+    lineage: {
+      agentSessionId: testEntityId('as', `as_control_${suffix}`),
+      packageSnapshotId: environmentPackage.snapshotId,
+      requestId: `req_control_${suffix}`,
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: turn.id,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    },
+  };
+}
+
+function createNeutralityCase4CapabilitySummary(
+  lineage: WorkerControlLineage,
+  sequence: number
+): WorkerCapabilityCallSummary {
+  return {
+    capabilityCallId: testEntityId('cap', 'capability_1'),
+    diagnostics: [],
+    family: 'knowledge.search',
+    inputSummary: 'Search project knowledge.',
+    lineage,
+    outputSummary: 'Returned one entry.',
+    schemaVersion: 1,
+    sequence,
+    status: 'succeeded',
+  };
+}
+
+it('Q171 compute neutrality case 4: refuses a stale tool capability summary after a new Turn is admitted', async () => {
+  const first = await createNeutralityCase4ControlFixture('neutrality-case4-first');
+  const second = await createNeutralityCase4ControlFixture('neutrality-case4-second');
+  let tokenSerial = 0;
+  const gateway = new WorkerControlGateway({
+    createToken: () => `token_neutrality_case4_${++tokenSerial}`,
+  });
+  gateway.registerSession(first.environmentPackage);
+  const secondRegistration = gateway.registerSession(second.environmentPackage);
+  const authorization = `Bearer ${secondRegistration.token}`;
+  gateway.recordHeartbeat({
+    authorization,
+    body: { status: 'running' },
+    lineage: second.lineage,
+    operation: 'heartbeat',
+    schemaVersion: 2,
+    sequence: 1,
+  });
+  expect(() =>
+    gateway.recordCapabilitySummary({
+      authorization,
+      lineage: second.lineage,
+      summary: createNeutralityCase4CapabilitySummary(first.lineage, 2),
+    })
+  ).toThrowError(
+    expect.objectContaining({
+      code: 'worker_control_lineage_mismatch',
+      status: 403,
+    }) as WorkerControlGatewayError
+  );
+  expect(
+    gateway.getSessionSnapshot(second.environmentPackage.snapshotId)?.capabilitySummaries
+  ).toEqual([]);
 });
 
 // RET §Native Transcripts And Runtime Logs: a truncated prefix is incomplete; Web §Runtime Activity In The Thread Timeline: partial capture stays partial.

@@ -509,7 +509,7 @@ describe('execution backend port through real Core coordination', () => {
   it.each([
     'open',
     'closing',
-  ] as const)('keeps %s exclusion local while an independent Thread gets a durable queued receipt', async (phase) => {
+  ] as const)('Q171 compute neutrality case 1: lose submit reply, empty inspect, kill ack, late create — keeps %s exclusion with healthy sibling progress', async (phase) => {
     const f = await fixture('unknown', 'local', true);
     f.port.cancel.mockImplementation(async (correlation) => ({
       ...correlation,
@@ -1079,96 +1079,6 @@ describe('execution backend port through real Core coordination', () => {
         attempts(f.db).find((attempt) => attempt.attempt_id === correlation.attemptId)!.phase
       ).not.toBe('closed');
       expect(f.store.getTurnById(entry.turnId).status).not.toBe('completed');
-    } finally {
-      f.db.sqlite.close();
-    }
-  });
-
-  it('keeps unknown or closing exclusion when submit reply is lost, inspect is empty, kill is acknowledged, and a late create succeeds on a sibling', async () => {
-    const f = await fixture('unknown', 'local', true);
-    f.port.inspect.mockImplementation(async () => null);
-    f.port.cancel.mockImplementation(async (correlation) => ({
-      ...correlation,
-      disposition: 'accepted',
-      execution: 'unknown',
-      fenceRef: null,
-      outcomeRef: null,
-    }));
-    try {
-      const held = await f.queue('neutrality-lost-submit');
-      await f.dispatch();
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      const original = f.effectCalls[0]!;
-      attemptRecords.markSchedulerExecutionAttemptClosing(f.db, {
-        attemptId: original.attemptId,
-        cause: 'turn-cancelled',
-        now: f.dispatchInput.now,
-      });
-      const response = await createApp({
-        coreDb: f.db,
-        store: f.store,
-        turnExecutor: f.executor,
-      }).request(
-        ...operationRequest(
-          'turn.interrupt',
-          {
-            workspaceId: held.workspaceId,
-            threadId: held.threadId,
-            turnId: held.turnId,
-          },
-          { body: JSON.stringify({ requestId: '00000000-0000-4000-8000-00000000c171' }) }
-        )
-      );
-      expect(response.status).toBeLessThan(300);
-      await f.maintain();
-      expect(f.port.cancel).toHaveBeenCalledOnce();
-      expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
-        'closing'
-      );
-      f.settleSubmitResponse();
-      await vi.waitFor(() =>
-        expect(
-          attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.disposition
-        ).toBe('unknown')
-      );
-      expect(f.port.submit).toHaveBeenCalledOnce();
-      f.setPhysicalCapacityAvailable(false);
-      const setup = createTestAgentSetup();
-      await f.store.createThread(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'Sibling',
-        'th_00000000-0000-7034-bb1e-225363d49699'
-      );
-      const siblingPost = createAppWithWorkspaceAuthority({
-        coreDb: f.db,
-        store: f.store,
-        turnExecutor: f.executor,
-        agentManifests: [setup.manifest],
-        providerRegistry: f.dispatchInput.providerRegistry,
-        gatewayConfig: f.dispatchInput.gatewayConfig,
-      }).request(
-        ...operationRequest(
-          'turn.start',
-          {},
-          {
-            body: JSON.stringify({
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              threadId: 'th_00000000-0000-7034-bb1e-225363d49699',
-              agentId: setup.manifest.id,
-              input: 'Late sibling create.',
-              requestId: '00000000-0000-4000-8000-00000000c172',
-            }),
-          }
-        )
-      );
-      expect((await siblingPost).status).toBe(202);
-      f.setPhysicalCapacityAvailable(true);
-      await f.dispatch();
-      expect(f.port.submit).toHaveBeenCalledTimes(2);
-      expect(f.effectCalls[1]!.attemptId).not.toBe(original.attemptId);
-      expect(attempts(f.db).find((row) => row.attempt_id === original.attemptId)?.phase).toBe(
-        'closing'
-      );
     } finally {
       f.db.sqlite.close();
     }

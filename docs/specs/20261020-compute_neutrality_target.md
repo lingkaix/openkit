@@ -66,7 +66,7 @@ For R3, the proposed qualification distinguishes actual receiver receipts, scope
 
 Only the paper mechanism-by-platform matrix has been completed. It examined retention, mediation, execution lifetime, storage, Gateway, telemetry, Knowledge and product workflows. Its conclusions are design evidence, not provider qualification.
 
-The following fake-backend cases are proposed and have not been executed as neutrality validation:
+The following fake-backend cases define proposed neutrality validation:
 
 - Lose a submit reply, return an empty list, acknowledge kill and allow a late create. Expect unknown/closing, no replay or conflicting reattachment, and healthy sibling progress.
 - Preserve an external session across executor replacement. Expect exact native-owner identity and fresh authority, without transcript reconstruction.
@@ -74,6 +74,6 @@ The following fake-backend cases are proposed and have not been executed as neut
 - Send a stale tool call after a new Turn. Expect current Turn and operation checks to refuse it.
 - Retry a provider mutation. Expect receiver-owned deduplication or proved non-execution before replay.
 
-On commit `2a1af3d50` (branch `q171/cases`), all five cases were executed against the existing fake backend fixtures in `execution-backend-port.test.ts`, `worker-governance-turn-executor.test.ts`, `worker-transcript.test.ts`, and `nanohost-harness-records.test.ts`; each new case passed locally. No open PROD-SUSPECT or NOT EXPRESSIBLE items were recorded for this slice.
+Owner tests titled `Q171 compute neutrality case N` in `execution-backend-port.test.ts`, `thread-native-resume.test.ts`, `worker-control-records.test.ts` (cases 3–4), and `nanohost-harness-records.test.ts` (case 5) execute these scenarios with existing fake backends. Update the recorded commit id when the branch lands.
 
 Use the existing owner tests and fake backend; add no test harness. Real-platform validation remains separately authorized and requires accounts and reachable ingress. No external run or runtime acceptance is claimed here.

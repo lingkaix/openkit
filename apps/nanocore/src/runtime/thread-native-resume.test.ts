@@ -63,7 +63,7 @@ it.each([
     resumes: false,
   },
   {
-    name: 'the same Agent on OpenCode',
+    name: 'the same Agent on OpenCode (Q171 compute neutrality case 2: preserve external session across executor replacement)',
     oldAgentId: 'agent_opencode_server',
     oldAdapter: 'opencode',
     resumes: true,
