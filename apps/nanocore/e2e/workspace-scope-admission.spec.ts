@@ -3,7 +3,12 @@ import { lstat, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
-import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
+import {
+  completeServerBootstrap,
+  type NanoCoreHarness,
+  removeDataRoot,
+  startNanoCoreHarness,
+} from './_lib/harness.js';
 import { cookieHeader, postJson } from './_lib/http.js';
 
 let harness: NanoCoreHarness | null = null;
@@ -38,6 +43,7 @@ it.each([
 
 it('quarantines a server-registered Workspace whose entire directory is absent', async () => {
   harness = await startNanoCoreHarness({ coreMode: 'server' });
+  await completeServerBootstrap(harness);
   const signup = await postJson(`${harness.baseUrl}/api/auth/sign-up/email`, {
     email: 'registered-owner@example.invalid',
     name: 'Registered owner',

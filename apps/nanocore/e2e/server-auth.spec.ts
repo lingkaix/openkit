@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
+import {
+  completeServerBootstrap,
+  type NanoCoreHarness,
+  removeDataRoot,
+  startNanoCoreHarness,
+} from './_lib/harness.js';
 import { cookieHeader, postJson } from './_lib/http.js';
 
 let harness: NanoCoreHarness | null = null;
@@ -17,6 +22,7 @@ afterEach(async () => {
 describe('nanocore e2e server auth', () => {
   it('signs up, signs in, calls protected routes, signs out, and returns typed 401', async () => {
     harness = await startNanoCoreHarness({ coreMode: 'server' });
+    await completeServerBootstrap(harness);
 
     const signUpResponse = await postJson(`${harness.baseUrl}/api/auth/sign-up/email`, {
       email: 'server-auth@example.com',
@@ -64,6 +70,7 @@ describe('nanocore e2e server auth', () => {
 
   it('persists accepted Workspace membership across restart and denies removed members', async () => {
     harness = await startNanoCoreHarness({ coreMode: 'server' });
+    await completeServerBootstrap(harness);
 
     const ownerSignUp = await postJson(`${harness.baseUrl}/api/auth/sign-up/email`, {
       email: 'sharing-owner@example.com',

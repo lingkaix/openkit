@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,6 +95,47 @@ export async function startNanoCoreHarness(
     kill: () => killProcess(child),
     stop: () => stopProcess(child),
   };
+}
+
+/** Completes first-admin setup through the public API using this disposable root's operator emission. */
+export async function completeServerBootstrap(harness: NanoCoreHarness): Promise<void> {
+  const owner = {
+    email: 'bootstrap-owner@example.invalid',
+    name: 'Bootstrap Owner',
+    password: 'password123456',
+  };
+  const signup = await fetch(`${harness.baseUrl}/api/auth/sign-up/email`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(owner),
+  });
+  await signup.body?.cancel();
+  if (signup.status !== 403) {
+    throw new Error(`Pre-bootstrap signup must refuse; received ${signup.status}.`);
+  }
+  const emission = await readFile(
+    join(harness.dataRoot, 'server', 'files', 'auth', 'bootstrap-token.txt'),
+    'utf8'
+  );
+  const token = /^Token: (\S+)$/m.exec(emission)?.[1];
+  if (!token) throw new Error('Disposable server bootstrap emission is unavailable.');
+  const response = await fetch(`${harness.baseUrl}/api/app/operations/bootstrap.consume`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      displayName: owner.name,
+      email: owner.email,
+      ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+      password: owner.password,
+      token,
+      tokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    }),
+  });
+  // The returned administrator bearer is not needed by these ordinary-user scenarios.
+  await response.body?.cancel();
+  if (response.status !== 201) {
+    throw new Error(`Public server bootstrap must succeed; received ${response.status}.`);
+  }
 }
 
 /**

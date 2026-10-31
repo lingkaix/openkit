@@ -3,7 +3,12 @@ import { lstat, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
+import {
+  completeServerBootstrap,
+  type NanoCoreHarness,
+  removeDataRoot,
+  startNanoCoreHarness,
+} from './_lib/harness.js';
 import { cookieHeader, postJson } from './_lib/http.js';
 
 let harness: NanoCoreHarness | null = null;
@@ -50,6 +55,7 @@ describe('nanocore e2e server boot', () => {
     'missing',
   ] as const)('serves a healthy sibling after restart with a %s Workspace database, without replacing authority', async (fault) => {
     harness = await startNanoCoreHarness({ coreMode: 'server' });
+    await completeServerBootstrap(harness);
     const signup = await postJson(`${harness.baseUrl}/api/auth/sign-up/email`, {
       email: 'workspace-owner@example.com',
       name: 'Workspace Owner',

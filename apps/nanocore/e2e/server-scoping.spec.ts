@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
+import {
+  completeServerBootstrap,
+  type NanoCoreHarness,
+  removeDataRoot,
+  startNanoCoreHarness,
+} from './_lib/harness.js';
 import { cookieHeader, postJson } from './_lib/http.js';
 
 let harness: NanoCoreHarness | null = null;
@@ -18,6 +23,7 @@ afterEach(async () => {
 describe('nanocore e2e server workspace scoping', () => {
   it('keeps user-created workspaces scoped to the authenticated user', async () => {
     harness = await startNanoCoreHarness({ coreMode: 'server' });
+    await completeServerBootstrap(harness);
 
     const firstCookie = await signUpAndCookie(harness.baseUrl, 'scope-a@example.com', 'Scope A');
     const secondCookie = await signUpAndCookie(harness.baseUrl, 'scope-b@example.com', 'Scope B');
