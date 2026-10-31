@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ArchivedGitPushRecordSchema } from '@openkit/app-api-schemas';
-import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import { parseWorkspaceExportManifest, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   ArtifactVersionRecordSchema,
   AuditEventSchema,
@@ -67,6 +67,91 @@ import {
 const timestamp = '2026-07-05T00:00:00.000Z';
 const localActor = { kind: 'user', id: LOCAL_USER_ID } as const;
 const workspaceKnowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
+
+it('marks exported Thread semantics before an unsupported reader can admit dependent content', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-semantics-export-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  try {
+    const store = new FsStore({ dataRoot });
+    const workspace = await store.createWorkspace('Portable private Thread');
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+    await store.createThread(workspace.id, 'Private history', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: userId,
+    });
+    const app = createApp({ coreDb, dataRoot, store });
+    const response = await app.request(
+      ...operationRequest('workspace.export', { workspaceId: workspace.id }, { method: 'POST' })
+    );
+    expect(response.status, await response.clone().text()).toBe(200);
+    const { exportId } = (await response.json()) as { exportId: string };
+    const manifest = JSON.parse(
+      readFileSync(
+        join(
+          dataRoot,
+          'server',
+          'exports',
+          'workspaces',
+          workspace.id,
+          exportId,
+          WORKSPACE_EXPORT_MANIFEST_FILE
+        ),
+        'utf8'
+      )
+    );
+    const features = ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'];
+    expect(manifest.requiredFeatures).toEqual(expect.arrayContaining(features));
+    for (const missing of features) {
+      // The real envelope reader has all other capabilities; this one is absent.
+      expect(() =>
+        parseWorkspaceExportManifest(manifest, {
+          supportedFeatures: manifest.requiredFeatures.filter(
+            (feature: string) => feature !== missing
+          ),
+        })
+      ).toThrow(`Unsupported required feature: ${missing}`);
+    }
+    expect(
+      verifyWorkspaceExportTree({
+        exportRoot: join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, exportId),
+      }).manifest.requiredFeatures
+    ).toEqual(manifest.requiredFeatures);
+
+    // A supported manifest cannot authorize unknown semantics on a dependent row.
+    const exportRoot = join(dataRoot, 'server', 'exports', 'workspaces', workspace.id, exportId);
+    const threadPath = join(exportRoot, 'records', 'threads.jsonl');
+    const originalThreads = readFileSync(threadPath, 'utf8').trim().split('\n');
+    expect(originalThreads).toHaveLength(1);
+    const row = JSON.parse(originalThreads[0]!);
+    const threadText = `${JSON.stringify({
+      ...row,
+      requiredFeatures: [...row.requiredFeatures, 'openkit.thread-visibility.future'],
+    })}\n`;
+    writeFileSync(threadPath, threadText);
+    const entry = manifest.contentInventory.find(
+      (candidate: { path: string }) => candidate.path === 'records/threads.jsonl'
+    );
+    if (!entry) throw new Error('Expected native Thread inventory entry.');
+    entry.bytes = Buffer.byteLength(threadText);
+    entry.digest = `sha256:${createHash('sha256').update(threadText).digest('hex')}`;
+    manifest.contentDigest = `sha256:${createHash('sha256')
+      .update(JSON.stringify(manifest.contentInventory))
+      .digest('hex')}`;
+    writeFileSync(
+      join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE),
+      `${JSON.stringify(manifest)}\n`
+    );
+    expect(manifest.requiredFeatures).not.toContain('openkit.thread-visibility.future');
+    expect(() => verifyWorkspaceExportTree({ exportRoot })).toThrow();
+    expect(readFileSync(threadPath, 'utf8')).toBe(threadText);
+  } finally {
+    await getControlStoreWorkerClient().shutdown();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
 
 it.each([
   'export',
@@ -149,6 +234,15 @@ it.each([
       expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM control_threads').get()).toEqual({
         count: 1,
       });
+      // Observe initial native import publication before any later Thread update.
+      const importedThreads = db.sqlite
+        .prepare('SELECT record_json FROM control_threads')
+        .all() as Array<{ record_json: string }>;
+      for (const row of importedThreads) {
+        expect(JSON.parse(row.record_json).requiredFeatures).toEqual(
+          expect.arrayContaining(['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'])
+        );
+      }
       expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM control_turns').get()).toEqual({
         count: 1,
       });
@@ -748,7 +842,12 @@ describe('workspace export verifier', () => {
       id: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(verifyWorkspaceExportTree({ exportRoot: root }).manifest).toMatchObject({
-      requiredFeatures: ['agent.resource-catalog.v1', 'workspace.recurring-triggers.v1'],
+      requiredFeatures: [
+        'agent.resource-catalog.v1',
+        'workspace.recurring-triggers.v1',
+        'openkit.thread-entry.v1',
+        'openkit.thread-visibility.v1',
+      ],
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   });

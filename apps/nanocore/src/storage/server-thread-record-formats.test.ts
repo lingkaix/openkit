@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { allocateEntityId, ServerTurnEventEnvelopeSchema } from '@openkit/protocol';
+import { allocateEntityId, ServerTurnEventEnvelopeSchema, ThreadSchema } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
@@ -153,6 +153,39 @@ async function createServerRetainedFixture() {
 }
 
 describe('native retained Server work formats', () => {
+  it('marks Server Thread entry and audience semantics and reads its own native publication', async () => {
+    const { dataRoot, scope, thread } = await createServerRetainedFixture();
+    const db = new Database(scope.path, { readonly: true, fileMustExist: true });
+    let record: Record<string, unknown>;
+    try {
+      const row = db
+        .prepare('SELECT record_json FROM control_threads WHERE id=?')
+        .get(thread.id) as {
+        record_json: string;
+      };
+      record = JSON.parse(row.record_json) as Record<string, unknown>;
+    } finally {
+      db.close();
+    }
+
+    expect(record.requiredFeatures).toEqual(
+      expect.arrayContaining(['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'])
+    );
+    // The fixture's later Turn legitimately changes preview and updatedAt.
+    // Read the current native projection without losing immutable Thread semantics.
+    const currentThread = ThreadSchema.parse(record);
+    expect(currentThread).toMatchObject({
+      id: thread.id,
+      owner: thread.owner,
+      name: thread.name,
+      entryPath: thread.entryPath,
+      visibility: thread.visibility,
+      createdAt: thread.createdAt,
+    });
+    expect(new FsStore({ dataRoot }).getServerThread(thread.id)).toEqual(currentThread);
+    expect(loadServerThreadRecords(dataRoot).threads).toContainEqual(currentThread);
+  });
+
   it.each(families)('writes %s v1 and retains descriptive additions', async (family) => {
     const fixture = await createServerRetainedFixture();
     const { dataRoot, scope, thread, turn, item } = fixture;

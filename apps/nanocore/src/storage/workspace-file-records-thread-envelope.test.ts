@@ -159,6 +159,39 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
 }
 
 describe('Thread canonical record envelope', () => {
+  it('marks current Thread entry and audience semantics and reads its own native publication', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-required-features-'));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = createTestStore({ dataRoot });
+    const workspace = await store.createWorkspace('Required Thread semantics');
+    const thread = await store.createThread(
+      workspace.id,
+      'Private administration',
+      undefined,
+      'administration',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
+    const persisted = threadRecord(dataRoot, workspace.id, thread.id);
+
+    // Thread visibility/sharing requires these flags before writable discovery.
+    expect(persisted.value.requiredFeatures).toEqual(
+      expect.arrayContaining(['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'])
+    );
+    expect(new FsStore({ dataRoot }).getThread(workspace.id, thread.id)).toEqual(thread);
+    await store.updateThread(workspace.id, thread.id, { name: 'Retained private administration' });
+    const updated = threadRecord(dataRoot, workspace.id, thread.id);
+    expect(updated.value.requiredFeatures).toEqual(persisted.value.requiredFeatures);
+    expect(new FsStore({ dataRoot }).getThread(workspace.id, thread.id)).toMatchObject({
+      entryPath: 'administration',
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+      name: 'Retained private administration',
+    });
+  });
+
   it('retains explicit entry and visibility and rejects unsupported required Thread semantics', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-envelope-'));
     const store = createTestStore({ dataRoot });

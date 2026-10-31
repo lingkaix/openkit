@@ -144,7 +144,6 @@ import {
   StoredWorkspaceQuarantineRecordV1Schema,
   StoredWorkspaceReconciliationRecordV1Schema,
 } from '../runtime/workspace-sync-outcomes-v1.js';
-
 import { parseArtifactVersionDescriptor } from './artifacts/artifact-version-records.js';
 import {
   readPortableJudgements,
@@ -160,6 +159,7 @@ import {
   StoredEventPayloadV1Schema,
   StoredTurnSnapshotV1Schema,
   StoredWorkspaceSnapshotV1Schema,
+  THREAD_REQUIRED_FEATURES,
 } from './retained-work-events-v1.js';
 import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
 import { StoredArtifactV1Schema, StoredTurnV1Schema } from './retained-work-metadata-v1.js';
@@ -5603,7 +5603,11 @@ function readImportJsonl(files: ReadonlyMap<string, string>, exportPath: string)
   const text = requiredExportFile(files, exportPath).trim();
   const records = text ? text.split('\n').map((line) => JSON.parse(line) as unknown) : [];
   return records.map((record, index) => {
-    rejectUnsupportedRecordFeatures(record, `${exportPath}:${index + 1}`);
+    rejectUnsupportedRecordFeatures(
+      record,
+      `${exportPath}:${index + 1}`,
+      exportPath === 'records/threads.jsonl' ? THREAD_REQUIRED_FEATURES : []
+    );
 
     return record;
   });
@@ -5629,9 +5633,14 @@ function readOptionalImportJsonl(
  *
  * @param record Imported raw JSON record.
  * @param exportPath Export-relative path used in diagnostics.
+ * @param supportedFeatures Additional capabilities implemented for this exact record family.
  * @throws Error when `requiredFeatures` is malformed or unsupported.
  */
-function rejectUnsupportedRecordFeatures(record: unknown, exportPath: string): void {
+function rejectUnsupportedRecordFeatures(
+  record: unknown,
+  exportPath: string,
+  supportedFeatures: readonly string[] = []
+): void {
   if (typeof record !== 'object' || record === null || !('requiredFeatures' in record)) {
     return;
   }
@@ -5653,6 +5662,7 @@ function rejectUnsupportedRecordFeatures(record: unknown, exportPath: string): v
   }
 
   const supportedRecordFeatures = new Set([
+    ...supportedFeatures,
     'evidence.bundle.v1',
     'runtime.evidence.v1',
     'worker.runtime-provenance.v1',

@@ -40,6 +40,8 @@ import {
   StoredEventV1Schema,
   StoredThreadSnapshotV1Schema,
   StoredTurnSnapshotV1Schema,
+  THREAD_REQUIRED_FEATURES,
+  ThreadRequiredFeaturesV1Schema,
 } from './retained-work-events-v1.js';
 import { StoredItemPayloadV1Schema, StoredItemV1Schema } from './retained-work-items-v1.js';
 import {
@@ -313,7 +315,9 @@ export function decode(
   if (
     raw.requiredFeatures !== undefined &&
     kind !== 'turn' &&
-    (!Array.isArray(raw.requiredFeatures) || raw.requiredFeatures.length > 0)
+    (kind === 'thread'
+      ? !ThreadRequiredFeaturesV1Schema.safeParse(raw.requiredFeatures).success
+      : !Array.isArray(raw.requiredFeatures) || raw.requiredFeatures.length > 0)
   )
     throw new ControlProductPreconditionError();
   if (isMainThread && kind === 'agent-session' && owner.kind === 'workspace')
@@ -567,6 +571,7 @@ function applyProducts(
         previous.record.requiredFeatures !== undefined
       )
         replacement.requiredFeatures = previous.record.requiredFeatures;
+      if (kind === 'thread') replacement.requiredFeatures = [...THREAD_REQUIRED_FEATURES];
       decode(kind, replacement, owner);
       const columns: Record<string, string | number | null> = {
         id,

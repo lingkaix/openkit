@@ -159,6 +159,15 @@ const ApprovalRequestSchema = z.object({
   resolvedAt: TimestampSchema.nullable(),
 });
 
+/** Thread entry and visibility semantics understood by the current retained writer and readers. */
+export const THREAD_REQUIRED_FEATURES = [
+  'openkit.thread-entry.v1',
+  'openkit.thread-visibility.v1',
+] as const;
+
+/** Required Thread capabilities admitted by the current retained readers. */
+export const ThreadRequiredFeaturesV1Schema = z.array(z.enum(THREAD_REQUIRED_FEATURES));
+
 /** Server-authored product entry that owns one Thread's continuation path. */
 const ThreadEntryPathSchema = z.enum(['conversation', 'administration', 'knowledge-manager']);
 

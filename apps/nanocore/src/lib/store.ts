@@ -217,6 +217,7 @@ import {
 } from '../storage/immutable-content.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { StoredServerEventPayloadV1Schema } from '../storage/retained-server-work-v1.js';
+import { THREAD_REQUIRED_FEATURES } from '../storage/retained-work-events-v1.js';
 import { StoredItemPayloadV1Schema } from '../storage/retained-work-items-v1.js';
 import {
   assertServerItemRevision,
@@ -1912,7 +1913,10 @@ export class FsStore {
             )
             .run(workspaceId, JSON.stringify(workspaceRecord));
           for (const thread of records.threads) {
-            const record = writeRetainedV1(thread);
+            const record = writeRetainedV1({
+              ...thread,
+              requiredFeatures: [...THREAD_REQUIRED_FEATURES],
+            });
             decodeControlProduct('thread', record, scope.owner);
             productDb.sqlite
               .prepare(

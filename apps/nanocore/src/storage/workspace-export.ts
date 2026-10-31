@@ -54,7 +54,11 @@ import {
   readRecurringPortableFiles,
   readRecurringPortableHistory,
 } from './recurring-portable-history.js';
-import { StoredTurnSnapshotV1Schema } from './retained-work-events-v1.js';
+import {
+  StoredTurnSnapshotV1Schema,
+  THREAD_REQUIRED_FEATURES,
+  ThreadRequiredFeaturesV1Schema,
+} from './retained-work-events-v1.js';
 import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
 import {
   isSupportedWorkObservationType,
@@ -471,7 +475,13 @@ export function writeWorkspaceExportTree(
       join(recordsRoot, 'workspace-record.json'),
       writeRetainedV1(projectWorkspaceSystemRecord(history.workspace))
     );
-    writeJsonl(join(recordsRoot, 'threads.jsonl'), history.threads);
+    writeJsonl(
+      join(recordsRoot, 'threads.jsonl'),
+      history.threads.map((thread) => ({
+        ...thread,
+        requiredFeatures: [...THREAD_REQUIRED_FEATURES],
+      }))
+    );
     writeJsonl(
       join(recordsRoot, 'turns.jsonl'),
       history.turns.map((turn) => {
@@ -854,6 +864,7 @@ export function writeWorkspaceExportTree(
     const requiredFeatures: RequiredFeatureId[] = [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
+      ...THREAD_REQUIRED_FEATURES,
     ];
     if (resourcePolicy.statements.length) requiredFeatures.push(WORKSPACE_RESOURCE_POLICY_FEATURE);
     if (
@@ -898,6 +909,7 @@ export function writeWorkspaceExportTree(
       supportedFeatures: [
         WORKSPACE_EXPORT_CATALOG_FEATURE,
         RECURRING_PORTABLE_FEATURE,
+        ...THREAD_REQUIRED_FEATURES,
         WORKSPACE_RESOURCE_POLICY_FEATURE,
         'workspace.generative-kernel.v1',
         'workspace.generative-ui.native-v1',
@@ -1067,6 +1079,7 @@ export function verifyWorkspaceExportTree(
     supportedFeatures: [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
+      ...THREAD_REQUIRED_FEATURES,
       WORKSPACE_RESOURCE_POLICY_FEATURE,
       'workspace.generative-kernel.v1',
       'workspace.generative-ui.native-v1',
@@ -1164,6 +1177,18 @@ export function verifyWorkspaceExportTree(
         throw new Error(`Invalid UTF-8 canonical export file: ${entry.path}`);
       fileContents.set(entry.path, text);
     }
+  }
+  // Check required semantics before Thread payload projections can strip them.
+  for (const row of fileContents.has('records/threads.jsonl')
+    ? readJsonlForVerification(fileContents, 'records/threads.jsonl')
+    : []) {
+    if (
+      row &&
+      typeof row === 'object' &&
+      'requiredFeatures' in row &&
+      !ThreadRequiredFeaturesV1Schema.safeParse(row.requiredFeatures).success
+    )
+      throw new Error('Unsupported required Thread semantics.');
   }
   verifyPortableRetrievalTraceFiles(fileContents, manifest.workspaceId);
   if (hasRecurringFeature) {

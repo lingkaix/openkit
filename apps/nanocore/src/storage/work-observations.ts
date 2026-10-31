@@ -24,7 +24,10 @@ import { retainWorkObservationBody, workObservationBodyBundleId } from '../evide
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { ControlProductOwner } from './control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
-import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
+import {
+  StoredThreadSnapshotV1Schema,
+  ThreadRequiredFeaturesV1Schema,
+} from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 
@@ -576,7 +579,7 @@ export function readControlWorkObservationTurnBinding(
   const turn = readRetainedV1(raw, () => StoredTurnV1Schema.parse(raw));
   if (
     threadRaw.requiredFeatures !== undefined &&
-    (!Array.isArray(threadRaw.requiredFeatures) || threadRaw.requiredFeatures.length !== 0)
+    !ThreadRequiredFeaturesV1Schema.safeParse(threadRaw.requiredFeatures).success
   )
     throw new Error('recovery_required: unsupported required Thread semantics');
   if (
