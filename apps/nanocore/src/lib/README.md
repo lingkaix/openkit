@@ -108,3 +108,5 @@ The target recovery owner may settle only its restored Workspace publication mar
 Artifact history and its producing-Item verification use `storage/artifacts/artifact-version-records.ts`; `artifact-authority.ts` owns the existing typed Artifact refusal and exact public version projection. Store no longer defines either responsibility.
 
 Protocol event request identity is projected once by `../storage/retained-work-events-v1.ts`. Store and runtime producers reuse the same canonical UUID and exact Workspace/Thread mapping without a separate identity rule.
+
+Workspace Review tests bind each Store operand to its scenario's existing Core root before partial Review storage setup. The actual Core authority, durable Review and real filesystem remain the deciding owners; constructing the unused Store input publishes no product Workspace and proves no native write acknowledgement.

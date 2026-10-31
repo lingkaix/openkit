@@ -19,7 +19,6 @@ import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   ensureLocalUser,
@@ -112,6 +111,7 @@ describe('workspace review application', () => {
     await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
 
     const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
+    const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     try {
@@ -160,7 +160,7 @@ describe('workspace review application', () => {
           decision: 'accepted',
           requestId: 'request-workspace-review-disabled-user',
           reviewId,
-          store: new FsStore(),
+          store,
           workspaceDb,
           workspaceId,
         })
@@ -223,6 +223,7 @@ describe('workspace review application', () => {
     await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
 
     const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
+    const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     try {
@@ -286,7 +287,7 @@ describe('workspace review application', () => {
           decision: 'accepted',
           requestId: `request-filesystem-lineage-${suffix}`,
           reviewId,
-          store: new FsStore(),
+          store,
           workspaceDb,
           workspaceId,
         });
@@ -309,7 +310,7 @@ describe('workspace review application', () => {
           decision: 'accepted',
           requestId: `request-filesystem-lineage-${suffix}-retry`,
           reviewId,
-          store: new FsStore(),
+          store,
           workspaceDb,
           workspaceId,
         });
@@ -364,6 +365,7 @@ describe('workspace review application', () => {
     });
     await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
     const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
+    const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
@@ -456,7 +458,7 @@ describe('workspace review application', () => {
         decision: 'accepted',
         requestId: '00000000-0000-4000-8000-000000000052',
         reviewId,
-        store: new FsStore(),
+        store,
         workspaceDb,
         workspaceId,
       });
@@ -473,6 +475,7 @@ describe('workspace review application', () => {
     temporaryRoots.push(dataRoot);
     const item = gitRenameWorkspaceReviewItem();
     const coreDb = openAuthorizedCoreDb(dataRoot, item.review.workspaceId);
+    const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, item.review.workspaceId);
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
@@ -488,7 +491,7 @@ describe('workspace review application', () => {
           decision: 'rejected',
           requestId: 'request-git-discard-missing-repository',
           reviewId: item.review.id,
-          store: new FsStore(),
+          store,
           workspaceDb,
           workspaceId: item.review.workspaceId,
         })
@@ -508,6 +511,7 @@ describe('workspace review application', () => {
     const fallbackReview = gitRenameWorkspaceReviewItem();
     const workspaceId = fallbackReview.review.workspaceId;
     const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
+    const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
@@ -521,7 +525,7 @@ describe('workspace review application', () => {
           decision: 'rejected',
           requestId: 'request-git-fallback-discard',
           reviewId: fallbackReview.review.id,
-          store: await createDemoStore(),
+          store,
           workspaceDb,
           workspaceId,
         })
