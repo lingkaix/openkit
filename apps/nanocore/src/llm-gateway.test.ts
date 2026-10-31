@@ -46,6 +46,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { createTestStore, openTestNativeWorkspace } from './test-support/store.js';
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -415,7 +416,7 @@ describe('OpenAI-compatible agent gateway', () => {
           },
         },
       ]),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (provider, request) => {
           seen.push({ providerId: provider.id, model: request.model });
           return {
@@ -432,7 +433,7 @@ describe('OpenAI-compatible agent gateway', () => {
             ],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -609,7 +610,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async () => {
           throw attachPiAiFailure(
             new OpenAICompatibleProviderError({
@@ -620,7 +621,7 @@ describe('OpenAI-compatible agent gateway', () => {
             })
           ) as OpenAICompatibleProviderError;
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -654,7 +655,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async () => {
           throw attachPiAiFailure(
             new OpenAICompatibleProviderError({
@@ -665,7 +666,7 @@ describe('OpenAI-compatible agent gateway', () => {
             })
           ) as OpenAICompatibleProviderError;
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -700,7 +701,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (_provider, request) => {
           seenRequests.push(request);
 
@@ -718,7 +719,7 @@ describe('OpenAI-compatible agent gateway', () => {
             ],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -1280,7 +1281,7 @@ describe('OpenAI-compatible agent gateway', () => {
         store,
         providerCredentialResolver: providerOptions.providerCredentialResolver,
         runtimeConfigManager,
-        llmPiAiClient: {
+        llmPiAiClient: asPiAiGatewayClientDouble({
           createChatCompletion: async (_provider, request, onUsage) => {
             upstreamCalls += 1;
             onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
@@ -1292,7 +1293,7 @@ describe('OpenAI-compatible agent gateway', () => {
               object: 'chat.completion',
             };
           },
-        } as unknown as PiAiGatewayClient,
+        }),
       });
       revokeOnNextConfigRead = true;
 
@@ -1737,7 +1738,7 @@ describe('OpenAI-compatible agent gateway', () => {
         store,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-          piAiClient: {
+          piAiClient: asPiAiGatewayClientDouble({
             createChatCompletion: async (_provider, request, onUsage) => {
               onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
               return {
@@ -1754,7 +1755,7 @@ describe('OpenAI-compatible agent gateway', () => {
                 object: 'chat.completion',
               };
             },
-          } as unknown as PiAiGatewayClient,
+          }),
         }),
       });
 
@@ -1832,7 +1833,7 @@ describe('OpenAI-compatible agent gateway', () => {
         store,
         ...createAnthropicProviderOptions(),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
-          piAiClient: {
+          piAiClient: asPiAiGatewayClientDouble({
             createChatCompletion: async (_provider, request, onUsage) => {
               onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
               return {
@@ -1849,7 +1850,7 @@ describe('OpenAI-compatible agent gateway', () => {
                 object: 'chat.completion',
               };
             },
-          } as unknown as PiAiGatewayClient,
+          }),
         }),
       });
 
@@ -1906,7 +1907,7 @@ describe('OpenAI-compatible agent gateway', () => {
         }),
         openKitConfig: {},
         providerRegistry: runtimeProviderRegistry(),
-        llmPiAiClient: {
+        llmPiAiClient: asPiAiGatewayClientDouble({
           createChatCompletion: async (_provider, request, onUsage) => {
             const usage = {
               prompt_tokens: 7,
@@ -1930,7 +1931,7 @@ describe('OpenAI-compatible agent gateway', () => {
               usage,
             };
           },
-        } as unknown as PiAiGatewayClient,
+        }),
       });
 
       const res = await app.request('/v1/chat/completions', {
@@ -2763,7 +2764,7 @@ describe('OpenAI-compatible agent gateway', () => {
         gatewayConfig: logicalGatewayConfig(profile),
         openKitConfig: {},
         providerRegistry: new ProviderRegistry([profile]),
-        llmPiAiClient: {
+        llmPiAiClient: asPiAiGatewayClientDouble({
           createChatCompletion: async (provider, request) => {
             seenApiKeys.push(provider.apiKey);
 
@@ -2781,7 +2782,7 @@ describe('OpenAI-compatible agent gateway', () => {
               ],
             };
           },
-        } as unknown as PiAiGatewayClient,
+        }),
         vaultUnlockState,
       });
       const rejected = await app.request('/v1/chat/completions', {
@@ -2866,11 +2867,11 @@ describe('OpenAI-compatible agent gateway', () => {
         gatewayConfig: logicalGatewayConfig(profile),
         openKitConfig: {},
         providerRegistry: new ProviderRegistry([profile]),
-        llmPiAiClient: {
+        llmPiAiClient: asPiAiGatewayClientDouble({
           createChatCompletion: async () => {
             throw new Error('provider should not be called while vault is locked');
           },
-        } as unknown as PiAiGatewayClient,
+        }),
         vaultUnlockState,
       });
 
@@ -2929,13 +2930,13 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletionStream: async (_provider, request) => {
           seenRequests.push(request);
 
           return stream;
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -3151,9 +3152,9 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletionStream: async () => stream,
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -3227,9 +3228,9 @@ describe('OpenAI-compatible agent gateway', () => {
           dataRoot,
           store,
           ...createOllamaProviderOptions(),
-          llmPiAiClient: {
+          llmPiAiClient: asPiAiGatewayClientDouble({
             createChatCompletionStream: async () => stream,
-          } as unknown as PiAiGatewayClient,
+          }),
         });
 
         const res = await app.request('/v1/chat/completions', {
@@ -3326,9 +3327,9 @@ describe('OpenAI-compatible agent gateway', () => {
       const fixtureStore = createTestStore({ dataRoot: storeRoot });
       const app = createApp({
         ...createOllamaProviderOptions(),
-        llmPiAiClient: {
+        llmPiAiClient: asPiAiGatewayClientDouble({
           createChatCompletionStream: async () => stream,
-        } as unknown as PiAiGatewayClient,
+        }),
         store: fixtureStore,
       });
 
@@ -3376,9 +3377,9 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletionStream: async () => stream,
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -3410,7 +3411,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOpenAIProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => ({
           id: 'resp_gateway',
           object: 'response',
@@ -3424,7 +3425,7 @@ describe('OpenAI-compatible agent gateway', () => {
             },
           ],
         }),
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -3690,7 +3691,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOpenAIProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
           seenRequests.push(request);
           return {
@@ -3701,7 +3702,7 @@ describe('OpenAI-compatible agent gateway', () => {
             output: [],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -3737,7 +3738,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (_provider, request) => {
           seenRequests.push(request);
 
@@ -3749,7 +3750,7 @@ describe('OpenAI-compatible agent gateway', () => {
             choices: [],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -3785,7 +3786,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOllamaProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (_provider, request) => {
           seenRequests.push(request);
 
@@ -3797,7 +3798,7 @@ describe('OpenAI-compatible agent gateway', () => {
             choices: [],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -3835,7 +3836,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOpenAIProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
           seenRequests.push(request);
           return {
@@ -3846,7 +3847,7 @@ describe('OpenAI-compatible agent gateway', () => {
             output: [],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 
@@ -3882,7 +3883,7 @@ describe('OpenAI-compatible agent gateway', () => {
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
     const app = createApp({
       ...createOpenAIProviderOptions(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request, onUsage) => {
           const usage = {
             cacheRead: 60,
@@ -3902,7 +3903,7 @@ describe('OpenAI-compatible agent gateway', () => {
             usage,
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       store: fixtureStore,
     });
 

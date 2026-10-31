@@ -11,6 +11,7 @@ import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { asPiAiGatewayClientDouble } from '../test-support/pi-ai-gateway-client-double.js';
 import {
   executeGatewayPlan,
   type GatewayAttemptContext,
@@ -193,7 +194,7 @@ describe('LLMGatewayProviderDispatcher pi-ai routing', () => {
         createResponsesStream: vi.fn(),
       };
       const dispatcher = new LLMGatewayProviderDispatcher({
-        piAiClient: adapterCalls as unknown as PiAiGatewayClient,
+        piAiClient: asPiAiGatewayClientDouble(adapterCalls as Record<string, unknown>),
       });
 
       await expect(invoke(dispatcher)).rejects.toMatchObject({
@@ -446,7 +447,7 @@ describe('LLMGatewayProviderDispatcher subscription routing', () => {
       createResponsesStream: vi.fn(),
     };
     const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: piAiCalls as unknown as PiAiGatewayClient,
+      piAiClient: asPiAiGatewayClientDouble(piAiCalls as Record<string, unknown>),
       providerSubscriptionAccountManager: {
         getPairHandle,
       } as unknown as ProviderSubscriptionAccountManager,
@@ -565,7 +566,7 @@ describe('LLMGatewayProviderDispatcher subscription routing', () => {
       getPairHandle,
     } as unknown as ProviderSubscriptionAccountManager;
     const dispatcher = new LLMGatewayProviderDispatcher({
-      piAiClient: piAiCalls as unknown as PiAiGatewayClient,
+      piAiClient: asPiAiGatewayClientDouble(piAiCalls as Record<string, unknown>),
       providerSubscriptionAccountManager,
     });
     const codex = piProviderConfig({
@@ -630,7 +631,7 @@ describe('LLMGatewayProviderDispatcher cancellation', () => {
   it('forwards one dispatch signal through pi-ai for ordinary and subscription calls', async () => {
     const abortController = new AbortController();
     const seenSignals: Array<AbortSignal | undefined> = [];
-    const piAiClient = {
+    const piAiClient = asPiAiGatewayClientDouble({
       createChatCompletion: async (
         _provider: ResolvedLLMProviderConfig,
         request: OpenAICompatibleChatCompletionRequest,
@@ -667,7 +668,7 @@ describe('LLMGatewayProviderDispatcher cancellation', () => {
           status: 'completed',
         };
       },
-    } as unknown as PiAiGatewayClient;
+    });
     const dispatcher = new LLMGatewayProviderDispatcher({
       piAiClient,
     });

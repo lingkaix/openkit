@@ -46,6 +46,7 @@ import { createDemoStore } from './demo-store.js';
 import { ensureLocalUser } from './local-user.js';
 import { createNativeTaskAdmissionFixture } from './native-task-admission.js';
 import { operationRequest } from './operation-request.js';
+import { asPiAiGatewayClientDouble } from './pi-ai-gateway-client-double.js';
 
 export const STORAGE_REF = 'wst_00000000-0000-7ac8-9f6c-13552db6aa87';
 export const SELECTED_CHOICE = {
@@ -375,7 +376,7 @@ export function taskProposalProvider(input: string, agentId: string) {
           ],
         }
   );
-  return { createResponses, client: { createResponses } as unknown as PiAiGatewayClient };
+  return { createResponses, client: asPiAiGatewayClientDouble({ createResponses }) };
 }
 
 /** Builds the public human answer from the canonical request's exact question identity. */

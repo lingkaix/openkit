@@ -45,6 +45,7 @@ import { knowledgeOperationRequest } from './test-support/knowledge-operation.js
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
@@ -267,7 +268,7 @@ function providerAnswer(text: string, model = 'openai/gpt-5.2') {
 function goalProposalProvider(intent: string) {
   const calls: Array<Parameters<PiAiGatewayClient['createResponses']>[1]> = [];
   let assistantCalls = 0;
-  const client = {
+  const client = asPiAiGatewayClientDouble({
     createResponses: async (
       _provider: unknown,
       request: Parameters<PiAiGatewayClient['createResponses']>[1]
@@ -291,7 +292,7 @@ function goalProposalProvider(intent: string) {
         'The exact Goal intent is ready. No worker work is authorized by a proposal.'
       );
     },
-  } as unknown as PiAiGatewayClient;
+  });
   return { client, calls, assistantCalls: () => assistantCalls };
 }
 
@@ -425,14 +426,14 @@ describe('quick chat app API', () => {
       coreDb,
       store,
       turnExecutor: executor,
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, _request, _onUsage, transport) => {
           calls += 1;
           if (calls > 1) return answer;
           admitted.resolve(transport.signal!);
           return provider.promise;
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     };
     const app = createAppWithWorkspaceAuthority(appOptions);
     const submit = (requestId: string) =>
@@ -649,12 +650,12 @@ describe('quick chat app API', () => {
       coreDb,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, _request, _onUsage, options) => {
           admitted.resolve(options.signal!);
           return provider.promise;
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     const pending = app.request(
       ...operationRequest(
@@ -739,7 +740,7 @@ describe('quick chat app API', () => {
       coreDb,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: { createResponses } as unknown as PiAiGatewayClient,
+      llmPiAiClient: asPiAiGatewayClientDouble({ createResponses }),
     });
     const submit = () =>
       app.request(
@@ -1208,7 +1209,7 @@ describe('quick chat app API', () => {
       dataRoot,
       store: await createDemoStore({ dataRoot }),
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (provider, request) => {
           calls.push({ providerId: provider.id, request });
           return {
@@ -1226,7 +1227,7 @@ describe('quick chat app API', () => {
             ],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -1380,7 +1381,7 @@ describe('quick chat app API', () => {
       coreDb,
       dataRoot,
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
           calls.push(request);
           return {
@@ -1398,7 +1399,7 @@ describe('quick chat app API', () => {
             ],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     };
     const app = createAppWithWorkspaceAuthority({ ...appOptions, store });
     recordWorkspaceOwnerMembership({
@@ -1542,7 +1543,7 @@ describe('quick chat app API', () => {
       dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
           calls.push({ request });
           return {
@@ -1560,7 +1561,7 @@ describe('quick chat app API', () => {
             ],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -1632,7 +1633,7 @@ describe('quick chat app API', () => {
         coreDb,
         store,
         turnExecutor: new ThrowingTurnExecutor(),
-        llmPiAiClient: {
+        llmPiAiClient: asPiAiGatewayClientDouble({
           createResponses: async (_provider, request) => ({
             id: 'chatcmpl_chat_mode_usage',
             object: 'response',
@@ -1648,7 +1649,7 @@ describe('quick chat app API', () => {
             ],
             usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
           }),
-        } as unknown as PiAiGatewayClient,
+        }),
       });
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -1963,7 +1964,7 @@ describe('quick chat app API', () => {
       dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
           providerCalls += 1;
           return {
@@ -1981,7 +1982,7 @@ describe('quick chat app API', () => {
             ],
           };
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
 
     const createRes = await app.request(
@@ -2074,7 +2075,7 @@ describe('quick chat app API', () => {
         coreDb,
         store: await createDemoStore({ dataRoot }),
         turnExecutor: new ThrowingTurnExecutor(),
-        llmPiAiClient: {
+        llmPiAiClient: asPiAiGatewayClientDouble({
           createResponses: async (_provider, request) => {
             const user = request.input.filter((message) => message.role === 'user').at(-1);
             prompts.push(user?.content.map((part) => part.text).join('') ?? '');
@@ -2095,7 +2096,7 @@ describe('quick chat app API', () => {
               ],
             };
           },
-        } as unknown as PiAiGatewayClient,
+        }),
       });
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -2226,7 +2227,7 @@ describe('quick chat app API', () => {
       dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async () =>
           ++modelCalls === 1
             ? {
@@ -2243,7 +2244,7 @@ describe('quick chat app API', () => {
                 ],
               }
             : providerAnswer('The exact work awaits your selection.'),
-      } as unknown as PiAiGatewayClient,
+      }),
     };
     const app = createAppWithWorkspaceAuthority(appOptions);
     const requestId = randomUUID();
@@ -2460,7 +2461,7 @@ describe('quick chat app API', () => {
       dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async () => {
           modelCalls += 1;
           const accepted = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -2471,7 +2472,7 @@ describe('quick chat app API', () => {
           }
           return providerAnswer('Four is the answer.');
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     const actionCenter = await app.request(
       ...operationRequest('attention.list', {
@@ -2559,7 +2560,7 @@ describe('quick chat app API', () => {
       dataRoot,
       store,
       turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: { createResponses: callProvider } as unknown as PiAiGatewayClient,
+      llmPiAiClient: asPiAiGatewayClientDouble({ createResponses: callProvider }),
     };
     const app = createAppWithWorkspaceAuthority(appOptions);
     const requestId = randomUUID();
@@ -3066,7 +3067,7 @@ describe('quick chat app API', () => {
   it('keeps personal shared work eligible but refuses an ordinary Assistant conversation outside the private Timeline', async () => {
     const createResponses = vi.fn(async () => providerAnswer('This answer must not be published.'));
     const fixture = await createTimelineFixture({
-      llmPiAiClient: { createResponses } as unknown as PiAiGatewayClient,
+      llmPiAiClient: asPiAiGatewayClientDouble({ createResponses }),
     });
     const goalResponse = await fixture.app.request(
       ...operationRequest(
@@ -3135,11 +3136,11 @@ describe('quick chat app API', () => {
     onTestFinished(() => diagnostics.mockRestore());
     const privateDiagnostic = randomUUID();
     const fixture = await createTimelineFixture({
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async () => {
           throw new Error(`Provider defect; token=${privateDiagnostic}`);
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     const response = await fixture.submit('Explain a short concept.');
     expect(response.status).toBe(500);
@@ -3171,7 +3172,7 @@ describe('quick chat app API', () => {
   ])('rejects %s before conversation or Provider admission', async (_label, body) => {
     const createResponses = vi.fn();
     const fixture = await createTimelineFixture({
-      llmPiAiClient: { createResponses } as unknown as PiAiGatewayClient,
+      llmPiAiClient: asPiAiGatewayClientDouble({ createResponses }),
     });
     const response = await fixture.app.request(
       ...operationRequest('conversation.submit', fixture.selectors, {
@@ -3188,9 +3189,9 @@ describe('quick chat app API', () => {
 
   it('rejects a missing Assistant answer after durable conversation admission', async () => {
     const fixture = await createTimelineFixture({
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async () => ({ ...providerAnswer(''), output: [] }),
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     const response = await fixture.submit('Explain a short concept.');
     expect(response.status).toBe(502);
@@ -3204,12 +3205,12 @@ describe('quick chat app API', () => {
     const admitted = Promise.withResolvers<void>();
     const provider = Promise.withResolvers<unknown>();
     const fixture = await createTimelineFixture({
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async () => {
           admitted.resolve();
           return provider.promise;
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     vi.useFakeTimers();
     try {
@@ -3233,12 +3234,12 @@ describe('quick chat app API', () => {
   it('uses the configured Provider and cache scope without starting an AgentSession', async () => {
     const requests: Array<Parameters<PiAiGatewayClient['createResponses']>[1]> = [];
     const fixture = await createTimelineFixture({
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
           requests.push(request);
           return providerAnswer('A bounded answer.');
         },
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     const response = await fixture.submit('Explain a short concept.');
     expect(response.status).toBe(200);
@@ -3293,12 +3294,12 @@ describe('quick chat app API', () => {
           secretRef: `vault://${referenceId}`,
         },
       ]),
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (provider) => {
           seenProviders.push({ apiKey: provider.apiKey, id: provider.id });
           return providerAnswer('Vault answer.');
         },
-      } as unknown as PiAiGatewayClient,
+      }),
       vaultUnlockState,
     });
     createVaultReference(fixture.coreDb, {
@@ -3326,12 +3327,12 @@ describe('quick chat app API', () => {
 
   it('records durable Timeline usage with measured Provider and command audit lineage', async () => {
     const fixture = await createTimelineFixture({
-      llmPiAiClient: {
+      llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async () => ({
           ...providerAnswer('Accounted answer.'),
           usage: { input_tokens: 7, output_tokens: 5, total_tokens: 12 },
         }),
-      } as unknown as PiAiGatewayClient,
+      }),
     });
     const requestId = randomUUID();
     const response = await fixture.submit('Explain a short concept.', requestId);
@@ -3412,7 +3413,7 @@ describe('quick chat app API', () => {
         requiredFeatures: [],
       },
       internalRoleProfiles: { schemaVersion: 1, defaultLogicalModelId: null, profiles: [] },
-      llmPiAiClient: { createResponses } as unknown as PiAiGatewayClient,
+      llmPiAiClient: asPiAiGatewayClientDouble({ createResponses }),
     });
     const response = await fixture.submit('Explain a short concept.');
     expect(response.status).toBe(409);

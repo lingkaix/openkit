@@ -24,7 +24,6 @@ import type {
   OpenAICompatibleResponsesRequest,
   OpenAICompatibleResponsesResponse,
 } from './llm/openai-compatible-client.js';
-import type { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
@@ -68,6 +67,7 @@ import {
 } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const privateMarker = 'AMBIENT_PRIVATE_TIMELINE_DETAIL_NOT_SELECTED_FOR_SHARED_WORK';
@@ -147,7 +147,7 @@ async function fixture(
     .spyOn(executor, 'prepareAgentSessionForTurn')
     .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
   const launches = vi.spyOn(executor, 'startTurn');
-  const provider = {
+  const provider = asPiAiGatewayClientDouble({
     createResponses: async (
       _provider: unknown,
       request: OpenAICompatibleResponsesRequest
@@ -169,7 +169,7 @@ async function fixture(
           }
         : answer();
     },
-  } as unknown as PiAiGatewayClient;
+  });
   const makeApp = (ownerStore: FsStore) =>
     createApp({
       coreDb,

@@ -216,8 +216,11 @@ describe('internal Agent Gateway provider', () => {
     await expect(provider({ ...request(), tools: [] })).resolves.toHaveProperty('message.content', [
       { type: 'text', text: 'Ready.' },
     ]);
-    if (reasoningEffort === undefined) expect(payloads[0]).not.toHaveProperty('reasoning');
-    else expect(payloads[0]).toHaveProperty('reasoning.effort', reasoningEffort);
+    // G3 accepted default: OpenKit-originated internal-agent Responses add reasoning.summary auto.
+    expect(payloads[0]).toHaveProperty('reasoning.summary', 'auto');
+    if (reasoningEffort !== undefined) {
+      expect(payloads[0]).toHaveProperty('reasoning.effort', reasoningEffort);
+    }
 
     // Reuse the real dispatcher after the internal call to detect leaked model/options state.
     await dispatcher.createResponses(config, { model: 'grok-4.6', input: 'Unbound call.' });
