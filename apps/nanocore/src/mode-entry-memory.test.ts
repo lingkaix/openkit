@@ -47,7 +47,8 @@ describe('#144 real Assistant command wiring', () => {
       output: [{ type: 'function_call', call_id: id, name, arguments: JSON.stringify(value) }],
       usage: { input_tokens: 7, output_tokens: 2, total_tokens: 9 },
     });
-    f.createResponses
+    const scriptedResponses = vi.fn(f.createResponses.getMockImplementation()!);
+    scriptedResponses
       .mockResolvedValueOnce(
         call('memory_tell', { content: 'I prefer green labels.', sources: [] }, 'tell')
       )
@@ -100,6 +101,33 @@ describe('#144 real Assistant command wiring', () => {
           'answer'
         )
       );
+    // Real rolling-context inference must not consume a scripted Memory Tool response.
+    f.createResponses.mockImplementation((...args) => {
+      const request = args[1];
+      if (JSON.stringify(request.input).includes('<openkit_context_summary_task>')) {
+        expect(request.tools ?? []).toHaveLength(0);
+        return Promise.resolve({
+          id: 'memory-continuation-summary',
+          object: 'response',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Preserve the personal green-label preference, User scope and Source attribution. Continue publication of the staged Notebook edit, then answer only from admitted published Memory evidence.',
+                },
+              ],
+            },
+          ],
+          usage: { input_tokens: 7, output_tokens: 2, total_tokens: 9 },
+        });
+      }
+      return scriptedResponses(...args);
+    });
     try {
       expect(f.thread).toMatchObject({
         visibility: 'private',
