@@ -428,6 +428,13 @@ export function requireCoordinatorGoal(
   db: WorkspaceDb,
   binding: { actor: Actor; goalId: string; workspaceId: string; threadId: string; turnId: string }
 ): GoalRecord {
+  return requireNativeCoordinatorGoal(db, binding);
+}
+/** Validates the native Goal/Thread/Turn tuple without a Main Store dependency. */
+function requireNativeCoordinatorGoal(
+  db: WorkspaceDb,
+  binding: { actor: Actor; goalId: string; workspaceId: string; threadId: string; turnId: string }
+): GoalRecord {
   const goal = requireOpen(readRecord(db, 'goals', 'goal_id', binding.goalId, StoredGoalV1Schema));
   if (
     goal.workspaceId !== binding.workspaceId ||
@@ -646,6 +653,25 @@ export const ControlGoalCommandInputSchema = z
   .strict();
 /** Structured-clone command input; immutable Item bodies are represented only by synchronized references. */
 export type ControlGoalCommandInput = z.infer<typeof ControlGoalCommandInputSchema>;
+/** Internal bookkeeping for the exact revision read by a live Coordinator; not a public Goal command or receipt. */
+const ControlGoalConsiderationInputSchema = z
+  .object({
+    kind: z.literal('considered'),
+    workspaceId: WorkspaceIdSchema,
+    goalId: z.string().min(1),
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    actor: GoalActorSchema,
+    readRevision: z.number().int().nonnegative(),
+  })
+  .strict();
+/** The existing Goal worker owns public commands and internal considered-marker commits. */
+export const ControlGoalInputSchema = z.union([
+  ControlGoalCommandInputSchema,
+  ControlGoalConsiderationInputSchema,
+]);
+/** Closed native Goal input; no authority callback crosses the boundary. */
+export type ControlGoalInput = z.infer<typeof ControlGoalInputSchema>;
 /** Native command outcome. A refused grant is durable but is not a successful command receipt. */
 export interface ControlGoalCommandResult {
   readonly view: GoalView;
@@ -669,12 +695,13 @@ export interface PreparedControlGoalCommand {
 /** Verifies actual immutable references before the caller enters its SQL savepoint; never runs file I/O inside SQL. */
 export async function prepareControlGoalCommand(
   db: WorkspaceDb,
-  input: ControlGoalCommandInput,
+  input: ControlGoalInput,
   mount?: ControlProductContentMount,
   newDirectories?: ControlContentPreparation
 ): Promise<PreparedControlGoalCommand> {
   if (db.sqlite.inTransaction)
     throw new GoalCommandError('invalid_request', 'Goal content preparation must precede SQL.');
+  if ('kind' in input) return { entries: [], items: [] };
   const owner = { kind: 'workspace', workspaceId: db.workspaceId } as const;
   const args = input.command.arguments as GoalArguments;
   const request = args.pendingRequestId
@@ -872,6 +899,36 @@ function raiseIntent(
       },
     ]
   );
+}
+/** Records the completed source view; execution can recheck Main authority after open without sending a callback to the worker. */
+export async function recordGoalConsideredRevision(
+  db: WorkspaceDb,
+  goal: GoalRecord,
+  turnId: string,
+  beforeSubmit?: () => void
+): Promise<void> {
+  const client = getControlStoreWorkerClient();
+  const path = workspaceDbPath(db.dataRoot, goal.workspaceId);
+  const database = `workspace:${path}`;
+  await client.open({
+    database,
+    path,
+    dataRoot: db.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: { kind: 'workspace', workspaceId: goal.workspaceId },
+    contentMount: goalContentMount(db),
+  });
+  beforeSubmit?.();
+  await client.goal(database, {
+    kind: 'considered',
+    workspaceId: goal.workspaceId,
+    goalId: goal.goalId,
+    threadId: goal.threadId,
+    turnId,
+    actor: goalActor(goal),
+    readRevision: goal.changeRevision,
+  });
 }
 /** Uses the existing native work-byte owner without inventing a Knowledge grant or changing product retention. */
 function goalContentMount(db: WorkspaceDb): ControlProductContentMount {
@@ -1536,11 +1593,36 @@ function resolveNativeGoalApproval(
  */
 export function applyControlGoalCommand(
   db: WorkspaceDb,
-  value: ControlGoalCommandInput,
+  value: ControlGoalInput,
   prepared: PreparedControlGoalCommand = { entries: [], items: [] }
 ): ControlGoalCommandResult {
   assertControlProductWriter(db.sqlite);
-  const input = ControlGoalCommandInputSchema.parse(value);
+  const input = ControlGoalInputSchema.parse(value);
+  if ('kind' in input) {
+    const goal = requireNativeCoordinatorGoal(db, {
+      actor: input.actor,
+      workspaceId: input.workspaceId,
+      goalId: input.goalId,
+      threadId: input.threadId,
+      turnId: input.turnId,
+    });
+    if (input.readRevision > goal.changeRevision)
+      throw new GoalCommandError(
+        'revision_conflict',
+        'The considered revision was not read from this Goal.'
+      );
+    // A later source change remains pending; a delayed ACK never moves the marker backwards.
+    db.sqlite
+      .prepare(
+        "UPDATE goals SET payload_json=json_set(payload_json, '$.consideredRevision', ?),schema_version=? WHERE goal_id=?"
+      )
+      .run(
+        Math.max(goal.consideredRevision, input.readRevision),
+        writeRetainedV1({}).schemaVersion,
+        input.goalId
+      );
+    return { view: readNativeGoalView(db, input.goalId), replayed: false, refusal: null };
+  }
   if (input.assistantOrigin && !input.context.assistantHandoff)
     throw new GoalCommandError(
       'invalid_request',

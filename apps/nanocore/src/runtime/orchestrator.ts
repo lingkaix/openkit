@@ -84,8 +84,13 @@ export interface StartTurnInput
   agentId?: string | null;
   /** Resolved User, Workspace, or Server Agent fallback. */
   defaultAgentId?: string | null;
-  /** Optional workspace database used to persist resolved setup lineage. */
-  agentSetupWorkspaceDb?: WorkspaceDb;
+  /** Exact setup ledger and its owning database's native-writer exclusion. */
+  agentSetupLedger?: {
+    /** Workspace connection whose lifetime belongs to the caller. */
+    workspaceDb: WorkspaceDb;
+    /** Settles posted ACKs and excludes this database until the returned release. */
+    pauseForWrite: () => Promise<() => void>;
+  };
   /** Available agent manifests. */
   agentManifests: AgentManifest[];
   /** Runtime config snapshot version captured for this turn. */
@@ -354,17 +359,23 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
       }
     ));
   if (existing) await input.store.updateTurn(turn.id, { status: 'running' });
-  const agentSetupRecordId =
-    agentSetupResult.setup && input.agentSetupWorkspaceDb
-      ? recordResolvedAgentSetup(input.agentSetupWorkspaceDb, {
-          recordId: `ras_${turn.id}`,
-          workspaceId: input.workspaceId,
-          turnId: turn.id,
-          requestId: input.requestId ?? null,
-          setup: agentSetupResult.setup,
-          createdAt: turn.startedAt ?? new Date().toISOString(),
-        }).id
-      : null;
+  let agentSetupRecordId: string | null = null;
+  if (agentSetupResult.setup && input.agentSetupLedger) {
+    // The setup family is still Main-owned; DX104 excludes this database's native writer until its complete migration.
+    const resume = await input.agentSetupLedger.pauseForWrite();
+    try {
+      agentSetupRecordId = recordResolvedAgentSetup(input.agentSetupLedger.workspaceDb, {
+        recordId: `ras_${turn.id}`,
+        workspaceId: input.workspaceId,
+        turnId: turn.id,
+        requestId: input.requestId ?? null,
+        setup: agentSetupResult.setup,
+        createdAt: turn.startedAt ?? new Date().toISOString(),
+      }).id;
+    } finally {
+      resume();
+    }
+  }
 
   await input.onTurnCreated?.(input.store.getTurnById(turn.id));
   await input.turnExecutor.startTurn(input.store, turn.id, input.input, {

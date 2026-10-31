@@ -17,9 +17,9 @@ import {
   ControlExecutionJournalInputSchema,
 } from '../runtime/execution-journal.js';
 import {
-  type ControlGoalCommandInput,
-  ControlGoalCommandInputSchema,
   type ControlGoalCommandResult,
+  type ControlGoalInput,
+  ControlGoalInputSchema,
 } from '../runtime/goal-owner.js';
 import {
   type ControlPendingCommandResult,
@@ -96,7 +96,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 22;
+export const CONTROL_WORKER_VERSION = 23;
 
 /** Fixed reference placement, batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -194,7 +194,7 @@ export type ControlWorkerCommand =
           readonly immediate?: boolean;
           readonly content?: ArrayBuffer;
         }
-      | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
+      | { readonly operation: 'goal'; readonly input: ControlGoalInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
@@ -994,7 +994,7 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
               : value.operation === 'project-cleanup'
                 ? ProjectWorkerBackendCleanupInputSchema
                 : value.operation === 'goal'
-                  ? ControlGoalCommandInputSchema
+                  ? ControlGoalInputSchema
                   : value.operation === 'review'
                     ? ControlReviewCommandInputSchema
                     : value.operation === 'maintenance'

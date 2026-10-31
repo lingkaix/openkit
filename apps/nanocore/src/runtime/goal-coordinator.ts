@@ -12,7 +12,6 @@ import {
   isSealedTurnTerminal,
   readRetainedV1,
   workspaceIdForOwner,
-  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -56,10 +55,10 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import {
-  type GoalOperationId,
   type GoalOwnerServices,
   goalActor,
   readGoalView,
+  recordGoalConsideredRevision,
   requireCoordinatorGoal,
 } from './goal-owner.js';
 import { StoredGoalV1Schema } from './goal-retained-v1.js';
@@ -93,18 +92,7 @@ export async function considerGoal(
     undefined,
     { turnId: allocateEntityId('tu'), executorKind: 'coordinator', agentId: 'goal-coordinator' }
   );
-  const current = db.sqlite
-    .prepare('SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE goal_id=?')
-    .get(goalId) as { schemaVersion: unknown; payload_json: string } | undefined;
-  if (current)
-    readRetainedV1(current, () => {
-      StoredGoalV1Schema.parse(JSON.parse(current.payload_json));
-      db.sqlite
-        .prepare(
-          "UPDATE goals SET payload_json=json_set(payload_json, '$.consideredRevision', ?),schema_version=? WHERE goal_id=?"
-        )
-        .run(goal.changeRevision, writeRetainedV1({}).schemaVersion, goalId);
-    });
+  await recordGoalConsideredRevision(db, goal, turn.id);
   return turn;
 }
 /** Existing Gateway and Task owners supplied by application assembly. */
@@ -636,35 +624,20 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       const view = readGoalView(store, db, goalId);
       const goal = view.goal!;
       const actor: Actor = goalActor(goal);
-      const resume = await client.pauseForDataRootBackup(`workspace:${db.sqlite.name}`);
-      try {
-        if (
-          !options.coreDb ||
-          !authorizeWorkspace(options.coreDb, actor, goal.workspaceId, {
-            policyOperation: 'workspace.write',
-            mutating: true,
-          })
-        )
-          throw new Error('Coordinator current authority is unavailable.');
-        db.sqlite.transaction(() => {
-          const currentRow = db.sqlite
-            .prepare(
-              'SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE goal_id=?'
-            )
-            .get(goal.goalId) as { schemaVersion: unknown; payload_json: string } | undefined;
-          if (!currentRow) throw new Error('Coordinator Goal is unavailable.');
-          const current = readRetainedV1(currentRow, () =>
-            StoredGoalV1Schema.parse(JSON.parse(currentRow.payload_json))
-          );
-          db.sqlite
-            .prepare(
-              "UPDATE goals SET payload_json=json_set(payload_json, '$.consideredRevision', ?),schema_version=? WHERE goal_id=?"
-            )
-            .run(current.changeRevision, writeRetainedV1({}).schemaVersion, goal.goalId);
-        })();
-      } finally {
-        resume();
-      }
+      const authorized = () =>
+        Boolean(
+          options.coreDb &&
+            authorizeWorkspace(options.coreDb, actor, goal.workspaceId, {
+              policyOperation: 'workspace.write',
+              mutating: true,
+            })
+        );
+      const assertAuthorized = () => {
+        if (!authorized()) throw new Error('Coordinator current authority is unavailable.');
+      };
+      assertAuthorized();
+      await recordGoalConsideredRevision(db, goal, turnId, assertAuthorized);
+      assertAuthorized();
       const snapshot = options.runtimeConfig();
       const workspaceConfig = findWorkspaceConfig(snapshot, goal.workspaceId)?.config;
       const userConfig = snapshot.userConfigs.find(
@@ -718,6 +691,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       await withTurnModelCapture(
         { store, turn, workspaceDb: db, environment: { systemPrompt, tools } },
         async (capture) => {
+          assertAuthorized();
           // Native acceptance of exact source input proves delivery, never grant consumption.
           await store.applyPendingRequestCommand(goal.workspaceId, {
             action: 'delivery-prove',
@@ -725,6 +699,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             turnId,
             now: new Date().toISOString(),
           });
+          assertAuthorized();
           const provider = createInternalAgentGatewayProvider({
             capture,
             logicalModel: selection.logicalModel,

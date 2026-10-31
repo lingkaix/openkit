@@ -22,8 +22,8 @@ import type { CommandRequestRecord } from '../lib/store.js';
 import { OperationError, restoreControlCapabilityFailure } from '../operation-error.js';
 import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
 import {
-  type ControlGoalCommandInput,
   type ControlGoalCommandResult,
+  type ControlGoalInput,
   GoalCommandError,
 } from '../runtime/goal-owner.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
@@ -315,12 +315,12 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'review':
       return ['judgement', 'select', 'decide', 'decision-receipt'].includes(command.input.mode);
     case 'goal':
-      return [
-        'goal.card.cancel',
-        'goal.plan.approve',
-        'goal.cancel',
-        'goal.completion.accept',
-      ].includes(command.input.command.operation);
+      return (
+        'kind' in command.input ||
+        ['goal.card.cancel', 'goal.plan.approve', 'goal.cancel', 'goal.completion.accept'].includes(
+          command.input.command.operation
+        )
+      );
     case 'journal':
       return command.input.kind === 'settle';
     default:
@@ -450,6 +450,7 @@ class ControlStoreWorkerClient {
         );
         break;
       case 'goal':
+        if ('kind' in command.input) break;
         entries.push(...(command.input.pendingAdmission?.entries ?? []));
         if (command.input.pendingItem) entries.push(command.input.pendingItem.entry);
         break;
@@ -1475,7 +1476,7 @@ class ControlStoreWorkerClient {
   }
 
   /** Executes the complete native Goal body; trusted domain refusals keep their public meaning, while SQL failures remain redacted. */
-  async goal(database: string, input: ControlGoalCommandInput): Promise<ControlGoalCommandResult> {
+  async goal(database: string, input: ControlGoalInput): Promise<ControlGoalCommandResult> {
     try {
       const reply = await this.request({ operation: 'goal', database, input });
       return (reply as Extract<Success, { operation: 'goal' }>).result;

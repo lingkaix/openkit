@@ -9,7 +9,10 @@ import { requireResolvedAgentSetup } from '../agents/setup-ledger.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -625,7 +628,13 @@ describe('startTurn orchestrator', () => {
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnExecutor,
         agentManifests: [configuredManifest],
-        agentSetupWorkspaceDb: workspaceDb,
+        agentSetupLedger: {
+          workspaceDb,
+          pauseForWrite: () =>
+            getControlStoreWorkerClient().pauseForDataRootBackup(
+              `workspace:${workspaceDb!.sqlite.name}`
+            ),
+        },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
 

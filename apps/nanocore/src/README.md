@@ -202,3 +202,5 @@ The physical product reader applies the existing 5 ms Main lock wait before serv
 Worker-control restart rebuild reads the retained AEP through the existing admitted readonly Workspace owner. Rebuild creates no layout and runs no migration; exact attempt/package/actor lineage, accepted Core records and read-handle closure retain their existing owners.
 
 Internal Gateway calls keep an owned admitted readonly Workspace handle through native capability, usage and terminal acknowledgements. The native owner performs the writes; Core-owned calls keep their existing writer, and calls without ledger context keep their borrowed capture handle.
+
+Goal considered markers are committed by the native Goal owner for both admission and execution. The marker records the completed source view revision; later source changes remain pending after reopen, and current Main authority is checked across the awaited commit before execution.

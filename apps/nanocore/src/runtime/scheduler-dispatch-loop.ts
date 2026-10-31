@@ -33,6 +33,7 @@ import {
   requireSchedulerAdmissionEntry,
   type SchedulerAdmissionEntryRecord,
 } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
@@ -499,7 +500,13 @@ async function dispatchSchedulerAdmission(
         agentSessionId: prepared.agentSessionId,
         agentId: entry.requestedAgentId,
         agentManifests: input.agentManifests,
-        agentSetupWorkspaceDb: workspaceDb,
+        agentSetupLedger: {
+          workspaceDb,
+          pauseForWrite: () =>
+            getControlStoreWorkerClient().pauseForDataRootBackup(
+              `workspace:${workspaceDb.sqlite.name}`
+            ),
+        },
         gatewayConfig: input.gatewayConfig,
         input: entry.turnInput,
         modelId: entry.modelId,

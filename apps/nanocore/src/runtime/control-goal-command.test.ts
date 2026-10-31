@@ -24,6 +24,7 @@ import {
   type ControlGoalCommandInput,
   ControlGoalCommandInputSchema,
   type ControlGoalCommandResult,
+  type ControlGoalInput,
   executeGoalOperation,
 } from './goal-owner.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -81,7 +82,7 @@ async function fixture() {
           else if (command === 'release-plan') db.sqlite.exec('DROP TRIGGER reject_plan_receipt');
           else if (command === 'reopen') { db.sqlite.close(); db = storage.openWorkspaceDb(workerData.root, workerData.workspaceId); }
           else {
-            const admitted = goal.ControlGoalCommandInputSchema.parse(input);
+            const admitted = goal.ControlGoalInputSchema.parse(input);
             const prepared = await goal.prepareControlGoalCommand(db, admitted, workerData.mount);
             result = db.sqlite.transaction(() => goal.applyControlGoalCommand(db, admitted, prepared))();
           }
@@ -99,7 +100,7 @@ async function fixture() {
     worker.once('message', () => resolve());
   });
   let nextId = 0;
-  const send = (command: string, input?: ControlGoalCommandInput) =>
+  const send = (command: string, input?: ControlGoalInput) =>
     new Promise<ControlGoalCommandResult>((resolve, reject) => {
       const id = ++nextId;
       const onMessage = (reply: {
@@ -387,6 +388,62 @@ describe('native Goal command deciding body', () => {
       reopened.sqlite.close();
     }
   }, 20000);
+
+  it('records only the revision the live Coordinator read and leaves a later Goal change pending after reopen', async () => {
+    const f = await fixture();
+    const created = await f.send(
+      'apply',
+      command(f.workspaceId, 'goal.create', { intent: 'Original intent' })
+    );
+    const goal = created.view.goal!;
+    const proposal = command(f.workspaceId, 'goal.plan.propose', {
+      goalId: goal.goalId,
+      threadId: goal.threadId,
+      expectedRevision: goal.changeRevision,
+      goalDomain: testGoalDomainProposal(f.workspaceId, goal.goalId),
+      commitment: {
+        intentBasis: { revision: 0, intent: goal.intent },
+        cards: [],
+        permittedAdjustments: 'Refine only',
+        completionEvidence: ['Reviewed design'],
+        boundaries: 'No deployment',
+      },
+    });
+    proposal.captureCoverage = DEFAULT_CAPTURE_COVERAGE_BINDING;
+    proposal.proposalTurnId = allocateEntityId('tu');
+    proposal.pendingItem = await pendingItem(f, proposal, goal.threadId, proposal.proposalTurnId);
+    const observed = (await f.send('apply', proposal)).view.goal!;
+    const readRevision = observed.changeRevision;
+    await f.send(
+      'apply',
+      command(f.workspaceId, 'goal.intent.revise', {
+        goalId: goal.goalId,
+        threadId: goal.threadId,
+        expectedRevision: observed.intentRevision,
+        intent: 'Later source fact',
+      })
+    );
+    const marker = {
+      kind: 'considered' as const,
+      workspaceId: f.workspaceId,
+      goalId: goal.goalId,
+      threadId: goal.threadId,
+      turnId: proposal.proposalTurnId,
+      actor,
+      readRevision,
+    };
+    await f.send('apply', marker);
+    await f.send('reopen');
+    const retained = (await f.send('apply', marker)).view.goal!;
+    expect(retained.consideredRevision).toBe(readRevision);
+    expect(retained.changeRevision).toBe(readRevision + 1);
+    expect(retained.intent).toBe('Later source fact');
+    expect(retained.disposition).toBeNull();
+    await expect(
+      f.send('apply', { ...marker, actor: { ...actor, userId: allocateEntityId('usr') } })
+    ).rejects.toMatchObject({ code: 'coordinator_authority_denied' });
+    expect((await f.send('apply', marker)).view.goal).toEqual(retained);
+  });
 
   it('decides revisions from current native state and preserves descriptive retained additions', async () => {
     const f = await fixture();

@@ -620,6 +620,10 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       journal(request.input);
       break;
     case 'goal':
+      if ('kind' in request.input) {
+        lanes.add(request.input.turnId);
+        break;
+      }
       if (
         request.input.command.operation === 'goal.plan.propose' &&
         !request.input.context.coordinatorTurnId &&
@@ -659,7 +663,8 @@ function pendingCommands(request: WriteCommand): readonly ControlPendingCommandI
   if (request.operation === 'terminal') return request.input.pending ?? [];
   if (request.operation === 'pending')
     return [request.input.input, ...(request.input.terminal?.pending ?? [])];
-  if (request.operation === 'goal') return request.input.pendingAdmission?.pending ?? [];
+  if (request.operation === 'goal')
+    return 'kind' in request.input ? [] : (request.input.pendingAdmission?.pending ?? []);
   return [];
 }
 
@@ -691,7 +696,7 @@ function pendingScope(owner: OwnedDatabase, request: WriteCommand, expand = true
       for (const row of rows) ids.add(row.request_id);
     }
   }
-  if (request.operation === 'goal') {
+  if (request.operation === 'goal' && !('kind' in request.input)) {
     const args = request.input.command.arguments;
     if ('pendingRequestId' in args && args.pendingRequestId) ids.add(args.pendingRequestId);
     if ('goalId' in args && args.goalId) goals.add(args.goalId);
@@ -748,7 +753,9 @@ async function prepareAfterPredecessors(
   );
   const commands = pendingCommands(queued);
   const goalPending =
-    queued.operation === 'goal' && 'pendingRequestId' in queued.input.command.arguments
+    queued.operation === 'goal' &&
+    !('kind' in queued.input) &&
+    'pendingRequestId' in queued.input.command.arguments
       ? queued.input.command.arguments.pendingRequestId
       : undefined;
   if (commands.length || goalPending) {
@@ -819,7 +826,7 @@ async function prepareAfterPredecessors(
             ? request.transition.entries.length
             : request.operation === 'pending'
               ? request.input.entries.length
-              : request.operation === 'goal'
+              : request.operation === 'goal' && !('kind' in request.input)
                 ? Number(Boolean(request.input.pendingItem)) +
                   (request.input.pendingAdmission?.entries.length ?? 0)
                 : request.operation === 'review' && request.input.mode === 'submit'
