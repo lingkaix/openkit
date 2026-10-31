@@ -7,6 +7,8 @@
  * the host's outbound maximum.
  */
 
+import { isRecord } from '@openkit/protocol';
+
 /** Maximum bytes of one request line the host accepts. */
 export const PI_CHANNEL_REQUEST_MAX_BYTES = 8 * 1024 * 1024;
 /** Maximum UTF-8 bytes of one final assistant text the adapter will admit. */
@@ -246,9 +248,4 @@ function parseEvent(value: Readonly<Record<string, unknown>>): PiParsedFrame {
       turnId: value.turnId,
     },
   };
-}
-
-/** Checks whether one JSON value is a non-array object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

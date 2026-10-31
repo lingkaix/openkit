@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { lstat, open } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { type Duplex, PassThrough } from 'node:stream';
-import { type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
+import { isRecord, type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
@@ -1862,11 +1862,6 @@ function sameModel(left: PiModel, right: PiModel): boolean {
 /** Compares MCP server ids as an ordered sequence. */
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-/** Checks whether one JSON value is a non-array object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Checks a Node filesystem or spawn error without widening unknown exceptions. */

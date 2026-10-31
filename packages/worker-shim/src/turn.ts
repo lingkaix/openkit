@@ -2,7 +2,7 @@ import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { digestOpenKitTree, OPENKIT_TREE_DIGEST_FORMAT } from '@openkit/config-schema';
-import { type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
+import { isRecord, type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import {
   CaptureCoverageBindingSchema,
   canonicalNativeEnvironment,
@@ -1256,16 +1256,6 @@ function isRuntimeSupplyMaterialization(value: unknown): value is RuntimeSupplyM
 }
 
 /**
- * Checks whether a value is a non-array object record.
- *
- * @param value Candidate value.
- * @returns True when the value can be inspected as a string-keyed record.
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
  * Rejects every retired native command or final-message override before adapter preparation.
  *
  * @param packageManifest Worker-visible AEP.
@@ -1539,7 +1529,7 @@ function resolveWorkspaceInputs(packageManifest: WorkerShimPackageManifest): Wor
  * @returns Parsed workspace input or null when unsupported.
  */
 function readWorkspaceInput(value: unknown): WorkspaceGitInput | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return null;
   }
 

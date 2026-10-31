@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isRecord } from '@openkit/protocol';
 import {
   type CaptureCoverageBinding,
   WORKER_OBSERVATION_CHUNK_MAX_BYTES,
@@ -583,7 +584,7 @@ export class ParentRuntimeCapture {
         await this.gap('malformed-frame');
         return;
       }
-      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      if (!isRecord(value)) {
         await this.gap('malformed-frame');
         return;
       }

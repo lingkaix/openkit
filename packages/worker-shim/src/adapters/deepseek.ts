@@ -29,7 +29,7 @@ import {
   type SessionNotification,
   type SessionUpdate,
 } from '@agentclientprotocol/sdk';
-import { REASONING_EFFORT_LEVELS, ReasoningEffortSchema } from '@openkit/protocol';
+import { isRecord, REASONING_EFFORT_LEVELS, ReasoningEffortSchema } from '@openkit/protocol';
 import type { HarnessRefusalReason } from '@openkit/worker-protocol';
 import type {
   WorkerAdapterLlmRoute,
@@ -2505,11 +2505,6 @@ function readNativeModel(parsed: unknown): NativeModel | null {
     maxTokens,
     ...(parsed.reasoning === undefined ? {} : { reasoning: parsed.reasoning }),
   };
-}
-
-/** True for a JSON object. Arrays and null are not records. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** Requires a positive integer. Missing and invalid bounds are not repaired. */

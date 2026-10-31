@@ -11,6 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
+import { isRecord } from '@openkit/protocol';
 import {
   type WorkerLineage,
   type WorkerRuntimeNativeOriginIndexEntry,
@@ -115,7 +116,7 @@ export async function proveCodexNativeConversation(options: {
       continue;
     }
     const value = JSON.parse(line) as unknown;
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    if (!isRecord(value)) {
       throw new Error('Codex exec emitted a malformed JSONL event.');
     }
     const record = value as Record<string, unknown>;
@@ -1490,11 +1491,6 @@ function stringArrayField(value: Record<string, unknown>, key: string): string[]
   return Array.isArray(candidate)
     ? candidate.filter((entry): entry is string => typeof entry === 'string')
     : [];
-}
-
-/** Checks whether a value is a non-array JSON object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Checks whether an unknown error carries a Node error code. */
