@@ -329,14 +329,25 @@ export function ItemView({
         </ItemCard>
       );
 
-    case 'reasoning':
+    case 'reasoning': {
+      const meta = item.summary[0] ?? 'Thinking through the task';
+      const detailParts =
+        item.summary.length > 1 ? [...item.summary, ...item.content] : [...item.content];
       return (
-        <ItemCard
-          kind="neutral"
-          title="Reasoning"
-          meta={item.summary[0] ?? 'Thinking through the task'}
-        />
+        <ItemCard kind="neutral" title="Reasoning" meta={meta}>
+          {detailParts.length > 0 ? (
+            <details className="mt-2">
+              <summary>Full reasoning</summary>
+              {detailParts.map((part, index) => (
+                <p key={index} className="whitespace-pre-wrap">
+                  {part}
+                </p>
+              ))}
+            </details>
+          ) : null}
+        </ItemCard>
       );
+    }
 
     case 'artifact-reference':
       return (
