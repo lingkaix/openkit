@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { ArtifactAuthorityError } from './artifact-authority.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
+import { serializeArtifactReviewFollowUpRequest } from './artifact-review-follow-up.js';
 import {
   ArtifactReviewError,
   ControlReviewCommandInputSchema,
@@ -29,7 +30,6 @@ import {
   listArtifactReviews,
   replayArtifactReviewDecision,
   selectArtifactReviewCandidate,
-  serializeArtifactReviewFollowUpRequest,
 } from './artifact-reviews.js';
 import { commitArtifactVersionCommand } from './artifact-versions.js';
 import {

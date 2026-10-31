@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { ArtifactReviewFollowUpRequestSchema } from '../artifact-reviews.js';
+import { ArtifactReviewFollowUpRequestSchema } from '../artifact-review-follow-up.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';

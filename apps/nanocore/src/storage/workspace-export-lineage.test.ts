@@ -25,10 +25,12 @@ import {
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   ArtifactReviewFollowUpRequestSchema,
+  serializeArtifactReviewFollowUpRequest,
+} from '../artifact-review-follow-up.js';
+import {
   deriveArtifactReviewFollowUpTurnId,
   deriveArtifactReviewId,
   deriveArtifactReviewWorkerRequestId,
-  serializeArtifactReviewFollowUpRequest,
 } from '../artifact-reviews.js';
 import {
   importWorkspaceCapabilityUsageLedger,

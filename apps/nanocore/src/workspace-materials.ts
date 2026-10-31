@@ -48,7 +48,6 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-import { commandRequestKey } from './lib/store.js';
 import {
   appendMaterialJudgement,
   correctMaterialRange,
@@ -57,6 +56,7 @@ import {
 import { OperationError } from './operation-error.js';
 import { commandInputHash, IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import {
+  commandRequestKey,
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
 } from './storage/command-request-records.js';

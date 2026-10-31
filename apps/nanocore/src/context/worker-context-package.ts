@@ -44,7 +44,7 @@ import {
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
-import { ArtifactReviewFollowUpRequestSchema } from '../artifact-reviews.js';
+import { ArtifactReviewFollowUpRequestSchema } from '../artifact-review-follow-up.js';
 import {
   STRUCTURED_WORKER_DELEGATION_MAX_CONTEXT_TOKENS,
   StructuredWorkerDelegationRequestSchema,

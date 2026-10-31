@@ -77,13 +77,15 @@ import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
-import { StoredArtifactReviewV1Schema } from '../artifact-review-v1.js';
 import {
   ArtifactReviewFollowUpRequestSchema,
+  serializeArtifactReviewFollowUpRequest,
+} from '../artifact-review-follow-up.js';
+import { StoredArtifactReviewV1Schema } from '../artifact-review-v1.js';
+import {
   deriveArtifactReviewFollowUpTurnId,
   deriveArtifactReviewId,
   deriveArtifactReviewWorkerRequestId,
-  serializeArtifactReviewFollowUpRequest,
 } from '../artifact-reviews.js';
 import { CanonicalCapabilityCallExtensionsSchema } from '../capability/usage-ledger.js';
 import {
