@@ -16,7 +16,6 @@ import {
 } from './auth/access-token-store.js';
 import * as capabilityUsage from './capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import * as sourcePublication from './knowledge/source-publication.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
@@ -32,6 +31,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { createKnowledgeAnswerApp } from './test-support/knowledge-agent.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -102,14 +102,9 @@ async function fixture(member = true, citedAnswer = false) {
   };
 }
 
-/** Test-owned exact immutable base; all mutations still cross current native admission. */
+/** Re-reads the admitted Workspace SQL head; Git refs do not select this publication. */
 function notebook(f: ReturnType<typeof fixture>) {
-  return new KnowledgeNotebook({
-    repositoryPath: join(
-      f.dataRoot,
-      'workspaces/ws_00000000-0000-7000-8000-000000000001/knowledge/notebook.git'
-    ),
-  });
+  return readTestWorkspaceNotebookSelection(f.dataRoot, DEMO_WORKSPACE_ID).notebook;
 }
 
 /** Retained entry/governance projection cohort; native role operations have their own query and command proofs. */
@@ -343,7 +338,7 @@ describe('Knowledge operation definition cutover', () => {
       ].sort()
     );
     expect(Object.keys(tables.KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
-      ['knowledge.schema.preview', ...entryIds].sort()
+      ['knowledge.schema.apply', 'knowledge.schema.preview', ...entryIds].sort()
     );
     const ids = [
       ...Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS!),
