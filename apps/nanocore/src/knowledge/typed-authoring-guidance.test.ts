@@ -23,6 +23,7 @@ import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
@@ -151,7 +152,18 @@ async function fixture(scope: Scope, enabled = false) {
       ? join(dataRoot, 'workspaces', workspace.id, 'knowledge')
       : resolveScopedNotebookOwner({ coreDb, actor: requestActor, target: { kind: scope } })
           .notebookRoot;
-  const notebook = new KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') });
+  const gitNotebook = new KnowledgeNotebook({
+    repositoryPath: join(notebookRoot, 'notebook.git'),
+  });
+  const selectedNotebook = () =>
+    scope === 'workspace'
+      ? readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook
+      : gitNotebook;
+  const notebook = {
+    publishedRevision: () => selectedNotebook().publishedRevision(),
+    readRevision: (revision: string, paths?: readonly string[]) =>
+      selectedNotebook().readRevision(revision, paths),
+  };
   const schemaPath = join(notebookRoot, 'schema', 'scope-schema.yaml');
   const activeSchema =
     DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.replace(
@@ -188,6 +200,7 @@ async function fixture(scope: Scope, enabled = false) {
     }),
   });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  store.setWorkspaceMutationAdmission(workspaceMutationAdmission);
   const finish = async (run: Run) => {
     expect(
       run.validateResult('{"summary":"Finished the native notebook operation."}')
@@ -249,6 +262,27 @@ async function fixture(scope: Scope, enabled = false) {
     ...dependencies,
     repositoryWorkspaceDb: dependencies.openWorkspace,
   });
+  const publishAdmittedSchema = async (schemaText: string) => {
+    const baseRevision = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).head
+      .notebookCommit;
+    const entry = { kind: 'public' as const, actor: requestActor };
+    const reviewedReport = await invoke(
+      'knowledge.schema.preview',
+      { workspaceId: workspace.id, requestId: randomUUID(), baseRevision, schemaText },
+      entry
+    );
+    await invoke(
+      'knowledge.schema.apply',
+      {
+        workspaceId: workspace.id,
+        requestId: randomUUID(),
+        baseRevision,
+        schemaText,
+        reviewedReport,
+      },
+      entry
+    );
+  };
   onTestFinished(async () => {
     await closeRetrievalServices();
     workspaceDb.sqlite.close();
@@ -267,6 +301,7 @@ async function fixture(scope: Scope, enabled = false) {
     finish,
     maintain,
     invoke,
+    publishAdmittedSchema,
     store,
     workspace,
     requestActor,
@@ -387,6 +422,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
       await tool(run, 'knowledge.notebook.update', { summary: 'Inspect without changing pages.' });
       return f.finish(run);
     });
+    if (scope === 'workspace') await f.publishAdmittedSchema(f.activeSchema);
     const result = await f.maintain();
     expect(result.outcome).toBe('no-change');
     expect(f.run).toHaveBeenCalledTimes(1);
@@ -401,7 +437,6 @@ describe('bounded typed Knowledge authoring guidance', () => {
     expect(delivered).toContain('Claim requires confidence');
     expect(delivered).toContain('finite number from zero through one');
     expect(delivered).not.toContain('UNDISCLOSED-PRIVATE-FIXTURE');
-    // Deciding RED: the native request currently contains no admitted active schema contract.
     expect(delivered).toContain(f.activeSchema);
     expect(delivered).toContain('short syntheses');
     expect(delivered).toContain('Keep originals in Sources');
@@ -442,6 +477,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
     expect(Buffer.byteLength(oversized)).toBeGreaterThan(16 * 1024);
     expect(parseScopeKnowledgeSchema(oversized).ok).toBe(true);
     writeFileSync(f.schemaPath, oversized);
+    if (scope === 'workspace') await f.publishAdmittedSchema(oversized);
     const result = await f.maintain();
     expect(result.outcome).toBe('no-change');
     expect(f.run).toHaveBeenCalledTimes(1);
@@ -477,6 +513,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
       });
       return f.finish(run);
     });
+    await f.publishAdmittedSchema(f.activeSchema);
     const result = await f.maintain();
     expect(result.outcome).toBe('review-required');
     const run = f.run.mock.calls[0]![0];
