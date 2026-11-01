@@ -147,3 +147,5 @@ The MCP credential-export fixture passes its existing App Core to the dormant de
 Direct Simulator lifecycle fixtures prepare their original scheduler admission, attempt and Session through existing owners before execution. The missing-setup case supplies only a deliberately invalid unpublished candidate and still proves refusal without Session or Turn binding; it grants no execution authority.
 
 The missing-Core diagnostics authority fixture gives only its dormant deterministic executor the fixture's existing Core. App authority remains absent, and the original unavailable-authority refusal stays required.
+
+Post-terminal publication tests retain the reachable native outcomes and their replay and conflict checks. Retired ordinary Workspace import supplies no terminal-history fixtures.
