@@ -17,6 +17,12 @@ import {
   AdminRecoveryError,
   type ControlAdminRecoveryInput,
 } from '../auth/admin-recovery-codecs.js';
+import {
+  BetterAuthNativeError,
+  type ControlBetterAuthInput,
+  type ControlBetterAuthResult,
+  isBetterAuthRefusal,
+} from '../auth/better-auth-codecs.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type { ControlGenerativePresentation } from '../generative-ui/native-publication-codecs.js';
 import type {
@@ -1380,6 +1386,25 @@ class ControlStoreWorkerClient {
         error.domain?.operation === 'thread-read-membership'
       )
         throw new Error(THREAD_READ_RECEIPT_INVALID, { cause: error });
+      throw error;
+    }
+  }
+
+  /** Commits one closed configured SDK stage before returning its original complete record. */
+  async betterAuth(
+    database: string,
+    input: ControlBetterAuthInput
+  ): Promise<ControlBetterAuthResult> {
+    try {
+      const reply = await this.request({ operation: 'better-auth', database, input });
+      return (reply as Extract<Success, { operation: 'better-auth' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'better-auth' &&
+        isBetterAuthRefusal(error.domain.code, error.domain.message, error.domain.status)
+      )
+        throw new BetterAuthNativeError(error.domain.code);
       throw error;
     }
   }
