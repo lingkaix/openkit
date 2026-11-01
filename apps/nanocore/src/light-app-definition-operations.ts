@@ -87,6 +87,7 @@ export function createLightAppDefinitionOperationImplementations(
       store: dependencies.store,
       inflightCommands: dependencies.inflightCommands,
       actor: context.actorRef,
+      recheckAdmission: context.recheckAdmission,
       ...kernelExecutionLineage(dependencies.store, input.workspaceId, context),
       requestId: input.requestId ?? '',
     };

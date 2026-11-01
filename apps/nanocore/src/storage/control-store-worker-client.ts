@@ -24,6 +24,12 @@ import {
   isBetterAuthRefusal,
 } from '../auth/better-auth-codecs.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
+import {
+  type ControlAppInput,
+  ControlAppInputSchema,
+  type ControlAppResult,
+  type ControlAppWire,
+} from '../generative-kernel/native-command-codecs.js';
 import type { ControlGenerativePresentation } from '../generative-ui/native-publication-codecs.js';
 import type {
   ControlMaintenanceAdmissionInput,
@@ -99,6 +105,8 @@ import type {
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
+  ControlPhysicalForecastDecisionSchema,
+  ControlPhysicalForecastSchema,
   type ControlProductCohort,
   type ControlProvenanceInput,
   type ControlSqlResult,
@@ -249,7 +257,9 @@ interface Pending {
   /** Binary input and echoed range content remain admitted until reply or known disposal. */
   readonly materialBytes: number;
   readonly inputBytes: number;
-  readonly capacity: readonly NativeCapacityReservation[];
+  readonly capacity: NativeCapacityReservation[];
+  /** A forecast is resolved once within this request's existing slot. */
+  physicalForecasted?: boolean;
   readonly closeout?: CapabilityCloseoutCredit | undefined;
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
@@ -846,13 +856,15 @@ class ControlStoreWorkerClient {
     if (recovery === undefined) {
       const owner =
         command.operation === 'open'
-          ? command.productOwner
+          ? (command.productOwner ?? command.physicalScope)
           : (opening?.command.productOwner ??
+            opening?.command.physicalScope ??
             ('database' in command
-              ? this.openings.get(command.database)?.command.productOwner
+              ? (this.openings.get(command.database)?.command.productOwner ??
+                this.openings.get(command.database)?.command.physicalScope)
               : undefined));
       if (
-        owner?.kind === 'workspace' &&
+        (owner?.kind === 'workspace' || owner?.kind === 'app') &&
         this.workspaceMutationAdmission?.isClosed(owner.workspaceId, 'capture')
       )
         throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
@@ -930,6 +942,31 @@ class ControlStoreWorkerClient {
         admitted = input;
       }
       const current = statSync(binding.path);
+      if (command.operation === 'close' && physical?.command.physicalScope) {
+        const app = physical.command.physicalScope;
+        const original = this.openings.get(binding.command.database);
+        if (
+          owner?.kind !== 'workspace' ||
+          app.workspaceId !== owner.workspaceId ||
+          !this.workspaceMutationAdmission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
+          binding.command.create !== false ||
+          binding.command.initialize !== 'workspace' ||
+          !original ||
+          !isDeepStrictEqual(original.command, binding.command) ||
+          original.path !== binding.path ||
+          original.identity !== binding.identity ||
+          realpathSync(binding.command.path) !== binding.path ||
+          `${current.dev}:${current.ino}` !== binding.identity ||
+          realpathSync(physical.command.dataRoot!) !== realpathSync(binding.command.dataRoot!) ||
+          realpathSync(physical.command.path) !== physical.path ||
+          command.database !== physical.command.database
+        )
+          throw new Error('Dependent App close binding is not current.');
+        const child = statSync(physical.path);
+        if (`${child.dev}:${child.ino}` !== physical.identity)
+          throw new Error('Dependent App identity changed.');
+        return;
+      }
       if (
         owner?.kind !== 'workspace' ||
         !this.workspaceMutationAdmission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
@@ -985,7 +1022,16 @@ class ControlStoreWorkerClient {
     const existing = this.openings.get(command.database);
     if (existing) {
       if (existing.host.failed) throw new ControlStoreWorkerError('unavailable', 'not-committed');
-      if (!isDeepStrictEqual(existing.command, command))
+      if (
+        !isDeepStrictEqual(existing.command, command) &&
+        !(
+          command.physicalScope &&
+          existing.acknowledged &&
+          existing.command.create &&
+          !command.create &&
+          isDeepStrictEqual({ ...existing.command, create: false }, command)
+        )
+      )
         throw new ControlStoreWorkerError('invalid-request', 'not-committed');
       await existing.promise;
       this.assertFrozenCall({ ...command, operation: 'open' }, recovery);
@@ -1423,6 +1469,105 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Reserves the existing physical forecast before copying a rollback candidate. */
+  reserveAppRollback(database: string, bytes: number): FileStorageReservation {
+    this.assertAccepting();
+    const opening = this.openings.get(database);
+    if (
+      !opening?.command.physicalScope ||
+      !opening.command.dataRoot ||
+      !Number.isSafeInteger(bytes) ||
+      bytes < 0
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    this.assertFrozenCall({ operation: 'close', database }, undefined, opening);
+    const root = resolve(opening.command.dataRoot);
+    let admission = this.fileAdmissions.get(root);
+    if (!admission) {
+      admission = new FileStorageAdmission(root, () => 1_000_000_000n);
+      this.fileAdmissions.set(root, admission);
+    }
+    return admission.forPath(opening.path).reserve({
+      stagingBytes: BigInt(bytes),
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: 0n,
+    });
+  }
+
+  /** Publishes one exact App tuple through the existing binary/FIFO/FULL accounts. */
+  async appKernel(
+    database: string,
+    input: ControlAppInput,
+    preparedCapacity?: FileStorageReservation
+  ): Promise<ControlAppResult> {
+    const owned = ControlAppInputSchema.parse(input);
+    const json = JSON.stringify(owned);
+    const wire: ControlAppWire = {
+      workspaceId: owned.workspaceId,
+      appId: owned.appId,
+      kind: owned.change.kind,
+      byteLength: Buffer.byteLength(json),
+      ...(owned.execution ? { turnId: owned.execution.turnId } : {}),
+    };
+    const opening = this.openings.get(database);
+    try {
+      const result = await this.request(
+        { operation: 'app-kernel', database, input: wire, content: new ArrayBuffer(0) },
+        [json],
+        undefined,
+        false,
+        undefined,
+        preparedCapacity ? [preparedCapacity] : []
+      );
+      const reply = result as Extract<Success, { operation: 'app-kernel' }>;
+      if (owned.change.kind === 'rollback') {
+        try {
+          if (!opening || !reply.identity) throw new Error('App replacement identity is missing.');
+          const current = statSync(opening.path);
+          const identity = `${current.dev}:${current.ino}`;
+          if (identity !== reply.identity) throw new Error('App replacement identity changed.');
+          opening.identity = identity;
+        } catch {
+          if (opening) this.fail(opening.host);
+          throw new ControlStoreWorkerError('unavailable', 'unknown');
+        }
+      }
+      return reply.result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'app-kernel') {
+        if (error.domain.code === 'EEXIST')
+          throw Object.assign(new Error(error.domain.message), { code: 'EEXIST' });
+        throw new KernelCommandError(
+          error.domain.code as ConstructorParameters<typeof KernelCommandError>[0],
+          error.domain.message,
+          {
+            status: error.domain.status,
+            ...(error.domain.appDetails?.path !== undefined
+              ? { path: error.domain.appDetails.path }
+              : {}),
+            ...(error.domain.appDetails?.limit !== undefined
+              ? { limit: error.domain.appDetails.limit }
+              : {}),
+            ...(error.domain.appDetails?.maximum !== undefined
+              ? { maximum: error.domain.appDetails.maximum }
+              : {}),
+            ...(error.domain.appDetails?.expectedRevision !== undefined
+              ? { expectedRevision: error.domain.appDetails.expectedRevision }
+              : {}),
+            ...(error.domain.appDetails?.currentRevision !== undefined
+              ? { currentRevision: error.domain.appDetails.currentRevision }
+              : {}),
+          }
+        );
+      }
+      throw error;
+    } finally {
+      if (preparedCapacity && !opening?.host.capacity.has(preparedCapacity))
+        preparedCapacity.release();
+    }
+  }
+
   /** Retains the exact authenticated rejection row before returning its original public refusal. */
   async workerControlEvidence(
     database: string,
@@ -1789,6 +1934,20 @@ class ControlStoreWorkerClient {
   async close(database: string, recovery?: ControlRecoveryNativeCall): Promise<void> {
     this.assertFrozenCall({ operation: 'close', database }, recovery);
     const opening = this.openings.get(database);
+    if (opening?.command.productOwner?.kind === 'workspace') {
+      const workspaceId = opening.command.productOwner.workspaceId;
+      const children = [...this.openings.values()].filter(
+        (entry) =>
+          entry.command.physicalScope?.workspaceId === workspaceId &&
+          entry.command.dataRoot !== undefined &&
+          opening.command.dataRoot !== undefined &&
+          realpathSync(entry.command.dataRoot) === realpathSync(opening.command.dataRoot)
+      );
+      for (const child of children) {
+        await child.promise;
+        await this.close(child.command.database, recovery);
+      }
+    }
     try {
       await this.drainScopePublications(opening);
       // Idle readers must not prevent the writer's final close from checkpointing at rest.
@@ -1847,9 +2006,43 @@ class ControlStoreWorkerClient {
     database: string,
     admission?: WorkspaceMutationAdmission
   ): Promise<() => void> | null {
-    if (this.backupHold || this.databaseHolds.has(database)) return null;
+    const parent = this.openings.get(database)?.command;
+    const owner = parent?.productOwner;
+    const keys = [
+      database,
+      ...[...this.openings.entries()]
+        .filter(
+          ([, entry]) =>
+            owner?.kind === 'workspace' &&
+            entry.command.physicalScope?.workspaceId === owner.workspaceId &&
+            entry.command.dataRoot !== undefined &&
+            parent?.dataRoot !== undefined &&
+            realpathSync(entry.command.dataRoot) === realpathSync(parent.dataRoot)
+        )
+        .map(([key]) => key),
+    ];
+    if (this.backupHold || keys.some((key) => this.databaseHolds.has(key))) return null;
     if (admission) this.setWorkspaceMutationAdmission(admission);
-    return this.pauseForDataRootBackup(database);
+    const acquired: Array<() => void> = [];
+    return Promise.allSettled(
+      keys.map(async (key) => {
+        const release = await this.pauseForDataRootBackup(key);
+        acquired.push(release);
+        return release;
+      })
+    ).then((results) => {
+      const failed = results.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') {
+        for (const release of acquired) release();
+        throw failed.reason;
+      }
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        for (const release of acquired) release();
+      };
+    });
   }
 
   async pauseForDataRootBackup(database?: string): Promise<() => void> {
@@ -1958,7 +2151,8 @@ class ControlStoreWorkerClient {
     materialParts?: readonly (string | Uint8Array)[],
     target?: WriterHost,
     deferPost = false,
-    recovery?: ControlFrozenNativeCall
+    recovery?: ControlFrozenNativeCall,
+    preparedCapacity: readonly NativeCapacityReservation[] = []
   ): Promise<Success> {
     if (command.operation !== 'shutdown') {
       try {
@@ -2049,12 +2243,14 @@ class ControlStoreWorkerClient {
       command.operation === 'capability' ||
       command.operation === 'observation' ||
       command.operation === 'generative-presentation' ||
+      command.operation === 'app-kernel' ||
       command.operation === 'thread-read-membership'
     ) {
       const size =
         command.operation === 'material'
           ? controlMaterialTransferSize(command.input)
           : command.operation === 'generative-presentation' ||
+              command.operation === 'app-kernel' ||
               command.operation === 'thread-read-membership'
             ? { byteLength: command.input.byteLength, replyByteLength: 0 }
             : command.operation === 'observation'
@@ -2130,13 +2326,16 @@ class ControlStoreWorkerClient {
     }
     let capacity: readonly NativeCapacityReservation[];
     try {
-      capacity = this.reserveCapacity(
-        command,
-        opening,
-        inputBytes,
-        materialBytes,
-        closeout !== undefined || !!creditedPublication
-      );
+      capacity = [
+        ...preparedCapacity,
+        ...this.reserveCapacity(
+          command,
+          opening,
+          inputBytes,
+          materialBytes,
+          closeout !== undefined || !!creditedPublication
+        ),
+      ];
     } catch (error) {
       return Promise.reject(
         error instanceof FileAdmissionError
@@ -2168,7 +2367,7 @@ class ControlStoreWorkerClient {
         ready: ready === undefined,
         materialBytes,
         inputBytes,
-        capacity,
+        capacity: [...capacity],
         closeout,
         resolve,
         reject,
@@ -2336,8 +2535,87 @@ class ControlStoreWorkerClient {
     this.completeBackupDrain();
   }
 
+  /** Reserves the exact post-predecessor copy before the owner publishes any of it. */
+  private receivePhysicalForecast(value: unknown, host: WriterHost): void {
+    const parsed = ControlPhysicalForecastSchema.safeParse(value);
+    if (!parsed.success) {
+      this.fail(host);
+      return;
+    }
+    const forecast = parsed.data;
+    const entry = this.pending.get(forecast.id);
+    const opening = this.openings.get(forecast.database);
+    if (
+      !entry ||
+      entry.host !== host ||
+      !entry.posted ||
+      entry.physicalForecasted ||
+      !('database' in entry.command) ||
+      entry.command.database !== forecast.database ||
+      !opening ||
+      opening.host !== host
+    ) {
+      this.fail(host);
+      return;
+    }
+    entry.physicalForecasted = true;
+    let decision: 'admitted' | 'no-space' | 'unavailable' = 'admitted';
+    const reserved: NativeCapacityReservation[] = [];
+    try {
+      const root = opening.command.dataRoot ?? dirname(opening.path);
+      const admission = this.fileAdmissions.get(resolve(root));
+      if (!admission) throw new Error('Missing native capacity owner.');
+      const physicalRoot = dirname(opening.path);
+      for (const file of forecast.files) {
+        const target = resolve(file.path);
+        if (target !== physicalRoot && !target.startsWith(`${physicalRoot}/`))
+          throw new Error('Physical forecast is outside its admitted scope.');
+        reserved.push(
+          admission.forPath(target).reserve(
+            {
+              stagingBytes: 0n,
+              extractionBytes: 0n,
+              derivativeBytes: 0n,
+              publicationBytes: BigInt(file.publicationBytes),
+            },
+            'ordinary'
+          )
+        );
+      }
+      for (const reservation of reserved) {
+        entry.capacity.push(reservation);
+        host.capacity.add(reservation);
+      }
+    } catch (error) {
+      for (const reservation of reserved) reservation.release();
+      decision = error instanceof FileAdmissionError ? 'no-space' : 'unavailable';
+    }
+    try {
+      host.worker!.postMessage(
+        ControlPhysicalForecastDecisionSchema.parse({
+          version: CONTROL_WORKER_VERSION,
+          id: forecast.id,
+          database: forecast.database,
+          operation: 'physical-forecast',
+          decision,
+        })
+      );
+    } catch {
+      this.fail(host);
+    }
+  }
+
   /** Rejects unknown/miscorrelated wire meanings without falsely reporting rollback. */
   private receive(value: unknown, host: WriterHost): void {
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      'status' in value &&
+      value.status === 'physical-forecast'
+    ) {
+      this.receivePhysicalForecast(value, host);
+      return;
+    }
     if (!isControlWorkerReply(value)) {
       this.fail(host);
       return;

@@ -1,12 +1,25 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { LightAppAdmittedSchemaSchema, type LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { lightAppDbPath, lightAppRoot } from '../storage/app-db.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import {
   boundedKernelResponse,
@@ -450,14 +463,110 @@ describe('Light App migration recovery', () => {
     next.title = 'Renamed';
     await updateLightAppSchema(request(ctx), app.appId, 1, 1, next);
     const selected = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId).snapshots[0]!;
-    const pending = createRecord(request(ctx), app.appId, 'contacts', 2, { name: 'Later data' });
-    const restoring = rollbackLightAppSnapshot(request(ctx), app.appId, 2, selected.snapshotId);
-    expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId).schemaRevision).toBe(1);
+    const database = `app:${lightAppDbPath(ctx.dataRoot, ctx.workspaceId, app.appId)}`;
+    const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(database);
+    let writeSettled = false;
+    let restoreSettled = false;
+    const pending = createRecord(request(ctx), app.appId, 'contacts', 2, {
+      name: 'Later data',
+    }).then((result) => {
+      writeSettled = true;
+      return result;
+    });
+    const restoring = rollbackLightAppSnapshot(
+      request(ctx),
+      app.appId,
+      2,
+      selected.snapshotId
+    ).then((result) => {
+      restoreSettled = true;
+      return result;
+    });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      expect.soft(writeSettled).toBe(false);
+      expect.soft(restoreSettled).toBe(false);
+      expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId).schemaRevision).toBe(2);
+    } finally {
+      resume();
+    }
     await pending;
     await restoring;
+    expect(getLightApp(ctx.dataRoot, ctx.workspaceId, app.appId).schemaRevision).toBe(1);
     expect(
       listRecords(ctx.dataRoot, ctx.workspaceId, app.appId, 'contacts', { schemaRevision: 1 }).items
     ).toEqual([]);
+  });
+
+  it('refuses a rollback candidate whose inode changes after native admission', async () => {
+    const ctx = await context();
+    const app = await createLightApp(ctx, schema);
+    const next = proposal(app);
+    next.title = 'Changed before inode refusal';
+    await updateLightAppSchema(request(ctx), app.appId, 1, 1, next);
+    const selected = listLightAppSnapshots(ctx.dataRoot, ctx.workspaceId, app.appId).snapshots[0]!;
+    const canonicalPath = lightAppDbPath(ctx.dataRoot, ctx.workspaceId, app.appId);
+    const canonicalBefore = readFileSync(canonicalPath);
+    const canonicalInode = lstatSync(canonicalPath).ino;
+    const rollback = request(ctx);
+    const post = Worker.prototype.postMessage;
+    let substituted = false;
+    const intercepted = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+      this: Worker,
+      ...args: Parameters<Worker['postMessage']>
+    ) {
+      const message = args[0];
+      if (
+        !substituted &&
+        message?.operation === 'app-kernel' &&
+        message.input?.kind === 'rollback' &&
+        message.content instanceof ArrayBuffer
+      ) {
+        const input = JSON.parse(Buffer.from(message.content).toString('utf8')) as {
+          change?: { kind?: string; candidate?: { path?: string; ino?: string } };
+        };
+        const candidate = input.change?.candidate;
+        if (input.change?.kind === 'rollback' && candidate?.path && candidate.ino) {
+          const original = `${candidate.path}.original`;
+          renameSync(candidate.path, original);
+          copyFileSync(original, candidate.path);
+          expect(String(lstatSync(candidate.path).ino)).not.toBe(candidate.ino);
+          substituted = true;
+        }
+      }
+      return post.apply(this, args);
+    });
+    try {
+      await expect(
+        rollbackLightAppSnapshot(rollback, app.appId, 2, selected.snapshotId)
+      ).rejects.toMatchObject({
+        code: 'unavailable',
+        message: 'App rollback candidate identity changed.',
+      });
+    } finally {
+      intercepted.mockRestore();
+    }
+    expect(substituted).toBe(true);
+    expect(lstatSync(canonicalPath).ino).toBe(canonicalInode);
+    expect(readFileSync(canonicalPath)).toEqual(canonicalBefore);
+    const inspect = new Database(canonicalPath, { fileMustExist: true, readonly: true });
+    try {
+      expect(
+        inspect
+          .prepare('SELECT COUNT(*) FROM idempotency_requests WHERE request_id = ?')
+          .pluck()
+          .get(rollback.requestId)
+      ).toBe(0);
+    } finally {
+      inspect.close();
+    }
+    const restored = await rollbackLightAppSnapshot(
+      request(ctx),
+      app.appId,
+      2,
+      selected.snapshotId
+    );
+    expect(restored.schemaRevision).toBe(1);
   });
 
   it('refuses fresh snapshot restore and format upgrade after retirement while preserving completed restore replay', async () => {
@@ -573,13 +682,31 @@ describe('Light App migration recovery', () => {
     unchanged.close();
     rmSync(snapshotDirectory);
     const upgrade = request(ctx);
-    const interrupted = vi.spyOn(ctx.store, 'recordCommandRequest').mockImplementationOnce(() => {
+    const client = getControlStoreWorkerClient();
+    const appKernel = client.appKernel.bind(client);
+    let journalCommitted = false;
+    const interrupted = vi.spyOn(client, 'appKernel').mockImplementation(async (...args) => {
+      if (args[1].change.kind !== 'format-complete') return appKernel(...args);
+      const journal = new Database(path, { fileMustExist: true, readonly: true });
+      try {
+        journalCommitted =
+          journal
+            .prepare('SELECT COUNT(*) FROM __drizzle_migrations WHERE created_at = 1792367635406')
+            .pluck()
+            .get() === 1;
+      } finally {
+        journal.close();
+      }
       throw new Error('Simulated interruption after native journal commit.');
     });
-    await expect(upgradeLightAppFormat(upgrade, app.appId, 1)).rejects.toThrow(
-      'Simulated interruption'
-    );
-    interrupted.mockRestore();
+    try {
+      await expect(upgradeLightAppFormat(upgrade, app.appId, 1)).rejects.toThrow(
+        'Simulated interruption'
+      );
+    } finally {
+      interrupted.mockRestore();
+    }
+    expect(journalCommitted).toBe(true);
     const restarted = {
       ...upgrade,
       store: await createDemoStore({ dataRoot: ctx.dataRoot }),

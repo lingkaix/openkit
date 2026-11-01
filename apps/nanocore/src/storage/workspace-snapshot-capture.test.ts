@@ -38,7 +38,12 @@ import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recove
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { createLightApp, createRecord } from '../generative-kernel/commands.js';
+import {
+  createLightApp,
+  createRecord,
+  getLightApp,
+  listRecords,
+} from '../generative-kernel/commands.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import { publishWorkspaceNotebook } from '../knowledge/notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
@@ -46,7 +51,10 @@ import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-
 import { AutomationStore } from '../lib/automation-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
-import { createOperationInvocation } from '../operation-composition.js';
+import {
+  createOperationInvocation,
+  type OperationInvocationDependencies,
+} from '../operation-composition.js';
 import { OperationError, projectOperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
@@ -90,6 +98,7 @@ import {
   createWorkspaceInvitation,
   getWorkspaceRegistryLifecycleFact,
 } from '../workspace-sharing.js';
+import { lightAppDbPath } from './app-db.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   type ControlTerminalTransition,
@@ -426,6 +435,21 @@ function databaseRows(bytes: Buffer | string, root: string): Record<string, unkn
           .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
       ])
     );
+  } finally {
+    db.close();
+  }
+}
+
+/** Reads the complete authored SQLite schema without treating page placement as content. */
+function databaseSchema(path: string): unknown[] {
+  const db = new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    return db
+      .prepare(
+        `SELECT type, name, tbl_name AS tableName, sql FROM sqlite_schema
+         ORDER BY type, name, tbl_name`
+      )
+      .all();
   } finally {
     db.close();
   }
@@ -2127,10 +2151,15 @@ describe('C-a nonwaiting native holds', () => {
 });
 
 /** Composes the ordinary public lifecycle operation with real authority, request and registry owners. */
-function deletionOperations(f: Fixture) {
-  const cleanup = vi.fn(async (_workspaceId: string) => {
+function deletionOperations(
+  f: Fixture,
+  cleanup = vi.fn(async (_workspaceId: string): Promise<void> => {
     throw new Error('Unexpected external MCP cleanup.');
-  });
+  }),
+  releaseIdentity?: NonNullable<
+    OperationInvocationDependencies['diagnosticsServices']
+  >['releaseIdentity']
+) {
   const invoke = createOperationInvocation({
     coreDb: f.coreDb,
     dataRoot: f.dataRoot,
@@ -2138,6 +2167,13 @@ function deletionOperations(f: Fixture) {
     fileAdmission: f.policy.admission,
     workspaceMutationAdmission: f.mutationAdmission,
     closeWorkspaceMcpSessions: cleanup,
+    ...(releaseIdentity
+      ? {
+          diagnosticsServices: { releaseIdentity } as NonNullable<
+            OperationInvocationDependencies['diagnosticsServices']
+          >,
+        }
+      : {}),
     inflightCommands: new WeakMap(),
     repositoryWorkspaceDb: (selected) => {
       const db = openWorkspaceDb(f.dataRoot, selected);
@@ -2286,6 +2322,92 @@ describe('C-a capture and existing deletion ownership', () => {
     expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([
       expect.objectContaining({ requestId: deletion.request.requestId, phase: 'requested' }),
     ]);
+  }, 120_000);
+
+  it('keeps the Workspace root in place when a dependent App close loses its native host', async () => {
+    const f = await fixture();
+    const context = {
+      ...f,
+      workspaceId,
+      actor: { kind: 'user' as const, id: f.ownerId },
+      requestId: randomUUID(),
+      inflightCommands: new WeakMap(),
+    };
+    const app = await createLightApp(context, {
+      format: 'openkit.light-app',
+      schemaVersion: 1,
+      title: 'Dependent close fixture',
+      purpose: 'Keep the owning Workspace root until every App close succeeds.',
+      collections: [
+        {
+          name: 'facts',
+          type: 'base',
+          description: 'One valid collection keeps the native App scope open.',
+          fields: [{ name: 'value', type: 'text', required: true, description: 'Fixture value.' }],
+          indexes: [],
+        },
+      ],
+    });
+    const appPath = lightAppDbPath(f.dataRoot, workspaceId, app.appId);
+    const appInode = lstatSync(appPath).ino;
+    const appRows = databaseRows(appPath, f.root);
+    const appSchema = databaseSchema(appPath);
+    const appDatabase = `app:${appPath}`;
+    const workspaceDatabase = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+    const cleanup = vi.fn(async (_workspaceId: string): Promise<void> => undefined);
+    const deletion = deletionOperations(f, cleanup, {
+      releaseTag: release.version,
+      sourceCommit: release.buildId,
+    });
+    const post = Worker.prototype.postMessage;
+    let closePosted = false;
+    let workspaceClosePosts = 0;
+    let boundaryTree: ReturnType<typeof tree> | undefined;
+    let boundaryInode: number | undefined;
+    let termination: Promise<number> | undefined;
+    const intercepted = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+      this: Worker,
+      ...args: Parameters<Worker['postMessage']>
+    ) {
+      const message = args[0];
+      if (message?.operation === 'close' && message.database === workspaceDatabase)
+        workspaceClosePosts += 1;
+      const result = post.apply(this, args);
+      if (!closePosted && message?.operation === 'close' && message.database === appDatabase) {
+        closePosted = true;
+        boundaryTree = tree(f.workspaceRoot);
+        boundaryInode = lstatSync(f.workspaceRoot).ino;
+        termination = this.terminate();
+      }
+      return result;
+    });
+    let refusal: unknown;
+    try {
+      refusal = await deletion
+        .invoke('workspace.delete', deletion.request, deletion.context)
+        .catch((error: unknown) => error);
+    } finally {
+      intercepted.mockRestore();
+      await termination;
+    }
+    expect(closePosted).toBe(true);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(workspaceClosePosts).toBe(0);
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith(workspaceId);
+    expect(lstatSync(f.workspaceRoot).ino).toBe(boundaryInode);
+    expect(lstatSync(appPath).ino).toBe(appInode);
+    expect(databaseRows(appPath, f.root)).toEqual(appRows);
+    expect(databaseSchema(appPath)).toEqual(appSchema);
+    expect(boundaryTree).toBeDefined();
+    const beforeClose = { ...boundaryTree };
+    const afterClose = tree(f.workspaceRoot);
+    const appEntry = appPath.slice(f.workspaceRoot.length);
+    // The posted close may checkpoint unchanged SQLite pages into the same main inode.
+    for (const carrier of [appEntry, `${appEntry}-wal`, `${appEntry}-shm`]) {
+      delete beforeClose[carrier];
+      delete afterClose[carrier];
+    }
+    expect(afterClose).toEqual(beforeClose);
   }, 120_000);
 
   it.each([
@@ -4638,6 +4760,194 @@ describe('C-a independent sealed generations', () => {
     } finally {
       db.sqlite.close();
     }
+  }, 120_000);
+
+  it('drains a posted App write into the cut and refuses later target mutation without freezing a sibling', async () => {
+    const f = await fixture();
+    const context = {
+      ...f,
+      workspaceId,
+      actor: { kind: 'user' as const, id: f.ownerId },
+      requestId: randomUUID(),
+      inflightCommands: new WeakMap(),
+    };
+    const schema = {
+      format: 'openkit.light-app' as const,
+      schemaVersion: 1 as const,
+      title: 'Capture fence notes',
+      purpose: 'Prove one exact App cut across native capture admission.',
+      collections: [
+        {
+          name: 'notes',
+          type: 'base' as const,
+          description: 'Captured notes.',
+          fields: [
+            { name: 'text', type: 'text' as const, required: true, description: 'Note text.' },
+          ],
+          indexes: [],
+        },
+      ],
+    };
+    const app = await createLightApp(context, schema);
+    await createRecord(
+      { ...context, requestId: randomUUID() },
+      app.appId,
+      'notes',
+      app.schemaRevision,
+      { text: 'Existing row before capture.' }
+    );
+    const client = getControlStoreWorkerClient();
+    const appDatabase = `app:${lightAppDbPath(f.dataRoot, workspaceId, app.appId)}`;
+    const post = vi.spyOn(Worker.prototype, 'postMessage');
+    let forwardAck: (() => void) | undefined;
+    let ackForwarded = false;
+    let acknowledge!: () => void;
+    const ackArrived = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    captureWorkerProbe.onNativeMessage = (worker, value) => {
+      if (!value || typeof value !== 'object' || !('id' in value)) return false;
+      const request = post.mock.calls.find(
+        ([message]) =>
+          message?.operation === 'app-kernel' &&
+          message.database === appDatabase &&
+          message.input?.kind === 'record-create'
+      )?.[0];
+      if (!request || value.id !== request.id || forwardAck) return false;
+      forwardAck = () => {
+        if (ackForwarded) return;
+        ackForwarded = true;
+        captureWorkerProbe.onNativeMessage = undefined;
+        worker.emit('message', value);
+      };
+      acknowledge();
+      return true;
+    };
+    const postedRequestId = randomUUID();
+    let postedSettled = false;
+    const posted = createRecord(
+      { ...context, requestId: postedRequestId },
+      app.appId,
+      'notes',
+      app.schemaRevision,
+      { text: 'Posted before capture.' }
+    ).finally(() => {
+      postedSettled = true;
+    });
+    await Promise.race([
+      ackArrived,
+      posted.then(() => {
+        throw new Error('App write settled before its native acknowledgement was released.');
+      }),
+    ]);
+    expect(postedSettled).toBe(false);
+    let beginDrain!: () => void;
+    const drainStarted = new Promise<void>((resolve) => {
+      beginDrain = resolve;
+    });
+    const tryPause = client.tryPauseForWorkspaceCapture.bind(client);
+    const hold = vi.spyOn(client, 'tryPauseForWorkspaceCapture').mockImplementation((...args) => {
+      const pending = tryPause(...args);
+      if (args[0] === `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`) beginDrain();
+      return pending;
+    });
+    let resume!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const copy = holdCapturePhase('db-backup', async () => {
+      enter();
+      await barrier;
+    });
+    const capturing = createWorkspaceBackup(f.input());
+    const laterRequestId = randomUUID();
+    let captured: Awaited<typeof capturing>;
+    let postedRecord: Awaited<typeof posted>;
+    let siblingWorkspaceId!: string;
+    let siblingApp!: Awaited<ReturnType<typeof createLightApp>>;
+    let siblingRecord!: Awaited<ReturnType<typeof createRecord>>;
+    try {
+      await Promise.race([
+        drainStarted,
+        capturing.then(() => {
+          throw new Error('Capture did not start its native App drain.');
+        }),
+      ]);
+      expect(postedSettled).toBe(false);
+      forwardAck!();
+      await Promise.race([
+        entered,
+        capturing.then(() => {
+          throw new Error('Capture did not reach its App database-copy boundary.');
+        }),
+      ]);
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      postedRecord = await posted;
+      await expect(
+        createRecord(
+          { ...context, requestId: laterRequestId },
+          app.appId,
+          'notes',
+          app.schemaRevision,
+          { text: 'Refused after capture freeze.' }
+        )
+      ).rejects.toMatchObject({ code: 'workspace_frozen' });
+      const sibling = await f.store.createWorkspace('Capture App sibling');
+      siblingWorkspaceId = sibling.id;
+      const siblingContext = { ...context, workspaceId: sibling.id, requestId: randomUUID() };
+      siblingApp = await createLightApp(siblingContext, schema);
+      siblingRecord = await createRecord(
+        { ...siblingContext, requestId: randomUUID() },
+        siblingApp.appId,
+        'notes',
+        siblingApp.schemaRevision,
+        { text: 'Sibling stays writable.' }
+      );
+    } finally {
+      forwardAck?.();
+      resume();
+      copy.mockRestore();
+      hold.mockRestore();
+      captureWorkerProbe.onNativeMessage = undefined;
+      post.mockRestore();
+      captured = await capturing;
+    }
+    expect(captured.disposition).toBe('sealed');
+    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    await f.read(captured.manifest.backupId, async (bundle) => {
+      const rows = databaseRows(await bytes(bundle, `light-apps/${app.appId}/data.sqlite`), f.root);
+      expect(JSON.stringify(rows)).toContain(postedRecord.id);
+      expect(rows.idempotency_requests).toEqual(
+        expect.arrayContaining([expect.objectContaining({ request_id: postedRequestId })])
+      );
+      expect(rows.audit_events).toEqual(
+        expect.arrayContaining([expect.objectContaining({ request_id: postedRequestId })])
+      );
+      expect(JSON.stringify(rows)).not.toContain(laterRequestId);
+      expect(JSON.stringify(rows)).not.toContain('Refused after capture freeze.');
+      expect(JSON.stringify(rows)).not.toContain(siblingRecord.id);
+    });
+    await shutdownControlStoreWorkerClient();
+    expect(getLightApp(f.dataRoot, workspaceId, app.appId)).toMatchObject({
+      appId: app.appId,
+      schemaRevision: app.schemaRevision,
+    });
+    expect(
+      listRecords(f.dataRoot, workspaceId, app.appId, 'notes', {
+        schemaRevision: app.schemaRevision,
+      })
+        .items.map((record) => record.data.text)
+        .toSorted()
+    ).toEqual(['Existing row before capture.', 'Posted before capture.'].toSorted());
+    expect(
+      listRecords(f.dataRoot, siblingWorkspaceId, siblingApp.appId, 'notes', {
+        schemaRevision: siblingApp.schemaRevision,
+      }).items
+    ).toEqual([siblingRecord]);
   }, 120_000);
 
   it('rejects a linked mutable source, preserves the previous seal, and releases target admission', async () => {

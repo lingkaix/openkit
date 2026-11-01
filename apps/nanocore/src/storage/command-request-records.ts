@@ -152,6 +152,7 @@ export function recordCommandRequestRecordInDb(
   record: CommandRequestRecord
 ): void {
   assertCommandRequestDbOwner(db, record.scope);
+  if (db.scope === 'app') assertControlProductWriter(db.sqlite);
   if (
     (db.scope === 'core' || db.scope === 'workspace') &&
     (isControlNativeReceiptCommand(record.command, db.scope) || nativeEvaluationReceipt(db, record))
@@ -286,7 +287,7 @@ export function getCommandRequestRecord(
     : openCommandRequestDb(dataRoot, owner);
 
   try {
-    if (!workerOwnedKey) pruneCommandRequestRecords(db, referenceTime);
+    if (!workerOwnedKey && db.scope !== 'app') pruneCommandRequestRecords(db, referenceTime);
     return getCommandRequestRecordFromDb(db, key, referenceTime);
   } finally {
     if (reader) reader.close();
@@ -559,7 +560,7 @@ export function listCommandRequestRecords(
  */
 function openCommandRequestDb(dataRoot: string, owner: CommandRequestOwner): CommandRequestDb {
   if (owner.scope === 'app') {
-    return openExistingAppDb(dataRoot, owner.workspaceId, owner.appId);
+    return openExistingAppDb(dataRoot, owner.workspaceId, owner.appId, 'format-upgrade');
   }
   const db =
     owner.scope === 'core'

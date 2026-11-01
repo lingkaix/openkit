@@ -286,6 +286,11 @@ test('reopens every SQL family and its linked file owners with exact readback', 
         requestId: '00000000-0000-4000-8000-000000000904',
         response: { kind: 'light_app_record', id: input.selectors.sql.lightAppRecordId },
       },
+      {
+        command: 'kernel.schema.update',
+        requestId: '00000000-0000-4000-8000-000000000905',
+        response: { kind: 'light_app', id: input.selectors.sql.lightAppId },
+      },
     ]
   );
   for (const receipt of lightAppReceipts) {

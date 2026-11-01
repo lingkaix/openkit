@@ -108,6 +108,7 @@ function kernelContext(
     workspaceId: input.workspaceId,
     requestId: input.requestId ?? '',
     actor: invocation.actorRef,
+    recheckAdmission: invocation.recheckAdmission,
     ...(input.requestId === undefined
       ? {}
       : kernelExecutionLineage(store, input.workspaceId, invocation)),

@@ -27,6 +27,15 @@ import {
   isBetterAuthRefusal,
 } from '../auth/better-auth-codecs.js';
 import {
+  ControlAppRefusalSchema,
+  type ControlAppResult,
+  ControlAppResultSchema,
+  type ControlAppScope,
+  ControlAppScopeSchema,
+  type ControlAppWire,
+  ControlAppWireSchema,
+} from '../generative-kernel/native-command-codecs.js';
+import {
   type ControlGenerativePresentationWire,
   ControlGenerativePresentationWireSchema,
 } from '../generative-ui/native-publication-codecs.js';
@@ -137,7 +146,46 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 31;
+export const CONTROL_WORKER_VERSION = 32;
+
+/** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
+export const ControlPhysicalForecastSchema = z
+  .object({
+    version: z.literal(CONTROL_WORKER_VERSION),
+    id: z.number().int().nonnegative().safe(),
+    database: z.string().min(1),
+    status: z.literal('physical-forecast'),
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string().refine(isAbsolute),
+            publicationBytes: z.number().int().nonnegative().safe(),
+          })
+          .strict()
+      )
+      .min(1),
+  })
+  .strict()
+  .refine(
+    (forecast) =>
+      new Set(forecast.files.map((file) => file.path)).size === forecast.files.length &&
+      Buffer.byteLength(JSON.stringify(forecast)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+  );
+
+/** Synchronous admission answer for the existing request, never another queued operation. */
+export const ControlPhysicalForecastDecisionSchema = z
+  .object({
+    version: z.literal(CONTROL_WORKER_VERSION),
+    id: z.number().int().nonnegative().safe(),
+    database: z.string().min(1),
+    operation: z.literal('physical-forecast'),
+    decision: z.enum(['admitted', 'no-space', 'unavailable']),
+  })
+  .strict();
+
+/** Exact post-predecessor publication forecast on each affected filesystem. */
+export type ControlPhysicalForecastFiles = z.infer<typeof ControlPhysicalForecastSchema>['files'];
 
 /** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
 export const ControlProvenanceInputSchema = z
@@ -251,10 +299,17 @@ export type ControlWorkerCommand =
           readonly initialize?: ControlInitializationScope;
           /** Explicit admitted product owner; absent on legacy primitive-only fixture scopes. */
           readonly productOwner?: ControlProductOwner;
+          /** Exact App physical binding, never a retained product owner. */
+          readonly physicalScope?: ControlAppScope;
           /** Exact admitted root for same-connection scoped domain bodies; never inferred from a caller-selected database key. */
           readonly dataRoot?: string;
           /** Admitted private Storage binding; never derived from an incoming content locator. */
           readonly contentMount?: ControlProductContentMount;
+        }
+      | {
+          readonly operation: 'app-kernel';
+          readonly input: ControlAppWire;
+          readonly content: ArrayBuffer;
         }
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
       | { readonly operation: 'recovery-history'; readonly workspaceId: string }
@@ -346,6 +401,7 @@ export function controlWorkerInputBytes(
             (command.operation === 'capability' ||
               command.operation === 'observation' ||
               command.operation === 'generative-presentation' ||
+              command.operation === 'app-kernel' ||
               command.operation === 'thread-read-membership') &&
             key === 'content' &&
             this === command
@@ -420,6 +476,7 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 /** Trusted domain refusals preserve the existing public contract; native SQL diagnostics never enter this projection. */
 interface OrdinaryControlWorkerDomainRefusal {
   readonly operation:
+    | 'app-kernel'
     | 'provenance'
     | 'admin-recovery'
     | 'better-auth'
@@ -441,6 +498,13 @@ interface OrdinaryControlWorkerDomainRefusal {
   readonly status: number;
   /** Trusted original owner class for this capability refusal. */
   readonly kind?: 'operation' | 'mcp' | 'turn' | 'pending';
+  readonly appDetails?: {
+    readonly path?: string | undefined;
+    readonly limit?: string | undefined;
+    readonly maximum?: number | undefined;
+    readonly expectedRevision?: number | undefined;
+    readonly currentRevision?: number | undefined;
+  };
 }
 
 /** Existing native refusals plus the sharing family's exact current-record projection. */
@@ -480,6 +544,12 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'better-auth';
       readonly result: ControlBetterAuthResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'app-kernel';
+      readonly result: ControlAppResult;
+      readonly identity?: string;
     }
   | { readonly status: 'ok'; readonly operation: 'recovery-history'; readonly done: boolean }
   | { readonly status: 'ok'; readonly operation: 'recovery-seal'; readonly digest: string | null }
@@ -634,6 +704,9 @@ function isSqlResult(value: unknown): boolean {
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
   if (isRecord(value) && value.operation === 'core-sharing')
     return ControlCoreSharingRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'app-kernel')
+    return ControlAppRefusalSchema.safeParse(value).success;
+
   return (
     isRecord(value) &&
     exactFields(value, ['operation', 'code', 'message', 'status'], ['kind']) &&
@@ -746,6 +819,13 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlBetterAuthResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'admin-recovery')
     return typeof reply.auditEventId === 'string' && reply.auditEventId.length > 0;
+  if (reply.operation === 'app-kernel')
+    return (
+      exactFields(reply, ['version', 'id', 'status', 'operation', 'result'], ['identity']) &&
+      (reply.identity === undefined ||
+        (typeof reply.identity === 'string' && /^\d+:\d+$/.test(reply.identity))) &&
+      ControlAppResultSchema.safeParse(reply.result).success
+    );
   if (reply.operation === 'thread-read-membership')
     return ThreadReadMembershipResultSchema.safeParse(reply.itemIds).success;
   if (reply.operation === 'generative-presentation')
@@ -1085,13 +1165,19 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(
         value,
         [...scoped, 'path', 'create'],
-        ['initialize', 'productOwner', 'dataRoot', 'contentMount']
+        ['initialize', 'productOwner', 'physicalScope', 'dataRoot', 'contentMount']
       ) &&
       typeof value.path === 'string' &&
       isAbsolute(value.path) &&
       typeof value.create === 'boolean' &&
       (value.dataRoot === undefined ||
         (typeof value.dataRoot === 'string' && isAbsolute(value.dataRoot))) &&
+      (value.physicalScope === undefined ||
+        (ControlAppScopeSchema.safeParse(value.physicalScope).success &&
+          value.productOwner === undefined &&
+          value.initialize === undefined &&
+          value.contentMount === undefined &&
+          typeof value.dataRoot === 'string')) &&
       (value.productOwner === undefined ||
         StoredWorkOwnerV1Schema.safeParse(value.productOwner).success) &&
       (value.contentMount === undefined ||
@@ -1171,6 +1257,14 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       ControlWorkerRejectedEvidenceSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  if (value.operation === 'app-kernel') {
+    const parsed = ControlAppWireSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
   if (value.operation === 'thread-read-membership') {
     const parsed = ControlThreadReadMembershipWireSchema.safeParse(value.input);
     return (

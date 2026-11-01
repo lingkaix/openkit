@@ -101,6 +101,8 @@ These records still belong to the core model. SQLite being their source of truth
 
 Each Light App data kernel, defined in [Generative Apps](generative-apps.md), requires an explicit bounded canonical record contract, including schema evolution, constraints, and complete portability from its first implementation. Generative UI declarations, saved view definitions, source results, and business records remain distinct data classes with explicit owners; a rendered or cached view cannot repair or replace missing business authority. Each Light App has an independent schema/data recovery unit; a per-app SQLite realization remains under the Workspace storage owner, not a separate database service. Independent app stores remain under existing storage ownership; neither concept authorizes a second storage plane, implicit generalization of an existing text record, or omission from backup and export coverage.
 
+When an admitted Workspace lifecycle closes its exact canonical database before replacing or removing that Workspace root, that same close owner MUST first drain and close every already-open App database beneath the exact bound root; its proof authorizes those dependent closes only and MUST NOT authorize App publication.
+
 ### Item Log Invariants
 
 Item logs MUST be append-only.

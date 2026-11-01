@@ -69,13 +69,16 @@ export function applyAppMigrations(
   sqlite: SetupDb['sqlite'],
   beforePendingMigration?: () => void
 ): void {
+  if (hasPendingAppMigrations(sqlite)) beforePendingMigration?.();
+  applyNativeScopeMigrations(sqlite, 'app', findMigrationsFolder('app'));
+}
+
+/** Reads the existing App journal before its recovery copy and native DDL are prepared. */
+export function hasPendingAppMigrations(sqlite: SetupDb['sqlite']): boolean {
   const migrationsFolder = findMigrationsFolder('app');
   const journal = readJournal(migrationsFolder);
   const applied = listAppliedNativeMigrationIds(sqlite, 'app', migrationsFolder);
-  if (journal.entries.some((entry) => !applied.includes(`app_${entry.tag}`))) {
-    beforePendingMigration?.();
-  }
-  applyNativeScopeMigrations(sqlite, 'app', migrationsFolder);
+  return journal.entries.some((entry) => !applied.includes(`app_${entry.tag}`));
 }
 
 /**

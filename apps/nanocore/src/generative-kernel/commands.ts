@@ -1,26 +1,42 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { copyVerifiedFile, createDirectoryExclusive, removeDurableFile } from '@openkit/storage';
+import { syncCanonicalDirectoryAsync } from '../storage/canonical-filesystem.js';
 import {
-  closeSync,
-  constants,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-} from 'node:fs';
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import {
+  asObject,
+  boundedKernelResponse,
+  catalogItemFromMetadata,
+  columnFor,
+  mapAppSqliteError as mapSqliteError,
+  parseFields,
+  projectApp,
+  projectRecord,
+  projectRestoredApp,
+  readMetadata,
+  readProjectedRecord,
+  replayBatch,
+  replayNamedRecord,
+  requireCurrentSchema,
+  resolveCollection,
+} from './app-model.js';
+import {
+  type ControlAppInput,
+  ControlAppInputSchema,
+  type ControlAppResult,
+} from './native-command-codecs.js';
+
+export { assertKernelMutationRequestSize, boundedKernelResponse } from './app-model.js';
+
+import { randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type CreateLightAppResponse,
   type GetLightAppResponse,
   LIGHT_APP_CAPABILITIES,
-  LIGHT_APP_KERNEL_FORMAT_VERSION,
   type LightAppAdmittedCollection,
-  type LightAppAdmittedSchema,
-  LightAppAdmittedSchemaSchema,
   type LightAppBatchRequest,
   type LightAppBatchResponse,
   type LightAppCatalogItem,
@@ -35,82 +51,31 @@ import {
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
 import { compareCodeUnits } from '@openkit/protocol';
-import Database from 'better-sqlite3';
-
-import { recordAppAuditEvent } from '../audit-events.js';
-import type { CommandRequestName, CommandRequestRecord, FsStore } from '../lib/store.js';
+import type Database from 'better-sqlite3';
+import type { FsStore } from '../lib/store.js';
 import {
-  commandInputHash,
-  IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import {
   type AppDb,
   assertAppDefinitionMatches,
-  createAppDb,
-  isSqliteBusy,
   lightAppDbPath,
   lightAppRoot,
   lightAppsRoot,
+  openAppDbReadOnly,
   openExistingAppDb,
-  writeDurableFile,
 } from '../storage/app-db.js';
-import { applyAppMigrations } from '../storage/migrate.js';
 import { KernelCommandError } from './errors.js';
 import { compileRecordFilter } from './filter.js';
-import {
-  additiveSchemaDdl,
-  collectionTableName,
-  createSchemaDdl,
-  fieldColumnName,
-  quoteIdent,
-} from './native.js';
-import { admitLightAppSchema, assertSafeSchemaEvolution } from './schema.js';
-import {
-  assertSnapshotIntegrity,
-  readLightAppSnapshot,
-  readLightAppSnapshots,
-  snapshotLightApp,
-} from './snapshots.js';
+import { collectionTableName, quoteIdent } from './native.js';
+import { admitLightAppSchema } from './schema.js';
+import { assertSnapshotRelations, readLightAppSnapshots } from './snapshots.js';
 import { allocateAppId, allocateRecordId } from './uuid.js';
-import { encodeSqlValue, normalizeLightAppFieldValue } from './values.js';
 
 const APP_DIRECTORY_LIMIT = LIGHT_APP_CAPABILITIES.maxAppDirectories;
-const RECORD_LIMIT = LIGHT_APP_CAPABILITIES.maxRecords;
-const DATA_OBJECT_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxDataObjectBytes;
-const MUTATION_REQUEST_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxMutationRequestBytes;
-const READ_RESPONSE_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxReadResponseBytes;
-const BATCH_POST = /^\/api\/collections\/([^/]+)\/records$/;
-const BATCH_PATCH = /^\/api\/collections\/([^/]+)\/records\/([^/]+)$/;
-
-/**
- * Refuses oversized logical mutation input before any Kernel effect.
- *
- * @param input Complete admitted operation input, including its resource and request identity.
- */
-export function assertKernelMutationRequestSize(input: unknown): void {
-  if (Buffer.byteLength(JSON.stringify(input), 'utf8') > MUTATION_REQUEST_BYTE_LIMIT)
-    throw new KernelCommandError('limit_exceeded', 'Mutation request exceeds 1 MiB.', {
-      limit: 'mutationRequestBytes',
-      maximum: MUTATION_REQUEST_BYTE_LIMIT,
-    });
-}
-
-/**
- * Checks the complete projection without truncation; mutation callers use it before commit.
- *
- * @param response Complete Kernel projection or expanded meaning response.
- * @returns The unchanged bounded response.
- */
-export function boundedKernelResponse<T>(response: T): T {
-  if (Buffer.byteLength(JSON.stringify(response), 'utf8') > READ_RESPONSE_BYTE_LIMIT)
-    throw new KernelCommandError('limit_exceeded', 'Read response exceeds 2 MiB.', {
-      limit: 'readResponseBytes',
-      maximum: READ_RESPONSE_BYTE_LIMIT,
-    });
-  return response;
-}
+const _RECORD_LIMIT = LIGHT_APP_CAPABILITIES.maxRecords;
+const _DATA_OBJECT_BYTE_LIMIT = LIGHT_APP_CAPABILITIES.maxDataObjectBytes;
 
 /** Shared Kernel command execution context. */
 export interface KernelCommandContext {
@@ -128,6 +93,8 @@ export interface KernelCommandContext {
   readonly execution?: { readonly threadId: string; readonly turnId: string };
   /** Caller request id. */
   readonly requestId: string;
+  /** Repeat current authority after native or immutable preparation awaits. */
+  readonly recheckAdmission?: (() => Promise<void>) | undefined;
 }
 
 /** Raw explicit catalog request bound by the existing app-local receipt. */
@@ -138,43 +105,19 @@ export interface LightAppRequestedDefinition {
   readonly digest?: string | undefined;
 }
 
-/** Current admitted app metadata stored with Kernel data. */
-type AppMetadataRow = {
-  appId: string;
-  workspaceId: string;
-  title: string;
-  purpose: string;
-  appRevision: number;
-  schemaRevision: number;
-  schemaDigest: string;
-  schemaJson: string;
-  lifecycle: 'active' | 'retired';
-  kernelFormatVersion: number;
-  definitionSourceJson: string | null;
-};
-
 type KernelCommandSpec<T> = {
-  command: CommandRequestName;
+  command: ControlAppInput['receipt']['command'];
   responseKind: 'light_app' | 'light_app_record' | 'light_app_batch';
   input: unknown;
-  execute: () => T;
-  replay: (record: CommandRequestRecord) => T;
+  change:
+    | Exclude<ControlAppInput['change'], { kind: 'rollback' }>
+    | Pick<
+        Extract<ControlAppInput['change'], { kind: 'rollback' }>,
+        'kind' | 'expectedAppRevision' | 'snapshotId'
+      >;
+  replay: (db: AppDb) => T;
   responseId: (result: T) => string;
 };
-
-type ParsedBatchEntry =
-  | {
-      method: 'POST';
-      collection: LightAppAdmittedCollection;
-      data: Record<string, string | number | boolean | null>;
-    }
-  | {
-      method: 'PATCH';
-      collection: LightAppAdmittedCollection;
-      recordId: string;
-      expectedRecordRevision: number;
-      data: Record<string, string | number | boolean | null>;
-    };
 
 /**
  * Lists Light Apps by scanning app directories.
@@ -222,52 +165,19 @@ export async function createLightApp(
 ): Promise<CreateLightAppResponse> {
   if (sourceSelection) LightAppDefinitionSourceSchema.parse(sourceSelection);
   const appId = allocateAppId(context.workspaceId, context.requestId);
-  const appRoot = lightAppRoot(context.dataRoot, context.workspaceId, appId);
-  if (existsSync(appRoot)) {
-    return replayOrRecoverCreate(context, appId, schema, sourceSelection, requestedDefinition);
-  }
-  // Selected catalog definitions already have Core-assigned identities.
-  const admitted = sourceSelection
-    ? LightAppAdmittedSchemaSchema.parse({ ...schema, appId, schemaRevision: 1 })
-    : admitLightAppSchema(schema, appId, 1);
-  ensureLightAppsInventory(context.dataRoot, context.workspaceId);
-  if (countAppDirectories(context.dataRoot, context.workspaceId) >= APP_DIRECTORY_LIMIT) {
-    throw new KernelCommandError('limit_exceeded', 'Workspace Light App limit exceeded.', {
-      limit: 'apps',
-      maximum: APP_DIRECTORY_LIMIT,
-    });
-  }
-  try {
-    mkdirSync(appRoot);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-      return replayOrRecoverCreate(context, appId, schema, sourceSelection, requestedDefinition);
-    }
-    throw error;
-  }
-  const schemaJson = `${JSON.stringify(admitted)}\n`;
-  const schemaDigest = persistDefinition(appRoot, schemaJson);
-  const appDb = createAppDb(context.dataRoot, context.workspaceId, appId);
-  try {
-    return await runKernelCommand(context, appDb, {
-      command: 'kernel.apps.create',
-      responseKind: 'light_app',
-      input: requestedDefinition ? { requestedDefinition } : { schema, sourceSelection },
-      execute: () =>
-        commitNewApp(appDb, context, {
-          admitted,
-          schemaDigest,
-          schemaJson,
-          ...(sourceSelection ? { sourceSelection } : {}),
-        }),
-      replay: () => projectApp(appDb),
-      responseId: (result) => result.appId,
-    });
-  } catch (error) {
-    throw mapSqliteError(error);
-  } finally {
-    if (appDb.sqlite.open) appDb.sqlite.close();
-  }
+  return runNativeAppCommand(context, appId, {
+    command: 'kernel.apps.create',
+    responseKind: 'light_app',
+    input: requestedDefinition ? { requestedDefinition } : { schema, sourceSelection },
+    change: {
+      kind: 'create',
+      schema,
+      ...(sourceSelection ? { sourceSelection } : {}),
+      ...(requestedDefinition ? { requestedDefinition } : {}),
+    },
+    replay: (db) => projectApp(db),
+    responseId: (result) => result.appId,
+  });
 }
 
 /**
@@ -325,85 +235,22 @@ export async function updateLightAppSchema(
   requestedDefinition?: LightAppRequestedDefinition
 ): Promise<CreateLightAppResponse> {
   if (sourceSelection) LightAppDefinitionSourceSchema.parse(sourceSelection);
-  return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) => {
-    return runKernelCommand(context, appDb, {
-      command: 'kernel.schema.update',
-      responseKind: 'light_app',
-      input: requestedDefinition
-        ? { expectedAppRevision, expectedSchemaRevision, requestedDefinition }
-        : { expectedAppRevision, expectedSchemaRevision, schema, sourceSelection },
-      execute: () => {
-        const current = readMetadata(appDb);
-        assertWritable(current);
-        if (current.appRevision !== expectedAppRevision) {
-          throw new KernelCommandError('conflict', 'App revision is stale.', {
-            path: 'expectedAppRevision',
-            expectedRevision: expectedAppRevision,
-            currentRevision: current.appRevision,
-          });
-        }
-        if (current.schemaRevision !== expectedSchemaRevision) {
-          throw new KernelCommandError('conflict', 'Schema revision is stale.', {
-            path: 'expectedSchemaRevision',
-            expectedRevision: expectedSchemaRevision,
-            currentRevision: current.schemaRevision,
-          });
-        }
-        const schemaRevision = nextSchemaRevision(appDb, current.schemaRevision);
-        const admitted = sourceSelection
-          ? LightAppAdmittedSchemaSchema.parse({ ...schema, appId, schemaRevision })
-          : admitLightAppSchema(schema, appId, schemaRevision, parseSchema(current));
-        if (sourceSelection) assertSafeSchemaEvolution(admitted, parseSchema(current));
-        const schemaJson = `${JSON.stringify(admitted)}\n`;
-        const schemaDigest = persistDefinition(
-          lightAppRoot(context.dataRoot, context.workspaceId, appId),
-          schemaJson
-        );
-        snapshotLightApp(appDb, 'definition-migration');
-        for (const statement of additiveSchemaDdl(parseSchema(current), admitted)) {
-          appDb.sqlite.exec(statement);
-        }
-        // SQLite retains deferred counters for the dropped table even after its valid replacement exists.
-        // Check actual foreign keys before clearing those counters; later writes change only app metadata, audit and receipts.
-        assertSnapshotIntegrity(appDb.sqlite);
-        appDb.sqlite.pragma('defer_foreign_keys = OFF');
-        const now = new Date().toISOString();
-        appDb.sqlite
-          .prepare(
-            `UPDATE app_metadata SET
-              title = ?, purpose = ?, app_revision = ?, schema_revision = ?,
-              schema_digest = ?, schema_json = ?, definition_source_json = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ?
-             WHERE app_id = ?`
-          )
-          .run(
-            admitted.title,
-            admitted.purpose,
-            current.appRevision + 1,
-            admitted.schemaRevision,
-            schemaDigest,
-            schemaJson,
-            sourceSelection ? JSON.stringify(sourceSelection) : null,
-            now,
-            JSON.stringify(context.actor),
-            context.requestId,
-            appId
-          );
-        recordKernelAudit(
-          appDb,
-          context,
-          'kernel.schema.update',
-          `light-app:${appId}`,
-          admitted.schemaRevision,
-          {
-            schemaRevision: admitted.schemaRevision,
-            collectionIds: admitted.collections.map((collection) => collection.id),
-          }
-        );
-        return projectApp(appDb);
-      },
-      replay: () => projectApp(appDb),
-      responseId: (result) => result.appId,
-    });
+  return runNativeAppCommand(context, appId, {
+    command: 'kernel.schema.update',
+    responseKind: 'light_app',
+    input: requestedDefinition
+      ? { expectedAppRevision, expectedSchemaRevision, requestedDefinition }
+      : { expectedAppRevision, expectedSchemaRevision, schema, sourceSelection },
+    change: {
+      kind: 'schema',
+      expectedAppRevision,
+      expectedSchemaRevision,
+      schema,
+      ...(sourceSelection ? { sourceSelection } : {}),
+      ...(requestedDefinition ? { requestedDefinition } : {}),
+    },
+    replay: (db) => projectApp(db),
+    responseId: (result) => result.appId,
   });
 }
 
@@ -439,62 +286,14 @@ export async function upgradeLightAppFormat(
   appId: string,
   expectedAppRevision: number
 ): Promise<CreateLightAppResponse> {
-  const appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId, 'format-upgrade');
-  const input = { expectedAppRevision };
-  try {
-    if (hasCommandReplay(context, appDb, 'kernel.format.upgrade', input)) return projectApp(appDb);
-    const current = appDb.sqlite
-      .prepare('SELECT app_revision AS appRevision, lifecycle FROM app_metadata WHERE app_id = ?')
-      .get(appId) as Pick<AppMetadataRow, 'appRevision' | 'lifecycle'>;
-    assertWritable(current);
-    if (current.appRevision !== expectedAppRevision)
-      throw new KernelCommandError('conflict', 'App revision is stale.', {
-        path: 'expectedAppRevision',
-        expectedRevision: expectedAppRevision,
-        currentRevision: current.appRevision,
-      });
-    applyAppMigrations(appDb.sqlite, () => {
-      appDb.sqlite
-        .transaction(() => snapshotLightApp(appDb, 'kernel-format-migration'))
-        .immediate();
-    });
-    return runKernelCommand(context, appDb, {
-      command: 'kernel.format.upgrade',
-      responseKind: 'light_app',
-      input,
-      execute: () => {
-        const metadata = readMetadata(appDb);
-        if (metadata.kernelFormatVersion !== LIGHT_APP_KERNEL_FORMAT_VERSION)
-          throw new KernelCommandError('unavailable', 'App kernel format is unsupported.');
-        appDb.sqlite
-          .prepare(
-            'UPDATE app_metadata SET app_revision = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ? WHERE app_id = ?'
-          )
-          .run(
-            expectedAppRevision + 1,
-            new Date().toISOString(),
-            JSON.stringify(context.actor),
-            context.requestId,
-            appId
-          );
-        recordKernelAudit(
-          appDb,
-          context,
-          'kernel.format.upgrade',
-          `light-app:${appId}`,
-          expectedAppRevision + 1,
-          { schemaRevision: metadata.schemaRevision }
-        );
-        return projectApp(appDb);
-      },
-      replay: () => projectApp(appDb),
-      responseId: (result) => result.appId,
-    });
-  } catch (error) {
-    throw mapSqliteError(error);
-  } finally {
-    if (appDb.sqlite.open) appDb.sqlite.close();
-  }
+  return runNativeAppCommand(context, appId, {
+    command: 'kernel.format.upgrade',
+    responseKind: 'light_app',
+    input: { expectedAppRevision },
+    change: { kind: 'format-complete', expectedAppRevision },
+    replay: (db) => projectApp(db),
+    responseId: (result) => result.appId,
+  });
 }
 
 /**
@@ -516,171 +315,14 @@ export async function rollbackLightAppSnapshot(
   expectedAppRevision: number,
   snapshotId: string
 ): Promise<CreateLightAppResponse> {
-  const currentDb = openExistingAppDb(
-    context.dataRoot,
-    context.workspaceId,
-    appId,
-    'format-upgrade'
-  );
-  const input = { expectedAppRevision, snapshotId };
-  let candidatePath: string | undefined;
-  let candidate: AppDb | undefined;
-  try {
-    if (hasCommandReplay(context, currentDb, 'kernel.snapshots.rollback', input)) {
-      return projectRestoredApp(currentDb);
-    }
-    const current = currentDb.sqlite
-      .prepare('SELECT app_revision AS appRevision, lifecycle FROM app_metadata WHERE app_id = ?')
-      .get(appId) as Pick<AppMetadataRow, 'appRevision' | 'lifecycle'>;
-    assertWritable(current);
-    if (current.appRevision !== expectedAppRevision)
-      throw new KernelCommandError('conflict', 'App revision is stale.', {
-        path: 'expectedAppRevision',
-        expectedRevision: expectedAppRevision,
-        currentRevision: current.appRevision,
-      });
-    const selected = readLightAppSnapshot(context.dataRoot, context.workspaceId, appId, snapshotId);
-    candidatePath = join(
-      lightAppRoot(context.dataRoot, context.workspaceId, appId),
-      `restore-${randomUUID()}.sqlite`
-    );
-    writeDurableFile(candidatePath, selected.bytes);
-    const sqlite = new Database(candidatePath, { fileMustExist: true });
-    const candidateDb: AppDb = { ...currentDb, sqlite };
-    candidate = candidateDb;
-    sqlite.pragma('journal_mode = DELETE');
-    sqlite.pragma('synchronous = FULL');
-    sqlite.pragma('foreign_keys = ON');
-    assertSnapshotIntegrity(sqlite);
-    assertAppDefinitionMatches(candidate);
-    const identity = sqlite
-      .prepare(
-        'SELECT app_id AS appId, workspace_id AS workspaceId, schema_digest AS digest FROM app_metadata'
-      )
-      .get() as { appId: string; workspaceId: string; digest: string };
-    if (
-      identity.appId !== appId ||
-      identity.workspaceId !== context.workspaceId ||
-      identity.digest !== selected.metadata.definitionVersion
-    ) {
-      throw new KernelCommandError('unavailable', 'App snapshot identity does not match.');
-    }
-    // Release the original connection and its WAL before the synchronous replace.
-    currentDb.sqlite.close();
-    const completed = runKernelCommand(context, candidateDb, {
-      command: 'kernel.snapshots.rollback',
-      responseKind: 'light_app',
-      input,
-      execute: () => {
-        sqlite
-          .prepare(
-            'UPDATE app_metadata SET app_revision = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ? WHERE app_id = ?'
-          )
-          .run(
-            expectedAppRevision + 1,
-            new Date().toISOString(),
-            JSON.stringify(context.actor),
-            context.requestId,
-            appId
-          );
-        recordKernelAudit(
-          candidateDb,
-          context,
-          'kernel.snapshots.rollback',
-          `light-app:${appId}`,
-          expectedAppRevision + 1,
-          { schemaRevision: selected.metadata.schemaRevision }
-        );
-        return projectRestoredApp(candidateDb);
-      },
-      replay: () => projectRestoredApp(candidateDb),
-      responseId: (result) => result.appId,
-    });
-    // The command owner runs synchronously but reports failures as a rejected promise.
-    // Inspect its actual committed receipt before publishing the file.
-    const verified = new Database(candidatePath, { fileMustExist: true });
-    let committed: boolean;
-    try {
-      committed = hasCommandReplay(
-        context,
-        { ...candidate, sqlite: verified },
-        'kernel.snapshots.rollback',
-        input
-      );
-    } finally {
-      verified.close();
-    }
-    if (!committed) return completed;
-    renameSync(candidatePath, lightAppDbPath(context.dataRoot, context.workspaceId, appId));
-    candidatePath = undefined;
-    const directory = openSync(lightAppRoot(context.dataRoot, context.workspaceId, appId), 'r');
-    try {
-      fsyncSync(directory);
-    } finally {
-      closeSync(directory);
-    }
-    return completed;
-  } catch (error) {
-    throw mapSqliteError(error);
-  } finally {
-    if (currentDb.sqlite.open) currentDb.sqlite.close();
-    if (candidate?.sqlite.open) candidate.sqlite.close();
-    if (candidatePath) {
-      rmSync(candidatePath, { force: true });
-      rmSync(`${candidatePath}-journal`, { force: true });
-    }
-  }
-}
-
-/** Checks the existing app-local receipt before a synchronous migration or restore. */
-function hasCommandReplay(
-  context: KernelCommandContext,
-  appDb: AppDb,
-  command: CommandRequestName,
-  input: Record<string, unknown>
-): boolean {
-  const receipt = context.store.getCommandRequest(
-    command,
-    context.requestId,
-    {
-      workspaceId: context.workspaceId,
-      appId: appDb.appId,
-    },
-    appDb
-  );
-  if (!receipt) return false;
-  if (receipt.inputHash !== commandInputHash({ actor: context.actor, ...input }))
-    throw new IdempotencyKeyConflictError();
-  return true;
-}
-
-/** Projects a restored migration base without admitting old-format data operations. */
-function projectRestoredApp(appDb: AppDb): CreateLightAppResponse {
-  const hasMarker = (
-    appDb.sqlite.pragma('table_info(app_metadata)') as Array<{ name: string }>
-  ).some((column) => column.name === 'kernel_format_version');
-  if (hasMarker) return projectApp(appDb);
-  const row = appDb.sqlite
-    .prepare(
-      'SELECT title, purpose, app_revision AS appRevision, schema_revision AS schemaRevision, schema_digest AS schemaDigest FROM app_metadata WHERE app_id = ?'
-    )
-    .get(appDb.appId) as {
-    title: string;
-    purpose: string;
-    appRevision: number;
-    schemaRevision: number;
-    schemaDigest: string;
-  };
-  return {
-    appId: appDb.appId,
-    ...row,
-    lifecycle: 'unavailable',
-    kernelFormatVersion: 1,
-    definitionVersion: row.schemaDigest,
-    definitionSource: null,
-    schema: null,
-    capabilities: LIGHT_APP_CAPABILITIES,
-  };
+  return runNativeAppCommand(context, appId, {
+    command: 'kernel.snapshots.rollback',
+    responseKind: 'light_app',
+    input: { expectedAppRevision, snapshotId },
+    change: { kind: 'rollback', expectedAppRevision, snapshotId },
+    replay: (db) => projectRestoredApp(db),
+    responseId: (result) => result.appId,
+  });
 }
 
 /**
@@ -696,48 +338,14 @@ export async function retireLightApp(
   appId: string,
   expectedAppRevision: number
 ): Promise<CreateLightAppResponse> {
-  return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) =>
-    runKernelCommand(context, appDb, {
-      command: 'kernel.apps.retire',
-      responseKind: 'light_app',
-      input: { expectedAppRevision },
-      execute: () => {
-        const metadata = readMetadata(appDb);
-        assertWritable(metadata);
-        if (metadata.appRevision !== expectedAppRevision) {
-          throw new KernelCommandError('conflict', 'App revision is stale.', {
-            path: 'expectedAppRevision',
-            expectedRevision: expectedAppRevision,
-            currentRevision: metadata.appRevision,
-          });
-        }
-        const now = new Date().toISOString();
-        appDb.sqlite
-          .prepare(
-            `UPDATE app_metadata SET lifecycle = 'retired', app_revision = ?, updated_at = ?, last_mutator_json = ?, last_request_id = ?
-             WHERE app_id = ?`
-          )
-          .run(
-            metadata.appRevision + 1,
-            now,
-            JSON.stringify(context.actor),
-            context.requestId,
-            appId
-          );
-        recordKernelAudit(
-          appDb,
-          context,
-          'kernel.apps.retire',
-          `light-app:${appId}`,
-          metadata.appRevision + 1,
-          { schemaRevision: metadata.schemaRevision }
-        );
-        return projectApp(appDb);
-      },
-      replay: () => projectApp(appDb),
-      responseId: (result) => result.appId,
-    })
-  );
+  return runNativeAppCommand(context, appId, {
+    command: 'kernel.apps.retire',
+    responseKind: 'light_app',
+    input: { expectedAppRevision },
+    change: { kind: 'retire', expectedAppRevision },
+    replay: (db) => projectApp(db),
+    responseId: (result) => result.appId,
+  });
 }
 
 /**
@@ -857,41 +465,14 @@ export async function createRecord(
   data: Record<string, unknown>
 ): Promise<LightAppRecord> {
   const recordId = allocateRecordId(appId, context.requestId, 0, 'create');
-  return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) =>
-    runKernelCommand(context, appDb, {
-      command: 'kernel.records.create',
-      responseKind: 'light_app_record',
-      input: { collectionSelector, schemaRevision, data },
-      execute: () => {
-        const metadata = readMetadata(appDb);
-        assertWritable(metadata);
-        const schema = requireCurrentSchema(metadata, schemaRevision);
-        const collection = resolveCollection(schema, collectionSelector);
-        assertRecordCeiling(appDb, schema, 1);
-        insertRecordRow(
-          appDb,
-          collection,
-          schema,
-          recordId,
-          data,
-          context.actor,
-          context.requestId
-        );
-        const record = readProjectedRecord(appDb, collection, schema.schemaRevision, recordId);
-        recordKernelAudit(
-          appDb,
-          context,
-          'kernel.records.create',
-          `light-app:${appId}:record:${recordId}`,
-          1,
-          { schemaRevision: schema.schemaRevision, records: [record] }
-        );
-        return record;
-      },
-      replay: () => replayNamedRecord(appDb, recordId),
-      responseId: (result) => result.id,
-    })
-  );
+  return runNativeAppCommand(context, appId, {
+    command: 'kernel.records.create',
+    responseKind: 'light_app_record',
+    input: { collectionSelector, schemaRevision, data },
+    change: { kind: 'record-create', collectionSelector, schemaRevision, data },
+    replay: (db) => replayNamedRecord(db, recordId),
+    responseId: (result) => result.id,
+  });
 }
 
 /**
@@ -912,24 +493,20 @@ export async function updateRecord(
   body: UpdateLightAppRecordRequest,
   lineage?: { presentationId: string; actionName: string; itemId: string; sourceFilter?: string }
 ): Promise<LightAppRecord> {
-  return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) =>
-    runKernelCommand(context, appDb, {
-      command: 'kernel.records.update',
-      responseKind: 'light_app_record',
-      input: { collectionSelector, recordId, ...body, ...(lineage ?? {}) },
-      execute: () => {
-        applyRecordUpdate(appDb, context, collectionSelector, recordId, body, true, lineage);
-        return readProjectedRecord(
-          appDb,
-          resolveCollection(parseSchema(readMetadata(appDb)), collectionSelector),
-          body.schemaRevision,
-          recordId
-        );
-      },
-      replay: () => replayNamedRecord(appDb, recordId),
-      responseId: (result) => result.id,
-    })
-  );
+  return runNativeAppCommand(context, appId, {
+    command: 'kernel.records.update',
+    responseKind: 'light_app_record',
+    input: { collectionSelector, recordId, ...body, ...(lineage ?? {}) },
+    change: {
+      kind: 'record-update',
+      collectionSelector,
+      recordId,
+      body,
+      ...(lineage ? { lineage } : {}),
+    },
+    replay: (db) => replayNamedRecord(db, recordId),
+    responseId: (result) => result.id,
+  });
 }
 
 /**
@@ -945,847 +522,14 @@ export async function batchRecords(
   appId: string,
   body: LightAppBatchRequest
 ): Promise<LightAppBatchResponse> {
-  return withAppDb(context.dataRoot, context.workspaceId, appId, async (appDb) =>
-    runKernelCommand(context, appDb, {
-      command: 'kernel.records.batch',
-      responseKind: 'light_app_batch',
-      input: body,
-      execute: () => executeBatch(appDb, context, body),
-      replay: () => replayBatch(appDb, context, body),
-      responseId: () => appId,
-    })
-  );
-}
-
-/**
- * Opens an app database, runs work, and always closes the handle.
- *
- * @param dataRoot Data root.
- * @param workspaceId Workspace id.
- * @param appId App id.
- * @param work Async work.
- * @returns Work result.
- */
-async function withAppDb<T>(
-  dataRoot: string,
-  workspaceId: string,
-  appId: string,
-  work: (appDb: AppDb) => Promise<T>
-): Promise<T> {
-  const appDb = openExistingAppDb(dataRoot, workspaceId, appId);
-  try {
-    return await work(appDb);
-  } catch (error) {
-    throw mapSqliteError(error);
-  } finally {
-    if (appDb.sqlite.open) appDb.sqlite.close();
-  }
-}
-
-/**
- * Runs one app-local idempotent Kernel command.
- *
- * @param context Command context.
- * @param appDb Open app database.
- * @param spec Command spec.
- * @returns Command result.
- */
-function runKernelCommand<T>(
-  context: KernelCommandContext,
-  appDb: AppDb,
-  spec: KernelCommandSpec<T>
-): Promise<T> {
-  try {
-    return runIdempotentCommand({
-      store: context.store,
-      inflightCommands: context.inflightCommands,
-      command: spec.command,
-      requestId: context.requestId,
-      scope: {
-        workspaceId: context.workspaceId,
-        appId: appDb.appId,
-      },
-      input: { actor: context.actor, ...asObject(spec.input) },
-      responseKind: spec.responseKind,
-      appDb,
-      appTransaction: true,
-      execute: () => boundedKernelResponse(spec.execute()),
-      replay: (record) => boundedKernelResponse(spec.replay(record)),
-      responseId: spec.responseId,
-    });
-  } finally {
-    // Transactional execute and replay complete before runIdempotentCommand yields.
-    // Close now so another synchronous command can replace the file.
-    if (appDb.sqlite.open) appDb.sqlite.close();
-  }
-}
-
-/**
- * Replays or refuses an existing app directory for create.
- *
- * @param context Command context.
- * @param appId Allocated app id.
- * @param schema Original schema input.
- * @param sourceSelection Effective catalog source selected for a fresh command.
- * @param requestedDefinition Raw catalog selector bound by the existing receipt.
- * @returns Replayed create result.
- */
-async function replayOrRecoverCreate(
-  context: KernelCommandContext,
-  appId: string,
-  schema: LightAppSchemaInput,
-  sourceSelection?: LightAppDefinitionSource,
-  requestedDefinition?: LightAppRequestedDefinition
-): Promise<CreateLightAppResponse> {
-  if (!existsSync(lightAppDbPath(context.dataRoot, context.workspaceId, appId))) {
-    throw new KernelCommandError(
-      'recovery_required',
-      'Interrupted app creation cannot be replayed.'
-    );
-  }
-  let appDb: AppDb;
-  try {
-    appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId);
-  } catch {
-    throw new KernelCommandError(
-      'recovery_required',
-      'Interrupted app creation cannot be replayed.'
-    );
-  }
-  try {
-    return await runKernelCommand(context, appDb, {
-      command: 'kernel.apps.create',
-      responseKind: 'light_app',
-      input: requestedDefinition ? { requestedDefinition } : { schema, sourceSelection },
-      execute: () => {
-        throw new KernelCommandError(
-          'recovery_required',
-          'Interrupted app creation cannot be replayed.'
-        );
-      },
-      replay: () => projectApp(appDb),
-      responseId: (result) => result.appId,
-    });
-  } finally {
-    if (appDb.sqlite.open) appDb.sqlite.close();
-  }
-}
-
-/**
- * Commits the first app metadata, DDL, and audit event.
- *
- * @param appDb Open app database.
- * @param context Trusted command execution context.
- * @param input Admitted schema and source selection.
- * @returns Created app projection.
- */
-function commitNewApp(
-  appDb: AppDb,
-  context: KernelCommandContext,
-  input: {
-    admitted: LightAppAdmittedSchema;
-    schemaDigest: string;
-    schemaJson: string;
-    sourceSelection?: LightAppDefinitionSource;
-  }
-): CreateLightAppResponse {
-  const now = new Date().toISOString();
-  for (const statement of createSchemaDdl(input.admitted)) {
-    appDb.sqlite.exec(statement);
-  }
-  appDb.sqlite
-    .prepare(
-      `INSERT INTO app_metadata (
-        app_id, workspace_id, title, purpose, app_revision, schema_revision,
-        schema_digest, schema_json, definition_source_json, lifecycle, created_at, updated_at,
-        creator_json, last_mutator_json, create_request_id, last_request_id
-      ) VALUES (?, ?, ?, ?, 1, 1, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      input.admitted.appId,
-      appDb.workspaceId,
-      input.admitted.title,
-      input.admitted.purpose,
-      input.schemaDigest,
-      input.schemaJson,
-      input.sourceSelection ? JSON.stringify(input.sourceSelection) : null,
-      now,
-      now,
-      JSON.stringify(context.actor),
-      JSON.stringify(context.actor),
-      context.requestId,
-      context.requestId
-    );
-  recordKernelAudit(appDb, context, 'kernel.apps.create', `light-app:${input.admitted.appId}`, 1, {
-    schemaRevision: input.admitted.schemaRevision,
-    collectionIds: input.admitted.collections.map((collection) => collection.id),
+  return runNativeAppCommand(context, appId, {
+    command: 'kernel.records.batch',
+    responseKind: 'light_app_batch',
+    input: body,
+    change: { kind: 'record-batch', body },
+    replay: (db) => replayBatch(db, context, body),
+    responseId: () => appId,
   });
-  return projectApp(appDb);
-}
-
-/**
- * Executes one batch inside the app transaction.
- *
- * @param appDb Open app database.
- * @param context Command context.
- * @param body Batch body.
- * @returns Batch result.
- */
-function executeBatch(
-  appDb: AppDb,
-  context: KernelCommandContext,
-  body: LightAppBatchRequest
-): LightAppBatchResponse {
-  const metadata = readMetadata(appDb);
-  assertWritable(metadata);
-  const schema = requireCurrentSchema(metadata, body.schemaRevision);
-  const parsed = parseBatchEntries(schema, body);
-  const created = parsed.filter((entry) => entry.method === 'POST').length;
-  assertRecordCeiling(appDb, schema, created);
-  const updateTargets = new Set<string>();
-  const createdIds = new Set<string>();
-  const resultIds: string[] = [];
-  parsed.forEach((entry, index) => {
-    if (entry.method === 'POST') {
-      const recordId = allocateRecordId(appDb.appId, context.requestId, index, 'batch');
-      createdIds.add(recordId);
-      insertRecordRow(
-        appDb,
-        entry.collection,
-        schema,
-        recordId,
-        entry.data,
-        context.actor,
-        context.requestId,
-        createdIds
-      );
-      resultIds.push(recordId);
-      return;
-    }
-    if (updateTargets.has(entry.recordId) || createdIds.has(entry.recordId)) {
-      throw new KernelCommandError(
-        'validation_failed',
-        'Batch update targets must be unique existing records.',
-        { path: 'requests' }
-      );
-    }
-    updateTargets.add(entry.recordId);
-    applyRecordUpdate(
-      appDb,
-      context,
-      entry.collection.id,
-      entry.recordId,
-      {
-        schemaRevision: schema.schemaRevision,
-        expectedRecordRevision: entry.expectedRecordRevision,
-        data: entry.data,
-      },
-      false
-    );
-    resultIds.push(entry.recordId);
-  });
-  const items = resultIds.map((recordId) => replayNamedRecord(appDb, recordId));
-  recordKernelAudit(
-    appDb,
-    context,
-    'kernel.records.batch',
-    `light-app:${appDb.appId}`,
-    schema.schemaRevision,
-    { schemaRevision: schema.schemaRevision, records: items }
-  );
-  return { app: catalogItemFromMetadata(readMetadata(appDb)), items };
-}
-
-/**
- * Replays one batch from the verified original request.
- *
- * @param appDb Open app database.
- * @param context Command context.
- * @param body Original batch body.
- * @returns Current records in request order.
- */
-function replayBatch(
-  appDb: AppDb,
-  context: KernelCommandContext,
-  body: LightAppBatchRequest
-): LightAppBatchResponse {
-  const schema = parseSchema(readMetadata(appDb));
-  const parsed = parseBatchEntries(schema, body);
-  return {
-    app: catalogItemFromMetadata(readMetadata(appDb)),
-    items: parsed.map((entry, index) => {
-      const recordId =
-        entry.method === 'POST'
-          ? allocateRecordId(appDb.appId, context.requestId, index, 'batch')
-          : entry.recordId;
-      return replayNamedRecord(appDb, recordId);
-    }),
-  };
-}
-
-/**
- * Inserts one native record row.
- *
- * @param appDb Open app database.
- * @param collection Admitted collection.
- * @param schema Admitted schema.
- * @param recordId Allocated record id.
- * @param data Caller field values.
- * @param actor Actor.
- * @param requestId Request id.
- * @param pendingCreatedIds In-batch created ids that relations may not target.
- */
-function insertRecordRow(
-  appDb: AppDb,
-  collection: LightAppAdmittedCollection,
-  schema: LightAppAdmittedSchema,
-  recordId: string,
-  data: Record<string, unknown>,
-  actor: ActorRef,
-  requestId: string,
-  pendingCreatedIds: ReadonlySet<string> = new Set()
-): void {
-  const now = new Date().toISOString();
-  const values = validateRecordData(appDb, collection, schema, data, true, pendingCreatedIds);
-  const columns = [
-    'id',
-    'revision',
-    'created',
-    'updated',
-    'creator_json',
-    'last_mutator_json',
-    'create_request_id',
-    'last_request_id',
-    'write_schema_revision',
-    ...collection.fields.map((field) => fieldColumnName(field.id)),
-  ];
-  const placeholders = columns.map(() => '?').join(', ');
-  const quoted = columns.map((column) => quoteIdent(column)).join(', ');
-  appDb.sqlite
-    .prepare(
-      `INSERT INTO ${quoteIdent(collectionTableName(collection.id))} (${quoted}) VALUES (${placeholders})`
-    )
-    .run(
-      recordId,
-      1,
-      now,
-      now,
-      JSON.stringify(actor),
-      JSON.stringify(actor),
-      requestId,
-      requestId,
-      schema.schemaRevision,
-      ...collection.fields.map((field) => encodeSqlValue(field.type, values[field.name] ?? null))
-    );
-}
-
-/**
- * Applies one record update.
- *
- * @param appDb Open app database.
- * @param context Command context.
- * @param collectionSelector Collection selector.
- * @param recordId Record id.
- * @param body Update body.
- * @param audit Whether to write an audit event.
- * @param lineage Optional presentation binding used to re-check source membership.
- */
-function applyRecordUpdate(
-  appDb: AppDb,
-  context: KernelCommandContext,
-  collectionSelector: string,
-  recordId: string,
-  body: UpdateLightAppRecordRequest,
-  audit = true,
-  lineage?: { presentationId: string; actionName: string; itemId: string; sourceFilter?: string }
-): void {
-  const metadata = readMetadata(appDb);
-  assertWritable(metadata);
-  const schema = requireCurrentSchema(metadata, body.schemaRevision);
-  const collection = resolveCollection(schema, collectionSelector);
-  const current = readRecordRow(appDb, collection, recordId);
-  if (Number(current.revision) !== body.expectedRecordRevision) {
-    throw new KernelCommandError('conflict', 'Record revision is stale.', {
-      path: 'expectedRecordRevision',
-      expectedRevision: body.expectedRecordRevision,
-      currentRevision: Number(current.revision),
-    });
-  }
-  if (lineage?.sourceFilter) {
-    const compiled = compileRecordFilter(lineage.sourceFilter, (operand) =>
-      columnFor(collection, operand)
-    );
-    if (compiled) {
-      const match = appDb.sqlite
-        .prepare(
-          `SELECT 1 AS ok FROM ${quoteIdent(collectionTableName(collection.id))} WHERE id = ? AND (${compiled.sql})`
-        )
-        .get(recordId, ...compiled.params) as { ok: number } | undefined;
-      if (!match) {
-        throw new KernelCommandError(
-          'validation_failed',
-          'Record is no longer a member of the bound source query.',
-          { path: 'filter' }
-        );
-      }
-    }
-  }
-  const values = validateRecordData(appDb, collection, schema, body.data, false);
-  const merged: Record<string, unknown> = {};
-  for (const field of collection.fields) {
-    merged[field.name] = Object.hasOwn(body.data, field.name)
-      ? values[field.name]
-      : decodeSqlValue(field.type, current[fieldColumnName(field.id)]);
-  }
-  if (Buffer.byteLength(JSON.stringify(merged), 'utf8') > DATA_OBJECT_BYTE_LIMIT) {
-    throw new KernelCommandError('limit_exceeded', 'Record data exceeds 16 KiB.', {
-      limit: 'dataObjectBytes',
-      maximum: DATA_OBJECT_BYTE_LIMIT,
-    });
-  }
-  const assignments = [
-    'revision = ?',
-    'updated = ?',
-    'last_mutator_json = ?',
-    'last_request_id = ?',
-    'write_schema_revision = ?',
-  ];
-  const params: unknown[] = [
-    Number(current.revision) + 1,
-    new Date().toISOString(),
-    JSON.stringify(context.actor),
-    context.requestId,
-    schema.schemaRevision,
-  ];
-  for (const field of collection.fields) {
-    if (!Object.hasOwn(body.data, field.name)) {
-      continue;
-    }
-    assignments.push(`${quoteIdent(fieldColumnName(field.id))} = ?`);
-    params.push(encodeSqlValue(field.type, values[field.name] ?? null));
-  }
-  params.push(recordId);
-  const result = appDb.sqlite
-    .prepare(
-      `UPDATE ${quoteIdent(collectionTableName(collection.id))} SET ${assignments.join(', ')} WHERE id = ?`
-    )
-    .run(...params);
-  if (result.changes !== 1) {
-    throw new KernelCommandError('not_found', 'Record not found.');
-  }
-  if (audit) {
-    recordKernelAudit(
-      appDb,
-      context,
-      'kernel.records.update',
-      `light-app:${appDb.appId}:record:${recordId}`,
-      Number(current.revision) + 1,
-      {
-        schemaRevision: schema.schemaRevision,
-        records: [
-          { id: recordId, collectionId: collection.id, revision: Number(current.revision) + 1 },
-        ],
-      },
-      lineage?.itemId
-    );
-  }
-}
-
-/**
- * Validates one record data object against the admitted collection.
- *
- * @param appDb Open app database.
- * @param collection Admitted collection.
- * @param schema Admitted schema.
- * @param data Caller values.
- * @param create Whether omitted required fields fail.
- * @param pendingCreatedIds In-batch created ids.
- * @returns Normalized field values keyed by name.
- */
-function validateRecordData(
-  appDb: AppDb,
-  collection: LightAppAdmittedCollection,
-  schema: LightAppAdmittedSchema,
-  data: Record<string, unknown>,
-  create: boolean,
-  pendingCreatedIds: ReadonlySet<string> = new Set()
-): Record<string, unknown> {
-  const encoded = JSON.stringify(data);
-  if (Buffer.byteLength(encoded, 'utf8') > DATA_OBJECT_BYTE_LIMIT) {
-    throw new KernelCommandError('limit_exceeded', 'Record data exceeds 16 KiB.', {
-      limit: 'dataObjectBytes',
-      maximum: DATA_OBJECT_BYTE_LIMIT,
-    });
-  }
-  const known = new Set(collection.fields.map((field) => field.name));
-  for (const key of Object.keys(data)) {
-    if (!known.has(key)) {
-      throw new KernelCommandError('validation_failed', `Unknown field: ${key}.`, { path: key });
-    }
-  }
-  const values: Record<string, unknown> = {};
-  for (const field of collection.fields) {
-    const present = Object.hasOwn(data, field.name);
-    if (!present) {
-      if (create && field.required) {
-        throw new KernelCommandError('validation_failed', `Field ${field.name} is required.`, {
-          path: field.name,
-        });
-      }
-      continue;
-    }
-    const value = data[field.name];
-    if (value === null) {
-      if (field.required) {
-        throw new KernelCommandError('validation_failed', `Field ${field.name} cannot be null.`, {
-          path: field.name,
-        });
-      }
-      values[field.name] = null;
-      continue;
-    }
-    values[field.name] = coerceFieldValue(appDb, schema, field, value, pendingCreatedIds);
-  }
-  return values;
-}
-
-/**
- * Coerces and checks one field value.
- *
- * @param appDb Open app database.
- * @param schema Admitted schema.
- * @param field Admitted field.
- * @param value Caller value.
- * @param pendingCreatedIds In-batch created ids.
- * @returns Canonical stored value.
- */
-function coerceFieldValue(
-  appDb: AppDb,
-  schema: LightAppAdmittedSchema,
-  field: LightAppAdmittedCollection['fields'][number],
-  value: unknown,
-  pendingCreatedIds: ReadonlySet<string>
-): unknown {
-  const canonical = normalizeLightAppFieldValue(field, value);
-  if (field.type !== 'relation') {
-    return canonical;
-  }
-  const recordId = String(canonical);
-  if (pendingCreatedIds.has(recordId)) {
-    throw new KernelCommandError(
-      'validation_failed',
-      'Batch relations cannot target records created in the same batch.',
-      { path: 'requests' }
-    );
-  }
-  const targetId = (field.options as { collection: string }).collection;
-  const target = schema.collections.find((collection) => collection.id === targetId);
-  if (!target) {
-    throw new KernelCommandError(
-      'validation_failed',
-      `Field ${field.name} has an unknown relation target.`,
-      { path: 'data' }
-    );
-  }
-  const exists = appDb.sqlite
-    .prepare(`SELECT 1 AS ok FROM ${quoteIdent(collectionTableName(target.id))} WHERE id = ?`)
-    .get(recordId) as { ok: number } | undefined;
-  if (!exists) {
-    throw new KernelCommandError(
-      'validation_failed',
-      `Field ${field.name} references a missing record.`,
-      { path: field.name }
-    );
-  }
-  return recordId;
-}
-
-/**
- * Decodes one SQLite value to the public JSON type.
- *
- * @param type Field type.
- * @param value SQLite value.
- * @returns JSON value.
- */
-function decodeSqlValue(type: string, value: unknown): unknown {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (type === 'bool') {
-    return Number(value) === 1;
-  }
-  return value;
-}
-
-/**
- * Projects one native row to the public record wire shape.
- *
- * @param collection Admitted collection.
- * @param schemaRevision Current schema revision.
- * @param row Native row.
- * @param fields Optional field allow-list.
- * @returns Public record.
- */
-function projectRecord(
-  collection: LightAppAdmittedCollection,
-  schemaRevision: number,
-  row: Record<string, unknown>,
-  fields?: ReadonlySet<string>
-): LightAppRecord {
-  const data: Record<string, string | number | boolean | null> = {};
-  for (const field of collection.fields) {
-    if (fields && !fields.has(field.name)) {
-      continue;
-    }
-    data[field.name] = decodeSqlValue(field.type, row[fieldColumnName(field.id)]) as
-      | string
-      | number
-      | boolean
-      | null;
-  }
-  return {
-    id: String(row.id),
-    collectionId: collection.id,
-    collectionName: collection.name,
-    revision: Number(row.revision),
-    schemaRevision,
-    created: String(row.created),
-    updated: String(row.updated),
-    data,
-  };
-}
-
-/**
- * Reads and projects one record, or throws not_found.
- *
- * @param appDb Open app database.
- * @param collection Admitted collection.
- * @param schemaRevision Schema revision.
- * @param recordId Record id.
- * @param fields Optional field projection.
- * @returns Public record.
- */
-function readProjectedRecord(
-  appDb: AppDb,
-  collection: LightAppAdmittedCollection,
-  schemaRevision: number,
-  recordId: string,
-  fields?: string
-): LightAppRecord {
-  const row = readRecordRow(appDb, collection, recordId);
-  return projectRecord(collection, schemaRevision, row, parseFields(collection, fields));
-}
-
-/**
- * Reads one native record row.
- *
- * @param appDb Open app database.
- * @param collection Admitted collection.
- * @param recordId Record id.
- * @returns Native row.
- */
-function readRecordRow(
-  appDb: AppDb,
-  collection: LightAppAdmittedCollection,
-  recordId: string
-): Record<string, unknown> {
-  const row = appDb.sqlite
-    .prepare(`SELECT * FROM ${quoteIdent(collectionTableName(collection.id))} WHERE id = ?`)
-    .get(recordId) as Record<string, unknown> | undefined;
-  if (!row) {
-    throw new KernelCommandError('not_found', 'Record not found.');
-  }
-  return row;
-}
-
-/**
- * Replays the current record named by a receipt.
- *
- * @param appDb Open app database.
- * @param recordId Record id.
- * @returns Current record.
- */
-function replayNamedRecord(appDb: AppDb, recordId: string): LightAppRecord {
-  const schema = parseSchema(readMetadata(appDb));
-  for (const collection of schema.collections) {
-    const row = appDb.sqlite
-      .prepare(`SELECT * FROM ${quoteIdent(collectionTableName(collection.id))} WHERE id = ?`)
-      .get(recordId) as Record<string, unknown> | undefined;
-    if (row) {
-      return projectRecord(collection, schema.schemaRevision, row);
-    }
-  }
-  throw new KernelCommandError('recovery_required', 'Named record authority is missing.');
-}
-
-/**
- * Parses batch virtual paths and bodies.
- *
- * @param schema Admitted schema.
- * @param body Batch body.
- * @returns Parsed entries.
- */
-function parseBatchEntries(
-  schema: LightAppAdmittedSchema,
-  body: LightAppBatchRequest
-): ParsedBatchEntry[] {
-  return body.requests.map((entry): ParsedBatchEntry => {
-    if (entry.method === 'POST') {
-      const match = BATCH_POST.exec(entry.url);
-      if (!match) {
-        throw new KernelCommandError('validation_failed', 'Unsupported batch create URL.', {
-          path: 'requests',
-        });
-      }
-      const parsedBody = entry.body as { data?: Record<string, unknown> };
-      if (!parsedBody || typeof parsedBody !== 'object' || parsedBody.data === undefined) {
-        throw new KernelCommandError('validation_failed', 'Batch create bodies require data.', {
-          path: 'requests',
-        });
-      }
-      return {
-        method: 'POST' as const,
-        collection: resolveCollection(schema, decodeURIComponent(match[1]!)),
-        data: parsedBody.data as Record<string, string | number | boolean | null>,
-      };
-    }
-    const match = BATCH_PATCH.exec(entry.url);
-    if (!match) {
-      throw new KernelCommandError('validation_failed', 'Unsupported batch update URL.', {
-        path: 'requests',
-      });
-    }
-    const parsedBody = entry.body as {
-      expectedRecordRevision?: number;
-      data?: Record<string, unknown>;
-    };
-    if (
-      !parsedBody ||
-      typeof parsedBody !== 'object' ||
-      parsedBody.data === undefined ||
-      parsedBody.expectedRecordRevision === undefined
-    ) {
-      throw new KernelCommandError(
-        'validation_failed',
-        'Batch update bodies require data and expectedRecordRevision.',
-        { path: 'requests' }
-      );
-    }
-    return {
-      method: 'PATCH' as const,
-      collection: resolveCollection(schema, decodeURIComponent(match[1]!)),
-      recordId: match[2]!,
-      expectedRecordRevision: parsedBody.expectedRecordRevision,
-      data: parsedBody.data as Record<string, string | number | boolean | null>,
-    };
-  });
-}
-
-/**
- * Projects app metadata as a get response.
- *
- * @param appDb Open app database.
- * @returns App projection.
- */
-function projectApp(appDb: AppDb): CreateLightAppResponse {
-  const metadata = readMetadata(appDb);
-  return {
-    ...catalogItemFromMetadata(metadata),
-    schema: parseSchema(metadata),
-    capabilities: LIGHT_APP_CAPABILITIES,
-  };
-}
-
-/**
- * Reads app_metadata.
- *
- * @param appDb Open app database.
- * @returns Metadata row.
- */
-function readMetadata(appDb: AppDb): AppMetadataRow {
-  const row = appDb.sqlite
-    .prepare(
-      `SELECT
-        app_id AS appId,
-        workspace_id AS workspaceId,
-        title,
-        purpose,
-        app_revision AS appRevision,
-        schema_revision AS schemaRevision,
-        schema_digest AS schemaDigest,
-        schema_json AS schemaJson,
-        kernel_format_version AS kernelFormatVersion,
-        definition_source_json AS definitionSourceJson,
-        lifecycle
-       FROM app_metadata WHERE app_id = ?`
-    )
-    .get(appDb.appId) as AppMetadataRow | undefined;
-  if (!row) {
-    throw new KernelCommandError('unavailable', 'App authority is incomplete.');
-  }
-  return row;
-}
-
-/**
- * Parses the admitted schema document.
- *
- * @param metadata Metadata row.
- * @returns Admitted schema.
- */
-function parseSchema(metadata: AppMetadataRow): LightAppAdmittedSchema {
-  return LightAppAdmittedSchemaSchema.parse(JSON.parse(metadata.schemaJson));
-}
-
-/**
- * Requires the caller schema revision to match the live schema.
- *
- * @param metadata Metadata row.
- * @param schemaRevision Caller schema revision.
- * @returns Admitted schema.
- */
-function requireCurrentSchema(
-  metadata: AppMetadataRow,
-  schemaRevision: number
-): LightAppAdmittedSchema {
-  if (metadata.schemaRevision !== schemaRevision) {
-    throw new KernelCommandError('schema_stale', 'Schema revision is stale.', {
-      path: 'schemaRevision',
-      expectedRevision: schemaRevision,
-      currentRevision: metadata.schemaRevision,
-    });
-  }
-  return parseSchema(metadata);
-}
-
-/**
- * Rejects writes against a retired app.
- *
- * @param metadata Metadata row.
- */
-function assertWritable(metadata: Pick<AppMetadataRow, 'lifecycle'>): void {
-  if (metadata.lifecycle !== 'active') {
-    throw new KernelCommandError('unsupported_operation', 'Retired apps reject writes.');
-  }
-}
-
-/**
- * Resolves a collection selector.
- *
- * @param schema Admitted schema.
- * @param selector Name or id.
- * @returns Admitted collection.
- */
-function resolveCollection(
-  schema: LightAppAdmittedSchema,
-  selector: string
-): LightAppAdmittedCollection {
-  const collection = schema.collections.find(
-    (candidate) => candidate.id === selector || candidate.name === selector
-  );
-  if (!collection) {
-    throw new KernelCommandError('not_found', 'Collection not found.');
-  }
-  return collection;
 }
 
 /**
@@ -1820,62 +564,6 @@ function compileSort(collection: LightAppAdmittedCollection, sort: string | unde
 }
 
 /**
- * Resolves a filter or sort operand to SQL.
- *
- * @param collection Admitted collection.
- * @param operand Field or metadata name.
- * @returns SQL column and type.
- */
-function columnFor(
-  collection: LightAppAdmittedCollection,
-  operand: string,
-  path: 'filter' | 'sort' = 'filter'
-): { sql: string; type: string } {
-  if (
-    operand === 'id' ||
-    operand === 'created' ||
-    operand === 'updated' ||
-    operand === 'revision'
-  ) {
-    return { sql: quoteIdent(operand), type: operand === 'revision' ? 'number' : 'text' };
-  }
-  const field = collection.fields.find((candidate) => candidate.name === operand);
-  if (!field) {
-    throw new KernelCommandError('validation_failed', `Unknown field: ${operand}.`, { path });
-  }
-  return { sql: quoteIdent(fieldColumnName(field.id)), type: field.type };
-}
-
-/**
- * Parses a fields projection.
- *
- * @param collection Admitted collection.
- * @param fields Comma-separated names.
- * @returns Allow-list, or undefined for all fields.
- */
-function parseFields(
-  collection: LightAppAdmittedCollection,
-  fields: string | undefined
-): ReadonlySet<string> | undefined {
-  if (!fields || fields.trim() === '') {
-    return undefined;
-  }
-  const names = fields
-    .split(',')
-    .map((name) => name.trim())
-    .filter(Boolean);
-  const known = new Set(collection.fields.map((field) => field.name));
-  for (const name of names) {
-    if (!known.has(name)) {
-      throw new KernelCommandError('validation_failed', `Unknown field: ${name}.`, {
-        path: 'fields',
-      });
-    }
-  }
-  return new Set(names);
-}
-
-/**
  * Enforces page and offset limits.
  *
  * @param page Page number.
@@ -1899,33 +587,6 @@ function assertPage(page: number, perPage: number): void {
     throw new KernelCommandError('limit_exceeded', 'List offset exceeds 10,000.', {
       limit: 'offset',
       maximum: LIGHT_APP_CAPABILITIES.maxOffset,
-    });
-  }
-}
-
-/**
- * Enforces the per-app record ceiling before inserts.
- *
- * @param appDb Open app database.
- * @param schema Admitted schema.
- * @param additional Rows about to be inserted.
- */
-function assertRecordCeiling(
-  appDb: AppDb,
-  schema: LightAppAdmittedSchema,
-  additional: number
-): void {
-  let total = 0;
-  for (const collection of schema.collections) {
-    const row = appDb.sqlite
-      .prepare(`SELECT COUNT(*) AS total FROM ${quoteIdent(collectionTableName(collection.id))}`)
-      .get() as { total: number };
-    total += row.total;
-  }
-  if (total + additional > RECORD_LIMIT) {
-    throw new KernelCommandError('limit_exceeded', 'App record limit exceeded.', {
-      limit: 'records',
-      maximum: RECORD_LIMIT,
     });
   }
 }
@@ -2001,29 +662,6 @@ function inspectCatalogItem(
 }
 
 /**
- * Builds a catalog item from metadata.
- *
- * @param metadata Metadata row.
- * @returns Catalog item.
- */
-function catalogItemFromMetadata(metadata: AppMetadataRow) {
-  return {
-    appId: metadata.appId,
-    title: metadata.title,
-    purpose: metadata.purpose,
-    appRevision: metadata.appRevision,
-    schemaRevision: metadata.schemaRevision,
-    schemaDigest: metadata.schemaDigest,
-    kernelFormatVersion: metadata.kernelFormatVersion,
-    definitionVersion: metadata.schemaDigest,
-    definitionSource: metadata.definitionSourceJson
-      ? LightAppDefinitionSourceSchema.parse(JSON.parse(metadata.definitionSourceJson))
-      : null,
-    lifecycle: metadata.lifecycle,
-  };
-}
-
-/**
  * Ensures the Light App inventory directory exists.
  *
  * @param dataRoot Data root.
@@ -2048,138 +686,258 @@ function countAppDirectories(dataRoot: string, workspaceId: string): number {
   return readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).length;
 }
 
-/** Allocates beyond retained definition history, which survives app snapshot replacement. */
-function nextSchemaRevision(appDb: AppDb, currentRevision: number): number {
-  const root = join(lightAppRoot(appDb.dataRoot, appDb.workspaceId, appDb.appId), 'definitions');
-  let highest = currentRevision;
-  try {
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
-      if (!/^[a-f0-9]{64}\.json$/.test(entry.name)) continue;
-      if (!entry.isFile()) throw new Error('Definition history must contain regular files.');
-      const descriptor = openSync(
-        join(root, entry.name),
-        constants.O_RDONLY | constants.O_NOFOLLOW
-      );
-      let bytes: Buffer;
-      try {
-        bytes = readFileSync(descriptor);
-      } finally {
-        closeSync(descriptor);
-      }
-      const digest = createHash('sha256').update(bytes).digest('hex');
-      const retained = LightAppAdmittedSchemaSchema.parse(JSON.parse(bytes.toString('utf8')));
-      if (`${digest}.json` !== entry.name || retained.appId !== appDb.appId) {
-        throw new Error('Definition history identity does not match.');
-      }
-      highest = Math.max(highest, retained.schemaRevision);
-    }
-  } catch {
-    throw new KernelCommandError('unavailable', 'App definition history is unavailable.');
-  }
-  return highest + 1;
-}
-
-/**
- * Writes one immutable definition file and returns its digest.
- *
- * @param appRoot App directory.
- * @param schemaJson Canonical schema JSON.
- * @returns sha256 digest.
- */
-function persistDefinition(appRoot: string, schemaJson: string): string {
-  const digest = `sha256:${createHash('sha256').update(schemaJson).digest('hex')}`;
-  const path = join(appRoot, 'definitions', `${digest.slice('sha256:'.length)}.json`);
-  if (!existsSync(path)) {
-    writeDurableFile(path, schemaJson);
-  }
-  return digest;
-}
-
-/**
- * Records one Kernel mutation audit event in the app database.
- *
- * @param appDb Open app database.
- * @param context Command context.
- * @param action Audit action.
- * @param resource Resource reference.
- * @param resourceRevision Resource revision.
- * @param evidence Admitted identities and revisions, without business values.
- * @param itemId Optional presentation Item, separate from the executing Turn.
- */
-function recordKernelAudit(
-  appDb: AppDb,
+/** Executes only readonly projections with a short App connection. */
+function readApp<T>(
   context: KernelCommandContext,
-  action: string,
-  resource: string,
-  resourceRevision: number,
-  evidence: {
-    schemaRevision: number;
-    collectionIds?: readonly string[];
-    records?: readonly Pick<LightAppRecord, 'id' | 'collectionId' | 'revision'>[];
-  },
-  itemId?: string
-): void {
-  // Human evidence uses the existing summary, not a new retained payload format.
-  // Existing admission bounds collections to 16 and affected batch records to 50.
-  const facts = [`Schema revision ${evidence.schemaRevision}`];
-  if (evidence.collectionIds?.length)
-    facts.push(`collections ${evidence.collectionIds.join(', ')}`);
-  for (const record of evidence.records ?? []) {
-    facts.push(
-      `collection ${record.collectionId}, record ${record.id}, record revision ${record.revision}`
-    );
+  appId: string,
+  replay: (db: AppDb) => T,
+  permitOldFormat = false
+): T {
+  const db = openExistingAppDb(
+    context.dataRoot,
+    context.workspaceId,
+    appId,
+    permitOldFormat ? 'format-upgrade' : 'current'
+  );
+  try {
+    return boundedKernelResponse(replay(db));
+  } finally {
+    db.sqlite.close();
   }
-  recordAppAuditEvent({
-    sqlite: appDb.sqlite,
-    workspaceId: appDb.workspaceId,
-    actor: context.actor,
+}
+
+/** Collapses duplicates before preparation; native business, Audit and original receipt share one ACK. */
+function runNativeAppCommand<T extends ControlAppResult>(
+  context: KernelCommandContext,
+  appId: string,
+  spec: KernelCommandSpec<T>
+): Promise<T> {
+  return runIdempotentCommand({
+    store: context.store,
+    inflightCommands: context.inflightCommands,
+    command: spec.command,
     requestId: context.requestId,
-    threadId: context.execution?.threadId ?? null,
-    turnId: context.execution?.turnId ?? null,
-    itemId: itemId ?? null,
-    category: 'system',
-    action,
-    resource,
-    resourceRevision,
-    outcome: 'succeeded',
-    summary: `${action}. ${facts.join('; ')}.`,
+    scope: { workspaceId: context.workspaceId, appId },
+    input: { actor: context.actor, ...asObject(spec.input) },
+    responseKind: spec.responseKind,
+    responseId: spec.responseId,
+    replay: () =>
+      readApp(
+        context,
+        appId,
+        spec.replay,
+        spec.command === 'kernel.format.upgrade' || spec.command === 'kernel.snapshots.rollback'
+      ),
+    execute: async (receipt) => {
+      await context.recheckAdmission?.();
+      const client = getControlStoreWorkerClient();
+      const root = lightAppRoot(context.dataRoot, context.workspaceId, appId);
+      const fresh = spec.change.kind === 'create';
+      if (fresh) {
+        if (spec.change.kind === 'create' && !spec.change.sourceSelection)
+          admitLightAppSchema(spec.change.schema, appId, 1);
+        if (existsSync(root))
+          throw new KernelCommandError(
+            'recovery_required',
+            'Interrupted app creation cannot be replayed.'
+          );
+        ensureLightAppsInventory(context.dataRoot, context.workspaceId);
+        if (countAppDirectories(context.dataRoot, context.workspaceId) >= APP_DIRECTORY_LIMIT)
+          throw new KernelCommandError('limit_exceeded', 'Workspace Light App limit exceeded.', {
+            limit: 'apps',
+            maximum: APP_DIRECTORY_LIMIT,
+          });
+        createDirectoryExclusive(root, 0o777);
+      } else {
+        const checked = openExistingAppDb(
+          context.dataRoot,
+          context.workspaceId,
+          appId,
+          spec.change.kind === 'format-complete' || spec.change.kind === 'rollback'
+            ? 'format-upgrade'
+            : 'current'
+        );
+        checked.sqlite.close();
+      }
+      const path = lightAppDbPath(context.dataRoot, context.workspaceId, appId);
+      const database = `app:${path}`;
+      await client.open({
+        database,
+        path,
+        create: fresh,
+        dataRoot: context.dataRoot,
+        physicalScope: { kind: 'app', workspaceId: context.workspaceId, appId },
+      });
+      await context.recheckAdmission?.();
+      const input: Omit<ControlAppInput, 'change'> & { change: KernelCommandSpec<T>['change'] } = {
+        workspaceId: context.workspaceId,
+        appId,
+        actor: context.actor,
+        requestId: context.requestId,
+        ...(context.execution ? { execution: context.execution } : {}),
+        receipt: ControlAppInputSchema.shape.receipt.parse(receipt),
+        change: spec.change,
+      };
+      const publish = async (owned: typeof input) => {
+        if (owned.change.kind === 'format-complete') {
+          await client.appKernel(
+            database,
+            ControlAppInputSchema.parse({
+              ...owned,
+              change: { ...owned.change, kind: 'format-journal' },
+            })
+          );
+          await context.recheckAdmission?.();
+        }
+        if (owned.change.kind === 'rollback') return publishRollback(context, database, owned);
+        return client.appKernel(database, ControlAppInputSchema.parse(owned));
+      };
+      const result = context.execution
+        ? await client.runTurnPublication(database, [context.execution.turnId], input, publish)
+        : await publish(input);
+      return boundedKernelResponse(result) as T;
+    },
   });
 }
 
-/**
- * Maps SQLite failures onto Kernel error codes.
- *
- * @param error Caught error.
- * @returns Mapped error.
- */
-function mapSqliteError(error: unknown): unknown {
-  if (error instanceof KernelCommandError) {
-    return error;
-  }
-  if (isSqliteBusy(error)) {
-    return new KernelCommandError('unavailable', 'App database is busy.');
-  }
-  const code =
-    typeof error === 'object' && error && 'code' in error
-      ? String((error as { code: string }).code)
-      : '';
-  if (code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
-    return new KernelCommandError('conflict', 'Record uniqueness conflict.');
-  }
-  if (code.startsWith('SQLITE_CONSTRAINT')) {
-    return new KernelCommandError('validation_failed', 'Record failed a native constraint.', {
-      path: 'data',
+/** Prepares an immutable complete candidate; only ordered native maintenance may replace canonical authority. */
+async function publishRollback(
+  context: KernelCommandContext,
+  database: string,
+  input: Omit<ControlAppInput, 'change'> & { change: KernelCommandSpec<ControlAppResult>['change'] }
+): Promise<ControlAppResult> {
+  if (input.change.kind !== 'rollback') throw new Error('Expected App rollback.');
+  const client = getControlStoreWorkerClient();
+  const { appId } = input;
+  const change = input.change;
+  const selected = readLightAppSnapshots(context.dataRoot, context.workspaceId, appId).find(
+    (row) => row.snapshotId === change.snapshotId
+  );
+  if (!selected) throw new KernelCommandError('not_found', 'App snapshot was not found.');
+  const root = lightAppRoot(context.dataRoot, context.workspaceId, appId);
+  const sourcePath = join(root, 'snapshots', `${selected.snapshotId}.sqlite`);
+  const source = statSync(sourcePath);
+  // Pinned SQLite maps one 32 KiB WAL-index region for a fresh, empty-WAL readonly copy.
+  const capacity = client.reserveAppRollback(database, source.size + APP_ROLLBACK_SIDECAR_BYTES);
+  const candidatePath = join(root, `restore-${randomUUID()}.sqlite`);
+  let transferred = false;
+  let unknown = false;
+  let ownsSidecars = false;
+  try {
+    await copyVerifiedFile({
+      sourcePath,
+      destinationPath: candidatePath,
+      expectedBytes: source.size,
+      maxBytes: source.size,
+      expectedSha256: selected.digest,
+      mode: 0o400,
     });
+    capacity.recordWritten(source.size);
+    const sidecars = [`${candidatePath}-wal`, `${candidatePath}-shm`];
+    for (const path of sidecars)
+      if (lstatSync(path, { throwIfNoEntry: false }))
+        throw new KernelCommandError(
+          'unavailable',
+          'App rollback candidate sidecar already exists.'
+        );
+    ownsSidecars = true;
+    let sqlite: Database.Database | undefined;
+    try {
+      sqlite = openAppDbReadOnly(candidatePath);
+      assertSnapshotRelations(sqlite);
+      const candidate: AppDb = {
+        scope: 'app',
+        sqlite,
+        dataRoot: context.dataRoot,
+        workspaceId: context.workspaceId,
+        appId,
+      };
+      assertAppDefinitionMatches(candidate);
+      const row = sqlite
+        .prepare(
+          'SELECT app_id AS appId,workspace_id AS workspaceId,schema_digest AS digest FROM app_metadata'
+        )
+        .get() as { appId: string; workspaceId: string; digest: string };
+      if (
+        row.appId !== appId ||
+        row.workspaceId !== context.workspaceId ||
+        row.digest !== selected.definitionVersion
+      )
+        throw new KernelCommandError('unavailable', 'App snapshot identity does not match.');
+    } finally {
+      sqlite?.close();
+      await clearRollbackCandidateSidecars(candidatePath);
+    }
+    await syncCanonicalDirectoryAsync(root);
+    const candidate = statSync(candidatePath);
+    await context.recheckAdmission?.();
+    transferred = true;
+    return await client.appKernel(
+      database,
+      ControlAppInputSchema.parse({
+        ...input,
+        change: {
+          ...input.change,
+          schemaRevision: selected.schemaRevision,
+          definitionVersion: selected.definitionVersion,
+          snapshotDigest: selected.digest,
+          candidate: {
+            path: candidatePath,
+            dev: String(candidate.dev),
+            ino: String(candidate.ino),
+            size: candidate.size,
+            mtimeMs: candidate.mtimeMs,
+            ctimeMs: candidate.ctimeMs,
+          },
+        },
+      }),
+      capacity
+    );
+  } catch (error) {
+    unknown = error instanceof ControlStoreWorkerError && error.commit === 'unknown';
+    throw error;
+  } finally {
+    if (!unknown) await discardRollbackCandidate(candidatePath, ownsSidecars);
+    // Failed cleanup leaves the existing forecast held; absence must precede release.
+    if (!transferred) capacity.release();
   }
-  return error;
 }
 
-/**
- * Narrows unknown command input to an object.
- *
- * @param value Input value.
- * @returns Object, or empty object.
- */
-function asObject(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+const APP_ROLLBACK_SIDECAR_BYTES = 32_768;
+
+/** Removes only the closed auxiliary files of the uniquely owned, empty-WAL candidate. */
+async function clearRollbackCandidateSidecars(candidatePath: string): Promise<void> {
+  for (const suffix of ['-wal', '-shm']) {
+    const path = `${candidatePath}${suffix}`;
+    const sidecar = lstatSync(path, { throwIfNoEntry: false });
+    if (!sidecar) continue;
+    if (
+      !sidecar.isFile() ||
+      sidecar.isSymbolicLink() ||
+      sidecar.nlink !== 1 ||
+      (suffix === '-wal' ? sidecar.size !== 0 : sidecar.size > APP_ROLLBACK_SIDECAR_BYTES)
+    )
+      throw new KernelCommandError('unavailable', 'App rollback candidate sidecar changed.');
+    await removeDurableFile({ destinationPath: path });
+    if (lstatSync(path, { throwIfNoEntry: false }))
+      throw new KernelCommandError(
+        'unavailable',
+        'App rollback candidate sidecar cleanup is incomplete.'
+      );
+  }
+}
+
+/** Proves known-outcome scratch removal before the caller can release its physical forecast. */
+async function discardRollbackCandidate(
+  candidatePath: string,
+  ownsSidecars: boolean
+): Promise<void> {
+  if (ownsSidecars) await clearRollbackCandidateSidecars(candidatePath);
+  await removeDurableFile({ destinationPath: candidatePath });
+  await removeDurableFile({ destinationPath: `${candidatePath}-journal` });
+  if (
+    lstatSync(candidatePath, { throwIfNoEntry: false }) ||
+    lstatSync(`${candidatePath}-journal`, { throwIfNoEntry: false })
+  )
+    throw new KernelCommandError('unavailable', 'App rollback candidate cleanup is incomplete.');
 }

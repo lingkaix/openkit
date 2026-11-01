@@ -849,7 +849,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       actor,
       requestId: '00000000-0000-4000-8000-000000000903',
     };
-    const app = await o.kernel.createLightApp(kernelContext, {
+    const appSchema = {
       format: 'openkit.light-app',
       schemaVersion: 1,
       title: 'Synthetic continuity app',
@@ -863,7 +863,8 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
           indexes: [],
         },
       ],
-    });
+    };
+    const app = await o.kernel.createLightApp(kernelContext, appSchema);
     sql.lightAppId = app.appId;
     sql.lightAppSchemaRevision = app.schemaRevision;
     sql.lightAppDefinitionVersion = app.definitionVersion;
@@ -876,9 +877,26 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
         { note: 'Synthetic retained business record.' }
       )
     ).id;
+    // Produce the recovery copy through the same schema mutation that owns it in service.
+    const beforeSchema = o.kernel.getLightApp(dataRoot, workspaceId, app.appId);
+    const {
+      appId: _schemaAppId,
+      schemaRevision: _schemaRevision,
+      ...schemaProposal
+    } = beforeSchema.schema;
+    const updatedApp = await o.kernel.updateLightAppSchema(
+      { ...kernelContext, requestId: '00000000-0000-4000-8000-000000000905' },
+      app.appId,
+      beforeSchema.appRevision,
+      beforeSchema.schemaRevision,
+      schemaProposal
+    );
+    sql.lightAppSchemaRevision = updatedApp.schemaRevision;
+    sql.lightAppDefinitionVersion = updatedApp.definitionVersion;
     const appHandle = o.appDb.openExistingAppDb(dataRoot, workspaceId, app.appId);
     try {
-      const snapshot = o.snapshots.snapshotLightApp(appHandle, 'definition-migration');
+      const [snapshot] = o.kernel.listLightAppSnapshots(dataRoot, workspaceId, app.appId).snapshots;
+      assert(snapshot, 'The schema mutation must publish its recovery copy.');
       sql.lightAppSnapshotId = snapshot.snapshotId;
       sql.lightAppSnapshotPath = relative(
         dataRoot,

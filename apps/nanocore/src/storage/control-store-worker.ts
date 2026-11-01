@@ -14,6 +14,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import { writeRetainedV1 } from '@openkit/protocol';
+import { changeVerifiedFileMode, publishVerifiedFileReplacement } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { ZodError } from 'zod';
 import {
@@ -27,7 +28,21 @@ import { ADMIN_RECOVERY_REQUIRED, AdminRecoveryError } from '../auth/admin-recov
 import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
 import { BETTER_AUTH_REFUSALS, BetterAuthNativeError } from '../auth/better-auth-codecs.js';
 import { applyControlBetterAuth } from '../auth/better-auth-native.js';
+import { assertWritable, mapAppSqliteError } from '../generative-kernel/app-model.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
+import {
+  type ControlAppInput,
+  ControlAppInputSchema,
+  type ControlAppScope,
+} from '../generative-kernel/native-command-codecs.js';
+import {
+  applyControlApp,
+  assertCommittedControlAppRollback,
+  assertControlAppReceipt,
+  type PreparedControlApp,
+  prepareControlApp,
+} from '../generative-kernel/native-command-worker.js';
+import { readLightAppSnapshots } from '../generative-kernel/snapshots.js';
 import {
   applyControlGenerativePresentation,
   type PreparedControlGenerativePresentation,
@@ -78,6 +93,7 @@ import {
   prepareControlMaterialCommand,
   WorkspaceMaterialError,
 } from '../workspace-materials.js';
+import { type AppDb, assertAppAuthority, lightAppDbPath } from './app-db.js';
 import {
   ControlStoreBusyError,
   ControlStoreNoSpaceError,
@@ -134,6 +150,9 @@ import {
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
+  ControlPhysicalForecastDecisionSchema,
+  type ControlPhysicalForecastFiles,
+  ControlPhysicalForecastSchema,
   type ControlSqlResult,
   type ControlSqlRow,
   type ControlSqlStatement,
@@ -154,7 +173,7 @@ import { EvaluationCandidateCommandError } from './evaluation-candidate-codecs.j
 import { applyControlEvaluationCandidate } from './evaluation-candidate-native.js';
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
-import { applyNativeScopeMigrations } from './migrate.js';
+import { applyAppMigrations, applyNativeScopeMigrations } from './migrate.js';
 import {
   THREAD_READ_RECEIPT_INVALID,
   ThreadReadItemIdsSchema,
@@ -191,6 +210,7 @@ type WriteCommand = Extract<
       | 'event'
       | 'publication'
       | 'project-cleanup'
+      | 'app-kernel'
       | 'thread-read-membership'
       | 'admin-recovery'
       | 'better-auth'
@@ -221,9 +241,13 @@ type WriteRequest = WriteCommand & {
   /** Membership only; all members occupy the same existing pending array. */
   readonly cohort?: { readonly size: number; readonly immediate: boolean } | undefined;
   preparation?: Promise<void>;
+  /** Reply to the original request's physical forecast; no new queue entry is admitted. */
+  physicalForecast?: { readonly resolve: () => void; readonly reject: (error: unknown) => void };
   ready: boolean;
   predecessorFailed: boolean;
   refusal?: ControlWorkerReply;
+  readonly preparedApp?: PreparedControlApp;
+  readonly appInput?: ControlAppInput;
   readonly preparedThreadReadItemIds?: readonly string[];
   readonly preparedGenerativePresentation?: PreparedControlGenerativePresentation;
   readonly preparedPublication?: PreparedControlPublication | undefined;
@@ -255,6 +279,7 @@ interface OwnedDatabase {
   readonly path: string;
   readonly identity: string;
   readonly productOwner: ControlProductOwner | undefined;
+  readonly physicalScope: ControlAppScope | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
   readonly pending: WriteRequest[];
   readonly publications: ControlContentPreparation['publications'];
@@ -271,6 +296,58 @@ const paths = new Set<string>();
 const identities = new Set<string>();
 const pendingIds = new Set<number>();
 let stopping = false;
+
+/** Binds the admitted physical App to this exact existing owner connection. */
+function appDatabase(owner: OwnedDatabase): AppDb {
+  const scope = owner.physicalScope;
+  const physical = lstatSync(owner.path);
+  if (
+    !physical.isFile() ||
+    physical.isSymbolicLink() ||
+    physical.nlink !== 1 ||
+    realpathSync(owner.path) !== owner.path ||
+    `${physical.dev}:${physical.ino}` !== owner.identity
+  )
+    throw new ControlProductPreconditionError();
+  if (!scope) throw new ControlProductPreconditionError();
+  const dataRoot = dirname(dirname(dirname(dirname(dirname(owner.path)))));
+  if (lightAppDbPath(dataRoot, scope.workspaceId, scope.appId) !== owner.path)
+    throw new ControlProductPreconditionError();
+  return {
+    scope: 'app',
+    sqlite: owner.sqlite,
+    dataRoot,
+    workspaceId: scope.workspaceId,
+    appId: scope.appId,
+  };
+}
+
+/** Keeps the admitted slot while Main synchronously reserves the exact post-predecessor copy. */
+function admitPhysicalPublication(
+  owner: OwnedDatabase,
+  request: WriteRequest,
+  files: ControlPhysicalForecastFiles
+): Promise<void> {
+  if (request.physicalForecast || request.ready || databases.get(request.database) !== owner)
+    throw new ControlProductPreconditionError();
+  return new Promise<void>((resolve, reject) => {
+    request.physicalForecast = { resolve, reject };
+    try {
+      port.postMessage(
+        ControlPhysicalForecastSchema.parse({
+          version: CONTROL_WORKER_VERSION,
+          id: request.id,
+          database: request.database,
+          status: 'physical-forecast',
+          files,
+        })
+      );
+    } catch (error) {
+      delete request.physicalForecast;
+      reject(error);
+    }
+  });
+}
 
 /** Drops one request's references without discarding work still joined by another admitted request. */
 function releaseContentPublications(
@@ -311,6 +388,26 @@ function failure(
 
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
+  if (operation === 'app-kernel') {
+    const mapped = mapAppSqliteError(error);
+    if (mapped instanceof KernelCommandError) {
+      const { path, limit, maximum, expectedRevision, currentRevision } = mapped;
+      return {
+        operation,
+        code: mapped.code,
+        message: mapped.message,
+        status: mapped.status,
+        appDetails: { path, limit, maximum, expectedRevision, currentRevision },
+      };
+    }
+    if (mapped && typeof mapped === 'object' && 'code' in mapped && mapped.code === 'EEXIST')
+      return {
+        operation,
+        code: 'EEXIST',
+        message: 'App snapshot destination already exists.',
+        status: 409,
+      };
+  }
   if (
     operation === 'thread-read-membership' &&
     error instanceof Error &&
@@ -642,6 +739,15 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     lanes.add(workId);
   };
   switch (request.operation) {
+    case 'app-kernel':
+      if (
+        !owner.physicalScope ||
+        owner.physicalScope.appId !== request.input.appId ||
+        owner.physicalScope.workspaceId !== request.input.workspaceId
+      )
+        throw new ControlProductPreconditionError();
+      lanes.add(`app:${request.input.appId}`);
+      break;
     case 'item':
     case 'event': {
       const turnId =
@@ -1593,6 +1699,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'better-auth',
               result,
             };
+          } else if (request.operation === 'app-kernel') {
+            if (!request.appInput || !request.preparedApp)
+              throw new ControlProductPreconditionError();
+            const result =
+              request.appInput.change.kind === 'format-journal'
+                ? null
+                : applyControlApp(appDatabase(owner), request.appInput, request.preparedApp);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'app-kernel',
+              result,
+            };
           } else if (request.operation === 'admin-recovery') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const auditEventId = applyControlAdminRecovery(owner.scopeDb, request.input);
@@ -1807,15 +1927,184 @@ async function drain(owner: OwnedDatabase): Promise<void> {
 function maintainDatabase(
   request: Extract<
     ControlWorkerRequest,
-    { operation: 'close' | 'checkpoint' | 'reclaim' | 'recovery-seal' }
+    { operation: 'close' | 'checkpoint' | 'reclaim' | 'recovery-seal' | 'app-kernel' }
   >,
   owner: OwnedDatabase
 ): void {
-  if (request.operation === 'close' || request.operation === 'recovery-seal') owner.closing = true;
+  if (
+    request.operation === 'close' ||
+    request.operation === 'recovery-seal' ||
+    request.operation === 'app-kernel'
+  )
+    owner.closing = true;
   const finish = async () => {
     try {
       await drain(owner);
-      if (request.operation === 'close' || request.operation === 'recovery-seal') {
+      if (request.operation === 'app-kernel') {
+        if (owner.poisoned) throw new ControlProductPreconditionError();
+        const input = ControlAppInputSchema.parse(
+          JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.content))
+        );
+        if (
+          input.change.kind !== request.input.kind ||
+          input.appId !== request.input.appId ||
+          input.workspaceId !== request.input.workspaceId ||
+          input.execution?.turnId !== request.input.turnId
+        )
+          throw new ControlProductPreconditionError();
+        const db = appDatabase(owner);
+        assertControlAppReceipt(db, input);
+        assertAppAuthority(db, true);
+        const current = owner.sqlite
+          .prepare('SELECT app_revision AS appRevision,lifecycle FROM app_metadata WHERE app_id=?')
+          .get(db.appId) as { appRevision: number; lifecycle: 'active' | 'retired' };
+        if (input.change.kind !== 'rollback') throw new ControlProductPreconditionError();
+        assertWritable(current);
+        if (current.appRevision !== input.change.expectedAppRevision)
+          throw new KernelCommandError('conflict', 'App revision is stale.', {
+            path: 'expectedAppRevision',
+            expectedRevision: input.change.expectedAppRevision,
+            currentRevision: current.appRevision,
+          });
+        const rollbackChange = input.change;
+        const selectedSnapshot = readLightAppSnapshots(db.dataRoot, db.workspaceId, db.appId).find(
+          (snapshot) => snapshot.snapshotId === rollbackChange.snapshotId
+        );
+        if (
+          !selectedSnapshot ||
+          selectedSnapshot.digest !== input.change.snapshotDigest ||
+          selectedSnapshot.schemaRevision !== input.change.schemaRevision ||
+          selectedSnapshot.definitionVersion !== input.change.definitionVersion
+        )
+          throw new ControlProductPreconditionError();
+        const candidate = input.change.candidate;
+        const root = dirname(owner.path);
+        const actual = lstatSync(candidate.path);
+        if (
+          !/^restore-[a-f0-9-]{36}\.sqlite$/.test(basename(candidate.path)) ||
+          dirname(candidate.path) !== root ||
+          realpathSync(candidate.path) !== candidate.path ||
+          !actual.isFile() ||
+          actual.isSymbolicLink() ||
+          actual.nlink !== 1 ||
+          String(actual.dev) !== candidate.dev ||
+          String(actual.ino) !== candidate.ino ||
+          actual.size !== candidate.size ||
+          actual.mtimeMs !== candidate.mtimeMs ||
+          actual.ctimeMs !== candidate.ctimeMs ||
+          (actual.mode & 0o222) !== 0
+        )
+          throw new KernelCommandError('unavailable', 'App rollback candidate identity changed.');
+        await changeVerifiedFileMode({
+          path: candidate.path,
+          expectedIdentity: `${candidate.dev}:${candidate.ino}`,
+          expectedBytes: candidate.size,
+          expectedMtimeMs: candidate.mtimeMs,
+          expectedCtimeMs: candidate.ctimeMs,
+          expectedMode: actual.mode & 0o777,
+          mode: 0o600,
+        });
+        const sqlite = new Database(candidate.path, { fileMustExist: true, timeout: 1000 });
+        let result: ReturnType<typeof applyControlApp>;
+        try {
+          sqlite.pragma('journal_mode = DELETE');
+          sqlite.pragma('synchronous = FULL');
+          sqlite.pragma('foreign_keys = ON');
+          const identity = sqlite
+            .prepare(
+              'SELECT app_id AS appId,workspace_id AS workspaceId,schema_digest AS digest FROM app_metadata'
+            )
+            .get() as { appId: string; workspaceId: string; digest: string };
+          if (
+            identity.appId !== db.appId ||
+            identity.workspaceId !== db.workspaceId ||
+            identity.digest !== input.change.definitionVersion
+          )
+            throw new ControlProductPreconditionError();
+          result = sqlite
+            .transaction(() => applyControlApp({ ...db, sqlite }, input, {}))
+            .immediate();
+        } finally {
+          sqlite.close();
+        }
+        // The bounded post-COMMIT proof is checked on a reopened handle before the candidate is renamed.
+        const written = lstatSync(candidate.path);
+        await changeVerifiedFileMode({
+          path: candidate.path,
+          expectedIdentity: `${candidate.dev}:${candidate.ino}`,
+          expectedBytes: written.size,
+          expectedMtimeMs: written.mtimeMs,
+          expectedCtimeMs: written.ctimeMs,
+          expectedMode: written.mode & 0o777,
+          mode: 0o400,
+        });
+        const committedIdentity = lstatSync(candidate.path);
+        const verified = new Database(candidate.path, {
+          readonly: true,
+          fileMustExist: true,
+          timeout: 1000,
+        });
+        try {
+          verified.pragma('query_only = ON');
+          assertCommittedControlAppRollback({ ...db, sqlite: verified }, input);
+        } finally {
+          verified.close();
+        }
+        const currentCandidate = lstatSync(candidate.path);
+        if (
+          !currentCandidate.isFile() ||
+          currentCandidate.isSymbolicLink() ||
+          currentCandidate.nlink !== 1 ||
+          String(currentCandidate.dev) !== String(committedIdentity.dev) ||
+          String(currentCandidate.ino) !== String(committedIdentity.ino) ||
+          currentCandidate.size !== committedIdentity.size ||
+          currentCandidate.mtimeMs !== committedIdentity.mtimeMs ||
+          currentCandidate.ctimeMs !== committedIdentity.ctimeMs ||
+          realpathSync(candidate.path) !== candidate.path
+        )
+          throw new ControlProductPreconditionError();
+        appDatabase(owner);
+        // Keep the original reservation and closing boundary until replacement and bounded reopen finish.
+        owner.sqlite.close();
+        await publishVerifiedFileReplacement({
+          sourcePath: candidate.path,
+          destinationPath: owner.path,
+          sourceIdentity: `${committedIdentity.dev}:${committedIdentity.ino}`,
+          destinationIdentity: owner.identity,
+          expectedBytes: committedIdentity.size,
+          expectedMtimeMs: committedIdentity.mtimeMs,
+          expectedCtimeMs: committedIdentity.ctimeMs,
+          expectedMode: committedIdentity.mode & 0o777,
+          mode: 0o600,
+        });
+        const reopened = new Database(owner.path, { fileMustExist: true, timeout: 1000 });
+        try {
+          assertCommittedControlAppRollback({ ...db, sqlite: reopened }, input);
+          const physical = statSync(owner.path);
+          const identity = `${physical.dev}:${physical.ino}`;
+          const replacement = {
+            ...owner,
+            sqlite: reopened,
+            writer: controlStoreFor(reopened),
+            identity,
+            closing: false,
+          };
+          identities.delete(owner.identity);
+          identities.add(identity);
+          databases.set(request.database, replacement);
+          reply({
+            version: CONTROL_WORKER_VERSION,
+            id: request.id,
+            status: 'ok',
+            operation: 'app-kernel',
+            result,
+            identity,
+          });
+        } catch (error) {
+          reopened.close();
+          throw error;
+        }
+      } else if (request.operation === 'close' || request.operation === 'recovery-seal') {
         closeWorkspaceProductReadHandles(owner.path);
         owner.sqlite.close();
         databases.delete(request.database);
@@ -1866,7 +2155,21 @@ function maintainDatabase(
         });
     } catch (error) {
       const code = failureCode(error, [request.id]);
-      reply(failure(request.id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
+      if (request.operation === 'app-kernel') {
+        const unknown = !owner.sqlite.open;
+        if (unknown) owner.poisoned = true;
+        else owner.closing = false;
+        const domain = unknown ? undefined : domainRefusal('app-kernel', error);
+        reply(
+          domain
+            ? { ...failure(request.id, 'precondition'), domain }
+            : failure(
+                request.id,
+                unknown ? 'commit-unknown' : code,
+                unknown ? 'unknown' : 'not-committed'
+              )
+        );
+      } else reply(failure(request.id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
     }
   };
   void finish();
@@ -1880,7 +2183,7 @@ function shutdownWorker(id: number): void {
     try {
       for (const owner of databases.values()) {
         await drain(owner);
-        owner.sqlite.close();
+        if (owner.sqlite.open) owner.sqlite.close();
       }
       databases.clear();
       paths.clear();
@@ -1930,12 +2233,21 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
       : realpathSync(request.path);
   const dataRoot = request.dataRoot === undefined ? undefined : realpathSync(request.dataRoot);
   if (dataRoot !== undefined) {
-    if (!request.productOwner) throw new ControlProductPreconditionError();
-    const expected =
-      request.productOwner.kind === 'server'
+    if (!request.productOwner && !request.physicalScope)
+      throw new ControlProductPreconditionError();
+    const expected = request.physicalScope
+      ? lightAppDbPath(dataRoot, request.physicalScope.workspaceId, request.physicalScope.appId)
+      : request.productOwner!.kind === 'server'
         ? coreDbPath(dataRoot)
-        : workspaceDbPath(dataRoot, request.productOwner.workspaceId);
-    if (join(realpathSync(dirname(expected)), basename(expected)) !== path)
+        : workspaceDbPath(
+            dataRoot,
+            request.productOwner!.kind === 'workspace' ? request.productOwner!.workspaceId : ''
+          );
+    if (
+      (request.physicalScope
+        ? resolve(expected)
+        : join(realpathSync(dirname(expected)), basename(expected))) !== path
+    )
       throw new ControlProductPreconditionError();
   }
   const existing = statSync(path, { throwIfNoEntry: false });
@@ -1944,9 +2256,16 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
     reply(failure(request.id, 'invalid-request'));
     return;
   }
-  const sqlite = new Database(path, { fileMustExist: !request.create });
+  const sqlite = new Database(path, {
+    fileMustExist: !request.create,
+    ...(request.physicalScope ? { timeout: 1000 } : {}),
+  });
   try {
     assertSavepointSafeSchema(sqlite);
+    if (request.physicalScope) {
+      sqlite.pragma('busy_timeout = 1000');
+      if (request.create) applyAppMigrations(sqlite);
+    }
     if (request.initialize !== undefined) {
       applyNativeScopeMigrations(
         sqlite,
@@ -2014,6 +2333,7 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
       path,
       identity,
       productOwner: request.productOwner,
+      physicalScope: request.physicalScope,
       contentMount,
       pending: [],
       publications: new Map(),
@@ -2034,6 +2354,29 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
 
 /** Routes trusted protocol messages without transporting connections or executing caller code. */
 function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
+  if (
+    value &&
+    typeof value === 'object' &&
+    'operation' in value &&
+    value.operation === 'physical-forecast'
+  ) {
+    const decision = ControlPhysicalForecastDecisionSchema.parse(value);
+    const request = databases
+      .get(decision.database)
+      ?.pending.find((item) => item.id === decision.id);
+    if (!request?.physicalForecast || request.ready)
+      throw new Error('Uncorrelated physical forecast decision.');
+    const continuation = request.physicalForecast;
+    delete request.physicalForecast;
+    if (decision.decision === 'admitted') continuation.resolve();
+    else
+      continuation.reject(
+        decision.decision === 'no-space'
+          ? new ControlStoreNoSpaceError(new Error('Physical publication forecast refused.'))
+          : new ControlProductPreconditionError()
+      );
+    return;
+  }
   if (value && typeof value === 'object' && 'requests' in value) {
     if (
       !isControlProductCohort(value) ||
@@ -2118,7 +2461,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       reply(failure(value.id, 'not-open'));
       return;
     }
-    if (value.operation === 'close' || value.operation === 'recovery-seal') {
+    if (
+      value.operation === 'close' ||
+      value.operation === 'recovery-seal' ||
+      (value.operation === 'app-kernel' && value.input.kind === 'rollback')
+    ) {
       maintainDatabase(value, owner);
       return;
     }
@@ -2139,6 +2486,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'event' ||
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
+      value.operation === 'app-kernel' ||
       value.operation === 'thread-read-membership' ||
       value.operation === 'admin-recovery' ||
       value.operation === 'better-auth' ||
@@ -2184,6 +2532,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           finish,
           cohort,
           barrier:
+            value.operation === 'app-kernel' ||
             value.operation === 'recovery-cleanup' ||
             value.operation === 'recovery-capture' ||
             value.operation === 'recovery-move-out' ||
@@ -2204,6 +2553,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           published: new Set(),
         };
         const prepare = async () => {
+          let preparedApp: PreparedControlApp | undefined;
+          let appInput: ControlAppInput | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
           let preparedGenerativePresentation: PreparedControlGenerativePresentation | undefined;
           let preparedPublication: PreparedControlPublication | undefined;
@@ -2222,6 +2573,23 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedProvenance: WorkerRuntimeProvenanceMetadataInput | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
           try {
+            if (value.operation === 'app-kernel') {
+              appInput = ControlAppInputSchema.parse(
+                JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value.content))
+              );
+              if (
+                appInput.change.kind !== value.input.kind ||
+                appInput.workspaceId !== value.input.workspaceId ||
+                appInput.appId !== value.input.appId ||
+                appInput.execution?.turnId !== value.input.turnId
+              )
+                throw new ControlProductPreconditionError();
+              Object.assign(queued, { appInput });
+              await prepareAfterPredecessors(owner, queued, earlier);
+              preparedApp = await prepareControlApp(appDatabase(owner), appInput, (files) =>
+                admitPhysicalPublication(owner, queued, files)
+              );
+            }
             if (value.operation === 'thread-read-membership') {
               preparedThreadReadItemIds = ThreadReadItemIdsSchema.parse(
                 JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value.content))
@@ -2456,6 +2824,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               throw new ControlProductPreconditionError();
             Object.assign(queued, {
               ready: true,
+              preparedApp,
+              appInput,
               preparedThreadReadItemIds,
               preparedEntries,
               preparedGenerativePresentation,

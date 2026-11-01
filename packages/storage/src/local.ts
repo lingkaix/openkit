@@ -8,6 +8,7 @@ import {
   mkdtemp,
   open,
   opendir,
+  rename,
   rm,
   stat,
   unlink,
@@ -862,6 +863,135 @@ export async function removeDurableFile(input: {
     await directory.sync();
     await verifyBinding(parent, '', `${before.dev}:${before.ino}`, true);
   } finally {
+    await directory.close();
+  }
+}
+
+/** Existing caller-held metadata for one already-verified regular file. */
+interface VerifiedFileProof {
+  readonly expectedIdentity: string;
+  readonly expectedBytes: number;
+  readonly expectedMtimeMs: number;
+  readonly expectedCtimeMs: number;
+  readonly expectedMode: number;
+}
+
+/** Checks the complete admitted metadata without reading or hashing file content. */
+async function assertVerifiedFile(file: FileHandle, expected: VerifiedFileProof): Promise<void> {
+  const actual = await file.stat();
+  if (
+    !Number.isSafeInteger(expected.expectedBytes) ||
+    expected.expectedBytes < 0 ||
+    !actual.isFile() ||
+    actual.nlink !== 1 ||
+    `${actual.dev}:${actual.ino}` !== expected.expectedIdentity ||
+    actual.size !== expected.expectedBytes ||
+    actual.mtimeMs !== expected.expectedMtimeMs ||
+    actual.ctimeMs !== expected.expectedCtimeMs ||
+    (actual.mode & 0o777) !== expected.expectedMode
+  )
+    throw new Error('Admitted file identity changed.');
+}
+
+/** Synchronizes the exact caller-owned file after its existing producer has closed its writes. */
+export async function syncVerifiedFile(
+  input: VerifiedFileProof & { readonly path: string }
+): Promise<void> {
+  const parent = dirname(resolve(input.path));
+  const name = basename(input.path);
+  const file = await confined(parent, name);
+  try {
+    await assertVerifiedFile(file, input);
+    await verifyBinding(parent, name, input.expectedIdentity);
+    await file.sync();
+    await verifyBinding(parent, name, input.expectedIdentity);
+    await assertVerifiedFile(file, input);
+  } finally {
+    await file.close();
+  }
+}
+
+/** Changes only the exact admitted file's mode; publication authority remains with its caller. */
+export async function changeVerifiedFileMode(
+  input: VerifiedFileProof & {
+    readonly path: string;
+    readonly mode: number;
+  }
+): Promise<void> {
+  const parent = dirname(resolve(input.path));
+  const name = basename(input.path);
+  const file = await confined(parent, name);
+  try {
+    await assertVerifiedFile(file, input);
+    await verifyBinding(parent, name, input.expectedIdentity);
+    await file.chmod(input.mode);
+    const changed = {
+      ...input,
+      expectedCtimeMs: (await file.stat()).ctimeMs,
+      expectedMode: input.mode,
+    };
+    await assertVerifiedFile(file, changed);
+    await verifyBinding(parent, name, input.expectedIdentity);
+    await assertVerifiedFile(file, changed);
+  } finally {
+    await file.close();
+  }
+}
+
+/** Replaces one exact same-directory file with its caller-verified candidate, then commits the entry. */
+export async function publishVerifiedFileReplacement(
+  input: Omit<VerifiedFileProof, 'expectedIdentity'> & {
+    readonly sourcePath: string;
+    readonly destinationPath: string;
+    readonly sourceIdentity: string;
+    readonly destinationIdentity: string;
+    readonly mode: number;
+  }
+): Promise<void> {
+  const parent = dirname(resolve(input.sourcePath));
+  if (
+    parent !== dirname(resolve(input.destinationPath)) ||
+    basename(input.sourcePath) === basename(input.destinationPath)
+  )
+    throw new Error('File replacement requires distinct entries in the same directory.');
+  const directory = await confined(parent, '', true);
+  let source: FileHandle | undefined;
+  let destination: FileHandle | undefined;
+  try {
+    const originalParent = await directory.stat({ bigint: true });
+    const sourceName = basename(input.sourcePath);
+    const destinationName = basename(input.destinationPath);
+    source = await confined(parent, sourceName);
+    destination = await confined(parent, destinationName);
+    const expected = { ...input, expectedIdentity: input.sourceIdentity };
+    await assertVerifiedFile(source, expected);
+    const previous = await destination.stat({ bigint: true });
+    if (!previous.isFile() || previous.nlink !== 1n)
+      throw new Error('Replacement destination is not an admitted regular file.');
+    await verifyBinding(parent, sourceName, input.sourceIdentity);
+    await verifyBinding(parent, destinationName, input.destinationIdentity);
+    await verifyBinding(parent, '', `${originalParent.dev}:${originalParent.ino}`, true);
+    await assertVerifiedFile(source, expected);
+    await source.chmod(input.mode);
+    const changed = {
+      ...expected,
+      expectedCtimeMs: (await source.stat()).ctimeMs,
+      expectedMode: input.mode,
+    };
+    await assertVerifiedFile(source, changed);
+    await source.sync();
+    await verifyBinding(parent, sourceName, input.sourceIdentity);
+    await verifyBinding(parent, destinationName, input.destinationIdentity);
+    await verifyBinding(parent, '', `${originalParent.dev}:${originalParent.ino}`, true);
+    const pinned = await descriptorPath(directory);
+    await assertVerifiedFile(source, changed);
+    await rename(join(pinned, sourceName), join(pinned, destinationName));
+    await directory.sync();
+    await verifyBinding(parent, destinationName, input.sourceIdentity);
+    await verifyBinding(parent, '', `${originalParent.dev}:${originalParent.ino}`, true);
+  } finally {
+    await destination?.close();
+    await source?.close();
     await directory.close();
   }
 }

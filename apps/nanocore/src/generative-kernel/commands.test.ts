@@ -1,29 +1,132 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { WorkerOptions } from 'node:worker_threads';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { lightAppDbPath, lightAppRoot } from '../storage/app-db.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { commandRequestKey, getCommandRequestRecord } from '../storage/command-request-records.js';
+import { CONTROL_STORE_BUDGET } from '../storage/control-store.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { observeTestAppRecordCount } from '../test-support/store.js';
 import type { KernelCommandContext } from './commands.js';
 import {
+  batchRecords,
   createLightApp,
   createRecord,
   getLightApp,
   getRecord,
+  listLightAppSnapshots,
   listLightApps,
   listRecords,
   updateLightAppSchema,
   updateRecord,
 } from './commands.js';
 import { KernelCommandError } from './errors.js';
+import { allocateAppId } from './uuid.js';
+
+const commitBoundary = vi.hoisted(() => ({
+  gate: new SharedArrayBuffer(4 * Int32Array.BYTES_PER_ELEMENT),
+  failForecastDecision: false,
+  forecastDecisionFailed: false,
+  holdTermination: false,
+  terminationRequested: false,
+  releaseTermination: undefined as (() => void) | undefined,
+  termination: undefined as Promise<number> | undefined,
+}));
+
+// Hold only an armed real native COMMIT; SQL, its result and the worker reply stay genuine.
+vi.mock('node:worker_threads', async (load) => {
+  const native = await load<typeof import('node:worker_threads')>();
+  return {
+    ...native,
+    Worker: class extends native.Worker {
+      constructor(filename: string | URL, options?: WorkerOptions) {
+        const prelude = `
+          const {workerData}=require('node:worker_threads');
+          const Database=require(workerData.databaseModule);
+          const gate=new Int32Array(workerData.appCommitGate);
+          const exec=Database.prototype.exec;
+          Database.prototype.exec=function(sql) {
+            const held=/^COMMIT$/i.test(sql) && Atomics.compareExchange(gate,0,1,0)===1;
+            if(!held) return exec.call(this,sql);
+            Atomics.store(gate,1,1);
+            Atomics.notify(gate,1);
+            if(Atomics.wait(gate,2,0,10000)==='timed-out') throw new Error('Timed out releasing the App COMMIT fixture.');
+            const result=exec.call(this,sql);
+            Atomics.store(gate,3,1);
+            Atomics.notify(gate,3);
+            return result;
+          };
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...((options?.workerData ?? {}) as object),
+            databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+            appCommitGate: commitBoundary.gate,
+          },
+        });
+        const postMessage = this.postMessage.bind(this);
+        this.postMessage = ((...args: Parameters<native.Worker['postMessage']>) => {
+          const value = args[0];
+          if (
+            commitBoundary.failForecastDecision &&
+            value !== null &&
+            typeof value === 'object' &&
+            'operation' in value &&
+            value.operation === 'physical-forecast'
+          ) {
+            commitBoundary.forecastDecisionFailed = true;
+            throw new Error('Injected physical forecast channel failure.');
+          }
+          return postMessage(...args);
+        }) as native.Worker['postMessage'];
+        const terminate = this.terminate.bind(this);
+        this.terminate = () => {
+          commitBoundary.terminationRequested = true;
+          if (commitBoundary.termination) return commitBoundary.termination;
+          if (!commitBoundary.holdTermination) return terminate();
+          commitBoundary.termination = new Promise<number>((resolve, reject) => {
+            commitBoundary.releaseTermination = () => {
+              if (!commitBoundary.holdTermination) return;
+              commitBoundary.holdTermination = false;
+              terminate().then(resolve, reject);
+            };
+          });
+          return commitBoundary.termination;
+        };
+      }
+    },
+  };
+});
 
 const temporaryRoots: string[] = [];
 afterEach(async () => {
+  const gate = new Int32Array(commitBoundary.gate);
+  Atomics.store(gate, 2, 1);
+  Atomics.notify(gate, 2);
+  commitBoundary.releaseTermination?.();
   await shutdownControlStoreWorkerClient();
+  gate.fill(0);
+  commitBoundary.failForecastDecision = false;
+  commitBoundary.forecastDecisionFailed = false;
+  commitBoundary.holdTermination = false;
+  commitBoundary.terminationRequested = false;
+  commitBoundary.releaseTermination = undefined;
+  commitBoundary.termination = undefined;
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -105,39 +208,51 @@ describe('Generative Kernel commands', () => {
     );
     let injected = false;
     let committedBeforeRows = false;
-    let write: ReturnType<typeof updateRecord> | undefined;
-    const restoreCount = observeTestAppRecordCount(
+    const gate = new Int32Array(commitBoundary.gate);
+    Atomics.store(gate, 0, 1);
+    const write = updateRecord(
+      { ...context, requestId: randomUUID() },
+      app.appId,
+      'mappings',
+      record.id,
       {
-        dataRoot: context.dataRoot,
-        workspaceId: context.workspaceId,
-        appId: app.appId,
-        collectionId: app.schema!.collections[0]!.id,
-      },
-      () => {
-        injected = true;
-        write = updateRecord(
-          { ...context, requestId: randomUUID() },
-          app.appId,
-          'mappings',
-          record.id,
-          {
-            schemaRevision: app.schemaRevision,
-            expectedRecordRevision: record.revision,
-            data: { active: false },
-          }
-        );
-        committedBeforeRows =
-          getRecord(
-            context.dataRoot,
-            context.workspaceId,
-            app.appId,
-            'mappings',
-            record.id,
-            app.schemaRevision
-          ).data.active === false;
+        schemaRevision: app.schemaRevision,
+        expectedRecordRevision: record.revision,
+        data: { active: false },
       }
     );
+    let restoreCount: (() => void) | undefined;
     try {
+      const commitDeadline = Date.now() + 10_000;
+      while (Atomics.load(gate, 1) === 0 && Date.now() < commitDeadline) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect(Atomics.load(gate, 1), 'the real App writer must reach COMMIT').toBe(1);
+      restoreCount = observeTestAppRecordCount(
+        {
+          dataRoot: context.dataRoot,
+          workspaceId: context.workspaceId,
+          appId: app.appId,
+          collectionId: app.schema!.collections[0]!.id,
+        },
+        () => {
+          injected = true;
+          Atomics.store(gate, 2, 1);
+          Atomics.notify(gate, 2);
+          expect(Atomics.wait(gate, 3, 0, 10_000), 'the real App COMMIT must finish').not.toBe(
+            'timed-out'
+          );
+          committedBeforeRows =
+            getRecord(
+              context.dataRoot,
+              context.workspaceId,
+              app.appId,
+              'mappings',
+              record.id,
+              app.schemaRevision
+            ).data.active === false;
+        }
+      );
       const result = listRecords(context.dataRoot, context.workspaceId, app.appId, 'mappings', {
         schemaRevision: app.schemaRevision,
         filter: 'active = true',
@@ -159,8 +274,10 @@ describe('Generative Kernel commands', () => {
         ).data.active
       ).toBe(false);
     } finally {
-      await Promise.allSettled(write ? [write] : []);
-      restoreCount();
+      Atomics.store(gate, 2, 1);
+      Atomics.notify(gate, 2);
+      await Promise.allSettled([write]);
+      restoreCount?.();
     }
   });
 
@@ -253,7 +370,22 @@ describe('Generative Kernel commands', () => {
   it('replays the same create request and rejects changed arguments', async () => {
     const requestId = randomUUID();
     const context = await createContext(requestId);
-    const first = await createLightApp(context, MAPPING_SCHEMA);
+    const appId = allocateAppId(context.workspaceId, requestId);
+    const path = lightAppDbPath(context.dataRoot, context.workspaceId, appId);
+    const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(`app:${path}`);
+    let settled = false;
+    const creating = createLightApp(context, MAPPING_SCHEMA).then((result) => {
+      settled = true;
+      return result;
+    });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      expect.soft(settled).toBe(false);
+      expect.soft(existsSync(path)).toBe(false);
+    } finally {
+      resume();
+    }
+    const first = await creating;
     const second = await createLightApp(context, MAPPING_SCHEMA);
     expect(second.appId).toBe(first.appId);
     await expect(
@@ -385,6 +517,210 @@ describe('Generative Kernel commands', () => {
         renamed.schemaRevision
       ).data.annotation
     ).toBe('keep');
+  });
+
+  it('admits the exact post-predecessor snapshot forecast before changing an App family', async () => {
+    const context = await createContext();
+    const target = await createLightApp(context, MAPPING_SCHEMA);
+    const sibling = await createLightApp(
+      { ...context, requestId: randomUUID() },
+      { ...MAPPING_SCHEMA, title: 'Independent sibling App' }
+    );
+    const path = lightAppDbPath(context.dataRoot, context.workspaceId, target.appId);
+    const database = `app:${path}`;
+    const bytesBeforePredecessor = BigInt(statSync(path).size);
+    const snapshotsBefore = listLightAppSnapshots(
+      context.dataRoot,
+      context.workspaceId,
+      target.appId
+    );
+    let predecessorAcknowledged = false;
+    const admission = new FileStorageAdmission(
+      context.dataRoot,
+      () => 0n,
+      () =>
+        predecessorAcknowledged
+          ? BigInt(CONTROL_STORE_BUDGET.maxWalBytes) + bytesBeforePredecessor + 64n * 1_024n
+          : 1_000_000_000n
+    );
+    const client = getControlStoreWorkerClient();
+    client.setFileStorageAdmission(context.dataRoot, admission);
+    const resume = await client.pauseForDataRootBackup(database);
+    const predecessor = batchRecords({ ...context, requestId: randomUUID() }, target.appId, {
+      schemaRevision: target.schemaRevision,
+      requests: Array.from({ length: 50 }, (_, index) => ({
+        method: 'POST' as const,
+        url: '/api/collections/mappings/records',
+        body: {
+          data: {
+            membership_id: `mem_forecast_${index}`,
+            crm_id: `crm_forecast_${index}`,
+            annotation: 'x'.repeat(4_000),
+            active: true,
+          },
+        },
+      })),
+    }).then((result) => {
+      predecessorAcknowledged = true;
+      return result;
+    });
+    const collection = target.schema!.collections[0]!;
+    const schemaRequestId = randomUUID();
+    const schema = updateLightAppSchema(
+      { ...context, requestId: schemaRequestId },
+      target.appId,
+      target.appRevision,
+      target.schemaRevision,
+      {
+        ...MAPPING_SCHEMA,
+        collections: [
+          {
+            ...MAPPING_SCHEMA.collections[0]!,
+            id: collection.id,
+            fields: [
+              ...MAPPING_SCHEMA.collections[0]!.fields.map((field, index) => ({
+                ...field,
+                id: collection.fields[index]!.id,
+              })),
+              {
+                name: 'forecast_note',
+                type: 'text',
+                required: false,
+                description: 'Added only when the physical snapshot is admitted.',
+              },
+            ],
+          },
+        ],
+      }
+    );
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      resume();
+    }
+    const committedPredecessor = await predecessor;
+    await expect(schema).rejects.toMatchObject({ code: 'no-space', commit: 'not-committed' });
+    expect(committedPredecessor.items).toHaveLength(50);
+    expect(
+      committedPredecessor.items.every(
+        (item) => typeof item.data.annotation === 'string' && item.data.annotation.length === 4_000
+      )
+    ).toBe(true);
+    expect(getLightApp(context.dataRoot, context.workspaceId, target.appId)).toEqual(target);
+    expect(listLightAppSnapshots(context.dataRoot, context.workspaceId, target.appId)).toEqual(
+      snapshotsBefore
+    );
+    const scope = { workspaceId: context.workspaceId, appId: target.appId };
+    expect(
+      getCommandRequestRecord(
+        context.dataRoot,
+        scope,
+        commandRequestKey('kernel.schema.update', schemaRequestId, scope),
+        new Date().toISOString()
+      )
+    ).toBeNull();
+    await expect(
+      createRecord(
+        { ...context, requestId: randomUUID() },
+        sibling.appId,
+        'mappings',
+        sibling.schemaRevision,
+        {
+          membership_id: 'mem_sibling',
+          crm_id: 'crm_sibling',
+          annotation: null,
+          active: true,
+        }
+      )
+    ).resolves.toMatchObject({ data: { membership_id: 'mem_sibling' } });
+  });
+
+  it('retains exact snapshot reservations until a failed native channel exits', async () => {
+    const context = await createContext();
+    const app = await createLightApp(context, MAPPING_SCHEMA);
+    const appRoot = lightAppRoot(context.dataRoot, context.workspaceId, app.appId);
+    const snapshotRoot = join(appRoot, 'snapshots');
+    const reservations: Array<{
+      path: string;
+      publicationBytes: bigint;
+      releaseCalls: number;
+    }> = [];
+    const admission = new FileStorageAdmission(
+      context.dataRoot,
+      () => 0n,
+      () => 1_000_000_000n
+    );
+    const forPath = admission.forPath.bind(admission);
+    const observeReservations = vi.spyOn(admission, 'forPath').mockImplementation((path) => {
+      const selected = forPath(path);
+      if (path !== snapshotRoot && !path.startsWith(`${snapshotRoot}/`)) return selected;
+      const reserve = selected.reserve.bind(selected);
+      vi.spyOn(selected, 'reserve').mockImplementation((writes, priority) => {
+        const reservation = reserve(writes, priority);
+        const observed = {
+          path,
+          publicationBytes: writes.publicationBytes,
+          releaseCalls: 0,
+        };
+        reservations.push(observed);
+        return {
+          ...reservation,
+          release: () => {
+            observed.releaseCalls += 1;
+            reservation.release();
+          },
+        };
+      });
+      return selected;
+    });
+    const client = getControlStoreWorkerClient();
+    client.setFileStorageAdmission(context.dataRoot, admission);
+    commitBoundary.failForecastDecision = true;
+    commitBoundary.holdTermination = true;
+    const collection = app.schema!.collections[0]!;
+    const changedSchema: LightAppSchemaInput = {
+      ...MAPPING_SCHEMA,
+      collections: [
+        {
+          ...MAPPING_SCHEMA.collections[0]!,
+          id: collection.id,
+          fields: [
+            ...MAPPING_SCHEMA.collections[0]!.fields.map((field, index) => ({
+              ...field,
+              id: collection.fields[index]!.id,
+            })),
+            {
+              name: 'channel_failure_note',
+              type: 'text',
+              required: false,
+              description: 'Added only after snapshot capacity remains owned through worker exit.',
+            },
+          ],
+        },
+      ],
+    };
+    try {
+      const failure = await updateLightAppSchema(
+        { ...context, requestId: randomUUID() },
+        app.appId,
+        app.appRevision,
+        app.schemaRevision,
+        changedSchema
+      ).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+      expect(commitBoundary.forecastDecisionFailed).toBe(true);
+      expect(commitBoundary.terminationRequested).toBe(true);
+      expect(reservations).toHaveLength(2);
+      expect(reservations.every((entry) => entry.publicationBytes > 0n)).toBe(true);
+      expect(reservations.every((entry) => entry.releaseCalls === 0)).toBe(true);
+      commitBoundary.releaseTermination?.();
+      await shutdownControlStoreWorkerClient();
+      expect(reservations.every((entry) => entry.releaseCalls === 1)).toBe(true);
+    } finally {
+      commitBoundary.releaseTermination?.();
+      await shutdownControlStoreWorkerClient();
+      observeReservations.mockRestore();
+    }
   });
 
   it('rechecks source-query membership before a lineage-bound record update', async () => {

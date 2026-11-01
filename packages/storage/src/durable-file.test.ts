@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import {
   type FileHandle,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -10,23 +11,28 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  changeVerifiedFileMode,
   copyFileForCut,
   copyVerifiedFile,
   createDirectoryExclusive,
   publishDurableFile,
+  publishVerifiedFileReplacement,
+  syncVerifiedFile,
 } from './local.js';
 
 const faults = vi.hoisted(() => ({
   sync: false,
+  syncCalls: 0,
   directorySync: false,
   afterParentInspection: undefined as undefined | ((path: string) => Promise<void>),
-  opened: undefined as undefined | ((path: string, handle: FileHandle) => void),
+  opened: undefined as undefined | ((path: string, handle: FileHandle) => void | Promise<void>),
 }));
 vi.mock('node:fs/promises', async (original) => {
   const actual = await original<typeof import('node:fs/promises')>();
@@ -41,11 +47,12 @@ vi.mock('node:fs/promises', async (original) => {
       const handle = await actual.open(...args);
       if (faults.opened || faults.afterParentInspection) {
         const resolved = String(await actual.realpath(`/proc/self/fd/${handle.fd}`));
-        faults.opened?.(resolved, handle);
+        await faults.opened?.(resolved, handle);
         await faults.afterParentInspection?.(resolved);
       }
       const sync = handle.sync.bind(handle);
       handle.sync = async () => {
+        faults.syncCalls += 1;
         if (faults.sync || (faults.directorySync && (await handle.stat()).isDirectory()))
           throw new Error('Injected durable-byte synchronization failure.');
         await sync();
@@ -62,6 +69,23 @@ function sha256(bytes: Uint8Array): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
+/** Derives the existing caller-held file identity from the actual inode. */
+async function identity(path: string): Promise<string> {
+  const file = await stat(path, { bigint: true });
+  return `${file.dev}:${file.ino}`;
+}
+
+/** Captures the complete caller-held metadata proof without reading file content. */
+async function fileProof(path: string) {
+  const file = await stat(path);
+  return {
+    identity: `${file.dev}:${file.ino}`,
+    expectedMtimeMs: file.mtimeMs,
+    expectedCtimeMs: file.ctimeMs,
+    expectedMode: file.mode & 0o777,
+  };
+}
+
 /** Supplies a disposable regular source and an absent destination in a private directory. */
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'snapshot-durable-'));
@@ -72,8 +96,35 @@ async function fixture() {
   return { root, sourcePath, destinationPath };
 }
 
+/** Supplies both exact current identities required by replacement admission. */
+async function replacementFixture() {
+  const f = await fixture();
+  await writeFile(f.destinationPath, 'Previous destination bytes.', { mode: 0o640 });
+  return {
+    ...f,
+    sourceProof: await fileProof(f.sourcePath),
+    destinationIdentity: await identity(f.destinationPath),
+  };
+}
+
+/** Projects one exact current replacement without deriving its authority from the subject. */
+function replacementInput(f: Awaited<ReturnType<typeof replacementFixture>>) {
+  return {
+    sourcePath: f.sourcePath,
+    destinationPath: f.destinationPath,
+    sourceIdentity: f.sourceProof.identity,
+    destinationIdentity: f.destinationIdentity,
+    expectedBytes: original.length,
+    expectedMtimeMs: f.sourceProof.expectedMtimeMs,
+    expectedCtimeMs: f.sourceProof.expectedCtimeMs,
+    expectedMode: f.sourceProof.expectedMode,
+    mode: 0o600,
+  };
+}
+
 afterEach(async () => {
   faults.sync = false;
+  faults.syncCalls = 0;
   faults.directorySync = false;
   faults.afterParentInspection = undefined;
   faults.opened = undefined;
@@ -364,6 +415,117 @@ describe('snapshot Storage byte primitives', () => {
       expect(await readFile(f.destinationPath)).toEqual(original);
     }
   });
+
+  it('synchronizes, changes mode and replaces exact identity-bound regular files', async () => {
+    const f = await replacementFixture();
+
+    await syncVerifiedFile({
+      path: f.sourcePath,
+      expectedIdentity: f.sourceProof.identity,
+      expectedBytes: original.length,
+      expectedMtimeMs: f.sourceProof.expectedMtimeMs,
+      expectedCtimeMs: f.sourceProof.expectedCtimeMs,
+      expectedMode: f.sourceProof.expectedMode,
+    });
+    await changeVerifiedFileMode({
+      path: f.sourcePath,
+      expectedIdentity: f.sourceProof.identity,
+      expectedBytes: original.length,
+      expectedMtimeMs: f.sourceProof.expectedMtimeMs,
+      expectedCtimeMs: f.sourceProof.expectedCtimeMs,
+      expectedMode: f.sourceProof.expectedMode,
+      mode: 0o400,
+    });
+    const changedMode = await fileProof(f.sourcePath);
+    expect(changedMode.identity).toBe(f.sourceProof.identity);
+    expect((await stat(f.sourcePath)).mode & 0o777).toBe(0o400);
+
+    await publishVerifiedFileReplacement({
+      ...replacementInput(f),
+      expectedMtimeMs: changedMode.expectedMtimeMs,
+      expectedCtimeMs: changedMode.expectedCtimeMs,
+      expectedMode: changedMode.expectedMode,
+    });
+    await expect(lstat(f.sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(f.destinationPath)).toEqual(original);
+    expect(await identity(f.destinationPath)).toBe(f.sourceProof.identity);
+    expect((await stat(f.destinationPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses stale source, stale destination and linked destination bindings without changing bytes', async () => {
+    for (const fault of ['source', 'destination', 'link'] as const) {
+      const f = await replacementFixture();
+      const predecessor = await readFile(f.destinationPath);
+      const changed = Buffer.from(`Substituted ${fault} bytes.`);
+      const replacement = join(f.root, `replacement-${fault}`);
+      const target = fault === 'source' ? f.sourcePath : f.destinationPath;
+      await writeFile(replacement, changed);
+      if (fault === 'link') {
+        await rm(target);
+        await symlink(replacement, target);
+      } else await rename(replacement, target);
+
+      await expect(publishVerifiedFileReplacement(replacementInput(f))).rejects.toThrow();
+      expect(await readFile(f.sourcePath)).toEqual(fault === 'source' ? changed : original);
+      expect(await readFile(f.destinationPath)).toEqual(fault === 'source' ? predecessor : changed);
+      if (fault === 'link') expect((await lstat(f.destinationPath)).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  it('does not acknowledge an exact-file synchronization failure', async () => {
+    const f = await fixture();
+    const sourceProof = await fileProof(f.sourcePath);
+    faults.sync = true;
+    await expect(
+      syncVerifiedFile({
+        path: f.sourcePath,
+        expectedIdentity: sourceProof.identity,
+        expectedBytes: original.length,
+        expectedMtimeMs: sourceProof.expectedMtimeMs,
+        expectedCtimeMs: sourceProof.expectedCtimeMs,
+        expectedMode: sourceProof.expectedMode,
+      })
+    ).rejects.toThrow('Injected durable-byte synchronization failure.');
+    faults.sync = false;
+    expect(await identity(f.sourcePath)).toBe(sourceProof.identity);
+    expect(await readFile(f.sourcePath)).toEqual(original);
+  });
+
+  it('reports directory-sync failure after exact replacement without claiming rollback', async () => {
+    const f = await replacementFixture();
+    faults.directorySync = true;
+    await expect(publishVerifiedFileReplacement(replacementInput(f))).rejects.toThrow(
+      'Injected durable-byte synchronization failure.'
+    );
+    faults.directorySync = false;
+    await expect(lstat(f.sourcePath)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(f.destinationPath)).toEqual(original);
+    expect(await identity(f.destinationPath)).toBe(f.sourceProof.identity);
+    expect((await stat(f.destinationPath)).mode & 0o777).toBe(0o600);
+  });
+
+  it('refuses same-inode same-size source mutation before mode, sync or replacement', async () => {
+    const f = await replacementFixture();
+    const changed = Buffer.from(original.map((byte) => byte ^ 0xff));
+    const before = await stat(f.sourcePath);
+    let mutated = false;
+    faults.opened = async (path) => {
+      if (path !== f.sourcePath || mutated) return;
+      mutated = true;
+      await writeFile(path, changed);
+      await utimes(path, before.atime, new Date(before.mtimeMs + 2_000));
+    };
+
+    await expect(publishVerifiedFileReplacement(replacementInput(f))).rejects.toThrow();
+    expect(mutated).toBe(true);
+    expect(await identity(f.sourcePath)).toBe(f.sourceProof.identity);
+    expect(await readFile(f.sourcePath)).toEqual(changed);
+    expect((await stat(f.sourcePath)).mode & 0o777).toBe(0o640);
+    expect(await readFile(f.destinationPath, 'utf8')).toBe('Previous destination bytes.');
+    expect(await identity(f.destinationPath)).toBe(f.destinationIdentity);
+    expect(faults.syncCalls).toBe(0);
+  });
+
   it('refuses source and destination parent substitution during verified copy', async () => {
     for (const family of ['source', 'destination'] as const) {
       const f = await fixture();

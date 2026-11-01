@@ -1,3 +1,4 @@
+import { APP_NATIVE_COMMANDS } from '../generative-kernel/native-command-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 
 export { commandInputHash } from '../storage/control-store-input.js';
@@ -231,28 +232,33 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
     'receiptDb' in options && options.receiptDb
       ? options.receiptDb
       : (options.coreDb ?? options.workspaceDb ?? options.appDb);
+  const workerOwnedApp =
+    options.scope.appId !== undefined &&
+    APP_NATIVE_COMMANDS.some((command) => command === options.command);
   const workerOwned =
-    options.store.getDataRoot() !== null &&
-    (isControlNativeReceiptCommand(
-      options.command,
-      options.scope.workspaceId === undefined ? 'core' : 'workspace'
-    ) ||
-      (options.command === 'evaluation.judgement-add' &&
-        options.input !== null &&
-        typeof options.input === 'object' &&
-        'judgement' in options.input &&
-        options.input.judgement !== null &&
-        typeof options.input.judgement === 'object' &&
-        'target' in options.input.judgement &&
-        options.input.judgement.target !== null &&
-        typeof options.input.judgement.target === 'object' &&
-        'kind' in options.input.judgement.target &&
-        (options.input.judgement.target.kind === 'artifact-version' ||
-          options.input.judgement.target.kind === 'material-range' ||
-          options.input.judgement.target.kind === 'candidate-set'))) &&
-    (options.scope.coreId === 'server' || options.scope.workspaceId !== undefined) &&
-    options.scope.userId === undefined &&
-    options.scope.appId === undefined;
+    workerOwnedApp ||
+    (options.store.getDataRoot() !== null &&
+      (isControlNativeReceiptCommand(
+        options.command,
+        options.scope.workspaceId === undefined ? 'core' : 'workspace'
+      ) ||
+        (options.command === 'evaluation.judgement-add' &&
+          options.input !== null &&
+          typeof options.input === 'object' &&
+          'judgement' in options.input &&
+          options.input.judgement !== null &&
+          typeof options.input.judgement === 'object' &&
+          'target' in options.input.judgement &&
+          options.input.judgement.target !== null &&
+          typeof options.input.judgement.target === 'object' &&
+          'kind' in options.input.judgement.target &&
+          (options.input.judgement.target.kind === 'artifact-version' ||
+            options.input.judgement.target.kind === 'material-range' ||
+            options.input.judgement.target.kind === 'candidate-set'))) &&
+      (options.scope.coreId === 'server' || options.scope.workspaceId !== undefined) &&
+      options.scope.userId === undefined &&
+      options.scope.appId === undefined);
+
   const dataRoot = options.store.getDataRoot();
   const mainWorkspaceDatabase =
     !workerOwned &&

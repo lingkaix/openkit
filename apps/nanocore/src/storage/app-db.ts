@@ -14,9 +14,7 @@ import { LIGHT_APP_KERNEL_FORMAT_VERSION } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 
 import { KernelCommandError } from '../generative-kernel/errors.js';
-import { configureOwnedSqlite } from './control-store.js';
 import { resolveDataRootPath } from './fs-layout.js';
-import { applyAppMigrations } from './migrate.js';
 
 /** Open app-scoped SQLite handle collocating Kernel data, receipts, and audit. */
 export interface AppDb {
@@ -31,8 +29,6 @@ export interface AppDb {
   /** Light App identity. */
   appId: string;
 }
-
-const APP_BUSY_TIMEOUT_MS = 1000;
 
 /**
  * Resolves one Light App SQLite path.
@@ -69,6 +65,8 @@ export function lightAppsRoot(dataRoot: string, workspaceId: string): string {
   return resolveDataRootPath(dataRoot, 'workspaces', workspaceId, 'light-apps');
 }
 
+const APP_BUSY_TIMEOUT_MS = 1000;
+
 /**
  * Opens an existing app database after integrity and identity checks. Does not create files.
  *
@@ -89,42 +87,15 @@ export function openExistingAppDb(
   if (!existsSync(path)) {
     throw new KernelCommandError('unavailable', 'App authority is missing.');
   }
-  assertSqliteIntegrity(path);
-  const sqlite = openSqlite(path, true);
-  applyAppPragmas(sqlite);
+  const sqlite = openAppDbReadOnly(path);
   const db: AppDb = { scope: 'app', sqlite, dataRoot, workspaceId, appId };
   try {
-    assertAppIdentity(db);
-    assertAppDefinitionMatches(db);
-    assertKnownKernelFormat(db, admission === 'format-upgrade');
+    assertAppAuthority(db, admission === 'format-upgrade');
     return db;
   } catch (error) {
     sqlite.close();
     throw error;
   }
-}
-
-/**
- * Creates a new app database after the app directory exists.
- *
- * @param dataRoot Data root.
- * @param workspaceId Workspace id.
- * @param appId App UUID.
- * @returns Open app database.
- */
-export function createAppDb(dataRoot: string, workspaceId: string, appId: string): AppDb {
-  const path = lightAppDbPath(dataRoot, workspaceId, appId);
-  if (existsSync(path)) {
-    throw new KernelCommandError(
-      'recovery_required',
-      'Interrupted app creation cannot be replayed.'
-    );
-  }
-  const sqlite = openSqlite(path, false);
-  applyAppPragmas(sqlite);
-  const db: AppDb = { scope: 'app', sqlite, dataRoot, workspaceId, appId };
-  applyAppMigrations(db.sqlite);
-  return db;
 }
 
 /**
@@ -167,36 +138,6 @@ export function isSqliteBusy(error: unknown): boolean {
     'code' in error &&
     (error as { code?: string }).code === 'SQLITE_BUSY'
   );
-}
-
-/**
- * Opens a SQLite connection with the Kernel busy bound.
- *
- * @param path Database path.
- * @param fileMustExist Whether the file must already exist.
- * @returns Open connection.
- */
-function openSqlite(path: string, fileMustExist: boolean): Database.Database {
-  try {
-    return new Database(path, { fileMustExist, timeout: APP_BUSY_TIMEOUT_MS });
-  } catch (error) {
-    if (isSqliteBusy(error)) {
-      throw new KernelCommandError('unavailable', 'App database is busy.', {
-        status: 503,
-      });
-    }
-    throw error;
-  }
-}
-
-/**
- * Applies Kernel SQLite durability and isolation pragmas.
- *
- * @param sqlite Open connection.
- */
-function applyAppPragmas(sqlite: Database.Database): void {
-  configureOwnedSqlite(sqlite);
-  sqlite.pragma(`busy_timeout = ${APP_BUSY_TIMEOUT_MS}`);
 }
 
 /**
@@ -253,26 +194,32 @@ function assertNotSymlink(path: string): void {
 }
 
 /**
- * Fails closed when an existing authoritative SQLite database is corrupt.
+ * Opens one existing App or rollback-candidate database for read-only verification.
+ * The caller retains path, lineage, and lifecycle admission.
  *
- * @param path SQLite database path.
+ * @param path Existing SQLite path.
+ * @returns Read-only connection after the bounded integrity check.
  */
-function assertSqliteIntegrity(path: string): void {
+export function openAppDbReadOnly(path: string): Database.Database {
   let sqlite: Database.Database | undefined;
   try {
-    sqlite = new Database(path, { fileMustExist: true });
-    sqlite.pragma('secure_delete = ON');
+    sqlite = new Database(path, {
+      readonly: true,
+      fileMustExist: true,
+      timeout: APP_BUSY_TIMEOUT_MS,
+    });
+    sqlite.pragma('query_only = ON');
     const result = sqlite.prepare('PRAGMA quick_check').pluck().get();
     if (result !== 'ok') {
       throw new KernelCommandError('unavailable', 'App database failed integrity check.');
     }
+    return sqlite;
   } catch (error) {
+    sqlite?.close();
     if (error instanceof KernelCommandError) {
       throw error;
     }
     throw new KernelCommandError('unavailable', 'App database failed integrity check.');
-  } finally {
-    sqlite?.close();
   }
 }
 
@@ -290,4 +237,11 @@ function assertKnownKernelFormat(db: AppDb, permitMigrationBase = false): void {
   if (version !== LIGHT_APP_KERNEL_FORMAT_VERSION) {
     throw new KernelCommandError('unavailable', 'App kernel format is unsupported.');
   }
+}
+
+/** Rechecks existing physical App authority without opening another connection or running migration. */
+export function assertAppAuthority(db: AppDb, permitMigrationBase = false): void {
+  assertAppIdentity(db);
+  assertAppDefinitionMatches(db);
+  assertKnownKernelFormat(db, permitMigrationBase);
 }
