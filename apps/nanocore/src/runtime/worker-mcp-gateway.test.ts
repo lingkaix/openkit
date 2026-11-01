@@ -17,6 +17,247 @@ import { mcpToolSchemaContentDigest } from './mcp-tool-schema-snapshots.js';
 import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
 
 describe('worker MCP gateway', () => {
+  it.each([
+    '$id',
+    '$ref',
+  ] as const)('refuses invalid output %s before target contact and keeps a valid sibling usable', async (outputSchemaFault) => {
+    const upstream = await createMcpHttpStub({ outputSchemaFault, protocolEra: '2026-07-28' });
+    const gateway = createDefaultWorkerMcpGateway();
+    const server = httpTestServer(upstream.url, 2_000);
+    const input = { server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
+    try {
+      const listed = await gateway.listTools(input);
+      expect(listed.tools.map((tool) => tool.name)).toEqual(['echo', 'valid-sibling']);
+      expect(listed.tools.find((tool) => tool.name === 'echo')?.outputSchema).toMatchObject({
+        [outputSchemaFault]: '1invalid://sdk-schema-canary',
+      });
+      // The real sibling recovery populates the SDK cache; Gateway discovery deliberately bypasses it.
+      const sibling = await gateway.callTool({
+        ...input,
+        arguments: { message: 'valid sibling' },
+        toolName: 'valid-sibling',
+      });
+      expect(sibling.structuredContent).toEqual({ message: 'valid sibling' });
+      expect(upstream.observed.filter((request) => request.startsWith('handler|'))).toEqual([
+        'handler|tools/call|valid-sibling',
+        'handler|tools/call|valid-sibling',
+      ]);
+      expect(upstream.observed.filter((request) => request.endsWith('|tools/call'))).toHaveLength(
+        2
+      );
+      const beforeBadCall = upstream.observed.length;
+      const failure = await gateway
+        .callTool({ ...input, arguments: { message: 'safe' }, toolName: 'echo' })
+        .catch((error: unknown) => error);
+      expect(upstream.observed.some((request) => request.endsWith('|tools/list'))).toBe(true);
+      expect(
+        upstream.observed.slice(beforeBadCall).filter((request) => request.endsWith('|tools/call'))
+      ).toEqual([]);
+      expect(upstream.observed.filter((request) => request === 'handler|tools/call|echo')).toEqual(
+        []
+      );
+      // Worker MCP error normalization distinguishes this target from earlier sibling/discovery contact.
+      expect(failure).toMatchObject({
+        code: 'mcp-server-unavailable',
+        message: 'MCP server is unavailable.',
+        status: 503,
+        upstreamEffect: 'not-contacted',
+      });
+      expect(JSON.stringify(failure)).not.toContain('sdk-schema-canary');
+      expect(gateway.getServerHealth(input)).toBe('degraded');
+    } finally {
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
+  it('keeps an actual header-mismatch call contacted when refreshed output compilation fails', async () => {
+    const upstream = await createMcpHttpStub({
+      outputSchemaFault: 'after-header-mismatch',
+      protocolEra: '2026-07-28',
+    });
+    const gateway = createDefaultWorkerMcpGateway();
+    const input = {
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    try {
+      const sibling = await gateway.callTool({
+        ...input,
+        arguments: { message: 'warm sibling' },
+        toolName: 'valid-sibling',
+      });
+      expect(sibling.structuredContent).toEqual({ message: 'warm sibling' });
+      expect(upstream.observed.filter((request) => request.startsWith('handler|'))).toEqual([
+        'handler|tools/call|valid-sibling',
+        'handler|tools/call|valid-sibling',
+      ]);
+      const beforeEcho = upstream.observed.length;
+      const failure = await gateway
+        .callTool({ ...input, arguments: { message: 'mirrored' }, toolName: 'echo' })
+        .catch((error: unknown) => error);
+      const methods = upstream.observed
+        .slice(beforeEcho)
+        .filter((request) => !request.startsWith('handler|'))
+        .map((request) => request.split('|').at(-1));
+      expect(methods[0]).toBe('tools/call');
+      expect(methods.slice(1)).toContain('tools/list');
+      expect(methods.filter((method) => method === 'tools/call')).toHaveLength(1);
+      expect(upstream.observed.filter((request) => request === 'handler|tools/call|echo')).toEqual([
+        'handler|tools/call|echo',
+      ]);
+      expect(
+        upstream.observedHeaders.some((headers) => headers.get('mcp-param-message') === 'mirrored')
+      ).toBe(true);
+      expect(failure).toMatchObject({
+        code: 'mcp-call-failed',
+        message: 'MCP tool call failed.',
+        status: 503,
+        upstreamEffect: 'contacted',
+      });
+      expect(JSON.stringify(failure)).not.toContain('sdk-schema-canary');
+      expect(gateway.getServerHealth(input)).toBe('degraded');
+    } finally {
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
+  it('keeps a cached schema refusal separate from an overlapping contacted sibling', async () => {
+    let release!: () => void;
+    const delayedResult = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const upstream = await createMcpHttpStub({
+      outputSchemaFault: '$ref',
+      protocolEra: '2026-07-28',
+      delayedResult,
+    });
+    const gateway = createDefaultWorkerMcpGateway();
+    const input = {
+      server: httpTestServer(upstream.url, 2_000),
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    };
+    let held: Promise<{ result: unknown } | { error: unknown }> | undefined;
+    try {
+      expect(
+        await gateway.callTool({
+          ...input,
+          arguments: { message: 'warm sibling' },
+          toolName: 'valid-sibling',
+        })
+      ).toMatchObject({ structuredContent: { message: 'warm sibling' } });
+      expect(
+        upstream.observed.filter((request) => request === 'handler|tools/call|valid-sibling')
+      ).toHaveLength(2);
+      held = gateway
+        .callTool({ ...input, arguments: { message: 'delayed' }, toolName: 'valid-sibling' })
+        .then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error })
+        );
+      await vi.waitFor(() =>
+        expect(
+          upstream.observed.filter((request) => request === 'handler|tools/call|valid-sibling')
+        ).toHaveLength(3)
+      );
+      // The sibling is still inside the real handler when this independent invocation fails.
+      await expect(
+        gateway.callTool({ ...input, arguments: { message: 'bad schema' }, toolName: 'echo' })
+      ).rejects.toMatchObject({ code: 'mcp-server-unavailable', upstreamEffect: 'not-contacted' });
+      expect(upstream.observed.filter((request) => request === 'handler|tools/call|echo')).toEqual(
+        []
+      );
+      release();
+      const outcome = await held;
+      // Session discard may abort the sibling; its observed contact must never become no-contact.
+      if ('error' in outcome)
+        expect(outcome.error).not.toMatchObject({ upstreamEffect: 'not-contacted' });
+      else expect(outcome.result).toMatchObject({ structuredContent: { message: 'delayed' } });
+    } finally {
+      release();
+      await held;
+      await gateway.close();
+      await upstream.close();
+    }
+  });
+
+  it.each([
+    'same-origin',
+    'cross-origin',
+  ] as const)('refuses %s MCP redirects before forwarding headers or a body', async (destination) => {
+    const targetRequests: string[] = [];
+    const sourceHeaders: Array<import('node:http').IncomingHttpHeaders> = [];
+    let targetUrl = '';
+    const http = createServer((request, response) => {
+      if (request.url === '/target') {
+        targetRequests.push(request.url);
+        response.writeHead(500).end('Unexpected redirect target contact.');
+        return;
+      }
+      sourceHeaders.push(request.headers);
+      response.writeHead(307, { location: targetUrl }).end();
+    });
+    const target =
+      destination === 'same-origin'
+        ? http
+        : createServer((request, response) => {
+            targetRequests.push(request.url ?? '');
+            response.writeHead(500).end('Unexpected redirect target contact.');
+          });
+    http.listen(0, '127.0.0.1');
+    await once(http, 'listening');
+    if (target !== http) {
+      target.listen(0, '127.0.0.1');
+      await once(target, 'listening');
+    }
+    const originAddress = http.address();
+    const targetAddress = target.address();
+    if (
+      !originAddress ||
+      typeof originAddress === 'string' ||
+      !targetAddress ||
+      typeof targetAddress === 'string'
+    )
+      throw new Error('Redirect fixture did not bind.');
+    targetUrl = `http://127.0.0.1:${targetAddress.port}/target`;
+    const { coreDb, gateway } = await createAuditedGateway();
+    const server = httpTestServer(`http://127.0.0.1:${originAddress.port}/mcp`, 2_000);
+    server.transport = {
+      kind: 'http',
+      endpoint: `http://127.0.0.1:${originAddress.port}/mcp`,
+      headers: { 'x-fixed-canary': 'fixed-only-at-source' },
+    };
+    try {
+      await expect(
+        gateway.callTool({
+          arguments: { message: 'body-only-at-source' },
+          credentials: { bearer: 'synthetic-redirect-canary' },
+          server,
+          toolName: 'echo',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
+      ).rejects.toMatchObject({
+        code: 'mcp-server-unavailable',
+        message: 'MCP server is unavailable.',
+      });
+      expect(sourceHeaders.length).toBeGreaterThan(0);
+      expect(sourceHeaders[0]).toMatchObject({
+        authorization: 'Bearer synthetic-redirect-canary',
+        'x-fixed-canary': 'fixed-only-at-source',
+      });
+      // MCP Catalog Management forbids any redirect target contact, even on the same origin.
+      expect(targetRequests).toEqual([]);
+    } finally {
+      await gateway.close();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { force: true, recursive: true });
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+      if (target !== http) await new Promise<void>((resolve) => target.close(() => resolve()));
+    }
+  });
+
   it('sends exactly one SDK bearer Authorization value over a mixed-case fixed header', async () => {
     const upstream = await createMcpHttpStub();
     const { coreDb, gateway } = await createAuditedGateway();
@@ -644,21 +885,31 @@ describe('worker MCP gateway', () => {
 
       await gateway.listTools({ server, workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
       const cancellation = new AbortController();
-      const callTool = vi.spyOn(Client.prototype, 'callTool').mockImplementationOnce(async () => {
-        setImmediate(() => cancellation.abort());
-        throw new Error('provider failed first');
-      });
-      await expect(
-        gateway.callTool({
-          arguments: { message: 'race' },
-          server,
-          signal: cancellation.signal,
-          toolName: 'echo',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      ).rejects.toMatchObject({ cancelled: false, upstreamEffect: 'unknown' });
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      callTool.mockRestore();
+      const originalCallTool = Client.prototype.callTool;
+      let actualResult: Awaited<ReturnType<Client['callTool']>> | undefined;
+      const callTool = vi
+        .spyOn(Client.prototype, 'callTool')
+        .mockImplementationOnce(async function (this: Client, ...args) {
+          // Lose the result only after real target contact; a local-only throw proves no contact.
+          actualResult = await Reflect.apply(originalCallTool, this, args);
+          setImmediate(() => cancellation.abort());
+          throw new Error('provider failed first');
+        });
+      try {
+        await expect(
+          gateway.callTool({
+            arguments: { message: 'race' },
+            server,
+            signal: cancellation.signal,
+            toolName: 'echo',
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          })
+        ).rejects.toMatchObject({ cancelled: false, upstreamEffect: 'unknown' });
+        expect(actualResult).toMatchObject({ structuredContent: { message: 'race' } });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      } finally {
+        callTool.mockRestore();
+      }
     } finally {
       await gateway.close();
     }
