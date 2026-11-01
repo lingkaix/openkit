@@ -7,6 +7,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { DISCONTINUOUS_FILE_CORPUS_FAMILIES } from './upgrade-from-previous-corpus.mjs';
 
 const execute = promisify(execFile);
 
@@ -139,9 +140,20 @@ export function canonical(value) {
 
 /** Keeps only a digest of reader results; fixture data and protected inputs stay private. */
 export function summarizeFamilies(families, required) {
+  const discontinuous = new Set(DISCONTINUOUS_FILE_CORPUS_FAMILIES);
   const result = {};
   for (const family of required) {
     const sample = families[family];
+    // The retained register still names these families. The corpus helper records
+    // the accepted discontinuity, so the join accounts for them without a sample.
+    if (discontinuous.has(family)) {
+      assert(
+        sample === undefined,
+        `${family}: discontinuous family presented a current reader sample.`
+      );
+      result[family] = { discontinuous: true };
+      continue;
+    }
     assert(
       sample && Array.isArray(sample.values) && sample.values.length > 0,
       `${family}: no reader result.`
