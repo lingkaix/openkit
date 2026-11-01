@@ -149,6 +149,26 @@ async function fixture(
     expect(body.error).toBeUndefined();
     return body.result;
   };
+  /** Sends the modern revision's per-request identity envelope through real bearer admission. */
+  const modernMessage = (method: string, params: Record<string, unknown>, secret?: string) =>
+    message(
+      method,
+      {
+        ...params,
+        _meta: {
+          'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+          'io.modelcontextprotocol/clientInfo': { name: 'remote-era-regression', version: '1' },
+          'io.modelcontextprotocol/clientCapabilities': {},
+        },
+      },
+      secret,
+      '/mcp',
+      {
+        'mcp-protocol-version': '2026-07-28',
+        'mcp-method': method,
+        ...(typeof params.name === 'string' ? { 'mcp-name': params.name } : {}),
+      }
+    );
   return {
     app,
     coreDb,
@@ -159,6 +179,7 @@ async function fixture(
     token,
     selectors,
     message,
+    modernMessage,
     call,
     automationStore,
   };
@@ -167,6 +188,155 @@ async function fixture(
 afterEach(() => vi.restoreAllMocks());
 
 describe('remote MCP App endpoint', () => {
+  it('serves modern server discovery only after bearer admission without initialization', async () => {
+    const f = await fixture();
+    const token = f.token();
+    try {
+      const refused = await f.modernMessage('server/discover', {}, undefined);
+      expect(refused.status).toBe(401);
+      expect(refused.headers.get('www-authenticate')).toBe('Bearer');
+      expect(
+        listServerAuditEvents(f.coreDb).filter((event) => event.action === 'remote-mcp.request')
+      ).toHaveLength(0);
+
+      const response = await f.modernMessage('server/discover', {}, token.secret);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.error).toBeUndefined();
+      expect(body.result.supportedVersions).toContain('2026-07-28');
+      expect(body.result.capabilities.tools).toBeDefined();
+      // Remote MCP owns one attributed audit for each admitted request, including discovery.
+      const audits = listServerAuditEvents(f.coreDb).filter(
+        (event) => event.action === 'remote-mcp.request'
+      );
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        actor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
+        authentication: { credentialKind: 'token', credentialId: token.record.tokenId },
+        resource: '/mcp',
+        outcome: 'succeeded',
+      });
+      expect(JSON.stringify(audits)).not.toContain(token.secret);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('lists the same four tools for modern and legacy stateless requests', async () => {
+    const f = await fixture();
+    const token = f.token();
+    try {
+      const modern = await f.modernMessage('tools/list', {}, token.secret);
+      expect(modern.status).toBe(200);
+      const modernBody = await modern.json();
+      expect(modernBody.error).toBeUndefined();
+      const legacy = await f.message('tools/list', {}, token.secret, '/mcp', {
+        'mcp-protocol-version': '2025-11-25',
+      });
+      expect(legacy.status).toBe(200);
+      const legacyBody = await legacy.json();
+      expect(legacyBody.error).toBeUndefined();
+      // Operation Definition owns exactly these four tools; the wire era adds no tool surface.
+      expect(modernBody.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual([
+        'openkit_call',
+        'openkit_describe',
+        'openkit_guide',
+        'openkit_search',
+      ]);
+      expect(modernBody.result.tools).toEqual(legacyBody.result.tools);
+      expect(
+        listServerAuditEvents(f.coreDb).filter((event) => event.action === 'remote-mcp.request')
+      ).toHaveLength(2);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('executes modern calls as the Token user and preserves tool refusals and next-request revocation', async () => {
+    const f = await fixture();
+    const token = f.token('workspace-readonly');
+    const requestId = randomUUID();
+    try {
+      // Neither a successful read nor its later refusal needs initialize or a retained session.
+      const read = await f.modernMessage(
+        'tools/call',
+        {
+          name: 'openkit_call',
+          arguments: { operation: 'kernel.apps.get', input: f.selectors },
+        },
+        token.secret
+      );
+      expect(read.status).toBe(200);
+      const readBody = await read.json();
+      expect(readBody.error).toBeUndefined();
+      expect(readBody.result.isError).not.toBe(true);
+      expect(JSON.parse(readBody.result.content[0].text)).toEqual(
+        getLightApp(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId)
+      );
+      const auditRows = () =>
+        listServerAuditEvents(f.coreDb).filter((event) => event.action === 'remote-mcp.request');
+      expect(auditRows()).toHaveLength(1);
+      expect(auditRows()[0]).toMatchObject({
+        actor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
+        authentication: { credentialKind: 'token', credentialId: token.record.tokenId },
+        resource: 'operation:kernel.apps.get',
+        outcome: 'succeeded',
+      });
+      expect(auditRows()[0].summary).toContain('remote-mcp');
+
+      const refused = await f.modernMessage(
+        'tools/call',
+        {
+          name: 'openkit_call',
+          arguments: {
+            operation: 'kernel.records.create',
+            input: {
+              ...f.selectors,
+              collection: 'entries',
+              schemaRevision: 1,
+              requestId,
+              data: { note: 'modern read-only refusal' },
+            },
+          },
+        },
+        token.secret
+      );
+      expect(refused.status).toBe(200);
+      const refusedBody = await refused.json();
+      expect(refusedBody.error).toBeUndefined();
+      expect(refusedBody.result.isError).toBe(true);
+      expect(JSON.parse(refusedBody.result.content[0].text).code).toBe('workspace_access_denied');
+      expect(
+        listRecords(f.dataRoot, DEMO_WORKSPACE_ID, f.appRecord.appId, 'entries', {
+          schemaRevision: 1,
+        }).items
+      ).toHaveLength(0);
+      expect(auditRows()).toHaveLength(2);
+      expect(auditRows().find((event) => event.requestId === requestId)).toMatchObject({
+        actor: { kind: 'user', id: testEntityId('usr', 'user_remote_mcp') },
+        authentication: { credentialKind: 'token', credentialId: token.record.tokenId },
+        resource: 'operation:kernel.records.create',
+        outcome: 'denied',
+      });
+      expect(JSON.stringify(auditRows())).not.toContain(token.secret);
+
+      revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
+      const revoked = await f.modernMessage(
+        'tools/call',
+        {
+          name: 'openkit_call',
+          arguments: { operation: 'kernel.apps.get', input: f.selectors },
+        },
+        token.secret
+      );
+      expect(revoked.status).toBe(401);
+      expect(revoked.headers.get('www-authenticate')).toBe('Bearer');
+      expect(auditRows()).toHaveLength(2);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
   it('refuses Artifact and archive streams before processing and omits support discovery', async () => {
     const f = await fixture();
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {

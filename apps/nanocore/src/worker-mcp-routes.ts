@@ -3,13 +3,10 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
 import {
-  createMcpHandler,
-  isLegacyRequest,
   type ListToolsResult,
   ProtocolError,
   ProtocolErrorCode,
   Server,
-  WebStandardStreamableHTTPServerTransport,
 } from '@modelcontextprotocol/server';
 import { operationToolName } from '@openkit/app-api-schemas';
 import type {
@@ -60,6 +57,7 @@ import {
   DISPLAY_PROJECTION_REFRESH_FIELDS,
   type FsStore,
 } from './lib/store.js';
+import { serveStatelessMcp } from './mcp-stateless-http.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import {
   OperationError,
@@ -807,7 +805,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           };
           return execute();
         });
-        return await serveStatelessWorkerMcp(context.req.raw, protocolMessage, () => {
+        return await serveStatelessMcp(context.req.raw, protocolMessage, () => {
           if (!server) throw new Error('Worker MCP server was not constructed.');
           return server;
         });
@@ -1054,7 +1052,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           cancellation.release();
         }
       });
-      return await serveStatelessWorkerMcp(context.req.raw, protocolMessage, () => {
+      return await serveStatelessMcp(context.req.raw, protocolMessage, () => {
         if (!server) throw new Error('Worker MCP server was not constructed.');
         return server;
       });
@@ -1064,43 +1062,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       await server?.close().catch(() => undefined);
     }
   });
-}
-
-/**
- * Serves one worker MCP POST on both protocol eras.
- * Legacy requests stay JSON and stateless. Modern requests use the SDK's per-request handler.
- * The factory runs once for the era that actually serves the request.
- */
-async function serveStatelessWorkerMcp(
-  request: Request,
-  parsedBody: unknown,
-  factory: () => Server
-): Promise<Response> {
-  const handler = createMcpHandler(() => factory(), {
-    legacy: 'reject',
-    responseMode: 'json',
-  });
-  const parsed = parsedBody === null ? undefined : parsedBody;
-  try {
-    if (await isLegacyRequest(request, parsed)) {
-      const server = factory();
-      const transport = new WebStandardStreamableHTTPServerTransport({
-        enableJsonResponse: true,
-      });
-      await server.connect(transport);
-      try {
-        return await transport.handleRequest(
-          request,
-          parsed === undefined ? undefined : { parsedBody: parsed }
-        );
-      } finally {
-        await server.close().catch(() => undefined);
-      }
-    }
-    return await handler.fetch(request, parsed === undefined ? undefined : { parsedBody: parsed });
-  } finally {
-    await handler.close().catch(() => undefined);
-  }
 }
 
 /** Correlates MCP cancellation notifications across stateless HTTP requests. */

@@ -1,5 +1,5 @@
 import { ToolSchema } from '@modelcontextprotocol/core';
-import { Server, WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/server';
+import { Server } from '@modelcontextprotocol/server';
 import {
   type BootReadinessSnapshot,
   type JsonOperationId,
@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { recordServerAuditEvent } from './audit-events.js';
 import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
 import type { AuthVariables } from './auth/middleware.js';
+import { serveStatelessMcp } from './mcp-stateless-http.js';
 import {
   createOperationInvocation,
   type OperationInvocationDependencies,
@@ -213,25 +214,19 @@ export function registerRemoteMcpRoutes({
         return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
     });
-    const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
-    try {
-      await server.connect(transport);
-      const response = await transport.handleRequest(c.req.raw);
-      if (dependencies.coreDb)
-        recordServerAuditEvent({
-          coreDb: dependencies.coreDb,
-          actor: { kind: 'user', id: actor.userId },
-          action: 'remote-mcp.request',
-          authentication: auditAuthenticationFromActor(actor),
-          resource: operationId ? `operation:${operationId}` : '/mcp',
-          requestId: requestId ?? null,
-          outcome: refused ? 'denied' : response.ok ? 'succeeded' : 'failed',
-          summary: `remote-mcp request using Token ${actor.tokenId}.`,
-        });
-      return response;
-    } finally {
-      await server.close();
-    }
+    const response = await serveStatelessMcp(c.req.raw, undefined, () => server);
+    if (dependencies.coreDb)
+      recordServerAuditEvent({
+        coreDb: dependencies.coreDb,
+        actor: { kind: 'user', id: actor.userId },
+        action: 'remote-mcp.request',
+        authentication: auditAuthenticationFromActor(actor),
+        resource: operationId ? `operation:${operationId}` : '/mcp',
+        requestId: requestId ?? null,
+        outcome: refused ? 'denied' : response.ok ? 'succeeded' : 'failed',
+        summary: `remote-mcp request using Token ${actor.tokenId}.`,
+      });
+    return response;
   });
 }
 
