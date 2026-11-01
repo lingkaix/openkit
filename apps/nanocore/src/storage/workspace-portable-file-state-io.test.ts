@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,13 +11,27 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { writeRetainedV1 } from '@openkit/protocol';
 
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createWorkerContextPackageFiles } from '../context/worker-context-package.js';
-import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
+import { FsStore } from '../lib/store.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from '../test-support/local-user.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { prepareWorkspaceKnowledgeSelection } from './control-store-knowledge.js';
+import { closeWorkspaceProductReadHandles } from './control-store-products.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
+import { applyMigrations } from './migrate.js';
+import { readAdmittedWorkspaceKnowledgeSelection } from './workspace-file-records.js';
 
 import {
   readWorkspacePortableFileState,
@@ -31,37 +46,148 @@ const PORTABLE_TURN = {
   threadId: 'th_00000000-0000-7d57-bb9a-837e048d6465',
   turnId: 'tu_00000000-0000-7533-bc6b-7efa7795a620',
 } as const;
-const PORTABLE_OWNERS = {
-  workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
-  threads: [{ threadId: PORTABLE_TURN.threadId }],
-  turns: [PORTABLE_TURN],
+/** Page bytes the portable reader must return from the selected Notebook commit. */
+const PORTABLE_PAGES = {
+  'native.md':
+    '---\ntype: "RepoConvention"\ntitle: "Native"\nfuture_note: "retained"\n---\nNative page.\n',
+  'nested/native.md':
+    '---\ntype: "RepoConvention"\ntitle: "Nested native"\n---\nNested native page.\n',
+  'nested/index.md': '# Nested authored index\n\nKeep this navigation byte-for-byte.\n',
+  'nested/log.md': '# Nested authored log\n\nKeep this history byte-for-byte.\n',
+  'kn_owned.md':
+    '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n',
 } as const;
 
-/** Creates one empty real workspace root. */
+/** Valid v4 scope schema. The description is the marker export must keep byte for byte. */
+const PORTABLE_SCOPE_SCHEMA_TEXT = `${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT.trimEnd()}
+description: "Portable export schema marker"
+`;
+
+/** Creates one empty directory for a staging or export root. */
 function workspaceRoot(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-/** Publishes exact codec-test page bytes in a fresh Git content owner; this supplies no native admission. */
-function seedNotebook(root: string, files: Readonly<Record<string, string>>): void {
-  new KnowledgeNotebook({ repositoryPath: join(root, 'knowledge', 'notebook.git') }).initialize({
-    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX, ...files },
-    metadata: {
-      summary: 'Portable file codec fixture',
-      changeRequest: {
-        requestId: randomUUID(),
-        inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(files)).digest('hex')}`,
-      },
-      producer: { kind: 'user', id: testEntityId('usr', 'portable-files') },
-      authority: { kind: 'direct', instructionReference: 'test-fixture:portable-files' },
-      sourceReferences: [],
-    },
-  });
+/** Binds the retained Thread and Turn ids to the Workspace the native owner actually created. */
+function portableOwners(workspaceId: string) {
+  return {
+    workspaceId,
+    threads: [{ threadId: PORTABLE_TURN.threadId }],
+    turns: [PORTABLE_TURN],
+  } as const;
 }
 
-/** Writes one complete portable source fixture. */
-function writePortableFixture(root: string): void {
-  const workspaceId = 'ws_00000000-0000-7e30-a961-1cf5d6540406';
+/** Opens one real Workspace, including db/workspace.sqlite, through the existing Store owner. */
+async function admittedWorkspace(prefix: string): Promise<{
+  dataRoot: string;
+  workspaceRoot: string;
+  workspaceId: string;
+  store: FsStore;
+}> {
+  const dataRoot = mkdtempSync(join(tmpdir(), prefix));
+  const coreDb = openCoreDb(dataRoot);
+  onTestFinished(async () => {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    closeWorkspaceProductReadHandles(dataRoot);
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = await store.createWorkspace('Portable file fixture', {
+    requestId: randomUUID(),
+    producer: { kind: 'user', id: LOCAL_USER_ID },
+    instructionReference: 'test-fixture:portable-files',
+  });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: LOCAL_USER_ID,
+    workspaceId: workspace.id,
+  });
+  return {
+    dataRoot,
+    workspaceRoot: join(dataRoot, 'workspaces', workspace.id),
+    workspaceId: workspace.id,
+    store,
+  };
+}
+
+/** Publishes the retained page bytes on the SQL-selected Notebook commit. */
+async function publishPortablePages(input: {
+  dataRoot: string;
+  store: FsStore;
+  workspaceId: string;
+  workspaceRoot: string;
+}): Promise<void> {
+  const workspaceDb = openWorkspaceDb(input.dataRoot, input.workspaceId);
+  try {
+    const selection = readAdmittedWorkspaceKnowledgeSelection(
+      input.workspaceRoot,
+      input.workspaceId
+    );
+    const candidateRevision = selection.notebook.prepare({
+      baseRevision: selection.head.notebookCommit,
+      changes: PORTABLE_PAGES,
+      metadata: {
+        summary: 'Publish portable test bytes',
+        producer: { kind: 'user', id: LOCAL_USER_ID },
+        authority: { kind: 'direct', instructionReference: 'test:portable-pages' },
+        changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(PORTABLE_PAGES) },
+        sourceReferences: [],
+      },
+    });
+    const nextHead = await prepareWorkspaceKnowledgeSelection({
+      db: workspaceDb,
+      workspaceRoot: input.workspaceRoot,
+      notebook: selection.notebook,
+      knowledgeBaseId: selection.head.knowledgeBaseId,
+      notebookCommit: candidateRevision,
+      schemaText: PORTABLE_SCOPE_SCHEMA_TEXT,
+    });
+    await input.store.commitWorkspaceKnowledge({
+      workspaceDb,
+      expectedHead: selection.head,
+      nextHead,
+      audits: [],
+      revalidatePublication: () => {
+        const current = readAdmittedWorkspaceKnowledgeSelection(
+          input.workspaceRoot,
+          input.workspaceId
+        );
+        if (!isDeepStrictEqual(current.head, selection.head))
+          throw new Error('Fixture Workspace Knowledge head changed.');
+      },
+    });
+  } finally {
+    if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+  }
+}
+
+/** Copies the admitted SQL selection so a second root reads the same Notebook commit. */
+function copyAdmittedAuthority(sourceRoot: string, targetRoot: string): void {
+  closeWorkspaceProductReadHandles(sourceRoot);
+  const workspaceDb = openWorkspaceDb(dirname(dirname(sourceRoot)), basename(sourceRoot));
+  workspaceDb.sqlite.pragma('wal_checkpoint(TRUNCATE)');
+  workspaceDb.sqlite.close();
+  for (const name of ['db', 'config', 'knowledge']) {
+    cpSync(join(sourceRoot, name), join(targetRoot, name), { recursive: true });
+  }
+}
+
+/** Creates a real Workspace and writes the retained trace and Context Package files onto it. */
+async function portableSource(prefix: string): Promise<{
+  root: string;
+  owners: ReturnType<typeof portableOwners>;
+}> {
+  const admitted = await admittedWorkspace(prefix);
+  await publishPortablePages(admitted);
+  writePortableTraces(admitted.workspaceRoot, admitted.workspaceId);
+  return { root: admitted.workspaceRoot, owners: portableOwners(admitted.workspaceId) };
+}
+
+/** Writes the retained trace and Context Package files under one admitted Workspace. */
+function writePortableTraces(root: string, workspaceId: string): void {
   const retrieval = {
     traceId: 'krt_00000000-0000-780e-b78f-51422afca1e9',
     queryContext: {
@@ -115,23 +241,6 @@ function writePortableFixture(root: string): void {
   mkdirSync(dirname(threadRetrievalPath), { recursive: true });
   writeFileSync(threadRetrievalPath, `${JSON.stringify(writeRetainedV1(threadRetrieval))}\n`);
 
-  mkdirSync(join(root, 'config'), { recursive: true });
-  writeFileSync(
-    join(root, 'config', 'workspace.jsonc'),
-    `{\n  // exact comment\n  "schemaVersion": 1,\n  "workspace": { "name": "Portable file fixture", "defaultKnowledgeBaseId": "${PORTABLE_KNOWLEDGE_BASE_ID}" }\n}\n`
-  );
-  mkdirSync(join(root, 'knowledge', 'schema'), { recursive: true });
-  writeFileSync(join(root, 'knowledge', 'schema', 'scope-schema.yaml'), 'custom: true\n');
-  seedNotebook(root, {
-    'native.md':
-      '---\ntype: "RepoConvention"\ntitle: "Native"\nfuture_note: "retained"\n---\nNative page.\n',
-    'nested/native.md':
-      '---\ntype: "RepoConvention"\ntitle: "Nested native"\n---\nNested native page.\n',
-    'nested/index.md': '# Nested authored index\n\nKeep this navigation byte-for-byte.\n',
-    'nested/log.md': '# Nested authored log\n\nKeep this history byte-for-byte.\n',
-    'kn_owned.md':
-      '---\ntype: "KnowledgePage"\ntitle: "Owned"\nopenkit_entry_id: "kn_owned"\n---\nOwned page.\n',
-  });
   const packageRoot = join(root, 'threads', PORTABLE_TURN.threadId, 'turns', PORTABLE_TURN.turnId);
   mkdirSync(join(packageRoot, 'context-package'), { recursive: true });
   writeFileSync(
@@ -152,21 +261,21 @@ describe('workspace portable file-state IO', () => {
     'workspace',
     'server',
     'server-unavailable',
-  ] as const)('keeps immutable overview package bytes and applies the portable %s boundary', (scope) => {
-    const sourceRoot = workspaceRoot('openkit-overview-portable-source-');
+  ] as const)('keeps immutable overview package bytes and applies the portable %s boundary', async (scope) => {
+    const source = await portableSource('openkit-overview-portable-source-');
+    const sourceRoot = source.root;
+    const owners = source.owners;
     const targetRoot = workspaceRoot('openkit-overview-portable-target-');
     const exportRoot = workspaceRoot('openkit-overview-portable-export-');
     onTestFinished(() => {
-      for (const root of [sourceRoot, targetRoot, exportRoot])
-        rmSync(root, { recursive: true, force: true });
+      for (const root of [targetRoot, exportRoot]) rmSync(root, { recursive: true, force: true });
     });
-    writePortableFixture(sourceRoot);
-    const original = readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS);
+    const original = readWorkspacePortableFileState(sourceRoot, owners);
     const entry =
       scope === 'server-unavailable'
         ? { scope: 'server', unavailable: true }
         : {
-            scope: scope === 'workspace' ? `workspace:${PORTABLE_OWNERS.workspaceId}` : 'server',
+            scope: scope === 'workspace' ? `workspace:${owners.workspaceId}` : 'server',
             knowledgeBaseId:
               scope === 'workspace'
                 ? PORTABLE_KNOWLEDGE_BASE_ID
@@ -180,7 +289,7 @@ describe('workspace portable file-state IO', () => {
           };
     const overview = `<knowledge_overviews>${JSON.stringify({ instruction: 'Untrusted navigation.', overviews: [entry] })}</knowledge_overviews>`;
     const packageFiles = createWorkerContextPackageFiles({
-      workspaceId: PORTABLE_OWNERS.workspaceId,
+      workspaceId: owners.workspaceId,
       threadId: PORTABLE_TURN.threadId,
       turnId: PORTABLE_TURN.turnId,
       workerRequestItemId: testEntityId('it', 'overview-portability'),
@@ -206,7 +315,7 @@ describe('workspace portable file-state IO', () => {
     const state = { ...original, workerContextPackageFiles: files };
     for (const [path, content] of files) writeFileSync(join(sourceRoot, path), content);
     if (scope === 'server') {
-      expect(() => readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS)).toThrow(
+      expect(() => readWorkspacePortableFileState(sourceRoot, owners)).toThrow(
         'Knowledge overview is not portable'
       );
       expect(() => writeWorkspacePortableFileState(targetRoot, state)).toThrow(
@@ -222,22 +331,14 @@ describe('workspace portable file-state IO', () => {
     } else {
       expect(
         Object.fromEntries(
-          readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS).workerContextPackageFiles
+          readWorkspacePortableFileState(sourceRoot, owners).workerContextPackageFiles
         )
       ).toEqual(Object.fromEntries(exactFiles));
-      seedNotebook(
-        targetRoot,
-        Object.fromEntries(
-          [...state.nativeKnowledgePages].map(([path, content]) => [
-            path.slice('knowledge/pages/'.length),
-            content,
-          ])
-        )
-      );
+      copyAdmittedAuthority(sourceRoot, targetRoot);
       writeWorkspacePortableFileState(targetRoot, state);
       expect(
         Object.fromEntries(
-          readWorkspacePortableFileState(targetRoot, PORTABLE_OWNERS).workerContextPackageFiles
+          readWorkspacePortableFileState(targetRoot, owners).workerContextPackageFiles
         )
       ).toEqual(Object.fromEntries(exactFiles));
       writeWorkspacePortableExportState(exportRoot, state);
@@ -250,10 +351,12 @@ describe('workspace portable file-state IO', () => {
       expect(readFileSync(join(sourceRoot, path), 'utf8')).toBe(content);
   });
 
-  it('retains canonical page annotations while excluding ignored trace fields from portable writes', () => {
-    const source = workspaceRoot('openkit-knowledge-extended-');
+  it('retains canonical page annotations while excluding ignored trace fields from portable writes', async () => {
+    const sourceFixture = await portableSource('openkit-knowledge-extended-');
+    const source = sourceFixture.root;
+    const owners = sourceFixture.owners;
     const target = workspaceRoot('openkit-knowledge-rewritten-');
-    writePortableFixture(source);
+    onTestFinished(() => rmSync(target, { recursive: true, force: true }));
     const retrievalPath = join(
       source,
       'threads',
@@ -267,21 +370,13 @@ describe('workspace portable file-state IO', () => {
     retrieval.futureNote = 'retained';
     retrieval.retrievalParameters.futureNote = 'retained';
     writeFileSync(retrievalPath, `${JSON.stringify(retrieval)}\n`);
-    const state = readWorkspacePortableFileState(source, PORTABLE_OWNERS);
+    const state = readWorkspacePortableFileState(source, owners);
     expect(JSON.stringify([...state.retrievalTraceFiles.values()])).not.toContain('futureNote');
     expect(readFileSync(retrievalPath, 'utf8')).toContain('futureNote');
     // The import coordinator owns content publication; the file-state writer owns only its other families.
-    seedNotebook(
-      target,
-      Object.fromEntries(
-        [...state.nativeKnowledgePages].map(([path, content]) => [
-          path.slice('knowledge/pages/'.length),
-          content,
-        ])
-      )
-    );
+    copyAdmittedAuthority(source, target);
     writeWorkspacePortableFileState(target, state);
-    const reopened = readWorkspacePortableFileState(target, PORTABLE_OWNERS);
+    const reopened = readWorkspacePortableFileState(target, owners);
     expect(reopened.retrievalTraceFiles).toEqual(state.retrievalTraceFiles);
     expect(reopened.nativeKnowledgePages).toEqual(state.nativeKnowledgePages);
     expect(reopened.nativeKnowledgePages.get('knowledge/pages/native.md')).toContain(
@@ -302,12 +397,13 @@ describe('workspace portable file-state IO', () => {
       )
     ).not.toContain('futureNote');
   });
-  it('round-trips canonical Notebook pages and exact workspace-owned text', () => {
-    const sourceRoot = workspaceRoot('openkit-portable-state-source-');
+  it('round-trips canonical Notebook pages and exact workspace-owned text', async () => {
+    const source = await portableSource('openkit-portable-state-source-');
+    const sourceRoot = source.root;
+    const owners = source.owners;
     const targetRoot = workspaceRoot('openkit-portable-state-target-');
-
-    writePortableFixture(sourceRoot);
-    mkdirSync(join(targetRoot, 'knowledge', 'schema'), { recursive: true });
+    onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
+    copyAdmittedAuthority(sourceRoot, targetRoot);
     mkdirSync(join(targetRoot, 'knowledge', 'pages'), { recursive: true });
     writeFileSync(join(targetRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'default: true\n');
     writeFileSync(
@@ -315,7 +411,7 @@ describe('workspace portable file-state IO', () => {
       '---\nopenkit_entry_id: "kn_target"\n---\nTarget owned page.\n'
     );
 
-    const state = readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS);
+    const state = readWorkspacePortableFileState(sourceRoot, owners);
 
     expect([...state.nativeKnowledgePages.keys()]).toEqual([
       'knowledge/pages/index.md',
@@ -343,18 +439,9 @@ describe('workspace portable file-state IO', () => {
       ],
     ]);
 
-    seedNotebook(
-      targetRoot,
-      Object.fromEntries(
-        [...state.nativeKnowledgePages].map(([path, content]) => [
-          path.slice('knowledge/pages/'.length),
-          content,
-        ])
-      )
-    );
     writeWorkspacePortableFileState(targetRoot, state);
 
-    const roundTripped = readWorkspacePortableFileState(targetRoot, PORTABLE_OWNERS);
+    const roundTripped = readWorkspacePortableFileState(targetRoot, owners);
     for (const [path, content] of state.nativeKnowledgePages) {
       expect(roundTripped.nativeKnowledgePages.get(path)).toBe(content);
     }
@@ -362,19 +449,21 @@ describe('workspace portable file-state IO', () => {
       state.workspaceConfig
     );
     expect(readFileSync(join(targetRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')).toBe(
-      'custom: true\n'
+      PORTABLE_SCOPE_SCHEMA_TEXT
     );
     expect(readFileSync(join(targetRoot, 'knowledge', 'pages', 'kn_target.md'), 'utf8')).toContain(
       'openkit_entry_id: "kn_target"'
     );
   });
 
-  it('rejects strict-schema and physical-boundary violations', () => {
-    const malformedRoot = workspaceRoot('openkit-portable-state-malformed-');
-    const linkedRoot = workspaceRoot('openkit-portable-state-linked-');
+  it('rejects strict-schema and physical-boundary violations', async () => {
+    const malformed = await portableSource('openkit-portable-state-malformed-');
+    const linked = await portableSource('openkit-portable-state-linked-');
+    const malformedRoot = malformed.root;
+    const linkedRoot = linked.root;
     const outsideRoot = workspaceRoot('openkit-portable-state-outside-');
+    onTestFinished(() => rmSync(outsideRoot, { recursive: true, force: true }));
 
-    writePortableFixture(malformedRoot);
     const malformedTracePath = join(
       malformedRoot,
       'threads',
@@ -387,9 +476,8 @@ describe('workspace portable file-state IO', () => {
     const malformedTrace = JSON.parse(readFileSync(malformedTracePath, 'utf8'));
     malformedTrace.caller = 'unsupported';
     writeFileSync(malformedTracePath, `${JSON.stringify(malformedTrace)}\n`);
-    expect(() => readWorkspacePortableFileState(malformedRoot, PORTABLE_OWNERS)).toThrow();
+    expect(() => readWorkspacePortableFileState(malformedRoot, malformed.owners)).toThrow();
 
-    writePortableFixture(linkedRoot);
     writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched\n');
     symlinkSync(
       join(outsideRoot, 'sentinel.txt'),
@@ -401,7 +489,7 @@ describe('workspace portable file-state IO', () => {
         'krt_00000000-0000-780e-b78f-51422afca1ea.json'
       )
     );
-    expect(() => readWorkspacePortableFileState(linkedRoot, PORTABLE_OWNERS)).toThrow(
+    expect(() => readWorkspacePortableFileState(linkedRoot, linked.owners)).toThrow(
       /symbolic link/i
     );
     expect(readFileSync(join(outsideRoot, 'sentinel.txt'), 'utf8')).toBe('untouched\n');
@@ -428,22 +516,21 @@ describe('workspace portable file-state IO', () => {
           )
         ),
     },
-  ])('rejects $name', ({ knownTurns, alter }) => {
-    const root = workspaceRoot('openkit-portable-state-invalid-worker-package-');
-    writePortableFixture(root);
-    alter(root);
+  ])('rejects $name', async ({ knownTurns, alter }) => {
+    const source = await portableSource('openkit-portable-state-invalid-worker-package-');
+    alter(source.root);
 
     expect(() =>
-      readWorkspacePortableFileState(root, {
-        ...PORTABLE_OWNERS,
+      readWorkspacePortableFileState(source.root, {
+        ...source.owners,
         turns: knownTurns,
       })
     ).toThrow();
   });
 
-  it('rejects a worker Context Package trace carried by another Turn path', () => {
-    const root = workspaceRoot('openkit-portable-state-worker-lineage-');
-    writePortableFixture(root);
+  it('rejects a worker Context Package trace carried by another Turn path', async () => {
+    const source = await portableSource('openkit-portable-state-worker-lineage-');
+    const root = source.root;
     writeFileSync(
       join(
         root,
@@ -461,23 +548,23 @@ describe('workspace portable file-state IO', () => {
       })}\n`
     );
 
-    expect(() => readWorkspacePortableFileState(root, PORTABLE_OWNERS)).toThrow(
+    expect(() => readWorkspacePortableFileState(root, source.owners)).toThrow(
       'Worker Context Package trace path lineage is contradictory.'
     );
   });
 
-  it('rejects retired ledgers and trace files with contradictory path lineage', () => {
-    const retiredRoot = workspaceRoot('openkit-portable-state-retired-trace-');
-    writePortableFixture(retiredRoot);
+  it('rejects retired ledgers and trace files with contradictory path lineage', async () => {
+    const retired = await portableSource('openkit-portable-state-retired-trace-');
+    const retiredRoot = retired.root;
     const retiredTracePath = join(retiredRoot, 'knowledge', 'traces', '202607.jsonl');
     mkdirSync(dirname(retiredTracePath), { recursive: true });
     writeFileSync(retiredTracePath, '');
-    expect(() => readWorkspacePortableFileState(retiredRoot, PORTABLE_OWNERS)).toThrow(
+    expect(() => readWorkspacePortableFileState(retiredRoot, retired.owners)).toThrow(
       'The retired Knowledge retrieval trace ledger is unsupported.'
     );
 
-    const contradictoryRoot = workspaceRoot('openkit-portable-state-trace-lineage-');
-    writePortableFixture(contradictoryRoot);
+    const contradictory = await portableSource('openkit-portable-state-trace-lineage-');
+    const contradictoryRoot = contradictory.root;
     const path = join(
       contradictoryRoot,
       'threads',
@@ -490,14 +577,14 @@ describe('workspace portable file-state IO', () => {
     const trace = JSON.parse(readFileSync(path, 'utf8'));
     trace.queryContext.turnId = 'tu_00000000-0000-7bf1-990f-799cdaa2a481';
     writeFileSync(path, `${JSON.stringify(trace)}\n`);
-    expect(() => readWorkspacePortableFileState(contradictoryRoot, PORTABLE_OWNERS)).toThrow(
+    expect(() => readWorkspacePortableFileState(contradictoryRoot, contradictory.owners)).toThrow(
       'Knowledge retrieval trace lineage is contradictory.'
     );
   });
 
-  it('ignores publisher temporary files while retaining Thread and Turn traces', () => {
-    const root = workspaceRoot('openkit-portable-state-trace-temporary-');
-    writePortableFixture(root);
+  it('ignores publisher temporary files while retaining Thread and Turn traces', async () => {
+    const source = await portableSource('openkit-portable-state-trace-temporary-');
+    const root = source.root;
     writeFileSync(
       join(
         root,
@@ -508,11 +595,12 @@ describe('workspace portable file-state IO', () => {
       ),
       'incomplete'
     );
-    expect(readWorkspacePortableFileState(root, PORTABLE_OWNERS).retrievalTraceFiles.size).toBe(2);
+    expect(readWorkspacePortableFileState(root, source.owners).retrievalTraceFiles.size).toBe(2);
   });
 
-  it('rejects a publisher-temp-shaped symbolic link in a retrieval trace directory', () => {
-    const root = workspaceRoot('openkit-portable-state-trace-temp-link-');
+  it('rejects a publisher-temp-shaped symbolic link in a retrieval trace directory', async () => {
+    const source = await portableSource('openkit-portable-state-trace-temp-link-');
+    const root = source.root;
     try {
       const traceDirectory = join(root, 'threads', PORTABLE_TURN.threadId, 'retrieval-traces');
       mkdirSync(traceDirectory, { recursive: true });
@@ -524,9 +612,9 @@ describe('workspace portable file-state IO', () => {
         )
       );
 
-      expect(() => readWorkspacePortableFileState(root, PORTABLE_OWNERS)).toThrow(/symbolic link/i);
+      expect(() => readWorkspacePortableFileState(root, source.owners)).toThrow(/symbolic link/i);
     } finally {
-      rmSync(root, { force: true, recursive: true });
+      rmSync(join(root, 'threads'), { force: true, recursive: true });
     }
   });
 });
