@@ -3342,6 +3342,18 @@ describe('OpenCode resident adapter', () => {
     expect(requestTexts(alphaRequest).join(' ')).toContain('echo-alpha');
     expect(authenticated(capability, 'alpha', creds.capabilityCredential)).toBe(true);
     expect(authenticated(capability, 'beta', creds.capabilityCredential)).toBe(false);
+    // Worker MCP adoption requires accepted modern tool traffic, not only an auto-negotiation probe.
+    const modernAlpha = capability.protocolHits.filter(
+      (hit) => hit.serverId === 'alpha' && hit.method === 'tools/list'
+    );
+    expect(modernAlpha.length).toBeGreaterThan(0);
+    for (const hit of modernAlpha) {
+      expect(hit.protocolHeaders['mcp-protocol-version']).toBe('2026-07-28');
+      expect(hit.protocolHeaders['mcp-method']).toBe('tools/list');
+      expect(hit.params).toMatchObject({
+        _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+      });
+    }
 
     const hits = inference.requests.length;
     const listed = capability.hits.length;
@@ -3404,6 +3416,18 @@ describe('OpenCode resident adapter', () => {
     expect(betaBodies.some((body) => body.includes('mcp-alpha-user'))).toBe(true);
     expect(betaBodies.some((body) => body.includes('echo-beta'))).toBe(true);
     expect(authenticated(capability, 'beta', nextCreds.capabilityCredential)).toBe(true);
+    const modernBeta = capability.protocolHits.filter(
+      (hit) => hit.serverId === 'beta' && hit.method === 'tools/list'
+    );
+    expect(modernBeta.length).toBeGreaterThan(0);
+    for (const hit of modernBeta) {
+      expect(hit.protocolHeaders['mcp-protocol-version']).toBe('2026-07-28');
+      expect(hit.protocolHeaders['mcp-method']).toBe('tools/list');
+      expect(hit.params).toMatchObject({
+        _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' },
+      });
+    }
+
     expect(authenticated(capability, 'alpha', nextCreds.capabilityCredential)).toBe(false);
     expect(authenticated(capability, 'beta', creds.capabilityCredential)).toBe(false);
     expect(filesContaining(successor.stateRoot, nextCreds.capabilityCredential)).toEqual([]);

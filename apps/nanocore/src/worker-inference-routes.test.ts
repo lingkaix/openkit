@@ -1,9 +1,12 @@
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request as requestHttp } from 'node:http';
 import { createServer as createHttp2Server, type ServerHttp2Session } from 'node:http2';
+import { createRequire } from 'node:module';
 import { connect as connectSocket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { zstdCompressSync } from 'node:zlib';
 import {
   createModels,
@@ -62,10 +65,12 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
-import { ensureLocalUser } from './test-support/local-user.js';
+import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
+import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
+import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -3353,4 +3358,270 @@ describe('Worker Turn admitted limits', () => {
       expect(f.environmentPackage).toEqual(admittedPackage);
     });
   }
+
+  it('negotiates modern MCP through the actual DeepSeek plugin and Integration to the admitted Worker', async ({
+    signal,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-protocol-'));
+    const coreDb = openCoreDb(dataRoot);
+    ownedCoreDatabases.push(coreDb);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    const native = createNativeTaskAdmissionFixture(coreDb, store);
+    const setup = createTestAgentSetup({
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      turnExecutor: native.executor,
+      fileAdmission: native.fileAdmission,
+      workerControlGateway: native.workerControlGateway,
+      agentManifests: [setup.manifest],
+      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+    });
+    const loopbackCredential = randomBytes(32).toString('base64url');
+    const inferenceCredential = randomBytes(32).toString('base64url');
+    const wire: Array<{
+      id: string;
+      method: string;
+      bodySha256: string;
+      query: string;
+      protocolHeaders: Record<string, string>;
+      revision: unknown;
+      clientName: unknown;
+      hasExpectedCredential: boolean;
+      status?: number;
+    }> = [];
+    const ingress: typeof wire = [];
+    const bridge = createHttp2Server();
+    const bridgeSessions = new Set<ServerHttp2Session>();
+    const bridgeFailures: unknown[] = [];
+    bridge.on('session', (session) => bridgeSessions.add(session));
+    bridge.on('stream', (stream, headers) => {
+      const chunks: Buffer[] = [];
+      stream.on('error', () => undefined);
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => {
+        void (async () => {
+          const bytes = Buffer.concat(chunks);
+          const body = JSON.parse(bytes.toString('utf8'));
+          const route = String(headers[':path']);
+          const url = new URL(route, 'http://127.0.0.1');
+          const forwarded = new Headers();
+          for (const [name, value] of Object.entries(headers)) {
+            if (!name.startsWith(':') && typeof value === 'string') forwarded.set(name, value);
+          }
+          const observation = {
+            id: String(body.id),
+            method: String(body.method),
+            bodySha256: createHash('sha256').update(bytes).digest('hex'),
+            query: url.search,
+            protocolHeaders: Object.fromEntries(
+              [...forwarded].filter(([name]) => name.startsWith('mcp-'))
+            ),
+            revision: body.params?._meta?.['io.modelcontextprotocol/protocolVersion'],
+            clientName: body.params?._meta?.['io.modelcontextprotocol/clientInfo']?.name,
+            hasExpectedCredential:
+              forwarded.get('authorization') === `Bearer ${native.executor.capabilityToken}`,
+            status: 0,
+          };
+          wire.push(observation);
+          // Keep the original query and all ordinary headers; only map the route namespace.
+          const response = await app.request(
+            `/api/worker-capabilities${url.pathname.slice('/capabilities'.length)}${url.search}`,
+            {
+              method: 'POST',
+              headers: forwarded,
+              body: bytes,
+            }
+          );
+          observation.status = response.status;
+          stream.respond({
+            ':status': response.status,
+            ...Object.fromEntries(response.headers),
+          });
+          stream.end(await response.text());
+        })().catch((error: unknown) => {
+          bridgeFailures.push(error);
+          if (!stream.destroyed) {
+            stream.respond({ ':status': 500 });
+            stream.end();
+          }
+        });
+      });
+    });
+    let integration: Awaited<ReturnType<typeof openSandboxIntegration>> | undefined;
+    let socket: ReturnType<typeof connectSocket> | undefined;
+    const fibers: Array<{ await(): Promise<unknown>; dispose(): Promise<void> | void }> = [];
+    const originalFetch = globalThis.fetch;
+    const fetchObservation = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async (input, init) => {
+        const request = new Request(input instanceof Request ? input.clone() : input, init);
+        const url = new URL(request.url);
+        if (
+          url.hostname === '127.0.0.1' &&
+          url.port === '17892' &&
+          url.pathname.startsWith('/capabilities/')
+        ) {
+          const bytes = Buffer.from(await request.clone().arrayBuffer());
+          const body = JSON.parse(bytes.toString('utf8'));
+          ingress.push({
+            id: String(body.id),
+            method: String(body.method),
+            bodySha256: createHash('sha256').update(bytes).digest('hex'),
+            query: url.search,
+            protocolHeaders: Object.fromEntries(
+              [...request.headers].filter(([name]) => name.startsWith('mcp-'))
+            ),
+            revision: body.params?._meta?.['io.modelcontextprotocol/protocolVersion'],
+            clientName: body.params?._meta?.['io.modelcontextprotocol/clientInfo']?.name,
+            hasExpectedCredential:
+              request.headers.get('authorization') === `Bearer ${loopbackCredential}`,
+          });
+        }
+        // Observe the public request without replacing its real HTTP/1 producer or consumer.
+        return originalFetch(input, init);
+      });
+    try {
+      const admitted = await app.request(
+        ...operationRequest(
+          'task.start',
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            threadId: DEMO_THREAD_ID,
+          },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: randomUUID(),
+              input: 'Inspect the selected Worker MCP tools.',
+            }),
+          }
+        )
+      );
+      expect(admitted.status, await admitted.clone().text()).toBe(202);
+      const admittedBody = await admitted.json();
+      await native.executor.launched.promise;
+      expect(native.executor.nativeLineage?.turnId).toBe(admittedBody.turn.id);
+      expect(native.executor.capabilityToken.length > 0).toBe(true);
+      expect(native.executor.capabilityToken === loopbackCredential).toBe(false);
+      integration = await openSandboxIntegration();
+      socket = connectSocket(17891, '127.0.0.1');
+      bridge.emit('connection', socket);
+      await integration.ready;
+      integration.registerSessionLoopback('protocol-fixture', {
+        capabilityCredential: loopbackCredential,
+        inferenceCredential,
+      });
+      integration.bindTurnRouteTokens('protocol-fixture', {
+        capabilityToken: native.executor.capabilityToken,
+        controlToken: randomBytes(32).toString('base64url'),
+        inferenceToken: randomBytes(32).toString('base64url'),
+      });
+      // Resolve the published plugin with its own SDK 2.2 dependency closure.
+      const shim = createRequire(
+        new URL('../../../packages/worker-shim/package.json', import.meta.url)
+      );
+      const dsh = createRequire(shim.resolve('@deepseek-ai/dsh/package.json'));
+      const pluginEntry = dsh.resolve('@deepseek-ai/dsh-mcp-client');
+      const pluginRequire = createRequire(pluginEntry);
+      const module = (name: string) => import(pathToFileURL(pluginRequire.resolve(name)).href);
+      const [cordis, prompt, tools, mcp] = await Promise.all([
+        module('@deepseek-ai/cordis'),
+        module('@deepseek-ai/dsh-system-prompt'),
+        module('@deepseek-ai/dsh-tools'),
+        import(pathToFileURL(pluginEntry).href),
+      ]);
+      const ctx = new cordis.Context();
+      const promptFiber = ctx.plugin(prompt.SystemPrompt, {});
+      fibers.push(promptFiber);
+      await promptFiber.await();
+      const toolsFiber = ctx.plugin(tools.ToolRuntime, { mode: 'native' });
+      fibers.push(toolsFiber);
+      await toolsFiber.await();
+      const mcpFiber = ctx.plugin(mcp, {
+        transport: 'streamable-http',
+        serverName: 'worker',
+        url: 'http://127.0.0.1:17892/capabilities/mcp/openkit-work?protocolProbe=kept',
+        headers: { authorization: `Bearer ${loopbackCredential}`, 'mcp-probe': 'preserved' },
+        failOnStartupError: true,
+        reconnect: { enabled: false },
+      });
+      fibers.push(mcpFiber);
+      await mcpFiber.await();
+      expect(
+        ctx.tools
+          .schemas()
+          .some((tool: { name: string }) => tool.name === 'mcp__worker__work_peer_list')
+      ).toBe(true);
+      const result = await ctx.tools.execute({
+        callId: randomUUID(),
+        name: 'mcp__worker__work_peer_list',
+        arguments: {},
+        signal,
+      });
+      expect(result.isError).toBe(false);
+      // Work capability lists other live bindings; this real admitted Sandbox contains only its caller.
+      expect(result.value.structuredContent).toEqual({ peers: [] });
+      expect(bridgeFailures.length).toBe(0);
+      expect(wire.some((hit) => hit.method === 'initialize')).toBe(false);
+      for (const method of ['server/discover', 'tools/list', 'tools/call']) {
+        const requests = wire.filter((hit) => hit.method === method);
+        expect(requests.length, method).toBeGreaterThan(0);
+        for (const request of requests) {
+          expect(request.status).toBe(200);
+          expect(request.revision).toBe('2026-07-28');
+          expect(request.clientName).toBe('dsh-mcp-client');
+          expect(request.protocolHeaders['mcp-protocol-version']).toBe('2026-07-28');
+          expect(request.protocolHeaders['mcp-method']).toBe(method);
+          expect(request.protocolHeaders['mcp-probe']).toBe('preserved');
+          expect(request.query).toBe('?protocolProbe=kept');
+          expect(request.hasExpectedCredential).toBe(true);
+          if (method === 'tools/call')
+            expect(request.protocolHeaders['mcp-name']).toBe('work_peer_list');
+          const before = ingress.filter((hit) => hit.id === request.id && hit.method === method);
+          expect(before).toHaveLength(1);
+          expect(before[0]?.hasExpectedCredential).toBe(true);
+          expect(before[0]?.bodySha256).toBe(request.bodySha256);
+          expect(before[0]?.protocolHeaders).toEqual(request.protocolHeaders);
+          expect(before[0]?.query).toBe(request.query);
+        }
+      }
+    } finally {
+      fetchObservation.mockRestore();
+      try {
+        // Join every public plugin lifecycle even if one disposal fails.
+        const disposalErrors: unknown[] = [];
+        for (const fiber of fibers.reverse()) {
+          try {
+            await fiber.dispose();
+          } catch (error: unknown) {
+            disposalErrors.push(error);
+          }
+        }
+        expect(disposalErrors.length).toBe(0);
+      } finally {
+        integration?.close();
+        for (const session of bridgeSessions) session.destroy();
+        socket?.destroy();
+        await new Promise<void>((resolve) => bridge.close(() => resolve()));
+        native.executor.completion.resolve();
+        try {
+          if (native.executor.launches > 0) await native.executor.execution;
+        } finally {
+          await native.restore();
+        }
+      }
+    }
+  }, 60_000);
 });

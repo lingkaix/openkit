@@ -177,6 +177,8 @@ Before advertising support, native qualification at the declared pin must prove 
 
 NanoCore resolves approved static Skill and selected MCP supply into the AEP. The Codex adapter projects exactly the resolved MCP server ids through the fixed authenticated loopback URLs above. NanoCore still owns catalog resolution, authorization, credentials, transport, usage, and audit, and the adapter must not discover, install, connect directly, authorize, or broaden supply. An empty manifest MCP selection does not disable the capability plane: resolved supply still includes the built-in servers supplied by [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md). A missing capability loopback credential fails `session.open` before native work. A reload or re-list, when the probed declaration says the client lists tools again, happens at a Turn boundary, not mid-Turn.
 
+The pinned Codex runtime keeps legacy MCP because its `2026-07-28` switch is still under development.
+
 ## Provider And Credentials
 
 The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements. The resolved AEP owns the preferred logical model, exact allowed route set, credential bindings, and effective launch policy. NanoCore performs that resolution but does not own a second native-runtime configuration.

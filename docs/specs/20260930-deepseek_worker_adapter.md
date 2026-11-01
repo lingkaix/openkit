@@ -136,6 +136,8 @@ The adapter must not send another `session/prompt`, cancel and then prompt, swit
 
 Native creation and the first-Turn initialization resume mount the exact current resolved MCP supply. An idle identity-proof resume mounts no MCP servers, as Session Operations specifies. On the inspected source that mount consumes tools, not MCP resources or prompts. There is no general live-replacement operation on the examined source. That fact is evidence the probe must check. It is not, by itself, the declaration of re-list behavior.
 
+The pinned native MCP client negotiates automatically and selects `2026-07-28` through the Worker endpoint when it supports that revision.
+
 This adapter does not re-list tools at Turn start. A supply change requires a successor AgentSession that resumes the exact conversation after the predecessor Turn settles. A later change to the MCP server id set, the Skill path set, or the working directory is refused before any native request inside an established binding. Narrowing and revocation still apply at the next call as `capability_denied`.
 
 In-Sandbox MCP follows native local configuration. OpenKit-managed MCP remains exactly selected and Gateway-projected; the adapter cannot broaden or directly replace that selection. Other external traffic follows the MCP and Sandbox/network owners, including admission-classified public endpoints and separately authorized REST grants. ACP does not become an authorization channel.

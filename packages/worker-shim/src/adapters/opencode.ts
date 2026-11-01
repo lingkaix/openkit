@@ -1714,6 +1714,7 @@ async function syncMcpServers(
         config: {
           // Keep the pin's CodeMode default so execute and search see managed tools.
           oauth: false,
+          protocol: '2026-07-28',
           type: 'remote',
           url: `${capabilityBaseUrl.replace(/\/$/, '')}/mcp/${id}`,
         },

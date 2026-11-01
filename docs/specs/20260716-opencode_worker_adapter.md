@@ -133,6 +133,8 @@ Before advertising support, native qualification must prove same-Turn inbox deli
 
 OpenKit-managed MCP is server configuration on the dedicated server, for the exact selected supply, not a cwd-scoped ACP registry. Dedicated initial servers avoid sharing a live configuration scope across sessions. The adapter must not discover, install, connect directly to, authorize, or broaden OpenKit-managed MCP supply. Independently configured local Skills and MCP follow Native Local Configuration; the managed selection is projected separately and does not disable them. [Worker MCP Tool Supply](20260704-worker_mcp_tool_supply.md) owns the Gateway plane for external systems. In-Sandbox MCP is unrestricted.
 
+For managed remote MCP, the adapter sets the pinned runtime's documented `protocol` option to `2026-07-28`.
+
 The adapter does not re-list tools at Turn start. A changed supply requires a successor AgentSession that resumes the native conversation. Narrowing and revocation apply at the next call as `capability_denied`.
 
 ## Provider And Credentials
