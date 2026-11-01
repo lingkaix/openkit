@@ -13,7 +13,7 @@ import type { Actor } from '../auth/identity.js';
 import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { type FsStore, knowledgeAuthorityId } from '../lib/store.js';
-import { commandInputHash, type InflightIdempotentCommand } from '../runtime/idempotent-command.js';
+import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   ActorRefReaderSchema,
@@ -29,6 +29,7 @@ import {
   type NotebookPublicationAdmission,
   prepareNotebookProposalChanges,
   publishNotebook,
+  retainNotebookProposalCandidate,
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 
@@ -96,21 +97,14 @@ export function createServerNotebookProposal(
   });
   const id = knowledgeAuthorityId('kp_', { ownerScope: 'server', requestId: edit.requestId });
   if (existsSync(proposalPath(context.coreDb, id))) throw new NotebookError('conflict');
-  const candidateRevision = git.prepare({
-    baseRevision: edit.baseRevision,
-    changes: Object.fromEntries(changes.map(({ path, content }) => [path, content])),
-    metadata: {
-      summary: edit.summary,
-      changeRequest: {
-        requestId: edit.requestId,
-        inputDigest: commandInputHash({ ...edit, producer }),
-      },
-      producer,
-      authority: { kind: 'proposal', proposalId: id },
-      sourceReferences: [...sourceReferences],
-    },
+  const candidateRevision = retainNotebookProposalCandidate({
+    notebook: git,
+    edit,
+    changes,
+    producer,
+    proposalId: id,
+    sourceReferences,
   });
-  git.retainCandidate({ proposalId: id, candidateRevision });
   const proposal = ServerKnowledgeProposalSchema.parse({
     id,
     operation: 'notebook-change',

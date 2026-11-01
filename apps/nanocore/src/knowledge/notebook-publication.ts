@@ -200,6 +200,34 @@ export function prepareNotebookProposalChanges(input: {
   return changes;
 }
 
+/** Retains the exact already-validated Proposal candidate without changing the published head. */
+export function retainNotebookProposalCandidate(input: {
+  readonly notebook: KnowledgeNotebook;
+  readonly edit: NotebookEdit;
+  readonly changes: NotebookEdit['changes'];
+  readonly producer: ActorRef & { kind: 'agent' };
+  readonly proposalId: string;
+  readonly sourceReferences: readonly string[];
+}): string {
+  const { notebook: git, edit, changes, producer, proposalId: id, sourceReferences } = input;
+  const candidateRevision = git.prepare({
+    baseRevision: edit.baseRevision,
+    changes: Object.fromEntries(changes.map(({ path, content }) => [path, content])),
+    metadata: {
+      summary: edit.summary,
+      changeRequest: {
+        requestId: edit.requestId,
+        inputDigest: commandInputHash({ ...edit, producer }),
+      },
+      producer,
+      authority: { kind: 'proposal', proposalId: id },
+      sourceReferences: [...sourceReferences],
+    },
+  });
+  git.retainCandidate({ proposalId: id, candidateRevision });
+  return candidateRevision;
+}
+
 /** Derives the exact durable owner from the existing database handle. */
 function notebookOwnerScope(owner: NotebookPublicationOwner): KnowledgeOwnerScope {
   return owner.kind === 'workspace'
