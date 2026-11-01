@@ -1,3 +1,4 @@
+import type { Http2Session } from 'node:http2';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { Context, Hono } from 'hono';
 
@@ -14,7 +15,12 @@ import {
   isNanoHostPhysicalConnectionContext,
   readNanoHostPhysicalConnectionContext,
 } from './nanohost-transport-session.js';
-import { verifyNanoHostTransportTokenRecord } from './nanohost-transport-token-store.js';
+import { evaluateNanoHostTransportTokenUsability } from './nanohost-transport-token.js';
+import {
+  getNanoHostTransportTokenRecord,
+  isNanoHostTransportIdentityActive,
+  verifyNanoHostTransportTokenRecord,
+} from './nanohost-transport-token-store.js';
 
 /** Input for admitting one native NanoHost physical connection. */
 export interface AdmitNanoHostTransportConnectionInput {
@@ -83,34 +89,55 @@ export type AdmitNanoHostTransportConnectionResult =
  * @param input Presented secret, native connection context, and RuntimeTarget id.
  * @returns Verified bound admission or a fail-closed result.
  */
-export function admitNanoHostTransportConnection(
+export async function admitNanoHostTransportConnection(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
   input: AdmitNanoHostTransportConnectionInput
-): AdmitNanoHostTransportConnectionResult {
-  const verified = verifyNanoHostTransportTokenRecord(coreDb, input.secret, {
-    channel: input.channel ?? 'nanohost-transport',
-    source: input.source ?? 'session-admit',
-    ...(input.now ? { now: input.now } : {}),
+): Promise<AdmitNanoHostTransportConnectionResult> {
+  const request = { ...input, ...(input.now ? { now: new Date(input.now.getTime()) } : {}) };
+  const verified = await verifyNanoHostTransportTokenRecord(coreDb, request.secret, {
+    channel: request.channel ?? 'nanohost-transport',
+    source: request.source ?? 'session-admit',
+    ...(request.now ? { now: request.now } : {}),
   });
 
-  if (!verified) {
+  const current = verified ? getNanoHostTransportTokenRecord(coreDb, verified.tokenId) : null;
+  if (
+    !verified ||
+    !current ||
+    current.ownerNanoHostIdentityId !== verified.ownerNanoHostIdentityId ||
+    current.deploymentId !== verified.deploymentId ||
+    !isNanoHostTransportIdentityActive(
+      coreDb,
+      current.ownerNanoHostIdentityId,
+      current.deploymentId
+    ) ||
+    !evaluateNanoHostTransportTokenUsability(current, request.now).usable
+  ) {
     return { ok: false, reason: 'unauthorized' };
   }
 
-  if (!input.physicalConnection || !isNanoHostPhysicalConnectionContext(input.physicalConnection)) {
+  if (
+    !request.physicalConnection ||
+    !isNanoHostPhysicalConnectionContext(request.physicalConnection)
+  ) {
     return { ok: false, reason: 'missing_connection_context' };
   }
-  if (authority.connectionGeneration(input.physicalConnection) !== null) {
+  const connection = request.physicalConnection as Http2Session;
+  if (
+    connection.destroyed ||
+    connection.closed ||
+    authority.connectionGeneration(request.physicalConnection) !== null
+  ) {
     return { ok: false, reason: 'rejected' };
   }
 
-  if (input.transportRevision !== String(transportRevision)) {
+  if (request.transportRevision !== String(transportRevision)) {
     return { ok: false, reason: 'nanohost_protocol_mismatch' };
   }
 
-  const targetId = input.targetId?.trim() || verified.ownerNanoHostIdentityId;
-  const observedAt = (input.now ?? new Date()).toISOString();
+  const targetId = request.targetId?.trim() || verified.ownerNanoHostIdentityId;
+  const observedAt = (request.now ?? new Date()).toISOString();
   const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: verified.deploymentId,
     identityId: verified.ownerNanoHostIdentityId,
@@ -120,7 +147,7 @@ export function admitNanoHostTransportConnection(
   const session = authority.admit({
     connectionGeneration: target.connectionGeneration,
     identityId: verified.ownerNanoHostIdentityId,
-    physicalConnection: input.physicalConnection,
+    physicalConnection: request.physicalConnection,
     onClose: (closed) => {
       if (!coreDb.sqlite.open) {
         return;
@@ -154,7 +181,7 @@ export function admitNanoHostTransportConnection(
     deploymentId: verified.deploymentId,
     connectionGeneration: session.connectionGeneration,
     role: session.role,
-    mayCarryWork: authority.mayCarryWork(input.physicalConnection),
+    mayCarryWork: authority.mayCarryWork(request.physicalConnection),
   };
 }
 
@@ -214,7 +241,7 @@ export function registerNanoHostTransportAdmissionRoutes({
     const physicalConnection = readNanoHostPhysicalConnectionContext(
       (c.env as { readonly incoming?: unknown } | undefined)?.incoming
     );
-    const admitted = admitNanoHostTransportConnection(coreDb!, sessionAuthority, {
+    const admitted = await admitNanoHostTransportConnection(coreDb!, sessionAuthority, {
       channel: 'nanohost-transport',
       physicalConnection,
       transportRevision: c.req.header('x-openkit-nanohost-transport-revision'),

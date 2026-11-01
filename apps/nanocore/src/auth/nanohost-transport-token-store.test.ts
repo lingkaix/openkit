@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -34,7 +35,7 @@ function insertActiveIdentity(coreDb: ReturnType<typeof openCoreDb>): void {
  * which does not exist yet. Do not implement the production store here.
  */
 describe('NanoHost transport token store', () => {
-  it('issues hash-only records and verifies without leaking the raw secret', () => {
+  it('issues hash-only records and verifies without leaking the raw secret', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-token-store-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -42,7 +43,7 @@ describe('NanoHost transport token store', () => {
       applyMigrations(coreDb);
       insertActiveIdentity(coreDb);
 
-      const issued = createNanoHostTransportTokenRecord(coreDb, {
+      const issued = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: 'deploy_primary',
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
@@ -54,7 +55,7 @@ describe('NanoHost transport token store', () => {
         token_hash: string;
         token_type: string;
       }>;
-      const verified = verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
+      const verified = await verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
         now: new Date('2026-08-08T00:00:00.000Z'),
       });
 
@@ -72,13 +73,14 @@ describe('NanoHost transport token store', () => {
         tokenType: 'nanohost-transport',
       });
       expect(JSON.stringify(verified)).not.toContain(issued.secret);
-      expect(verifyNanoHostTransportTokenRecord(coreDb, 'okt_wrong')).toBeNull();
+      expect(await verifyNanoHostTransportTokenRecord(coreDb, 'okt_wrong')).toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('rotates and revokes without leaking raw secrets into redacted records', () => {
+  it('rotates and revokes without leaking raw secrets into redacted records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-token-store-rotate-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -86,18 +88,18 @@ describe('NanoHost transport token store', () => {
       applyMigrations(coreDb);
       insertActiveIdentity(coreDb);
 
-      const issued = createNanoHostTransportTokenRecord(coreDb, {
+      const issued = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: 'deploy_primary',
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: 'integration_nanohost_primary',
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
-      const rotated = rotateNanoHostTransportTokenRecord(coreDb, issued.tokenId, {
+      const rotated = await rotateNanoHostTransportTokenRecord(coreDb, issued.tokenId, {
         now: new Date('2026-08-08T01:00:00.000Z'),
         overlapSeconds: 60,
       });
-      const revoked = revokeNanoHostTransportTokenRecord(coreDb, rotated?.tokenId ?? '', {
+      const revoked = await revokeNanoHostTransportTokenRecord(coreDb, rotated?.tokenId ?? '', {
         now: new Date('2026-08-08T02:00:00.000Z'),
       });
 
@@ -119,11 +121,12 @@ describe('NanoHost transport token store', () => {
       });
       expect(JSON.stringify(revoked)).not.toContain(rotated?.secret);
       expect(
-        verifyNanoHostTransportTokenRecord(coreDb, rotated?.secret ?? '', {
+        await verifyNanoHostTransportTokenRecord(coreDb, rotated?.secret ?? '', {
           now: new Date('2026-08-08T02:00:00.000Z'),
         })
       ).toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

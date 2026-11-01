@@ -36,8 +36,10 @@ import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission
 import { getWorkspaceInvitation, getWorkspaceMember } from '../workspace-sharing.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
 import {
+  DeploymentAdminRequiredError,
   getOpenKitAccessTokenRecord,
   type OpenKitAccessTokenRecord,
+  requireCurrentDeploymentAdmin,
   resolveSessionDeploymentAdminTokenId,
 } from './access-token-store.js';
 import type { Actor } from './identity.js';
@@ -149,63 +151,11 @@ export interface RegisterOperationAccessGuardsInput {
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
 }
 
-/** Current non-secret deployment-administrator authority proved from durable Token state. */
-export interface CurrentDeploymentAdminAuthority {
-  /** Token id that currently grants server administration, absent only in local mode. */
-  readonly tokenId: string | null;
-  /** Canonical user that owns the authority. */
-  readonly userId: string;
-}
-
-/** Raised when an operation has no current usable deployment-administrator authority. */
-export class DeploymentAdminRequiredError extends Error {
-  public constructor() {
-    super('Current deployment administrator authority is required.');
-    this.name = 'DeploymentAdminRequiredError';
-  }
-}
-
-/**
- * Rechecks current deployment-administrator authority from durable user and Token owners.
- *
- * @param coreDb Core identity and Token authority.
- * @param actor Authenticated request actor whose authority must still be usable.
- * @param now Current time for Token expiration and rotation-grace evaluation.
- * @returns Current non-secret administrator authority.
- * @throws DeploymentAdminRequiredError when the actor or its current Token authority is unusable.
- */
-export function requireCurrentDeploymentAdmin(
-  coreDb: CoreDb,
-  actor: Actor | undefined,
-  now = new Date()
-): CurrentDeploymentAdminAuthority {
-  if (!actor || !isCanonicalUserActive(coreDb, actor.userId)) {
-    throw new DeploymentAdminRequiredError();
-  }
-  if (actor.kind === 'local') {
-    return { tokenId: null, userId: actor.userId };
-  }
-  if (actor.kind === 'session') {
-    // Only actual session authentication projects this eligibility; channel pairing does not.
-    const tokenId = actor.adminTokenId
-      ? resolveSessionDeploymentAdminTokenId(coreDb, actor.userId, now)
-      : null;
-    if (tokenId) {
-      return { tokenId, userId: actor.userId };
-    }
-    throw new DeploymentAdminRequiredError();
-  }
-  const token = actor.tokenId ? getOpenKitAccessTokenRecord(coreDb, actor.tokenId) : undefined;
-  if (
-    token?.ownerUserId === actor.userId &&
-    token.scope === 'server-admin' &&
-    actor.tokenScope === 'server-admin' &&
-    evaluateOpenKitAccessTokenUsability(token, now).usable
-  ) {
-    return { tokenId: token.tokenId, userId: actor.userId };
-  }
-  throw new DeploymentAdminRequiredError();
-}
+export {
+  type CurrentDeploymentAdminAuthority,
+  DeploymentAdminRequiredError,
+  requireCurrentDeploymentAdmin,
+} from './access-token-store.js';
 
 /** One exact method and Hono path owned by a catalog operation. */
 interface OperationRoute {

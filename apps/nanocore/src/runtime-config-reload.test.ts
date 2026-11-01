@@ -134,7 +134,7 @@ describe('NanoHost restart-required reload fencing', () => {
             'INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at) VALUES (?, ?, ?, ?)'
           )
           .run(host.identityId, deploymentId, 'active', new Date().toISOString());
-        const token = createNanoHostTransportTokenRecord(coreDb, {
+        const token = await createNanoHostTransportTokenRecord(coreDb, {
           deploymentId,
           expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
           ownerNanoHostIdentityId: host.identityId,
@@ -283,8 +283,8 @@ describe('NanoHost restart-required reload fencing', () => {
         for (const client of clients) client.destroy();
         for (const session of sessions) session.destroy();
         if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
-        coreDb.sqlite.close();
         await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
         rmSync(dataRoot, { recursive: true, force: true });
       }
     });
