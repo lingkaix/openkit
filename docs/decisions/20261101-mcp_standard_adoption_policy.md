@@ -9,11 +9,9 @@ decider: Engineer
 
 OpenKit follows the Model Context Protocol ahead of its dated releases, under two rules.
 
-The first rule covers the MCP Gateway, the Worker face, and internal Operation and Tool exposure. They move to a new standard as soon as it is released, or as soon as a published release of the official SDK supports it, even when no dated protocol revision contains it yet. [Worker MCP Tool Supply](../specs/20260704-worker_mcp_tool_supply.md) owns this rule.
+The first rule is internal. The MCP Gateway serves a new standard, beside the older revision, as soon as the standard is released or a published release of the official SDK supports it, even when no dated protocol revision contains it yet. The reference clients are the harnesses of the current four Worker adapters: Pi, Codex, OpenCode, and DeepSeek. Each adapter turns a technique on for its harness as soon as the pinned harness release supports it through a documented option. An under-development flag does not count. Removing an older form from the Worker face waits until all four harnesses support the new one. [Worker MCP Tool Supply](../specs/20260704-worker_mcp_tool_supply.md) owns this rule.
 
-The second rule covers the MCP that OpenKit exposes to user agents. It changes to a new form as soon as the Claude Code, Codex, and Grok MCP clients all support that technique. [Remote MCP Interface](../specs/20261002-remote_mcp_interface.md) owns this rule.
-
-A client supports a technique when a stable client release has it on by default. A disabled or under-development flag does not count. The change replaces the old form. OpenKit does not keep two remote tool surfaces, as NONNEG-001 already requires.
+The second rule is external. The MCP that OpenKit exposes to user agents changes to a new form as soon as Claude Code, Codex, and Grok all support that technique. Grok here is the Grok assistant, which reaches MCP servers through custom connectors. It is a separate product from Grok Build, which this rule does not consider. A client supports a technique when its stable release has it on by default. A disabled or under-development flag does not count. The change replaces the old form. OpenKit does not keep two remote tool surfaces, as NONNEG-001 already requires. [Remote MCP Interface](../specs/20261002-remote_mcp_interface.md) owns this rule.
 
 A released protocol revision that the official SDK negotiates beside the older one falls under the first rule on every face, including the remote endpoint, because no existing client loses anything. Retiring the older revision, or replacing the four meta-tools, falls under the second rule.
 
@@ -21,13 +19,15 @@ A draft that no official SDK release supports triggers neither rule. OpenKit may
 
 ## Reason
 
-The engineer stated this on 2026-11-01, translated from Chinese: "Once a new standard is released, or the standard is not released yet but the SDK supports it, we switch to the new standard as soon as possible. For the MCP OpenKit exposes, as soon as the mainstream Claude Code, Codex, and Grok clients support a technique in the new standard, we immediately switch our exposed MCP to the new form."
+The engineer stated this on 2026-11-01, translated from Chinese: "Once a new standard is released, or the standard is not released yet but the SDK supports it, we switch to the new standard as soon as possible. For the MCP OpenKit exposes, as soon as the mainstream Claude Code, Codex, and Grok bot support a technique in the new standard, we immediately switch our exposed MCP to the new form."
+
+The engineer then clarified, also translated: "Grok bot is a separate, independent product; we do not consider Grok Build. Internally, we look at the worker harnesses the current four adapters support."
 
 Earlier the same day, also translated: "Our support for the new MCP standards should be ahead, because they contain valuable parts we need."
 
-The dated release is a poor signal. SEP-3398 moved the next revision to March 2027, while capabilities such as Skills (SEP-2640) and Tasks (SEP-2663) are already Final and new capabilities now ship as extensions with their own lifecycle. The SDK and the three clients show what is usable today.
+The dated release is a poor signal. SEP-3398 moved the next revision to March 2027, while capabilities such as Skills (SEP-2640) and Tasks (SEP-2663) are already Final and new capabilities now ship as extensions with their own lifecycle. The SDK and the clients show what is usable today.
 
-The record reads the engineer's "Claude Code & Codex & Grok" as all three clients, and "Grok bot" as the MCP client in Grok Build.
+The record reads "Claude Code & Codex & Grok bot" as all three clients. Internally the adapters can switch one at a time because OpenKit owns their configuration and the Gateway negotiates both revisions.
 
 ## Rejected Alternatives
 
@@ -36,7 +36,7 @@ The record reads the engineer's "Claude Code & Codex & Grok" as all three client
 
 ## Revisit When
 
-One of the three clients stops being a mainstream client of the exposed MCP, or an SDK-supported technique is withdrawn from the standard after OpenKit adopts it.
+One of the three external clients stops being a mainstream client of the exposed MCP, the set of Worker adapters changes, or an SDK-supported technique is withdrawn from the standard after OpenKit adopts it.
 
 ## Affected Owners
 

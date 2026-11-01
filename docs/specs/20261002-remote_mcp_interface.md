@@ -77,7 +77,7 @@ NanoCore serves the endpoint on its App listener. The endpoint is not worker MCP
 
 The transport is MCP Streamable HTTP. A client is not required to use Skills over MCP, progressive tool loading, or any MCP feature the plain `openkit_search`, `openkit_describe`, `openkit_guide`, and `openkit_call` tools do not need. The tool surface is the Remote MCP Projection in [Operation Definition](20261002-operation_definition.md). This endpoint does not define a second tool. Where a client does not support a newer MCP mechanism, the endpoint offers that projection's plain tools, and it adopts the standard mechanism once protocol, SDKs, and clients support it well.
 
-The endpoint changes to a new MCP form as soon as the Claude Code, Codex, and Grok MCP clients all support that technique by default. A released protocol revision that the official SDK negotiates beside the older one needs no such wait, because no existing client loses anything ([decision](../decisions/20261101-mcp_standard_adoption_policy.md)).
+The endpoint changes to a new MCP form as soon as Claude Code, Codex, and the Grok assistant's custom MCP connectors all support that technique by default. A released protocol revision that the official SDK negotiates beside the older one needs no such wait, because no existing client loses anything ([decision](../decisions/20261101-mcp_standard_adoption_policy.md)).
 
 An MCP transport session may exist for the protocol dialogue. It holds no OpenKit authority. If the session is missing, stale, or lost, including when NanoCore restarts, product records stay as they are. The client opens a new transport session. The endpoint does not replay or repair a product effect from session state.
 
