@@ -77,6 +77,8 @@ Paths beginning with `C/` resolve under `apps/nanocore/src/`; `S/` under `docs/s
 
 The Workspace, Thread, Turn, Item, stream event, work observation and AgentSession rows below retain pre-control-store locations. Those locations and file-marker claims are stale, not current canonical authority. Current readers use scope-owned `control_workspaces`, `control_threads`, `control_turns`, `control_agent_sessions`, `control_product_entries` and `control_work_observations`, with immutable content where referenced. `C/storage/workspace-file-records.ts` and `C/storage/work-observations.ts` project those reads. A complete re-baseline of these rows and the SQL inventory remains pending with the held control-store owner review. This notice grants no alternate file reader or migration.
 
+Two further dispositions stay open. The storage layout and this register still disagree about where Light App definition history lives, and ownership of the App package and source-reference seam is unresolved (audit Q-190). This register settles neither and adds no history table, format or transfer contract for them; the storage release resolves both.
+
 | Family | Location | Owner | Class | Current version marker or identity | Closed core / open extension and reader | Fixture sources | Gap or limit |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Layout marker | server/layout.json | L/E | canonical | schemaVersion 1; layoutVersion 2 | E; C/storage/fs-layout.ts validates the owned layout and identity | C/storage/fs-layout.test.ts | No qualified prior-release layout fixture. |
