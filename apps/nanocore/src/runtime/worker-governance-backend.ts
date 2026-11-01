@@ -18,6 +18,7 @@ import {
   type WorkerCredentialFileBinding,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
+import { isRecord } from '@openkit/protocol';
 import { workerSessionInputPaths, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import {
@@ -1599,15 +1600,6 @@ export function openShellNetworkEndpointsFromPackagePolicy(
   });
 }
 
-/**
- * Checks whether an unknown value is a non-null record.
- *
- * @param value Candidate value.
- * @returns True when the value is an object record.
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 /** Validates intentional submission eligibility before the broader transcript/output mapper. @param environmentPackage Trusted AEP. @param artifactPath Canonical absolute file path. */
 export function validateWorkerArtifactPath(
   environmentPackage: AgentEnvironmentPackage,

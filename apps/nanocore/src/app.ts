@@ -31,7 +31,7 @@ import { projectAgentCatalogEntries } from './agents/catalog-projection.js';
 import type { AgentManifest } from './agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from './agents/readiness.js';
 import { type AgentSetupResolverDependencies, resolveAgentSetup } from './agents/setup-resolver.js';
-import { apiErrorPayload, asApiError } from './api-errors.js';
+import { asApiError, asOperationError } from './api-errors.js';
 import {
   type AppUpdateHostTransport,
   createSshAppUpdateHostTransport,
@@ -2000,10 +2000,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         signal: c.req.raw.signal,
       });
     } catch (error) {
-      const projected = projectOperationError(error);
-      if (!projected) throw error;
-      const { status, ...body } = projected;
-      return Response.json(apiErrorPayload(body), { status });
+      return asOperationError(error, projectOperationError(error));
     }
   });
 

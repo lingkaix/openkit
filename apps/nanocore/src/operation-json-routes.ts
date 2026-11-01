@@ -5,7 +5,7 @@ import {
   operationUsesBootstrapSecret,
 } from '@openkit/app-api-schemas';
 import type { Context, Hono } from 'hono';
-import { apiErrorPayload } from './api-errors.js';
+import { asOperationError } from './api-errors.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { submitConversationFiles } from './conversation-file-routes.js';
 import type { FsStore } from './lib/store.js';
@@ -92,10 +92,7 @@ export function registerOperationJsonRoutes(
         });
         return successStatus === 204 ? c.body(null, 204) : c.json(output, successStatus);
       } catch (error) {
-        const projected = projectOperationError(error);
-        if (!projected) throw error;
-        const { status, ...body } = projected;
-        return Response.json(apiErrorPayload(body), { status });
+        return asOperationError(error, projectOperationError(error));
       }
     });
   }

@@ -2,6 +2,7 @@ import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
+import type { projectOperationError } from './operation-error.js';
 import {
   AgentEnvironmentSnapshotPreparationError,
   AgentEnvironmentSnapshotReadError,
@@ -21,6 +22,16 @@ import { CanonicalPublicationError } from './storage/canonical-publication-error
  */
 export function asApiError(message: string, code = 'not_found', status = 404): Response {
   return Response.json(apiErrorPayload({ code, message }), { status });
+}
+
+/** Frames a classified operation failure for HTTP; unknown values keep their original error boundary. */
+export function asOperationError(
+  error: unknown,
+  projected: ReturnType<typeof projectOperationError>
+): Response {
+  if (!projected) throw error;
+  const { status, ...body } = projected;
+  return Response.json(apiErrorPayload(body), { status });
 }
 
 /**
