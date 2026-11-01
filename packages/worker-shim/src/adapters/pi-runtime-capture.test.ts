@@ -65,7 +65,7 @@ it('RET E REVIEW R2 keeps a read Pi file prefix and names its later disappearanc
       packageSnapshotId,
       captureCoverage: { scope: 'task', value: 'on' },
       nativeLogMaxBytes: 16 * 1024 * 1024,
-      authoredVersion: '1.0.2',
+      authoredVersion: '1.4.0',
       credentialValues: ['ret-e-synthetic-credential'],
       emit: async (record, body) => {
         received.push({
@@ -255,7 +255,7 @@ it.each([
       packageSnapshotId: 'e7-package',
       captureCoverage: { scope: 'task', value: 'on' },
       credentialValues: ['e7-known-secret'],
-      ...{ nativeLogMaxBytes: 1, authoredVersion: '1.0.2' },
+      ...{ nativeLogMaxBytes: 1, authoredVersion: '1.4.0' },
       emit: async (record, body) => {
         received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
       },

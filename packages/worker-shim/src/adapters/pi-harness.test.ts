@@ -500,7 +500,7 @@ describe('Pi Harness integration', () => {
             issue: 130,
             scope: 'two synthetic loopback Turns in one real Pi SDK host and Harness',
             version:
-              'pi-coding-agent 1.0.2 with workspace patch; worker protocol 2; canonical events 1',
+              'pi-coding-agent 1.4.0 with workspace patch; worker protocol 2; canonical events 1',
             retention: 'temporary fixture only; external log contains structural metadata',
             redaction: 'no frames, reasoning, handles, paths, credentials or request content',
             native: native.map(({ turnId, ...event }) => ({

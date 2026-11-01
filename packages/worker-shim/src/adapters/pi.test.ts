@@ -3585,7 +3585,7 @@ it(
       ...input.runtimeCapture,
       captureCoverage: { scope: 'task' as const, value: 'on' as const },
       nativeLogMaxBytes: 7,
-      authoredVersion: '1.0.2',
+      authoredVersion: '1.4.0',
       emit: async (record: RuntimeObservation, body?: Uint8Array) => {
         received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
       },
@@ -3676,7 +3676,7 @@ it(
       runtimeCapture: {
         ...input.runtimeCapture,
         captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '1.0.2' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '1.4.0' },
         emit: async (record, body) => {
           received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
         },

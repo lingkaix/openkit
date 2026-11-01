@@ -560,8 +560,11 @@ async function captureBoundaryResident(
         data: [{ id: 'model', providerID: OPENCODE_PROVIDER_ID, enabled: true }],
       }),
     },
+    experimental: {
+      mcp: { add: async () => undefined },
+      session: { wait: async () => undefined },
+    },
     mcp: {
-      add: async () => undefined,
       list: async () => ({ data: [] }),
       remove: async () => undefined,
     },
@@ -602,7 +605,6 @@ async function captureBoundaryResident(
       },
       interrupt: async () => ({ interrupted: true }),
       move: async () => undefined,
-      wait: async () => undefined,
       prompt: async () => {
         prompted = true;
         return { id: 'native-user' };

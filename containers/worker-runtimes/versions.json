@@ -6,33 +6,33 @@
   },
   "pi": {
     "package": "@earendil-works/pi-coding-agent",
-    "version": "1.0.2",
+    "version": "1.4.0",
     "host": "@openkit/pi-runtime-host",
-    "patchSha256": "e55eacea2faecd1b5812c21469aa28869d3b12974ec0eaf3299f35906d191d45",
+    "patchSha256": "d2b1f00b02b71eda03e1ee73e30192fcbfc0733caae72de9505176321788a224",
     "patchedFiles": {
-      "dist/extensions/mcp/index.js": "da36f914ed7bf3ad62bb69f20e9a82e123b19ab3fe874a3cf5d8a22f24f4c4ee",
+      "dist/extensions/mcp/index.js": "ae5d979ec53b763e862cc44eb33a1c76e10bc8c325cca1938baeb5ecc3709d22",
       "dist/extensions/mcp/index.d.ts": "6707eef166f180f99bd91cc4fb14dda787d9001183df6ce8eb5a3ee9086b251c"
     },
     "dependencies": {
-      "@earendil-works/pi-ai": "1.0.2",
-      "@earendil-works/pi-tui": "1.0.2",
-      "@earendil-works/pi-mcp": "1.0.2"
+      "@earendil-works/pi-ai": "1.4.0",
+      "@earendil-works/pi-tui": "1.4.0",
+      "@earendil-works/pi-mcp": "1.4.0"
     }
   },
   "opencode": {
     "package": "@opencode/cli",
-    "version": "2.0.22",
+    "version": "2.2.5",
     "client": {
       "package": "@opencode/client",
-      "version": "2.0.22"
+      "version": "2.2.5"
     }
   },
   "deepseek": {
     "package": "@deepseek-ai/dsh",
-    "version": "0.2.0-rc.2",
+    "version": "0.2.1-rc.5",
     "acpClient": {
       "package": "@agentclientprotocol/sdk",
-      "version": "1.7.0"
+      "version": "2.2.0"
     }
   }
 }

@@ -280,7 +280,7 @@ describe('OpenCode resident adapter', () => {
       runtimeCapture: {
         ...input.runtimeCapture,
         captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.0.22' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.2.5' },
         emit: async (record, body) => {
           received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
         },
@@ -351,7 +351,7 @@ describe('OpenCode resident adapter', () => {
       runtimeCapture: {
         ...input.runtimeCapture,
         captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.0.22' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.2.5' },
         emit: async (record, body) => {
           received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
         },
@@ -564,7 +564,7 @@ describe('OpenCode resident adapter', () => {
       runtimeCapture: {
         ...input.runtimeCapture,
         captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.0.22-authored' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.2.5-authored' },
         emit: async (record, body) => {
           received.push({
             record,
@@ -629,7 +629,7 @@ describe('OpenCode resident adapter', () => {
       expect(record.content).toMatchObject({ state: 'expected', boundary: 'native-content-v1' });
       expect(record.fact.native).toMatchObject({
         harness: 'opencode',
-        authoredVersion: '2.0.22-authored',
+        authoredVersion: '2.2.5-authored',
         measuredVersion: null,
       });
     }
@@ -673,7 +673,7 @@ describe('OpenCode resident adapter', () => {
       runtimeCapture: {
         ...input.runtimeCapture,
         captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.0.22' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.2.5' },
         emit: async (record, body) => {
           received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
         },
@@ -1548,7 +1548,7 @@ describe('OpenCode resident adapter', () => {
     f.client.session.move = async () => {
       calls.push('move');
     };
-    f.client.session.wait = async () => {
+    f.client.experimental.session.wait = async () => {
       calls.push('wait');
     };
     const evict = vi.spyOn(f.client.debug.location, 'evict').mockImplementation(async () => {
@@ -2511,12 +2511,6 @@ describe('OpenCode resident adapter', () => {
     }
   });
 
-  it('records supporting literal-string evidence; image smoke still owns /etc/opencode absence', () => {
-    expect(readFileSync(resolveOpenCodeBinary()).includes(Buffer.from('/etc/opencode'))).toBe(
-      false
-    );
-  });
-
   it('fails open closed when the client or the binary cannot be loaded', async () => {
     let loaded = false;
     const missingBinary = createOpenCodeAdapter({
@@ -2538,7 +2532,7 @@ describe('OpenCode resident adapter', () => {
       },
     });
     await expect(missingClient.openSession(input)).rejects.toThrow(
-      /@opencode\/client@2\.0\.22[\s\S]*worker-runtimes/
+      /@opencode\/client@2\.2\.5[\s\S]*worker-runtimes/
     );
   });
 
@@ -4844,11 +4838,11 @@ function absentRowModule() {
     OpenCode: {
       make() {
         return {
-          mcp: {
-            add: async () => undefined,
-            list: async () => ({ data: [] }),
-            remove: async () => undefined,
+          experimental: {
+            mcp: { add: async () => undefined, connect: async () => undefined },
+            session: { wait: async () => undefined },
           },
+          mcp: { list: async () => ({ data: [] }) },
           message: { list: async () => ({ cursor: {}, data: [] }) },
           permission: { list: async () => [] },
           session: {
@@ -4859,7 +4853,6 @@ function absentRowModule() {
             },
             interrupt: async () => undefined,
             move: async () => undefined,
-            wait: async () => undefined,
             prompt: async () => ({ id: 'user-1' }),
           },
         };
@@ -4886,11 +4879,11 @@ function failingModule(method: 'create' | 'prompt') {
               data: [{ id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID, enabled: true }],
             }),
           },
-          mcp: {
-            add: async () => undefined,
-            list: async () => ({ data: [] }),
-            remove: async () => undefined,
+          experimental: {
+            mcp: { add: async () => undefined, connect: async () => undefined },
+            session: { wait: async () => undefined },
           },
+          mcp: { list: async () => ({ data: [] }) },
           message: {
             list: async () => ({ cursor: {}, data: [] }),
           },
@@ -4912,7 +4905,6 @@ function failingModule(method: 'create' | 'prompt') {
             },
             interrupt: async () => undefined,
             move: async () => undefined,
-            wait: async () => undefined,
             prompt: async () => {
               if (method === 'prompt') throw new Error('prompt acceptance is unknown');
               return { id: 'user-1' };
@@ -5873,6 +5865,88 @@ describe('W4 round-eight refused setup cleanup', () => {
   }
 });
 
+/** Native producer metadata carried on the exact Request received by the loopback. */
+const NATIVE_REQUEST_HEADER = 'x-openkit-test-native-request';
+
+/** Observes native selection without changing the request body, effort, or title policy. */
+function installNativeRequestProbe(layout: { root: string; work: string }): void {
+  const plugin = join(layout.root, 'native-request-observer');
+  mkdirSync(plugin);
+  writeFileSync(join(plugin, 'package.json'), '{"type":"module"}');
+  writeFileSync(
+    join(plugin, 'index.js'),
+    `export default {
+      id: 'openkit-test-native-request',
+      async setup(ctx) {
+        await ctx.session.hook('http.request', async (evt) => {
+          evt.request.headers.set(${JSON.stringify(NATIVE_REQUEST_HEADER)}, JSON.stringify({
+            kind: evt.kind,
+            variant: evt.model.variant,
+          }));
+        });
+      },
+    };`
+  );
+  writeFileSync(join(layout.work, 'opencode.json'), JSON.stringify({ plugins: [plugin] }));
+}
+
+/** Missing or unknown native kinds cannot exempt an actual request from the primary oracle. */
+function nativeRequestMetadata(headers: CapturedInference['headers']): {
+  kind: 'primary' | 'title';
+  variant?: string;
+} {
+  const header = headers[NATIVE_REQUEST_HEADER];
+  if (typeof header !== 'string') throw new Error('Native request kind is missing.');
+  const metadata = JSON.parse(header) as { kind?: unknown; variant?: unknown };
+  if (metadata?.kind !== 'primary' && metadata?.kind !== 'title')
+    throw new Error('Native request kind is missing or unknown.');
+  if (metadata.variant !== undefined && typeof metadata.variant !== 'string')
+    throw new Error('Native selected variant is unknown.');
+  return metadata as { kind: 'primary' | 'title'; variant?: string };
+}
+
+/** Applies AEP per-request precedence only to the native producer's explicit title selection. */
+function assertNativeEffortRequests(
+  requests: readonly CapturedInference[],
+  expected: ReasoningEffort
+): {
+  primary: CapturedInference[];
+  titles: number;
+} {
+  const primary: CapturedInference[] = [];
+  let titles = 0;
+  for (const request of requests) {
+    const metadata = nativeRequestMetadata(request.headers);
+    const effort = metadata.kind === 'primary' ? expected : 'none';
+    expect(metadata.variant).toBe(effort);
+    expect(request.body.reasoning_effort).toBe(effort);
+    if (metadata.kind === 'primary') primary.push(request);
+    else titles += 1;
+  }
+  expect(primary.length).toBeGreaterThan(0);
+  return { primary, titles };
+}
+
+it.each([
+  { fault: 'wrong primary effort', kind: 'primary', variant: 'high', effort: 'low' },
+  { fault: 'wrong title effort', kind: 'title', variant: 'none', effort: 'high' },
+  { fault: 'missing kind', kind: undefined, variant: 'none', effort: 'none' },
+  { fault: 'unknown kind', kind: 'unknown', variant: 'none', effort: 'none' },
+])('s4: rejects native effort observation with $fault', ({ kind, variant, effort }) => {
+  const request: CapturedInference = {
+    body: { messages: [], model: 'effort-model', reasoning_effort: effort },
+    headers: { [NATIVE_REQUEST_HEADER]: JSON.stringify({ kind, variant }) },
+    path: '/inference/v1/chat/completions',
+  };
+  const primary: CapturedInference = {
+    ...request,
+    body: { ...request.body, reasoning_effort: 'high' },
+    headers: { [NATIVE_REQUEST_HEADER]: JSON.stringify({ kind: 'primary', variant: 'high' }) },
+  };
+  // A valid primary prevents an unrelated missing-primary failure from satisfying a title control.
+  expect(() => assertNativeEffortRequests([primary, request], 'high')).toThrow();
+});
+
 it.each([
   { levels: [] },
   { levels: ['low'] },
@@ -5882,6 +5956,8 @@ it.each([
   const inference = await startSyntheticInference(() => ({ text: 'effort-answer' }));
   servers.push(inference);
   const layout = makeRoots();
+  installNativeRequestProbe(layout);
+  let nativeTitles = 0;
   const creds = loopback('effort', inference.url);
   const session = await opencodeAdapter.openSession(openInput(layout, creds));
   sessions.push(session);
@@ -5919,6 +5995,7 @@ it.each([
     // Live Gateway advertisement never resets or restricts the retained native selection.
     if (index === 2) reasoning.reasoningEffortLevels = ['minimal'];
     const before = bodies().length;
+    const requestBefore = inference.requests.length;
     const admitted = input(`effort-${index}`);
     const result = await (
       await session.startTurn({
@@ -5930,11 +6007,10 @@ it.each([
     const expected = effort ?? 'high';
     expect(bodies().slice(before).length).toBeGreaterThan(0);
     expect(bodies().slice(before).map(level)).toEqual(expect.arrayContaining([expected]));
-    expect(
-      bodies()
-        .slice(before)
-        .every((body) => level(body) === expected)
-    ).toBe(true);
+    // COORD ruling 2026-10-31: AEP per-request precedence permits the native title variant.
+    const native = assertNativeEffortRequests(inference.requests.slice(requestBefore), expected);
+    nativeTitles += native.titles;
+    expect(native.primary.every((request) => level(request.body) === expected)).toBe(true);
     expect(result.diagnostics?.reasoningEffort).toBe(expected);
 
     if (handle) expect(await session.nativeHandle()).toEqual(handle);
@@ -5942,6 +6018,7 @@ it.each([
     expect(handle.state).toBe('ready');
   }
   const before = bodies().length;
+  const requestBefore = inference.requests.length;
   const result = await (
     await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
   ).settled;
@@ -5952,6 +6029,9 @@ it.each([
       .slice(before)
       .every((body) => level(body) === undefined)
   ).toBe(true);
+  for (const request of inference.requests.slice(requestBefore))
+    nativeRequestMetadata(request.headers);
+  expect(nativeTitles).toBeGreaterThan(0);
   expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
   expect(result.diagnostics?.reasoningEffort).toBe('unknown');
   expect(await session.nativeHandle()).toEqual(handle);

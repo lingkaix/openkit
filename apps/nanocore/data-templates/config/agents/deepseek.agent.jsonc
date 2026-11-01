@@ -5,12 +5,12 @@
   "displayName": "DeepSeek Agent",
   "readiness": {
     "status": "disabled",
-    "message": "DeepSeek 0.2.0-rc.2 remains disabled until a live bounded inference Turn proves its Gateway route."
+    "message": "DeepSeek remains disabled and excluded from v0.1.0: native completed and aborted outcomes must be distinguishable before qualification."
   },
   "runtime": {
     "kind": "deepseek",
     "adapter": "deepseek",
-    "version": "0.2.0-rc.2",
+    "version": "0.2.1-rc.5",
     "image": {
       "kind": "reference",
       "ref": "openkit/worker-runtimes:dev",
