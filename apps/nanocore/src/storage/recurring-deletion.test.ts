@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -76,7 +77,14 @@ it('seals the complete recurring graph before deletion removes its Core rows and
       summary: 'Non-portable Core action remains under its existing disposition.',
     });
     const requestId = randomUUID();
-    const app = createApp({ coreDb, dataRoot, store, automationStore });
+    const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      automationStore,
+      releaseIdentity: { releaseTag: null, sourceCommit },
+    });
     const response = await app.request(
       ...operationRequest(
         'workspace.delete',
@@ -113,8 +121,8 @@ it('seals the complete recurring graph before deletion removes its Core rows and
       originalOwnerUserId: request.originalOwnerUserId,
       sourceRegistryRevision: manifest.sourceRegistryRevision,
       closureId: request.closureId!,
-      recoveryExportId: request.recoveryExportId!,
-      recoveryExportManifestDigest: request.recoveryExportManifestDigest!,
+      recoveryBackupId: request.recoveryBackupId!,
+      recoveryBackupManifestDigest: request.recoveryBackupManifestDigest!,
     });
     expect.soft(verified.requiredFeatures).toContain('workspace.recurring-history.v1');
     const history = JSON.parse(
