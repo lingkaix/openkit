@@ -6,6 +6,7 @@ import * as policyKernel from '@openkit/policy-kernel';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import * as productAccess from '../policy/workspace-access.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createApp, createTestSessionActor } from '../test-support/app.js';
@@ -125,7 +126,11 @@ function removeOperationGrants(operation: string, serverOnly = false) {
 describe('QP-2c remaining inline authority', () => {
   it('reports unavailable authority when diagnostics has no Core dependency', async () => {
     const f = await fixture();
-    const app = createApp({ dataRoot: f.root, store: f.store });
+    const app = createApp({
+      dataRoot: f.root,
+      store: f.store,
+      turnExecutor: new SimulatedTurnExecutor({ coreDb: f.db }),
+    });
     // Core Policy Decision: missing mandatory facts are an error, not an authorization denial.
     const unavailable = await app.request('/api/diagnostics');
     expect(unavailable.status).toBe(503);
