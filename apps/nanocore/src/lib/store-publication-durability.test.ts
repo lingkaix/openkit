@@ -1,14 +1,30 @@
 // openkit-test-platform: posix
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { feedbackFilePath } from '../runtime/feedback.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { createTestStore } from '../test-support/store.js';
+import { createThread as createThreadCommand } from '../thread-routes.js';
 import { FsStore } from './store.js';
+
+const allocation = vi.hoisted(() => ({ threadId: undefined as string | undefined }));
+// Inject one Thread allocator collision; all command facts and other IDs stay owner-produced.
+vi.mock('@openkit/protocol', async (load) => {
+  const actual = await load<typeof import('@openkit/protocol')>();
+  return {
+    ...actual,
+    allocateEntityId: ((...args: Parameters<typeof actual.allocateEntityId>) =>
+      args[0] === 'th' && allocation.threadId
+        ? allocation.threadId
+        : actual.allocateEntityId(...args)) as typeof actual.allocateEntityId,
+  };
+});
 
 const transport = vi.hoisted(() => ({
   hold: undefined as { entered: () => void; deliver?: () => void } | undefined,
@@ -191,6 +207,216 @@ describe('Store publishes only persisted record candidates', () => {
     expect.soft(f.store.getAgentSession(session.id)).toEqual(session);
     expect(record(f, 'control_agent_sessions', session.id)).toBe(before);
     expect(new FsStore({ dataRoot: f.root }).getAgentSession(session.id)).toEqual(session);
+  });
+
+  it.each([
+    'create',
+    'update',
+  ] as const)('returns its own acknowledged Thread %s while later heads remain current reads', async (operation) => {
+    const f = await fixture();
+    const other = new FsStore({ dataRoot: f.root });
+    const threadId = operation === 'create' ? allocateEntityId('th') : f.thread.id;
+    const gate = holdProductReply();
+    let firstSettled = false;
+    const mutation =
+      operation === 'create'
+        ? f.store.createThread(f.workspace.id, 'First acknowledged candidate', threadId)
+        : f.store.updateThread(f.workspace.id, threadId, { name: 'First acknowledged candidate' });
+    const first = mutation.then(
+      (value) => {
+        firstSettled = true;
+        return { value };
+      },
+      (error: unknown) => {
+        firstSettled = true;
+        return { error };
+      }
+    );
+    pending.push(first);
+    try {
+      await gate.reached;
+      const acknowledged = other.getThread(f.workspace.id, threadId);
+      expect(acknowledged).toMatchObject({
+        id: threadId,
+        owner: { kind: 'workspace', workspaceId: f.workspace.id },
+        name: 'First acknowledged candidate',
+      });
+      const later = other.updateThread(f.workspace.id, threadId, { name: 'Later committed head' });
+      pending.push(later);
+      const current = await later;
+      expect(current.name).toBe('Later committed head');
+      expect(firstSettled).toBe(false);
+      gate.release();
+      expect.soft(await first).toEqual({ value: acknowledged });
+      expect(f.store.getThread(f.workspace.id, threadId)).toEqual(current);
+      await shutdownControlStoreWorkerClient();
+      expect(new FsStore({ dataRoot: f.root }).getThread(f.workspace.id, threadId)).toEqual(
+        current
+      );
+    } finally {
+      gate.release();
+    }
+  });
+
+  it('reads native private-Thread selection and original receipt replay from their current acknowledged owner', async () => {
+    const f = await fixture();
+    const dependencies = { store: f.store, inflightCommands: new WeakMap() };
+    const create = vi.spyOn(f.store, 'createThread');
+    try {
+      const original = await createThreadCommand(
+        {
+          workspaceId: f.workspace.id,
+          requestId: randomUUID(),
+          name: 'Original Timeline',
+          visibility: 'private',
+        },
+        dependencies,
+        actor.id
+      );
+      const current = await f.store.updateThread(f.workspace.id, original.id, {
+        name: 'Current Timeline',
+      });
+      const selected = await createThreadCommand(
+        {
+          workspaceId: f.workspace.id,
+          requestId: randomUUID(),
+          name: 'Unpublished fresh candidate',
+          visibility: 'private',
+        },
+        dependencies,
+        actor.id
+      );
+      const admittedCall = create.mock.calls.at(-1)!;
+      expect(admittedCall[2]).not.toBe(original.id);
+      expect(admittedCall[5]).toBeDefined();
+      expect(selected).toEqual(current);
+      expect(() => f.store.getThread(f.workspace.id, admittedCall[2]!)).toThrow(/not found/);
+      const later = await f.store.updateThread(f.workspace.id, original.id, {
+        name: 'Head after receipt',
+      });
+      // Replay the exact real command-produced admission; its unused candidate was never published.
+      // No receipt, Audit or durable row is fabricated by this fixture.
+      expect(await f.store.createThread(...admittedCall)).toEqual(later);
+      expect(
+        f.store
+          .listThreads(f.workspace.id)
+          .filter(
+            (thread) => thread.visibility === 'private' && thread.privateOwnerUserId === actor.id
+          )
+      ).toEqual([later]);
+    } finally {
+      create.mockRestore();
+    }
+  });
+
+  it('returns retained history when fresh private admissions race with the same candidate ID', async () => {
+    const f = await fixture();
+    const dependencies = { store: f.store, inflightCommands: new WeakMap() };
+    const threadId = allocateEntityId('th');
+    const requestIds = [randomUUID(), randomUUID()];
+    const originalCreate = f.store.createThread.bind(f.store);
+    let release!: () => void;
+    const bothEntered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let arrivals = 0;
+    const create = vi.spyOn(f.store, 'createThread').mockImplementation(async (...args) => {
+      if (++arrivals === 2) release();
+      // Release both actual Store calls before either can submit its native transition.
+      await bothEntered;
+      return originalCreate(...args);
+    });
+    allocation.threadId = threadId;
+    try {
+      const commands = ['First admitted Timeline', 'Unwritten second candidate'].map(
+        (name, index) =>
+          createThreadCommand(
+            {
+              workspaceId: f.workspace.id,
+              requestId: requestIds[index]!,
+              name,
+              visibility: 'private',
+            },
+            dependencies,
+            actor.id
+          )
+      );
+      pending.push(...commands);
+      const [first, second] = await Promise.all(commands);
+      expect(create.mock.calls.map((call) => call[2])).toEqual([threadId, threadId]);
+      expect(create.mock.calls.map((call) => call[5]?.receipt.requestId)).toEqual(requestIds);
+      const retained = f.store.getThread(f.workspace.id, threadId);
+      expect(retained).toMatchObject({
+        id: threadId,
+        name: 'First admitted Timeline',
+        visibility: 'private',
+        privateOwnerUserId: actor.id,
+      });
+      expect(first).toEqual(retained);
+      expect.soft(second).toEqual(retained);
+      expect(
+        f.store
+          .listThreads(f.workspace.id)
+          .filter(
+            (thread) => thread.visibility === 'private' && thread.privateOwnerUserId === actor.id
+          )
+      ).toEqual([retained]);
+      await shutdownControlStoreWorkerClient();
+      expect(new FsStore({ dataRoot: f.root }).getThread(f.workspace.id, threadId)).toEqual(
+        retained
+      );
+    } finally {
+      allocation.threadId = undefined;
+      release();
+      create.mockRestore();
+    }
+  });
+
+  it.each([
+    'quarantine',
+    'missing-database',
+  ] as const)('preserves the current Thread refusal after FULL COMMIT and before reply delivery: %s', async (fault) => {
+    const f = await fixture();
+    const other = new FsStore({ dataRoot: f.root });
+    const gate = holdProductReply();
+    const result = f.store
+      .updateThread(f.workspace.id, f.thread.id, { name: 'Acknowledged before refusal' })
+      .then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error })
+      );
+    pending.push(result);
+    const databasePath = join(f.root, 'workspaces', f.workspace.id, 'db', 'workspace.sqlite');
+    const heldPath = `${databasePath}.held`;
+    try {
+      await gate.reached;
+      expect(other.getThread(f.workspace.id, f.thread.id).name).toBe('Acknowledged before refusal');
+      if (fault === 'quarantine')
+        refuseScope(f.root, { scope: 'workspace', id: f.workspace.id, check: 'recovery' });
+      else renameSync(databasePath, heldPath);
+      let expected: unknown;
+      try {
+        other.getThread(f.workspace.id, f.thread.id);
+      } catch (error) {
+        expected = error;
+      }
+      expect(expected).toBeInstanceOf(Error);
+      if (!(expected instanceof Error)) throw new Error('The selected Thread must be unavailable.');
+      expect(expected).toMatchObject({
+        code: fault === 'quarantine' ? 'recovery_required' : 'ENOENT',
+      });
+      gate.release();
+      expect(await result).toEqual({
+        error: expect.objectContaining({
+          name: expected.name,
+          message: expected.message,
+          ...('code' in expected ? { code: expected.code } : {}),
+        }),
+      });
+    } finally {
+      gate.release();
+      if (existsSync(heldPath)) renameSync(heldPath, databasePath);
+    }
   });
 
   it('returns its own AgentSession candidate when a later revision commits before its reply arrives', async () => {

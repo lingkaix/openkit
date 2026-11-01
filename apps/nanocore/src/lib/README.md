@@ -16,6 +16,8 @@ C2-B2 product writes use the native database worker and return Promises. Callers
 
 AgentSession mutations return their own parsed revision after its native acknowledgement and fresh selected-Workspace admission, physical identity and publication checks. They do not substitute a later Session head. Current execution and authorization decisions keep their independent fresh reads; the acknowledged result is not a current-authority grant.
 
+Ordinary Thread create and update return their own parsed record after native acknowledgement and current physical, owner and publication checks. Command replay and private conversation selection retain the current selected history, including when the proposed ID matches it. Public Thread reads keep their native validation; an acknowledged result grants no current authority.
+
 Workspace Agent health refresh reads the current catalog projection and returns a fresh observation time without replacing stored Agent health.
 
 Turn stream state retains the live process-local listeners and ordered event projection. Runtime scheduling and timeout owners retain their own timer lifetimes.
