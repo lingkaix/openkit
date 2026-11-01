@@ -866,28 +866,17 @@ function submitKnowledgeProposalDecision(
 ): Promise<Response> {
   const proposal = store.getKnowledgeProposal(proposalId);
   if (!proposal) throw new Error('Proposal fixture is unavailable.');
-  const proposalBytes = readFileSync(
-    join(
-      store.getDataRoot()!,
-      'workspaces',
-      proposal.workspaceId,
-      'knowledge',
-      'proposals',
-      `${proposalId}.md`
-    ),
-    'utf8'
-  );
   return app.request(
     ...knowledgeOperationRequest(
       'knowledge.proposal.decide',
-      { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', proposalId: proposalId },
+      { workspaceId: proposal.workspaceId, proposalId },
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           requestId,
           decision,
-          proposalDigest: artifactDigest(proposalBytes),
+          proposalDigest: store.knowledgeProposalDigest(proposal.workspaceId, proposalId),
           baseRevision: proposal.baseRevision,
           candidateRevision: proposal.candidateRevision,
         }),
@@ -1765,9 +1754,12 @@ describe('nanocore server', () => {
   });
 
   it('delegates an unclassified workspace listing failure to the safe HTTP error handler', async () => {
-    const broken = new BrokenWorkspaceListStore();
+    const coreDb = createCoreDb(false);
+    const broken = new BrokenWorkspaceListStore({ dataRoot: coreDb.dataRoot });
     const canonicalApp = await createApp(
       {
+        coreDb,
+        dataRoot: coreDb.dataRoot,
         store: broken,
         turnExecutor: new FakeTurnExecutor(),
       },
@@ -3926,7 +3918,8 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       workspaceRoots: [],
     });
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-config-stale-session-'));
+    const dataRoot = store.getDataRoot();
+    if (!dataRoot) throw new Error('Demo store root is unavailable.');
     const runtimeConfigManager = createRuntimeConfigManager({
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot, version: 2 }),
     });
