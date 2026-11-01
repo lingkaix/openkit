@@ -25,6 +25,8 @@ import {
 } from '../artifact-reviews.js';
 import { ADMIN_RECOVERY_REQUIRED, AdminRecoveryError } from '../auth/admin-recovery-codecs.js';
 import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
+import { BETTER_AUTH_REFUSALS, BetterAuthNativeError } from '../auth/better-auth-codecs.js';
+import { applyControlBetterAuth } from '../auth/better-auth-native.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import {
   applyControlGenerativePresentation,
@@ -191,6 +193,7 @@ type WriteCommand = Extract<
       | 'project-cleanup'
       | 'thread-read-membership'
       | 'admin-recovery'
+      | 'better-auth'
       | 'worker-control-evidence'
       | 'generative-presentation'
       | 'evaluation-candidate'
@@ -344,6 +347,10 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       ...('details' in error && error.details ? { details: error.details } : {}),
     });
     return projected.success ? projected.data : undefined;
+  }
+  if (operation === 'better-auth' && error instanceof BetterAuthNativeError) {
+    const refusal = BETTER_AUTH_REFUSALS[error.code];
+    return { operation, code: error.code, message: refusal.message, status: refusal.status };
   }
   let domain: ControlWorkerDomainRefusal | undefined;
   if (
@@ -1576,6 +1583,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'thread-read-membership',
               itemIds: stored,
             };
+          } else if (request.operation === 'better-auth') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlBetterAuth(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'better-auth',
+              result,
+            };
           } else if (request.operation === 'admin-recovery') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const auditEventId = applyControlAdminRecovery(owner.scopeDb, request.input);
@@ -2124,6 +2141,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'project-cleanup' ||
       value.operation === 'thread-read-membership' ||
       value.operation === 'admin-recovery' ||
+      value.operation === 'better-auth' ||
       value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||
       value.operation === 'provenance' ||

@@ -20,6 +20,13 @@ import {
   ControlAdminRecoveryInputSchema,
 } from '../auth/admin-recovery-codecs.js';
 import {
+  type ControlBetterAuthInput,
+  ControlBetterAuthInputSchema,
+  type ControlBetterAuthResult,
+  ControlBetterAuthResultSchema,
+  isBetterAuthRefusal,
+} from '../auth/better-auth-codecs.js';
+import {
   type ControlGenerativePresentationWire,
   ControlGenerativePresentationWireSchema,
 } from '../generative-ui/native-publication-codecs.js';
@@ -130,7 +137,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 30;
+export const CONTROL_WORKER_VERSION = 31;
 
 /** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
 export const ControlProvenanceInputSchema = z
@@ -289,6 +296,7 @@ export type ControlWorkerCommand =
           readonly input: ControlWorkerRejectedEvidence;
         }
       | { readonly operation: 'admin-recovery'; readonly input: ControlAdminRecoveryInput }
+      | { readonly operation: 'better-auth'; readonly input: ControlBetterAuthInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
@@ -414,6 +422,7 @@ interface OrdinaryControlWorkerDomainRefusal {
   readonly operation:
     | 'provenance'
     | 'admin-recovery'
+    | 'better-auth'
     | 'thread-read-membership'
     | 'generative-presentation'
     | 'evaluation-candidate'
@@ -467,6 +476,11 @@ export type ControlWorkerReply = {
       readonly result: ControlRecoverySafetyResult;
     }
   | { readonly status: 'ok'; readonly operation: 'admin-recovery'; readonly auditEventId: string }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'better-auth';
+      readonly result: ControlBetterAuthResult;
+    }
   | { readonly status: 'ok'; readonly operation: 'recovery-history'; readonly done: boolean }
   | { readonly status: 'ok'; readonly operation: 'recovery-seal'; readonly digest: string | null }
   | {
@@ -640,6 +654,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'item' || value.operation === 'event') &&
         value.code === 'conflict' &&
         value.status === 409) ||
+      (value.operation === 'better-auth' &&
+        isBetterAuthRefusal(value.code, value.message, value.status)) ||
       (value.operation === 'admin-recovery' &&
         value.status === 409 &&
         value.code === 'recovery_required' &&
@@ -726,6 +742,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
     );
+  if (reply.operation === 'better-auth')
+    return ControlBetterAuthResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'admin-recovery')
     return typeof reply.auditEventId === 'string' && reply.auditEventId.length > 0;
   if (reply.operation === 'thread-read-membership')
@@ -1136,6 +1154,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'better-auth')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlBetterAuthInputSchema.safeParse(value.input).success
+    );
   if (value.operation === 'admin-recovery')
     return (
       exactFields(value, [...scoped, 'input']) &&

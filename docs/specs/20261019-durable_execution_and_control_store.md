@@ -371,6 +371,8 @@ Server configuration/physical changes remain separate keyed effects.
 
 Expose authorized diagnosis; never initialize empty replacement authority or trust projections.
 
+The stopped-server administrator recovery procedure MAY open an existing Core without initialization or migration only when creation is disabled, the product owner is server-scoped, an admitted data root is present, and the existing canonical-path check passes. Schema safety validation MUST still run. Omitted initialization in every other product-open shape MUST refuse; ordinary running-server Core opens retain Core initialization. The procedure retains the existing Core owner and FIFO and adds no open mode, owner or wire field. The [administrator recovery contract](20260704-remote_auth_credential_bootstrap.md#stopped-server-administrator-recovery) owns its exclusive-lock and credential-publication requirements.
+
 Server/shared-authority failure refuses boot; user-private failure blocks dependent operations; rebuildable-index failure is not canonical loss.
 
 Containment/writer uncertainty fences its actual affected scope; healthy Workspaces remain usable.

@@ -6,6 +6,7 @@ import { allocateEntityId } from '@openkit/protocol';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -57,6 +58,7 @@ describe('createBetterAuth', () => {
       }
     } finally {
       vi.unstubAllEnvs();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -139,6 +141,7 @@ describe('createBetterAuth', () => {
       }
     } finally {
       vi.unstubAllEnvs();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -238,6 +241,7 @@ describe('createBetterAuth', () => {
       expect(userCount()).toBe(permitted ? 3 : 1);
     } finally {
       vi.useRealTimers();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -341,6 +345,7 @@ describe('createBetterAuth', () => {
         coreDb.sqlite.prepare('SELECT id FROM users WHERE email = ?').get('disabled@example.com')
       ).toBeUndefined();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -412,6 +417,7 @@ describe('createBetterAuth', () => {
         kind: 'human',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -484,6 +490,7 @@ describe('createBetterAuth', () => {
           .get(user.id)
       ).toEqual({ count: 0 });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
