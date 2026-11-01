@@ -45,7 +45,7 @@ type ImportResult = { catalog: ResourceCatalogDocument; version: SkillVersionRec
 export function createSkillManagementCommands(
   dependencies: OperationInvocationDependencies,
   hooks: CatalogOperationHooks,
-  afterMutation: (workspaceId: string) => void
+  afterMutation: (workspaceId: string) => void | Promise<void>
 ) {
   const dataRoot = dependencies.dataRoot ?? dependencies.store?.getDataRoot();
   const root = () => {
@@ -160,7 +160,7 @@ export function createSkillManagementCommands(
           executing = true;
           const result = await options.execute(workspaceDb, catalog);
           published = true;
-          afterMutation(input.workspaceId);
+          await afterMutation(input.workspaceId);
           return result;
         },
       });

@@ -225,7 +225,7 @@ async function fixture() {
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
-  const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
+  const reload = vi.fn(async () => await manager.reload({ mode: 'safe', dryRun: false }));
   const domains = createGoalDomainPolicyService({
     coreDb,
     store,

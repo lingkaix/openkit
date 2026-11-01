@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
@@ -9,7 +10,7 @@ import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environm
 import {
   activateWorkerStorageAttachment,
   admitWorkerStorageContributor,
-  createWorkerStorageBinding,
+  createAndReserveWorkerStorageAttachment,
   getWorkerStorageBinding,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
@@ -17,7 +18,10 @@ import {
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestSessionActor } from '../test-support/app.js';
@@ -91,38 +95,31 @@ async function createFixture(
        ) VALUES ('target_1', 'identity_1', 'deployment_1', 1, 1, 1, 1, ?, 1)`
     )
     .run(NOW);
-  const created = createWorkerStorageBinding(coreDb, {
+  const reserved = await createAndReserveWorkerStorageAttachment(coreDb, {
+    agentSessionId: testEntityId('as', 'session_1'),
+    authorizeContributor: () => true,
     deploymentId: 'deployment_1',
     layout: LAYOUT,
     now: NOW,
-    runtimeTargetId: 'target_1',
-    workspaceId: workspace.id,
-  });
-  const reserved = reserveWorkerStorageAttachment(coreDb, {
-    agentSessionId: testEntityId('as', 'session_1'),
-    authorizeContributor: () => true,
-    expectedRevision: created.revision,
-    layout: LAYOUT,
     purpose: 'work',
     responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
     runtimeTargetId: 'target_1',
-    storageRef: created.storageRef,
     threadId: thread.id,
     workspaceId: workspace.id,
   });
-  const attached = activateWorkerStorageAttachment(coreDb, {
+  const attached = await activateWorkerStorageAttachment(coreDb, {
     attachmentGeneration: reserved.attachmentGeneration,
     expectedRevision: reserved.revision,
     sandboxBindingRef: 'sandbox_binding_1',
-    storageRef: created.storageRef,
+    storageRef: reserved.storageRef,
     targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
   });
-  const binding = releaseWorkerStorageAttachment(coreDb, {
+  const binding = await releaseWorkerStorageAttachment(coreDb, {
     attachmentGeneration: attached.attachmentGeneration,
     cleanupProved: true,
     expectedRevision: attached.revision,
     sandboxBindingRef: 'sandbox_binding_1',
-    storageRef: created.storageRef,
+    storageRef: reserved.storageRef,
   });
   const runtimeEffects: WorkerEnvironmentRuntimeEffects = {
     inspectImage: vi.fn(),
@@ -178,9 +175,9 @@ function addOtherMember(fixture: Fixture): void {
 }
 
 /** Prepares a live shared attachment so another authorized caller can contribute during inspection. */
-async function prepareConcurrentContributor(fixture: Fixture): Promise<() => void> {
+async function prepareConcurrentContributor(fixture: Fixture): Promise<() => Promise<void>> {
   addOtherMember(fixture);
-  const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
+  const reserved = await reserveWorkerStorageAttachment(fixture.coreDb, {
     agentSessionId: testEntityId('as', 'session_status'),
     authorizeContributor: () => true,
     expectedRevision: fixture.binding.revision,
@@ -192,7 +189,7 @@ async function prepareConcurrentContributor(fixture: Fixture): Promise<() => voi
     threadId: fixture.threadId,
     workspaceId: fixture.workspaceId,
   });
-  fixture.binding = activateWorkerStorageAttachment(fixture.coreDb, {
+  fixture.binding = await activateWorkerStorageAttachment(fixture.coreDb, {
     attachmentGeneration: reserved.attachmentGeneration,
     expectedRevision: reserved.revision,
     sandboxBindingRef: 'sandbox_status',
@@ -200,9 +197,9 @@ async function prepareConcurrentContributor(fixture: Fixture): Promise<() => voi
     targets: reserved.targets,
   });
   const thread = await fixture.store.createThread(fixture.workspaceId, 'Other shared work');
-  return () => {
+  return async () => {
     // This models another authorized caller's admission, not the status caller's authority.
-    admitWorkerStorageContributor(fixture.coreDb, {
+    await admitWorkerStorageContributor(fixture.coreDb, {
       authorizeContributor: () => true,
       expectedRevision: fixture.binding.revision,
       layout: LAYOUT,
@@ -581,7 +578,7 @@ describe('Worker environment operations', () => {
     'dispatch',
     'publication',
   ] as const)('refuses status %s when concurrent admission adds a contributor outside the caller audience', async (boundary) => {
-    let addContributor: () => void;
+    let addContributor: () => Promise<void>;
     let authorizedAtDispatch: boolean | undefined;
     let changesAfterAdmission: unknown;
     const hostInspection = vi.fn();
@@ -589,7 +586,7 @@ describe('Worker environment operations', () => {
     const fixture = await createFixture({
       inspectStorage: async ({ authorize, binding }) => {
         expect(authorize()).toBe(true);
-        if (boundary === 'dispatch') addContributor();
+        if (boundary === 'dispatch') await addContributor();
         authorizedAtDispatch = authorize();
         if (!authorizedAtDispatch) {
           changesAfterAdmission = fixture.coreDb.sqlite.prepare('SELECT total_changes()').get();
@@ -598,7 +595,7 @@ describe('Worker environment operations', () => {
         hostInspection();
         // Complete a read-only observation before another caller changes source admission.
         await Promise.resolve();
-        if (boundary === 'publication') addContributor();
+        if (boundary === 'publication') await addContributor();
         changesAfterAdmission = fixture.coreDb.sqlite.prepare('SELECT total_changes()').get();
         return {
           attachment: null,
@@ -806,6 +803,68 @@ describe('Worker environment operations', () => {
       storageRef: fixture.binding.storageRef,
     });
     expect(replayed).toEqual(first);
+    expect(purgeCalls).toBe(1);
+  });
+
+  it('does not repeat the host purge when its committed native settlement reply is lost', async () => {
+    let purgeCalls = 0;
+    const fixture = await createFixture({
+      purgeStorage: async ({ binding }) => {
+        purgeCalls += 1;
+        return { state: 'purged', storageRef: binding.storageRef };
+      },
+    });
+    const input = {
+      confirmation: `purge-worker-environment:${fixture.binding.storageRef}:${fixture.binding.revision}`,
+      expectedRevision: fixture.binding.revision,
+      requestId: '00000000-0000-4000-8000-000000000004',
+      storageRef: fixture.binding.storageRef,
+    } as const;
+    const context = { actor: fixture.actor, workspaceId: fixture.workspaceId };
+    const emit = Worker.prototype.emit;
+    let termination: Promise<number> | undefined;
+    const replies = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      this: Worker,
+      event: string | symbol,
+      ...args: unknown[]
+    ) {
+      const reply = args[0];
+      if (
+        termination === undefined &&
+        event === 'message' &&
+        typeof reply === 'object' &&
+        reply !== null &&
+        'operation' in reply &&
+        reply.operation === 'worker-storage-binding' &&
+        'status' in reply &&
+        reply.status === 'ok' &&
+        'result' in reply &&
+        typeof reply.result === 'object' &&
+        reply.result !== null &&
+        'state' in reply.result &&
+        reply.result.state === 'purged'
+      ) {
+        termination = this.terminate();
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+
+    try {
+      await expect(fixture.operations.purge(context, input)).rejects.toMatchObject({
+        commit: 'unknown',
+        name: ControlStoreWorkerError.name,
+      });
+      expect(termination).toBeDefined();
+      await termination;
+    } finally {
+      replies.mockRestore();
+    }
+    expect(getWorkerStorageBinding(fixture.coreDb, input)).toMatchObject({ state: 'purged' });
+    expect(purgeCalls).toBe(1);
+
+    await shutdownControlStoreWorkerClient();
+    await expect(fixture.operations.purge(context, input)).rejects.toBeDefined();
     expect(purgeCalls).toBe(1);
   });
 

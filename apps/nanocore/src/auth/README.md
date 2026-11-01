@@ -6,6 +6,8 @@ This directory owns NanoCore authentication middleware, Better Auth browser sess
 
 ## Boundaries
 
+- Presented bearer verification remains on Main. Its exact identity/hash proof enters the existing native Core owner, which rereads the current Token and active User, checks expiry, rotation grace and revocation, and publishes last-use before returning the existing redacted identity. No bearer, precomputed authority grant or secret returns through that internal command; other credential writers retain their existing ownership.
+
 - Browser and product requests use Better Auth session cookies; remote requests from the `openkit-ops` administrator CLI, remote MCP, other non-browser clients, and administration clients use explicit `okt_` bearer credentials.
 - Authentication establishes the actor; workspace membership and token scope still require authorization before any workspace database, store, or mutation is opened.
 - `/mcp` reuses this middleware's bearer verifier and socket-derived transport admission in both modes. It accepts no implicit local actor or browser session, returns the same uniform authentication body plus `WWW-Authenticate: Bearer`, and installs only the presented Token's actor. Native operation invocation retains scope and permission admission; the endpoint adds no second authorizer. The App composition forces `remote-mcp` last-use attribution regardless of caller-supplied channel headers.

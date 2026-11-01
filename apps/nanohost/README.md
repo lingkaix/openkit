@@ -11,6 +11,8 @@ NanoHost is the OpenKit execution-host service: one Rust binary crate that owns 
 
 The live installer writes payload bytes through each claimed temporary inode before setting its final mode. Caught failure and signal cleanup can therefore identify the invocation's files through publication. Staging retains its separate private-directory identity.
 
+An ordinary admission refusal or lost allocation reply re-enters the existing reconnect path with fresh physical HTTP/2 IO. It never repeats allocation on the spent connection. Credential rejection and a typed transport revision mismatch keep their existing terminal classification. The native admission and fresh-IO tests cover this distinction.
+
 ## Internal roles
 
 These are responsibility boundaries inside one binary, not separate crates, plugins, or public interfaces:

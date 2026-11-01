@@ -44,9 +44,11 @@ export function createRuntimeConfigOperationImplementations(
         nativeEnvironment().view(publicOperationActor(context), input.fileId)
       ),
     'runtime.agent-environment-update': (input, context) =>
-      runConfigOperation(() => nativeEnvironment().update(publicOperationActor(context), input)),
-    'runtime.reload': (input) => {
-      const response = owner().manager.reload(input);
+      runConfigOperation(
+        async () => await nativeEnvironment().update(publicOperationActor(context), input)
+      ),
+    'runtime.reload': async (input) => {
+      const response = await owner().manager.reload(input);
       if (response.status === 'applied') owner().onReloadApplied?.();
       return response;
     },

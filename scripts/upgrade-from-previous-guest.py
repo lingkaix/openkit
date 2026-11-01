@@ -469,6 +469,8 @@ class Upgrade:
         require(self.stopped != online, "phase_stop_boundary_invalid")
         value = {key: val for key, val in self.input.items()
                  if key not in ("preparedLayout", "login", "liveDevOrigin", "liveDevAppContainer")}
+        if phase == "seed":
+            value["corpusProducer"] = "historical"
         worker = phase in ("worker-before", "worker")
         if worker:
             value["requestId"] = str(uuid.uuid4())

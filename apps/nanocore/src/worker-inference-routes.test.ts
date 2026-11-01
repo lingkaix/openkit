@@ -3373,7 +3373,7 @@ describe('Worker Turn admitted limits', () => {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       workspaceId: DEMO_WORKSPACE_ID,
     });
-    const native = createNativeTaskAdmissionFixture(coreDb, store);
+    const native = await createNativeTaskAdmissionFixture(coreDb, store);
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });

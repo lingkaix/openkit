@@ -213,12 +213,12 @@ describe('authored configuration tolerance', () => {
     expect(() => loadOpenKitConfigWithDiagnostics(dataRoot)).toThrow(/future\.config\.rule/);
   });
 
-  it('returns a tolerant-key warning through the public reload plan', () => {
+  it('returns a tolerant-key warning through the public reload plan', async () => {
     const { dataRoot, path } = authoredFile('config/server.jsonc', '{ "schemaVersion": 1 }');
     const manager = createRuntimeConfigManager({ dataRoot });
     writeFileSync(path, '{ "schemaVersion": 1, "futureDisplayHint": "compact" }');
 
-    const result = manager.reload({ mode: 'safe', dryRun: false });
+    const result = await manager.reload({ mode: 'safe', dryRun: false });
     expect(result.status).toBe('applied');
     expect(result.plan.warnings).toHaveLength(1);
     expect(result.plan.warnings[0]?.message).toContain('futureDisplayHint');
@@ -600,7 +600,7 @@ function jsonLocation(path: readonly (string | number)[]): string {
 describe('descriptive configuration extension loading', () => {
   it.each(
     descriptiveCases
-  )('strips and warns through snapshot, reload and editing for $kind at $location', ({
+  )('strips and warns through snapshot, reload and editing for $kind at $location', async ({
     kind,
     file,
     value,
@@ -628,7 +628,7 @@ describe('descriptive configuration extension loading', () => {
         message: `Unknown configuration key "future.note" at ${expectedPath} was ignored.`,
       }),
     ]);
-    const reloaded = manager.reload({ mode: 'safe', dryRun: false });
+    const reloaded = await manager.reload({ mode: 'safe', dryRun: false });
     expect(reloaded.status).toBe('applied');
     expect(reloaded.plan.warnings).toContainEqual(
       expect.objectContaining({ message: expect.stringContaining(expectedPath) })
@@ -771,7 +771,7 @@ describe('descriptive configuration extension loading', () => {
     { kind: 'agent', location: ['runtime', 'image'], field: 'pullPolicy', value: 'future' },
     { kind: 'agent', location: ['readiness'], field: 'status', value: 'future' },
     { kind: 'internal-role', location: ['profiles', 0, 'limits'], field: 'deadlineMs', value: -1 },
-  ])('refuses authority additions or invalid core values on reload for $kind at $location for $field', ({
+  ])('refuses authority additions or invalid core values on reload for $kind at $location for $field', async ({
     kind,
     location,
     field,
@@ -789,7 +789,7 @@ describe('descriptive configuration extension loading', () => {
       atPath(draft, []).extensions = { openkit: {} };
     atPath(draft, location)[field] = value;
     writeFileSync(path, JSON.stringify(draft));
-    const result = manager.reload({ mode: 'safe', dryRun: false });
+    const result = await manager.reload({ mode: 'safe', dryRun: false });
     expect(result.status).toBe('failed');
     expect(manager.current()).toBe(before);
     const files = new RuntimeConfigFileService({

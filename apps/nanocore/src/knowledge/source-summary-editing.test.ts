@@ -582,14 +582,14 @@ async function captureRelatedSource(f: Awaited<ReturnType<typeof fixture>>): Pro
 }
 
 /** Narrows the current Source audience through the shared authored-Policy fixture and reload. */
-function restrictSourceThread(f: Awaited<ReturnType<typeof fixture>>): string {
+async function restrictSourceThread(f: Awaited<ReturnType<typeof fixture>>): string {
   const original = writeManagedThreadPolicyFixture({
     dataRoot: f.dataRoot,
     workspaceId: f.workspace.id,
     threadId: f.origin.id,
     userId: f.userId,
   });
-  expect(f.runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+  expect((await f.runtimeConfigManager.reload({ mode: 'safe' })).status).toBe('applied');
   return original;
 }
 
@@ -752,7 +752,7 @@ async function runMaintenance(
       }
     } else if (mode === 'revoked') {
       // Narrow the admitted Source through current canonical Policy, without changing visibility.
-      restrictSourceThread(f);
+      await restrictSourceThread(f);
       revokedReadRefused = await execute('knowledge.notebook-workspace.update', {
         script: `cat /notebook/${f.path}`,
       }).then(
@@ -1072,7 +1072,7 @@ async function assertMaintenance(
         expect(f.store.getKnowledgeProposalReviewDecision(proposal.id)).toBeNull();
         expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
         expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
-        const originalConfig = restrictSourceThread(f);
+        const originalConfig = await restrictSourceThread(f);
         const denied = await f.call('knowledge.proposal.read', {
           proposalId: proposal.id,
           path: f.path,
@@ -1096,7 +1096,7 @@ async function assertMaintenance(
           join(f.dataRoot, 'workspaces', f.workspace.id, 'config', 'workspace.jsonc'),
           originalConfig
         );
-        expect(f.runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+        expect((await f.runtimeConfigManager.reload({ mode: 'safe' })).status).toBe('applied');
         const mismatched = await f.call('knowledge.proposal.decide', {
           ...tuple,
           proposalDigest: `sha256:${'b'.repeat(64)}`,

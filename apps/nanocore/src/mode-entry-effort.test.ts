@@ -95,7 +95,7 @@ describe('reasoning effort admission and replay', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    recordTestNativeRuntimeTarget(coreDb);
+    await recordTestNativeRuntimeTarget(coreDb);
     const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
     const executor = Object.assign(new SimulatedTurnExecutor({ coreDb, fileAdmission }), {
       startContexts: [] as TurnStartRuntimeContext[],

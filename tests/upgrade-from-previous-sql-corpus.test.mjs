@@ -47,13 +47,13 @@ async function fixture(t, existingRuntimeTarget = false) {
   if (existingRuntimeTarget) {
     const targets = await load('runtime/nanohost-runtime-target');
     const { readDataRootLayoutMarker } = await load('storage/fs-layout');
-    const target = targets.allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await targets.allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       targetId: 'synthetic-existing-target',
       identityId: 'synthetic-existing-identity',
       deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
       observedAt: '2026-10-17T00:00:00.000Z',
     });
-    targets.upsertNanoHostRuntimeTarget(coreDb, {
+    await targets.upsertNanoHostRuntimeTarget(coreDb, {
       ...target,
       physicalEpoch: 'f'.repeat(64),
       freshEmpty: true,
@@ -124,6 +124,7 @@ async function fixture(t, existingRuntimeTarget = false) {
   coreDb.sqlite.close();
   const input = {
     appRoot,
+    corpusProducer: 'current',
     dataRoot: join(root, 'data'),
     retainedRoot: join(root, 'retained'),
     userId,
@@ -189,14 +190,14 @@ test('reopens every SQL family and its linked file owners with exact readback', 
     const targets = await input.load('runtime/nanohost-runtime-target');
     const target = targets.getNanoHostRuntimeTarget(runtimeDb, input.selectors.sql.runtimeTargetId);
     assert.equal(target.targetId, 'synthetic-existing-target');
-    targets.fenceNanoHostRuntimeTargetAfterRestart(runtimeDb, '2026-10-19T00:00:00.000Z');
-    const reconnected = targets.allocateNanoHostRuntimeTargetConnectionGeneration(runtimeDb, {
+    await targets.fenceNanoHostRuntimeTargetAfterRestart(runtimeDb, '2026-10-19T00:00:00.000Z');
+    const reconnected = await targets.allocateNanoHostRuntimeTargetConnectionGeneration(runtimeDb, {
       targetId: target.targetId,
       identityId: target.identityId,
       deploymentId: target.deploymentId,
       observedAt: '2026-10-19T00:00:01.000Z',
     });
-    targets.upsertNanoHostRuntimeTarget(runtimeDb, {
+    await targets.upsertNanoHostRuntimeTarget(runtimeDb, {
       ...reconnected,
       physicalEpoch: 'c'.repeat(64),
       freshEmpty: true,
@@ -391,14 +392,14 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   t.after(() => core.sqlite.close());
   const previousTarget = targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
   const now = new Date().toISOString();
-  const target = targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+  const target = await targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
     targetId: previousTarget.targetId,
     identityId: previousTarget.identityId,
     deploymentId: previousTarget.deploymentId,
     observedAt: now,
   });
   // A new modeled peer generation supplies the same fresh/fenced proof as other offline fixtures.
-  targets.upsertNanoHostRuntimeTarget(core, {
+  await targets.upsertNanoHostRuntimeTarget(core, {
     ...target,
     physicalEpoch: 'a'.repeat(64),
     ready: true,
@@ -475,7 +476,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   assert.equal(session.status, 'idle');
   assert.equal(attempts.requireSchedulerExecutionAttempt(core, attempt.attemptId).phase, 'closed');
   const storage = bindings.getWorkerStorageBinding(core, { storageRef: sql.storageRef });
-  const reserved = bindings.reserveWorkerStorageAttachment(core, {
+  const reserved = await bindings.reserveWorkerStorageAttachment(core, {
     agentSessionId: session.id,
     authorizeContributor: () => true,
     expectedRevision: storage.revision,
@@ -488,7 +489,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     workspaceId: session.workspaceId,
     now,
   });
-  const attached = bindings.activateWorkerStorageAttachment(core, {
+  const attached = await bindings.activateWorkerStorageAttachment(core, {
     attachmentGeneration: reserved.attachmentGeneration,
     expectedRevision: reserved.revision,
     sandboxBindingRef: 'idle-corpus-sandbox',
@@ -602,7 +603,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
     /physical Epoch/
   );
   // The ordered guest driver already checked live readiness before stopping these writers.
-  targets.fenceNanoHostRuntimeTargetAfterRestart(core, now);
+  await targets.fenceNanoHostRuntimeTargetAfterRestart(core, now);
   assert.equal(
     (await checkIdleNativeBinding(input, previous, candidateWorker)).idleBindingRetired,
     true

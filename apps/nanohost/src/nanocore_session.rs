@@ -1664,13 +1664,28 @@ where
                     reason = "nanohost_protocol_mismatch";
                 }
             }
-            return Err(OuterSessionFailure::terminal(
-                OuterSessionStage::Admission,
-                OuterSessionOperation::None,
-                Some(status.as_u16()),
-                reason,
-            )
-            .with_reconnect_after(reconnect_after));
+            // A consumed physical admission cannot be repeated on this connection. Only
+            // credentials and an actual protocol mismatch hold; other failures reconnect
+            // through the existing fresh-physical-IO path, without retrying an allocation.
+            let failure =
+                if status == StatusCode::UNAUTHORIZED || reason == "nanohost_protocol_mismatch" {
+                    OuterSessionFailure::terminal(
+                        OuterSessionStage::Admission,
+                        OuterSessionOperation::None,
+                        Some(status.as_u16()),
+                        reason,
+                    )
+                    .with_reconnect_after(reconnect_after)
+                } else {
+                    OuterSessionFailure::reconnect(
+                        OuterSessionStage::Admission,
+                        OuterSessionOperation::None,
+                        Some(status.as_u16()),
+                        reason,
+                        reconnect_after,
+                    )
+                };
+            return Err(failure);
         }
         if required_header(response.headers(), NANOHOST_TRANSPORT_REVISION_HEADER).ok()
             != Some(NANOHOST_TRANSPORT_REVISION.trim())
@@ -5523,7 +5538,15 @@ mod tests {
                 assert!(dispatch_ran.get());
             } else {
                 let failure = result.expect_err("incompatible admission must fail closed");
-                assert_eq!(failure.disposition(), OuterSessionDisposition::Terminal);
+                // The accepted one-shot admission amendment requires a fresh connection for a rejected physical admission.
+                assert_eq!(
+                    failure.disposition(),
+                    if case == "ordinary-conflict" {
+                        OuterSessionDisposition::Reconnect
+                    } else {
+                        OuterSessionDisposition::Terminal
+                    }
+                );
                 assert_eq!(
                     failure.reason(),
                     if case == "ordinary-conflict" {
@@ -5537,6 +5560,113 @@ mod tests {
                 assert!(!dispatch_ran.get());
             }
             server.await.unwrap();
+        }
+    }
+
+    /// A rejected or unknown one-shot admission requires a new physical connection, without stopping the Epoch.
+    #[tokio::test]
+    async fn one_shot_admission_failure_reconnects_on_fresh_physical_io() {
+        for case in ["rejected", "unknown"] {
+            let (context, presentation) = test_outer_credentials();
+            for attempt in 0..2 {
+                // Each iteration creates a separate physical H2 transport; no failed connection is reused.
+                let (client_io, server_io) = tokio::io::duplex(4096);
+                let server = tokio::spawn(async move {
+                    let mut connection = h2::server::handshake(server_io).await.unwrap();
+                    let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+                    assert_eq!(
+                        request.uri().path(),
+                        "/api/nanohost/transport/session/admit"
+                    );
+                    let mut body = request.into_body();
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = body.data().await {
+                        let chunk = chunk.unwrap();
+                        body.flow_control().release_capacity(chunk.len()).unwrap();
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    assert_eq!(bytes, b"{}");
+                    if attempt == 0 && case == "unknown" {
+                        // The complete request reached Core; physical response loss proves no outcome.
+                        return;
+                    }
+                    let response = if attempt == 0 {
+                        Response::builder().status(409).body(()).unwrap()
+                    } else {
+                        Response::builder()
+                            .status(200)
+                            .header(
+                                "x-openkit-nanohost-transport-revision",
+                                NANOHOST_TRANSPORT_REVISION.trim(),
+                            )
+                            .body(())
+                            .unwrap()
+                    };
+                    let payload = if attempt == 0 {
+                        serde_json::json!({"code":"nanohost_transport_admission_rejected"})
+                    } else {
+                        serde_json::json!({"connectionGeneration":2,"deploymentId":"deployment-a","identityId":"nanohost-a","mayCarryWork":true,"role":"authoritative"})
+                    };
+                    respond
+                        .send_response(response, false)
+                        .unwrap()
+                        .send_data(Bytes::from(payload.to_string()), true)
+                        .unwrap();
+                    if attempt == 1 {
+                        let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+                        assert_eq!(
+                            request.uri().path(),
+                            "/api/nanohost/transport/session/readiness"
+                        );
+                        let mut body = request.into_body();
+                        while let Some(chunk) = body.data().await {
+                            let chunk = chunk.unwrap();
+                            body.flow_control().release_capacity(chunk.len()).unwrap();
+                        }
+                        respond
+                            .send_response(Response::builder().status(204).body(()).unwrap(), true)
+                            .unwrap();
+                    }
+                    assert!(connection.accept().await.is_none());
+                });
+                let gate_ran = std::cell::Cell::new(false);
+                let dispatch_ran = std::cell::Cell::new(false);
+                let result = run_outer_session(
+                    client_io,
+                    "http://core:80",
+                    &context,
+                    &presentation,
+                    None,
+                    (TEST_PHYSICAL_EPOCH, test_startup_deadline(), None, || {
+                        gate_ran.set(true);
+                        Ok(None)
+                    }),
+                    |_, _| async {
+                        dispatch_ran.set(true);
+                        Ok(())
+                    },
+                )
+                .await;
+                if attempt == 0 {
+                    let failure = result.expect_err("one-shot failure must not admit work");
+                    assert_eq!(
+                        failure.disposition(),
+                        OuterSessionDisposition::Reconnect,
+                        "{case}"
+                    );
+                    assert_eq!(
+                        failure.status(),
+                        if case == "rejected" { Some(409) } else { None }
+                    );
+                    assert!(!gate_ran.get());
+                    assert!(!dispatch_ran.get());
+                } else {
+                    assert_eq!(result.unwrap(), 2);
+                    assert!(gate_ran.get());
+                    assert!(dispatch_ran.get());
+                }
+                server.await.unwrap();
+            }
         }
     }
 

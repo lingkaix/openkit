@@ -25,13 +25,15 @@ import {
 } from '../runtime/agent-environment.js';
 import {
   acceptSchedulerExecutionObservation,
+  bindNanoHostAttemptPreparation,
   closeSchedulerExecutionAttemptWithFence,
   finalizeSchedulerExecutionAttemptInput,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
+  recordSimulatorFinalStatus,
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
-} from '../runtime/execution-attempt-records.js';
+} from '../runtime/execution-attempts.js';
 import type {
   ExecutionBackend,
   ExecutionBackendCorrelation,
@@ -39,7 +41,6 @@ import type {
   ExecutionReleaseProof,
 } from '../runtime/execution-backend.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import { bindNanoHostAttemptPreparation } from '../runtime/nanohost-attempt-records.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import {
@@ -66,14 +67,15 @@ import type {
 import { projectWorkerBackendCleanup } from '../runtime/worker-backend-cleanup-projection.js';
 import {
   listWorkerBackendSessions,
+  workerBackendImageIdentity,
+  workerBackendLineageFromRuntimeImage,
+} from '../runtime/worker-backend-session-records.js';
+import {
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
-  workerBackendImageIdentity,
-  workerBackendLineageFromRuntimeImage,
 } from '../runtime/worker-backend-sessions.js';
 import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
-import { recordWorkerControlAcceptedRecord } from '../runtime/worker-control-records.js';
 import { createLocalSimulatorCredentialCheckValues } from '../runtime/worker-credential-guard.js';
 import {
   acceptPreparedWorkerTurnContextPackage,
@@ -430,7 +432,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           : {}),
       });
     if (this.coreDb) {
-      bindNanoHostAttemptPreparation(this.coreDb, {
+      await bindNanoHostAttemptPreparation(this.coreDb, {
         attemptId: input.attemptId,
         agentSessionId: input.prepared.agentSessionId,
         inputRef: `aepsnap_${input.preparation.turn.id}_${input.prepared.agentSessionId}`,
@@ -917,7 +919,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         if (!runtimeTarget) {
           throw new Error('Internal self-check scheduler RuntimeTarget is unavailable.');
         }
-        const backendSession = recordWorkerBackendSessionMaterializing(this.coreDb, {
+        const backendSession = await recordWorkerBackendSessionMaterializing(this.coreDb, {
           backendLineage,
           backendVersion: null,
           identity: {
@@ -935,7 +937,6 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             turnId: turn.id,
             workspaceId: workspaceIdForOwner(turn.owner),
           },
-          now: () => timestamp,
           sandboxBindingRef: context.sandboxBindingRef,
         });
         const inputSnapshots = buildWorkspaceInputSnapshots({
@@ -959,7 +960,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             })),
           },
         });
-        transitionWorkerBackendSessionState(this.coreDb, {
+        await transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'materializing',
           attemptId: backendSession.attemptId,
           now: () => timestamp,
@@ -973,7 +974,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         } finally {
           resume();
         }
-        markWorkerBackendWorkspaceHandoffComplete(this.coreDb, {
+        await markWorkerBackendWorkspaceHandoffComplete(this.coreDb, {
           attemptId: backendSession.attemptId,
           now: () => timestamp,
         });
@@ -998,12 +999,12 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           );
         }
         if (!context.attemptId) throw new Error('Self-check has no exact attempt identity.');
-        finalizeSchedulerExecutionAttemptInput(this.coreDb, {
+        await finalizeSchedulerExecutionAttemptInput(this.coreDb, {
           attemptId: context.attemptId,
           inputRef: environmentPackage.snapshotId,
           bindingRef: context.sandboxBindingRef,
         });
-        const submission = recordSchedulerExecutionOperation(this.coreDb, {
+        const submission = await recordSchedulerExecutionOperation(this.coreDb, {
           attemptId: context.attemptId,
           operationId: commandInputHash({
             attemptId: context.attemptId,
@@ -1026,7 +1027,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           submission
         );
         try {
-          acceptSchedulerExecutionObservation(
+          await acceptSchedulerExecutionObservation(
             this.coreDb,
             await this.submit({
               ...schedulerExecutionCorrelation(submission),
@@ -1052,7 +1053,9 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           await this.emitUserInputRequest(store, state, environmentPackage, workspaceDb);
         }
         const finalTimestamp = new Date().toISOString();
-        recordWorkerControlAcceptedRecord(this.coreDb, {
+        await recordSimulatorFinalStatus(this.coreDb, {
+          kind: 'simulator-final',
+          attemptId: backendSession.attemptId,
           acceptedAt: finalTimestamp,
           lineage: {
             agentSessionId,
@@ -1062,12 +1065,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             turnId: turn.id,
             workspaceId: workspaceIdForOwner(turn.owner),
           },
-          operation: 'final_status',
-          record: { sequence: 1, status: 'completed', stopReason: 'completed' },
-          recordKey: '1',
-          sequence: 1,
         });
-        markSchedulerExecutionAttemptClosing(this.coreDb, {
+        await markSchedulerExecutionAttemptClosing(this.coreDb, {
           attemptId: backendSession.attemptId,
           now: () => finalTimestamp,
           cause: 'worker-final-status',
@@ -1079,13 +1078,13 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           'inspect-cleanup'
         );
         try {
-          transitionWorkerBackendSessionState(this.coreDb, {
+          await transitionWorkerBackendSessionState(this.coreDb, {
             fromState: 'materialized',
             attemptId: backendSession.attemptId,
             now: () => finalTimestamp,
             toState: 'cleanup-pending',
           });
-          transitionWorkerBackendSessionState(this.coreDb, {
+          await transitionWorkerBackendSessionState(this.coreDb, {
             fromState: 'cleanup-pending',
             attemptId: backendSession.attemptId,
             now: () => finalTimestamp,
@@ -1107,7 +1106,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             workspaceHandoffState: 'complete',
             workspaceId: workspaceIdForOwner(turn.owner),
           });
-          transitionWorkerBackendSessionState(this.coreDb, {
+          await transitionWorkerBackendSessionState(this.coreDb, {
             fromState: 'physical-cleaned',
             attemptId: backendSession.attemptId,
             now: () => finalTimestamp,
@@ -1228,7 +1227,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         context.attemptId &&
         ['completed', 'interrupted', 'cancelled'].includes(store.getTurnById(turnId).status)
       ) {
-        const attempt = markSchedulerExecutionAttemptClosing(this.coreDb, {
+        const attempt = await markSchedulerExecutionAttemptClosing(this.coreDb, {
           attemptId: context.attemptId,
           cause: `turn-${store.getTurnById(turnId).status}`,
         });
@@ -1244,7 +1243,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           } as const;
           const release = await this.release({ ...correlation, proof });
           if (release.state === 'released' && release.fenceRef) {
-            closeSchedulerExecutionAttemptWithFence(this.coreDb, {
+            await closeSchedulerExecutionAttemptWithFence(this.coreDb, {
               correlation,
               proof,
               fenceRef: release.fenceRef,

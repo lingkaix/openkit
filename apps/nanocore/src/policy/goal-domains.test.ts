@@ -59,7 +59,7 @@ async function fixture(uses?: number) {
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
-  const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
+  const reload = vi.fn(async () => await manager.reload({ mode: 'safe', dryRun: false }));
   const service = () =>
     createGoalDomainPolicyService({
       coreDb,
@@ -201,7 +201,7 @@ describe('jointly approved Goal-domain publication', () => {
     const f = await fixture(1);
     await f.approve();
     await f.consume();
-    const { statement } = f.activate();
+    const { statement } = await f.activate();
     const resource = statement.scope.resources[0]!;
     const prepared = createGoalTaskPolicyService({
       coreDb: f.coreDb,
@@ -330,7 +330,7 @@ describe('jointly approved Goal-domain publication', () => {
     await f.approve();
     await f.consume();
     expect(f.service().read(f.key)).toBeNull();
-    const result = f.activate();
+    const result = await f.activate();
     const request = readPendingRequest(f.db.sqlite, f.request.requestId)!;
     expect(result.statement).toEqual({
       ...f.statement,
@@ -340,7 +340,7 @@ describe('jointly approved Goal-domain publication', () => {
     expect(f.service().read(f.key)).toEqual(result.statement);
     expect(f.db.sqlite.transaction(() => f.service().read(f.key))()).toEqual(result.statement);
     const count = listServerPermissionDecisions(f.coreDb).length;
-    expect(f.activate()).toEqual(result);
+    expect(await f.activate()).toEqual(result);
     expect(listServerPermissionDecisions(f.coreDb)).toHaveLength(count);
     expect(listServerPermissionDecisions(f.coreDb).at(-1)).toMatchObject({
       result: 'allow',
@@ -399,11 +399,11 @@ describe('jointly approved Goal-domain publication', () => {
     const f = await fixture();
     await f.approve();
     await f.consume();
-    f.activate();
+    await f.activate();
     f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))();
     expect(f.service().read(f.key)).toBeNull();
     expect(() => f.activate()).toThrow(/credential.*no longer authorized/);
-    expect(f.service().close(f.key).changed).toBe(true);
+    expect((await f.service().close(f.key)).changed).toBe(true);
     expect(f.service().read(f.key)).toBeNull();
   });
 
@@ -411,11 +411,11 @@ describe('jointly approved Goal-domain publication', () => {
     const f = await fixture();
     await f.approve();
     await f.consume();
-    f.activate();
-    expect(f.service().close({ ...f.key, goalId: 'another-goal' }).changed).toBe(false);
-    expect(f.service().close(f.key).changed).toBe(true);
+    await f.activate();
+    expect((await f.service().close({ ...f.key, goalId: 'another-goal' })).changed).toBe(false);
+    expect((await f.service().close(f.key)).changed).toBe(true);
     expect(f.service().read(f.key)).toBeNull();
-    expect(f.service().close(f.key).changed).toBe(false);
+    expect((await f.service().close(f.key)).changed).toBe(false);
     expect(() => f.activate()).toThrow(/inactive or changed/);
   });
 
@@ -439,7 +439,7 @@ describe('jointly approved Goal-domain publication', () => {
     const f = await fixture();
     await f.approve();
     await f.consume();
-    f.activate();
+    await f.activate();
     const scope = { ...f.key, threadId: f.request.threadId };
     const view = await executeGoalOperation('goal.read', scope, { actor: f.actor }, f.store, f.db, {
       coreDb: f.coreDb,
@@ -458,7 +458,7 @@ describe('jointly approved Goal-domain publication', () => {
       { coreDb: f.coreDb }
     );
     expect(f.service().read(f.key)).toBeNull();
-    expect(f.service().close(f.key).changed).toBe(true);
+    expect((await f.service().close(f.key)).changed).toBe(true);
     expect(() => f.activate()).toThrow(/obsolete or closed/);
   });
 
@@ -466,7 +466,7 @@ describe('jointly approved Goal-domain publication', () => {
     const f = await fixture();
     await f.approve();
     await f.consume();
-    f.activate();
+    await f.activate();
     const prepare = vi.spyOn(f.db.sqlite, 'prepare').mockImplementationOnce(() => {
       throw new Error('Injected Workspace read failure');
     });
@@ -487,7 +487,7 @@ describe('jointly approved Goal-domain publication', () => {
       'active'
     );
     expect(() => f.service().read(f.key)).toThrow(/file and loaded revision differ/);
-    f.manager.reload({ mode: 'safe', dryRun: false });
+    await f.manager.reload({ mode: 'safe', dryRun: false });
     expect(f.service().read(f.key)).not.toBeNull();
     const original = readFileSync(f.path, 'utf8');
     const update = vi.spyOn(f.files, 'updateFile').mockImplementationOnce(() => {

@@ -274,10 +274,10 @@ type NativeCapabilityAdmissionFacts = Pick<
   | 'warmMcpSchema'
   | 'retainMcpAdmissionFailure'
 >;
-/** Starts a Workspace call through its admitted native owner; Core admission stays synchronous. */
+/** Starts a call through its exact database owner before any dependent upstream contact. */
 export function startCapabilityCall(
   input: StartServerCapabilityCallInput
-): StartedCapabilityCall<ServerGatewayCallContext>;
+): Promise<StartedCapabilityCall<ServerGatewayCallContext>>;
 export function startCapabilityCall(
   input: StartCapabilityCallInput & NativeCapabilityAdmissionFacts
 ): Promise<
@@ -287,14 +287,39 @@ export function startCapabilityCall(
   input:
     | (StartCapabilityCallInput & NativeCapabilityAdmissionFacts)
     | StartServerCapabilityCallInput
-):
+): Promise<
   | StartedCapabilityCall<ServerGatewayCallContext>
-  | Promise<
-      StartedCapabilityCall & { readonly admissionFailure?: ControlCapabilityAdmissionFailure }
-    > {
+  | (StartedCapabilityCall & { readonly admissionFailure?: ControlCapabilityAdmissionFailure })
+> {
   assertWorkspaceCapabilityActor(input);
-  if (input.workspaceDb.scope === 'core')
-    return startCapabilityCallInDb(input as StartServerCapabilityCallInput);
+  if (input.workspaceDb.scope === 'core') {
+    const { workspaceDb, callId, auditLineage, now, ...context } =
+      input as StartServerCapabilityCallInput;
+    if (input.workspaceId !== undefined || context.owner?.kind !== 'server')
+      throw new Error('Capability call database owner mismatch.');
+    return getControlStoreWorkerClient()
+      .coreCapability(
+        workspaceDb,
+        ControlCapabilityCommandInputSchema.parse({
+          kind: 'server-admit',
+          context,
+          callId,
+          auditLineage,
+          now: now?.toISOString(),
+        })
+      )
+      .then((result) => {
+        if (
+          result === null ||
+          typeof result !== 'object' ||
+          !('inserted' in result) ||
+          !('owner' in result.context) ||
+          result.context.owner.kind !== 'server'
+        )
+          throw new TypeError('Invalid native Server capability admission result.');
+        return presentControlFacts(result) as StartedCapabilityCall<ServerGatewayCallContext>;
+      });
+  }
   const {
     workspaceDb,
     workspaceId,
@@ -620,15 +645,57 @@ export async function finishMcpToolCall(
   }
 }
 
-/** Records Workspace measurements through the native owner; Core measurement stays synchronous. */
-export function recordUsage(input: RecordUsageInput & { workspaceDb: CoreDb }): string[];
+/** Preserves each original Core measurement commit and its separate failure closeout. */
+async function recordCoreUsage(
+  input: RecordUsageInput & { workspaceDb: CoreDb }
+): Promise<string[]> {
+  const context = input.call.context;
+  if (context.workspaceId !== undefined || !('owner' in context) || context.owner.kind !== 'server')
+    throw new Error('Usage record database owner mismatch.');
+  const ids: string[] = [];
+  const now = (input.now ?? new Date()).toISOString();
+  try {
+    for (const measurement of input.records) {
+      const result = await getControlStoreWorkerClient().coreCapability(
+        input.workspaceDb,
+        ControlCapabilityCommandInputSchema.parse({
+          kind: 'server-usage',
+          call: input.call,
+          measurement,
+          auditLineage: input.auditLineage,
+          now,
+        })
+      );
+      if (!Array.isArray(result)) throw new TypeError('Invalid native usage result.');
+      ids.push(...result);
+    }
+  } catch (error) {
+    // A lost acknowledgement is unknown, never authority to diagnose and rewrite the Call.
+    if (!(error instanceof ControlStoreWorkerError && error.commit === 'unknown')) {
+      try {
+        await finishCapabilityCall({
+          workspaceDb: input.workspaceDb,
+          callId: input.call.id,
+          auditLineage: input.auditLineage,
+          status: 'failed',
+          errorCode: 'usage_record_failed',
+        });
+      } catch {}
+    }
+    throw error;
+  }
+  return ids;
+}
+
+/** Records measurements through the same bounded owner for either canonical database scope. */
+export function recordUsage(input: RecordUsageInput & { workspaceDb: CoreDb }): Promise<string[]>;
 export function recordUsage(
   input: RecordUsageInput & { workspaceDb: WorkspaceDb }
 ): Promise<string[]>;
-export function recordUsage(input: RecordUsageInput): string[] | Promise<string[]>;
-export function recordUsage(input: RecordUsageInput): string[] | Promise<string[]> {
+export function recordUsage(input: RecordUsageInput): Promise<string[]>;
+export function recordUsage(input: RecordUsageInput): Promise<string[]> {
   const db = input.workspaceDb;
-  if (db.scope === 'core') return recordUsageInDb(input);
+  if (db.scope === 'core') return recordCoreUsage({ ...input, workspaceDb: db });
   return (async () => {
     if (input.call.context.workspaceId !== db.workspaceId)
       throw new Error('Usage record database owner mismatch.');
@@ -831,16 +898,30 @@ function hasEquivalentUsageRecord(
   return row?.usage_id;
 }
 
-/** Finishes an actual Workspace call by ID after native ACK; Core finish stays synchronous. */
+/** Finishes the actual Call and linked Audit through its canonical database owner. */
 export function finishCapabilityCall(
   input: FinishCapabilityCallInput & { workspaceDb: CoreDb }
-): void;
+): Promise<void>;
 export function finishCapabilityCall(
   input: FinishCapabilityCallInput & { workspaceDb: WorkspaceDb }
 ): Promise<void>;
-export function finishCapabilityCall(input: FinishCapabilityCallInput): void | Promise<void>;
-export function finishCapabilityCall(input: FinishCapabilityCallInput): void | Promise<void> {
-  if (input.workspaceDb.scope === 'core') return finishCapabilityCallInDb(input);
+export function finishCapabilityCall(input: FinishCapabilityCallInput): Promise<void>;
+export function finishCapabilityCall(input: FinishCapabilityCallInput): Promise<void> {
+  if (input.workspaceDb.scope === 'core') {
+    const { workspaceDb, now, callId, ...facts } = input;
+    return getControlStoreWorkerClient()
+      .coreCapability(
+        workspaceDb,
+        ControlCapabilityCommandInputSchema.parse({
+          kind: 'server-finish',
+          callId,
+          finish: { ...facts, now: now?.toISOString() },
+        })
+      )
+      .then((result) => {
+        if (result !== null) throw new TypeError('Invalid native capability finish result.');
+      });
+  }
   const { workspaceDb, now, callId, ...finish } = input;
   return getControlStoreWorkerClient()
     .workspaceCapability(
@@ -943,11 +1024,20 @@ export function finishCapabilityCallInDb(input: FinishCapabilityCallInput): void
     .immediate();
 }
 
-/** Workspace stamping awaits its original native owner; Core keeps its synchronous body. */
+/** Schema attribution uses the exact existing Call owner in both scopes. */
 export function stampCapabilityCallSchemaSnapshot(
   input: StampCapabilityCallSchemaSnapshotInput
-): void | Promise<void> {
-  if (input.workspaceDb.scope === 'core') return stampCapabilityCallSchemaSnapshotInDb(input);
+): Promise<void> {
+  if (input.workspaceDb.scope === 'core')
+    return getControlStoreWorkerClient()
+      .coreCapability(input.workspaceDb, {
+        kind: 'server-attribution',
+        callId: input.callId,
+        schemaSnapshotId: input.schemaSnapshotId,
+      })
+      .then((result) => {
+        if (result !== null) throw new TypeError('Invalid native schema stamp result.');
+      });
   return getControlStoreWorkerClient()
     .workspaceCapability(input.workspaceDb, {
       kind: 'attribution',
@@ -989,11 +1079,34 @@ export function stampCapabilityCallSchemaSnapshotInDb(
  * @param input Workspace database and recovery time.
  * @returns Number of recovered calls.
  */
-export function recoverRunningCapabilityCalls(input: RecoverRunningCapabilityCallsInput): number {
+export function recoverRunningCapabilityCalls(
+  input: RecoverRunningCapabilityCallsInput & { workspaceDb: WorkspaceDb }
+): number;
+export function recoverRunningCapabilityCalls(
+  input: RecoverRunningCapabilityCallsInput & { workspaceDb: CoreDb }
+): Promise<number>;
+export function recoverRunningCapabilityCalls(
+  input: RecoverRunningCapabilityCallsInput
+): number | Promise<number>;
+export function recoverRunningCapabilityCalls(
+  input: RecoverRunningCapabilityCallsInput
+): number | Promise<number> {
   const now = input.now ?? new Date();
   const calls = input.workspaceDb.sqlite
     .prepare('SELECT * FROM capability_calls WHERE status = ?')
     .all('running') as CapabilityCallRow[];
+  if (input.workspaceDb.scope === 'core')
+    return (async () => {
+      for (const call of calls)
+        await finishCapabilityCall({
+          callId: call.call_id,
+          errorCode: 'capability_call_recovered_after_restart',
+          now,
+          status: 'unknown',
+          workspaceDb: input.workspaceDb,
+        });
+      return calls.length;
+    })();
 
   for (const call of calls) {
     finishCapabilityCallInDb({
@@ -1622,15 +1735,32 @@ export interface GatewayCallLedgerBinding {
 }
 
 /** Appends or settles one entry atomically; the open logical call remains the sole owner. */
-/** Records lineage through the Workspace writer while preserving synchronous Core lineage. */
+/** Commits lineage through the exact Call owner before dependent observations. */
 export function writeGatewayRouteLineage(
   input: GatewayCallLedgerBinding & {
     readonly logicalModelId: string;
     readonly entry: GatewayRouteLineageEntry;
     readonly entryIndex?: number;
   }
-): number | Promise<number> {
-  if (input.workspaceDb.scope === 'core') return writeGatewayRouteLineageInDb(input);
+): Promise<number> {
+  if (input.workspaceDb.scope === 'core')
+    return getControlStoreWorkerClient()
+      .coreCapability(
+        input.workspaceDb,
+        ControlCapabilityCommandInputSchema.parse({
+          kind: 'server-attribution',
+          callId: input.call.id,
+          routeLineage: {
+            logicalModelId: input.logicalModelId,
+            entry: input.entry,
+            entryIndex: input.entryIndex,
+          },
+        })
+      )
+      .then((result) => {
+        if (typeof result !== 'number') throw new TypeError('Invalid native lineage result.');
+        return result;
+      });
   return getControlStoreWorkerClient()
     .workspaceCapability(
       input.workspaceDb,

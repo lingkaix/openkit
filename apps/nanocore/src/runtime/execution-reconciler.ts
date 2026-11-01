@@ -19,7 +19,7 @@ import {
   NanoHostCleanupFencePendingError,
 } from './nanohost-runtime-target.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
-import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
 
 /** Transient selected action; its physical owner rechecks the addressed revision and provenance. */

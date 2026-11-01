@@ -278,6 +278,24 @@ class LifecycleTests(unittest.TestCase):
         patch.dict(os.environ, {"OPENKIT_UPGRADE_ADMIN_TOKEN": "synthetic-token",
                                "OPENKIT_UPGRADE_LOGIN_PASSWORD": "synthetic-password"}).start()
 
+    def test_previous_seed_selects_historical_corpus_producer(self):
+        """The previous image receives the explicit historical producer selection."""
+        output = Path(self.input["retainedRoot"])
+        output.mkdir(parents=True)
+        upgrade = DRIVER.Upgrade(self.input, self.boundary, [])
+        upgrade.stopped = True
+        self.boundary.host_active = False
+        self.boundary.running = False
+        upgrade.images[("previous", "appImage")] = self.boundary.image_id(
+            "previous", "appImage")
+
+        upgrade.phase("seed", "previous")
+
+        self.assertEqual(self.boundary.reader["Image"], self.boundary.image_id(
+            "previous", "appImage"))
+        reader_input = json.loads(Path(self.boundary.reader["Cmd"][-1]).read_text())
+        self.assertEqual(reader_input["corpusProducer"], "historical")
+
     def test_continuity_retains_whole_state_before_candidate_mutation(self):
         """Candidate mutation follows stopped baseline and complete retention."""
         result = DRIVER.run_upgrade(self.input, self.boundary)

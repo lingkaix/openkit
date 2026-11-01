@@ -521,7 +521,7 @@ describe('Item-confirmed self Memory forget', () => {
         knowledgeMaintenance: { enabled: false, reviewRequiredPageIds: ['preference'] },
       })
     );
-    expect(f.writer.runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await f.writer.runtimeConfigManager.reload({ mode: 'safe' })).status).toBe('applied');
     await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
       code: 'review_required',
     });

@@ -561,10 +561,17 @@ export async function runPhase(phase, input) {
   }
   const required = retainedFamilies(await readFile(join(input.checkout, REGISTER), 'utf8'));
   if (phase === 'seed') {
+    assert(
+      input.corpusProducer === 'historical' || input.corpusProducer === 'current',
+      'The corpus producer must be explicitly historical or current.'
+    );
     const { seedFileCorpus } = await import('./upgrade-from-previous-corpus.mjs');
     const { seedSqlCorpus } = await import('./upgrade-from-previous-sql-corpus.mjs');
     const selectors = await seedFileCorpus(input);
-    Object.assign(selectors, await seedSqlCorpus({ ...input, selectors }));
+    Object.assign(
+      selectors,
+      await seedSqlCorpus({ ...input, selectors, corpusProducer: input.corpusProducer })
+    );
     await mkdir(dirname(input.baseline), { recursive: true, mode: 0o700 });
     await writeFile(
       `${input.baseline}.selectors.json`,

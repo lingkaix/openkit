@@ -1,3 +1,5 @@
+export { listWorkspaceReconciliationRecords } from './workspace-reconciliation-read.js';
+
 import { createHash } from 'node:crypto';
 import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -26,8 +28,9 @@ import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identit
 import {
   getWorkerBackendSession,
   type WorkerBackendSessionRecord,
-} from './worker-backend-sessions.js';
+} from './worker-backend-session-records.js';
 import { workerStorageScopeDigest } from './worker-storage-bindings.js';
+import { listWorkspaceReconciliationRecords } from './workspace-reconciliation-read.js';
 import {
   type RawWorkspaceCapture,
   readRawWorkspaceCapture,
@@ -128,35 +131,6 @@ function persistWorkspaceReconciliationRecordV1(
     );
 
   return parsed;
-}
-
-/**
- * Lists durable workspace reconciliation records for one workspace.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace id.
- * @returns Stored reconciliation records in newest-first order.
- */
-export function listWorkspaceReconciliationRecords(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string
-): WorkspaceReconciliationRecord[] {
-  return (
-    workspaceDb.sqlite
-      .prepare(
-        `SELECT schema_version AS schemaVersion,payload_json
-         FROM workspace_reconciliation_records
-         WHERE workspace_id = ?
-         ORDER BY started_at ASC, reconciliation_record_id ASC`
-      )
-      .all(workspaceId) as WorkspaceReconciliationRecordRow[]
-  )
-    .map((row) =>
-      readRetainedV1(row, () =>
-        StoredWorkspaceReconciliationRecordV1Schema.parse(JSON.parse(row.payload_json))
-      )
-    )
-    .reverse();
 }
 
 /**

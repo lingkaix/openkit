@@ -3,7 +3,7 @@ import type {
   NanoHostEffectOperation,
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
-import type { WorkerBackendSessionRecord } from './worker-backend-sessions.js';
+import type { WorkerBackendSessionRecord } from './worker-backend-session-records.js';
 
 /**
  * Re-derives the complete fixed-effect identity shared by dispatch and retained-delivery correlation.

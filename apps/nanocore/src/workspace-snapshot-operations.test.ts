@@ -22,6 +22,7 @@ import * as durableBytes from '@openkit/storage';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import * as accessTokens from './auth/access-token-store.js';
+import * as accessTokenVerification from './auth/access-token-verification.js';
 import { isScopeAdmitted } from './bootstrap/readiness.js';
 import { restoreWorkspaceRecoveryAdmission } from './bootstrap/workspace-recovery.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -264,6 +265,16 @@ describe('C-a composed snapshot App API', () => {
       const actualRead = accessTokens.getOpenKitAccessTokenRecord;
       const actualEvaluate = policyKernel.evaluateAccess;
       let armed = false;
+      let armAfterAuthentication = false;
+      const actualVerify = accessTokenVerification.verifyOpenKitAccessTokenRecord;
+      // Download has no public Server admission callback; arm only after real bearer verification.
+      vi.spyOn(accessTokenVerification, 'verifyOpenKitAccessTokenRecord').mockImplementation(
+        async (...args) => {
+          const verified = await actualVerify(...args);
+          if (armAfterAuthentication) armed = true;
+          return verified;
+        }
+      );
       const phases: string[] = [];
       const read = vi
         .spyOn(accessTokens, 'getOpenKitAccessTokenRecord')
@@ -301,7 +312,8 @@ describe('C-a composed snapshot App API', () => {
         'workspace.backup-download',
       ]) {
         phases.length = 0;
-        armed = operation === 'workspace.backup-download';
+        armed = false;
+        armAfterAuthentication = operation === 'workspace.backup-download';
         const response = await authenticated(operation, {
           workspaceId,
           backupId: operation === 'workspace.backup-capture' ? allocateEntityId('wsbak') : backupId,
@@ -328,6 +340,7 @@ describe('C-a composed snapshot App API', () => {
         expect(f.admission.isClosed(workspaceId)).toBe(false);
         expect(snapshotAuthorityState(f)).toEqual(before);
       }
+      armAfterAuthentication = false;
       read.mockRestore();
       evaluate.mockRestore();
       const verified = await authenticated('workspace.backup-verify', { workspaceId, backupId });

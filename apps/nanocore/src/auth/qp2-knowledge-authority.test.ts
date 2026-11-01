@@ -33,10 +33,8 @@ import {
   createTestStore,
   createTestUserDb,
 } from '../test-support/store.js';
-import {
-  createOpenKitAccessTokenRecord,
-  verifyOpenKitAccessTokenRecord,
-} from './access-token-store.js';
+import { createOpenKitAccessTokenRecord } from './access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from './access-token-verification.js';
 import { createBetterAuth } from './better-auth.js';
 import type { Actor } from './identity.js';
 
@@ -79,7 +77,7 @@ async function fixture() {
     workspaceIds: [],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
+  const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
   if (!verified) throw new Error('Fixture administrator must authenticate.');
   const administrator: Actor = {
     kind: 'token',

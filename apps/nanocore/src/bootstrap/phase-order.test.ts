@@ -29,7 +29,7 @@ function readEntrypointSource(): string {
 }
 
 /**
- * Evaluates the entrypoint closeNanoCoreListeners body against injected shutdown bindings.
+ * Evaluates listener closure with the completion continuation now owned by shutdown.
  *
  * @param bindings Free variables closed over by the entrypoint function.
  * @returns The extracted close function.
@@ -63,13 +63,15 @@ function evaluateCloseNanoCoreListeners(bindings: {
     'closeRetrievalServices',
     'appServer',
     'nanoHostServer',
-    `${javascript}\nreturn closeNanoCoreListeners;`
+    'nanohostTransportSessionAuthority',
+    `${javascript}\nreturn (onClosed) => { void closeNanoCoreListeners().then(onClosed); };`
   )(
     bindings.shutdownTelemetry,
     bindings.workerMcpGateway,
     async () => undefined,
     bindings.appServer,
-    bindings.nanoHostServer
+    bindings.nanoHostServer,
+    { closeAllPhysicalConnections: async () => undefined }
   ) as (onClosed: () => void) => void;
 }
 

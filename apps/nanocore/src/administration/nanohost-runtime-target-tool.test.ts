@@ -62,7 +62,7 @@ describe('administration nanohost.runtime-target Tool', () => {
     });
     expect(absent.isError).toBe(true);
 
-    const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId,
       identityId,
       observedAt: '2026-08-15T01:02:02.000Z',
@@ -83,7 +83,7 @@ describe('administration nanohost.runtime-target Tool', () => {
     expect(JSON.stringify(unready)).toContain('physicalEpoch');
     expect(JSON.stringify(unready)).not.toContain(physicalEpoch);
 
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       connectionGeneration: allocated.connectionGeneration,
       deploymentId,
       freshEmpty: true,

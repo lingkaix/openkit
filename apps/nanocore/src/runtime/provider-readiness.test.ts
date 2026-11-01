@@ -130,7 +130,7 @@ async function fixture(kind: SupplyCase) {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  recordTestNativeRuntimeTarget(coreDb);
+  await recordTestNativeRuntimeTarget(coreDb);
   cleanups.push(() => {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { verifyOpenKitAccessTokenRecord } from './access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from './access-token-verification.js';
 import {
   consumeServerBootstrapToken,
   ensureServerBootstrapToken,
@@ -220,9 +220,11 @@ describe('server bootstrap token', () => {
         record: { ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f', scope: 'server-admin' },
       });
       expect(
-        verifyOpenKitAccessTokenRecord(coreDb, consumed?.secret ?? '', {
-          now: new Date('2026-07-06T00:02:30.000Z'),
-        })?.scope
+        (
+          await verifyOpenKitAccessTokenRecord(coreDb, consumed?.secret ?? '', {
+            now: new Date('2026-07-06T00:02:30.000Z'),
+          })
+        )?.scope
       ).toBe('server-admin');
       expect(secondConsume?.status).toBe('unavailable');
       expect(userCount.count).toBe(1);

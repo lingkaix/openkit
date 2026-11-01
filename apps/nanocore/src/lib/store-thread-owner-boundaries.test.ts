@@ -266,7 +266,7 @@ describe('canonical work owner and retained storage boundaries', () => {
       threadId: f.thread.id,
       turnId: f.turn.id,
     });
-    const serverCall = startCapabilityCall({
+    const serverCall = await startCapabilityCall({
       ...callInput,
       workspaceDb: coreDb,
       owner: { kind: 'server' },
@@ -274,7 +274,7 @@ describe('canonical work owner and retained storage boundaries', () => {
       turnId: f.serverTurn.id,
     });
     await finishCapabilityCall({ workspaceDb, callId: workspaceCall.id, status: 'succeeded' });
-    finishCapabilityCall({ workspaceDb: coreDb, callId: serverCall.id, status: 'succeeded' });
+    await finishCapabilityCall({ workspaceDb: coreDb, callId: serverCall.id, status: 'succeeded' });
     await shutdownControlStoreWorkerClient();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();

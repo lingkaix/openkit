@@ -18,7 +18,7 @@ describe('operational readiness dimensions', () => {
     { sampledAt: '2026-10-14T00:00:00.000Z', state: 'ready', age: 259200000, freshEmpty: true },
     { sampledAt: '2026-10-11T00:00:00.000Z', state: 'ready', age: 0, freshEmpty: true },
     { sampledAt: '2026-10-10T00:00:00.000Z', state: 'unknown', age: null, freshEmpty: null },
-  ])('shows host observation age at $sampledAt without promoting future evidence', ({
+  ])('shows host observation age at $sampledAt without promoting future evidence', async ({
     sampledAt,
     state,
     age,
@@ -33,12 +33,12 @@ describe('operational readiness dimensions', () => {
       deploymentId: 'dep_00000000-0000-787c-af58-ea110715292e',
     };
     try {
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...nanoHostConfig,
         targetId: nanoHostConfig.identityId,
         observedAt,
       });
-      upsertNanoHostRuntimeTarget(coreDb, {
+      await upsertNanoHostRuntimeTarget(coreDb, {
         ...nanoHostConfig,
         targetId: nanoHostConfig.identityId,
         observedAt,

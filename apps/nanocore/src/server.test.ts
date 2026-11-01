@@ -634,7 +634,7 @@ async function createApp(
   if (options.coreDb) {
     ensureLocalUser(options.coreDb);
     if (options.turnExecutor instanceof FakeTurnExecutor)
-      options.turnExecutor.configureCore(options.coreDb, options);
+      await options.turnExecutor.configureCore(options.coreDb, options);
   }
 
   const store =
@@ -1056,7 +1056,7 @@ class FakeTurnExecutor implements TurnExecutor {
   private completedExecutions = 0;
   private readonly closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
   private readonly workerLoops = vi.spyOn(workerTurnLoop, 'runWorkerTurnLoop');
-  public configureCore(coreDb: CoreDb, options: CreateAppOptions): void {
+  public async configureCore(coreDb: CoreDb, options: CreateAppOptions): Promise<void> {
     this.runtimeSnapshot =
       options.runtimeConfigManager?.current() ??
       createInMemoryRuntimeConfigSnapshot({
@@ -1066,7 +1066,7 @@ class FakeTurnExecutor implements TurnExecutor {
       });
     this.fixtureOptions = { coreDb };
     this.continuity = new SimulatedTurnExecutor({ coreDb });
-    recordTestNativeRuntimeTarget(coreDb);
+    await recordTestNativeRuntimeTarget(coreDb);
   }
   /** The existing simulator owns this model's four-operation execution port. */
   public get executionBackend() {
@@ -1165,7 +1165,7 @@ class FakeTurnExecutor implements TurnExecutor {
         environmentPackage,
         createdAt: new Date().toISOString(),
       });
-      const target = recordTestNativeRuntimeTarget(coreDb);
+      const target = await recordTestNativeRuntimeTarget(coreDb);
       const at = turn.startedAt!;
       const sessionInput = {
         id: context.agentSessionId,
@@ -1201,7 +1201,7 @@ class FakeTurnExecutor implements TurnExecutor {
         allocationRef: attempt.bindingRef,
       });
       await store.updateTurn(turnId, { agentSessionId: sessionInput.id }, { journalIntents });
-      const backendSession = recordWorkerBackendSessionMaterializing(coreDb, {
+      const backendSession = await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: environmentPackage.runtime.image.ref, kind: 'reference' },
         backendVersion: null,
         identity: {
@@ -1240,7 +1240,9 @@ class FakeTurnExecutor implements TurnExecutor {
         },
       });
       recordWorkspaceBackendHandoff(db, inputSnapshots, materializationRecords);
-      markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendSession.attemptId });
+      await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+        attemptId: backendSession.attemptId,
+      });
       await endWorkerTurnMaterialization(store, db, turnId, 'completed', [
         backendSession.backendSessionId,
       ]);
@@ -1309,17 +1311,17 @@ class FakeTurnExecutor implements TurnExecutor {
         session.packageSnapshotId
       ).snapshot;
       const cleanup = await beginWorkerTurnJournalStep(store, db, turnId, 'inspect-cleanup');
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         attemptId: context.attemptId!,
         fromState: 'materializing',
         toState: 'cleanup-pending',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         attemptId: context.attemptId!,
         fromState: 'cleanup-pending',
         toState: 'physical-cleaned',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         attemptId: context.attemptId!,
         fromState: 'physical-cleaned',
         toState: 'cleaned',
@@ -10780,7 +10782,7 @@ describe('nanocore server', () => {
         environmentPackage,
         createdAt: environmentPackage.createdAt,
       });
-      const target = recordTestNativeRuntimeTarget(coreDb);
+      const target = await recordTestNativeRuntimeTarget(coreDb);
       // Admit original obligations before the modeled submission; interruption proves no release.
       const journalIntents = prepareWorkerTurnJournalIntents(
         workspaceDb,
@@ -11829,6 +11831,7 @@ describe('nanocore server', () => {
       });
       secondClient.destroy();
       await observedCandidateClose;
+      await authority.closePhysicalConnection(secondServerSession);
       expect(authority.mayCarryWork(firstServerSession)).toBe(true);
       expect(authority.mayCarryWork(secondServerSession)).toBe(false);
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(1);
@@ -11859,6 +11862,8 @@ describe('nanocore server', () => {
       const observedPredecessorClose = once(firstServerSession, 'close');
       firstClient.destroy();
       await observedPredecessorClose;
+      // The physical event fences synchronously; join its existing native publication before SQL reads.
+      await authority.closePhysicalConnection(firstServerSession);
       expect(authority.mayCarryWork(firstServerSession)).toBe(false);
       expect(authority.mayCarryWork(thirdServerSession)).toBe(true);
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(3);
@@ -11995,6 +12000,7 @@ describe('nanocore server', () => {
       const observedThirdClose = once(thirdServerSession, 'close');
       thirdClient.destroy();
       await observedThirdClose;
+      await authority.closePhysicalConnection(thirdServerSession);
       expect(authority.mayCarryWork(thirdServerSession)).toBe(false);
       expect(authority.mayCarryWork(fourthServerSession)).toBe(true);
       await expect(
@@ -12011,7 +12017,10 @@ describe('nanocore server', () => {
         postEffect(fourthClient, '/api/nanohost/transport/effects/file.export/result', absenceBody)
       ).resolves.toMatchObject({ status: 409 });
 
-      expect(() => authority.closePhysicalConnection(secondServerSession)).not.toThrow();
+      // Await the repeated close so its rejection cannot escape the non-throw oracle.
+      await expect(
+        Promise.resolve().then(() => authority.closePhysicalConnection(secondServerSession))
+      ).resolves.not.toBeInstanceOf(Error);
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBe(4);
       expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
         connectionGeneration: 4,
@@ -12023,6 +12032,7 @@ describe('nanocore server', () => {
       const observedSoleClose = once(fourthServerSession, 'close');
       fourthClient.destroy();
       await observedSoleClose;
+      await authority.closePhysicalConnection(fourthServerSession);
       expect(authority.authoritativeGeneration('integration_nanohost_main')).toBeNull();
       expect(getNanoHostRuntimeTarget(coreDb, 'integration_nanohost_main')).toMatchObject({
         connectionGeneration: 4,
