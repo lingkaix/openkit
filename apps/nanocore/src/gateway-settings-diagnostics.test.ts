@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { AppDiagnosticsResponseSchema } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
@@ -11,18 +12,21 @@ import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { initializeTestCore } from './test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb } from './test-support/store.js';
 
 const roots: string[] = [];
+const executorCoreDbs: ReturnType<typeof createTestCoreDb>[] = [];
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  for (const coreDb of executorCoreDbs.splice(0)) closeTestCoreDb(coreDb);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Builds real authored files so active provenance and restart retention use the production loader. */
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'gateway-settings-'));
-  initializeTestCore(root);
+  const executorCoreDb = createTestCoreDb(root);
+  executorCoreDbs.push(executorCoreDb);
   roots.push(root);
   mkdirSync(join(root, 'config', 'providers'), { recursive: true });
   writeFileSync(
@@ -80,8 +84,12 @@ function fixture() {
     })
   );
   const manager = createRuntimeConfigManager({ dataRoot: root });
-  const app = createApp({ dataRoot: root, runtimeConfigManager: manager });
-  return { app, manager, profile, profilePath, catalog, catalogPath };
+  const app = createApp({
+    dataRoot: root,
+    runtimeConfigManager: manager,
+    turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
+  });
+  return { app, manager, profile, profilePath, catalog, catalogPath, executorCoreDb };
 }
 
 describe('Gateway settings active diagnostics', () => {
@@ -191,7 +199,7 @@ describe('Gateway settings active diagnostics', () => {
 });
 
 it('uses the existing network-free pair check for exact active subscription binding', async () => {
-  const { manager } = fixture();
+  const { manager, executorCoreDb } = fixture();
   const gatewayUnavailableReason = vi.fn().mockReturnValue('subscription_account_logged_out');
   const accountManager = {
     gatewayUnavailableReason,
@@ -199,6 +207,7 @@ it('uses the existing network-free pair check for exact active subscription bind
   const app = createApp({
     runtimeConfigManager: manager,
     providerSubscriptionAccountManager: accountManager,
+    turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
   });
   const response = await app.request(...operationRequest('diagnostics.app', {}));
   expect(response.status).toBe(200);
