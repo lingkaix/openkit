@@ -2372,14 +2372,15 @@ describe('C-a capture and existing deletion ownership', () => {
       const message = args[0];
       if (message?.operation === 'close' && message.database === workspaceDatabase)
         workspaceClosePosts += 1;
-      const result = post.apply(this, args);
       if (!closePosted && message?.operation === 'close' && message.database === appDatabase) {
-        closePosted = true;
         boundaryTree = tree(f.workspaceRoot);
         boundaryInode = lstatSync(f.workspaceRoot).ino;
+        closePosted = true;
+        const result = post.apply(this, args);
         termination = this.terminate();
+        return result;
       }
-      return result;
+      return post.apply(this, args);
     });
     let refusal: unknown;
     try {
