@@ -1064,3 +1064,83 @@ it.each([
     .soft(f.notebook().retainedCandidate(proposal.id).revision)
     .toBe(proposal.candidateRevision);
 });
+
+// S61:220–222 and the 0600 stale-new-decision ruling: only acceptance publishes against current head.
+it.each([
+  'rejected',
+  'deferred',
+  'accepted',
+] as const)('User stale new %s decision preserves current publication and its exact reviewed tuple', async (decision) => {
+  const f = fixture(false);
+  const pending = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
+  expect(pending.outcome).toBe('review-required');
+  const context = {
+    ...f.dependencies,
+    actor: f.input.requestActor,
+    revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
+      readUserMemoryNotebookAdmission(
+        { ...f.dependencies, actor: f.input.requestActor },
+        files,
+        paths
+      ),
+  };
+  const selected = readUserMemoryProposal(context, pending.proposalId!);
+  const proposal = selected.proposal;
+  // Advance the real head through a separately created and accepted Proposal, not a raw ref write.
+  const control = await createUserMemoryProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision: proposal.baseRevision,
+      summary: 'Publish a separate reviewed change before deciding the older Proposal.',
+      changes: [
+        {
+          path: 'index.md',
+          content: `${f.notebook().readRevision(proposal.baseRevision).files['index.md']}\nA separate current publication.\n`,
+        },
+      ],
+    },
+    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
+    []
+  );
+  const controlSelected = readUserMemoryProposal(context, control.id);
+  await decideUserMemoryProposal(context, {
+    requestId: randomUUID(),
+    proposalId: control.id,
+    proposalDigest: controlSelected.proposalDigest,
+    baseRevision: control.baseRevision,
+    candidateRevision: control.candidateRevision,
+    decision: 'accepted',
+  });
+  const currentHead = f.notebook().publishedRevision();
+  const currentFiles = f.notebook().readRevision(currentHead).files;
+  expect(currentHead).toBe(control.candidateRevision);
+  expect(currentHead).not.toBe(proposal.baseRevision);
+  expect(currentHead).not.toBe(proposal.candidateRevision);
+  expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([]);
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision: proposal.baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision,
+  };
+  if (decision === 'accepted') {
+    await expect(decideUserMemoryProposal(context, request)).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([]);
+  } else {
+    await expect(decideUserMemoryProposal(context, request)).resolves.toMatchObject({
+      review: request,
+      notebookRevision: null,
+    });
+    expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([
+      expect.objectContaining(request),
+    ]);
+  }
+  expect(f.notebook().publishedRevision()).toBe(currentHead);
+  expect(f.notebook().readRevision(currentHead).files).toEqual(currentFiles);
+  expect(f.notebook().retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+});

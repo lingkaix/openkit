@@ -1369,3 +1369,79 @@ it.each([
   expect.soft(f.notebook.publishedRevision()).toBe(baseRevision);
   expect.soft(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
 });
+
+// S61:220–222 and the 0600 stale-new-decision ruling: only acceptance publishes against current head.
+it.each([
+  'rejected',
+  'deferred',
+  'accepted',
+] as const)('Server stale new %s decision preserves current publication and its exact reviewed tuple', async (decision) => {
+  const f = fixture(false);
+  const pending = await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input);
+  expect(pending.outcome).toBe('review-required');
+  const context = {
+    ...f.dependencies,
+    actor: f.requestActor,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+  };
+  const selected = readServerNotebookProposal(context, pending.proposalId!);
+  const proposal = selected.proposal;
+  // Advance the real head through a separately created and accepted Proposal, not a raw ref write.
+  const control = createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision: proposal.baseRevision,
+      summary: 'Publish a separate reviewed change before deciding the older Proposal.',
+      changes: [
+        {
+          path: 'index.md',
+          content: `${f.notebook.readRevision(proposal.baseRevision).files['index.md']}\nA separate current publication.\n`,
+        },
+      ],
+    },
+    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+    []
+  );
+  const controlSelected = readServerNotebookProposal(context, control.id);
+  await decideServerNotebookProposal(context, {
+    requestId: randomUUID(),
+    proposalId: control.id,
+    proposalDigest: controlSelected.proposalDigest,
+    baseRevision: control.baseRevision,
+    candidateRevision: control.candidateRevision,
+    decision: 'accepted',
+  });
+  const currentHead = f.notebook.publishedRevision();
+  const currentFiles = f.notebook.readRevision(currentHead).files;
+  expect(currentHead).toBe(control.candidateRevision);
+  expect(currentHead).not.toBe(proposal.baseRevision);
+  expect(currentHead).not.toBe(proposal.candidateRevision);
+  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([]);
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision: proposal.baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision,
+  };
+  if (decision === 'accepted') {
+    await expect(decideServerNotebookProposal(context, request)).rejects.toMatchObject({
+      code: 'conflict',
+    });
+    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([]);
+  } else {
+    await expect(decideServerNotebookProposal(context, request)).resolves.toMatchObject({
+      review: request,
+      notebookRevision: null,
+    });
+    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([
+      expect.objectContaining(request),
+    ]);
+  }
+  expect(f.notebook.publishedRevision()).toBe(currentHead);
+  expect(f.notebook.readRevision(currentHead).files).toEqual(currentFiles);
+  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+});

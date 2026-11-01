@@ -305,7 +305,11 @@ export async function decideUserMemoryProposal(
   }
   if (!prior && selected.reviews.some((review) => review.decision !== 'deferred'))
     throw new NotebookError('conflict');
-  if (!prior && notebook(context).publishedRevision() !== proposal.baseRevision)
+  if (
+    !prior &&
+    request.decision === 'accepted' &&
+    notebook(context).publishedRevision() !== proposal.baseRevision
+  )
     throw new NotebookError('conflict');
   if (!prior)
     assertNotebookProposalDecisionEvidence({ kind: 'user', userDb: context.userDb }, request);
