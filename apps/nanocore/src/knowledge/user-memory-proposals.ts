@@ -31,6 +31,7 @@ import {
   prepareNotebookProposalChanges,
   prepareNotebookProposalReview,
   publishNotebook,
+  readNotebookProposalCandidateMaterial,
   retainNotebookProposalCandidate,
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
@@ -159,28 +160,14 @@ export function readUserMemoryProposal(context: UserMemoryProposalContext, id: s
   if (meta.type !== 'proposal' || meta.review_required !== true)
     throw new NotebookError('recovery_required');
   const git = notebook(context);
-  if (typeof meta.candidate_revision !== 'string' || typeof meta.base_revision !== 'string')
-    throw new NotebookError('recovery_required');
-  const candidate = git.readRevision(meta.candidate_revision);
-  const base = git.readRevision(meta.base_revision);
-  const paths = [...new Set([...Object.keys(base.files), ...Object.keys(candidate.files)])]
-    .filter((path) => base.files[path] !== candidate.files[path])
-    .sort();
-  const changes = paths.map((path) => ({ path, content: candidate.files[path] ?? null }));
-  const proposal = ProposalReader.parse({
-    id,
-    operation: meta.operation,
-    ownerScope: meta.owner_scope,
-    baseRevision: meta.base_revision,
-    candidateRevision: meta.candidate_revision,
+  const {
+    candidate,
+    base,
+    paths,
     changes,
-    contentDigest: meta.content_digest,
-    sourceReferences: meta.source_references,
-    rationale: meta.rationale,
-    producer: meta.producer,
-    status: 'pending',
-    createdAt: meta.created_at,
-  });
+    proposal: rawProposal,
+  } = readNotebookProposalCandidateMaterial(git, id, meta);
+  const proposal = ProposalReader.parse(rawProposal);
   if (
     proposal.ownerScope.userId !== context.userDb.userId ||
     proposal.baseRevision !== candidate.parentRevision ||

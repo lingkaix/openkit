@@ -139,3 +139,5 @@ Workspace and User Memory maintenance use the same UTF-8 model-input excerpt pro
 User and Server Proposal creation share exact candidate metadata preparation and retention in the existing Notebook publisher. Each scope keeps its own admission, identity, record publication and Workspace acknowledgement.
 
 User and Server Proposal decisions share fresh immutable Review fact construction in the Notebook publisher; each caller retains replay selection, scope validation, current admission and durable recording.
+
+User and Server Proposal readers share immutable candidate/base selection, ordered changes and raw Proposal facts in the Notebook publisher. Each scope retains frontmatter parsing, its own schema, candidate and Review proofs, current admission and Source disclosure.

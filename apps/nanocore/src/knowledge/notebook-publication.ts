@@ -206,6 +206,37 @@ export function prepareNotebookProposalChanges(input: {
   return changes;
 }
 
+/** Reads immutable candidate material; each caller validates its own Proposal scope before disclosure. */
+export function readNotebookProposalCandidateMaterial(
+  git: KnowledgeNotebook,
+  id: string,
+  meta: Record<string, unknown>
+) {
+  if (typeof meta.candidate_revision !== 'string' || typeof meta.base_revision !== 'string')
+    throw new NotebookError('recovery_required');
+  const candidate = git.readRevision(meta.candidate_revision);
+  const base = git.readRevision(meta.base_revision);
+  const paths = [...new Set([...Object.keys(base.files), ...Object.keys(candidate.files)])]
+    .filter((path) => base.files[path] !== candidate.files[path])
+    .sort();
+  const changes = paths.map((path) => ({ path, content: candidate.files[path] ?? null }));
+  const proposal = {
+    id,
+    operation: meta.operation,
+    ownerScope: meta.owner_scope,
+    baseRevision: meta.base_revision,
+    candidateRevision: meta.candidate_revision,
+    changes,
+    contentDigest: meta.content_digest,
+    sourceReferences: meta.source_references,
+    rationale: meta.rationale,
+    producer: meta.producer,
+    status: 'pending',
+    createdAt: meta.created_at,
+  };
+  return { candidate, base, paths, changes, proposal };
+}
+
 /** Retains the exact already-validated Proposal candidate without changing the published head. */
 export function retainNotebookProposalCandidate(input: {
   readonly notebook: KnowledgeNotebook;
