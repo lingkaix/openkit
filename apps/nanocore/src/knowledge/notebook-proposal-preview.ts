@@ -137,6 +137,45 @@ export function createKnowledgeProposalPreviewOperationImplementations(
   };
 }
 
+/** Projects an already admitted scoped Proposal diff through the shared bounded preview owner. */
+export function projectSelectedKnowledgeProposalPreview(
+  selected: {
+    readonly proposal: {
+      readonly id: string;
+      readonly baseRevision: string;
+      readonly candidateRevision: string;
+    };
+    readonly proposalDigest: string;
+    readonly diff: readonly {
+      readonly path: string;
+      readonly before: string | null;
+      readonly after: string | null;
+    }[];
+  },
+  input: Pick<ReadKnowledgeProposalRequest, 'path' | 'offset'>
+): ReadKnowledgeProposalResponse {
+  const before = Object.fromEntries(
+    selected.diff.flatMap((change) =>
+      change.before === null ? [] : [[change.path, change.before]]
+    )
+  );
+  const after = Object.fromEntries(
+    selected.diff.flatMap((change) => (change.after === null ? [] : [[change.path, change.after]]))
+  );
+  return projectKnowledgeProposalPreview(
+    {
+      proposalId: selected.proposal.id,
+      proposalDigest: selected.proposalDigest,
+      baseRevision: selected.proposal.baseRevision,
+      candidateRevision: selected.proposal.candidateRevision,
+      paths: selected.diff.map((change) => change.path),
+    },
+    before,
+    after,
+    input
+  );
+}
+
 /** Shared exact candidate inventory/chunks; current owner admission runs before this inert projection. */
 export function projectKnowledgeProposalPreview(
   tuple: Pick<

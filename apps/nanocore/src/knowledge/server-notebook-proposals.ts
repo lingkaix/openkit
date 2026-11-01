@@ -21,7 +21,7 @@ import {
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
-import { projectKnowledgeProposalPreview } from './notebook-proposal-preview.js';
+import { projectSelectedKnowledgeProposalPreview } from './notebook-proposal-preview.js';
 import {
   type NotebookEdit,
   type NotebookPublicationAdmission,
@@ -217,26 +217,7 @@ export function readServerNotebookProposalPreview(
   }
 ) {
   const selected = readServerNotebookProposal(context, input.proposalId);
-  const before = Object.fromEntries(
-    selected.diff.flatMap((change) =>
-      change.before === null ? [] : [[change.path, change.before]]
-    )
-  );
-  const after = Object.fromEntries(
-    selected.diff.flatMap((change) => (change.after === null ? [] : [[change.path, change.after]]))
-  );
-  return projectKnowledgeProposalPreview(
-    {
-      proposalId: selected.proposal.id,
-      proposalDigest: selected.proposalDigest,
-      baseRevision: selected.proposal.baseRevision,
-      candidateRevision: selected.proposal.candidateRevision,
-      paths: selected.diff.map((change) => change.path),
-    },
-    before,
-    after,
-    input
-  );
+  return projectSelectedKnowledgeProposalPreview(selected, input);
 }
 
 /** Human Review keeps the original Agent producer and uses the existing fixed-base publisher. */
