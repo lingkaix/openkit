@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,7 @@ import {
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import * as goalCoordinator from '../runtime/goal-coordinator.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -21,36 +22,26 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { projectAgentCatalogEntries } from './catalog-projection.js';
 
 describe('agent.list and agent.read operations', () => {
   it('opens only the authorized Workspace ids', async () => {
-    const store = createTestStore({
-      dataRoot: mkdtempSync(join(tmpdir(), 'openkit-agent-catalog-authorized-')),
-    });
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agent-catalog-authorized-'));
+    const agentsRoot = join(dataRoot, 'config', 'agents');
+    const allowedManifest = createTestAgentSetup({
+      agentId: 'agent_allowed_only',
+      displayName: 'Allowed Agent',
+    }).manifest;
+    const previousManifest = createTestAgentSetup({
+      agentId: 'agent_denied_only',
+      displayName: 'Denied Agent',
+    }).manifest;
+    mkdirSync(agentsRoot, { recursive: true });
+    for (const manifest of [allowedManifest, previousManifest]) {
+      writeFileSync(join(agentsRoot, `${manifest.id}.agent.jsonc`), JSON.stringify(manifest));
+    }
+    const store = createTestStore({ dataRoot });
     const allowedWorkspace = await store.createWorkspace('Allowed agents');
     const deniedWorkspace = await store.createWorkspace('Denied agents');
-    store.setWorkspaceAgentCatalogProjection(() =>
-      projectAgentCatalogEntries([
-        createTestAgentSetup({
-          agentId: 'agent_allowed_only',
-          displayName: 'Allowed Agent',
-        }).manifest,
-      ])
-    );
-    store.upsertAgent(deniedWorkspace.id, {
-      capabilities: [],
-      defaultProfileId: null,
-      health: { checkedAt: null, message: null, status: 'unknown' as const },
-      id: 'agent_denied_only',
-      kind: 'coder',
-      modelId: null,
-      name: 'Denied Agent',
-      profiles: [],
-      sandboxSummary: null,
-      skillIds: [],
-      status: 'enabled',
-    });
     const coreDb = openCoreDb(store.getDataRoot()!);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
@@ -59,6 +50,16 @@ describe('agent.list and agent.read operations', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: allowedWorkspace.id,
     });
+    const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+    const previousSnapshot = runtimeConfigManager.current();
+    expect(previousSnapshot.agentManifests.map((manifest) => manifest.id)).toContain(
+      previousManifest.id
+    );
+    rmSync(join(agentsRoot, `${previousManifest.id}.agent.jsonc`));
+    expect(runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+    expect(runtimeConfigManager.current().agentManifests.map((manifest) => manifest.id)).toEqual([
+      allowedManifest.id,
+    ]);
     // Join real startup before observing request-only enumeration and effects.
     const createCoordinator = goalCoordinator.createGoalCoordinator;
     const coordinators = vi
@@ -71,10 +72,7 @@ describe('agent.list and agent.read operations', () => {
     const app = createApp({
       store,
       coreDb,
-      agentManifests: [
-        createTestAgentSetup({ agentId: 'agent_allowed_only', displayName: 'Allowed Agent' })
-          .manifest,
-      ],
+      runtimeConfigManager,
     });
     expect(coordinators).toHaveBeenCalledOnce();
     for (const { value: coordinator } of coordinators.mock.results) {
@@ -139,6 +137,23 @@ describe('agent.list and agent.read operations', () => {
 
   it('limits global catalog reads to workspaces visible to scoped tokens', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agent-catalog-scope-'));
+    const allowedManifest = createTestAgentSetup({
+      agentId: 'agent_allowed_only',
+      displayName: 'Allowed Agent',
+    }).manifest;
+    const otherManifest = createTestAgentSetup({
+      agentId: 'agent_other_supply',
+      displayName: 'Other Supply',
+    }).manifest;
+    const previousManifest = createTestAgentSetup({
+      agentId: 'agent_denied_only',
+      displayName: 'Denied Agent',
+    }).manifest;
+    const agentsRoot = join(dataRoot, 'config', 'agents');
+    mkdirSync(agentsRoot, { recursive: true });
+    for (const manifest of [allowedManifest, otherManifest, previousManifest]) {
+      writeFileSync(join(agentsRoot, `${manifest.id}.agent.jsonc`), JSON.stringify(manifest));
+    }
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
@@ -153,27 +168,17 @@ describe('agent.list and agent.read operations', () => {
         workspaceId: workspace.id,
       });
     }
-    const allowedManifest = createTestAgentSetup({
-      agentId: 'agent_allowed_only',
-      displayName: 'Allowed Agent',
-    }).manifest;
-    const otherManifest = createTestAgentSetup({
-      agentId: 'agent_other_supply',
-      displayName: 'Other Supply',
-    }).manifest;
-    store.upsertAgent(deniedWorkspace.id, {
-      capabilities: [],
-      defaultProfileId: null,
-      health: { checkedAt: null, message: null, status: 'unknown' },
-      id: 'agent_denied_only',
-      kind: 'coder',
-      modelId: null,
-      name: 'Denied Agent',
-      profiles: [],
-      sandboxSummary: null,
-      skillIds: [],
-      status: 'enabled',
-    });
+    const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+    const previousSnapshot = runtimeConfigManager.current();
+    expect(previousSnapshot.agentManifests.map((manifest) => manifest.id)).toContain(
+      previousManifest.id
+    );
+    rmSync(join(agentsRoot, `${previousManifest.id}.agent.jsonc`));
+    expect(runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+    expect(runtimeConfigManager.current().agentManifests.map((manifest) => manifest.id)).toEqual([
+      allowedManifest.id,
+      otherManifest.id,
+    ]);
     const serverAdmin = createOpenKitAccessTokenRecord(coreDb, {
       expiresAt: '2999-01-01T00:00:00.000Z',
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -193,7 +198,7 @@ describe('agent.list and agent.read operations', () => {
       workspaceIds: [allowedWorkspace.id],
     });
     const app = createApp({
-      agentManifests: [allowedManifest, otherManifest],
+      runtimeConfigManager,
       auth: {
         api: { getSession: async () => null },
         handler: async () => new Response(null, { status: 404 }),
@@ -429,22 +434,34 @@ describe('agent.list and agent.read operations', () => {
       await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     });
+    const previousManifest = createTestAgentSetup({
+      agentId: 'agent_persisted_only',
+      displayName: 'Persisted Only',
+    }).manifest;
+    const agentsRoot = join(dataRoot, 'config', 'agents');
+    mkdirSync(agentsRoot, { recursive: true });
+    for (const manifest of [configured, unready, previousManifest]) {
+      writeFileSync(join(agentsRoot, `${manifest.id}.agent.jsonc`), JSON.stringify(manifest));
+    }
     const store = await createDemoStore({ dataRoot });
-    store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', {
-      capabilities: [],
-      defaultProfileId: null,
-      health: { checkedAt: null, message: null, status: 'unknown' },
-      id: 'agent_persisted_only',
-      kind: 'coder',
-      modelId: null,
-      name: 'Persisted Only',
-      profiles: [],
-      sandboxSummary: null,
-      skillIds: [],
-      status: 'enabled',
-    });
+    const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+    const previousSnapshot = runtimeConfigManager.current();
+    expect(previousSnapshot.agentManifests.map((manifest) => manifest.id)).toContain(
+      previousManifest.id
+    );
+    const loadedUnready = previousSnapshot.agentManifests.find(
+      (manifest) => manifest.id === unready.id
+    );
+    expect(loadedUnready?.workspace?.env).toEqual(unready.workspace.env);
+    expect(loadedUnready?.readiness).toEqual(unready.readiness);
+    rmSync(join(agentsRoot, `${previousManifest.id}.agent.jsonc`));
+    expect(runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+    expect(runtimeConfigManager.current().agentManifests.map((manifest) => manifest.id)).toEqual([
+      configured.id,
+      unready.id,
+    ]);
     const app = createApp({
-      agentManifests: [configured, unready],
+      runtimeConfigManager,
       store,
     });
 
