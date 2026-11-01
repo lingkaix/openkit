@@ -775,3 +775,231 @@ it('reads retained Proposal/Review annotations and preserves them on the next hu
   expect(rewritten.decisions).toHaveLength(2);
   expect(readFileSync(path, 'utf8')).toBe(annotated);
 });
+
+// S61 exact Proposal/Review evidence: corrupt retained files only after their actual owners write them.
+it.each([
+  'candidate-parent',
+  'candidate-producer',
+  'review-id',
+  'review-proposal-digest',
+  'review-content-digest',
+  'duplicate-request',
+  'terminal-order',
+] as const)('refuses contradictory retained Server evidence: %s', async (fault) => {
+  const { existsSync } = await import('node:fs');
+  const f = fixture(false);
+  const context = {
+    ...f.dependencies,
+    actor: f.requestActor,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+  };
+  const producer = {
+    kind: 'agent' as const,
+    id: 'knowledge-manager',
+    responsibleUserId: f.requestActor.userId,
+  };
+  const published = f.notebook.publishedRevision();
+  const original = f.notebook.readRevision(published).files['index.md']!;
+  const proposal = createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision: published,
+      summary: 'Retain one exact evidence candidate.',
+      changes: [{ path: 'index.md', content: `${original}\nExact evidence candidate.\n` }],
+    },
+    producer,
+    []
+  );
+  const selected = readServerNotebookProposal(context, proposal.id);
+  const proposalPath = join(
+    f.coreDb.dataRoot,
+    'server',
+    'knowledge',
+    'proposals',
+    `${proposal.id}.md`
+  );
+  const reviewPath = join(
+    f.coreDb.dataRoot,
+    'server',
+    'knowledge',
+    'reviews',
+    `${proposal.id}.json`
+  );
+  if (fault === 'candidate-parent') {
+    // Public Notebook preparation permits an empty comparison revision; no Git object is fabricated.
+    const comparison = f.notebook.prepare({
+      baseRevision: published,
+      changes: {},
+      metadata: {
+        summary: 'Lawful same-tree comparison revision.',
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: commandInputHash('same-tree comparison revision'),
+        },
+        producer: f.input.actor,
+        authority: { kind: 'direct', instructionReference: 'fixture' },
+        sourceReferences: [],
+      },
+    });
+    expect(f.notebook.readRevision(comparison).files).toEqual(
+      f.notebook.readRevision(published).files
+    );
+    expect(comparison).not.toBe(published);
+    writeFileSync(
+      proposalPath,
+      readFileSync(proposalPath, 'utf8').replace(
+        /^base_revision: .+$/m,
+        `base_revision: ${JSON.stringify(comparison)}`
+      )
+    );
+  } else if (fault === 'candidate-producer') {
+    // The actual human is valid, but substituting them erases this candidate's Agent provenance.
+    writeFileSync(
+      proposalPath,
+      readFileSync(proposalPath, 'utf8').replace(
+        /^producer: .+$/m,
+        `producer: ${JSON.stringify(f.input.actor)}`
+      )
+    );
+  } else {
+    const request = {
+      requestId: randomUUID(),
+      proposalId: proposal.id,
+      proposalDigest: selected.proposalDigest,
+      baseRevision: proposal.baseRevision,
+      candidateRevision: proposal.candidateRevision,
+      decision: 'deferred' as const,
+    };
+    await decideServerNotebookProposal(context, request);
+    await decideServerNotebookProposal(context, { ...request, requestId: randomUUID() });
+    if (fault === 'terminal-order')
+      await decideServerNotebookProposal(context, {
+        ...request,
+        requestId: randomUUID(),
+        decision: 'rejected',
+      });
+    const retained = JSON.parse(readFileSync(reviewPath, 'utf8'));
+    if (fault === 'review-id') retained.decisions[0].reviewId = retained.decisions[1].reviewId;
+    else if (fault === 'duplicate-request') retained.decisions.push(retained.decisions[0]);
+    else if (fault === 'terminal-order') retained.decisions.unshift(retained.decisions.pop());
+    else {
+      const other = createServerNotebookProposal(
+        context,
+        {
+          requestId: randomUUID(),
+          baseRevision: published,
+          summary: 'Retain a different exact candidate.',
+          changes: [{ path: 'index.md', content: `${original}\nDifferent evidence candidate.\n` }],
+        },
+        producer,
+        []
+      );
+      const otherSelected = readServerNotebookProposal(context, other.id);
+      if (fault === 'review-proposal-digest')
+        retained.decisions[0].proposalDigest = otherSelected.proposalDigest;
+      else retained.decisions[0].contentDigest = other.contentDigest;
+    }
+    writeFileSync(reviewPath, `${JSON.stringify(retained)}\n`);
+  }
+  const damagedProposal = readFileSync(proposalPath, 'utf8');
+  const damagedReviews = existsSync(reviewPath) ? readFileSync(reviewPath, 'utf8') : undefined;
+  expect
+    .soft(() => readServerNotebookProposalPreview(context, { proposalId: proposal.id, offset: 0 }))
+    .toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+  expect(f.notebook.publishedRevision()).toBe(published);
+  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  expect(readFileSync(proposalPath, 'utf8')).toBe(damagedProposal);
+  expect(existsSync(reviewPath) ? readFileSync(reviewPath, 'utf8') : undefined).toBe(
+    damagedReviews
+  );
+});
+
+it('keeps the producing human and another current Server administrator distinct through exact Review', async () => {
+  const { createBetterAuth } = await import('../auth/better-auth.js');
+  const { createOpenKitAccessTokenRecord, verifyOpenKitAccessTokenRecord } = await import(
+    '../auth/access-token-store.js'
+  );
+  const f = fixture(false);
+  const auth = createBetterAuth(f.coreDb, { env: { PORT: '3000' } });
+  const response = await auth.handler(
+    new Request('http://127.0.0.1:3000/api/auth/sign-up/email', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Another Knowledge administrator',
+        email: [randomUUID(), 'example.invalid'].join('@'),
+        password: randomUUID(),
+      }),
+    })
+  );
+  expect(response.status).toBe(200);
+  const administratorId: string = (await response.json()).user.id;
+  const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+    ownerUserId: administratorId,
+    scope: 'server-admin',
+    workspaceIds: [],
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  });
+  const verified = verifyOpenKitAccessTokenRecord(f.coreDb, issued.secret);
+  if (!verified) throw new Error('Fixture administrator must authenticate.');
+  const administrator: import('../auth/identity.js').Actor = {
+    kind: 'token',
+    userId: verified.ownerUserId,
+    tokenId: verified.tokenId,
+    tokenScope: verified.scope,
+  };
+  expect(administrator.userId).not.toBe(f.requestActor.userId);
+  const context = {
+    ...f.dependencies,
+    actor: f.requestActor,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+  };
+  const producer = {
+    kind: 'agent' as const,
+    id: 'knowledge-manager',
+    responsibleUserId: f.requestActor.userId,
+  };
+  const baseRevision = f.notebook.publishedRevision();
+  const original = f.notebook.readRevision(baseRevision).files['index.md']!;
+  const proposal = createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision,
+      summary: 'Review a different human-backed Agent candidate.',
+      changes: [
+        { path: 'index.md', content: `${original}\nExact cross-administrator candidate.\n` },
+      ],
+    },
+    producer,
+    []
+  );
+  const reviewer = {
+    ...f.dependencies,
+    actor: administrator,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, administrator, files),
+  };
+  const selected = readServerNotebookProposal(reviewer, proposal.id);
+  const preview = readServerNotebookProposalPreview(reviewer, {
+    proposalId: proposal.id,
+    path: 'index.md',
+    offset: 0,
+  });
+  const accepted = await decideServerNotebookProposal(reviewer, {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision: proposal.baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision: 'accepted',
+  });
+  expect(accepted.review.actor).toEqual({ kind: 'user', id: administrator.userId });
+  expect(accepted.notebookRevision).toBe(proposal.candidateRevision);
+  const current = f.notebook.readRevision(accepted.notebookRevision!);
+  expect(current.metadata.producer).toEqual(producer);
+  expect(current.files['index.md']).toBe(preview.after);
+});

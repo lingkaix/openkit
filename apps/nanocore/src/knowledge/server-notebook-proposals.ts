@@ -166,6 +166,8 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
   });
   if (
     proposal.contentDigest !== digest(JSON.stringify(changes)) ||
+    proposal.baseRevision !== candidate.parentRevision ||
+    JSON.stringify(proposal.producer) !== JSON.stringify(candidate.metadata.producer) ||
     candidate.metadata.authority.kind !== 'proposal' ||
     candidate.metadata.authority.proposalId !== id ||
     git.retainedCandidate(id).revision !== candidate.revision
@@ -178,9 +180,20 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
   const reviewFile = ReviewFileReader.parse(raw);
   if (reviewFile.proposalId !== id) throw new NotebookError('recovery_required');
   const reviews = reviewFile.decisions;
+  const proposalDigest = digest(bytes);
   if (
+    new Set(reviews.map(({ requestId }) => requestId)).size !== reviews.length ||
     reviews.some(
-      (review) =>
+      (review, index) =>
+        (review.decision !== 'deferred' && index !== reviews.length - 1) ||
+        review.reviewId !==
+          deriveEntityId('kr', {
+            ownerScope: { kind: 'server' },
+            proposalId: id,
+            requestId: review.requestId,
+          }) ||
+        review.proposalDigest !== proposalDigest ||
+        review.contentDigest !== proposal.contentDigest ||
         review.proposalId !== id ||
         review.baseRevision !== proposal.baseRevision ||
         review.candidateRevision !== proposal.candidateRevision
@@ -198,7 +211,7 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
   if (validation.errors.length) throw new NotebookError('recovery_required');
   return {
     proposal,
-    proposalDigest: digest(bytes),
+    proposalDigest,
     diff: paths.map((path) => ({
       path,
       before: base.files[path] ?? null,
