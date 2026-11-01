@@ -78,6 +78,7 @@ The workspace data source catalog (`docs/specs/20260704-workspace_data_source_ca
 
 The decision and its reason are recorded in [a decision record](../decisions/20260930-public_endpoints_by_admitted_grant.md).
 - The gateway uses the official MCP SDK v2 packages and supports the current MCP standard, including the 2026-07-28 stateless era, on both its worker-facing and upstream faces ([decision](../decisions/20260929-gateway_adopts_current_mcp_standard.md)).
+- The gateway and internal tool exposure move to a new MCP standard as soon as it is released or a published official SDK release supports it, ahead of the dated protocol release ([decision](../decisions/20261101-mcp_standard_adoption_policy.md)).
 - The tool surface a worker sees is fixed at Turn admission and changes only at a Turn boundary ([decision](../decisions/20260929-tool_surface_changes_at_turn_boundaries.md)).
 - An `approval-required` call returns a pending result at once, and after a grant the gateway executes the captured call ([decision](../decisions/20260930-pending_tool_calls.md)).
 - Gateway-managed MCP servers are declared in a workspace-scoped catalog (with read-only projection of server-scoped shared entries) and referenced by name from agent manifests.
