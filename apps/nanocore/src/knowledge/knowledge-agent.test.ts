@@ -51,6 +51,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { createTestStore } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-agent.js';
@@ -115,12 +116,39 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     createdAt: now,
     updatedAt: now,
   };
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-  });
+  const selectWorkspaceNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
   const publicationConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const admitPublication = (
+    notebook: KnowledgeNotebook,
+    scopeSchemaText: string,
+    request: {
+      requestId: string;
+      baseRevision: string;
+      summary: string;
+      changes: ReadonlyArray<{ path: string; content: string }>;
+    }
+  ) =>
+    readWorkspaceNotebookAdmission({
+      store,
+      coreDb,
+      workspaceDb,
+      notebook,
+      scopeSchemaText,
+      request: {
+        workspaceId: workspace.id,
+        requestId: request.requestId,
+        baseRevision: request.baseRevision,
+        summary: request.summary,
+        changes: request.changes,
+      },
+      requestActor: { kind: 'local', userId },
+      actor,
+      runtimeConfigManager: { current: () => publicationConfig },
+      workspaceMutationAdmission,
+    });
   const sourceRequestId = randomUUID();
+  const sourceSelection = selectWorkspaceNotebook();
   await publishCapturedSource(
     {
       owner: { dataRoot, ownerScope: { kind: 'workspace', workspaceId: workspace.id } },
@@ -131,22 +159,11 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
       commandInput: sourceInput,
       captureChannel: 'knowledge.source.register',
       revalidatePublication: () => {
-        readWorkspaceNotebookAdmission({
-          store,
-          coreDb,
-          workspaceDb,
-          notebook,
-          request: {
-            workspaceId: workspace.id,
-            requestId: sourceRequestId,
-            baseRevision: notebook.publishedRevision(),
-            changes: [],
-            summary: 'Capture the explicit launch evidence.',
-          },
-          requestActor: { kind: 'local', userId },
-          actor,
-          runtimeConfigManager: { current: () => publicationConfig },
-          workspaceMutationAdmission,
+        admitPublication(sourceSelection.notebook, sourceSelection.scopeSchemaText, {
+          requestId: sourceRequestId,
+          baseRevision: sourceSelection.notebook.publishedRevision(),
+          summary: 'Capture the explicit launch evidence.',
+          changes: [],
         });
       },
     },
@@ -155,10 +172,11 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
   );
   const source = store.getKnowledgeSource(workspace.id, sourceInput.id);
   const sourceReference = `source:${source.id}@${source.contentDigest}`;
+  const pageSelection = selectWorkspaceNotebook();
   const publicationRequest = {
     requestId: randomUUID(),
     workspaceId: workspace.id,
-    baseRevision: notebook.publishedRevision(),
+    baseRevision: pageSelection.notebook.publishedRevision(),
     summary: 'Record launch evidence',
     changes: [
       {
@@ -180,39 +198,41 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     {
       store,
       workspaceDb,
-      notebook,
+      notebook: pageSelection.notebook,
       producer: actor,
       inflightCommands: new WeakMap(),
       revalidate: () =>
-        readWorkspaceNotebookAdmission({
-          store,
-          coreDb,
-          workspaceDb,
-          notebook,
-          request: publicationRequest,
-          requestActor: { kind: 'local', userId },
-          actor,
-          runtimeConfigManager: { current: () => publicationConfig },
-          workspaceMutationAdmission,
-        }),
+        admitPublication(pageSelection.notebook, pageSelection.scopeSchemaText, publicationRequest),
     },
     publicationRequest
   );
   if (emptyOverview) {
-    const baseRevision = notebook.publishedRevision();
-    const candidateRevision = notebook.prepare({
-      baseRevision,
-      changes: { 'index.md': '---\nokf_version: "0.2"\n---\n# Notebook\n' },
-      metadata: {
-        summary: 'Retain an empty overview beside the human fact',
-        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'a'.repeat(64)}` },
+    const overviewSelection = selectWorkspaceNotebook();
+    const overviewRequest = {
+      requestId: randomUUID(),
+      workspaceId: workspace.id,
+      baseRevision: overviewSelection.notebook.publishedRevision(),
+      summary: 'Retain an empty overview beside the human fact',
+      changes: [{ path: 'index.md', content: '---\nokf_version: "0.2"\n---\n# Notebook\n' }],
+    };
+    await publishWorkspaceNotebook(
+      {
+        store,
+        workspaceDb,
+        notebook: overviewSelection.notebook,
         producer: actor,
-        authority: { kind: 'direct', instructionReference: 'fixture:empty-overview' },
-        sourceReferences: [],
+        inflightCommands: new WeakMap(),
+        revalidate: () =>
+          admitPublication(
+            overviewSelection.notebook,
+            overviewSelection.scopeSchemaText,
+            overviewRequest
+          ),
       },
-    });
-    notebook.publish({ baseRevision, candidateRevision });
+      overviewRequest
+    );
   }
+  const notebook = selectWorkspaceNotebook().notebook;
   const revision = notebook.publishedRevision();
   const workspaceFiles = notebook.readRevision(revision, ['launch-evidence.md', 'index.md']).files;
   const page = workspaceFiles['launch-evidence.md']!;
@@ -1522,29 +1542,43 @@ it('rechecks current User authority after Memory page reads before answer delive
 
 it('exposes and forwards exact narrowing type/applicability arguments through the real KM search Tool', async () => {
   const f = await fixture();
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(f.dataRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git'),
-  });
   const { updateOkfFrontmatter } = await import('./okf.js');
-  const { commandInputHash } = await import('../runtime/idempotent-command.js');
-  const baseRevision = notebook.publishedRevision();
+  const selection = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id);
   const content = updateOkfFrontmatter({
     path: 'launch-evidence.md',
     content: f.page,
     updates: { type: 'Rule', applies_to: ['tool:launch.check'] },
   });
-  const candidateRevision = notebook.prepare({
-    baseRevision,
-    changes: { 'launch-evidence.md': content },
-    metadata: {
-      summary: 'Declare applicability',
+  const publicationRequest = {
+    requestId: randomUUID(),
+    workspaceId: f.workspace.id,
+    baseRevision: selection.notebook.publishedRevision(),
+    summary: 'Declare applicability',
+    changes: [{ path: 'launch-evidence.md', content }],
+  };
+  await publishWorkspaceNotebook(
+    {
+      store: f.store,
+      workspaceDb: f.workspaceDb,
+      notebook: selection.notebook,
       producer: f.actor,
-      authority: { kind: 'direct', instructionReference: 'test:search-filters' },
-      sourceReferences: [f.sourceReference],
-      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(content) },
+      inflightCommands: new WeakMap(),
+      revalidate: () =>
+        readWorkspaceNotebookAdmission({
+          store: f.store,
+          coreDb: f.coreDb,
+          workspaceDb: f.workspaceDb,
+          notebook: selection.notebook,
+          scopeSchemaText: selection.scopeSchemaText,
+          request: publicationRequest,
+          requestActor: { kind: 'local', userId: f.userId },
+          actor: f.actor,
+          runtimeConfigManager: { current: () => f.publicationConfig },
+          workspaceMutationAdmission: f.workspaceMutationAdmission,
+        }),
     },
-  });
-  notebook.publish({ baseRevision, candidateRevision });
+    publicationRequest
+  );
   let step = 0;
   f.createResponses.mockImplementation(async () => {
     if (++step === 1)
@@ -1634,7 +1668,7 @@ it.each([
     'knowledge',
     'notebook.git'
   );
-  const notebook = new KnowledgeNotebook({ repositoryPath });
+  const selection = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id);
   const input = {
     dataRoot: f.dataRoot,
     workspaceId: f.workspace.id,
@@ -1649,7 +1683,7 @@ it.each([
   const publicationRequest = {
     requestId: randomUUID(),
     workspaceId: f.workspace.id,
-    baseRevision: f.revision,
+    baseRevision: selection.notebook.publishedRevision(),
     summary: 'Publish a later exact evidence revision',
     changes: [
       { path: 'launch-evidence.md', content },
@@ -1664,7 +1698,7 @@ it.each([
     {
       store: f.store,
       workspaceDb: f.workspaceDb,
-      notebook,
+      notebook: selection.notebook,
       producer: f.actor,
       inflightCommands: new WeakMap(),
       revalidate: () =>
@@ -1672,7 +1706,8 @@ it.each([
           store: f.store,
           coreDb: f.coreDb,
           workspaceDb: f.workspaceDb,
-          notebook,
+          notebook: selection.notebook,
+          scopeSchemaText: selection.scopeSchemaText,
           request: publicationRequest,
           requestActor: { kind: 'local', userId: f.userId },
           actor: f.actor,
@@ -1682,7 +1717,10 @@ it.each([
     },
     publicationRequest
   );
-  const candidateRevision = notebook.publishedRevision();
+  const candidateRevision = readTestWorkspaceNotebookSelection(
+    f.dataRoot,
+    f.workspace.id
+  ).notebook.publishedRevision();
   const after = await retrieveWorkspaceKnowledge(input);
   expect(after.notebookRevision).toBe(candidateRevision);
   expect(after.notebookRevision).not.toBe(before.notebookRevision);
