@@ -248,7 +248,8 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
         typeof options.input.judgement.target === 'object' &&
         'kind' in options.input.judgement.target &&
         (options.input.judgement.target.kind === 'artifact-version' ||
-          options.input.judgement.target.kind === 'material-range'))) &&
+          options.input.judgement.target.kind === 'material-range' ||
+          options.input.judgement.target.kind === 'candidate-set'))) &&
     (options.scope.coreId === 'server' || options.scope.workspaceId !== undefined) &&
     options.scope.userId === undefined &&
     options.scope.appId === undefined;

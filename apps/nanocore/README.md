@@ -1,5 +1,7 @@
 # nanocore
 
+Candidate-set creation, selection and candidate-target human judgements use one typed Workspace native request for the complete record and original receipt. Main keeps current Kernel and exact Artifact audience checks, repeats them after opening the writer, and leaves candidate projection reads on Main. The native savepoint checks membership and request lineage, preserves retained descriptive history, and returns the complete original response after its covering FULL commit. Artifact and Material assessments retain their existing native owners.
+
 The Memory Knowledge-query fixture batches its Page and Source requests in one external model response. The real loop reads the selected Page before admitting and reading its Source; all search, content, citation, trace, isolation and usage assertions remain. This avoids an unrelated extra model round trip without changing the 30-second test bound.
 
 Knowledge proposal and reversal tests isolate independent decision and evidence scenarios. The S39 Knowledge check shares one real completed Task across delivery and proposal-lineage observations, with bounded setup and the original assertions; its cleanup remains explicit. Each test and the shared S39 setup have a 60-second bound.

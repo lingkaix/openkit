@@ -147,6 +147,8 @@ import {
 } from './control-store-worker-protocol.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
 import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
+import { EvaluationCandidateCommandError } from './evaluation-candidate-codecs.js';
+import { applyControlEvaluationCandidate } from './evaluation-candidate-native.js';
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import { applyNativeScopeMigrations } from './migrate.js';
@@ -188,6 +190,7 @@ type WriteCommand = Extract<
       | 'admin-recovery'
       | 'worker-control-evidence'
       | 'generative-presentation'
+      | 'evaluation-candidate'
       | 'provenance'
       | 'observation'
       | 'capability'
@@ -312,6 +315,12 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       message: THREAD_READ_RECEIPT_INVALID,
       status: 409,
     };
+  if (
+    operation === 'evaluation-candidate' &&
+    (error instanceof EvaluationCandidateCommandError ||
+      error instanceof IdempotencyKeyConflictError)
+  )
+    return { operation, code: error.code, message: error.message, status: error.status };
   let domain: ControlWorkerDomainRefusal | undefined;
   if (
     operation === 'admin-recovery' &&
@@ -1412,6 +1421,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'review',
               result,
             };
+          } else if (request.operation === 'evaluation-candidate') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            const result = applyControlEvaluationCandidate(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'evaluation-candidate',
+              result,
+            };
           } else if (request.operation === 'material') {
             if (owner.scopeDb?.scope !== 'workspace' || !request.preparedMaterial)
               throw new ControlProductPreconditionError();
@@ -2080,6 +2099,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'journal' ||
       value.operation === 'goal' ||
       value.operation === 'maintenance' ||
+      value.operation === 'evaluation-candidate' ||
       value.operation === 'material' ||
       value.operation === 'review' ||
       value.operation === 'terminal'

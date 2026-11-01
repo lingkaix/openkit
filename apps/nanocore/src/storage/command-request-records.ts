@@ -128,8 +128,16 @@ function nativeEvaluationReceipt(db: CommandRequestDb, record: CommandRequestRec
       .get(record.key) ||
     !!db.sqlite
       .prepare(`SELECT 1 WHERE EXISTS (SELECT 1 FROM artifact_reviews AS review,json_each(review.judgements) AS annotation WHERE review.workspace_id=? AND json_extract(annotation.value,'$.requestId')=?)
-      OR EXISTS (SELECT 1 FROM workspace_material_revisions AS revision,json_each(revision.judgements) AS annotation WHERE revision.workspace_id=? AND json_extract(annotation.value,'$.requestId')=?)`)
-      .get(db.workspaceId, record.requestId, db.workspaceId, record.requestId)
+      OR EXISTS (SELECT 1 FROM workspace_material_revisions AS revision,json_each(revision.judgements) AS annotation WHERE revision.workspace_id=? AND json_extract(annotation.value,'$.requestId')=?)
+      OR EXISTS (SELECT 1 FROM evaluation_candidate_sets AS candidate,json_each(candidate.payload_json,'$.judgements') AS annotation WHERE candidate.workspace_id=? AND json_extract(annotation.value,'$.requestId')=?)`)
+      .get(
+        db.workspaceId,
+        record.requestId,
+        db.workspaceId,
+        record.requestId,
+        db.workspaceId,
+        record.requestId
+      )
   );
 }
 

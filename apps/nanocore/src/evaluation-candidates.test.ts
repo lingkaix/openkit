@@ -6,20 +6,25 @@ import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createArtifactReview } from './artifact-reviews.js';
 import {
-  appendCandidateSetJudgement,
   createCandidateSet,
   listCandidateSets,
   readCandidateSet,
   selectCandidateSet,
 } from './evaluation-candidates.js';
+import { createEvaluationJudgementOperationImplementations } from './evaluation-judgement-operations.js';
 import { createEvaluationOperationImplementations } from './evaluation-operations.js';
 import { FsStore } from './lib/store.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { workspaceMembershipDecisionFixture } from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { removeWorkspaceMember } from './workspace-sharing.js';
 
 const roots: string[] = [];
 const databases: Array<CoreDb | WorkspaceDb> = [];
@@ -117,6 +122,41 @@ async function fixture(privateSecond = false) {
     inflightCommands,
   };
   return { coreDb, workspaceDb, store, workspace, userId, candidates, dataRoot, bob, access };
+}
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+/** Public operation dependencies with an optional connection-local Main write refusal. */
+function dependencies(state: Fixture, readOnly = false) {
+  return {
+    coreDb: state.coreDb,
+    store: state.store,
+    inflightCommands: state.access.inflightCommands,
+    repositoryWorkspaceDb: (workspaceId: string) => {
+      const handle = openWorkspaceDb(state.dataRoot, workspaceId);
+      databases.push(handle);
+      if (readOnly) {
+        handle.sqlite.pragma('query_only = ON');
+        expect(handle.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      }
+      return handle;
+    },
+  };
+}
+
+/** Exact authenticated public actor and Workspace selected by the fixture. */
+function publicContext(
+  state: Fixture,
+  recheckAdmission?: () => Promise<void>,
+  userId = state.userId
+) {
+  return {
+    kind: 'public' as const,
+    actor: { kind: 'session' as const, userId },
+    actorRef: { kind: 'user' as const, id: userId },
+    scope: { kind: 'workspace' as const, workspaceId: state.workspace.id },
+    ...(recheckAdmission ? { recheckAdmission } : {}),
+  };
 }
 
 describe('Workspace candidate set authority', () => {
@@ -286,15 +326,31 @@ describe('Workspace candidate set authority', () => {
     state.workspaceDb.sqlite
       .prepare('UPDATE evaluation_candidate_sets SET payload_json = ? WHERE candidate_set_id = ?')
       .run(JSON.stringify(rawBeforeRating), original.candidateSetId);
-    const rated = state.workspaceDb.sqlite.transaction(() =>
-      appendCandidateSetJudgement(state.access, {
-        candidateSetId: original.candidateSetId,
+    const judgementOperations = createEvaluationJudgementOperationImplementations({
+      store: state.store,
+      coreDb: state.coreDb,
+      inflightCommands: state.access.inflightCommands,
+      repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(state.dataRoot, workspaceId),
+    });
+    await judgementOperations['evaluation.judgement-add'](
+      {
+        workspaceId: state.workspace.id,
         requestId: 'human-rating',
-        kind: 'rate',
-        choice: { value: 4, lowerBound: 1, upperBound: 5 },
-        note: 'Useful comparison.',
-      })
-    )();
+        judgement: {
+          target: { kind: 'candidate-set', candidateSetId: original.candidateSetId },
+          kind: 'rate',
+          choice: { value: 4, lowerBound: 1, upperBound: 5 },
+          note: 'Useful comparison.',
+        },
+      },
+      {
+        kind: 'public',
+        actor: state.access.actor,
+        actorRef: { kind: 'user', id: state.userId },
+        scope: { kind: 'workspace', workspaceId: state.workspace.id },
+      }
+    );
+    const rated = readCandidateSet(state.access, original.candidateSetId);
     expect(rated.judgements).toHaveLength(3);
     expect(
       JSON.parse(
@@ -378,13 +434,15 @@ describe('Workspace candidate set authority', () => {
       requestId: 'transaction-choice',
       choice: state.candidates[0]!,
     };
-    const failure = vi.spyOn(state.store, 'recordCommandRequest').mockImplementation(() => {
-      throw new Error('Receipt persistence failed.');
+    state.workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_candidate_choice_receipt
+      BEFORE INSERT ON idempotency_requests WHEN NEW.request_id = 'transaction-choice'
+      BEGIN SELECT RAISE(ABORT, 'Receipt persistence failed.'); END`);
+    await expect(selectCandidateSet(state.access, input)).rejects.toMatchObject({
+      name: 'ControlStoreWorkerError',
+      message: 'Control database writer operation failed.',
+      commit: 'not-committed',
     });
-    await expect(selectCandidateSet(state.access, input)).rejects.toThrow(
-      'Receipt persistence failed.'
-    );
-    failure.mockRestore();
+    state.workspaceDb.sqlite.exec('DROP TRIGGER refuse_candidate_choice_receipt');
     expect(readCandidateSet(state.access, original.candidateSetId)).toEqual(original);
     expect((await selectCandidateSet(state.access, input)).judgements).toHaveLength(1);
   });
@@ -418,6 +476,245 @@ describe('Workspace candidate set authority', () => {
     expect(() => listCandidateSets(bobAccess)).toThrow(
       expect.objectContaining({ code: 'workspace_access_denied' })
     );
+  });
+
+  it('commits and replays create and select while Main has only a readonly Workspace handle', async () => {
+    const state = await fixture();
+    const context = publicContext(state);
+    const operations = createEvaluationOperationImplementations(dependencies(state, true));
+    const create = {
+      workspaceId: state.workspace.id,
+      requestId: 'native-readonly-create',
+      candidates: state.candidates,
+    };
+    const created = await operations['evaluation.candidate-set-create'](create, context);
+    const raw = JSON.parse(
+      (
+        state.workspaceDb.sqlite
+          .prepare('SELECT payload_json AS payloadJson FROM evaluation_candidate_sets')
+          .get() as { payloadJson: string }
+      ).payloadJson
+    );
+    raw.descriptiveAnnotation = { retained: true };
+    state.workspaceDb.sqlite
+      .prepare('UPDATE evaluation_candidate_sets SET payload_json = ?')
+      .run(JSON.stringify(raw));
+    const select = {
+      workspaceId: state.workspace.id,
+      candidateSetId: created.candidateSetId,
+      requestId: 'native-readonly-select',
+      choice: state.candidates[1]!,
+      note: 'Exact second candidate.',
+    };
+    const selected = await operations['evaluation.candidate-set-select'](select, context);
+    expect(selected).toMatchObject({
+      candidateSetId: create.requestId,
+      candidates: state.candidates,
+      judgements: [{ requestId: select.requestId, choice: select.choice, note: select.note }],
+    });
+    expect(
+      JSON.parse(
+        (
+          state.workspaceDb.sqlite
+            .prepare('SELECT payload_json AS payloadJson FROM evaluation_candidate_sets')
+            .get() as { payloadJson: string }
+        ).payloadJson
+      )
+    ).toMatchObject({ descriptiveAnnotation: { retained: true } });
+    expect(
+      state.workspaceDb.sqlite
+        .prepare(
+          'SELECT command_name, request_id FROM idempotency_requests WHERE request_id IN (?, ?) ORDER BY request_id'
+        )
+        .all(create.requestId, select.requestId)
+    ).toEqual([
+      { command_name: 'evaluation.candidate-set-create', request_id: create.requestId },
+      { command_name: 'evaluation.candidate-set-select', request_id: select.requestId },
+    ]);
+    expect(await operations['evaluation.candidate-set-create'](create, context)).toEqual(created);
+    expect(await operations['evaluation.candidate-set-select'](select, context)).toEqual(selected);
+  });
+
+  it('rechecks current Workspace authority after native preparation and before effects', async () => {
+    const state = await fixture();
+    const client = getControlStoreWorkerClient();
+    const open = client.open.bind(client);
+    let opened = false;
+    let rechecks = 0;
+    vi.spyOn(client, 'open').mockImplementationOnce(async (input) => {
+      await open(input);
+      opened = true;
+    });
+    const operations = createEvaluationOperationImplementations(dependencies(state));
+    const context = publicContext(
+      state,
+      async () => {
+        expect(opened).toBe(true);
+        rechecks += 1;
+        const removed = state.coreDb.sqlite.transaction(() =>
+          removeWorkspaceMember({
+            authorization: workspaceMembershipDecisionFixture(
+              state.coreDb,
+              state.userId,
+              state.workspace.id
+            ),
+            coreDb: state.coreDb,
+            workspaceId: state.workspace.id,
+            actorUserId: state.userId,
+            memberUserId: state.bob,
+            expectedRevision: 1,
+          })
+        )();
+        expect(removed.kind).toBe('removed');
+      },
+      state.bob
+    );
+    await expect(
+      operations['evaluation.candidate-set-create'](
+        {
+          workspaceId: state.workspace.id,
+          requestId: 'revoked-after-native-open',
+          candidates: state.candidates,
+        },
+        context
+      )
+    ).rejects.toMatchObject({ code: 'workspace_access_denied' });
+    expect(rechecks).toBe(1);
+    expect(
+      state.workspaceDb.sqlite.prepare('SELECT * FROM evaluation_candidate_sets').all()
+    ).toEqual([]);
+    expect(
+      state.workspaceDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
+        .all('revoked-after-native-open')
+    ).toEqual([]);
+  });
+
+  it('refuses a nonmember choice without changing the candidate row or receipt inventory', async () => {
+    const state = await fixture();
+    const original = await createCandidateSet(state.access, {
+      workspaceId: state.workspace.id,
+      requestId: 'native-membership-set',
+      candidates: state.candidates,
+    });
+    const operations = createEvaluationOperationImplementations(dependencies(state, true));
+    const context = publicContext(state);
+    const body = 'Visible exact candidate outside this set.';
+    const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
+    const now = new Date().toISOString();
+    const artifact = await state.store.createArtifact({
+      id: allocateEntityId('ar'),
+      workspaceId: state.workspace.id,
+      threadId: null,
+      turnId: null,
+      kind: 'file',
+      title: 'Nonmember candidate',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body },
+      contentDigest,
+      lastMutationRequestId: 'nonmember-candidate',
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: 'nonmember-candidate',
+        sourceDigest: contentDigest,
+        actor: { kind: 'user', id: state.userId },
+        requestId: 'nonmember-candidate',
+        recordedAt: now,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const before = state.workspaceDb.sqlite
+      .prepare('SELECT payload_json FROM evaluation_candidate_sets')
+      .all();
+    const receipts = state.workspaceDb.sqlite
+      .prepare('SELECT * FROM idempotency_requests ORDER BY request_key')
+      .all();
+    await expect(
+      operations['evaluation.candidate-set-select'](
+        {
+          workspaceId: state.workspace.id,
+          candidateSetId: original.candidateSetId,
+          requestId: 'native-nonmember-choice',
+          choice: { artifactId: artifact.id, artifactVersion: artifact.version, contentDigest },
+        },
+        context
+      )
+    ).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(
+      state.workspaceDb.sqlite.prepare('SELECT payload_json FROM evaluation_candidate_sets').all()
+    ).toEqual(before);
+    expect(
+      state.workspaceDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests ORDER BY request_key')
+        .all()
+    ).toEqual(receipts);
+  });
+
+  it('rolls back candidate assessment with its receipt and replays one native commit', async () => {
+    const state = await fixture();
+    const set = await createCandidateSet(state.access, {
+      workspaceId: state.workspace.id,
+      requestId: 'assessment-set',
+      candidates: state.candidates,
+    });
+    const operations = createEvaluationJudgementOperationImplementations(dependencies(state, true));
+    const context = publicContext(state);
+    const input = {
+      workspaceId: state.workspace.id,
+      requestId: 'candidate-assessment',
+      judgement: {
+        kind: 'rate' as const,
+        target: { kind: 'candidate-set' as const, candidateSetId: set.candidateSetId },
+        choice: { value: 4, lowerBound: 1, upperBound: 5 },
+        note: 'Useful retained comparison.',
+        extensions: { rubric: 'manual' },
+      },
+    };
+    const before = state.workspaceDb.sqlite
+      .prepare('SELECT payload_json FROM evaluation_candidate_sets')
+      .all();
+    const receipts = state.workspaceDb.sqlite
+      .prepare('SELECT * FROM idempotency_requests ORDER BY request_key')
+      .all();
+    state.workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_candidate_assessment_receipt
+      BEFORE INSERT ON idempotency_requests WHEN NEW.request_id = 'candidate-assessment'
+      BEGIN SELECT RAISE(ABORT, 'candidate assessment receipt refused'); END`);
+    await expect(operations['evaluation.judgement-add'](input, context)).rejects.toThrow();
+    expect(
+      state.workspaceDb.sqlite.prepare('SELECT payload_json FROM evaluation_candidate_sets').all()
+    ).toEqual(before);
+    expect(
+      state.workspaceDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests ORDER BY request_key')
+        .all()
+    ).toEqual(receipts);
+    state.workspaceDb.sqlite.exec('DROP TRIGGER refuse_candidate_assessment_receipt');
+    const recorded = await operations['evaluation.judgement-add'](input, context);
+    expect(recorded.judgement).toMatchObject({
+      actor: context.actorRef,
+      requestId: input.requestId,
+      target: input.judgement.target,
+      note: input.judgement.note,
+      extensions: input.judgement.extensions,
+    });
+    expect(
+      state.workspaceDb.sqlite
+        .prepare(
+          'SELECT command_name, response_kind, response_id FROM idempotency_requests WHERE request_id = ?'
+        )
+        .all(input.requestId)
+    ).toEqual([
+      {
+        command_name: 'evaluation.judgement-add',
+        response_kind: 'evaluation_judgement',
+        response_id: input.requestId,
+      },
+    ]);
+    expect(await operations['evaluation.judgement-add'](input, context)).toEqual(recorded);
   });
 
   it('joins ordinary native JSON operations to real Workspace admission and server attribution', async () => {

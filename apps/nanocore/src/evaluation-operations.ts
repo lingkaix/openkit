@@ -54,6 +54,7 @@ export function createEvaluationOperationImplementations(
         workspaceDb,
         inflightCommands: dependencies.inflightCommands,
         actor: context.actor,
+        ...(context.recheckAdmission ? { recheckAdmission: context.recheckAdmission } : {}),
       });
     } catch (error) {
       if (error instanceof IdempotencyKeyConflictError)

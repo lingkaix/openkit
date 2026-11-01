@@ -68,6 +68,8 @@ export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   'material.range-correct',
   'worker.recovery.retry',
   'generative-ui.publish',
+  'evaluation.candidate-set-create',
+  'evaluation.candidate-set-select',
 ] as const satisfies readonly CommandRequestName[];
 
 /** Workspace Knowledge commands commit their original receipt with SQL publication; other scopes retain their current writer. */
@@ -104,6 +106,9 @@ export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.
       AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)
     OR EXISTS (SELECT 1 FROM workspace_material_revisions AS revision, json_each(revision.judgements) AS annotation
     WHERE revision.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
+      AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)
+    OR EXISTS (SELECT 1 FROM evaluation_candidate_sets AS candidate, json_each(candidate.payload_json,'$.judgements') AS annotation
+    WHERE candidate.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
       AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)))`;
 
 /** Original receipt facts; expiry policy remains with the existing command producer, not another ledger. */

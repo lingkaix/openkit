@@ -21,11 +21,17 @@ import { isArtifactVisible } from './auth/thread-visibility.js';
 import { type CommandRequestRecord, type FsStore, StoreRecordNotFoundError } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import {
+  type IdempotentCommandReceipt,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import { preserveDescriptiveRecord } from './storage/workspace-file-records.js';
+import {
+  type ControlEvaluationCandidate,
+  ControlEvaluationCandidateSchema,
+} from './storage/evaluation-candidate-codecs.js';
+import { nativeProductScope } from './storage/workspace-file-records.js';
 
 /** Existing authenticated authority and SQLite scope; no caller payload supplies these facts. */
 export interface CandidateSetAccess {
@@ -33,9 +39,11 @@ export interface CandidateSetAccess {
   readonly coreDb: CoreDb;
   readonly workspaceDb: WorkspaceDb;
   readonly actor: Actor;
+  /** Existing public admission is rechecked after awaited native preparation. */
+  readonly recheckAdmission?: () => Promise<void>;
 }
 
-/** Reuses the existing command receipt owner with the same Workspace transaction. */
+/** Reuses the existing native command receipt owner and Workspace writer. */
 export interface CandidateSetCommands extends CandidateSetAccess {
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
 }
@@ -162,6 +170,26 @@ export function listCandidateSets(access: CandidateSetAccess): CandidateSetRecor
   return records;
 }
 
+/** Opens only the already admitted physical Workspace; this await never holds Main SQL. */
+async function openCandidateWriter(access: CandidateSetAccess) {
+  const scope = nativeProductScope(access.workspaceDb.dataRoot, {
+    kind: 'workspace',
+    workspaceId: access.workspaceDb.workspaceId,
+  });
+  const database = `workspace:${scope.path}`;
+  const client = getControlStoreWorkerClient();
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: access.workspaceDb.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  return { client, database };
+}
+
 /** Creates immutable ordered membership with its ordinary transaction-owned command receipt. */
 export async function createCandidateSet(
   access: CandidateSetCommands,
@@ -174,14 +202,15 @@ export async function createCandidateSet(
     store: access.store,
     inflightCommands: access.inflightCommands,
     workspaceDb: access.workspaceDb,
-    workspaceTransaction: true,
     command: 'evaluation.candidate-set-create',
     requestId: input.requestId,
     scope: { workspaceId: input.workspaceId },
     input: { actor, candidates: input.candidates },
     responseKind: 'evaluation_candidate_set',
     responseId: (record) => record.candidateSetId,
-    execute: () => {
+    execute: async (receipt) => {
+      const { client, database } = await openCandidateWriter(access);
+      await access.recheckAdmission?.();
       admit(access, 'evaluation.candidate-set-create');
       admitCandidates(access, input.candidates);
       const parsed = CandidateSetRecordSchema.safeParse(
@@ -201,30 +230,10 @@ export async function createCandidateSet(
           'Candidate membership must contain at least two distinct exact Artifact versions.',
           400
         );
-      const existing = access.workspaceDb.sqlite
-        .prepare(
-          'SELECT candidate_set_id AS candidateSetId, payload_json AS payloadJson FROM evaluation_candidate_sets WHERE workspace_id = ? AND candidate_set_id = ?'
-        )
-        .get(input.workspaceId, input.requestId) as Row | undefined;
-      if (existing) {
-        const { record } = parseRow(access, existing);
-        if (
-          !isDeepStrictEqual(record.candidates, input.candidates) ||
-          !isDeepStrictEqual(record.createdBy, actor)
-        )
-          throw new OperationError(
-            'conflict',
-            'The candidate-set creation identity already owns different membership.',
-            409
-          );
-        throw recovery();
-      }
-      access.workspaceDb.sqlite
-        .prepare(
-          'INSERT INTO evaluation_candidate_sets (workspace_id, candidate_set_id, payload_json) VALUES (?, ?, ?)'
-        )
-        .run(input.workspaceId, input.requestId, JSON.stringify(parsed.data));
-      return parsed.data;
+      return client.evaluationCandidate(
+        database,
+        ControlEvaluationCandidateSchema.parse({ mode: 'create', record: parsed.data, receipt })
+      );
     },
     replay: (receipt) => {
       assertReceipt(receipt, input.requestId);
@@ -239,15 +248,16 @@ export async function createCandidateSet(
   });
 }
 
-/** Appends set-owned judgement in the caller's existing Workspace transaction; no second judgement store exists. */
-export function appendCandidateSetJudgement(
+/** Appends set-owned history and its original receipt on the native writer after current authority rechecks. */
+export async function appendCandidateSetJudgement(
   access: CandidateSetAccess,
-  input: CandidateSetJudgementInput
-): CandidateSetRecord {
+  input: CandidateSetJudgementInput,
+  receipt: IdempotentCommandReceipt
+): Promise<CandidateSetRecord> {
+  const { client, database } = await openCandidateWriter(access);
+  await access.recheckAdmission?.();
   const actor = admit(access, 'evaluation.candidate-set-select');
-  if (!access.workspaceDb.sqlite.inTransaction)
-    throw new Error('Candidate judgement requires the existing Workspace transaction.');
-  const record = readCandidateSet(access, input.candidateSetId);
+  readCandidateSet(access, input.candidateSetId);
   const judgement = JudgementRecordSchema.parse(
     writeRetainedV1({
       workspaceId: access.workspaceDb.workspaceId,
@@ -261,50 +271,12 @@ export function appendCandidateSetJudgement(
       extensions: input.extensions ?? {},
     })
   );
-  if (
-    input.kind === 'select' &&
-    !record.candidates.some((candidate) => isDeepStrictEqual(candidate, input.choice))
-  )
-    throw new OperationError(
-      'invalid_request',
-      'The selected exact Artifact version is not a member of this candidate set.',
-      400
-    );
-  const previous = record.judgements.find((entry) => entry.requestId === input.requestId);
-  if (previous) {
-    if (
-      previous.kind !== judgement.kind ||
-      !isDeepStrictEqual(previous.actor, actor) ||
-      !isDeepStrictEqual(previous.choice, judgement.choice) ||
-      previous.note !== judgement.note
-    )
-      throw new OperationError(
-        'conflict',
-        'The judgement request identity already owns a different assessment.',
-        409
-      );
-    throw recovery();
-  }
-  const updated = CandidateSetRecordSchema.parse({
-    ...record,
-    judgements: [...record.judgements, judgement],
+  const command: ControlEvaluationCandidate = ControlEvaluationCandidateSchema.parse({
+    mode: 'append',
+    judgement,
+    receipt,
   });
-  const row = access.workspaceDb.sqlite
-    .prepare(
-      'SELECT candidate_set_id AS candidateSetId, payload_json AS payloadJson FROM evaluation_candidate_sets WHERE workspace_id = ? AND candidate_set_id = ?'
-    )
-    .get(access.workspaceDb.workspaceId, input.candidateSetId) as Row;
-  const { raw } = parseRow(access, row);
-  access.workspaceDb.sqlite
-    .prepare(
-      'UPDATE evaluation_candidate_sets SET payload_json = ? WHERE workspace_id = ? AND candidate_set_id = ?'
-    )
-    .run(
-      JSON.stringify(preserveDescriptiveRecord(raw, record, updated)),
-      access.workspaceDb.workspaceId,
-      input.candidateSetId
-    );
-  return updated;
+  return client.evaluationCandidate(database, command);
 }
 
 /** Appends one exact member choice and replays its original authoritative history prefix. */
@@ -319,7 +291,6 @@ export async function selectCandidateSet(
     store: access.store,
     inflightCommands: access.inflightCommands,
     workspaceDb: access.workspaceDb,
-    workspaceTransaction: true,
     command: 'evaluation.candidate-set-select',
     requestId: input.requestId,
     scope: { workspaceId: input.workspaceId, candidateSetId: input.candidateSetId },
@@ -327,8 +298,12 @@ export async function selectCandidateSet(
     responseKind: 'evaluation_candidate_set',
     responseId: (record) => record.candidateSetId,
     // Set membership owns this choice; do not also append a version-owned Review choice.
-    execute: () =>
-      appendCandidateSetJudgement(access, { ...input, kind: 'select', note: input.note ?? null }),
+    execute: (receipt) =>
+      appendCandidateSetJudgement(
+        access,
+        { ...input, kind: 'select', note: input.note ?? null },
+        receipt
+      ),
     replay: (receipt) => {
       assertReceipt(receipt, input.candidateSetId);
       const record = readCandidateSet(access, input.candidateSetId);

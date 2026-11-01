@@ -101,6 +101,11 @@ import type {
   ControlRecoverySafetyInput,
   ControlRecoverySafetyResult,
 } from './control-store-recovery.js';
+import {
+  type ControlEvaluationCandidate,
+  ControlEvaluationCandidateResultSchema,
+  ControlEvaluationCandidateSchema,
+} from './evaluation-candidate-codecs.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
   type ControlThreadReadMembershipWire,
@@ -117,7 +122,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 28;
+export const CONTROL_WORKER_VERSION = 29;
 
 /** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
 export const ControlProvenanceInputSchema = z
@@ -284,6 +289,7 @@ export type ControlWorkerCommand =
           readonly input: ControlMaterialWireInput;
           readonly content?: ArrayBuffer;
         }
+      | { readonly operation: 'evaluation-candidate'; readonly input: ControlEvaluationCandidate }
       | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
       | { readonly operation: 'terminal'; readonly input: ControlTerminalTransition }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' | 'recovery-seal' }
@@ -401,6 +407,7 @@ export interface ControlWorkerDomainRefusal {
     | 'admin-recovery'
     | 'thread-read-membership'
     | 'generative-presentation'
+    | 'evaluation-candidate'
     | 'goal'
     | 'capability'
     | 'maintenance'
@@ -457,6 +464,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'thread-read-membership';
       readonly itemIds: string[];
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'evaluation-candidate';
+      readonly result: import('@openkit/app-api-schemas').CandidateSetRecord;
     }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
@@ -630,7 +642,9 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'products' || value.operation === 'transition') &&
         ['request_executing', 'thread_busy', 'conflict'].includes(String(value.code)) &&
         value.status === 409) ||
-      ((value.operation === 'material' || value.operation === 'review') &&
+      ((value.operation === 'material' ||
+        value.operation === 'review' ||
+        value.operation === 'evaluation-candidate') &&
         ((['stale', 'conflict', 'recovery_required', 'idempotency_key_conflict'].includes(
           String(value.code)
         ) &&
@@ -769,6 +783,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     );
   if (reply.operation === 'review')
     return ControlReviewCommandResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'evaluation-candidate')
+    return ControlEvaluationCandidateResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'material')
     return ControlMaterialCommandResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'maintenance')
@@ -1152,27 +1168,30 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     value.operation === 'goal' ||
     value.operation === 'maintenance' ||
     value.operation === 'review' ||
+    value.operation === 'evaluation-candidate' ||
     value.operation === 'terminal'
   ) {
     try {
       const schema =
-        value.operation === 'publication'
-          ? ControlPublicationInputSchema
-          : value.operation === 'pending'
-            ? ControlPendingTransitionSchema
-            : value.operation === 'journal'
-              ? ControlExecutionJournalInputSchema
-              : value.operation === 'project-cleanup'
-                ? ProjectWorkerBackendCleanupInputSchema
-                : value.operation === 'goal'
-                  ? ControlGoalInputSchema
-                  : value.operation === 'review'
-                    ? ControlReviewCommandInputSchema
-                    : value.operation === 'maintenance'
-                      ? ControlMaintenanceAdmissionInputSchema
-                      : value.operation === 'terminal'
-                        ? ControlTerminalTransitionSchema
-                        : ControlWorkObservationInputSchema;
+        value.operation === 'evaluation-candidate'
+          ? ControlEvaluationCandidateSchema
+          : value.operation === 'publication'
+            ? ControlPublicationInputSchema
+            : value.operation === 'pending'
+              ? ControlPendingTransitionSchema
+              : value.operation === 'journal'
+                ? ControlExecutionJournalInputSchema
+                : value.operation === 'project-cleanup'
+                  ? ProjectWorkerBackendCleanupInputSchema
+                  : value.operation === 'goal'
+                    ? ControlGoalInputSchema
+                    : value.operation === 'review'
+                      ? ControlReviewCommandInputSchema
+                      : value.operation === 'maintenance'
+                        ? ControlMaintenanceAdmissionInputSchema
+                        : value.operation === 'terminal'
+                          ? ControlTerminalTransitionSchema
+                          : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

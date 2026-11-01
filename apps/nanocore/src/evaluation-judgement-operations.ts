@@ -17,7 +17,11 @@ import { readMaterialJudgement } from './material-range-corrections.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import type { AdmittedOperationContext, FamilyImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
-import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
+import {
+  IdempotencyKeyConflictError,
+  type IdempotentCommandReceipt,
+  runIdempotentCommand,
+} from './runtime/idempotent-command.js';
 import {
   assertWorkspaceMaterialRange,
   ControlMaterialCommandInputSchema,
@@ -55,19 +59,24 @@ function admitTarget(access: CandidateSetCommands, assessment: Assessment, reque
   }
 }
 
-/** Appends only a candidate-set annotation inside its unchanged Main-owned command transaction. */
-function appendCandidateAssessment(
+/** Appends only a candidate-set annotation and original receipt in its native transaction. */
+async function appendCandidateAssessment(
   access: CandidateSetCommands,
-  input: RecordEvaluationJudgementRequest
+  input: RecordEvaluationJudgementRequest,
+  receipt: IdempotentCommandReceipt
 ) {
   const assessment = input.judgement;
   if (assessment.target.kind !== 'candidate-set')
     throw new OperationError('invalid_request', 'Candidate-set target is required.', 400);
-  const updated = appendCandidateSetJudgement(access, {
-    ...assessment,
-    candidateSetId: assessment.target.candidateSetId,
-    requestId: input.requestId,
-  });
+  const updated = await appendCandidateSetJudgement(
+    access,
+    {
+      ...assessment,
+      candidateSetId: assessment.target.candidateSetId,
+      requestId: input.requestId,
+    },
+    receipt
+  );
   return updated.judgements.find((entry) => entry.requestId === input.requestId) ?? missingResult();
 }
 
@@ -125,6 +134,7 @@ export function createEvaluationJudgementOperationImplementations(
         inflightCommands: dependencies.inflightCommands,
         workspaceDb: db,
         actor: context.actor,
+        ...(context.recheckAdmission ? { recheckAdmission: context.recheckAdmission } : {}),
       });
     } catch (error) {
       if (error instanceof OperationError) throw error;
@@ -209,8 +219,9 @@ export function createEvaluationJudgementOperationImplementations(
         if (input.judgement.target.kind === 'candidate-set')
           return runIdempotentCommand({
             ...common,
-            workspaceTransaction: true,
-            execute: () => ({ judgement: appendCandidateAssessment(access, input) }),
+            execute: async (receipt) => ({
+              judgement: await appendCandidateAssessment(access, input, receipt),
+            }),
           });
         return runIdempotentCommand({
           ...common,

@@ -110,6 +110,7 @@ import {
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
 import type { WorkspaceDb } from './db.js';
+import type { ControlEvaluationCandidate } from './evaluation-candidate-codecs.js';
 import {
   type ControlThreadReadMembership,
   THREAD_READ_RECEIPT_INVALID,
@@ -1654,6 +1655,27 @@ class ControlStoreWorkerClient {
       return (reply as Extract<Success, { operation: 'material' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'material') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
+  }
+
+  /** Commits candidate membership/history with its original receipt; FULL acknowledgement returns the complete record. */
+  async evaluationCandidate(
+    database: string,
+    input: ControlEvaluationCandidate
+  ): Promise<import('@openkit/app-api-schemas').CandidateSetRecord> {
+    try {
+      const reply = await this.request({ operation: 'evaluation-candidate', database, input });
+      return (reply as Extract<Success, { operation: 'evaluation-candidate' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'evaluation-candidate'
+      ) {
         if (error.domain.code === 'idempotency_key_conflict')
           throw new IdempotencyKeyConflictError();
         throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
