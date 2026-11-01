@@ -15,6 +15,11 @@ import {
   ControlReviewCommandResultSchema,
 } from '../artifact-reviews.js';
 import {
+  ADMIN_RECOVERY_REQUIRED,
+  type ControlAdminRecoveryInput,
+  ControlAdminRecoveryInputSchema,
+} from '../auth/admin-recovery-codecs.js';
+import {
   type ControlGenerativePresentationWire,
   ControlGenerativePresentationWireSchema,
 } from '../generative-ui/native-publication-codecs.js';
@@ -112,7 +117,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 27;
+export const CONTROL_WORKER_VERSION = 28;
 
 /** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
 export const ControlProvenanceInputSchema = z
@@ -270,6 +275,7 @@ export type ControlWorkerCommand =
           readonly operation: 'worker-control-evidence';
           readonly input: ControlWorkerRejectedEvidence;
         }
+      | { readonly operation: 'admin-recovery'; readonly input: ControlAdminRecoveryInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
@@ -392,6 +398,7 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 export interface ControlWorkerDomainRefusal {
   readonly operation:
     | 'provenance'
+    | 'admin-recovery'
     | 'thread-read-membership'
     | 'generative-presentation'
     | 'goal'
@@ -438,6 +445,7 @@ export type ControlWorkerReply = {
       readonly operation: 'recovery-safety';
       readonly result: ControlRecoverySafetyResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'admin-recovery'; readonly auditEventId: string }
   | { readonly status: 'ok'; readonly operation: 'recovery-history'; readonly done: boolean }
   | { readonly status: 'ok'; readonly operation: 'recovery-seal'; readonly digest: string | null }
   | {
@@ -599,6 +607,10 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'item' || value.operation === 'event') &&
         value.code === 'conflict' &&
         value.status === 409) ||
+      (value.operation === 'admin-recovery' &&
+        value.status === 409 &&
+        value.code === 'recovery_required' &&
+        value.message === ADMIN_RECOVERY_REQUIRED) ||
       (value.operation === 'thread-read-membership' &&
         value.status === 409 &&
         value.code === 'recovery_required' &&
@@ -679,6 +691,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
     );
+  if (reply.operation === 'admin-recovery')
+    return typeof reply.auditEventId === 'string' && reply.auditEventId.length > 0;
   if (reply.operation === 'thread-read-membership')
     return ThreadReadMembershipResultSchema.safeParse(reply.itemIds).success;
   if (reply.operation === 'generative-presentation')
@@ -1083,6 +1097,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'admin-recovery')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlAdminRecoveryInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'worker-control-evidence')
     return (
       exactFields(value, [...scoped, 'input']) &&

@@ -129,7 +129,35 @@ export function createOpenKitAccessTokenRecord(
   const tokenId = input.tokenId ?? allocateEntityId('tok');
   const secret = input.secret ?? createOpenKitAccessTokenSecret();
   const now = (input.now ?? new Date()).toISOString();
+  const record = insertOpenKitAccessTokenRecord(coreDb, {
+    ...input,
+    scope: binding.scope,
+    workspaceIds: binding.workspaceIds,
+    tokenId,
+    tokenHash: hashOpenKitAccessTokenSecret(secret),
+    issuedAt: now,
+  });
+  return { record, secret, tokenId };
+}
 
+/** Exact existing hash-only insertion tuple, shared by issuance and native stopped recovery. */
+export interface InsertOpenKitAccessTokenRecordInput {
+  readonly tokenId: string;
+  readonly tokenHash: string;
+  readonly ownerUserId: string;
+  readonly scope: OpenKitAccessTokenScope;
+  readonly workspaceIds: readonly string[];
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  readonly predecessorTokenId?: string | null;
+}
+
+/** Inserts and reads back one record without generating or transporting its plaintext material. */
+export function insertOpenKitAccessTokenRecord(
+  coreDb: CoreDb,
+  input: InsertOpenKitAccessTokenRecordInput
+): OpenKitAccessTokenRecord {
+  const binding = normalizeOpenKitAccessTokenScope(input.scope, input.workspaceIds);
   coreDb.sqlite
     .prepare(
       `INSERT INTO openkit_access_tokens (
@@ -146,23 +174,21 @@ export function createOpenKitAccessTokenRecord(
       ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
     )
     .run(
-      tokenId,
-      hashOpenKitAccessTokenSecret(secret),
+      input.tokenId,
+      input.tokenHash,
       input.ownerUserId,
       binding.scope,
       writeRetainedV1({}).schemaVersion,
       JSON.stringify(binding.workspaceIds),
-      now,
+      input.issuedAt,
       input.expiresAt,
       input.predecessorTokenId ?? null
     );
-
-  const record = getOpenKitAccessTokenRecord(coreDb, tokenId);
+  const record = getOpenKitAccessTokenRecord(coreDb, input.tokenId);
   if (!record) {
-    throw new Error(`OpenKit access token record was not created: ${tokenId}`);
+    throw new Error(`OpenKit access token record was not created: ${input.tokenId}`);
   }
-
-  return { record, secret, tokenId };
+  return record;
 }
 
 /**

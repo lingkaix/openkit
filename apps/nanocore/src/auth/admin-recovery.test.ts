@@ -95,14 +95,14 @@ function disableRecoveryOwner(dataRoot: string): void {
 }
 
 /** Creates one completed recovery fixture for contradiction tests. */
-function completeRecoveryFixture(name: string): {
+async function completeRecoveryFixture(name: string): Promise<{
   dataRoot: string;
   outputPath: string;
   envelope: { requestId: string; tokenId: string; token: string };
-} {
+}> {
   const dataRoot = createRecoveryDataRoot();
   const outputPath = join(dataRoot, name);
-  runOpenKitOperatorCli(recoveryArgs(dataRoot, outputPath), { now: () => NOW, write() {} });
+  await runOpenKitOperatorCli(recoveryArgs(dataRoot, outputPath), { now: () => NOW, write() {} });
   return {
     dataRoot,
     outputPath,
@@ -111,8 +111,8 @@ function completeRecoveryFixture(name: string): {
 }
 
 describe('stopped-server administrator recovery', () => {
-  it('retries against annotated historical Audit actors without reissuing credentials', () => {
-    const fixture = completeRecoveryFixture('annotated-history.json');
+  it('retries against annotated historical Audit actors without reissuing credentials', async () => {
+    const fixture = await completeRecoveryFixture('annotated-history.json');
     const db = openCoreDb(fixture.dataRoot);
     const row = db.sqlite
       .prepare('SELECT actor_json, subject_json FROM audit_events WHERE request_id = ?')
@@ -127,7 +127,7 @@ describe('stopped-server administrator recovery', () => {
     db.sqlite.close();
     const bytes = readFileSync(fixture.outputPath, 'utf8');
     expect(
-      runOpenKitOperatorCli(recoveryArgs(fixture.dataRoot, fixture.outputPath), {
+      await runOpenKitOperatorCli(recoveryArgs(fixture.dataRoot, fixture.outputPath), {
         now: () => NOW,
         write() {},
       })
@@ -146,7 +146,7 @@ describe('stopped-server administrator recovery', () => {
     ).toEqual({ count: 1 });
     reopened.sqlite.close();
   });
-  it('refuses a noncanonical retained User before discovery output', () => {
+  it('refuses a noncanonical retained User before discovery output', async () => {
     const dataRoot = createRecoveryDataRoot();
     const db = openCoreDb(dataRoot);
     try {
@@ -157,21 +157,24 @@ describe('stopped-server administrator recovery', () => {
       db.sqlite.close();
     }
     const output: string[] = [];
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(['admin', 'recovery-users', '--data-root', dataRoot], {
         write: (line) => output.push(line),
       })
-    ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    ).rejects.toThrow(expect.objectContaining({ code: 'recovery_required' }));
     expect(output).toEqual([]);
     expect(existsSync(dataRootLockPath(dataRoot))).toBe(false);
   });
-  it('lists only redacted active canonical Users and releases the data-root lock', () => {
+  it('lists only redacted active canonical Users and releases the data-root lock', async () => {
     const dataRoot = createRecoveryDataRoot();
     const output: string[] = [];
 
-    const result = runOpenKitOperatorCli(['admin', 'recovery-users', '--data-root', dataRoot], {
-      write: (line) => output.push(line),
-    });
+    const result = await runOpenKitOperatorCli(
+      ['admin', 'recovery-users', '--data-root', dataRoot],
+      {
+        write: (line) => output.push(line),
+      }
+    );
 
     expect(result).toEqual([
       {
@@ -192,7 +195,7 @@ describe('stopped-server administrator recovery', () => {
     const outputPath = join(dataRoot, 'admin-recovery.json');
     const output: string[] = [];
 
-    const result = runOpenKitOperatorCli(recoveryArgs(dataRoot, outputPath), {
+    const result = await runOpenKitOperatorCli(recoveryArgs(dataRoot, outputPath), {
       now: () => NOW,
       write: (line) => output.push(line),
     });
@@ -281,7 +284,7 @@ describe('stopped-server administrator recovery', () => {
     }
   });
 
-  it('requires exact confirmation and accepts only future expiry through 24 hours', () => {
+  it('requires exact confirmation and accepts only future expiry through 24 hours', async () => {
     const rejectedExpiries = [
       '2026-09-01T23:59:59.999Z',
       NOW.toISOString(),
@@ -290,12 +293,12 @@ describe('stopped-server administrator recovery', () => {
     for (const expiresAt of rejectedExpiries) {
       const dataRoot = createRecoveryDataRoot();
       const outputPath = join(dataRoot, 'rejected-expiry.json');
-      expect(() =>
+      await expect(
         runOpenKitOperatorCli(recoveryArgs(dataRoot, outputPath, expiresAt), {
           now: () => NOW,
           write() {},
         })
-      ).toThrow(expect.objectContaining({ code: 'invalid_request' }));
+      ).rejects.toThrow(expect.objectContaining({ code: 'invalid_request' }));
       expect(existsSync(outputPath)).toBe(false);
     }
 
@@ -304,7 +307,7 @@ describe('stopped-server administrator recovery', () => {
     const mismatched = recoveryArgs(confirmationRoot, confirmationPath);
     mismatched[mismatched.length - 1] =
       'issue-server-admin-token:usr_00000000-0000-73d4-904a-d4c4b905df7c:wrong-expiry';
-    expect(() => runOpenKitOperatorCli(mismatched, { now: () => NOW, write() {} })).toThrow(
+    await expect(runOpenKitOperatorCli(mismatched, { now: () => NOW, write() {} })).rejects.toThrow(
       expect.objectContaining({ code: 'invalid_request' })
     );
     expect(existsSync(confirmationPath)).toBe(false);
@@ -312,17 +315,20 @@ describe('stopped-server administrator recovery', () => {
     const boundaryRoot = createRecoveryDataRoot();
     const boundaryPath = join(boundaryRoot, 'exact-24-hours.json');
     expect(
-      runOpenKitOperatorCli(recoveryArgs(boundaryRoot, boundaryPath, '2026-09-03T00:00:00.000Z'), {
-        now: () => NOW,
-        write() {},
-      })
+      await runOpenKitOperatorCli(
+        recoveryArgs(boundaryRoot, boundaryPath, '2026-09-03T00:00:00.000Z'),
+        {
+          now: () => NOW,
+          write() {},
+        }
+      )
     ).toMatchObject({ status: 'completed' });
   });
 
-  it('distinguishes a disabled-owner new request from existing recovery attempts', () => {
+  it('distinguishes a disabled-owner new request from existing recovery attempts', async () => {
     const freshRoot = createRecoveryDataRoot();
     const freshPath = join(freshRoot, 'disabled-owner-new.json');
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(
         recoveryArgs(freshRoot, freshPath, EXPIRES_AT, 'usr_00000000-0000-7e63-b85a-c188de8ee1c3'),
         {
@@ -330,13 +336,13 @@ describe('stopped-server administrator recovery', () => {
           write() {},
         }
       )
-    ).toThrow(expect.objectContaining({ code: 'invalid_request' }));
+    ).rejects.toThrow(expect.objectContaining({ code: 'invalid_request' }));
     expect(existsSync(freshPath)).toBe(false);
 
     const inactiveRoot = createRecoveryDataRoot();
     const inactivePath = join(inactiveRoot, 'disabled-owner-inactive.json');
     const inactiveArgs = recoveryArgs(inactiveRoot, inactivePath);
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(inactiveArgs, {
         now: () => NOW,
         onPhase(phase) {
@@ -344,27 +350,27 @@ describe('stopped-server administrator recovery', () => {
         },
         write() {},
       })
-    ).toThrow('injected file-first crash');
+    ).rejects.toThrow('injected file-first crash');
     const inactiveFile = readFileSync(inactivePath, 'utf8');
     disableRecoveryOwner(inactiveRoot);
-    expect(() => runOpenKitOperatorCli(inactiveArgs, { now: () => NOW, write() {} })).toThrow(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
+    await expect(
+      runOpenKitOperatorCli(inactiveArgs, { now: () => NOW, write() {} })
+    ).rejects.toThrow(expect.objectContaining({ code: 'recovery_required' }));
     expect(readFileSync(inactivePath, 'utf8')).toBe(inactiveFile);
 
-    const completed = completeRecoveryFixture('disabled-owner-completed.json');
+    const completed = await completeRecoveryFixture('disabled-owner-completed.json');
     const completedFile = readFileSync(completed.outputPath, 'utf8');
     disableRecoveryOwner(completed.dataRoot);
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(recoveryArgs(completed.dataRoot, completed.outputPath), {
         now: () => NOW,
         write() {},
       })
-    ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    ).rejects.toThrow(expect.objectContaining({ code: 'recovery_required' }));
     expect(readFileSync(completed.outputPath, 'utf8')).toBe(completedFile);
   });
 
-  it('fails closed without mutation for linked and nonregular output paths', () => {
+  it('fails closed without mutation for linked and nonregular output paths', async () => {
     for (const kind of ['symlink', 'directory'] as const) {
       const dataRoot = createRecoveryDataRoot();
       const outputRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-recovery-output-'));
@@ -377,14 +383,13 @@ describe('stopped-server administrator recovery', () => {
         mkdirSync(outputPath);
       }
 
-      expect(
-        () =>
-          runOpenKitOperatorCli(recoveryArgs(dataRoot, outputPath), {
-            now: () => NOW,
-            write() {},
-          }),
+      await expect(
+        runOpenKitOperatorCli(recoveryArgs(dataRoot, outputPath), {
+          now: () => NOW,
+          write() {},
+        }),
         kind
-      ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+      ).rejects.toThrow(expect.objectContaining({ code: 'recovery_required' }));
       if (kind === 'symlink') {
         expect(readFileSync(targetPath, 'utf8'), kind).toBe('occupied\n');
       } else {
@@ -411,11 +416,11 @@ describe('stopped-server administrator recovery', () => {
     }
   });
 
-  it('retains the lock against a concurrent NanoCore acquisition without service startup', () => {
+  it('retains the lock against a concurrent NanoCore acquisition without service startup', async () => {
     const dataRoot = createRecoveryDataRoot();
     let checked = false;
 
-    runOpenKitOperatorCli(['admin', 'recovery-users', '--data-root', dataRoot], {
+    await runOpenKitOperatorCli(['admin', 'recovery-users', '--data-root', dataRoot], {
       onPhase(phase) {
         if (phase !== 'locked') return;
         checked = true;
@@ -430,30 +435,30 @@ describe('stopped-server administrator recovery', () => {
     expect(existsSync(dataRootLockPath(dataRoot))).toBe(false);
   });
 
-  it('reports a held lock without preparing or changing the existing layout', () => {
+  it('reports a held lock without preparing or changing the existing layout', async () => {
     const dataRoot = createRecoveryDataRoot();
     const configPath = join(dataRoot, 'config', 'server.jsonc');
     const lock = acquireDataRootLock(dataRoot, { bootId: 'existing-holder' });
     unlinkSync(configPath);
 
     try {
-      expect(() =>
+      await expect(
         runOpenKitOperatorCli(['admin', 'recovery-users', '--data-root', dataRoot], {
           write() {},
         })
-      ).toThrow(expect.objectContaining({ code: 'data_root_locked' }));
+      ).rejects.toThrow(expect.objectContaining({ code: 'data_root_locked' }));
       expect(existsSync(configPath)).toBe(false);
     } finally {
       lock.release();
     }
   });
 
-  it('resumes the exact file-first attempt after a pre-transaction crash', () => {
+  it('resumes the exact file-first attempt after a pre-transaction crash', async () => {
     const dataRoot = createRecoveryDataRoot();
     const outputPath = join(dataRoot, 'file-first-crash.json');
     const args = recoveryArgs(dataRoot, outputPath);
 
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(args, {
         now: () => NOW,
         onPhase(phase) {
@@ -461,7 +466,7 @@ describe('stopped-server administrator recovery', () => {
         },
         write() {},
       })
-    ).toThrow('injected file-first crash');
+    ).rejects.toThrow('injected file-first crash');
     const envelopeBefore = JSON.parse(readFileSync(outputPath, 'utf8')) as {
       requestId: string;
       tokenId: string;
@@ -483,17 +488,17 @@ describe('stopped-server administrator recovery', () => {
       before.sqlite.close();
     }
 
-    const result = runOpenKitOperatorCli(args, { now: () => NOW, write() {} });
+    const result = await runOpenKitOperatorCli(args, { now: () => NOW, write() {} });
     expect(JSON.parse(readFileSync(outputPath, 'utf8'))).toEqual(envelopeBefore);
     expect(result).toMatchObject({ status: 'completed', tokenId: envelopeBefore.tokenId });
   });
 
-  it('re-establishes file and parent durability before retrying a written envelope', () => {
+  it('re-establishes file and parent durability before retrying a written envelope', async () => {
     const dataRoot = createRecoveryDataRoot();
     const outputPath = join(dataRoot, 'pre-sync-crash.json');
     const args = recoveryArgs(dataRoot, outputPath);
 
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(args, {
         now: () => NOW,
         onPhase(phase) {
@@ -501,10 +506,10 @@ describe('stopped-server administrator recovery', () => {
         },
         write() {},
       })
-    ).toThrow('injected pre-sync crash');
+    ).rejects.toThrow('injected pre-sync crash');
 
     const phases: string[] = [];
-    runOpenKitOperatorCli(args, {
+    await runOpenKitOperatorCli(args, {
       now: () => NOW,
       onPhase: (phase) => phases.push(phase),
       write() {},
@@ -512,12 +517,12 @@ describe('stopped-server administrator recovery', () => {
     expect(phases).toEqual(['locked', 'file-durable', 'transaction-committed']);
   });
 
-  it('requires operator inspection when an inactive published envelope expires', () => {
+  it('requires operator inspection when an inactive published envelope expires', async () => {
     const dataRoot = createRecoveryDataRoot();
     const outputPath = join(dataRoot, 'expired-inactive.json');
     const args = recoveryArgs(dataRoot, outputPath);
 
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(args, {
         now: () => NOW,
         onPhase(phase) {
@@ -525,24 +530,24 @@ describe('stopped-server administrator recovery', () => {
         },
         write() {},
       })
-    ).toThrow('injected file-first crash');
+    ).rejects.toThrow('injected file-first crash');
     const published = readFileSync(outputPath, 'utf8');
 
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(args, {
         now: () => new Date(EXPIRES_AT),
         write() {},
       })
-    ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    ).rejects.toThrow(expect.objectContaining({ code: 'recovery_required' }));
     expect(readFileSync(outputPath, 'utf8')).toBe(published);
   });
 
-  it('rejects a malformed inactive envelope without creating durable records', () => {
+  it('rejects a malformed inactive envelope without creating durable records', async () => {
     const dataRoot = createRecoveryDataRoot();
     const outputPath = join(dataRoot, 'malformed-inactive.json');
     const args = recoveryArgs(dataRoot, outputPath);
 
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(args, {
         now: () => NOW,
         onPhase(phase) {
@@ -550,7 +555,7 @@ describe('stopped-server administrator recovery', () => {
         },
         write() {},
       })
-    ).toThrow('injected file-first crash');
+    ).rejects.toThrow('injected file-first crash');
     const original = JSON.parse(readFileSync(outputPath, 'utf8')) as {
       requestId: string;
       tokenId: string;
@@ -558,7 +563,7 @@ describe('stopped-server administrator recovery', () => {
     writeFileSync(outputPath, `${JSON.stringify({ ...original, extra: true })}\n`, 'utf8');
     const malformed = readFileSync(outputPath, 'utf8');
 
-    expect(() => runOpenKitOperatorCli(args, { now: () => NOW, write() {} })).toThrow(
+    await expect(runOpenKitOperatorCli(args, { now: () => NOW, write() {} })).rejects.toThrow(
       expect.objectContaining({ code: 'recovery_required' })
     );
     expect(readFileSync(outputPath, 'utf8')).toBe(malformed);
@@ -579,13 +584,13 @@ describe('stopped-server administrator recovery', () => {
     }
   });
 
-  it('fails closed for contradictory Token, Audit, file, and retry-input states', () => {
+  it('fails closed for contradictory Token, Audit, file, and retry-input states', async () => {
     const cases = [
       {
         name: 'different-canonical-token',
         mutate(
           _coreDb: ReturnType<typeof openCoreDb>,
-          fixture: ReturnType<typeof completeRecoveryFixture>
+          fixture: Awaited<ReturnType<typeof completeRecoveryFixture>>
         ) {
           writeFileSync(
             fixture.outputPath,
@@ -603,7 +608,7 @@ describe('stopped-server administrator recovery', () => {
         name: 'token-hash-mismatch',
         mutate(
           coreDb: ReturnType<typeof openCoreDb>,
-          fixture: ReturnType<typeof completeRecoveryFixture>
+          fixture: Awaited<ReturnType<typeof completeRecoveryFixture>>
         ) {
           coreDb.sqlite
             .prepare('UPDATE openkit_access_tokens SET token_hash = ? WHERE token_id = ?')
@@ -616,7 +621,7 @@ describe('stopped-server administrator recovery', () => {
         name: 'token-without-audit',
         mutate(
           coreDb: ReturnType<typeof openCoreDb>,
-          fixture: ReturnType<typeof completeRecoveryFixture>
+          fixture: Awaited<ReturnType<typeof completeRecoveryFixture>>
         ) {
           coreDb.sqlite
             .prepare('DELETE FROM audit_events WHERE request_id = ?')
@@ -629,7 +634,7 @@ describe('stopped-server administrator recovery', () => {
         name: 'audit-without-token',
         mutate(
           coreDb: ReturnType<typeof openCoreDb>,
-          fixture: ReturnType<typeof completeRecoveryFixture>
+          fixture: Awaited<ReturnType<typeof completeRecoveryFixture>>
         ) {
           coreDb.sqlite
             .prepare('DELETE FROM openkit_access_tokens WHERE token_id = ?')
@@ -642,7 +647,7 @@ describe('stopped-server administrator recovery', () => {
         name: 'workspace-owned-audit',
         mutate(
           coreDb: ReturnType<typeof openCoreDb>,
-          fixture: ReturnType<typeof completeRecoveryFixture>
+          fixture: Awaited<ReturnType<typeof completeRecoveryFixture>>
         ) {
           coreDb.sqlite
             .prepare('UPDATE audit_events SET workspace_id = ? WHERE request_id = ?')
@@ -655,7 +660,7 @@ describe('stopped-server administrator recovery', () => {
         name: 'retained-token-with-lost-file-and-audit',
         mutate(
           coreDb: ReturnType<typeof openCoreDb>,
-          fixture: ReturnType<typeof completeRecoveryFixture>
+          fixture: Awaited<ReturnType<typeof completeRecoveryFixture>>
         ) {
           coreDb.sqlite
             .prepare('DELETE FROM audit_events WHERE request_id = ?')
@@ -675,7 +680,7 @@ describe('stopped-server administrator recovery', () => {
     ];
 
     for (const testCase of cases) {
-      const fixture = completeRecoveryFixture(`${testCase.name}.json`);
+      const fixture = await completeRecoveryFixture(`${testCase.name}.json`);
       const coreDb = openCoreDb(fixture.dataRoot);
       try {
         testCase.mutate(coreDb, fixture);
@@ -686,14 +691,13 @@ describe('stopped-server administrator recovery', () => {
         ? readFileSync(fixture.outputPath, 'utf8')
         : null;
 
-      expect(
-        () =>
-          runOpenKitOperatorCli(
-            recoveryArgs(fixture.dataRoot, fixture.outputPath, testCase.expiresAt ?? EXPIRES_AT),
-            { now: () => NOW, write() {} }
-          ),
+      await expect(
+        runOpenKitOperatorCli(
+          recoveryArgs(fixture.dataRoot, fixture.outputPath, testCase.expiresAt ?? EXPIRES_AT),
+          { now: () => NOW, write() {} }
+        ),
         testCase.name
-      ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+      ).rejects.toThrow(expect.objectContaining({ code: 'recovery_required' }));
       if (testCase.name === 'retained-token-with-lost-file-and-audit') {
         expect(existsSync(fixture.outputPath), testCase.name).toBe(false);
       } else {
@@ -720,12 +724,12 @@ describe('stopped-server administrator recovery', () => {
     }
   });
 
-  it('returns the same completed summary after a post-commit crash without duplicates', () => {
+  it('returns the same completed summary after a post-commit crash without duplicates', async () => {
     const dataRoot = createRecoveryDataRoot();
     const outputPath = join(dataRoot, 'post-commit-crash.json');
     const args = recoveryArgs(dataRoot, outputPath);
 
-    expect(() =>
+    await expect(
       runOpenKitOperatorCli(args, {
         now: () => NOW,
         onPhase(phase) {
@@ -733,12 +737,12 @@ describe('stopped-server administrator recovery', () => {
         },
         write() {},
       })
-    ).toThrow('injected post-commit crash');
+    ).rejects.toThrow('injected post-commit crash');
     const envelope = JSON.parse(readFileSync(outputPath, 'utf8')) as {
       requestId: string;
       tokenId: string;
     };
-    const result = runOpenKitOperatorCli(args, { now: () => NOW, write() {} });
+    const result = await runOpenKitOperatorCli(args, { now: () => NOW, write() {} });
     const coreDb = openCoreDb(dataRoot);
     try {
       expect(result).toMatchObject({ status: 'completed', tokenId: envelope.tokenId });

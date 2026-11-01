@@ -12,16 +12,24 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { deriveEntityId, isEntityId, isRecord } from '@openkit/protocol';
-import { recordServerAuditEvent } from '../audit-events.js';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck } from '../storage/db.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   createOpenKitAccessTokenSecret,
   hashOpenKitAccessTokenSecret,
   isOpenKitAccessTokenSecret,
 } from './access-token.js';
-import { createOpenKitAccessTokenRecord } from './access-token-store.js';
+import {
+  AdminRecoveryError,
+  recoveryAuditSummary,
+  recoveryRequired,
+} from './admin-recovery-codecs.js';
+
+export { AdminRecoveryError } from './admin-recovery-codecs.js';
+
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 const MAX_RECOVERY_LIFETIME_MS = 24 * 60 * 60 * 1_000;
@@ -94,19 +102,6 @@ export interface OpenKitOperatorOptions {
   onPhase?: (phase: OpenKitOperatorPhase) => void;
 }
 
-/** Safe terminal error surfaced by the local operator executable. */
-export class AdminRecoveryError extends Error {
-  /** Stable secret-free error code. */
-  public readonly code: string;
-
-  /** Creates one secret-free operator failure. */
-  public constructor(code: string, message: string) {
-    super(message);
-    this.name = 'AdminRecoveryError';
-    this.code = code;
-  }
-}
-
 interface RecoveryInput {
   dataRoot: string;
   ownerUserId: string;
@@ -154,10 +149,10 @@ interface RecoveryAuditRow {
 }
 
 /** Runs one stopped-server OpenKit operator command. */
-export function runOpenKitOperatorCli(
+export async function runOpenKitOperatorCli(
   argv: readonly string[],
   options: OpenKitOperatorOptions = {}
-): readonly AdminRecoveryUser[] | AdminRecoverySummary {
+): Promise<readonly AdminRecoveryUser[] | AdminRecoverySummary> {
   if (argv[0] === 'admin' && argv[1] === 'recovery-users') {
     const flags = parseFlags(argv.slice(2), ['--data-root']);
     const dataRoot = requireAbsolutePath(flags['--data-root']!, 'data-root');
@@ -193,8 +188,11 @@ export function runOpenKitOperatorCli(
     };
 
     requireRecoveryConfirmation(input);
-    return runLocked(input.dataRoot, options, (coreDb) =>
-      recoverAdminAccess(coreDb, input, options)
+    return runLocked(
+      input.dataRoot,
+      options,
+      (coreDb) => recoverAdminAccess(coreDb, input, options),
+      true
     );
   }
 
@@ -202,11 +200,12 @@ export function runOpenKitOperatorCli(
 }
 
 /** Holds the existing data-root lock through database close and stdout completion. */
-function runLocked<T>(
+async function runLocked<T>(
   dataRoot: string,
   options: OpenKitOperatorOptions,
-  command: (coreDb: CoreDb) => T
-): T {
+  command: (coreDb: CoreDb) => T | Promise<T>,
+  nativeRecovery = false
+): Promise<T> {
   let lock: ReturnType<typeof acquireDataRootLock>;
   try {
     lock = acquireDataRootLock(dataRoot, { bootId: `operator-${randomUUID()}` });
@@ -222,7 +221,28 @@ function runLocked<T>(
     const coreDb = openExistingCoreDbWithIntegrityCheck(dataRoot);
     let result: T;
     try {
-      result = command(coreDb);
+      const native = nativeRecovery ? getControlStoreWorkerClient() : undefined;
+      const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+      const database = `core:${scope.path}`;
+      try {
+        if (native)
+          await native.open({
+            database,
+            path: scope.path,
+            dataRoot: coreDb.dataRoot,
+            create: false,
+            productOwner: scope.owner,
+          });
+        result = await command(coreDb);
+      } finally {
+        if (native) {
+          await native.close(database).catch(async (error: unknown) => {
+            // A failed close cannot release the root lock with a surviving writer.
+            await native.shutdown();
+            throw error;
+          });
+        }
+      }
     } finally {
       coreDb.sqlite.close();
     }
@@ -234,11 +254,11 @@ function runLocked<T>(
 }
 
 /** Creates or exactly resumes one file-first administrator recovery attempt. */
-function recoverAdminAccess(
+async function recoverAdminAccess(
   coreDb: CoreDb,
   input: RecoveryInput,
   options: OpenKitOperatorOptions
-): AdminRecoverySummary {
+): Promise<AdminRecoverySummary> {
   const now = options.now?.() ?? new Date();
   const expectedRequestId = recoveryRequestId(input.outputPath);
   const expectedTokenId = recoveryTokenId(input.outputPath);
@@ -290,7 +310,7 @@ function recoverAdminAccess(
         throw recoveryRequired();
       }
       syncRecoveryFile(fileDescriptor, input.outputPath, options.onPhase);
-      const summary = commitRecovery(coreDb, envelope, now);
+      const summary = await commitRecovery(coreDb, envelope, now);
       assertRecoveryFileIdentity(fileDescriptor, input.outputPath);
       options.onPhase?.('transaction-committed');
       return summary;
@@ -306,42 +326,21 @@ function recoverAdminAccess(
 }
 
 /** Commits the pre-published Token and AuditEvent atomically. */
-function commitRecovery(
+async function commitRecovery(
   coreDb: CoreDb,
   envelope: AdminRecoveryEnvelope,
   now: Date
-): AdminRecoverySummary {
-  const event = coreDb.sqlite.transaction(() => {
-    const issue = createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: envelope.ownerUserId,
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: envelope.expiresAt,
-      now,
-      tokenId: envelope.tokenId,
-      secret: envelope.token,
-    });
-    if (issue.tokenId !== envelope.tokenId || issue.secret !== envelope.token) {
-      throw recoveryRequired();
-    }
-
-    return recordServerAuditEvent({
-      action: 'auth.admin-recovery.issue',
-      actor: { id: 'openkit-operator', kind: 'system', responsibleUserId: null },
-      category: 'system',
-      coreDb,
-      occurredAt: now,
-      outcome: 'succeeded',
-      requestId: envelope.requestId,
-      resource: `auth-token:${envelope.tokenId}`,
-      severity: 'info',
-      subject: { id: envelope.ownerUserId, kind: 'user' },
-      summary: recoveryAuditSummary(envelope.expiresAt),
-      now,
-    });
-  })();
-
-  return recoverySummary(envelope, event.id);
+): Promise<AdminRecoverySummary> {
+  const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+  const auditEventId = await getControlStoreWorkerClient().adminRecovery(`core:${scope.path}`, {
+    requestId: envelope.requestId,
+    tokenId: envelope.tokenId,
+    ownerUserId: envelope.ownerUserId,
+    tokenHash: hashOpenKitAccessTokenSecret(envelope.token),
+    issuedAt: now.toISOString(),
+    expiresAt: envelope.expiresAt,
+  });
+  return recoverySummary(envelope, auditEventId);
 }
 
 /** Rejects any pre-existing durable state before first file publication. */
@@ -629,11 +628,6 @@ function recoveryIdentity(domain: 'request', outputPath: string): string {
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-8${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 }
 
-/** Produces the exact redacted Audit summary that binds recovery expiry. */
-function recoveryAuditSummary(expiresAt: string): string {
-  return `Local operator issued one server-admin Token expiring at ${expiresAt}.`;
-}
-
 /** Produces the only non-secret completion projection. */
 function recoverySummary(
   envelope: AdminRecoveryEnvelope,
@@ -668,12 +662,4 @@ function isNodeError(error: unknown, code: string): boolean {
 /** Creates one stable argument error. */
 function invalidRequest(message: string): AdminRecoveryError {
   return new AdminRecoveryError('invalid_request', message);
-}
-
-/** Creates the single fail-closed half-state error. */
-function recoveryRequired(): AdminRecoveryError {
-  return new AdminRecoveryError(
-    'recovery_required',
-    'Administrator recovery state requires operator inspection.'
-  );
 }

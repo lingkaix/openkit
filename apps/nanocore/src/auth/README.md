@@ -40,6 +40,8 @@ This directory owns NanoCore authentication middleware, Better Auth browser sess
 - `bootstrap.ts` owns the one-time server owner bootstrap path.
 - `actor-store-manager.ts` owns actor-scoped store selection.
 
+The stopped-server operator keeps its exclusive data-root lock across native preparation and FULL acknowledgement. Its file-first recovery envelope and fsync precede the existing atomic hash-only Token plus Audit tuple; the original file identity and exact-retry checks remain. Native and Main database handles close before standard output and root-lock release. A failed native close joins the existing worker shutdown before releasing that lock and cannot report completion. Recovery opens only the already existing Core scope without migration. Other authentication writers remain separate pending their complete-family native cuts.
+
 ## Verification
 
 Run authentication middleware, server flow, access-token, bootstrap, administrator-recovery, membership, and Server route tests relevant to the change, followed by NanoCore typecheck, lint, and build. Administrator-recovery tests use only temporary data roots and process-local lock probes; they must not start, stop, or restart NanoCore. Server-mode tests must cover unauthenticated, wrong-scope, removed-membership, read-only, and server-admin cases where applicable.

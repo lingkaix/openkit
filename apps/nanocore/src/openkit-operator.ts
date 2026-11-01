@@ -3,7 +3,7 @@
 import { AdminRecoveryError, runOpenKitOperatorCli } from './auth/admin-recovery.js';
 
 try {
-  runOpenKitOperatorCli(process.argv.slice(2));
+  await runOpenKitOperatorCli(process.argv.slice(2));
 } catch (error) {
   const code = error instanceof AdminRecoveryError ? error.code : 'operator_failed';
   const message =

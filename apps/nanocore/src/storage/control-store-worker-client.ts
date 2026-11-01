@@ -13,6 +13,10 @@ import {
   type ControlReviewCommandResult,
 } from '../artifact-reviews.js';
 import { prepareAuditEventStatement } from '../audit-events.js';
+import {
+  AdminRecoveryError,
+  type ControlAdminRecoveryInput,
+} from '../auth/admin-recovery-codecs.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import type { ControlGenerativePresentation } from '../generative-ui/native-publication-codecs.js';
 import type {
@@ -1376,6 +1380,18 @@ class ControlStoreWorkerClient {
         error.domain?.operation === 'thread-read-membership'
       )
         throw new Error(THREAD_READ_RECEIPT_INVALID, { cause: error });
+      throw error;
+    }
+  }
+
+  /** Commits only the stopped-operator's original hash-only Token and Audit tuple. */
+  async adminRecovery(database: string, input: ControlAdminRecoveryInput): Promise<string> {
+    try {
+      const reply = await this.request({ operation: 'admin-recovery', database, input });
+      return (reply as Extract<Success, { operation: 'admin-recovery' }>).auditEventId;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'admin-recovery')
+        throw new AdminRecoveryError(error.domain.code, error.domain.message);
       throw error;
     }
   }

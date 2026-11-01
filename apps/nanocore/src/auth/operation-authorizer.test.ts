@@ -1927,7 +1927,7 @@ describe('central Workspace operation authorizer', () => {
       'usr_00000000-0000-7241-80d8-0d46cb74b40d'
     );
     const now = new Date().toISOString();
-    fixture.store.ensureQuickChatWorkspace('usr_00000000-0000-7241-80d8-0d46cb74b40d');
+    await fixture.store.ensureQuickChatWorkspace('usr_00000000-0000-7241-80d8-0d46cb74b40d');
     fixture.coreDb.sqlite
       .prepare(
         `INSERT INTO workspace_registry (

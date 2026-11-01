@@ -22,6 +22,8 @@ import {
   prepareControlReviewCommand,
   readControlReviewMaterialId,
 } from '../artifact-reviews.js';
+import { ADMIN_RECOVERY_REQUIRED, AdminRecoveryError } from '../auth/admin-recovery-codecs.js';
+import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import {
   applyControlGenerativePresentation,
@@ -183,6 +185,7 @@ type WriteCommand = Extract<
       | 'publication'
       | 'project-cleanup'
       | 'thread-read-membership'
+      | 'admin-recovery'
       | 'worker-control-evidence'
       | 'generative-presentation'
       | 'provenance'
@@ -310,6 +313,14 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       status: 409,
     };
   let domain: ControlWorkerDomainRefusal | undefined;
+  if (
+    operation === 'admin-recovery' &&
+    error instanceof AdminRecoveryError &&
+    error.code === 'recovery_required' &&
+    error.message === ADMIN_RECOVERY_REQUIRED
+  )
+    return { operation, code: error.code, message: error.message, status: 409 };
+
   if (
     operation === 'generative-presentation' &&
     (error instanceof IdempotencyKeyConflictError ||
@@ -1512,6 +1523,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'thread-read-membership',
               itemIds: stored,
             };
+          } else if (request.operation === 'admin-recovery') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const auditEventId = applyControlAdminRecovery(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'admin-recovery',
+              auditEventId,
+            };
           } else if (request.operation === 'worker-control-evidence') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const row = request.input;
@@ -1823,7 +1844,13 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
   }
   if (
     request.productOwner &&
-    request.initialize !== (request.productOwner.kind === 'server' ? 'core' : 'workspace')
+    request.initialize !== (request.productOwner.kind === 'server' ? 'core' : 'workspace') &&
+    !(
+      request.initialize === undefined &&
+      request.create === false &&
+      request.productOwner.kind === 'server' &&
+      request.dataRoot !== undefined
+    )
   )
     throw new ControlProductPreconditionError();
   let contentMount = request.contentMount;
@@ -2043,6 +2070,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'thread-read-membership' ||
+      value.operation === 'admin-recovery' ||
       value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||
       value.operation === 'provenance' ||
