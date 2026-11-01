@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type ActorRef,
+  deriveEntityId,
   type KnowledgeNotebookAdmission,
   KnowledgeNotebookAdmissionSchema,
   type KnowledgeOwnerScope,
@@ -12,7 +13,12 @@ import {
   recordServerAuditEvent,
   recordUserAuditEvent,
 } from '../audit-events.js';
-import type { CommandRequestScope, FsStore, KnowledgeProposalReviewRecord } from '../lib/store.js';
+import type {
+  CommandRequestScope,
+  FsStore,
+  KnowledgeProposalRecord,
+  KnowledgeProposalReviewRecord,
+} from '../lib/store.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import {
   commandInputHash,
@@ -226,6 +232,37 @@ export function retainNotebookProposalCandidate(input: {
   });
   git.retainCandidate({ proposalId: id, candidateRevision });
   return candidateRevision;
+}
+
+/** Prepares fresh immutable Review facts; callers retain replay, scope validation and recording. */
+export function prepareNotebookProposalReview(
+  ownerScope: Exclude<KnowledgeOwnerScope, { kind: 'workspace' }>,
+  proposal: Pick<
+    KnowledgeProposalRecord,
+    'id' | 'baseRevision' | 'candidateRevision' | 'contentDigest' | 'changes'
+  >,
+  request: Pick<KnowledgeProposalReviewRecord, 'requestId' | 'decision' | 'proposalDigest'>,
+  actor: Extract<ActorRef, { kind: 'user' }>
+) {
+  return {
+    proposalId: proposal.id,
+    ownerScope,
+    baseRevision: proposal.baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    reviewId: deriveEntityId('kr', {
+      ownerScope,
+      proposalId: proposal.id,
+      requestId: request.requestId,
+    }),
+    requestId: request.requestId,
+    decision: request.decision,
+    actor,
+    proposalDigest: request.proposalDigest,
+    changedPageIds: proposal.changes!.map(({ path }) => path.slice(0, -3)),
+    contentDigest: proposal.contentDigest,
+    targetAbsentAtDecision: null,
+    decidedAt: new Date().toISOString(),
+  };
 }
 
 /** Derives the exact durable owner from the existing database handle. */

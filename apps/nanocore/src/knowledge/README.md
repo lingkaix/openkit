@@ -137,3 +137,5 @@ Workspace and User Memory maintenance use the same UTF-8 model-input excerpt pro
 `scope-schema-impact.ts` classifies the complete supplied Notebook revision and exact Page/Source bytes without opening an owner. The public preview in `scope-schema-migration.ts` selects those facts and retains its two current-admission checks and final head comparison; the pure result grants no publication authority.
 
 User and Server Proposal creation share exact candidate metadata preparation and retention in the existing Notebook publisher. Each scope keeps its own admission, identity, record publication and Workspace acknowledgement.
+
+User and Server Proposal decisions share fresh immutable Review fact construction in the Notebook publisher; each caller retains replay selection, scope validation, current admission and durable recording.

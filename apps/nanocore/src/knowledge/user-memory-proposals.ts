@@ -29,6 +29,7 @@ import {
   type NotebookEdit,
   type NotebookPublicationAdmission,
   prepareNotebookProposalChanges,
+  prepareNotebookProposalReview,
   publishNotebook,
   retainNotebookProposalCandidate,
 } from './notebook-publication.js';
@@ -309,25 +310,14 @@ export async function decideUserMemoryProposal(
     assertNotebookProposalDecisionEvidence({ kind: 'user', userDb: context.userDb }, request);
   const review =
     prior ??
-    UserReviewSchema.parse({
-      proposalId: proposal.id,
-      ownerScope: { kind: 'user', userId: context.userDb.userId },
-      baseRevision: proposal.baseRevision,
-      candidateRevision: proposal.candidateRevision,
-      reviewId: deriveEntityId('kr', {
-        ownerScope: { kind: 'user', userId: context.userDb.userId },
-        proposalId: proposal.id,
-        requestId: request.requestId,
-      }),
-      requestId: request.requestId,
-      decision: request.decision,
-      actor: { kind: 'user', id: context.actor.userId },
-      proposalDigest: request.proposalDigest,
-      changedPageIds: proposal.changes!.map(({ path }) => path.slice(0, -3)),
-      contentDigest: proposal.contentDigest,
-      targetAbsentAtDecision: null,
-      decidedAt: new Date().toISOString(),
-    });
+    UserReviewSchema.parse(
+      prepareNotebookProposalReview(
+        { kind: 'user', userId: context.userDb.userId },
+        proposal,
+        request,
+        { kind: 'user', id: context.actor.userId }
+      )
+    );
   const recordDecision = () => {
     admitMemoryContext(context, 'review.apply');
     if (prior) return;
