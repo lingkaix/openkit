@@ -551,7 +551,9 @@ export function createServerMcpOperationImplementations(
         'vault_grant',
         async () => {
           grant(input.grantId);
-          const result = revokeVaultGrant(coreDb!, { grantId: input.grantId });
+          const result = coreDb!.sqlite.transaction(() =>
+            revokeVaultGrant(coreDb!, { grantId: input.grantId })
+          )();
           await dependencies.closeServerMcpSessions?.();
           return grant(result.grantId);
         },

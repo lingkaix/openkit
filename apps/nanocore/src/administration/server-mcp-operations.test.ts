@@ -21,14 +21,18 @@ import { applyMigrations } from '../storage/migrate.js';
 import { users } from '../storage/schema/index.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
+import { getVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
+import { listVaultInjectionPlans } from '../vault-injection-plans.js';
+import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 
-const cleanup: (() => void)[] = [];
+const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
-  for (const close of cleanup.splice(0).reverse()) close();
+  for (const close of cleanup.splice(0).reverse()) await close();
 });
 
 /** Real Core records, encrypted material, native admission and durable receipt owner. */
@@ -363,6 +367,86 @@ describe('Server MCP administration owner and recovery', () => {
       status: 'active',
       targetCapabilityId: null,
     });
+  });
+
+  it.each([
+    true,
+    false,
+  ])('keeps Server grant revocation atomic before session closure (fault: %s)', async (fault) => {
+    const close = vi.fn(async () => {});
+    const f = fixture(close);
+    const upstream = await createMcpHttpStub();
+    cleanup.push(() => upstream.close());
+    const reference = await f.call('vault.server-mcp-secret-create', {
+      material: 'synthetic-atomic-revocation',
+    });
+    const grant = await f.call('vault.server-mcp-grant-create', {
+      referenceId: reference.referenceId,
+    });
+    const created = await f.call('administration.server-mcp-create', {
+      ...creation,
+      declaration: { kind: 'http', endpoint: upstream.url },
+    });
+    // Actual delivery creates the plan and receipt through their owners.
+    await f.call('administration.mcp-discovery-preview', {
+      catalogScope: { kind: 'server' },
+      mcpId: created.entry.id,
+      versionDigest: created.versionDigest,
+      expectedRevision: created.revision,
+      expectedBindingRevision: created.entry.bindingRevision,
+      timeoutMs: 2000,
+      credentialBindings: [
+        {
+          slot: 'authorization',
+          vaultGrantId: grant.grantId,
+          sink: { kind: 'header', name: 'Authorization' },
+        },
+      ],
+    });
+    const observer = openCoreDb(f.dataRoot);
+    cleanup.push(() => observer.sqlite.close());
+    const read = () => ({
+      grant: getVaultGrant(observer, grant.grantId),
+      plans: listVaultInjectionPlans(observer),
+      receipts: listVaultInjectionReceipts(observer),
+    });
+    const before = read();
+    expect(before.grant?.status).toBe('active');
+    expect(before.plans).toMatchObject([{ grantId: grant.grantId, status: 'active' }]);
+    expect(before.receipts).toMatchObject([{ grantId: grant.grantId, revocationStatus: 'active' }]);
+    const committed = {
+      grant: { ...before.grant, status: 'revoked' },
+      plans: before.plans.map((plan) => ({ ...plan, status: 'revoked' })),
+      receipts: before.receipts.map((receipt) => ({
+        ...receipt,
+        revocationStatus: 'revoked',
+      })),
+    };
+    const atClose: ReturnType<typeof read>[] = [];
+    close.mockClear();
+    close.mockImplementation(async () => {
+      // A separate connection cannot mistake pending writes for committed state.
+      atClose.push(read());
+    });
+    if (fault) {
+      // Fault only after valid setup, between grant/plan updates and receipt completion.
+      f.coreDb.sqlite.exec(`CREATE TEMP TRIGGER fail_server_mcp_receipt_revocation
+          BEFORE UPDATE OF revocation_status ON vault_injection_receipts
+          BEGIN SELECT RAISE(ABORT, 'Synthetic receipt revocation failure'); END`);
+      await expect(
+        f.call('vault.server-mcp-grant-revoke', { grantId: grant.grantId })
+      ).rejects.toMatchObject({ status: 409, code: 'recovery_required' });
+      expect(close).not.toHaveBeenCalled();
+      // Vault Backend Implementation: grant-only revocation uses one Core transaction.
+      expect(read()).toEqual(before);
+    } else {
+      await expect(
+        f.call('vault.server-mcp-grant-revoke', { grantId: grant.grantId })
+      ).resolves.toMatchObject({ grantId: grant.grantId, status: 'revoked' });
+      // Core Storage publication follows commit; Vault preserves completion history.
+      expect(atClose).toEqual([committed]);
+      expect(read()).toEqual(committed);
+    }
   });
 
   it('retains saved catalog authority and fences a missing receipt when session cleanup fails', async () => {
