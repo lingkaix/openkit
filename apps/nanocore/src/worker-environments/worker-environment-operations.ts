@@ -223,7 +223,7 @@ export function createWorkerEnvironmentOperations(
             input.storageRef,
             contributorAuthorizer(dependencies.store, context)
           );
-          const pending = markWorkerStoragePurgePending(dependencies.coreDb, {
+          const pending = await markWorkerStoragePurgePending(dependencies.coreDb, {
             authorizePurge: () => hasOperationAuthority(dependencies.coreDb, context, true),
             expectedRevision: input.expectedRevision,
             hasSurvivingReferences: () => hasSurvivingWork(dependencies, binding),
@@ -240,7 +240,7 @@ export function createWorkerEnvironmentOperations(
           } catch {
             outcome = 'unknown';
           }
-          const settled = settleWorkerStoragePurge(dependencies.coreDb, {
+          const settled = await settleWorkerStoragePurge(dependencies.coreDb, {
             expectedRevision: pending.revision,
             outcome,
             storageRef: pending.storageRef,
@@ -305,7 +305,7 @@ export function createWorkerEnvironmentOperations(
   };
 }
 
-/** Rechecks durable future-work references before the synchronous purge reservation. */
+/** Rechecks durable future-work references before the native purge reservation. */
 function hasSurvivingWork(
   dependencies: CreateWorkerEnvironmentOperationsInput,
   binding: WorkerStorageBinding

@@ -37,7 +37,10 @@ import {
   requireNanoHostExecutionAttempt,
   resolveNanoHostAttemptTokenBinding,
 } from './nanohost-attempt-records.js';
-import { getWorkerBackendSession, workerBackendImageIdentity } from './worker-backend-sessions.js';
+import {
+  getWorkerBackendSession,
+  workerBackendImageIdentity,
+} from './worker-backend-session-records.js';
 import type {
   WorkerControlAcceptedRecordRecorder,
   WorkerControlAcceptedRecordRecorderInput,
@@ -304,7 +307,7 @@ export async function recoverWorkerObservationSource(
 }
 
 /** Writes only the original Core receipt; native observation work finishes before this synchronous step. */
-function writeWorkerControlAcceptedRecord(
+export function writeWorkerControlAcceptedRecord(
   coreDb: CoreDb,
   input: WorkerControlAcceptedRecordRecorderInput
 ): void {
@@ -324,7 +327,15 @@ function writeWorkerControlAcceptedRecord(
     ) as { schemaVersion: unknown; recordJson: string } | undefined;
   if (
     existing &&
-    !readRetainedV1(existing, () => isDeepStrictEqual(JSON.parse(existing.recordJson), receipt))
+    !readRetainedV1(existing, () => {
+      const retained: unknown = JSON.parse(existing.recordJson);
+      // Ordinary event receipts use their descriptive reader; the exact known core still matches.
+      const known =
+        event && event.event.type !== 'observation.content.chunk'
+          ? WorkerCanonicalEventRecordReaderSchema.parse(retained)
+          : retained;
+      return isDeepStrictEqual(known, receipt);
+    })
   )
     throw new Error('recovery_required: worker receipt identity conflict');
   coreDb.sqlite

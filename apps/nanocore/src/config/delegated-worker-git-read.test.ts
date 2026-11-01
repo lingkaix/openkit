@@ -289,7 +289,7 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
     readRuntimeConfigStatus: () => manager.status(),
   });
   const write = vi.spyOn(files, 'updateFile');
-  const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
+  const reload = vi.fn(async () => await manager.reload({ mode: 'safe', dryRun: false }));
   const options = {
     actor,
     coreDb,
@@ -585,7 +585,7 @@ describe('finite delegated Worker Git-read application', () => {
     const candidate = (await f.propose()).candidate;
     const original = readFileSync(f.agentPath, 'utf8');
     f.saveAssignments(entries);
-    expect(f.manager.reload({ mode: 'safe', dryRun: false }).status).toBe('applied');
+    expect((await f.manager.reload({ mode: 'safe', dryRun: false })).status).toBe('applied');
     await expect(
       f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
     ).rejects.toMatchObject({ code: 'configuration_delegation_required' });

@@ -8,7 +8,7 @@ import {
   isSchedulerExecutionBusyRefusal,
   listSchedulerExecutionAttemptsForTurn,
 } from '../runtime/execution-attempt-records.js';
-import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
+import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import {
   listWorkspaceInputSnapshots,
   listWorkspaceMaterializationRecords,

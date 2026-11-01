@@ -2180,7 +2180,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   if (services.goalDomain && result.goal) {
     try {
       if (result.goal.disposition) {
-        services.goalDomain.forActor(context.actor, db).close({
+        await services.goalDomain.forActor(context.actor, db).close({
           workspaceId: input.workspaceId,
           goalId,
         });
@@ -2194,7 +2194,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
           if (!request.decidingActorContext)
             throw new Error('Goal-domain deciding credential is unavailable.');
           const policy = services.goalDomain.forActor(request.decidingActorContext, db);
-          policy.activate({
+          await policy.activate({
             workspaceId: input.workspaceId,
             requestId: input.pendingRequestId,
             expectedPolicyRevision: services.goalDomain.currentRevision(),

@@ -62,8 +62,8 @@ import { listWorkspaceAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
-  verifyOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from './auth/access-token-verification.js';
 import { createBetterAuth } from './auth/better-auth.js';
 import { consumeServerBootstrapToken, ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import {
@@ -125,7 +125,7 @@ import {
   openNanoHostAgentSessionBinding,
   readNanoHostThreadAgentSessionBinding,
   settleNanoHostHarnessOperation,
-} from './runtime/nanohost-harness-records.js';
+} from './runtime/nanohost-harness.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
@@ -489,7 +489,7 @@ describe('worker MCP routes', () => {
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const token = issued.record;
-    const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
+    const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
     if (!verified) throw new Error('I16 administrator bearer must authenticate.');
     const vaultUnlockState = createVaultUnlockState({
       backendKind: 'encrypted-file',
@@ -1179,7 +1179,7 @@ describe('worker MCP routes', () => {
       identityId: 'capture-wait',
       targetId: 'capture-wait',
     };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: '2026-10-05T00:00:00.000Z',
     });
@@ -2085,7 +2085,7 @@ describe('worker MCP routes', () => {
       agentManifests: [setup.manifest],
     });
     const manager = createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot });
-    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => snapshot,
     });
     admitTestNativeEnvironment(coreDb, setup.manifest);
@@ -2219,7 +2219,7 @@ describe('worker MCP routes', () => {
         timestamp,
       }));
       for (const binding of bindingInputs.slice(0, 3))
-        openNanoHostAgentSessionBinding(coreDb, binding);
+        await openNanoHostAgentSessionBinding(coreDb, binding);
       const [peerSession, , withdrawnSession, foreignSession] = sessions as [
         (typeof sessions)[number],
         (typeof sessions)[number],
@@ -2567,8 +2567,8 @@ describe('worker MCP routes', () => {
       const second = native.executionFor(successor.id);
       await second.launched.promise;
       await native.waitForStartup(native.executor.nativeLineage!.turnId);
-      const target = recordTestNativeRuntimeTarget(coreDb);
-      createNanoHostHarnessRuntime(coreDb, {
+      const target = await recordTestNativeRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
         adapterVersion: 'test',
         harnessBindingRef: 'harness_binding_foreign',
@@ -2583,7 +2583,7 @@ describe('worker MCP routes', () => {
         runtimeTargetId: target.targetId,
         timestamp,
       });
-      openNanoHostAgentSessionBinding(coreDb, bindingInputs[3]!);
+      await openNanoHostAgentSessionBinding(coreDb, bindingInputs[3]!);
       expect(
         readNanoHostThreadAgentSessionBinding(coreDb, {
           workspaceId,
@@ -2700,7 +2700,7 @@ describe('worker MCP routes', () => {
         content,
         expectedRevision: configFile.file.revision,
       });
-      expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+      expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
       const restricted = (await laterClient.callTool({ name: 'work_peer_list', arguments: {} }))
         .structuredContent!.peers as Array<Record<string, unknown>>;
       const restrictedHandle = laterPeers.find((entry) => entry.title === 'restricted')!.handle;
@@ -2899,7 +2899,7 @@ describe('worker MCP routes', () => {
         turnId: testEntityId('tu', 'schema-mcp-policy'),
       }),
     };
-    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => runtimeConfig,
     });
     admitTestNativeEnvironment(coreDb, setup.manifest);
@@ -3310,7 +3310,7 @@ describe('worker MCP routes', () => {
         { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId },
       ],
     });
-    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => runtimeConfig,
     });
     admitTestNativeEnvironment(coreDb, setup.manifest);
@@ -3710,9 +3710,11 @@ describe('worker MCP routes', () => {
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const originalCallTool = workerMcpGateway.callTool.bind(workerMcpGateway);
     const upstream = vi.spyOn(workerMcpGateway, 'callTool');
-    const native = createNativeTaskAdmissionFixture(coreDb, store, {
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => snapshot,
     });
+    let nativeRestore: Promise<void> | undefined;
+    const restoreNative = () => (nativeRestore ??= native.restore());
     admitTestNativeEnvironment(coreDb, snapshot.agentManifests[0]!);
     const captureApp = createApp({
       coreDb,
@@ -3886,6 +3888,7 @@ describe('worker MCP routes', () => {
       expect(StartTaskModeResponseSchema.parse(await replay.json()).turn.id).toBe(turn.id);
       expect(native.executor.launches).toBe(1);
       expect(upstream).not.toHaveBeenCalled();
+      await restoreNative();
       await shutdownControlStoreWorkerClient();
       // Reopen real products for the response module; delivery is a separate covered owner.
       store = new FsStore({ dataRoot });
@@ -4169,7 +4172,7 @@ describe('worker MCP routes', () => {
           .map((result) => result.value.closeout)
       );
       taskAdmissions.mockRestore();
-      await native.restore();
+      await restoreNative();
       await workerMcpGateway.close();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();

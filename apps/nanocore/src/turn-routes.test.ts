@@ -30,7 +30,7 @@ import {
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
   schedulerExecutionCorrelation,
-} from './runtime/execution-attempt-records.js';
+} from './runtime/execution-attempts.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import * as productTurnOwners from './runtime/product-turn-start.js';
 import { startSchedulerDispatchRetryService } from './runtime/scheduler-dispatch-service.js';
@@ -177,12 +177,12 @@ class RecordingTurnExecutor implements TurnExecutor {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const attempt = recordSchedulerExecutionOperation(this.coreDb, {
+    const attempt = await recordSchedulerExecutionOperation(this.coreDb, {
       attemptId: context.attemptId,
       operationId: `recording:${turnId}`,
       submission: true,
     });
-    acceptSchedulerExecutionObservation(
+    await acceptSchedulerExecutionObservation(
       this.coreDb,
       await this.executionBackend.submit({
         ...schedulerExecutionCorrelation(attempt),
@@ -203,7 +203,7 @@ class RecordingTurnExecutor implements TurnExecutor {
       { completedAt: new Date().toISOString(), status: 'completed' },
       { requestId: context.requestId }
     );
-    markSchedulerExecutionAttemptClosing(this.coreDb!, {
+    await markSchedulerExecutionAttemptClosing(this.coreDb!, {
       attemptId: context.attemptId!,
       cause: 'turn-completed',
       outcomeRef: `turn:${turnId}:completed`,
@@ -232,7 +232,7 @@ class RecordingTurnExecutor implements TurnExecutor {
       turnId,
     })) {
       if (attempt.phase === 'closed') continue;
-      const closing = markSchedulerExecutionAttemptClosing(this.coreDb!, {
+      const closing = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
         attemptId: attempt.attemptId,
         cause: `turn-${turn.status}`,
         outcomeRef: `turn:${turnId}:${turn.status}`,
@@ -247,7 +247,7 @@ class RecordingTurnExecutor implements TurnExecutor {
       } as const;
       const correlation = schedulerExecutionCorrelation(closing);
       const released = await this.executionBackend!.release({ ...correlation, proof });
-      closeSchedulerExecutionAttemptWithFence(this.coreDb!, {
+      await closeSchedulerExecutionAttemptWithFence(this.coreDb!, {
         correlation,
         proof,
         fenceRef: released.fenceRef!,
@@ -360,6 +360,7 @@ async function createSchedulerFixture(
   const store = await createDemoStore({ dataRoot, ...(persist ? { coreDb } : {}) });
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });
+  const finishExecution = observeRecordingExecution(executor);
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -374,7 +375,30 @@ async function createSchedulerFixture(
     turnExecutor: executor,
     workerPlacement,
   });
-  return { app, coreDb, dataRoot, store };
+  return {
+    app,
+    coreDb,
+    dataRoot,
+    store,
+    finishExecution,
+  };
+}
+
+/** Captures the original modeled execution and joins its exact Turn and final native release ACK. */
+function observeRecordingExecution(executor: RecordingTurnExecutor) {
+  const started = Promise.withResolvers<{ turnId: string; execution: Promise<void> }>();
+  const originalStart = executor.startTurn.bind(executor);
+  // Keep an earlier caller spy intact; replacing its implementation would call the same spy recursively.
+  executor.startTurn = (...args) => {
+    const execution = originalStart(...args);
+    started.resolve({ turnId: args[1], execution });
+    return execution;
+  };
+  return async (turnId: string) => {
+    const observed = await started.promise;
+    expect(observed.turnId).toBe(turnId);
+    await observed.execution;
+  };
 }
 
 /**
@@ -400,7 +424,7 @@ async function createNativeTurnFixture(slug: string) {
       providerRegistry: testProviderRegistry(),
     }),
   });
-  const native = createNativeTaskAdmissionFixture(coreDb, store, {
+  const native = await createNativeTaskAdmissionFixture(coreDb, store, {
     readRuntimeConfig: () => config.current(),
   });
   const admissions = vi.spyOn(productTurnOwners, 'observeTurnAdmission');
@@ -515,6 +539,7 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
 
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });
+  const finishExecution = observeRecordingExecution(executor);
   const app = createApp({
     agentManifests: [createTestAgentSetup().manifest],
     auth: createHeaderAuthStub(),
@@ -524,7 +549,7 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
     store,
     turnExecutor: executor,
   });
-  return { app, coreDb, dataRoot, store };
+  return { app, coreDb, dataRoot, store, finishExecution };
 }
 
 /**
@@ -591,6 +616,7 @@ describe('generic turn routes', () => {
       expect(response.status).toBe(202);
       const turn = TurnSchema.parse(await response.json());
       expect(turn.triggerSource).toEqual({ kind: 'user-input', summary: 'Direct Worker input.' });
+      await fixture.finishExecution(turn.id);
       await vi.waitFor(() => expect(executor.startCalls).toBe(1));
       await vi.waitFor(() =>
         expect(
@@ -775,7 +801,10 @@ describe('generic turn routes', () => {
   it('returns typed unsupported without mutating when the executor cannot interrupt', async () => {
     const executor = new RecordingTurnExecutor({ interrupts: false, completeStarts: false });
     const started = vi.spyOn(executor, 'startTurn');
-    const { app, store, coreDb } = await createSchedulerFixture(executor, 'unsupported-interrupt');
+    const { app, store, coreDb, finishExecution } = await createSchedulerFixture(
+      executor,
+      'unsupported-interrupt'
+    );
     try {
       const start = await app.request(
         ...operationRequest(
@@ -794,6 +823,7 @@ describe('generic turn routes', () => {
       );
       expect(start.status).toBe(202);
       const turn = TurnSchema.parse(await start.json());
+      await finishExecution(turn.id);
       await vi.waitFor(() => expect(executor.startCalls).toBe(1));
       // The call counter precedes the original native submission acknowledgement.
       await started.mock.results[0]!.value;
@@ -1221,6 +1251,7 @@ describe('generic turn routes', () => {
 
       expect(response.status).toBe(202);
       expect(turn.status).toBe('pending');
+      await fixture.finishExecution(turn.id);
       await vi.waitFor(() =>
         expect(readTurnAttempt(fixture.coreDb, turn.id)?.phase).toBe('closed')
       );
@@ -1392,6 +1423,7 @@ describe('generic turn routes', () => {
         )
       );
       const firstTurn = TurnSchema.parse(await firstResponse.json());
+      await fixture.finishExecution(firstTurn.id);
       await vi.waitFor(() =>
         expect(readTurnAttempt(fixture.coreDb, firstTurn.id)?.phase).toBe('closed')
       );
@@ -1485,6 +1517,7 @@ describe('generic turn routes', () => {
           id: 'usr_00000000-0000-79cf-b70a-b5595737412e',
         }),
       });
+      await fixture.finishExecution(turn.id);
       await vi.waitFor(() =>
         expect(readTurnAttempt(fixture.coreDb, turn.id)?.phase).toBe('closed')
       );

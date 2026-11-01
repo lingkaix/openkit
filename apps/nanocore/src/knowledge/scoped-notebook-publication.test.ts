@@ -7,8 +7,8 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
-  verifyOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import type { Actor } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -27,7 +27,7 @@ const alice = 'usr_00000000-0000-7000-8000-000000000001';
 const bob = 'usr_00000000-0000-7000-8000-000000000002';
 
 /** Real canonical identities, authenticated bearer, existing scoped SQLite and Git; no boolean grants. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'scoped-publication-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -52,7 +52,7 @@ function fixture() {
     workspaceIds: [],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
-  const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
+  const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
   if (!verified) throw new Error('Fixture bearer must authenticate.');
   const administrator: Actor = {
     kind: 'token',
@@ -135,7 +135,7 @@ function notebook(input: Parameters<typeof resolveScopedNotebookOwner>[0]): Know
 
 describe('internal direct User and Server Notebook publication', () => {
   it('cleans only the exact confirmed suppressed page while its links stay unavailable', async () => {
-    const f = fixture();
+    const f = await fixture();
     const ownerScope = resolveScopedNotebookOwner(f.user).ownerScope;
     const saved = await publishScopedNotebook(f.user, edit(f.initialUser, ownerScope));
     const referrer = serializeKnowledgePageFixture(
@@ -190,7 +190,7 @@ describe('internal direct User and Server Notebook publication', () => {
   });
 
   it('permits unrelated explicit saves when a suppressed page remains after failed cleanup', async () => {
-    const f = fixture();
+    const f = await fixture();
     const ownerScope = resolveScopedNotebookOwner(f.user).ownerScope;
     const saved = await publishScopedNotebook(f.user, edit(f.initialUser, ownerScope));
     const target = readMemoryPage(f.user, 'note')!;
@@ -227,7 +227,7 @@ describe('internal direct User and Server Notebook publication', () => {
     'user',
     'server',
   ] as const)('honors current %s protected-page policy before effects and again after preparation', async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     const input = kind === 'user' ? f.user : f.server;
     const initial = kind === 'user' ? f.initialUser : f.initialServer;
     const db = kind === 'user' ? f.userDb : f.coreDb;
@@ -235,7 +235,7 @@ describe('internal direct User and Server Notebook publication', () => {
     const configRoot =
       kind === 'user' ? join(f.dataRoot, 'users', alice, 'config') : join(f.dataRoot, 'config');
     const configPath = join(configRoot, kind === 'user' ? 'user.jsonc' : 'server.jsonc');
-    const protect = (pageIds: string[]) => {
+    const protect = async (pageIds: string[]) => {
       mkdirSync(configRoot, { recursive: true });
       writeFileSync(
         configPath,
@@ -244,22 +244,22 @@ describe('internal direct User and Server Notebook publication', () => {
           knowledgeMaintenance: { enabled: false, reviewRequiredPageIds: pageIds },
         })
       );
-      expect(input.runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+      expect((await input.runtimeConfigManager.reload({ mode: 'safe' })).status).toBe('applied');
     };
-    protect(['note']);
+    await protect(['note']);
     await expect(publishScopedNotebook(input, request)).rejects.toMatchObject({
       code: 'review_required',
     });
     expect(notebook(input).publishedRevision()).toBe(initial);
     expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
 
-    protect([]);
+    await protect([]);
     const prepare = KnowledgeNotebook.prototype.prepare;
     const prepared = vi
       .spyOn(KnowledgeNotebook.prototype, 'prepare')
-      .mockImplementationOnce(function (this: KnowledgeNotebook, input) {
+      .mockImplementationOnce(async function (this: KnowledgeNotebook, input) {
         const candidate = prepare.call(this, input);
-        protect(['note']);
+        await protect(['note']);
         return candidate;
       });
     await expect(publishScopedNotebook(input, request)).rejects.toMatchObject({
@@ -274,7 +274,7 @@ describe('internal direct User and Server Notebook publication', () => {
     'user',
     'server',
   ] as const)('publishes and replays exact %s scope through its existing Audit/receipt owner', async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     const input = kind === 'user' ? f.user : f.server;
     const ownerScope = resolveScopedNotebookOwner(input).ownerScope;
     const base = kind === 'user' ? f.initialUser : f.initialServer;
@@ -341,7 +341,7 @@ describe('internal direct User and Server Notebook publication', () => {
   });
 
   it('refuses foreign User profiles/databases and keeps administrator User inspection read-only', async () => {
-    const f = fixture();
+    const f = await fixture();
     const foreignDb = openUserDb(f.dataRoot, bob);
     applyScopedMigrations(foreignDb);
     try {
@@ -384,7 +384,7 @@ describe('internal direct User and Server Notebook publication', () => {
   });
 
   it('denies a disabled User and revoked current administrator before fresh effects or completed replay', async () => {
-    const f = fixture();
+    const f = await fixture();
     const userRequest = edit(f.initialUser, { kind: 'user', userId: alice });
     const serverRequest = edit(f.initialServer, { kind: 'server' });
     await publishScopedNotebook(f.user, userRequest);
@@ -410,7 +410,7 @@ describe('internal direct User and Server Notebook publication', () => {
   });
 
   it('rechecks a real administrator revocation after preparation and before Audit/ref publication', async () => {
-    const f = fixture();
+    const f = await fixture();
     const prepare = KnowledgeNotebook.prototype.prepare;
     vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementationOnce(function (
       this: KnowledgeNotebook,
@@ -432,7 +432,7 @@ describe('internal direct User and Server Notebook publication', () => {
   });
 
   it('refuses an unregistered Source in an initialized Notebook and keeps generic native history source-free', async () => {
-    const f = fixture();
+    const f = await fixture();
     const scope = { kind: 'user', userId: alice } as const;
     const request = edit(f.initialUser, scope);
     const sourceContent = page(scope, 'Source-bound bytes.', [
@@ -463,7 +463,7 @@ describe('internal direct User and Server Notebook publication', () => {
   });
 
   it('admits self literal Sources without extending Server or administrative inspection publication', async () => {
-    const f = fixture();
+    const f = await fixture();
     const source = await registerUserKnowledgeSource(f.user, {
       requestId: randomUUID(),
       kind: 'document',
@@ -513,7 +513,7 @@ describe('internal direct User and Server Notebook publication', () => {
     'user',
     'server',
   ] as const)('retains %s Git/Audit effects after receipt failure and refuses inferred completion', async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     const input = kind === 'user' ? f.user : f.server;
     const db = kind === 'user' ? f.userDb : f.coreDb;
     const initial = kind === 'user' ? f.initialUser : f.initialServer;

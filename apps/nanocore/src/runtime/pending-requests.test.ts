@@ -247,7 +247,7 @@ async function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGate
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  recordTestNativeRuntimeTarget(coreDb);
+  await recordTestNativeRuntimeTarget(coreDb);
   admitTestNativeEnvironment(
     coreDb,
     createTestAgentSetup({ ...(agentId ? { agentId } : {}) }).manifest

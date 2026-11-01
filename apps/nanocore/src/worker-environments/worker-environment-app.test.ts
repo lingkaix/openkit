@@ -110,7 +110,7 @@ function createNanoHostDispatch(
         request.imageSettlement &&
         (request.kind === 'image.acquire' || request.kind === 'image.build')
       )
-        writeWorkerImageSettlement(coreDb, {
+        await writeWorkerImageSettlement(coreDb, {
           ...request.imageSettlement,
           requestId: request.requestId,
           operation: request.kind,
@@ -616,7 +616,7 @@ describe('Worker environment App composition', () => {
     const collectionEntered = Promise.withResolvers<void>();
     const releaseCollection = Promise.withResolvers<void>();
     const entered: { turnId: string; execution: Promise<void> }[] = [];
-    let native: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
+    let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
     let restoreCollection: (() => void) | undefined;
     let responseSettled = false;
     let successorDispatch:
@@ -688,7 +688,7 @@ describe('Worker environment App composition', () => {
       const initialRevision = contentRevision(readFileSync(agentPath, 'utf8'));
       const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
       admitTestNativeEnvironment(coreDb, agentSetup.manifest, {}, IMAGE_DIGEST);
-      native = createNativeTaskAdmissionFixture(coreDb, store, {
+      native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => runtimeConfigManager.current(),
       });
       const executor = native.executor;

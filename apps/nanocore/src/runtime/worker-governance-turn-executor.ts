@@ -139,6 +139,7 @@ import {
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
   acceptSchedulerExecutionObservation,
+  bindNanoHostAttemptPreparation,
   closeSchedulerExecutionAttemptWithFence,
   closeSchedulerExecutionAttemptWithoutEffects,
   listOpenSchedulerExecutionAttempts,
@@ -147,7 +148,7 @@ import {
   recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
-} from './execution-attempt-records.js';
+} from './execution-attempts.js';
 import { requireExecutionCredentialReceipts } from './execution-backend.js';
 import {
   createExecutionStepJournalReader,
@@ -161,8 +162,7 @@ import type {
   ExecutionStepRef,
 } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
-import { bindNanoHostAttemptPreparation } from './nanohost-attempt-records.js';
-import { drainNanoHostSandboxAdmission } from './nanohost-harness-records.js';
+import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
   frozenPendingOutcomeInput,
@@ -186,13 +186,15 @@ import type {
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
 import {
   listWorkerBackendSessions,
+  type WorkerBackendSessionRecord,
+  workerBackendImageIdentity,
+  workerBackendLineageFromRuntimeImage,
+} from './worker-backend-session-records.js';
+import {
   markWorkerBackendSessionLaunching,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
-  type WorkerBackendSessionRecord,
-  workerBackendImageIdentity,
-  workerBackendLineageFromRuntimeImage,
 } from './worker-backend-sessions.js';
 import {
   getWorkerCheckpoint,
@@ -1111,7 +1113,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly coreDb: CoreDb | null;
   private readonly fileAdmission: FileStorageAdmission | undefined;
   private readonly createAgentSessionId: () => string;
-  private readonly now: () => string;
+  private readonly now: (() => string) | undefined;
   private readonly resolveResidentWorkerStorageWorkSlotRef:
     | ((environmentPackage: AgentEnvironmentPackagePreview) => string | null)
     | null;
@@ -1145,7 +1147,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.coreDb = options.coreDb ?? null;
     this.fileAdmission = options.fileAdmission;
     this.createAgentSessionId = options.createAgentSessionId ?? (() => allocateEntityId('as'));
-    this.now = options.now ?? (() => new Date().toISOString());
+    this.now = options.now;
     this.resolveResidentWorkerStorageWorkSlotRef =
       options.resolveResidentWorkerStorageWorkSlotRef ?? null;
     this.runtimeProvenanceImporter =
@@ -1153,6 +1155,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     this.vaultBackend = options.vaultBackend ?? null;
     this.workerControlGateway = options.workerControlGateway ?? null;
     this.workspaceMutationAdmission = options.workspaceMutationAdmission ?? null;
+  }
+
+  /** Samples Main observations while keeping an absent override absent for native deciding clocks. */
+  private currentTime(): string {
+    return this.now?.() ?? new Date().toISOString();
   }
 
   /** Hands off surviving ready proof before previewing continuity, without replacement effects. */
@@ -1424,7 +1431,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): Promise<SchedulerWorkerStorageChoice | undefined> {
     const { prepared } = input;
     if (!this.coreDb) throw new Error('Attempt preparation requires Core storage.');
-    bindNanoHostAttemptPreparation(this.coreDb, {
+    await bindNanoHostAttemptPreparation(this.coreDb, {
       attemptId: input.attemptId,
       agentSessionId: prepared.agentSessionId,
       inputRef: `aepsnap_${input.preparation.turn.id}_${prepared.agentSessionId}`,
@@ -1722,7 +1729,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       await store.updateAgentSession(current.id, {
         message: 'Replaced before a Turn with incompatible or unproved runtime continuity.',
         status: 'closed',
-        updatedAt: this.now(),
+        updatedAt: this.currentTime(),
       });
     }
     if (
@@ -2081,7 +2088,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         attempt.inputRef!
       ).snapshot;
       const current = () =>
-        assertCurrentWorkerCredentialAuthority(coreDb, consumer, this.now, declaration);
+        assertCurrentWorkerCredentialAuthority(
+          coreDb,
+          consumer,
+          () => this.currentTime(),
+          declaration
+        );
       if (input.action !== 'revoke') current();
       if (plan.status !== 'active')
         throw new OperationError(
@@ -2117,7 +2129,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             planId: plan.planId,
             receiptId,
             resolvingPath: 'grant',
-            now: this.now,
+            ...(this.now ? { now: this.now } : {}),
           }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion })
         );
       };
@@ -2289,7 +2301,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           grantId: grant.grantId,
           agentSessionId: consumer.scope.agentSessionId,
           backendSummary: JSON.stringify({ ...verified, replacesReceiptId: previous.receiptId }),
-          injectedAt: this.now(),
+          injectedAt: this.currentTime(),
           expiresAt: grant.expiresAt,
           revocationStatus: 'active',
         });
@@ -2304,10 +2316,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       return verified!;
     } catch (cause) {
       if (effectAttempt && effectPackage) {
-        markSchedulerExecutionAttemptClosing(coreDb, {
+        await markSchedulerExecutionAttemptClosing(coreDb, {
           attemptId: effectAttempt.attemptId,
           cause: 'credential-effect-unproved',
-          now: this.now,
+          ...(this.now ? { now: this.now } : {}),
         });
         try {
           await this.backend.cleanupSession(this.backend.planSession(effectPackage), {
@@ -2395,28 +2407,30 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       cleanups.set(binding.sandboxBindingRef, anchor);
     }
     for (const [sandboxBindingRef, anchor] of cleanups)
-      drainNanoHostSandboxAdmission(coreDb, {
+      await drainNanoHostSandboxAdmission(coreDb, {
         sandboxBindingRef,
         originPhysicalEpoch: anchor.originPhysicalEpoch,
       });
     // Preparation can expose material before a binding or completion receipt exists. Revoke its
-    // exact admitted attempt before the first await, not only a currently active native Turn.
-    const attempts = listOpenSchedulerExecutionAttempts(coreDb)
-      .filter(
-        (attempt) => attempt.agentSessionId !== null && selectedSessions.has(attempt.agentSessionId)
-      )
-      .map((attempt) => ({
-        attempt,
-        closing:
-          attempt.phase === 'open'
-            ? markSchedulerExecutionAttemptClosing(coreDb, {
-                attemptId: attempt.attemptId,
-                cause: 'turn-cancelled',
-                now: this.now,
-              })
-            : attempt,
-        execution: this.activeTurnExecutions.get(attempt.turnId),
-      }));
+    // exact admitted attempt before cancellation or physical cleanup, not only a currently active native Turn.
+    const attempts: {
+      attempt: ReturnType<typeof requireSchedulerExecutionAttempt>;
+      closing: ReturnType<typeof requireSchedulerExecutionAttempt>;
+      execution: Promise<unknown> | undefined;
+    }[] = [];
+    for (const attempt of listOpenSchedulerExecutionAttempts(coreDb).filter(
+      (value) => value.agentSessionId !== null && selectedSessions.has(value.agentSessionId)
+    )) {
+      const closing =
+        attempt.phase === 'open'
+          ? await markSchedulerExecutionAttemptClosing(coreDb, {
+              attemptId: attempt.attemptId,
+              cause: 'turn-cancelled',
+              ...(this.now ? { now: this.now } : {}),
+            })
+          : attempt;
+      attempts.push({ attempt, closing, execution: this.activeTurnExecutions.get(attempt.turnId) });
+    }
     // File removal is a placement-neutral obligation, including an idle resident's closed creator.
     // The existing Vault receipt and scheduler attempt supply its exact identity; neither authorizes work.
     const fileRevocations = new Map<
@@ -2489,7 +2503,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           throw new Error('Credential revocation requires the existing live or recovery owner.');
         // Already-closing work keeps its accepted closeout; no second cancellation or fresh effect.
         if (attempt.phase === 'open' && closing.operationId)
-          acceptSchedulerExecutionObservation(
+          await acceptSchedulerExecutionObservation(
             coreDb,
             await this.executionBackend.cancel(schedulerExecutionCorrelation(closing))
           );
@@ -2501,7 +2515,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           if (error instanceof StoreRecordNotFoundError) return;
           throw error;
         }
-        await store.updateAgentSession(agentSessionId, { stale: true, updatedAt: this.now() });
+        await store.updateAgentSession(agentSessionId, {
+          stale: true,
+          updatedAt: this.currentTime(),
+        });
       }),
     ]);
     // Original callers retain their execution errors; cleanup and exact absence decide revocation.
@@ -2558,7 +2575,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       await store.updateAgentSession(agentSessionId, {
         stale: true,
         ...(['busy', 'idle'].includes(session.status) ? { status: 'closed' as const } : {}),
-        updatedAt: this.now(),
+        updatedAt: this.currentTime(),
       });
     }
   }
@@ -2727,7 +2744,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      const timestamp = preparedWorkerContext ? turn.startedAt! : this.now();
+      const timestamp = preparedWorkerContext ? turn.startedAt! : this.currentTime();
       // Backend support is admitted from secret-free metadata before any Vault material leaves.
       const packageDiagnostics = await withLifecycleStageTelemetry(
         {
@@ -2762,7 +2779,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             }
           : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
-        now: this.now,
+        ...(this.now ? { now: this.now } : {}),
         providerCredentialSink: (credential) => providerCredentials.push(credential),
         credentialReceiptSink: (receipt) => credentialReceipts.push(receipt),
         requestId,
@@ -2896,7 +2913,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ? buildWorkspaceInputSnapshots({
             backendCapabilities: backendCapabilities.capabilities,
             backendKind,
-            createdAt: preparedWorkerContext ? timestamp : this.now(),
+            createdAt: preparedWorkerContext ? timestamp : this.currentTime(),
             environmentPackage,
           })
         : [];
@@ -2944,7 +2961,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         // Durable package bytes must precede every Session or journal reference to this snapshot.
         if (workspaceDb) {
           recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-            createdAt: preparedWorkerContext ? timestamp : this.now(),
+            createdAt: preparedWorkerContext ? timestamp : this.currentTime(),
             environmentPackage: launchPackage,
           });
         }
@@ -3009,7 +3026,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         await this.emitAgentSession(store, launchPackage, requestId, agentSession);
 
         if (this.coreDb && launchContext.sandboxBindingRef) {
-          launchLifecycle.session = recordWorkerBackendSessionMaterializing(this.coreDb, {
+          launchLifecycle.session = await recordWorkerBackendSessionMaterializing(this.coreDb, {
             backendLineage: workerBackendLineageFromRuntimeImage(launchPackage.runtime.image),
             backendVersion: launchCapabilities.version ?? null,
             identity: launchLifecycle.identity,
@@ -3018,7 +3035,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               turnId: launchPackage.scope.turnId,
               workspaceId: launchPackage.scope.workspaceId,
             },
-            now: this.now,
+            ...(this.now ? { now: this.now } : {}),
             sandboxBindingRef: launchContext.sandboxBindingRef,
           });
         }
@@ -3099,15 +3116,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             existingAgentSession.retainedStorage.attachmentGeneration === undefined
               ? { storageRef: retainedStorage.storageRef, workSlotRef: retainedStorage.workSlotRef }
               : { ...retainedStorage, attachmentGeneration: retainedStorage.attachmentGeneration },
-          updatedAt: this.now(),
+          updatedAt: this.currentTime(),
         });
       }
       await this.bindNativeHandleRecorder(store, environmentPackage);
       if (backendLifecycle.session) {
-        backendLifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+        backendLifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
           fromState: 'materializing',
           attemptId: backendLifecycle.session.attemptId,
-          now: this.now,
+          ...(this.now ? { now: this.now } : {}),
           toState: 'materialized',
         });
       }
@@ -3120,7 +3137,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       const builtMaterializationRecords = workspaceDb
         ? buildWorkspaceMaterializationRecords({
-            createdAt: preparedWorkerContext ? timestamp : this.now(),
+            createdAt: preparedWorkerContext ? timestamp : this.currentTime(),
             inputSnapshots,
             materialization: { ...materialization, backendKind },
           })
@@ -3143,9 +3160,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const materializationRecords = handoff.materializationRecords;
       backendLifecycle.workspaceHandoffState = workspaceDb ? 'complete' : 'pending';
       if (backendLifecycle.session) {
-        backendLifecycle.session = markWorkerBackendWorkspaceHandoffComplete(this.coreDb!, {
+        backendLifecycle.session = await markWorkerBackendWorkspaceHandoffComplete(this.coreDb!, {
           attemptId: backendLifecycle.session.attemptId,
-          now: this.now,
+          ...(this.now ? { now: this.now } : {}),
         });
         backendLifecycle.workspaceHandoffState = backendLifecycle.session.workspaceHandoffState;
       }
@@ -3170,7 +3187,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const busySession = await store.updateAgentSession(resolvedAgentSessionId, {
         message: null,
         status: 'busy',
-        updatedAt: this.now(),
+        updatedAt: this.currentTime(),
       });
       await this.emitAgentSession(store, environmentPackage, requestId, busySession);
 
@@ -3190,7 +3207,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           403
         );
       }
-      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
+      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, () =>
+        this.currentTime()
+      );
       if (!workspaceDb) throw new Error('Worker launch requires its admitted Workspace owner.');
       await this.backend.prepareLaunch(materialization, workspaceDb);
       if (!existingAgentSession && runtimeFileCredentials.length > 0) {
@@ -3241,9 +3260,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           );
         }
       }
-      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
+      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, () =>
+        this.currentTime()
+      );
       preparedWorkerContext?.assertCurrentKnowledgeOverview();
-      const submission = recordSchedulerExecutionOperation(this.coreDb!, {
+      const submission = await recordSchedulerExecutionOperation(this.coreDb!, {
         attemptId: context.attemptId!,
         operationId: commandInputHash({
           attemptId: context.attemptId,
@@ -3251,12 +3272,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           operation: 'submit',
         }),
         submission: true,
-        now: this.now,
+        ...(this.now ? { now: this.now } : {}),
       });
       if (backendLifecycle.session)
-        backendLifecycle.session = markWorkerBackendSessionLaunching(this.coreDb!, {
+        backendLifecycle.session = await markWorkerBackendSessionLaunching(this.coreDb!, {
           attemptId: backendLifecycle.session.attemptId,
-          now: this.now,
+          ...(this.now ? { now: this.now } : {}),
         });
       let observation: Awaited<
         ReturnType<import('./execution-backend.js').ExecutionBackend['submit']>
@@ -3274,7 +3295,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         // The durable attempt holds only its own exclusion after a definite or unknown submission.
         context.onSubmissionSettled?.();
       }
-      const accepted = acceptSchedulerExecutionObservation(this.coreDb!, observation);
+      const accepted = await acceptSchedulerExecutionObservation(this.coreDb!, observation);
       if (!accepted || observation.disposition !== 'accepted')
         throw new Error(
           'Native submission is unresolved; inspect its original operation without replay.'
@@ -3284,10 +3305,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           action: 'delivery-prove',
           workspaceId: workspaceIdForOwner(turn.owner),
           turnId: turn.id,
-          now: this.now(),
+          now: this.currentTime(),
         });
       // An original Stop may already own closing. Credential revocation still forbids late receipts.
-      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, this.now);
+      assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, () =>
+        this.currentTime()
+      );
       // Credential material is delivered once at `session.open`; a reused binding receives none.
       if (!existingAgentSession) {
         const realized = requireExecutionCredentialReceipts(
@@ -3299,7 +3322,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           createVaultInjectionReceipt(this.coreDb!, {
             ...receipt,
             ...(fileReceipt ? { backendSummary: JSON.stringify(fileReceipt) } : {}),
-            injectedAt: this.now(),
+            injectedAt: this.currentTime(),
           });
         }
       }
@@ -3328,7 +3351,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
         closeoutAt = workerFinalStatus.acceptedAt;
       }
-      closeoutAt ??= this.now();
+      closeoutAt ??= this.currentTime();
       await this.finishLaunchedTurn(
         store,
         environmentPackage,
@@ -3359,17 +3382,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const errors: unknown[] = primaryFailed ? [primaryError] : [];
     let failedAttempt = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
     if (primaryFailed && failedAttempt.operationId === null)
-      failedAttempt = closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
+      failedAttempt = await closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
         attemptId: failedAttempt.attemptId,
         noOutstandingEffects: true,
         cause: 'turn-start-failed',
-        now: this.now,
+        ...(this.now ? { now: this.now } : {}),
       });
     else if (primaryFailed)
-      failedAttempt = markSchedulerExecutionAttemptClosing(this.coreDb!, {
+      failedAttempt = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
         attemptId: failedAttempt.attemptId,
         cause: 'execution-failed',
-        now: this.now,
+        ...(this.now ? { now: this.now } : {}),
       });
     if (backendCleanupRequired) {
       if (!backendLifecycle || !environmentPackage || !backendCapabilities) {
@@ -3453,7 +3476,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ) {
             await terminalizeGovernedWorkerTurn({
               agentSessionId,
-              completedAt: this.now(),
+              completedAt: this.currentTime(),
               errorCode: primaryError.code,
               message: primaryError.message,
               outcome: 'interrupted',
@@ -3588,7 +3611,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         !collected && session.state !== 'physical-cleaned' && session.state !== 'cleaned';
       const restartFailure = {
         agentSessionId: environmentPackage.scope.agentSessionId,
-        completedAt: this.now(),
+        completedAt: this.currentTime(),
         errorCode: 'worker_governance_restart_recovery',
         message: 'Worker output could not be verified during restart closeout.',
         outcome: 'interrupted' as const,
@@ -3733,11 +3756,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       throw new Error('Attempt terminal handoff is incomplete.');
     // The Task envelope observes this owner's full worker closeout before finishing its own
     // checkpoint. That later mode projection cannot be a prerequisite for this same release.
-    attempt = markSchedulerExecutionAttemptClosing(this.coreDb, {
+    attempt = await markSchedulerExecutionAttemptClosing(this.coreDb, {
       attemptId,
       cause: `turn-${turn.status}`,
       outcomeRef: `turn:${turn.id}:${turn.status}`,
-      now: this.now,
+      ...(this.now ? { now: this.now } : {}),
     });
     const proof = {
       terminalHandoff: true,
@@ -3759,11 +3782,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       )
         throw new Error('Release response contradicts the exact original operation.');
       if (result.state === 'released' && result.fenceRef) {
-        closeSchedulerExecutionAttemptWithFence(this.coreDb, {
+        await closeSchedulerExecutionAttemptWithFence(this.coreDb, {
           correlation,
           proof,
           fenceRef: result.fenceRef,
-          now: this.now,
+          ...(this.now ? { now: this.now } : {}),
         });
         const workspaceDb = this.openWorkspaceDb(attempt.workspaceId);
         if (!workspaceDb) throw new Error('Worker release journal owner is unavailable.');
@@ -3849,7 +3872,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       return;
     if (!attempt || attempt.phase !== 'open')
       throw new Error('Turn cancellation is already owned or has no live attempt.');
-    const closing = markSchedulerExecutionAttemptClosing(this.coreDb!, {
+    const closing = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
       attemptId: attempt.attemptId,
       cause:
         context.stopReason === 'budget_exhausted'
@@ -3857,7 +3880,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           : context.stopReason === 'error'
             ? 'raw-output-unavailable'
             : 'turn-cancelled',
-      now: this.now,
+      ...(this.now ? { now: this.now } : {}),
     });
     if (context.command) {
       if (context.command.receipt.command !== 'turn.interrupt')
@@ -3874,7 +3897,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
       );
     }
-    acceptSchedulerExecutionObservation(
+    await acceptSchedulerExecutionObservation(
       this.coreDb!,
       await this.executionBackend.cancel(schedulerExecutionCorrelation(closing))
     );
@@ -4007,7 +4030,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               rawStreamPaths: collection?.rawStreamPaths ?? {},
               streamManifestPath: collection?.manifestPath ?? null,
             },
-            collectedAt: this.now(),
+            collectedAt: this.currentTime(),
             environmentPackage,
             workspaceDb,
             workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
@@ -4294,7 +4317,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (session.nativeHandleDigest !== digest) {
       await store.updateAgentSession(agentSessionId, {
         nativeHandleDigest: digest,
-        updatedAt: this.now(),
+        updatedAt: this.currentTime(),
       });
     }
   }
@@ -4330,10 +4353,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       if (lifecycle.session) {
         const session = lifecycle.session;
         if (session.state !== 'cleanup-pending') {
-          lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+          lifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
             fromState: session.state,
             attemptId: session.attemptId,
-            now: this.now,
+            ...(this.now ? { now: this.now } : {}),
             toState: 'cleanup-pending',
           });
         }
@@ -4364,10 +4387,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       } catch (error) {
         if (lifecycle.session?.state === 'cleanup-pending') {
-          lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+          lifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
             fromState: 'cleanup-pending',
             attemptId: lifecycle.session.attemptId,
-            now: this.now,
+            ...(this.now ? { now: this.now } : {}),
             toState: 'cleanup-failed',
           });
         }
@@ -4383,9 +4406,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         lifecycle.identity.backendSessionId,
       ]);
 
-      lifecycle.physicalCleanedAt = this.now();
+      lifecycle.physicalCleanedAt = this.currentTime();
       if (lifecycle.session?.state === 'cleanup-pending') {
-        lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+        lifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
           fromState: 'cleanup-pending',
           attemptId: lifecycle.session.attemptId,
           now: () => lifecycle.physicalCleanedAt!,
@@ -4421,18 +4444,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         lifecycle.session?.workspaceHandoffState === 'pending' &&
         projection.workspaceHandoffComplete
       ) {
-        lifecycle.session = markWorkerBackendWorkspaceHandoffComplete(this.coreDb!, {
+        lifecycle.session = await markWorkerBackendWorkspaceHandoffComplete(this.coreDb!, {
           attemptId: lifecycle.session.attemptId,
-          now: this.now,
+          ...(this.now ? { now: this.now } : {}),
         });
       }
     }
 
     if (lifecycle.session?.state === 'physical-cleaned' && workspaceDb) {
-      lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
+      lifecycle.session = await transitionWorkerBackendSessionState(this.coreDb!, {
         fromState: 'physical-cleaned',
         attemptId: lifecycle.session.attemptId,
-        now: this.now,
+        ...(this.now ? { now: this.now } : {}),
         toState: 'cleaned',
       });
     }
@@ -4891,7 +4914,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       await terminalizeGovernedWorkerTurn({
         agentSessionId,
         agentSessionRetained,
-        completedAt: this.now(),
+        completedAt: this.currentTime(),
         errorCode: 'worker_governance_turn_cancelled',
         message: cancellationWon
           ? 'Worker execution was interrupted.'
@@ -4954,7 +4977,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       await terminalizeGovernedWorkerTurn({
         agentSessionId,
         agentSessionRetained,
-        completedAt: this.now(),
+        completedAt: this.currentTime(),
         errorCode: 'unsupported_gateway_feature',
         message:
           'The Gateway cannot preserve the requested features for the selected model route. Choose a compatible model route and start a new Task.',
@@ -4998,7 +5021,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     requestId: string | null,
     stopReason: Extract<StopReason, 'budget_exhausted' | 'completed' | 'length'> = 'completed'
   ): Promise<void> {
-    const completedAt = this.now();
+    const completedAt = this.currentTime();
     const projection = {
       id: agentSessionId,
       message: null,
@@ -5134,7 +5157,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             ),
           }
         : {}),
-      completedAt: this.now(),
+      completedAt: this.currentTime(),
       errorCode: cancellationWon
         ? 'worker_governance_turn_cancelled'
         : 'worker_governance_turn_failed',

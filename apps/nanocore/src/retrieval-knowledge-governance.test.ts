@@ -538,9 +538,9 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       threadId: sourceThread.id,
       userId: fixture.userId,
     });
-    expect(fixture.runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe(
-      'applied'
-    );
+    expect(
+      (await fixture.runtimeConfigManager.reload({ dryRun: false, mode: 'safe' })).status
+    ).toBe('applied');
     const after = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'audience-marker'),
       limit: 20,

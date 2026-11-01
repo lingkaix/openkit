@@ -59,7 +59,7 @@ beforeEach(async () => {
   coreDb = openCoreDb(join(root, 'data'));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordTestNativeRuntimeTarget(coreDb);
+  await recordTestNativeRuntimeTarget(coreDb);
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});

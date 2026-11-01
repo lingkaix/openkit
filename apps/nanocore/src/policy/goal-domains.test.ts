@@ -59,7 +59,7 @@ async function fixture(uses?: number) {
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
-  const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
+  const reload = vi.fn(async () => await manager.reload({ mode: 'safe', dryRun: false }));
   const service = () =>
     createGoalDomainPolicyService({
       coreDb,
@@ -487,7 +487,7 @@ describe('jointly approved Goal-domain publication', () => {
       'active'
     );
     expect(() => f.service().read(f.key)).toThrow(/file and loaded revision differ/);
-    f.manager.reload({ mode: 'safe', dryRun: false });
+    await f.manager.reload({ mode: 'safe', dryRun: false });
     expect(f.service().read(f.key)).not.toBeNull();
     const original = readFileSync(f.path, 'utf8');
     const update = vi.spyOn(f.files, 'updateFile').mockImplementationOnce(() => {

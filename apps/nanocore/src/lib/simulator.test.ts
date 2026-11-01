@@ -86,7 +86,7 @@ interface MaterialProposalPublisher {
  * @param registerDemoMembership False when native Demo publication must precede membership.
  * @returns Migrated Core database handles.
  */
-function createCoreDb(registerDemoMembership = true): CoreDb {
+async function createCoreDb(registerDemoMembership = true): CoreDb {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-simulator-route-')));
 
   applyMigrations(coreDb);
@@ -97,7 +97,7 @@ function createCoreDb(registerDemoMembership = true): CoreDb {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-  configureNativeRuntimeTarget(coreDb);
+  await configureNativeRuntimeTarget(coreDb);
   return coreDb;
 }
 
@@ -106,15 +106,15 @@ function createCoreDb(registerDemoMembership = true): CoreDb {
  *
  * @param coreDb Migrated Core database handles.
  */
-function configureNativeRuntimeTarget(coreDb: CoreDb): void {
+async function configureNativeRuntimeTarget(coreDb: CoreDb): Promise<void> {
   if (!getNanoHostRuntimeTarget(coreDb, 'target_local')) {
-    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const runtimeTarget = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
       identityId: 'identity_local',
       observedAt: '2026-07-05T00:00:00.000Z',
       targetId: 'target_local',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...runtimeTarget,
       freshEmpty: true,
       observedAt: '2026-07-05T00:00:01.000Z',
@@ -167,7 +167,7 @@ async function createRemoteGitProductFixture(
   vaultGrantRef?: string,
   configuredCanary = false
 ) {
-  const coreDb = createCoreDb(false);
+  const coreDb = await createCoreDb(false);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -282,7 +282,7 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('records simulator input and completes the bounded Turn', async () => {
-    const coreDb = createCoreDb(false);
+    const coreDb = await createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -391,7 +391,7 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('rejects a mismatched scheduler lease key before any simulator backend effect', async () => {
-    const coreDb = createCoreDb(false);
+    const coreDb = await createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -444,7 +444,7 @@ describe('SimulatedTurnExecutor', () => {
 
   // Two real S39 publication and native execution lifecycles use this local runner budget; product deadlines stay unchanged.
   it('reuses one compatible current AgentSession across sequential simulator Turns', async () => {
-    const coreDb = createCoreDb(false);
+    const coreDb = await createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -586,7 +586,7 @@ describe('SimulatedTurnExecutor', () => {
   it('terminalizes an incompatible idle predecessor before a later Turn starts', async () => {
     const imageRefA = 'openkit/worker-codex:image-a';
     const imageRefB = 'openkit/worker-codex:image-b';
-    const coreDb = createCoreDb(false);
+    const coreDb = await createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -820,7 +820,7 @@ describe('SimulatedTurnExecutor', () => {
 
   it('strictly projects and consumes bound Material with shared file admission', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
-    const coreDb = createCoreDb(false);
+    const coreDb = await createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -1524,7 +1524,7 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('uses the resolved manifest agent and default profile', async () => {
-    const coreDb = createCoreDb(false);
+    const coreDb = await createCoreDb(false);
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
       closeWorkspaceProductReadHandles();
@@ -1742,7 +1742,7 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('commits one ready version-one Artifact with exact turn-output proof', async () => {
-    const coreDb = createCoreDb(false);
+    const coreDb = await createCoreDb(false);
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
       closeWorkspaceProductReadHandles();
@@ -1881,7 +1881,7 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('emits command output delta before the command item completes', async () => {
-    const coreDb = createCoreDb(false);
+    const coreDb = await createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,

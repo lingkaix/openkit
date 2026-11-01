@@ -257,7 +257,6 @@ export function createNanoHostHarnessRuntime(
     throw new Error('Sandbox, Integration, and Harness bindings must be distinct.');
   }
 
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
     const sandbox = coreDb.sqlite
       .prepare('SELECT * FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
@@ -374,9 +373,7 @@ export function createNanoHostHarnessRuntime(
         input.timestamp,
         writeRetainedV1({}).schemaVersion
       );
-    coreDb.sqlite.exec('COMMIT');
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 }
@@ -431,12 +428,10 @@ export function drainNanoHostHarnessAdmission(
   input: { readonly harnessBindingRef: string; readonly timestamp: string }
 ): void {
   requireIdentity(input.harnessBindingRef, 'Harness binding');
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+
   try {
     drainNanoHostHarnessAdmissionInTransaction(coreDb, input);
-    coreDb.sqlite.exec('COMMIT');
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 }
@@ -507,12 +502,9 @@ export function fenceNanoHostSandboxRuntime(
     requireIdentity(input.sandboxBindingRef, 'Sandbox binding');
   }
 
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
     fenceNanoHostSandboxRuntimeInTransaction(coreDb, input);
-    coreDb.sqlite.exec('COMMIT');
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 }
@@ -729,7 +721,6 @@ export function openNanoHostAgentSessionBinding(
     throw new Error('Effective setup generation is invalid.');
   }
 
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
     const harness = requireHarness(coreDb, input.harnessInstanceId);
     if (
@@ -799,9 +790,7 @@ export function openNanoHostAgentSessionBinding(
     if (updated.changes !== 1) {
       throw new Error('NanoHost Harness open-session capacity changed concurrently.');
     }
-    coreDb.sqlite.exec('COMMIT');
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 }
@@ -973,82 +962,62 @@ export function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: QueueNanoHostHarnessOperationInput
 ): number {
-  const startedAt = performance.now();
+  const body = requireHarnessOperationBody(input.operation, input.body);
+
   try {
-    const body = requireHarnessOperationBody(input.operation, input.body);
-    coreDb.sqlite.exec('BEGIN IMMEDIATE');
-    try {
-      const harness = requireHarness(coreDb, input.harnessInstanceId);
-      if (!['idle', 'settled'].includes(harness.operation_state)) {
-        throw new Error('NanoHost Harness already has an unsettled operation.');
-      }
-      // Queueing retains the predecessor receipt; only physical dispatch may retire it.
-      if (
-        (input.operation === 'session.open' || input.operation === 'turn.start') &&
-        (harness.lifecycle_state !== 'open' || harness.drain_state !== 'accepting')
-      ) {
-        throw new Error('NanoHost Harness is not accepting new work.');
-      }
-      requireOperationLineage(coreDb, harness, input.operation, body);
-      const command = input.prepared.command;
-      const durableBody = redactHarnessWireBody(input.operation, input.prepared.wireBody);
-      const commandBodyJson = canonicalJson(durableBody);
-      if (
-        command.schemaVersion !== 2 ||
-        command.harnessInstanceId !== harness.harness_instance_id ||
-        command.operation !== input.operation ||
-        command.sequence !== harness.next_sequence ||
-        canonicalJson(command.body) !== commandBodyJson ||
-        canonicalJson(requireDurableHarnessBody(input.operation, command.body)) !==
-          canonicalJson(body) ||
-        command.operationId !==
-          harnessOperationId(harness, input.operation, command.sequence, durableBody)
-      ) {
-        throw new Error(
-          'NanoHost Harness prepared identity conflicts with current binding or sequence.'
-        );
-      }
-      const update = coreDb.sqlite
-        .prepare(
-          `UPDATE harness_instance_records
+    const harness = requireHarness(coreDb, input.harnessInstanceId);
+    if (!['idle', 'settled'].includes(harness.operation_state)) {
+      throw new Error('NanoHost Harness already has an unsettled operation.');
+    }
+    // Queueing retains the predecessor receipt; only physical dispatch may retire it.
+    if (
+      (input.operation === 'session.open' || input.operation === 'turn.start') &&
+      (harness.lifecycle_state !== 'open' || harness.drain_state !== 'accepting')
+    ) {
+      throw new Error('NanoHost Harness is not accepting new work.');
+    }
+    requireOperationLineage(coreDb, harness, input.operation, body);
+    const command = input.prepared.command;
+    const durableBody = redactHarnessWireBody(input.operation, input.prepared.wireBody);
+    const commandBodyJson = canonicalJson(durableBody);
+    if (
+      command.schemaVersion !== 2 ||
+      command.harnessInstanceId !== harness.harness_instance_id ||
+      command.operation !== input.operation ||
+      command.sequence !== harness.next_sequence ||
+      canonicalJson(command.body) !== commandBodyJson ||
+      canonicalJson(requireDurableHarnessBody(input.operation, command.body)) !==
+        canonicalJson(body) ||
+      command.operationId !==
+        harnessOperationId(harness, input.operation, command.sequence, durableBody)
+    ) {
+      throw new Error(
+        'NanoHost Harness prepared identity conflicts with current binding or sequence.'
+      );
+    }
+    const update = coreDb.sqlite
+      .prepare(
+        `UPDATE harness_instance_records
          SET operation_state = 'queued', operation_id = ?,
              operation_sequence = next_sequence, operation = ?, command_body_json = ?,
              command_fingerprint = ?, updated_at = ?
          WHERE harness_instance_id = ? AND operation_state IN ('idle', 'settled')
            AND next_sequence = ?`
-        )
-        .run(
-          command.operationId,
-          input.operation,
-          commandBodyJson,
-          sha256Hex(commandBodyJson),
-          input.timestamp,
-          input.harnessInstanceId,
-          command.sequence
-        );
-      if (update.changes !== 1) throw new Error('NanoHost Harness changed before enqueue.');
-      coreDb.sqlite.exec('COMMIT');
-      return command.sequence;
-    } catch (error) {
-      coreDb.sqlite.exec('ROLLBACK');
-      throw error;
-    }
-  } finally {
-    try {
-      const durationMs = performance.now() - startedAt;
-      if (durationMs >= 100) {
-        console.error(
-          JSON.stringify({
-            stage: 'harness-enqueue',
-            durationMs: Math.round(durationMs),
-            timestamp: new Date().toISOString(),
-            harnessInstanceId: input.harnessInstanceId,
-          })
-        );
-      }
-    } catch {
-      // Diagnostics must not change the owning operation.
-    }
+      )
+      .run(
+        command.operationId,
+        input.operation,
+        commandBodyJson,
+        sha256Hex(commandBodyJson),
+        input.timestamp,
+        input.harnessInstanceId,
+        command.sequence
+      );
+    if (update.changes !== 1) throw new Error('NanoHost Harness changed before enqueue.');
+
+    return command.sequence;
+  } catch (error) {
+    throw error;
   }
 }
 
@@ -1061,7 +1030,7 @@ export function dispatchNanoHostHarnessOperation(
   input: DispatchNanoHostHarnessOperationInput
 ): NanoHostHarnessCommand | null {
   requireIdentity(input.sandboxIntegrationBindingRef, 'Sandbox Integration binding');
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+
   try {
     const integration = coreDb.sqlite
       .prepare(
@@ -1079,20 +1048,18 @@ export function dispatchNanoHostHarnessOperation(
       )
       .get(integration.sandboxRuntimeId) as HarnessRow | undefined;
     if (!harness) {
-      coreDb.sqlite.exec('COMMIT');
       return null;
     }
     readRetainedV1(harness, () => harness);
     const receipt = readHarnessResultReceipt(harness);
     if (receipt && receipt.retained.consumption === undefined) {
-      coreDb.sqlite.exec('COMMIT');
       return null;
     }
     requireConsumedHarnessResult(harness);
     const now = input.now?.() ?? new Date().toISOString();
     if (Date.parse(now) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS) {
       setHarnessUnknown(coreDb, harness.harness_instance_id, now, 'queued');
-      coreDb.sqlite.exec('COMMIT');
+
       return null;
     }
     if (
@@ -1181,7 +1148,7 @@ export function dispatchNanoHostHarnessOperation(
       );
     if (update.changes !== 1)
       throw new Error('NanoHost Harness operation changed before dispatch.');
-    coreDb.sqlite.exec('COMMIT');
+
     return {
       body: durableBody,
       harnessInstanceId: harness.harness_instance_id,
@@ -1191,7 +1158,6 @@ export function dispatchNanoHostHarnessOperation(
       sequence: harness.next_sequence,
     };
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 }
@@ -1201,16 +1167,13 @@ export function expireNanoHostHarnessQueuedOperation(
   coreDb: CoreDb,
   input: ExpireNanoHostHarnessQueuedOperationInput
 ): void {
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
     const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
     if (harness.operation_state !== 'queued') {
       throw new Error('NanoHost Harness enqueue expiry does not match a queued operation.');
     }
     setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp, 'queued');
-    coreDb.sqlite.exec('COMMIT');
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 }
@@ -1227,7 +1190,7 @@ export function settleNanoHostHarnessOperation(
   input: SettleNanoHostHarnessOperationInput
 ): 'settled' | 'replayed' {
   input = { ...input, result: HarnessResultEnvelopeReaderSchema.parse(input.result) };
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+
   try {
     const harness = requireHarnessForIntegration(
       coreDb,
@@ -1285,7 +1248,7 @@ export function settleNanoHostHarnessOperation(
         if (!identical)
           throw new Error('NanoHost Harness result replay conflicts with the settled result.');
       }
-      coreDb.sqlite.exec('COMMIT');
+
       return 'replayed';
     } else if (harness.operation) {
       input = {
@@ -1378,7 +1341,6 @@ export function settleNanoHostHarnessOperation(
         );
       if (retainedUnknown.changes !== 1)
         throw new Error('NanoHost Harness unknown receipt changed concurrently.');
-      coreDb.sqlite.exec('COMMIT');
     } else {
       if (input.result.disposition === 'succeeded') {
         projectSuccessfulResult(coreDb, harness, input.result.body, input.timestamp);
@@ -1402,10 +1364,8 @@ export function settleNanoHostHarnessOperation(
       if (update.changes !== 1) {
         throw new Error('NanoHost Harness result settlement changed concurrently.');
       }
-      coreDb.sqlite.exec('COMMIT');
     }
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
   return 'settled';
@@ -1417,16 +1377,14 @@ export function markNanoHostHarnessOperationUnknown(
   input: MarkNanoHostHarnessOperationUnknownInput
 ): void {
   requireSha256(input.operationId, 'Harness operation id');
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+
   try {
     const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
     if (harness.operation_state !== 'dispatched' || harness.operation_id !== input.operationId) {
       throw new Error('NanoHost Harness unknown result does not match a dispatched operation.');
     }
     setHarnessUnknown(coreDb, harness.harness_instance_id, input.timestamp);
-    coreDb.sqlite.exec('COMMIT');
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 }
@@ -2094,7 +2052,7 @@ export function acknowledgeNanoHostHarnessResult(
   const incoming = HarnessResultEnvelopeReaderSchema.parse(input.result);
   const consumer = readHarnessConsumerReceipt(input.consumerReceipt);
   const consumerReceipt = canonicalJson(consumer);
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+
   try {
     const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
     const receipt = readHarnessResultReceipt(harness);
@@ -2154,7 +2112,7 @@ export function acknowledgeNanoHostHarnessResult(
         canonicalJson(consumption as unknown as Record<string, unknown>)
       )
         throw new Error('NanoHost Harness consumer acknowledgement replay conflicts.');
-      coreDb.sqlite.exec('COMMIT');
+
       return;
     }
     if (
@@ -2204,9 +2162,7 @@ export function acknowledgeNanoHostHarnessResult(
       );
     if (update.changes !== 1)
       throw new Error('NanoHost Harness consumer acknowledgement changed concurrently.');
-    coreDb.sqlite.exec('COMMIT');
   } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
     throw error;
   }
 }

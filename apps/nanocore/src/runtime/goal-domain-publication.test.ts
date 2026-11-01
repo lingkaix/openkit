@@ -44,7 +44,7 @@ async function fixture() {
   const configPath = join(dataRoot, 'config/server.jsonc');
   writeFileSync(configPath, JSON.stringify({ schemaVersion: 1 }));
   const manager = createRuntimeConfigManager({ dataRoot });
-  const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
+  const reload = vi.fn(async () => await manager.reload({ mode: 'safe', dryRun: false }));
   const forActor = (current: Actor) =>
     createGoalDomainPolicyService({
       coreDb,
@@ -232,7 +232,7 @@ it('keeps failed publication non-authorizing and retries from the completed requ
     f.plan.planVersionId
   );
   expect(() => f.forActor(f.actor).read(f.scope)).toThrow(/loaded revision differ/);
-  f.manager.reload({ mode: 'safe', dryRun: false });
+  await f.manager.reload({ mode: 'safe', dryRun: false });
   const revision = readGoalView(f.store, f.db, f.scope.goalId).goal!.changeRevision;
   await f.consume();
   expect(f.forActor(f.actor).read(f.scope)).toMatchObject({ state: 'active' });

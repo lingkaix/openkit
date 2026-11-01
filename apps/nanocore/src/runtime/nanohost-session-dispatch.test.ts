@@ -42,7 +42,7 @@ describe('authoritative NanoHost session dispatch', () => {
     const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
     const exporter = new InMemorySpanExporter();
     const target = { deploymentId: 'trace', identityId: 'trace', targetId: 'trace' };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: new Date().toISOString(),
     });
@@ -250,7 +250,7 @@ describe('authoritative NanoHost session dispatch', () => {
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
     const target = { deploymentId: 'resources', identityId: 'resources', targetId: 'resources' };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: new Date().toISOString(),
     });
@@ -449,7 +449,7 @@ describe('authoritative NanoHost session dispatch', () => {
       identityId: 'skill-import',
       targetId: 'skill-import',
     };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: '2026-10-17T00:00:00.000Z',
     });
@@ -569,7 +569,7 @@ describe('authoritative NanoHost session dispatch', () => {
       identityId: 'command-pin',
       targetId: 'command-pin',
     };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: '2026-10-05T00:00:00.000Z',
     });
@@ -921,7 +921,7 @@ describe('authoritative NanoHost session dispatch', () => {
       sessionAuthority: authority,
     });
     const target = { deploymentId: 'live-cleanup', identityId: 'live-cleanup' };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       targetId: target.identityId,
       observedAt: new Date().toISOString(),
@@ -1028,7 +1028,7 @@ describe('authoritative NanoHost session dispatch', () => {
       sessionAuthority: authority,
     });
     const target = { deploymentId: 'collection', identityId: 'collection' };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       targetId: target.identityId,
       observedAt: new Date().toISOString(),
@@ -1469,7 +1469,7 @@ describe('authoritative NanoHost session dispatch', () => {
       identityId: 'host-settlement',
       targetId: 'host-settlement',
     };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: '2026-08-10T00:00:00.000Z',
     });
@@ -1552,10 +1552,16 @@ describe('authoritative NanoHost session dispatch', () => {
         imageExecution,
       });
       void pending.catch(() => undefined);
-      await expect(dispatch.poll(physical, 'image.acquire')).resolves.toEqual({
-        imageReference: 'openkit:test',
-        requestId,
+      await vi.waitFor(async () => {
+        await expect(dispatch.poll(physical, 'image.acquire')).resolves.toEqual({
+          imageReference: 'openkit:test',
+          requestId,
+        });
       });
+      // This persistent post-setup fault executes on the real native writer, unlike Main query_only.
+      coreDb.sqlite.exec(`CREATE TRIGGER reject_dispatch_image_receipt
+        BEFORE INSERT ON worker_image_settlements
+        BEGIN SELECT RAISE(ABORT, 'injected image receipt failure'); END`);
       coreDb.sqlite.exec('PRAGMA query_only = ON');
       const result = { requestId, digest: `sha256:${'c'.repeat(64)}`, note: 'ignored' };
       await expect(dispatch.result(physical, 'image.acquire', result)).rejects.toMatchObject({
@@ -1564,6 +1570,8 @@ describe('authoritative NanoHost session dispatch', () => {
       await expect(pending).rejects.toMatchObject({ code: 'recovery_required' });
       expect(authority.mayCarryWork(physical)).toBe(true);
       coreDb.sqlite.exec('PRAGMA query_only = OFF');
+      coreDb.sqlite.exec('DROP TRIGGER reject_dispatch_image_receipt');
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
       await dispatch.result(physical, 'image.acquire', result);
       const restarted = createNanoHostSessionDispatch({
         coreDb,
@@ -1606,6 +1614,7 @@ describe('authoritative NanoHost session dispatch', () => {
           digest: `sha256:${'d'.repeat(64)}`,
         })
       ).rejects.toMatchObject({ status: 409 });
+      coreDb.sqlite.exec('PRAGMA query_only = OFF');
       coreDb.sqlite
         .prepare('UPDATE worker_image_settlements SET image_digest = ? WHERE request_id = ?')
         .run('malformed-digest', requestId);
@@ -1767,7 +1776,7 @@ describe('authoritative NanoHost session dispatch', () => {
       identityId: 'nanohost-typed-failure',
       targetId: 'nanohost-typed-failure',
     };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: '2026-08-10T00:00:00.000Z',
     });
@@ -1834,7 +1843,7 @@ describe('authoritative NanoHost session dispatch', () => {
       ).resolves.toBeUndefined();
       await rejected;
 
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         observedAt: '2026-08-10T00:00:01.000Z',
       });
@@ -2001,7 +2010,7 @@ describe('authoritative NanoHost session dispatch', () => {
         });
       }
 
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         observedAt: '2026-08-10T00:00:02.000Z',
       });
@@ -2153,7 +2162,7 @@ describe('authoritative NanoHost session dispatch', () => {
         () => null,
         (error: unknown) => error
       );
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         observedAt: '2026-08-10T00:00:03.000Z',
       });
@@ -2208,7 +2217,7 @@ describe('authoritative NanoHost session dispatch', () => {
       identityId: 'nanohost-create-cleanup-order',
       targetId: 'nanohost-create-cleanup-order',
     };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: '2026-09-11T06:12:00.000Z',
     });
@@ -2294,7 +2303,7 @@ describe('authoritative NanoHost session dispatch', () => {
         kind: 'image.acquire',
         requestId: queuedRequestId,
       });
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         observedAt: '2026-09-11T06:38:00.000Z',
       });
@@ -2331,7 +2340,7 @@ describe('authoritative NanoHost session dispatch', () => {
       expect(cleanupError).toBeInstanceOf(Error);
       expect((cleanupError as Error).message).toMatch(/unknown/i);
 
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         observedAt: '2026-09-11T06:39:00.000Z',
       });
@@ -2389,7 +2398,7 @@ describe('authoritative NanoHost session dispatch', () => {
       identityId: 'nanohost-effect-epoch-origin',
       targetId: 'nanohost-effect-epoch-origin',
     };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: '2026-09-11T00:00:00.000Z',
     });
@@ -2441,7 +2450,7 @@ describe('authoritative NanoHost session dispatch', () => {
       });
       void staleOutcome.catch(() => undefined);
 
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         observedAt: '2026-09-11T00:00:01.000Z',
       });
@@ -2463,7 +2472,7 @@ describe('authoritative NanoHost session dispatch', () => {
         kind: 'image.inspect',
         requestId: reconnectRequestId,
       });
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         observedAt: '2026-09-11T00:00:02.000Z',
       });
@@ -2507,7 +2516,7 @@ describe('authoritative NanoHost session dispatch', () => {
       identityId: 'host-image-retry',
       targetId: 'host-image-retry',
     };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: '2026-08-10T00:00:00.000Z',
     });
@@ -2571,8 +2580,11 @@ describe('authoritative NanoHost session dispatch', () => {
         kind: 'image.acquire',
         requestId,
       });
-      const delivered = await post('/api/nanohost/transport/effects/image.acquire', {});
-      expect(delivered.status).toBe(200);
+      let delivered!: Awaited<ReturnType<typeof post>>;
+      await vi.waitFor(async () => {
+        delivered = await post('/api/nanohost/transport/effects/image.acquire', {});
+        expect(delivered.status).toBe(200);
+      });
       expect(JSON.parse(delivered.body)).toMatchObject({
         imageReference: 'openkit:test',
         requestId,

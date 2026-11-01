@@ -228,13 +228,13 @@ it.each([
     const agentSessionId = testEntityId('as', 'resume-next-opencode');
     const attemptId = testEntityId('attempt', 'resume-next-attempt');
     const bindingRef = `fixture-binding:${turn.id}`;
-    const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: 'deployment_fake_executor',
       identityId: 'identity_fake_executor',
       observedAt: timestamp,
       targetId: 'runtime-target-test',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: timestamp,

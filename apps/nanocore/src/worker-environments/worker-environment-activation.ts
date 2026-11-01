@@ -112,7 +112,9 @@ export interface CreateWorkerEnvironmentActivationInput {
   /** Existing runtime and ordinary-Turn owner for confirmed immediate replacement. */
   readonly replaceResidentWork: ReplaceWorkerEnvironmentResidentWork;
   /** Reloads runtime configuration through the existing safe-mode owner. */
-  readonly reloadRuntimeConfig: () => ReturnType<RuntimeConfigManager['reload']>;
+  readonly reloadRuntimeConfig: () =>
+    | Awaited<ReturnType<RuntimeConfigManager['reload']>>
+    | ReturnType<RuntimeConfigManager['reload']>;
   /** Durable Thread, Item, Artifact, and command-receipt owner. */
   readonly store: FsStore;
 }
@@ -241,7 +243,7 @@ export function createWorkerEnvironmentActivation(
           );
           // Admission is written before configuration reload can resolve a package. The immutable
           // acquisition result remains unchanged; only this human-confirmed non-secret projection is added.
-          admitWorkerImageEnvironment(
+          await admitWorkerImageEnvironment(
             dependencies.coreDb,
             {
               authoredArtifactId: currentCandidate.authoredCandidate.artifactId,
@@ -300,7 +302,7 @@ export function createWorkerEnvironmentActivation(
             } else {
               configuration = configurationUpdate.configuration;
             }
-            reloadApplied = dependencies.reloadRuntimeConfig().status === 'applied';
+            reloadApplied = (await dependencies.reloadRuntimeConfig()).status === 'applied';
           } catch {
             reloadApplied = false;
           }

@@ -30,9 +30,8 @@ import { FsStore } from './lib/store.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
   activateWorkerStorageAttachment,
-  createWorkerStorageBinding,
+  createAndReserveWorkerStorageAttachment,
   markWorkerStorageAttachmentUnknown,
-  reserveWorkerStorageAttachment,
 } from './runtime/worker-storage-bindings.js';
 import { recordWorkspaceQuarantineRecord } from './runtime/workspace-quarantine-records.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
@@ -258,7 +257,7 @@ function rows(f: Fixture, table: string) {
 }
 
 /** Creates existing runtime facts without launching a Worker or claiming an external effect. */
-function retainRuntimeFences(f: Fixture) {
+async function retainRuntimeFences(f: Fixture) {
   const entry = createSchedulerAdmissionEntry(f.coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'retirement-queue',
@@ -280,7 +279,7 @@ function retainRuntimeFences(f: Fixture) {
     operationId: 'retained-uncertain-submission',
     now: () => NOW,
   });
-  const target = recordTestNativeRuntimeTarget(f.coreDb, 'retirement-target');
+  const target = await recordTestNativeRuntimeTarget(f.coreDb, 'retirement-target');
   const layout = {
     family: 'openkit-worker',
     version: '1',
@@ -291,28 +290,20 @@ function retainRuntimeFences(f: Fixture) {
     targets: [{ target: '/workspace' }],
   };
   for (const state of ['reserved', 'attached', 'unknown']) {
-    const binding = createWorkerStorageBinding(f.coreDb, {
+    const reserved = await createAndReserveWorkerStorageAttachment(f.coreDb, {
+      agentSessionId: testEntityId('as', `retirement-${state}`),
+      authorizeContributor: () => true,
       deploymentId: target.deploymentId,
-      runtimeTargetId: target.targetId,
-      workspaceId: f.workspaceId,
       layout,
       now: NOW,
-    });
-    const reserved = reserveWorkerStorageAttachment(f.coreDb, {
-      authorizeContributor: () => true,
-      expectedRevision: binding.revision,
-      layout,
       purpose: 'work',
       responsibleUserId: FIXTURE_LOCAL_USER_ID,
-      storageRef: binding.storageRef,
+      runtimeTargetId: target.targetId,
       threadId: testEntityId('th', `retirement-${state}`),
       workspaceId: f.workspaceId,
-      agentSessionId: testEntityId('as', `retirement-${state}`),
-      runtimeTargetId: target.targetId,
-      now: NOW,
     });
     if (state === 'attached')
-      activateWorkerStorageAttachment(f.coreDb, {
+      await activateWorkerStorageAttachment(f.coreDb, {
         attachmentGeneration: reserved.attachmentGeneration,
         expectedRevision: reserved.revision,
         sandboxBindingRef: 'retained-sandbox',
@@ -321,7 +312,7 @@ function retainRuntimeFences(f: Fixture) {
         now: NOW,
       });
     if (state === 'unknown')
-      markWorkerStorageAttachmentUnknown(f.coreDb, {
+      await markWorkerStorageAttachmentUnknown(f.coreDb, {
         attachmentGeneration: reserved.attachmentGeneration,
         expectedRevision: reserved.revision,
         storageRef: reserved.storageRef,
@@ -415,7 +406,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'missing',
   ] as const)('retires %s authority without opening content, altering any retained entry or releasing runtime fences', async (fault) => {
     const f = await fixture(fault);
-    const runtime = retainRuntimeFences(f);
+    const runtime = await retainRuntimeFences(f);
     const beforeRuntime = runtime();
     const tree = retainedTree(f.workspaceRoot);
     const exports = retainedTree(join(f.dataRoot, 'server', 'exports'));

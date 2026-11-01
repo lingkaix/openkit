@@ -171,11 +171,11 @@ function recordCanonicalWorkspaceHandoff(
 }
 
 /** Establishes exact authorized submitted Native authority and its original physical anchor. */
-function dispatchLease(
+async function dispatchLease(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string,
   triggerActor: ActorRef = { kind: 'user', id: LOCAL_USER_ID }
-): void {
+): Promise<void> {
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     triggerActor,
@@ -198,7 +198,7 @@ function dispatchLease(
     operationId: `original:${suffix}`,
     now: () => '2026-07-05T00:00:02.000Z',
   });
-  recordBackendSession(coreDb, suffix);
+  await recordBackendSession(coreDb, suffix);
 }
 
 /** The Native recovery subject owns Workspace projection; only its product terminal callback is modeled here. */
@@ -216,18 +216,18 @@ function recoveryInput(coreDb: ReturnType<typeof createMigratedCoreDb>, now: () 
 }
 
 /** Records the production backend anchor owned by one dispatched test lease. */
-function recordBackendSession(
+async function recordBackendSession(
   coreDb: ReturnType<typeof createMigratedCoreDb>,
   suffix: string
-): void {
+): Promise<void> {
   if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
-    const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: 'deployment-test',
       identityId: 'identity-test',
       observedAt: '2026-07-05T00:00:00.000Z',
       targetId: 'runtime-target-test',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...allocated,
       freshEmpty: true,
       observedAt: '2026-07-05T00:00:01.000Z',
@@ -236,7 +236,7 @@ function recordBackendSession(
       ready: true,
     });
   }
-  recordWorkerBackendSessionMaterializing(coreDb, {
+  await recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
     backendVersion: '0.0.80',
     identity: {
@@ -329,7 +329,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, 'heartbeat');
+      await dispatchLease(coreDb, 'heartbeat');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_heartbeat'),
@@ -372,7 +372,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, 'server_user', triggerActor);
+      await dispatchLease(coreDb, 'server_user', triggerActor);
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_server_user'),
@@ -412,7 +412,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, 'actor_mismatch', {
+      await dispatchLease(coreDb, 'actor_mismatch', {
         kind: 'automation',
         id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
         responsibleUserId: 'usr_00000000-0000-7c6a-be9d-0973844c8526',
@@ -464,7 +464,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, 'release_retry');
+      await dispatchLease(coreDb, 'release_retry');
       const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_retry',
         workspaceInputIds: ['repo'],
@@ -503,7 +503,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, 'zero_input');
+      await dispatchLease(coreDb, 'zero_input');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_zero_input'),
@@ -547,7 +547,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, 'partial_handoff');
+      await dispatchLease(coreDb, 'partial_handoff');
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 30_000,
         attemptId: testEntityId('attempt', 'lease_partial_handoff'),
@@ -614,8 +614,8 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, 'stale_retained');
-      dispatchLease(coreDb, 'release_retained');
+      await dispatchLease(coreDb, 'stale_retained');
+      await dispatchLease(coreDb, 'release_retained');
       const staleEnvironmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'stale_retained',
         workspaceInputIds: ['repo'],
@@ -679,7 +679,7 @@ describe('scheduler lease maintenance service', () => {
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      dispatchLease(coreDb, 'release_timeout');
+      await dispatchLease(coreDb, 'release_timeout');
       const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_timeout',
         workspaceInputIds: ['repo'],

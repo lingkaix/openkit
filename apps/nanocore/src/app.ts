@@ -38,10 +38,8 @@ import {
 } from './app-update/host-transport.js';
 import { registerArtifactFileRoutes } from './artifact-file-routes.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
-import {
-  resolveSessionDeploymentAdminTokenId,
-  verifyOpenKitAccessTokenRecord,
-} from './auth/access-token-store.js';
+import { resolveSessionDeploymentAdminTokenId } from './auth/access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from './auth/access-token-verification.js';
 import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
 import { type Actor, ensureLocalUser } from './auth/identity.js';
 // Actor type used by mode worker turn request credential threading
@@ -175,10 +173,7 @@ import {
   executeCapturedPendingCall,
   prepareCapturedPendingCall,
 } from './runtime/captured-pending-call.js';
-import {
-  markSchedulerAttemptForTerminalTurn,
-  markSchedulerExecutionAttemptClosing,
-} from './runtime/execution-attempt-records.js';
+import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempts.js';
 import { createGoalCoordinator, type GoalWorkerCandidate } from './runtime/goal-coordinator.js';
 import {
   advanceGoalForThread,
@@ -191,12 +186,7 @@ import type {
   IdempotentCommandReceipt,
   InflightIdempotentCommand,
 } from './runtime/idempotent-command.js';
-import {
-  acceptNanoHostAttemptHeartbeatByBinding,
-  adoptNanoHostAttemptReconnect,
-  NanoHostAttemptHeartbeatRejectedError,
-  resolveNanoHostAttemptTokenBinding,
-} from './runtime/nanohost-attempt-records.js';
+import { resolveNanoHostAttemptTokenBinding } from './runtime/nanohost-attempt-records.js';
 import { recordNanoHostRuntimeTargetConnectionClose } from './runtime/nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
@@ -222,6 +212,11 @@ import {
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
 import type { TurnExecutor } from './runtime/types.js';
+import {
+  publishWorkerControlFinalStatus,
+  publishWorkerControlHeartbeat,
+  publishWorkerControlOperation,
+} from './runtime/worker-control-final-status.js';
 import {
   type WorkerControlFinalStatusAcceptedHook,
   WorkerControlGateway,
@@ -558,35 +553,15 @@ export function createDefaultWorkerControlGateway(
 
   const gateway = new WorkerControlGateway({
     acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
-    authorizeReconnectHeartbeat: (input) => {
-      try {
-        adoptNanoHostAttemptReconnect(coreDb, input);
-      } catch (error) {
-        throwSchedulerHeartbeatGatewayError(error);
-      }
-    },
-    onHeartbeatAccepted: (input) => {
-      try {
-        acceptNanoHostAttemptHeartbeatByBinding(coreDb, {
-          acceptedAt: input.heartbeat.lastHeartbeatAt,
-          lineage: input.lineage,
-          sandboxBindingRef: input.sandboxBindingRef,
-          ...(input.workerProcessKeyHash
-            ? { workerProcessKeyHash: input.workerProcessKeyHash }
-            : {}),
-          workerSequence: input.heartbeat.sequence,
-        });
-      } catch (error) {
-        throwSchedulerHeartbeatGatewayError(error);
-      }
-    },
-    onFinalStatusAccepted: (input) => {
+    publishHeartbeat: (input) => publishWorkerControlHeartbeat(coreDb, input),
+    publishControlOperation: (input) => publishWorkerControlOperation(coreDb, input),
+    publishFinalStatus: async (input) => {
       const rawDb = openBootVerifiedWorkspaceDb(coreDb.dataRoot, input.lineage.workspaceId);
       try {
         assertWorkerRawOutputFinalStatus(
           rawDb,
           input.lineage,
-          input.eventType === 'turn.completed'
+          input.payload.terminalData.status === 'completed'
         );
       } catch (error) {
         if (
@@ -602,27 +577,7 @@ export function createDefaultWorkerControlGateway(
       } finally {
         rawDb.sqlite.close();
       }
-      const resolution = resolveNanoHostAttemptTokenBinding(coreDb, input);
-
-      if (resolution.status !== 'accepted') {
-        // The gateway admitted and persisted exact terminal evidence before this hook. A
-        // cancellation-owned closing attempt keeps that evidence without restoring effect authority.
-        if (
-          resolution.reason === 'attempt-not-live' &&
-          resolveWorkerControlFinalStatusTokenBinding(coreDb, input).status === 'accepted'
-        )
-          return;
-        throw new WorkerControlGatewayError(
-          'worker_control_lease_not_live',
-          'Worker control request lease is not live.',
-          403
-        );
-      }
-
-      markSchedulerExecutionAttemptClosing(coreDb, {
-        attemptId: resolution.attempt.attemptId,
-        cause: 'worker-final-status',
-      });
+      return publishWorkerControlFinalStatus(coreDb, input);
     },
     ...(onFinalStatusCommitted ? { onFinalStatusCommitted } : {}),
     resolveFinalStatusTokenBinding: (input) =>
@@ -639,46 +594,11 @@ export function createDefaultWorkerControlGateway(
       }
       return resolution;
     },
-    runFinalStatusTransaction: (operation) => coreDb.sqlite.transaction(operation).immediate(),
-    runHeartbeatTransaction: (operation) => coreDb.sqlite.transaction(operation)(),
     sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
   });
 
   rebuildWorkerControlGatewaySessions(coreDb, gateway);
   return gateway;
-}
-
-/** Projects scheduler heartbeat rejections into the stable worker-control error surface. */
-function throwSchedulerHeartbeatGatewayError(error: unknown): never {
-  if (!(error instanceof NanoHostAttemptHeartbeatRejectedError)) {
-    throw error;
-  }
-  if (error.reason === 'sequence-stale') {
-    throw new WorkerControlGatewayError(
-      'worker_control_sequence_stale',
-      'Worker control heartbeat sequence is stale.',
-      409
-    );
-  }
-  if (error.reason === 'attempt-changed') {
-    throw new WorkerControlGatewayError(
-      'worker_control_identity_conflict',
-      'Worker control heartbeat identity conflicts with the durable lease binding.',
-      409
-    );
-  }
-  if (error.reason === 'reconnect-required') {
-    throw new WorkerControlGatewayError(
-      'worker_control_reconnect_required',
-      'Worker control session must reconnect after NanoCore restart.',
-      503
-    );
-  }
-  throw new WorkerControlGatewayError(
-    'worker_control_lease_not_live',
-    'Worker control request lease is not live.',
-    403
-  );
 }
 
 /** Input used to create the default process vault backend for an app instance. */
@@ -780,9 +700,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         })
       : providerCredentialResolverFallback;
   const accessTokenVerifier = options.coreDb
-    ? (secret: string, request: Request) => {
+    ? async (secret: string, request: Request) => {
         const pathname = new URL(request.url).pathname;
-        const token = verifyOpenKitAccessTokenRecord(options.coreDb!, secret, {
+        const token = await verifyOpenKitAccessTokenRecord(options.coreDb!, secret, {
           channel: requestAuditChannel(request, pathname),
           source: requestAuditSource(request, pathname),
         });
@@ -959,8 +879,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         }
       : admitNanoHostSession(input);
   const reloadRuntimeConfig = runtimeConfigManager.reload.bind(runtimeConfigManager);
-  runtimeConfigManager.reload = (input) => {
-    const response = reloadRuntimeConfig(input);
+  runtimeConfigManager.reload = async (input) => {
+    const result = reloadRuntimeConfig(input);
+    const response = result instanceof Promise ? await result : result;
     if (
       !input.dryRun &&
       response.plan.requiresRestart.some((change) => change.path.startsWith('nanohost.'))
@@ -969,7 +890,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       const identityId = startupOpenKitConfig.nanohost?.identityId;
       if (identityId) {
         if (options.coreDb) {
-          fenceNanoHostTransportAuthority(
+          await fenceNanoHostTransportAuthority(
             options.coreDb,
             nanohostTransportSessionAuthority,
             identityId,
@@ -982,26 +903,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
     return response;
   };
-  if (options.coreDb && startupOpenKitConfig.nanohost) {
-    const coreDb = options.coreDb;
-    const targetId = startupOpenKitConfig.nanohost.identityId;
-    const closePhysicalConnection = nanohostTransportSessionAuthority.closePhysicalConnection.bind(
-      nanohostTransportSessionAuthority
-    );
-    /** Projects an explicit physical-session close through the existing durable target owner. */
-    nanohostTransportSessionAuthority.closePhysicalConnection = (physicalConnection) => {
-      const closed = closePhysicalConnection(physicalConnection);
-      if (coreDb.sqlite.open && closed.closedGeneration !== null) {
-        recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-          authoritativeGeneration: closed.authoritativeGeneration,
-          closedGeneration: closed.closedGeneration,
-          observedAt: new Date().toISOString(),
-          targetId,
-        });
-      }
-      return closed;
-    };
-  }
   const fileAdmission =
     options.fileAdmission ??
     new FileStorageAdmission(dataRoot ?? '.', () =>
@@ -1135,7 +1036,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               const terminal = await waitForWorkerTurnTerminalState(sharedStore, member.turnId);
               if (!isSealedTurnTerminal(terminal.status))
                 throw new Error('Worker still requires human intervention.');
-              markSchedulerAttemptForTerminalTurn(coreDb, terminal);
+              await markSchedulerAttemptForTerminalTurn(coreDb, terminal);
             }
             requireAuthority();
             const released = getWorkerStorageBinding(coreDb, { storageRef: before.storageRef });
@@ -1427,7 +1328,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(input.onTurnCreated ? { onTurnCreated: input.onTurnCreated } : {}),
     });
 
-    markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn);
+    await markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn);
     return handle.turn;
   }
 
@@ -2419,7 +2320,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         }
         throw error;
       });
-      markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn);
+      await markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn);
     },
   };
 

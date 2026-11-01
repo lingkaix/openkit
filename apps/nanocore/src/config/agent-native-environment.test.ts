@@ -12,8 +12,8 @@ import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
-  queueNanoHostHarnessOperation,
-} from '../runtime/nanohost-harness-records.js';
+  prepareNanoHostHarnessOperation,
+} from '../runtime/nanohost-harness.js';
 import {
   admitWorkerImageEnvironment,
   writeWorkerImageSettlement,
@@ -102,7 +102,7 @@ async function fixture() {
     authoredContentDigest: `sha256:${'a'.repeat(64)}`,
     inputDigest: `sha256:${'b'.repeat(64)}`,
   };
-  writeWorkerImageSettlement(db, {
+  await writeWorkerImageSettlement(db, {
     ...candidate,
     requestId: '1'.repeat(64),
     operation: 'image.acquire',
@@ -117,8 +117,8 @@ async function fixture() {
     files,
     store,
     service,
-    admit: () =>
-      admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values }),
+    admit: async () =>
+      await admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values }),
   };
 }
 
@@ -133,7 +133,7 @@ describe('Agent public native environment administration', () => {
           'Agent "agent_native" requires Worker environment preparation and activation before starting work; verified image defaults are unavailable.',
       })
     );
-    f.admit();
+    await f.admit();
     expect(() =>
       f.service.view({ kind: 'session', userId: testEntityId('usr', 'foreign') }, f.fileId)
     ).toThrow();
@@ -147,7 +147,7 @@ describe('Agent public native environment administration', () => {
   });
   it('rejects stale identities and protected/null edits before existing file CAS or reload', async () => {
     const f = await fixture();
-    f.admit();
+    await f.admit();
     const update = vi.spyOn(f.files, 'updateFile');
     const reload = vi.spyOn(f.manager, 'reload');
     const baseline = readFileSync(f.path, 'utf8');
@@ -164,14 +164,14 @@ describe('Agent public native environment administration', () => {
       { ...request, defaultsDigest: `sha256:${'f'.repeat(64)}` },
       { ...request, environment: { HOME: null } },
     ])
-      expect(() => f.service.update(actor, invalid)).toThrow();
+      await expect(f.service.update(actor, invalid)).rejects.toThrow();
     expect(update).not.toHaveBeenCalled();
     expect(reload).not.toHaveBeenCalled();
     expect(readFileSync(f.path, 'utf8')).toBe(baseline);
   });
   it('reads pending/acknowledged/unknown projections from bindings and hides private sibling Threads', async () => {
     const f = await fixture();
-    f.admit();
+    await f.admit();
     recordWorkspaceOwnerMembership({
       coreDb: f.db,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -195,7 +195,7 @@ describe('Agent public native environment administration', () => {
         `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count) VALUES ('target-native', 'identity-native', 'deployment-native', 1, 1, 1, 1, ?, ?, 1)`
       )
       .run('a'.repeat(64), now);
-    createNanoHostHarnessRuntime(f.db, {
+    await createNanoHostHarnessRuntime(f.db, {
       adapterId: 'pi',
       adapterVersion: 'test',
       harnessInstanceId: 'harness-native',
@@ -211,7 +211,7 @@ describe('Agent public native environment administration', () => {
       timestamp: now,
     });
     const environment = f.service.view(actor, f.fileId).desired;
-    expect(() =>
+    await expect(
       openNanoHostAgentSessionBinding(f.db, {
         agentSessionId: 'as_00000000-0000-7000-8000-000000000004',
         agentSessionRuntimeBindingId: 'binding-wrong-image',
@@ -227,9 +227,9 @@ describe('Agent public native environment administration', () => {
         },
         timestamp: now,
       })
-    ).toThrow('measured Sandbox');
+    ).rejects.toThrow('measured Sandbox');
     for (const row of [thread, hidden])
-      openNanoHostAgentSessionBinding(f.db, {
+      await openNanoHostAgentSessionBinding(f.db, {
         agentSessionId: testEntityId('as', `as_${row.id.slice(3)}`),
         agentSessionRuntimeBindingId: `binding-${row.id}`,
         agentSessionCompatibilityKey: 'c'.repeat(64),
@@ -261,7 +261,7 @@ describe('Agent public native environment administration', () => {
     };
     for (const nativeEnvironment of [undefined, { DEFAULT: 'wrong', EMPTY: '' }])
       expect(() =>
-        queueNanoHostHarnessOperation(f.db, {
+        prepareNanoHostHarnessOperation(f.db, {
           harnessInstanceId: 'harness-native',
           operation: 'session.open',
           body: { ...body, ...(nativeEnvironment ? { nativeEnvironment } : {}) },
@@ -330,7 +330,7 @@ describe('Agent public native environment administration', () => {
 
   it('publishes typed private runtime environment operations and refuses non-administrators before reading values', async () => {
     const f = await fixture();
-    f.admit();
+    await f.admit();
     let viewer = actor as import('../auth/identity.js').Actor;
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
@@ -387,9 +387,9 @@ describe('Agent public native environment administration', () => {
 
   it('persists literal overrides/removals through real CAS without claiming a failed reload or native application', async () => {
     const f = await fixture();
-    f.admit();
+    await f.admit();
     const previous = f.files.readFile(f.fileId).file.revision!;
-    const result = f.service.update(actor, {
+    const result = await f.service.update(actor, {
       fileId: f.fileId,
       expectedRevision: previous,
       imageDigest,
@@ -405,7 +405,7 @@ describe('Agent public native environment administration', () => {
     expect(() =>
       f.files.updateFile({ id: f.fileId, kind: 'agent', expectedRevision: previous, content: '{}' })
     ).toThrow();
-    const restored = f.service.update(actor, {
+    const restored = await f.service.update(actor, {
       fileId: f.fileId,
       expectedRevision: result.persistedRevision,
       imageDigest,

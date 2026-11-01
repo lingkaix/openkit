@@ -3,13 +3,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { workerStorageWorkSlotRef } from './worker-governance-turn-executor.js';
 import {
   activateWorkerStorageAttachment,
+  admitWorkerStorageContributor,
   authorizeAttachedWorkerStorageReplacement,
-  createWorkerStorageBinding,
+  createAndReserveWorkerStorageAttachment,
   getWorkerStorageBinding,
   listWorkerStorageBindings,
   markWorkerStorageAttachmentUnknown,
@@ -55,14 +57,45 @@ function createCoreDb(): CoreDb {
   return coreDb;
 }
 
-/** Creates one empty storage association on the fixture target. */
-function createBinding(coreDb: CoreDb, workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201') {
-  return createWorkerStorageBinding(coreDb, {
+/** Drains the native owner before closing the Main view of its Core database. */
+async function closeCoreDb(coreDb: CoreDb): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  if (coreDb.sqlite.open) coreDb.sqlite.close();
+}
+
+/** Creates and reserves one genuine association through its public owner. */
+async function createReservedBinding(
+  coreDb: CoreDb,
+  workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+  seed = 'fixture'
+) {
+  return await createAndReserveWorkerStorageAttachment(coreDb, {
+    agentSessionId: `session_${seed}`,
+    authorizeContributor: allowContributor,
     deploymentId: 'deployment_1',
     layout: LAYOUT,
     now: NOW,
+    purpose: 'work',
+    responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
     runtimeTargetId: 'target_1',
+    threadId: `thread_${seed}`,
     workspaceId,
+  });
+}
+
+/** Releases one genuine first reservation for idle-state tests. */
+async function createBinding(
+  coreDb: CoreDb,
+  workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+  seed = 'fixture'
+) {
+  const reserved = await createReservedBinding(coreDb, workspaceId, seed);
+  return await releaseWorkerStorageAttachment(coreDb, {
+    attachmentGeneration: reserved.attachmentGeneration,
+    cleanupProved: true,
+    expectedRevision: reserved.revision,
+    now: NOW,
+    storageRef: reserved.storageRef,
   });
 }
 
@@ -72,7 +105,7 @@ function allowContributor(_contributor: WorkerStorageContributor): boolean {
 }
 
 /** Builds the exact selection facts for one binding revision. */
-function selection(binding: ReturnType<typeof createBinding>) {
+function selection(binding: Awaited<ReturnType<typeof createBinding>>) {
   return {
     authorizeContributor: allowContributor,
     expectedRevision: binding.revision,
@@ -86,10 +119,127 @@ function selection(binding: ReturnType<typeof createBinding>) {
 }
 
 describe('Worker storage bindings', () => {
-  it('writes v1 storage and reads inert target additions without changing retained identity', () => {
+  it('creates and reserves one association atomically through the native owner', async () => {
+    let coreDb = createCoreDb();
+    const dataRoot = coreDb.dataRoot;
+    try {
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
+      const reserved = await createReservedBinding(coreDb, undefined, 'atomic');
+
+      expect(reserved).toMatchObject({
+        attachmentGeneration: 1,
+        currentAgentSessionId: 'session_atomic',
+        contributors: [
+          expect.objectContaining({
+            attachmentGeneration: 1,
+            threadId: 'thread_atomic',
+          }),
+        ],
+        revision: 2,
+        state: 'reserved',
+      });
+      await closeCoreDb(coreDb);
+      coreDb = openCoreDb(dataRoot);
+      expect(getWorkerStorageBinding(coreDb, { storageRef: reserved.storageRef })).toEqual(
+        reserved
+      );
+    } finally {
+      await closeCoreDb(coreDb);
+    }
+  });
+
+  it('publishes an existing binding reservation through the native owner while Main is query-only', async () => {
     const coreDb = createCoreDb();
     try {
-      const original = createBinding(coreDb);
+      const binding = await createBinding(coreDb);
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
+
+      const reserved = await reserveWorkerStorageAttachment(coreDb, {
+        ...selection(binding),
+        agentSessionId: 'session_native_owner',
+        runtimeTargetId: 'target_1',
+      });
+
+      expect(reserved).toMatchObject({
+        attachmentGeneration: binding.attachmentGeneration + 1,
+        currentAgentSessionId: 'session_native_owner',
+        revision: binding.revision + 1,
+        state: 'reserved',
+        storageRef: binding.storageRef,
+      });
+      expect(reserved.contributors.at(-1)).toMatchObject({ threadId: 'thread_1' });
+      expect(getWorkerStorageBinding(coreDb, { storageRef: binding.storageRef })).toEqual(reserved);
+    } finally {
+      await closeCoreDb(coreDb);
+    }
+  });
+
+  it('preserves an attached shared work slot when the native owner admits its next contributor', async () => {
+    const coreDb = createCoreDb();
+    try {
+      const reserved = await createReservedBinding(coreDb, undefined, 'shared-owner');
+      const attached = await activateWorkerStorageAttachment(coreDb, {
+        attachmentGeneration: reserved.attachmentGeneration,
+        expectedRevision: reserved.revision,
+        sandboxBindingRef: 'sandbox_shared_owner',
+        storageRef: reserved.storageRef,
+        targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+      });
+      expect(attached.currentWorkSlotRef).toEqual(expect.any(String));
+      const originalWorkSlotRef = attached.currentWorkSlotRef!;
+      const sharedContributor = {
+        ...selection(attached),
+        responsibleUserId: 'usr_00000000-0000-7a71-a8b1-dcc65a83481f',
+        reuseWorkSlotRef: originalWorkSlotRef,
+        threadId: 'thread_shared_contributor',
+      };
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
+
+      const admitted = await admitWorkerStorageContributor(coreDb, sharedContributor);
+
+      expect(admitted.currentWorkSlotRef).toBe(originalWorkSlotRef);
+      expect(admitted.contributors).toHaveLength(2);
+      expect(admitted.contributors.at(-1)).toMatchObject({
+        responsibleUserId: sharedContributor.responsibleUserId,
+        threadId: sharedContributor.threadId,
+        workSlotRef: originalWorkSlotRef,
+      });
+    } finally {
+      await closeCoreDb(coreDb);
+    }
+  });
+
+  it('refuses a contributor whose authority changes after the native owner opens', async () => {
+    const coreDb = createCoreDb();
+    try {
+      const binding = await createBinding(coreDb, undefined, 'revoked');
+      const before = getWorkerStorageBinding(coreDb, { storageRef: binding.storageRef });
+      let authorityChecks = 0;
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
+
+      await expect(
+        reserveWorkerStorageAttachment(coreDb, {
+          ...selection(binding),
+          agentSessionId: 'session_revoked',
+          authorizeContributor: () => {
+            authorityChecks += 1;
+            return false;
+          },
+          runtimeTargetId: 'target_1',
+        })
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+
+      expect(authorityChecks).toBe(1);
+      expect(getWorkerStorageBinding(coreDb, { storageRef: binding.storageRef })).toEqual(before);
+    } finally {
+      await closeCoreDb(coreDb);
+    }
+  });
+
+  it('writes v1 storage and reads inert target additions without changing retained identity', async () => {
+    const coreDb = createCoreDb();
+    try {
+      const original = await createBinding(coreDb);
       const retained = JSON.stringify(
         original.targets.map((target) => ({
           ...target,
@@ -110,14 +260,14 @@ describe('Worker storage bindings', () => {
           .get(original.storageRef)
       ).toEqual({ schemaVersion: 1, bytes: retained });
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('refuses an unknown storage version before target decode or attachment reservation', () => {
+  it('refuses an unknown storage version before target decode or attachment reservation', async () => {
     const coreDb = createCoreDb();
     try {
-      const original = createBinding(coreDb);
+      const original = await createBinding(coreDb);
       coreDb.sqlite
         .prepare(`UPDATE worker_storage_bindings SET schema_version = 2,
         targets_json = '{' WHERE storage_ref = ?`)
@@ -133,13 +283,13 @@ describe('Worker storage bindings', () => {
           workspaceId: original.workspaceId,
         })
       ).toThrow('Unsupported retained record format.');
-      expect(() =>
+      await expect(
         reserveWorkerStorageAttachment(coreDb, {
           ...selection(original),
           agentSessionId: 'session_unknown_version',
           runtimeTargetId: original.runtimeTargetId,
         })
-      ).toThrow('Unsupported retained record format.');
+      ).rejects.toThrow('Unsupported retained record format.');
       expect(
         coreDb.sqlite
           .prepare(`SELECT schema_version AS schemaVersion, targets_json, state, revision
@@ -152,7 +302,7 @@ describe('Worker storage bindings', () => {
         revision: original.revision,
       });
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
@@ -161,10 +311,10 @@ describe('Worker storage bindings', () => {
     { initialized: null },
     { target: 'relative-path' },
     { requiredFeatures: ['future-attachment'] },
-  ])('refuses invalid or unsupported required retained target semantics %# without changing bytes', (change) => {
+  ])('refuses invalid or unsupported required retained target semantics %# without changing bytes', async (change) => {
     const coreDb = createCoreDb();
     try {
-      const original = createBinding(coreDb);
+      const original = await createBinding(coreDb);
       const retained = JSON.stringify(original.targets.map((target) => ({ ...target, ...change })));
       coreDb.sqlite
         .prepare('UPDATE worker_storage_bindings SET targets_json = ? WHERE storage_ref = ?')
@@ -178,43 +328,43 @@ describe('Worker storage bindings', () => {
           .get(original.storageRef)
       ).toEqual({ bytes: retained });
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('refuses attachment generation exhaustion before changing storage or contributors', () => {
+  it('refuses attachment generation exhaustion before changing storage or contributors', async () => {
     const coreDb = createCoreDb();
     try {
-      const initial = createBinding(coreDb);
+      const initial = await createBinding(coreDb);
       coreDb.sqlite
         .prepare(
           'UPDATE worker_storage_bindings SET attachment_generation = ? WHERE storage_ref = ?'
         )
         .run(Number.MAX_SAFE_INTEGER, initial.storageRef);
       const binding = getWorkerStorageBinding(coreDb, { storageRef: initial.storageRef })!;
-      expect(() =>
+      await expect(
         reserveWorkerStorageAttachment(coreDb, {
           ...selection(binding),
           agentSessionId: 'session_1',
           runtimeTargetId: 'target_1',
         })
-      ).toThrow('attachment generation is exhausted');
+      ).rejects.toThrow('attachment generation is exhausted');
       expect(getWorkerStorageBinding(coreDb, { storageRef: initial.storageRef })).toEqual(binding);
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('authorizes only the exact selected revision attached to a replaced Sandbox', () => {
+  it('authorizes only the exact selected revision attached to a replaced Sandbox', async () => {
     const coreDb = createCoreDb();
     try {
-      const binding = createBinding(coreDb);
-      const reserved = reserveWorkerStorageAttachment(coreDb, {
+      const binding = await createBinding(coreDb);
+      const reserved = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(binding),
         agentSessionId: 'session_1',
         runtimeTargetId: 'target_1',
       });
-      const attached = activateWorkerStorageAttachment(coreDb, {
+      const attached = await activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: reserved.attachmentGeneration,
         expectedRevision: reserved.revision,
         sandboxBindingRef: 'sandbox_1',
@@ -249,14 +399,14 @@ describe('Worker storage bindings', () => {
         })
       ).toThrow('work slot is unavailable');
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('stores a host-verifiable layout and exposes only currently authorized candidates', () => {
+  it('stores a host-verifiable layout and exposes only currently authorized candidates', async () => {
     const coreDb = createCoreDb();
     try {
-      const binding = createBinding(coreDb);
+      const binding = await createBinding(coreDb);
       const canonical = JSON.stringify({
         family: 'openkit-worker',
         version: '1',
@@ -267,10 +417,15 @@ describe('Worker storage bindings', () => {
         targets: [{ target: '/sandbox' }, { target: '/workspace' }],
       });
       expect(binding).toMatchObject({
-        attachmentGeneration: 0,
-        contributors: [],
+        attachmentGeneration: 1,
+        contributors: [
+          expect.objectContaining({
+            attachmentGeneration: 1,
+            threadId: 'thread_fixture',
+          }),
+        ],
         layoutDigest: `sha256:${createHash('sha256').update(canonical).digest('hex')}`,
-        revision: 1,
+        revision: 3,
         scopeDigest: workerStorageScopeDigest('ws_00000000-0000-73c3-900f-8d310e4ba201'),
         state: 'idle',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
@@ -281,7 +436,7 @@ describe('Worker storage bindings', () => {
         { initialized: false, target: '/workspace' },
       ]);
 
-      const reserved = reserveWorkerStorageAttachment(coreDb, {
+      const reserved = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(binding),
         agentSessionId: 'session_1',
         runtimeTargetId: 'target_1',
@@ -298,29 +453,29 @@ describe('Worker storage bindings', () => {
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
       ).toEqual([]);
-      expect(reserved.contributors).toHaveLength(1);
+      expect(reserved.contributors).toHaveLength(2);
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('rejects cross-Workspace, revoked-audience, and contributor-contaminated review reuse', () => {
+  it('rejects cross-Workspace, revoked-audience, and contributor-contaminated review reuse', async () => {
     const coreDb = createCoreDb();
     try {
-      const binding = createBinding(coreDb);
-      const reserved = reserveWorkerStorageAttachment(coreDb, {
+      const binding = await createBinding(coreDb);
+      const reserved = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(binding),
         agentSessionId: 'session_1',
         runtimeTargetId: 'target_1',
       });
-      const attached = activateWorkerStorageAttachment(coreDb, {
+      const attached = await activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: reserved.attachmentGeneration,
         expectedRevision: reserved.revision,
         sandboxBindingRef: 'sandbox_1',
         storageRef: binding.storageRef,
         targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
       });
-      const idle = releaseWorkerStorageAttachment(coreDb, {
+      const idle = await releaseWorkerStorageAttachment(coreDb, {
         attachmentGeneration: attached.attachmentGeneration,
         cleanupProved: true,
         expectedRevision: attached.revision,
@@ -359,27 +514,27 @@ describe('Worker storage bindings', () => {
         ).toThrow('Independent review cannot reuse contributor storage');
       }
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('does not disclose one user contributor history to another member of the same Workspace', () => {
+  it('does not disclose one user contributor history to another member of the same Workspace', async () => {
     const coreDb = createCoreDb();
     try {
-      const binding = createBinding(coreDb);
-      const reserved = reserveWorkerStorageAttachment(coreDb, {
+      const binding = await createBinding(coreDb);
+      const reserved = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(binding),
         agentSessionId: 'session_1',
         runtimeTargetId: 'target_1',
       });
-      const attached = activateWorkerStorageAttachment(coreDb, {
+      const attached = await activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: reserved.attachmentGeneration,
         expectedRevision: reserved.revision,
         sandboxBindingRef: 'sandbox_1',
         storageRef: binding.storageRef,
         targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
       });
-      const idle = releaseWorkerStorageAttachment(coreDb, {
+      const idle = await releaseWorkerStorageAttachment(coreDb, {
         attachmentGeneration: attached.attachmentGeneration,
         cleanupProved: true,
         expectedRevision: attached.revision,
@@ -404,35 +559,47 @@ describe('Worker storage bindings', () => {
         })
       ).toEqual([]);
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('uses CAS to reject competing writers and preserves lineage across detach', () => {
+  it('uses CAS to reject competing writers and preserves lineage across detach', async () => {
     const coreDb = createCoreDb();
     try {
-      const binding = createBinding(coreDb);
-      const first = reserveWorkerStorageAttachment(coreDb, {
+      const binding = await createBinding(coreDb);
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
+      const first = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(binding),
         agentSessionId: 'session_1',
         runtimeTargetId: 'target_1',
       });
-      expect(() =>
+      await expect(
         reserveWorkerStorageAttachment(coreDb, {
           ...selection(binding),
           agentSessionId: 'session_competing',
           runtimeTargetId: 'target_1',
         })
-      ).toThrow();
+      ).rejects.toThrow();
 
-      const attached = activateWorkerStorageAttachment(coreDb, {
+      await expect(
+        activateWorkerStorageAttachment(coreDb, {
+          attachmentGeneration: first.attachmentGeneration + 1,
+          expectedRevision: first.revision,
+          sandboxBindingRef: 'sandbox_stale',
+          storageRef: binding.storageRef,
+          targets: first.targets.map((target) => ({ ...target, initialized: true })),
+        })
+      ).rejects.toThrow('revision changed');
+      expect(getWorkerStorageBinding(coreDb, { storageRef: binding.storageRef })).toEqual(first);
+
+      const attached = await activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: first.attachmentGeneration,
         expectedRevision: first.revision,
         sandboxBindingRef: 'sandbox_1',
         storageRef: binding.storageRef,
         targets: first.targets.map((target) => ({ ...target, initialized: true })),
       });
-      expect(() =>
+      await expect(
         releaseWorkerStorageAttachment(coreDb, {
           attachmentGeneration: attached.attachmentGeneration,
           cleanupProved: false,
@@ -440,24 +607,24 @@ describe('Worker storage bindings', () => {
           sandboxBindingRef: 'sandbox_1',
           storageRef: binding.storageRef,
         })
-      ).toThrow('cleanup is not proved');
-      const idle = releaseWorkerStorageAttachment(coreDb, {
+      ).rejects.toThrow('cleanup is not proved');
+      const idle = await releaseWorkerStorageAttachment(coreDb, {
         attachmentGeneration: attached.attachmentGeneration,
         cleanupProved: true,
         expectedRevision: attached.revision,
         sandboxBindingRef: 'sandbox_1',
         storageRef: binding.storageRef,
       });
-      const successor = reserveWorkerStorageAttachment(coreDb, {
+      const successor = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(idle),
         agentSessionId: 'session_2',
         runtimeTargetId: 'target_1',
         threadId: 'thread_2',
       });
-      expect(successor.attachmentGeneration).toBe(2);
-      expect(successor.contributors).toHaveLength(2);
+      expect(successor.attachmentGeneration).toBe(first.attachmentGeneration + 1);
+      expect(successor.contributors).toHaveLength(first.contributors.length + 1);
       expect(successor.currentWorkSlotRef).not.toBe(first.currentWorkSlotRef);
-      expect(() =>
+      await expect(
         reserveWorkerStorageAttachment(coreDb, {
           ...selection(successor),
           agentSessionId: 'session_3',
@@ -465,22 +632,22 @@ describe('Worker storage bindings', () => {
           runtimeTargetId: 'target_1',
           threadId: 'thread_3',
         })
-      ).toThrow('already has an attachment');
-      const successorAttached = activateWorkerStorageAttachment(coreDb, {
+      ).rejects.toThrow('already has an attachment');
+      const successorAttached = await activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: successor.attachmentGeneration,
         expectedRevision: successor.revision,
         sandboxBindingRef: 'sandbox_2',
         storageRef: binding.storageRef,
         targets: successor.targets.map((target) => ({ ...target, initialized: true })),
       });
-      const successorIdle = releaseWorkerStorageAttachment(coreDb, {
+      const successorIdle = await releaseWorkerStorageAttachment(coreDb, {
         attachmentGeneration: successorAttached.attachmentGeneration,
         cleanupProved: true,
         expectedRevision: successorAttached.revision,
         sandboxBindingRef: 'sandbox_2',
         storageRef: binding.storageRef,
       });
-      const transferred = reserveWorkerStorageAttachment(coreDb, {
+      const transferred = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(successorIdle),
         agentSessionId: 'session_3',
         reuseWorkSlotRef: first.currentWorkSlotRef!,
@@ -505,27 +672,27 @@ describe('Worker storage bindings', () => {
         )
       ).toBe(first.currentWorkSlotRef);
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('adds targets once and retains removed target identities across a compatible image change', () => {
+  it('adds targets once and retains removed target identities across a compatible image change', async () => {
     const coreDb = createCoreDb();
     try {
-      const binding = createBinding(coreDb);
-      const firstReservation = reserveWorkerStorageAttachment(coreDb, {
+      const binding = await createBinding(coreDb);
+      const firstReservation = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(binding),
         agentSessionId: 'session_before_image_change',
         runtimeTargetId: 'target_1',
       });
-      const firstAttachment = activateWorkerStorageAttachment(coreDb, {
+      const firstAttachment = await activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: firstReservation.attachmentGeneration,
         expectedRevision: firstReservation.revision,
         sandboxBindingRef: 'sandbox_before_image_change',
         storageRef: binding.storageRef,
         targets: firstReservation.targets.map((target) => ({ ...target, initialized: true })),
       });
-      const idle = releaseWorkerStorageAttachment(coreDb, {
+      const idle = await releaseWorkerStorageAttachment(coreDb, {
         attachmentGeneration: firstAttachment.attachmentGeneration,
         cleanupProved: true,
         expectedRevision: firstAttachment.revision,
@@ -537,7 +704,7 @@ describe('Worker storage bindings', () => {
         targets: [{ target: '/workspace' }, { target: '/data' }],
       };
 
-      const changed = reserveWorkerStorageAttachment(coreDb, {
+      const changed = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(idle),
         agentSessionId: 'session_after_image_change',
         expectedRevision: idle.revision,
@@ -551,7 +718,7 @@ describe('Worker storage bindings', () => {
         expect.objectContaining({ active: true, initialized: true, target: '/workspace' }),
       ]);
 
-      const attached = activateWorkerStorageAttachment(coreDb, {
+      const attached = await activateWorkerStorageAttachment(coreDb, {
         attachmentGeneration: changed.attachmentGeneration,
         expectedRevision: changed.revision,
         sandboxBindingRef: 'sandbox_after_image_change',
@@ -569,20 +736,22 @@ describe('Worker storage bindings', () => {
         initialized: true,
       });
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 
-  it('fences uncertain attachments and requires explicit authorized purge settlement', () => {
+  it('fences uncertain attachments and requires explicit authorized purge settlement', async () => {
     const coreDb = createCoreDb();
     try {
-      const binding = createBinding(coreDb);
-      const reserved = reserveWorkerStorageAttachment(coreDb, {
+      const binding = await createBinding(coreDb);
+      const purgeable = await createBinding(coreDb, undefined, 'purgeable');
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
+      const reserved = await reserveWorkerStorageAttachment(coreDb, {
         ...selection(binding),
         agentSessionId: 'session_1',
         runtimeTargetId: 'target_1',
       });
-      const unknown = markWorkerStorageAttachmentUnknown(coreDb, {
+      const unknown = await markWorkerStorageAttachmentUnknown(coreDb, {
         attachmentGeneration: reserved.attachmentGeneration,
         expectedRevision: reserved.revision,
         storageRef: binding.storageRef,
@@ -592,30 +761,31 @@ describe('Worker storage bindings', () => {
         'storage is fenced'
       );
       expect(
-        releaseWorkerStorageAttachment(coreDb, {
-          attachmentGeneration: unknown.attachmentGeneration,
-          cleanupProved: true,
-          expectedRevision: unknown.revision,
-          storageRef: unknown.storageRef,
-        }).state
+        (
+          await releaseWorkerStorageAttachment(coreDb, {
+            attachmentGeneration: unknown.attachmentGeneration,
+            cleanupProved: true,
+            expectedRevision: unknown.revision,
+            storageRef: unknown.storageRef,
+          })
+        ).state
       ).toBe('idle');
 
-      const purgeable = createBinding(coreDb);
-      expect(() =>
+      await expect(
         markWorkerStoragePurgePending(coreDb, {
           authorizePurge: () => false,
           expectedRevision: purgeable.revision,
           hasSurvivingReferences: () => false,
           storageRef: purgeable.storageRef,
         })
-      ).toThrow('purge is not authorized');
-      const pending = markWorkerStoragePurgePending(coreDb, {
+      ).rejects.toThrow('purge is not authorized');
+      const pending = await markWorkerStoragePurgePending(coreDb, {
         authorizePurge: () => true,
         expectedRevision: purgeable.revision,
         hasSurvivingReferences: () => false,
         storageRef: purgeable.storageRef,
       });
-      const settled = settleWorkerStoragePurge(coreDb, {
+      const settled = await settleWorkerStoragePurge(coreDb, {
         expectedRevision: pending.revision,
         outcome: 'unknown',
         storageRef: purgeable.storageRef,
@@ -624,8 +794,18 @@ describe('Worker storage bindings', () => {
       expect(getWorkerStorageBinding(coreDb, { storageRef: purgeable.storageRef })).toEqual(
         settled
       );
+      await expect(
+        settleWorkerStoragePurge(coreDb, {
+          expectedRevision: pending.revision,
+          outcome: 'purged',
+          storageRef: purgeable.storageRef,
+        })
+      ).rejects.toThrow('revision changed');
+      expect(getWorkerStorageBinding(coreDb, { storageRef: purgeable.storageRef })).toEqual(
+        settled
+      );
     } finally {
-      coreDb.sqlite.close();
+      await closeCoreDb(coreDb);
     }
   });
 });

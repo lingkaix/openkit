@@ -139,7 +139,7 @@ async function stoppedOriginalWorker() {
     ownerUserId: FIXTURE_LOCAL_USER_ID,
     workspaceId: DEMO_WORKSPACE_ID,
   });
-  const target = recordTestNativeRuntimeTarget(coreDb);
+  const target = await recordTestNativeRuntimeTarget(coreDb);
   const setup = createTestAgentSetup({ requiredCapabilities: ['worker.runtime-provenance.v1'] });
   admitTestNativeEnvironment(coreDb, setup.manifest);
   await shutdownControlStoreWorkerClient();

@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
-import { recordServerAuditEvent } from '../audit-events.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import {
   DISPLAY_PROJECTION_REFRESH_FIELDS,
@@ -23,16 +22,19 @@ import {
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
 import {
+  armNanoHostAttemptReconnect,
   closeSchedulerExecutionAttemptWithFence,
   isSchedulerExecutionBusyRefusal,
   listOpenSchedulerExecutionAttempts,
   listSchedulerExecutionAttemptsByTurnId,
+  markNanoHostAttemptNeedsEvidence,
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
-} from './execution-attempt-records.js';
+} from './execution-attempts.js';
 import {
+  isNanoHostAttemptReconnectEligible,
   type NanoHostExecutionAttemptRecord,
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
@@ -43,10 +45,13 @@ import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection
 import {
   getWorkerBackendSession,
   listWorkerBackendSessions,
-  markWorkerBackendWorkspaceHandoffComplete,
-  transitionWorkerBackendSessionState,
   type WorkerBackendSessionRecord,
   workerBackendImageIdentity,
+} from './worker-backend-session-records.js';
+import {
+  markWorkerBackendWorkspaceHandoffComplete,
+  retireOrphanWorkerBackendSession,
+  transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
 import {
   getWorkerControlAcceptedFinalStatus,
@@ -104,48 +109,29 @@ export async function classifyNanoHostAttemptsAfterRestart(
         hasPendingWorkerCancellationFinal(native, timestamp)
       )
         continue;
-      const eligible =
-        native.phase === 'open' &&
-        native.deadline !== null &&
-        native.deadline > timestamp &&
-        session.state === 'launching' &&
-        session.workspaceHandoffState === 'complete' &&
-        native.lastWorkerSequence !== null &&
-        native.lastWorkerSequence >= 1 &&
-        native.workerProcessKeyHash !== null &&
-        (native.recoveryState === null || native.recoveryState === 'awaiting-reconnect') &&
-        (native.recoveryDeadline === null || native.recoveryDeadline > timestamp);
+      const eligible = isNanoHostAttemptReconnectEligible(native, session, timestamp);
       if (eligible) {
         try {
           await input.restoreBackendSession(session);
-          const deadline =
-            native.recoveryDeadline ??
-            new Date(
-              Math.min(Date.parse(native.deadline!), Date.parse(timestamp) + 300_000)
-            ).toISOString();
-          const armed = coreDb.sqlite
-            .prepare(
-              `UPDATE scheduler_execution_attempts SET recovery_state = 'awaiting-reconnect', recovery_deadline = ? WHERE attempt_id = ? AND phase = 'open' AND recovery_deadline IS ?`
-            )
-            .run(deadline, attempt.attemptId, native.recoveryDeadline);
-          if (armed.changes !== 1) throw new Error('Native reconnect ownership changed.');
+          await armNanoHostAttemptReconnect(coreDb, {
+            attemptId: attempt.attemptId,
+            classifiedAt: timestamp,
+            expectedRecoveryDeadline: native.recoveryDeadline,
+            ...(input.now ? { now: input.now } : {}),
+          });
           continue;
         } catch {
           /* Unrestorable native identity belongs to the existing cleanup owner. */
         }
       }
-      markSchedulerExecutionAttemptClosing(coreDb, {
+      await markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: attempt.attemptId,
         cause: 'restart-native-recovery',
         ...(input.now ? { now: input.now } : {}),
       });
-      coreDb.sqlite
-        .prepare(
-          "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ? AND phase = 'closing'"
-        )
-        .run(attempt.attemptId);
+      await markNanoHostAttemptNeedsEvidence(coreDb, attempt.attemptId);
       if (!['physical-cleaned', 'cleaned'].includes(session.state)) {
-        const fenced = moveSessionToCleanupPending(coreDb, session, timestamp);
+        const fenced = await moveSessionToCleanupPending(coreDb, session, timestamp);
         input.prepareBackendCleanup(toRestartBackendIdentity(fenced));
       }
     } catch (error) {
@@ -226,7 +212,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           : native.heartbeatDeadline <= timestamp;
       if (native.phase === 'open' && !livenessExpired && native.recoveryState !== 'needs-evidence')
         continue;
-      markSchedulerExecutionAttemptClosing(coreDb, {
+      await markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: attempt.attemptId,
         cause: livenessExpired ? 'native-liveness-expired' : 'native-cleanup',
         now,
@@ -267,11 +253,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         ) {
           // Empty tables do not prove no materialization.
           // Preserve the existing inspection classification without retrying unchanged unknown cleanup on every maintenance pass.
-          coreDb.sqlite
-            .prepare(
-              "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ? AND phase = 'closing'"
-            )
-            .run(native.attemptId);
+          await markNanoHostAttemptNeedsEvidence(coreDb, native.attemptId);
           continue;
         }
         if (!materializationNotPublished) {
@@ -303,7 +285,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         if (!projection.workspaceHandoffComplete)
           throw new Error('Native cleanup workspace handoff is incomplete.');
         if (session.workspaceHandoffState === 'pending')
-          session = markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+          session = await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
             attemptId: attempt.attemptId,
             now,
           });
@@ -326,7 +308,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           hasRecoveredTerminalHandoff(input.store, session, workspace.environmentPackage);
       }
       if (session.state === 'physical-cleaned')
-        session = transitionWorkerBackendSessionState(coreDb, {
+        session = await transitionWorkerBackendSessionState(coreDb, {
           fromState: 'physical-cleaned',
           attemptId: attempt.attemptId,
           toState: 'cleaned',
@@ -347,7 +329,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         } as const;
         const terminal = input.store?.getTurnById(native.turnId);
         const settledAttempt = terminal
-          ? markSchedulerExecutionAttemptClosing(coreDb, {
+          ? await markSchedulerExecutionAttemptClosing(coreDb, {
               attemptId: native.attemptId,
               cause: `turn-${terminal.status}`,
               outcomeRef: `turn:${terminal.id}:${terminal.status}`,
@@ -371,7 +353,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           )
         )
           throw new Error('Native recovery release has no exact backend fence.');
-        closeSchedulerExecutionAttemptWithFence(coreDb, {
+        await closeSchedulerExecutionAttemptWithFence(coreDb, {
           correlation,
           proof,
           fenceRef: release.fenceRef,
@@ -421,29 +403,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         input.cleanupBackendSession
       );
       if (cleaned.state === 'physical-cleaned')
-        coreDb.sqlite
-          .transaction(() => {
-            transitionWorkerBackendSessionState(coreDb, {
-              fromState: 'physical-cleaned',
-              attemptId: cleaned.attemptId,
-              toState: 'cleaned',
-              now,
-            });
-            recordServerAuditEvent({
-              action: 'scheduler.orphan-backend-retired',
-              category: 'system',
-              coreDb,
-              outcome: 'succeeded',
-              resource: `server:worker-backend-session:${cleaned.attemptId}`,
-              severity: 'warning',
-              summary: 'Unowned worker backend session physically cleaned and retired.',
-              workspaceId: cleaned.workspaceId,
-              threadId: cleaned.threadId,
-              turnId: cleaned.turnId,
-              agentSessionId: cleaned.agentSessionId,
-            });
-          })
-          .immediate();
+        await retireOrphanWorkerBackendSession(coreDb, { attemptId: cleaned.attemptId, now });
     } catch (error) {
       logNativeRecoveryFailure(
         session,
@@ -524,7 +484,7 @@ async function cleanupPhysicalSession(
   let session =
     originalSession.state === 'cleanup-failed'
       ? originalSession
-      : moveSessionToCleanupPending(coreDb, originalSession, now());
+      : await moveSessionToCleanupPending(coreDb, originalSession, now());
   if (!cleanupBackendSession) {
     throw new Error('Scheduler restart recovery requires a backend cleanup implementation.');
   }
@@ -532,7 +492,7 @@ async function cleanupPhysicalSession(
     await cleanupBackendSession(toRestartBackendIdentity(session));
   } catch (error) {
     if (session.state === 'cleanup-pending') {
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
         attemptId: session.attemptId,
         now,
@@ -542,9 +502,9 @@ async function cleanupPhysicalSession(
     throw error;
   }
   if (session.state === 'cleanup-failed') {
-    session = moveSessionToCleanupPending(coreDb, session, now());
+    session = await moveSessionToCleanupPending(coreDb, session, now());
   }
-  return transitionWorkerBackendSessionState(coreDb, {
+  return await transitionWorkerBackendSessionState(coreDb, {
     fromState: 'cleanup-pending',
     attemptId: session.attemptId,
     now,
@@ -615,15 +575,15 @@ function openRecoveryWorkspace(
 }
 
 /** Advances any effect-owning state to cleanup-pending. */
-function moveSessionToCleanupPending(
+async function moveSessionToCleanupPending(
   coreDb: CoreDb,
   session: WorkerBackendSessionRecord,
   timestamp: string
-): WorkerBackendSessionRecord {
+): Promise<WorkerBackendSessionRecord> {
   if (session.state === 'cleanup-pending') {
     return session;
   }
-  return transitionWorkerBackendSessionState(coreDb, {
+  return await transitionWorkerBackendSessionState(coreDb, {
     fromState: session.state,
     attemptId: session.attemptId,
     now: () => timestamp,

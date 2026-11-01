@@ -288,7 +288,7 @@ async function start(f: Awaited<ReturnType<typeof fixture>>, fault?: 'mount' | '
     },
   };
   const interception = new PolicyInterception();
-  const native = createNativeTaskAdmissionFixture(
+  const native = await createNativeTaskAdmissionFixture(
     f.coreDb,
     f.store,
     {

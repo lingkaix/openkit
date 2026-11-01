@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -23,38 +24,45 @@ const candidate = {
 };
 
 describe('confirmed image environment settlement', () => {
-  it('withholds defaults until exact confirmation and carries admission across restart', () => {
+  it('withholds defaults until exact confirmation and carries admission across restart', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-native-env-'));
     let db = openCoreDb(root);
     try {
       applyMigrations(db);
       expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toBeNull();
-      expect(() =>
-        admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} })
-      ).toThrow(WorkerImageSettlementConflict);
-      writeWorkerImageSettlement(db, {
+      await expect(
+        async () =>
+          await admitWorkerImageEnvironment(db, candidate, {
+            imageDigest,
+            defaultsDigest,
+            values: {},
+          })
+      ).rejects.toThrow(WorkerImageSettlementConflict);
+      await writeWorkerImageSettlement(db, {
         ...candidate,
         requestId: '1'.repeat(64),
         operation: 'image.acquire',
         outcome: { kind: 'success', imageDigest },
       });
       expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toBeNull();
-      expect(() =>
-        admitWorkerImageEnvironment(
-          db,
-          { ...candidate, authoredContentDigest: `sha256:${'c'.repeat(64)}` },
-          { imageDigest, defaultsDigest, values: {} }
-        )
-      ).toThrow(WorkerImageSettlementConflict);
-      expect(() =>
-        admitWorkerImageEnvironment(db, candidate, {
-          imageDigest,
-          defaultsDigest,
-          values: { CHANGED: 'x' },
-        })
-      ).toThrow();
+      await expect(
+        async () =>
+          await admitWorkerImageEnvironment(
+            db,
+            { ...candidate, authoredContentDigest: `sha256:${'c'.repeat(64)}` },
+            { imageDigest, defaultsDigest, values: {} }
+          )
+      ).rejects.toThrow(WorkerImageSettlementConflict);
+      await expect(
+        async () =>
+          await admitWorkerImageEnvironment(db, candidate, {
+            imageDigest,
+            defaultsDigest,
+            values: { CHANGED: 'x' },
+          })
+      ).rejects.toThrow();
       expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toBeNull();
-      admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} });
+      await admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} });
       db.sqlite.close();
       db = openCoreDb(root);
       expect(readAdmittedWorkerImageEnvironment(db, imageDigest)).toEqual({
@@ -62,13 +70,14 @@ describe('confirmed image environment settlement', () => {
         defaultsDigest,
         values: {},
       });
-      expect(() =>
-        admitWorkerImageEnvironment(db, candidate, {
-          imageDigest,
-          defaultsDigest,
-          values: { CHANGED: 'x' },
-        })
-      ).toThrow();
+      await expect(
+        async () =>
+          await admitWorkerImageEnvironment(db, candidate, {
+            imageDigest,
+            defaultsDigest,
+            values: { CHANGED: 'x' },
+          })
+      ).rejects.toThrow();
       const extended = JSON.stringify(
         { imageDigest, defaultsDigest, values: {}, note: 'inert future metadata' },
         null,
@@ -79,7 +88,7 @@ describe('confirmed image environment settlement', () => {
           'UPDATE worker_image_settlements SET native_environment_json = ? WHERE request_id = ?'
         )
         .run(extended, '1'.repeat(64));
-      admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} });
+      await admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} });
       expect(
         db.sqlite
           .prepare(
@@ -88,11 +97,12 @@ describe('confirmed image environment settlement', () => {
           .get('1'.repeat(64))
       ).toEqual({ bytes: extended });
     } finally {
+      await shutdownControlStoreWorkerClient();
       db.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }
   });
-  it('refuses conflicting second admission before writing and revalidates durable bytes on read', () => {
+  it('refuses conflicting second admission before writing and revalidates durable bytes on read', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-native-env-conflict-'));
     const db = openCoreDb(root);
     try {
@@ -101,14 +111,14 @@ describe('confirmed image environment settlement', () => {
         ...candidate,
         authoredArtifactId: 'ar_00000000-0000-7715-a7ab-a9e022886a62',
       };
-      writeWorkerImageSettlement(db, {
+      await writeWorkerImageSettlement(db, {
         ...candidate,
         requestId: '1'.repeat(64),
         operation: 'image.acquire',
         outcome: { kind: 'success', imageDigest },
       });
-      admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} });
-      writeWorkerImageSettlement(db, {
+      await admitWorkerImageEnvironment(db, candidate, { imageDigest, defaultsDigest, values: {} });
+      await writeWorkerImageSettlement(db, {
         ...second,
         requestId: '2'.repeat(64),
         operation: 'image.acquire',
@@ -116,13 +126,14 @@ describe('confirmed image environment settlement', () => {
       });
       const values = { CHANGED: 'literal' };
       const changedDigest = `sha256:${createHash('sha256').update(canonicalNativeEnvironment(values)).digest('hex')}`;
-      expect(() =>
-        admitWorkerImageEnvironment(db, second, {
-          imageDigest,
-          defaultsDigest: changedDigest,
-          values,
-        })
-      ).toThrow();
+      await expect(
+        async () =>
+          await admitWorkerImageEnvironment(db, second, {
+            imageDigest,
+            defaultsDigest: changedDigest,
+            values,
+          })
+      ).rejects.toThrow();
       expect(
         db.sqlite
           .prepare(
@@ -149,6 +160,7 @@ describe('confirmed image environment settlement', () => {
         );
       expect(() => readAdmittedWorkerImageEnvironment(db, imageDigest)).toThrow();
     } finally {
+      await shutdownControlStoreWorkerClient();
       db.sqlite.close();
       rmSync(root, { recursive: true, force: true });
     }

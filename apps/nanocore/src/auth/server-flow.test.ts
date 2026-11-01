@@ -542,13 +542,13 @@ describe('server auth flow', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-inflight-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_server_fixture',
       observedAt: new Date().toISOString(),
       targetId: 'target_server_fixture',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: new Date().toISOString(),

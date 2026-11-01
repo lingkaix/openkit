@@ -5,11 +5,9 @@ import {
   createOpenKitAccessTokenSecret,
   evaluateOpenKitAccessTokenUsability,
   hashOpenKitAccessTokenSecret,
-  isOpenKitAccessTokenSecret,
   normalizeOpenKitAccessTokenScope,
   type OpenKitAccessTokenScope,
   type OpenKitAccessTokenStatus,
-  verifyOpenKitAccessTokenSecret,
 } from './access-token.js';
 import type { Actor } from './identity.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
@@ -192,62 +190,35 @@ export function insertOpenKitAccessTokenRecord(
   return record;
 }
 
-/**
- * Verifies one presented OpenKit access token against durable server records.
- *
- * @param coreDb Open Core database handles.
- * @param secret Presented bearer token secret.
- * @param options Optional verification clock and redacted source summary.
- * @returns Verified non-secret token identity or null.
- * @throws When a retained token format or its workspace-binding JSON is invalid.
- */
-export function verifyOpenKitAccessTokenRecord(
+/** Revalidates the current hash proof and authority, then records use in the native deciding section. */
+export function recordVerifiedOpenKitAccessTokenUse(
   coreDb: CoreDb,
-  secret: string,
-  options: { channel?: string; now?: Date; source?: string } = {}
+  input: import('../storage/access-token-verification-codecs.js').ControlAccessTokenVerification
 ): VerifiedOpenKitAccessTokenRecord | null {
-  if (!isOpenKitAccessTokenSecret(secret)) {
-    return null;
-  }
-
-  const expectedHash = hashOpenKitAccessTokenSecret(secret);
   const row = coreDb.sqlite
     .prepare(
-      'SELECT schema_version AS schemaVersion, * FROM openkit_access_tokens WHERE token_hash = ?'
+      'SELECT schema_version AS schemaVersion, * FROM openkit_access_tokens WHERE token_id = ?'
     )
-    .get(expectedHash) as OpenKitAccessTokenRow | undefined;
-
-  if (!row || !verifyOpenKitAccessTokenSecret(secret, row.token_hash)) {
-    return null;
-  }
-
+    .get(input.tokenId) as OpenKitAccessTokenRow | undefined;
+  if (!row || row.token_hash !== input.expectedHash) return null;
   return readRetainedV1(row, () => {
-    if (!isCanonicalUserActive(coreDb, row.owner_user_id)) {
+    if (!isCanonicalUserActive(coreDb, row.owner_user_id)) return null;
+    const now = input.now ? new Date(input.now) : new Date();
+    if (
+      !evaluateOpenKitAccessTokenUsability(
+        {
+          expiresAt: row.expires_at,
+          rotatedGraceExpiresAt: row.rotated_grace_expires_at,
+          status: row.status,
+        },
+        now
+      ).usable
+    )
       return null;
-    }
-
-    const usability = evaluateOpenKitAccessTokenUsability(
-      {
-        expiresAt: row.expires_at,
-        rotatedGraceExpiresAt: row.rotated_grace_expires_at,
-        status: row.status,
-      },
-      options.now
-    );
-
-    if (!usability.usable) {
-      return null;
-    }
-
-    const lastUsedAt = (options.now ?? new Date()).toISOString();
     coreDb.sqlite
-      .prepare(
-        `UPDATE openkit_access_tokens
-       SET last_used_at = ?, last_used_channel = ?, last_used_source = ?
-       WHERE token_id = ?`
-      )
-      .run(lastUsedAt, options.channel ?? null, options.source ?? null, row.token_id);
-
+      .prepare(`UPDATE openkit_access_tokens
+      SET last_used_at = ?, last_used_channel = ?, last_used_source = ? WHERE token_id = ?`)
+      .run(now.toISOString(), input.channel ?? null, input.source ?? null, row.token_id);
     return getOpenKitAccessTokenRecord(coreDb, row.token_id);
   });
 }

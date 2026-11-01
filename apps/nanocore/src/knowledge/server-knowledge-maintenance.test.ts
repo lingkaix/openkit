@@ -918,9 +918,8 @@ it.each([
 
 it('keeps the producing human and another current Server administrator distinct through exact Review', async () => {
   const { createBetterAuth } = await import('../auth/better-auth.js');
-  const { createOpenKitAccessTokenRecord, verifyOpenKitAccessTokenRecord } = await import(
-    '../auth/access-token-store.js'
-  );
+  const { createOpenKitAccessTokenRecord } = await import('../auth/access-token-store.js');
+  const { verifyOpenKitAccessTokenRecord } = await import('../auth/access-token-verification.js');
   const f = fixture(false);
   const auth = createBetterAuth(f.coreDb, { env: { PORT: '3000' } });
   const response = await auth.handler(
@@ -942,7 +941,7 @@ it('keeps the producing human and another current Server administrator distinct 
     workspaceIds: [],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const verified = verifyOpenKitAccessTokenRecord(f.coreDb, issued.secret);
+  const verified = await verifyOpenKitAccessTokenRecord(f.coreDb, issued.secret);
   if (!verified) throw new Error('Fixture administrator must authenticate.');
   const administrator: import('../auth/identity.js').Actor = {
     kind: 'token',

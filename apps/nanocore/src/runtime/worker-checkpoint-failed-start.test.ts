@@ -26,7 +26,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
-import { createNanoHostHarnessRuntime } from './nanohost-harness-records.js';
+import { createNanoHostHarnessRuntime } from './nanohost-harness.js';
 import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
 import {
   getWorkerBackendSession,
@@ -94,7 +94,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const target = recordTestNativeRuntimeTarget(coreDb);
+  const target = await recordTestNativeRuntimeTarget(coreDb);
   const execution = new SimulatedTurnExecutor({ coreDb });
   const materialized = Promise.withResolvers<void>();
   const fail = Promise.withResolvers<void>();
@@ -260,7 +260,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   for (const state of ['cleanup-pending', 'physical-cleaned', 'cleaned'] as const) {
     const current = getWorkerBackendSession(coreDb, attempt.attemptId)!;
     if (current.state !== state)
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         attemptId: attempt.attemptId,
         fromState: current.state,
         toState: state,
@@ -851,7 +851,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
       }
       if (gap === 'binding') {
         const anchor = getWorkerBackendSession(f.coreDb, attemptId)!;
-        createNanoHostHarnessRuntime(f.coreDb, {
+        await createNanoHostHarnessRuntime(f.coreDb, {
           adapterId: 'codex',
           adapterVersion: 'test',
           harnessBindingRef: 'harness-binding',

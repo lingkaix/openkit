@@ -406,7 +406,7 @@ export async function applyResourcePolicyRequest(
   let effectAttempted = false;
   let result: {
     saved: ReturnType<ResourcePolicyRequestDependencies['files']['updateFile']>;
-    reload: ReturnType<ResourcePolicyRequestDependencies['manager']['reload']>;
+    reload: Awaited<ReturnType<ResourcePolicyRequestDependencies['manager']['reload']>>;
   };
 
   try {
@@ -425,7 +425,7 @@ export async function applyResourcePolicyRequest(
       content,
       expectedRevision: change.expectedRevision,
     });
-    const reload = dependencies.manager.reload({ dryRun: false, mode: 'safe' });
+    const reload = await dependencies.manager.reload({ dryRun: false, mode: 'safe' });
     result = { saved, reload };
   } catch (error) {
     // Saved configuration and loaded state remain separate effect domains.

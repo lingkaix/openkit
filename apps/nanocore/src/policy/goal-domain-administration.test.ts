@@ -254,7 +254,7 @@ async function fixture() {
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
-  const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
+  const reload = vi.fn(async () => await manager.reload({ mode: 'safe', dryRun: false }));
   const domains = createGoalDomainPolicyService({
     coreDb,
     store,
@@ -359,7 +359,7 @@ async function fixture() {
       db,
       { coreDb }
     );
-  const activation = domains.activate({
+  const activation = await domains.activate({
     workspaceId: workspace.id,
     requestId: plan.pendingRequestId,
     expectedPolicyRevision: policyDigest(EMPTY_POLICY_DOCUMENT),
@@ -685,7 +685,7 @@ describe('bounded native Goal-domain administration', () => {
     const before = f.tasks.evaluateTask(f.effect)!;
     const writes = vi.spyOn(f.files, 'updateFile');
     const decisionCount = listServerPermissionDecisions(f.coreDb).length;
-    const result = f.administer();
+    const result = await f.administer();
     expect(result.statement).toMatchObject({
       id: f.grant.id,
       kind: 'permission',
@@ -813,7 +813,7 @@ describe('bounded native Goal-domain administration', () => {
         .run(f.plan.pendingRequestId);
     if (reason === 'disabled-human')
       f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))();
-    if (reason === 'withdrawn-domain') f.domains.close(f.scope);
+    if (reason === 'withdrawn-domain') await f.domains.close(f.scope);
     const original = readFileSync(f.path, 'utf8');
     const writes = vi.spyOn(f.files, 'updateFile');
     const reloads = f.reload.mock.calls.length;
@@ -855,7 +855,7 @@ describe('bounded native Goal-domain administration', () => {
 
   it('keeps root scope, the current human Kernel, prohibitions and a human-only gate mandatory', async () => {
     const f = await fixture();
-    f.administer();
+    await f.administer();
     expect(f.tasks.evaluateTask(f.effect)!.kernel.effect).toBe('allow');
     const outside = f.tasks.evaluateTask({
       ...f.effect,
@@ -884,7 +884,7 @@ describe('bounded native Goal-domain administration', () => {
 
   it('accounts finite grant use once and recognizes only the same final decision with linked Audit', async () => {
     const f = await fixture();
-    const result = f.administer({
+    const result = await f.administer({
       grant: { ...f.grant, lifetime: { ...f.grant.lifetime, uses: 1 } },
     });
     const reference = { id: result.statement.id, digest: policyDigest(result.statement) };
@@ -925,7 +925,7 @@ describe('bounded native Goal-domain administration', () => {
 
   it('ends grants on expiry and domain withdrawal and refuses a closed Worker context', async () => {
     const f = await fixture();
-    f.administer({
+    await f.administer({
       grant: {
         ...f.grant,
         lifetime: {
@@ -944,7 +944,7 @@ describe('bounded native Goal-domain administration', () => {
     expect(f.tasks.evaluateTask(f.effect)!.kernel.effect).toBe('deny');
     clock.mockRestore();
     expect(f.tasks.evaluateTask(f.effect)!.kernel.effect).toBe('allow');
-    f.domains.close(f.scope);
+    await f.domains.close(f.scope);
     expect(f.tasks.evaluateTask(f.effect)!.kernel.effect).toBe('deny');
     expect(f.domains.read(f.scope)).toBeNull();
     await retainCompletedTaskFixture(f.store, f.db, f.turn.id, false);

@@ -1135,8 +1135,7 @@ describe('remote MCP App endpoint', () => {
   it('derives exactly four tools and per-operation annotations and bounded ranked search from all definitions', async () => {
     const f = await fixture();
     const token = f.token();
-    // Metadata discovery keeps real Token and audit writes in one rolled-back fixture transaction.
-    f.coreDb.sqlite.exec('BEGIN');
+    // Real Token and native Audit owners each settle before the next metadata request.
     try {
       const listed = await (await f.message('tools/list', {}, token.secret)).json();
       expect(listed.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
@@ -1190,19 +1189,18 @@ describe('remote MCP App endpoint', () => {
           delete (OPERATION_DEFINITIONS as unknown as Record<string, unknown>)[id];
       }
     } finally {
-      f.coreDb.sqlite.exec('ROLLBACK');
       f.coreDb.sqlite.close();
     }
   });
 
-  it('reaches every eligible definition through search, describe and native call with the exact Token actor', async () => {
+  it.each([
+    0, 1,
+  ])('reaches every eligible definition through search, describe and native call with the exact Token actor (cohort %i)', async (cohort) => {
     const f = await fixture();
     const token = f.token();
     const native = vi.fn(async () => ({ reached: true }));
     vi.spyOn(invocation, 'createOperationInvocation').mockReturnValue(native);
-    // This dispatch probe keeps real bearer verification and audit writes, but batches
-    // their fixture-local commits instead of fsyncing three requests per definition.
-    f.coreDb.sqlite.exec('BEGIN');
+    // Keep real bearer and native Audit publication; Main must not hold SQL across the request await.
     try {
       const excluded = Object.entries(OPERATION_DEFINITIONS)
         .filter(([, definition]) => !operationMcpEligible(definition))
@@ -1221,7 +1219,10 @@ describe('remote MCP App endpoint', () => {
         'workspace.archive-download',
         'workspace.backup-download',
       ]);
-      for (const [operation, definition] of Object.entries(OPERATION_DEFINITIONS)) {
+      // Disjoint cohorts retain exhaustive coverage and the original per-case bound with real FULL Audit ACKs.
+      for (const [operation, definition] of Object.entries(OPERATION_DEFINITIONS).filter(
+        (_, index) => index % 2 === cohort
+      )) {
         const search = JSON.parse(
           (await f.call('openkit_search', { query: operation }, token.secret)).content[0].text
         );
@@ -1260,7 +1261,6 @@ describe('remote MCP App endpoint', () => {
         }
       }
     } finally {
-      f.coreDb.sqlite.exec('ROLLBACK');
       f.coreDb.sqlite.close();
       rmSync(f.dataRoot, { recursive: true, force: true });
     }

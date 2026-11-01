@@ -1,4 +1,16 @@
 import { WorkerControlGatewayError } from '../operation-error.js';
+import type {
+  ControlWorkerFinalStatusCommand,
+  ControlWorkerFinalStatusResult,
+} from '../storage/worker-control-final-status-codecs.js';
+import type {
+  ControlWorkerHeartbeatCommand,
+  ControlWorkerHeartbeatResult,
+} from '../storage/worker-control-heartbeat-codecs.js';
+import type {
+  ControlWorkerOperationCommand,
+  ControlWorkerOperationResult,
+} from '../storage/worker-control-record-codecs.js';
 
 export { WorkerControlGatewayError } from '../operation-error.js';
 
@@ -244,7 +256,19 @@ export interface WorkerControlGatewayOptions {
   sequenceRecorder?: WorkerControlSequenceRecorder;
   /** Optional transaction boundary for atomic heartbeat persistence. */
   runHeartbeatTransaction?: <T>(operation: () => T) => T;
-  /** Optional transaction boundary for atomic final-status acceptance. */
+  /** Original nonterminal sequence then receipt stages, each acknowledged independently. */
+  publishControlOperation?: (
+    input: ControlWorkerOperationCommand
+  ) => Promise<ControlWorkerOperationResult>;
+  /** Complete Core heartbeat publication, including reconnect and current liveness. */
+  publishHeartbeat?: (
+    input: ControlWorkerHeartbeatCommand
+  ) => Promise<ControlWorkerHeartbeatResult>;
+  /** Complete Core final-status publication; memory installs only after its covering FULL acknowledgement. */
+  publishFinalStatus?: (
+    input: ControlWorkerFinalStatusCommand
+  ) => Promise<ControlWorkerFinalStatusResult>;
+  /** Optional transaction boundary for atomic final-status acceptance in an embedded recorder. */
   runFinalStatusTransaction?: <T>(operation: () => T) => T;
   /** Optional binding resolver for cancellation-only first finals and exact final-status replay. */
   resolveFinalStatusTokenBinding?: WorkerControlFinalStatusTokenBindingResolver;
@@ -498,6 +522,10 @@ export class WorkerControlGateway {
   private readonly createCapabilityToken: () => string;
   private readonly now: () => string;
   private readonly acceptedRecordRecorder: WorkerControlAcceptedRecordRecorder | null;
+  private readonly publishControlOperation: WorkerControlGatewayOptions['publishControlOperation'];
+  private readonly publishHeartbeat: WorkerControlGatewayOptions['publishHeartbeat'];
+  private readonly heartbeatClock: WorkerControlGatewayOptions['now'];
+  private readonly publishFinalStatus: WorkerControlGatewayOptions['publishFinalStatus'];
   private readonly onFinalStatusAccepted: WorkerControlFinalStatusAcceptedHook | null;
   private readonly onFinalStatusCommitted: WorkerControlFinalStatusAcceptedHook | null;
   private readonly onHeartbeatAccepted: WorkerControlHeartbeatAcceptedHook | null;
@@ -520,6 +548,10 @@ export class WorkerControlGateway {
     this.createCapabilityToken = options.createCapabilityToken ?? createRandomToken;
     this.now = options.now ?? (() => new Date().toISOString());
     this.acceptedRecordRecorder = options.acceptedRecordRecorder ?? null;
+    this.publishFinalStatus = options.publishFinalStatus;
+    this.publishHeartbeat = options.publishHeartbeat;
+    this.publishControlOperation = options.publishControlOperation;
+    this.heartbeatClock = options.now;
     this.onFinalStatusAccepted = options.onFinalStatusAccepted ?? null;
     this.onFinalStatusCommitted = options.onFinalStatusCommitted ?? null;
     this.onHeartbeatAccepted = options.onHeartbeatAccepted ?? null;
@@ -731,7 +763,7 @@ export class WorkerControlGateway {
    */
   public recordHeartbeat(
     input: AuthenticatedWorkerControlInput & WorkerControlHeartbeatRequest
-  ): WorkerControlResponseEnvelope {
+  ): WorkerControlResponseEnvelope | Promise<WorkerControlResponseEnvelope> {
     const request = WorkerControlHeartbeatRequestReaderSchema.parse({
       body: input.body,
       lineage: input.lineage,
@@ -747,6 +779,69 @@ export class WorkerControlGateway {
       schemaVersion: request.schemaVersion,
       sequence: request.sequence,
     };
+    if (this.publishHeartbeat) {
+      const { state, token } = this.requireFinalStatusSession(input);
+      const sandboxBindingRef = this.requireSandboxBindingRef(state);
+      if (!request.reconnectKey) {
+        // Preserve the existing synchronous read refusal and diagnostic boundary; native repeats current authority after FIFO.
+        this.assertTokenBinding(state, token, 'worker-control', request.lineage);
+        input.onAuthenticated?.({ ...state.lineage });
+      } else {
+        // Reconnect-required is the one preflight state the native adoption may resolve.
+        const resolution = this.resolveTokenBinding?.({
+          lineage: request.lineage,
+          sandboxBindingRef,
+          token,
+          tokenFamily: 'worker-control',
+        });
+        if (resolution?.status === 'rejected' && resolution.reason !== 'reconnect-required')
+          this.throwTokenBindingRejection(resolution.reason);
+      }
+      return this.publishHeartbeat({
+        lineage: request.lineage,
+        sandboxBindingRef,
+        tokenHash: hashWorkerRouteToken(token),
+        payload: {
+          request: heartbeatEnvelope,
+          ...(this.heartbeatClock ? { acceptedAt: this.heartbeatClock() } : {}),
+          ...(request.reconnectKey
+            ? {
+                reconnectProcessKeyHash: createHash('sha256')
+                  .update(Buffer.from(request.reconnectKey, 'base64url'))
+                  .digest('base64url'),
+              }
+            : {}),
+        },
+      }).then((result) => {
+        if (request.reconnectKey) input.onAuthenticated?.({ ...state.lineage });
+        let fingerprints = state.operationFingerprintsBySequence.get('heartbeat');
+        if (!fingerprints) {
+          fingerprints = new Map();
+          state.operationFingerprintsBySequence.set('heartbeat', fingerprints);
+        }
+        fingerprints.set(request.sequence, sequencedControlFingerprint(heartbeatEnvelope));
+        state.highestOperationSequenceByOperation.set(
+          'heartbeat',
+          Math.max(
+            state.highestOperationSequenceByOperation.get('heartbeat') ?? -1,
+            result.nextExpectedSequence - 1
+          )
+        );
+        if (!result.duplicate)
+          state.snapshot.heartbeat = {
+            lastHeartbeatAt: result.acceptedAt,
+            message: request.body.message ?? null,
+            sequence: request.sequence,
+            status: request.body.status,
+          };
+        return WorkerControlResponseEnvelopeSchema.parse({
+          schemaVersion: 2,
+          accepted: true,
+          nextExpectedSequence: result.nextExpectedSequence,
+          diagnostics: [],
+        });
+      });
+    }
     let acceptedState: WorkerControlSessionState | undefined;
     let previousHeartbeat: WorkerControlHeartbeat | null = null;
 
@@ -844,8 +939,51 @@ export class WorkerControlGateway {
         collectionHint?: string | null | undefined;
       };
     }
-  ): WorkerControlArtifactNotice {
+  ): WorkerControlArtifactNotice | Promise<WorkerControlArtifactNotice> {
     const state = this.requireSession(input);
+    if (this.publishControlOperation) {
+      const artifact: WorkerControlArtifactNotice = {
+        artifactId: `worker-artifact-${input.lineage.packageSnapshotId}-${input.sequence}`,
+        mediaType: input.artifact.mediaType ?? null,
+        noticedAt: this.now(),
+        path: input.artifact.path,
+        sequence: input.sequence,
+        title: input.artifact.title,
+        ...(input.artifact.digest !== undefined ? { digest: input.artifact.digest } : {}),
+        ...(input.artifact.collectionHint !== undefined
+          ? { collectionHint: input.artifact.collectionHint }
+          : {}),
+      };
+      return this.publishNonterminal(
+        state,
+        {
+          kind: 'record',
+          operation: 'artifact_notice',
+          record: artifact,
+          recordKey: String(input.sequence),
+          sequence: input.sequence,
+          acceptedAt: artifact.noticedAt,
+        },
+        sequencedControlFingerprint(input)
+      ).then((sequence) => {
+        if (sequence.duplicate) {
+          let original = state.snapshot.artifacts.find(
+            (candidate) => candidate.sequence === input.sequence
+          );
+          if (!original && sequence.record && 'artifactId' in sequence.record) {
+            original = sequence.record;
+            state.snapshot.artifacts.push(original);
+          }
+          if (!original)
+            throw new Error(
+              `Sequenced artifact notice retry has no recorded artifact: ${input.sequence}`
+            );
+          return { ...original };
+        }
+        state.snapshot.artifacts.push(artifact);
+        return { ...artifact };
+      });
+    }
     const sequence = acceptSequencedControlOperation(
       state,
       'artifact_notice',
@@ -912,9 +1050,47 @@ export class WorkerControlGateway {
       /** Optional product-safe diagnostic supplied by the worker. */
       message?: string | null;
     }
-  ): WorkerControlSupplyRefreshAck {
+  ): WorkerControlSupplyRefreshAck | Promise<WorkerControlSupplyRefreshAck> {
     const body = WorkerControlSupplyRefreshAckBodyReaderSchema.parse(input);
     const state = this.requireSession(input);
+    if (this.publishControlOperation) {
+      const ack: WorkerControlSupplyRefreshAck = {
+        acknowledgedAt: this.now(),
+        message: body.message ?? null,
+        refreshId: body.refreshId,
+        sequence: input.sequence,
+        status: body.status,
+      };
+      return this.publishNonterminal(
+        state,
+        {
+          kind: 'record',
+          operation: 'supply_refresh_ack',
+          record: ack,
+          recordKey: String(input.sequence),
+          sequence: input.sequence,
+          acceptedAt: ack.acknowledgedAt,
+        },
+        sequencedControlFingerprint({ ...body, lineage: input.lineage, sequence: input.sequence })
+      ).then((sequence) => {
+        if (sequence.duplicate) {
+          let original = state.snapshot.supplyRefreshAcks.find(
+            (candidate) => candidate.sequence === input.sequence
+          );
+          if (!original && sequence.record && 'refreshId' in sequence.record) {
+            original = sequence.record;
+            state.snapshot.supplyRefreshAcks.push(original);
+          }
+          if (!original)
+            throw new Error(
+              `Sequenced supply refresh acknowledgement retry has no recorded acknowledgement: ${input.sequence}`
+            );
+          return { ...original };
+        }
+        state.snapshot.supplyRefreshAcks.push(ack);
+        return { ...ack };
+      });
+    }
     const sequence = acceptSequencedControlOperation(
       state,
       'supply_refresh_ack',
@@ -970,7 +1146,7 @@ export class WorkerControlGateway {
       /** Product-safe capability summary record to validate and retain. */
       summary: unknown;
     }
-  ): WorkerControlResponseEnvelope {
+  ): WorkerControlResponseEnvelope | Promise<WorkerControlResponseEnvelope> {
     const state = this.requireSession(input);
     const parsed = WorkerCapabilityCallSummaryReaderSchema.safeParse(input.summary);
 
@@ -992,6 +1168,28 @@ export class WorkerControlGateway {
       );
     }
 
+    if (this.publishControlOperation)
+      return this.publishNonterminal(
+        state,
+        {
+          kind: 'record',
+          operation: 'capability_summary',
+          record: summary,
+          recordKey: String(summary.sequence),
+          sequence: summary.sequence,
+          acceptedAt: summary.completedAt ?? this.now(),
+        },
+        sequencedControlFingerprint(summary)
+      ).then((sequence) => {
+        if (!sequence.duplicate)
+          state.snapshot.capabilitySummaries.push(cloneCapabilitySummary(summary));
+        return WorkerControlResponseEnvelopeSchema.parse({
+          accepted: true,
+          diagnostics: [],
+          nextExpectedSequence: sequence.nextExpectedSequence,
+          schemaVersion: 2,
+        });
+      });
     const sequence = acceptSequencedControlOperation(
       state,
       'capability_summary',
@@ -1118,6 +1316,46 @@ export class WorkerControlGateway {
       );
     }
 
+    if (this.publishControlOperation) {
+      const publish = () =>
+        this.publishNonterminal(
+          state,
+          {
+            kind: 'record',
+            operation: 'event_append',
+            record,
+            recordKey: String(record.sequence),
+            sequence: record.sequence,
+            acceptedAt: this.now(),
+          },
+          canonicalJsonText(workerControlEventReceipt(record))
+        ).then((sequence) => {
+          const fingerprint = canonicalJsonText(workerControlEventReceipt(record));
+          const previous = state.eventFingerprintsBySequence.get(record.sequence);
+          state.eventFingerprintsBySequence.set(record.sequence, fingerprint);
+          state.highestEventSequence = Math.max(
+            state.highestEventSequence ?? -1,
+            sequence.nextExpectedSequence - 1
+          );
+          if (
+            previous === undefined &&
+            record.event.type !== 'observation.recorded' &&
+            record.event.type !== 'observation.content.chunk'
+          )
+            state.snapshot.events.push(cloneCanonicalEventRecord(record));
+          return WorkerControlResponseEnvelopeSchema.parse({
+            accepted: true,
+            diagnostics: [],
+            nextExpectedSequence: sequence.nextExpectedSequence,
+            schemaVersion: 2,
+          });
+        });
+      return (record.event.type === 'observation.recorded' ||
+        record.event.type === 'observation.content.chunk') &&
+        this.acceptedRecordRecorder?.prepareObservation
+        ? this.acceptedRecordRecorder.prepareObservation(record).then(publish)
+        : publish();
+    }
     const accept = (): WorkerControlResponseEnvelope => {
       this.acceptCanonicalEvent(state, input.lineage, record);
       return WorkerControlResponseEnvelopeSchema.parse({
@@ -1132,7 +1370,7 @@ export class WorkerControlGateway {
         record.event.type === 'observation.content.chunk') &&
       this.acceptedRecordRecorder?.prepareObservation
     ) {
-      // Native ACK precedes every Core sequence/receipt write. Final status stays synchronous.
+      // Native observation ACK precedes the original observation sequence/receipt stage.
       return this.acceptedRecordRecorder.prepareObservation(record).then(accept);
     }
     return accept();
@@ -1144,7 +1382,7 @@ export class WorkerControlGateway {
    * @param input Authenticated final-status request.
    * @returns Worker-control response envelope with the next expected event sequence.
    */
-  public recordFinalStatus(
+  public async recordFinalStatus(
     input: AuthenticatedWorkerControlInput & {
       /** Worker sequence shared by both durable operation streams. */
       readonly sequence: number;
@@ -1157,7 +1395,7 @@ export class WorkerControlGateway {
       /** Product-safe terminal diagnostics. */
       readonly diagnostics?: Readonly<Record<string, string>>;
     }
-  ): WorkerControlResponseEnvelope {
+  ): Promise<WorkerControlResponseEnvelope> {
     const terminalData = WorkerCanonicalTerminalEventDataSchema.parse({
       ...(input.diagnostics ? { diagnostics: input.diagnostics } : {}),
       evidenceManifestDigests: input.evidenceManifestDigests ?? {},
@@ -1185,10 +1423,7 @@ export class WorkerControlGateway {
       status: terminalData.status,
       stopReason: terminalData.stopReason,
     };
-    const hadEventFingerprint = state.eventFingerprintsBySequence.has(input.sequence);
-    const hadFinalStatusFingerprint =
-      state.operationFingerprintsBySequence.get('final_status')?.has(input.sequence) ?? false;
-    const accept = (): void => {
+    const authorizeFinal = (): boolean => {
       let replayOnly = false;
 
       if (this.resolveFinalStatusTokenBinding) {
@@ -1225,6 +1460,91 @@ export class WorkerControlGateway {
         input.onAuthenticated?.({ ...state.lineage });
       }
 
+      return replayOnly;
+    };
+    if (this.publishFinalStatus) {
+      const fingerprint = sequencedControlFingerprint(fingerprintPayload);
+      const eventFingerprint = canonicalJsonText(eventRecord);
+      const priorFinal = state.operationFingerprintsBySequence
+        .get('final_status')
+        ?.get(input.sequence);
+      const priorEvent = state.eventFingerprintsBySequence.get(input.sequence);
+      if (priorFinal !== undefined && priorFinal !== fingerprint)
+        throw new WorkerControlGatewayError(
+          'worker_control_sequence_conflict',
+          `Worker control final_status sequence already accepted with different content: ${input.sequence}`,
+          409
+        );
+      if (priorEvent !== undefined && priorEvent !== eventFingerprint)
+        throw new WorkerControlGatewayError(
+          'worker_control_sequence_conflict',
+          `Worker event sequence already accepted with different content: ${input.sequence}`,
+          409
+        );
+      authorizeFinal();
+      const sandboxBindingRef = this.requireSandboxBindingRef(state);
+      const result = await this.publishFinalStatus({
+        lineage: input.lineage,
+        sandboxBindingRef,
+        tokenHash: hashWorkerRouteToken(token),
+        payload: {
+          terminalData,
+          sequence: input.sequence,
+          acceptedAt,
+          eventAcceptedAt: this.now(),
+        },
+      });
+      // Native refusal or a lost ACK leaves the live projection untouched. Concurrent exact
+      // replays can complete during the await, so install against the current projection.
+      const currentEvent = state.eventFingerprintsBySequence.get(input.sequence);
+      const currentFinal = state.operationFingerprintsBySequence
+        .get('final_status')
+        ?.get(input.sequence);
+      if (currentFinal !== undefined && currentFinal !== fingerprint)
+        throw new WorkerControlGatewayError(
+          'worker_control_sequence_conflict',
+          `Worker control final_status sequence already accepted with different content: ${input.sequence}`,
+          409
+        );
+      if (currentEvent !== undefined && currentEvent !== eventFingerprint)
+        throw new WorkerControlGatewayError(
+          'worker_control_sequence_conflict',
+          `Worker event sequence already accepted with different content: ${input.sequence}`,
+          409
+        );
+      let fingerprints = state.operationFingerprintsBySequence.get('final_status');
+      if (!fingerprints) {
+        fingerprints = new Map<number, string>();
+        state.operationFingerprintsBySequence.set('final_status', fingerprints);
+      }
+      fingerprints.set(input.sequence, fingerprint);
+      state.highestOperationSequenceByOperation.set(
+        'final_status',
+        Math.max(
+          state.highestOperationSequenceByOperation.get('final_status') ?? -1,
+          result.nextFinalStatusSequence - 1
+        )
+      );
+      state.eventFingerprintsBySequence.set(input.sequence, eventFingerprint);
+      state.highestEventSequence = Math.max(
+        state.highestEventSequence ?? -1,
+        result.nextEventSequence - 1
+      );
+      if (currentEvent === undefined)
+        state.snapshot.events.push(cloneCanonicalEventRecord(eventRecord));
+      this.onFinalStatusCommitted?.({ eventType, lineage: input.lineage, sandboxBindingRef });
+      return WorkerControlResponseEnvelopeSchema.parse({
+        accepted: true,
+        diagnostics: [],
+        nextExpectedSequence: nextExpectedEventSequence(state),
+        schemaVersion: 2,
+      });
+    }
+    const hadEventFingerprint = state.eventFingerprintsBySequence.has(input.sequence);
+    const hadFinalStatusFingerprint =
+      state.operationFingerprintsBySequence.get('final_status')?.has(input.sequence) ?? false;
+    const accept = (): void => {
+      const replayOnly = authorizeFinal();
       const finalStatusSequence = acceptSequencedControlOperation(
         state,
         'final_status',
@@ -1419,6 +1739,39 @@ export class WorkerControlGateway {
     }
 
     return { duplicate: durableSequence?.duplicate ?? false };
+  }
+
+  /** Posts only the exact authenticated operation and installs its sequence projection after both original stages. */
+  private async publishNonterminal(
+    state: WorkerControlSessionState,
+    payload: ControlWorkerOperationCommand['payload'],
+    fingerprint: string
+  ): Promise<ControlWorkerOperationResult> {
+    if (!this.publishControlOperation)
+      throw new Error('Worker control publication is unavailable.');
+    const result = await this.publishControlOperation({
+      lineage: state.lineage,
+      sandboxBindingRef: this.requireSandboxBindingRef(state),
+      tokenHash: state.workerControlTokenHash,
+      payload,
+      fingerprint,
+    });
+    if (payload.operation !== 'event_append') {
+      let fingerprints = state.operationFingerprintsBySequence.get(payload.operation);
+      if (!fingerprints) {
+        fingerprints = new Map();
+        state.operationFingerprintsBySequence.set(payload.operation, fingerprints);
+      }
+      fingerprints.set(payload.sequence, fingerprint);
+      state.highestOperationSequenceByOperation.set(
+        payload.operation,
+        Math.max(
+          state.highestOperationSequenceByOperation.get(payload.operation) ?? -1,
+          result.nextExpectedSequence - 1
+        )
+      );
+    }
+    return result;
   }
 
   /**

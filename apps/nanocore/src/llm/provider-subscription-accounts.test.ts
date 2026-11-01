@@ -1088,7 +1088,7 @@ describe('ProviderSubscriptionAccountManager', () => {
           fixture.manager
         )
       ).toMatchObject({ routes: [{ available: true }] });
-      expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+      expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
       expect(listVaultUseRecords(fixture.coreDb)).toEqual(before);
       expect(resolves).not.toHaveBeenCalled();
     } finally {

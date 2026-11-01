@@ -290,7 +290,9 @@ export interface RuntimeConfigManager {
     freeze: WorkspaceFrozenAdmission
   ): RuntimeConfigSnapshot;
   /** Reloads runtime config from the configured data root. */
-  reload(input: RuntimeConfigReloadRequest): RuntimeConfigReloadResponse;
+  reload(
+    input: RuntimeConfigReloadRequest
+  ): RuntimeConfigReloadResponse | Promise<RuntimeConfigReloadResponse>;
   /** Returns redacted runtime config status. */
   status(): RuntimeConfigStatus;
 }

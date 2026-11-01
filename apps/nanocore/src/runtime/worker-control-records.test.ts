@@ -840,7 +840,7 @@ function nativeBodies(f: ReturnType<typeof nativeReceiver>) {
 }
 
 /** Records an image through the existing trusted backend owner, without a Worker-supplied grant. */
-function nativeImageBinding(
+async function nativeImageBinding(
   f: ReturnType<typeof nativeReceiver>,
   imageRef: string,
   bindingLineage = f.lineage
@@ -875,13 +875,13 @@ function nativeImageBinding(
     sessionCompatibilityKey: 'ret2-image',
     now,
   });
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: 'deployment-ret2-image',
     identityId: 'nanohost-ret2-image',
     observedAt: now(),
     targetId: 'runtime-target-ret2-image',
   });
-  upsertNanoHostRuntimeTarget(coreDb, {
+  await upsertNanoHostRuntimeTarget(coreDb, {
     ...target,
     freshEmpty: true,
     observedAt: now(),
@@ -889,7 +889,7 @@ function nativeImageBinding(
     predecessorFenced: true,
     ready: true,
   });
-  const recorded = recordWorkerBackendSessionMaterializing(coreDb, {
+  const recorded = await recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { kind: 'reference', imageRef },
     backendVersion: '0.0.99',
     identity: {
@@ -942,7 +942,7 @@ it('RET-2 authenticates the second package with its own token before and after r
 // RET §Native Transcripts And Runtime Logs: admitted image identity belongs to the backend owner.
 it('RET-2 retains the exact trusted backend image binding independently of native metadata', async () => {
   const f = await nativeReceiver();
-  const binding = nativeImageBinding(f, `registry.test/worker@sha256:${'a'.repeat(64)}`);
+  const binding = await nativeImageBinding(f, `registry.test/worker@sha256:${'a'.repeat(64)}`);
   f.restart();
   expect(getWorkerBackendSession(f.coreDb, binding.attemptId)).toEqual(binding);
   expect((await f.send(1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
@@ -952,7 +952,7 @@ it('RET-2 retains the exact trusted backend image binding independently of nativ
 it('RET-2 accepts a trusted image match and unknown identity but refuses a fresh-source wrong digest', async () => {
   const f = await nativeReceiver();
   const trustedDigest = `sha256:${'a'.repeat(64)}`;
-  nativeImageBinding(f, `registry.test/worker@${trustedDigest}`);
+  await nativeImageBinding(f, `registry.test/worker@${trustedDigest}`);
   const match = nativeMetadata(f, 'trusted-match', Buffer.from('x'));
   const matched = {
     ...match,
@@ -990,7 +990,7 @@ it.each([
 ] as const)('RET-2 a %s trusted image binding cannot verify or authorize a Worker image claim', async (binding) => {
   const f = await nativeReceiver();
   if (binding !== 'missing') {
-    nativeImageBinding(
+    await nativeImageBinding(
       f,
       binding === 'non-digest'
         ? 'registry.test/worker:authored-label'

@@ -113,10 +113,12 @@ async function createFixture() {
     authority = createNanoHostTransportSessionAuthority();
     dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
     physical = undefined;
-    generation = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-      ...target,
-      observedAt: new Date().toISOString(),
-    }).connectionGeneration;
+    generation = (
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+        ...target,
+        observedAt: new Date().toISOString(),
+      })
+    ).connectionGeneration;
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use(`${deletePath}/result`, async (_context, next) => {
       await next();
@@ -153,7 +155,7 @@ async function createFixture() {
     sessionCompatibilityKey: 'fixture-compatibility',
     now: () => '2026-07-15T00:00:02.000Z',
   });
-  recordWorkerBackendSessionMaterializing(coreDb, {
+  await recordWorkerBackendSessionMaterializing(coreDb, {
     backendLineage: { kind: 'reference', imageRef: 'worker:test' },
     backendVersion: '0.0.99',
     identity: {
@@ -175,24 +177,26 @@ async function createFixture() {
     sandboxBindingRef: 'lease-binding:lease_backend_session',
   });
   /** Advances only the real existing backend lifecycle, without fabricating a result receipt. */
-  const transition = (
+  const transition = async (
     toState: 'cleanup-pending' | 'cleanup-failed' | 'physical-cleaned' | 'cleaned'
   ) => {
     const fromState = getWorkerBackendSession(coreDb, leaseId)!.state;
-    transitionWorkerBackendSessionState(coreDb, { fromState, attemptId: leaseId, toState });
+    await transitionWorkerBackendSessionState(coreDb, { fromState, attemptId: leaseId, toState });
   };
-  transition('cleanup-pending');
+  await transition('cleanup-pending');
   return {
     boot,
     /** Admits a fresh physical Epoch without replacing the dispatcher's completed-result memory. */
     async successor(physicalEpoch: string) {
-      authority.closePhysicalConnection(physical!);
+      await authority.closePhysicalConnection(physical!);
       client.destroy();
       physical = undefined;
-      generation = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-        ...target,
-        observedAt: new Date().toISOString(),
-      }).connectionGeneration;
+      generation = (
+        await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+          ...target,
+          observedAt: new Date().toISOString(),
+        })
+      ).connectionGeneration;
       client = connectHttp2(origin);
       expect(await post('/api/nanohost/transport/session/readiness', { physicalEpoch })).toEqual({
         status: 204,
@@ -262,8 +266,8 @@ describe('cleaned backend delete delivery discard', () => {
       const lostAcknowledgement = fixture.sendDeleteWithLostAcknowledgement();
       await expect(pending).resolves.toEqual({ sandboxId, state: 'deleted' });
       expect(lostAcknowledgement.headers).toEqual([]);
-      fixture.transition('physical-cleaned');
-      fixture.transition('cleaned');
+      await fixture.transition('physical-cleaned');
+      await fixture.transition('cleaned');
       await fixture.boot();
       await lostAcknowledgement.closed;
       expect(lostAcknowledgement.headers).toEqual([]);
@@ -314,11 +318,11 @@ describe('cleaned backend delete delivery discard', () => {
         body: '',
       });
       await rejected;
-      fixture.transition('cleanup-failed');
+      await fixture.transition('cleanup-failed');
       await fixture.successor('c'.repeat(64));
-      fixture.transition('cleanup-pending');
-      fixture.transition('physical-cleaned');
-      fixture.transition('cleaned');
+      await fixture.transition('cleanup-pending');
+      await fixture.transition('physical-cleaned');
+      await fixture.transition('cleaned');
       const before = fixture.coreDb.sqlite.serialize();
       expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(
         successStatus
@@ -339,8 +343,8 @@ describe('cleaned backend delete delivery discard', () => {
   it('installs no completed receipt when discarding a cleaned-row result', async () => {
     const fixture = await createFixture();
     try {
-      fixture.transition('physical-cleaned');
-      fixture.transition('cleaned');
+      await fixture.transition('physical-cleaned');
+      await fixture.transition('cleaned');
       expect(await fixture.post(`${deletePath}/result`, retainedResult)).toEqual({
         status: 204,
         body: '',
@@ -359,7 +363,7 @@ describe('cleaned backend delete delivery discard', () => {
   it('permits correlated physical-cleaned delivery without treating it as prior dispatch or settlement', async () => {
     const fixture = await createFixture();
     try {
-      fixture.transition('physical-cleaned');
+      await fixture.transition('physical-cleaned');
       await fixture.boot();
       const before = fixture.coreDb.sqlite.serialize();
       expect(await fixture.post(`${deletePath}/result`, retainedResult)).toEqual({
@@ -379,7 +383,7 @@ describe('cleaned backend delete delivery discard', () => {
   ] as const)('rejects an unfinished %s row', async (state) => {
     const fixture = await createFixture();
     try {
-      if (state === 'cleanup-failed') fixture.transition(state);
+      if (state === 'cleanup-failed') await fixture.transition(state);
       await fixture.boot();
       const before = fixture.coreDb.sqlite.serialize();
       expect((await fixture.post(`${deletePath}/result`, retainedResult)).status).toBe(409);
@@ -400,8 +404,8 @@ describe('cleaned backend delete delivery discard', () => {
   ])('rejects a malformed or uncorrelated retained result (case %#)', async (change) => {
     const fixture = await createFixture();
     try {
-      fixture.transition('physical-cleaned');
-      fixture.transition('cleaned');
+      await fixture.transition('physical-cleaned');
+      await fixture.transition('cleaned');
       await fixture.boot();
       const before = fixture.coreDb.sqlite.serialize();
       expect(
@@ -416,7 +420,7 @@ describe('cleaned backend delete delivery discard', () => {
   it('rejects wrong connections, operations, and foreign target or deployment lineage', async () => {
     const fixture = await createFixture();
     try {
-      fixture.transition('physical-cleaned');
+      await fixture.transition('physical-cleaned');
       await fixture.boot();
       expect((await fixture.wrongConnection()).status).toBe(409);
       expect(
@@ -444,7 +448,7 @@ describe('cleaned backend delete delivery discard', () => {
   ])('rejects unreadable or incomplete backend lineage %s', async (column, value) => {
     const fixture = await createFixture();
     try {
-      fixture.transition('physical-cleaned');
+      await fixture.transition('physical-cleaned');
       fixture.coreDb.sqlite
         .prepare(`UPDATE worker_backend_sessions SET ${column} = ? WHERE attempt_id = ?`)
         .run(value, leaseId);
@@ -476,7 +480,7 @@ describe('cleaned backend delete delivery discard', () => {
   it('keeps a contradictory live pending entry ahead of cleaned-row discard', async () => {
     const fixture = await createFixture();
     try {
-      fixture.transition('physical-cleaned');
+      await fixture.transition('physical-cleaned');
       const pending = fixture.dispatch.effect({
         kind: 'sandbox.delete',
         input: deleteInput,
@@ -496,7 +500,7 @@ describe('cleaned backend delete delivery discard', () => {
   it('settles the existing result-only expectation instead of discarding its matching delivery', async () => {
     const fixture = await createFixture();
     try {
-      fixture.transition('physical-cleaned');
+      await fixture.transition('physical-cleaned');
       const pending = fixture.dispatch.expectResultOnly!([
         { kind: 'sandbox.delete', originPhysicalEpoch: 'a'.repeat(64), requestId },
       ]);

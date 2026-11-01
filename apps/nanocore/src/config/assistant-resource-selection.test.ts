@@ -62,7 +62,7 @@ function authoredSelection(assistant?: unknown): string {
 }
 
 describe('Assistant resource selection configuration seam', () => {
-  it('carries real schema output through file load, reload and restart without rewriting source', () => {
+  it('carries real schema output through file load, reload and restart without rewriting source', async () => {
     const { dataRoot, path } = createSelectionFixture();
     const inspection = { enabled: false, excludedPaths: ['private'] };
     const initialBytes = authoredSelection({
@@ -87,7 +87,7 @@ describe('Assistant resource selection configuration seam', () => {
       resources: { skillIds: ['skill-research', 'skill-review'] },
     });
     writeFileSync(path, nextBytes);
-    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
     expect(manager.current().workspaceConfigs[0]?.config.workspace.assistant).toEqual({
       repositoryInspection: inspection,
       resources: { skillIds: ['skill-research', 'skill-review'] },
@@ -130,7 +130,7 @@ describe('Assistant resource selection configuration seam', () => {
     expect(readFileSync(path, 'utf8')).toBe(bytes);
   });
 
-  it('retains the last good snapshot after invalid selection and recovers from corrected source', () => {
+  it('retains the last good snapshot after invalid selection and recovers from corrected source', async () => {
     const { dataRoot, path } = createSelectionFixture();
     writeFileSync(path, authoredSelection());
     const manager = createRuntimeConfigManager({ dataRoot });
@@ -143,7 +143,7 @@ describe('Assistant resource selection configuration seam', () => {
     ]) {
       const invalidBytes = authoredSelection({ resources });
       writeFileSync(path, invalidBytes);
-      const failed = manager.reload({ mode: 'safe' });
+      const failed = await manager.reload({ mode: 'safe' });
       expect(failed.status).toBe('failed');
       expect(manager.current()).toBe(initial);
       expect(readFileSync(path, 'utf8')).toBe(invalidBytes);
@@ -151,7 +151,7 @@ describe('Assistant resource selection configuration seam', () => {
 
     const correctedBytes = authoredSelection({ resources: { skillIds: [] } });
     writeFileSync(path, correctedBytes);
-    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
     expect(manager.current().workspaceConfigs[0]?.config.workspace.assistant).toMatchObject({
       resources: { skillIds: [] },
     });
@@ -159,7 +159,7 @@ describe('Assistant resource selection configuration seam', () => {
 
     const removedBytes = authoredSelection();
     writeFileSync(path, removedBytes);
-    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
     expect(loadRuntimeConfig(dataRoot).workspaceConfigs).toEqual(
       manager.current().workspaceConfigs
     );

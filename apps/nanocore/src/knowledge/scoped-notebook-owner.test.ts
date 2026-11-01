@@ -7,8 +7,8 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
-  verifyOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import type { Actor } from '../auth/identity.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
@@ -64,14 +64,14 @@ function fixture() {
         initialization,
       }),
     /** Authenticate the real issued bearer before constructing its trusted native actor. */
-    admin: (userId = bob): Actor => {
+    admin: async (userId = bob): Promise<Actor> => {
       const issued = createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: userId,
         scope: 'server-admin',
         workspaceIds: [],
         expiresAt: '2999-01-01T00:00:00.000Z',
       });
-      const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
+      const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
       if (!verified) throw new Error('Test bearer must authenticate.');
       return {
         kind: 'token',
@@ -201,7 +201,7 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     expect(() => resolveScopedNotebookOwner(input)).toThrow('Scoped notebook access denied.');
   });
 
-  it('does not convert a Workspace credential into User Memory authority', () => {
+  it('does not convert a Workspace credential into User Memory authority', async () => {
     const f = fixture();
     f.initializeUser();
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
@@ -210,7 +210,7 @@ describe('User Memory and Server Knowledge scope foundation', () => {
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const verified = verifyOpenKitAccessTokenRecord(f.coreDb, issued.secret)!;
+    const verified = (await verifyOpenKitAccessTokenRecord(f.coreDb, issued.secret))!;
     const actor: Actor = {
       kind: 'token',
       userId: verified.ownerUserId,
@@ -230,10 +230,10 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     ).toThrow('Scoped notebook access denied.');
   });
 
-  it('admits current administrative inspection while keeping me bound to the administrator, then refuses revocation', () => {
+  it('admits current administrative inspection while keeping me bound to the administrator, then refuses revocation', async () => {
     const f = fixture();
     f.initializeUser();
-    const actor = f.admin();
+    const actor = await f.admin();
     const input = {
       coreDb: f.coreDb,
       actor,
@@ -254,7 +254,7 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     );
   });
 
-  it('uses current session administrator eligibility and refuses disabled or missing owners', () => {
+  it('uses current session administrator eligibility and refuses disabled or missing owners', async () => {
     const f = fixture();
     f.initializeUser();
     const actor: Actor = { kind: 'session', userId: bob };
@@ -264,12 +264,12 @@ describe('User Memory and Server Knowledge scope foundation', () => {
       target: { kind: 'user-inspection', userId: alice } as const,
     };
     expect(() => pinScopedNotebook(input)).toThrow('Scoped notebook access denied.');
-    const admin = f.admin();
+    const admin = await f.admin();
     input.actor = createTestSessionActor(f.coreDb, bob);
     expect(pinScopedNotebook(input).read().files['index.md']).toBe(DEFAULT_NOTEBOOK_INDEX);
     revokeOpenKitAccessTokenRecord(f.coreDb, admin.tokenId!);
     expect(() => pinScopedNotebook(input)).toThrow('Scoped notebook access denied.');
-    const currentAdmin = f.admin();
+    const currentAdmin = await f.admin();
     f.coreDb.sqlite.prepare("UPDATE users SET status = 'disabled' WHERE id = ?").run(alice);
     expect(() => pinScopedNotebook({ ...input, actor: currentAdmin })).toThrow(
       'Scoped notebook access denied.'
@@ -290,12 +290,12 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     );
   });
 
-  it('keeps Server and User roots independent and requires the current administrator for Server access', () => {
+  it('keeps Server and User roots independent and requires the current administrator for Server access', async () => {
     const f = fixture();
     const userRevision = f.initializeUser();
     const input = { coreDb: f.coreDb, actor: f.actor, target: { kind: 'server' } as const };
     expect(() => pinScopedNotebook(input)).toThrow('Scoped notebook access denied.');
-    const actor = f.admin();
+    const actor = await f.admin();
     const creationStarted = Date.now();
     const revision = initializeScopedNotebook({
       ...input,

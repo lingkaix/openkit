@@ -81,7 +81,7 @@ import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-r
 import { readExecutionJournalRoot } from '../runtime/execution-journal.js';
 import { hasUnprovedNanoHostWorkspaceCleanup } from '../runtime/nanohost-attempt-records.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
-import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
+import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import { getWorkerStorageBinding } from '../runtime/worker-storage-bindings.js';
 import {
   listWorkspaceApplyPlans,

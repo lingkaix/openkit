@@ -11,7 +11,7 @@ import {
   type PrepareNanoHostHarnessOperationInput,
   prepareNanoHostHarnessOperation,
   queueNanoHostHarnessOperation,
-} from '../runtime/nanohost-harness-records.js';
+} from '../runtime/nanohost-harness.js';
 import type { SchedulerAdmissionEntryRecord } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 
@@ -71,14 +71,14 @@ export function recordTestExecutionAttempt(
  * @param input Explicit command input and, when inspected separately, its exact prior preparation.
  * @returns The real queue owner's exact sequence.
  */
-export function queueTestPreparedHarnessOperation(
+export async function queueTestPreparedHarnessOperation(
   coreDb: CoreDb,
   input: PrepareNanoHostHarnessOperationInput & {
     readonly prepared?: PreparedNanoHostHarnessOperation;
   }
-): number {
+): Promise<number> {
   const prepared = input.prepared ?? prepareNanoHostHarnessOperation(coreDb, input);
-  return queueNanoHostHarnessOperation(coreDb, { ...input, prepared });
+  return await queueNanoHostHarnessOperation(coreDb, { ...input, prepared });
 }
 
 /**
@@ -88,7 +88,7 @@ export function queueTestPreparedHarnessOperation(
  * @param coreDb Actual Core owner containing the exact receiver result.
  * @param input Explicit fixture namespace, binding, result selector and observation time.
  */
-export function acknowledgeTestExternalWorkspaceConsumer(
+export async function acknowledgeTestExternalWorkspaceConsumer(
   coreDb: CoreDb,
   input: {
     readonly harnessInstanceId: string;
@@ -97,7 +97,7 @@ export function acknowledgeTestExternalWorkspaceConsumer(
     readonly turnId: string;
     readonly timestamp: string;
   }
-): void {
+): Promise<void> {
   const row = coreDb.sqlite
     .prepare(
       'SELECT result_json AS bytes FROM harness_instance_records WHERE harness_instance_id = ?'
@@ -107,7 +107,7 @@ export function acknowledgeTestExternalWorkspaceConsumer(
   const result = JSON.parse(row.bytes) as Parameters<
     typeof acknowledgeNanoHostHarnessResult
   >[1]['result'];
-  acknowledgeNanoHostHarnessResult(coreDb, {
+  await acknowledgeNanoHostHarnessResult(coreDb, {
     result,
     harnessBindingRef: input.harnessBindingRef,
     timestamp: input.timestamp,

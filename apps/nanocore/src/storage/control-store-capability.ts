@@ -70,7 +70,7 @@ import {
   readControlScalarText,
   WorkerCapabilityMcpToolSchema,
 } from './control-store-input.js';
-import type { WorkspaceDb } from './db.js';
+import type { CoreDb, WorkspaceDb } from './db.js';
 
 const scope = {
   workspaceId: WorkspaceIdSchema,
@@ -383,6 +383,170 @@ const rawSettleCommand = z
   .strict();
 const rawInvalidateCommand = z.object({ kind: z.literal('raw-invalidate'), ...scope }).strict();
 
+const serverContext = callContext.omit({ workspaceId: true }).extend({
+  owner: z.object({ kind: z.literal('server') }).strict(),
+});
+const serverStartedCall = startedCall.extend({ context: serverContext });
+const serverAdmitCommand = z
+  .object({
+    kind: z.literal('server-admit'),
+    context: serverContext,
+    callId: CapabilityCallIdSchema.optional(),
+    auditLineage: auditLineage.optional(),
+    now: timestamp.optional(),
+  })
+  .strict();
+const serverUsageCommand = z
+  .object({
+    kind: z.literal('server-usage'),
+    call: serverStartedCall,
+    measurement,
+    auditLineage: auditLineage.optional(),
+    now: timestamp.optional(),
+  })
+  .strict();
+const serverFinishCommand = z
+  .object({
+    kind: z.literal('server-finish'),
+    callId: CapabilityCallIdSchema,
+    finish: finish
+      .pick({
+        status: true,
+        errorCode: true,
+        auditLineage: true,
+        now: true,
+        deliveredKnowledgeAnswer: true,
+      })
+      .partial({ now: true }),
+  })
+  .strict();
+const serverAttributionCommand = z
+  .object({
+    kind: z.literal('server-attribution'),
+    callId: CapabilityCallIdSchema,
+    systemPromptDigest: attributionCommand.shape.systemPromptDigest,
+    schemaSnapshotId: attributionCommand.shape.schemaSnapshotId,
+    routeLineage: attributionCommand.shape.routeLineage,
+  })
+  .strict()
+  .refine(
+    (input) =>
+      [input.systemPromptDigest, input.schemaSnapshotId, input.routeLineage].filter(
+        (value) => value !== undefined
+      ).length === 1,
+    { message: 'Call attribution requires exactly one owned mutation.' }
+  );
+/** Names only the Server ledger cases of the existing capability owner. */
+export function isServerCapabilityCommand(
+  input: ControlCapabilityCommandInput
+): input is Extract<
+  ControlCapabilityCommandInput,
+  { kind: 'server-admit' | 'server-usage' | 'server-finish' | 'server-attribution' }
+> {
+  return (
+    input.kind === 'server-admit' ||
+    input.kind === 'server-usage' ||
+    input.kind === 'server-finish' ||
+    input.kind === 'server-attribution'
+  );
+}
+/** Known original ledger refusals, never native SQL diagnostics. */
+export class CoreCapabilityRefusal extends Error {}
+/** Restricts the private projection to original controlled domain messages. */
+function isCoreCapabilityRefusal(error: unknown): error is Error {
+  if (!(error instanceof Error) || error.name !== 'Error') return false;
+  if (
+    [
+      'Capability call database owner mismatch.',
+      'Usage record database owner mismatch.',
+      'Capability call was not stored.',
+      'Capability call attribution conflicts with the existing request.',
+      'Capability usage ledger values must be redacted before recording.',
+      'Gateway lineage requires its running CapabilityCall.',
+      'Gateway lineage logical model conflicts.',
+      'Gateway lineage entry is missing.',
+    ].includes(error.message)
+  )
+    return true;
+  return [
+    'Capability call changed concurrently: ',
+    'Capability call schema snapshot conflicts: ',
+    'LLM capability call system-prompt digest was not recorded: ',
+  ].some(
+    (prefix) =>
+      error.message.startsWith(prefix) &&
+      CapabilityCallIdSchema.safeParse(error.message.slice(prefix.length)).success
+  );
+}
+/** Runs one original Server commit stage on the Core savepoint; it adds no Workspace authority. */
+export function applyControlCoreCapabilityCommand(
+  db: CoreDb,
+  input: ControlCapabilityCommandInput
+): ControlCapabilityCommandResult {
+  if (!db.sqlite.inTransaction || !isServerCapabilityCommand(input))
+    throw new WorkerRawOutputAuthorityError();
+  try {
+    if (input.kind === 'server-admit')
+      return startCapabilityCallInDb(
+        presentControlFacts({
+          ...input.context,
+          workspaceDb: db,
+          ...(input.callId === undefined ? {} : { callId: input.callId }),
+          ...(input.auditLineage === undefined ? {} : { auditLineage: input.auditLineage }),
+          ...(input.now === undefined ? {} : { now: new Date(input.now) }),
+        })
+      );
+    if (input.kind === 'server-usage') {
+      const records = [presentControlFacts(input.measurement)];
+      return recordUsageInDb(
+        presentControlFacts({
+          workspaceDb: db,
+          call: { ...input.call, context: presentControlFacts(input.call.context) },
+          records,
+          ...(input.auditLineage === undefined ? {} : { auditLineage: input.auditLineage }),
+          ...(input.now === undefined ? {} : { now: new Date(input.now) }),
+        })
+      );
+    }
+    if (input.kind === 'server-finish') {
+      const { now, ...facts } = input.finish;
+      finishCapabilityCallInDb(
+        presentControlFacts({
+          ...facts,
+          callId: input.callId,
+          workspaceDb: db,
+          ...(now === undefined ? {} : { now: new Date(now) }),
+        })
+      );
+      return null;
+    }
+    if (input.systemPromptDigest)
+      persistLlmCapabilityCallSystemPromptDigestInDb({
+        workspaceDb: db,
+        callId: input.callId,
+        systemPromptDigest: input.systemPromptDigest,
+      });
+    if (input.schemaSnapshotId)
+      stampCapabilityCallSchemaSnapshotInDb({
+        workspaceDb: db,
+        callId: input.callId,
+        schemaSnapshotId: input.schemaSnapshotId,
+      });
+    return input.routeLineage
+      ? writeGatewayRouteLineageInDb(
+          presentControlFacts({
+            ...input.routeLineage,
+            workspaceDb: db,
+            call: { id: input.callId },
+          })
+        )
+      : null;
+  } catch (error) {
+    if (isCoreCapabilityRefusal(error)) throw new CoreCapabilityRefusal(error.message);
+    throw error;
+  }
+}
+
 /** Native commands; all prepared facts share the existing native savepoint. */
 export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', [
   checkpointCommand,
@@ -396,6 +560,10 @@ export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', 
   finishCommand,
   attributionCommand,
   participantAuditCommand,
+  serverAdmitCommand,
+  serverUsageCommand,
+  serverFinishCommand,
+  serverAttributionCommand,
 ]);
 /** Exact prepared command admitted by the existing bounded native envelope. */
 export type ControlCapabilityCommandInput = z.infer<typeof ControlCapabilityCommandInputSchema>;
@@ -425,6 +593,21 @@ export const ControlCapabilityWireInputSchema = z.discriminatedUnion('kind', [
   }),
   attributionCommand,
   participantAuditCommand,
+  serverAdmitCommand,
+  serverUsageCommand,
+  serverFinishCommand.extend({
+    finish: finish
+      .pick({
+        status: true,
+        errorCode: true,
+        auditLineage: true,
+        now: true,
+        deliveredKnowledgeAnswer: true,
+      })
+      .partial({ now: true })
+      .extend({ deliveredKnowledgeAnswer: ControlScalarTextSchema.optional() }),
+  }),
+  serverAttributionCommand,
 ]);
 /** Transient binary binding for the current answer field, never retained data. */
 export type ControlCapabilityWireInput = z.infer<typeof ControlCapabilityWireInputSchema>;
@@ -437,7 +620,7 @@ export function controlCapabilityText(input: ControlCapabilityCommandInput): str
 export function controlCapabilityText(
   input: ControlCapabilityWireInput | ControlCapabilityCommandInput
 ) {
-  return input.kind === 'usage-finish' || input.kind === 'finish'
+  return input.kind === 'usage-finish' || input.kind === 'finish' || input.kind === 'server-finish'
     ? input.finish?.deliveredKnowledgeAnswer
     : input.kind === 'mcp-schema'
       ? (input.serverVersion ?? undefined)
@@ -452,7 +635,7 @@ export function prepareControlCapabilityTransfer(value: ControlCapabilityCommand
     return { input: ControlCapabilityWireInputSchema.parse(input), parts: [] };
   const span = frameControlScalarText(text);
   const wire =
-    input.kind === 'usage-finish' || input.kind === 'finish'
+    input.kind === 'usage-finish' || input.kind === 'finish' || input.kind === 'server-finish'
       ? { ...input, finish: { ...input.finish, deliveredKnowledgeAnswer: span } }
       : { ...input, serverVersion: span };
   return { input: ControlCapabilityWireInputSchema.parse(wire), parts: [text] };
@@ -468,7 +651,7 @@ export function prepareControlCapabilityCommand(
   if (span !== undefined) {
     const text = readControlScalarText(span, content);
     return ControlCapabilityCommandInputSchema.parse(
-      input.kind === 'usage-finish' || input.kind === 'finish'
+      input.kind === 'usage-finish' || input.kind === 'finish' || input.kind === 'server-finish'
         ? { ...input, finish: { ...input.finish, deliveredKnowledgeAnswer: text } }
         : { ...input, serverVersion: text }
     );
@@ -495,7 +678,7 @@ export type ControlCapabilityAdmissionFailure = z.infer<
 >;
 
 /** Closed raw aggregate, actual StartedCapabilityCall or retained usage identifiers. */
-export const ControlCapabilityCommandResultSchema = z.union([
+export const ControlWorkspaceCapabilityCommandResultSchema = z.union([
   z.object({ schemaSnapshotId: z.string().min(1), liveSnapshotId: z.string().min(1) }).strict(),
   z.lazy(() => ControlCheckpointCommandResultSchema),
   z.object({ rawOutputBytes: ordinal, exhausted: z.boolean(), chargedBytes: ordinal }).strict(),
@@ -506,6 +689,15 @@ export const ControlCapabilityCommandResultSchema = z.union([
   z.array(UsageRecordIdSchema),
   ordinal,
   z.null(),
+]);
+/** Workspace projections cannot acquire Server ownership through the expanded private reply union. */
+export type ControlWorkspaceCapabilityCommandResult = z.infer<
+  typeof ControlWorkspaceCapabilityCommandResultSchema
+>;
+/** The exact opened database selects which closed result family is admissible. */
+export const ControlCapabilityCommandResultSchema = z.union([
+  ControlWorkspaceCapabilityCommandResultSchema,
+  serverStartedCall,
 ]);
 /** Prepared results become visible only after the existing outer durable acknowledgement. */
 export type ControlCapabilityCommandResult = z.infer<typeof ControlCapabilityCommandResultSchema>;
@@ -602,6 +794,7 @@ export function applyControlCapabilityCommand(
   input: ControlCapabilityCommandInput,
   advanceGoalRevision: (goalId: string) => void
 ): ControlCapabilityCommandResult {
+  if (isServerCapabilityCommand(input)) throw new WorkerRawOutputAuthorityError();
   if (input.kind === 'checkpoint') return applyControlCheckpointCommand(db, input.input);
   if (db.scope !== 'workspace' || db.workspaceId !== input.workspaceId || !db.sqlite.inTransaction)
     throw new WorkerRawOutputAuthorityError();

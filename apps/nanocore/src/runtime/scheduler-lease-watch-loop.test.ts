@@ -63,7 +63,7 @@ async function fixture() {
     restoreBackendSession: vi.fn(async () => {}),
     reconcileAcceptedFinalStatus: vi.fn(async () => {}),
   };
-  const seed = (suffix: string, submitted = true, anchored = false) => {
+  const seed = async (suffix: string, submitted = true, anchored = false) => {
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -106,8 +106,8 @@ async function fixture() {
       } finally {
         workspaceDb.sqlite.close();
       }
-      const target = recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test');
-      recordWorkerBackendSessionMaterializing(coreDb, {
+      const target = await recordTestNativeRuntimeTarget(coreDb, 'runtime-target-test');
+      await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
         identity: {
@@ -153,7 +153,7 @@ async function fixture() {
 describe('Native attempt liveness and recovery', () => {
   it('identifies real scheduler inspection failure without a native item and continues later stages', async () => {
     const f = await fixture();
-    const binding = f.seed('scheduler_diagnostic');
+    const binding = await f.seed('scheduler_diagnostic');
     const fault = new Error('/private/scheduler-canary secret-scheduler-canary');
     const inspect = vi.spyOn(f.recovery.executionBackend, 'inspect').mockRejectedValue(fault);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -278,7 +278,10 @@ describe('Native attempt liveness and recovery', () => {
       .mockRejectedValueOnce(faults[0])
       .mockRejectedValueOnce(faults[1]);
     try {
-      const bindings = [f.seed('safe_first', true, true), f.seed('safe_second', true, true)];
+      const bindings = [
+        await f.seed('safe_first', true, true),
+        await f.seed('safe_second', true, true),
+      ];
       if (phase === 'closed') {
         // Model already accepted generic release while an idle native binding remains for retirement.
         for (const binding of bindings) {
@@ -341,7 +344,7 @@ describe('Native attempt liveness and recovery', () => {
     const f = await fixture();
     const checkpoints = vi.fn(async () => 0);
     const failures: unknown[] = [];
-    f.seed('independent_stage', true, true);
+    await f.seed('independent_stage', true, true);
     const service = startSchedulerAttemptMaintenanceService({
       intervalMs: 30_000,
       setInterval: () => 'fixture-timer',
@@ -375,7 +378,7 @@ describe('Native attempt liveness and recovery', () => {
   it('keeps a pre-heartbeat attempt live until its startup deadline', async () => {
     const f = await fixture();
     try {
-      const binding = f.seed('materializing', true, true);
+      const binding = await f.seed('materializing', true, true);
       await runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
         ...f.recovery,
         now: () => '2026-07-05T00:00:40.000Z',
@@ -418,8 +421,8 @@ describe('Native attempt liveness and recovery', () => {
   it('closes proven pre-effect startup work while expired submitted heartbeat authority retains exclusion', async () => {
     const f = await fixture();
     try {
-      const startup = f.seed('startup', false);
-      const heartbeat = f.seed('heartbeat');
+      const startup = await f.seed('startup', false);
+      const heartbeat = await f.seed('heartbeat');
       acceptNanoHostAttemptHeartbeat(f.coreDb, {
         attemptId: heartbeat.attemptId,
         workerSequence: 0,
@@ -470,7 +473,7 @@ describe('Native attempt liveness and recovery', () => {
   it('routes anchored startup timeouts to exact physical recovery without releasing exclusion', async () => {
     const f = await fixture();
     try {
-      const binding = f.seed('anchored_startup', true, true);
+      const binding = await f.seed('anchored_startup', true, true);
       await expect(
         runNanoHostAttemptRecoveryMaintenance(f.coreDb, {
           ...f.recovery,
@@ -506,7 +509,7 @@ describe('Native attempt liveness and recovery', () => {
   it('retains an awaiting reconnect attempt until its recovery deadline while refusing routes', async () => {
     const f = await fixture();
     try {
-      const binding = f.seed('awaiting_reconnect', true, true);
+      const binding = await f.seed('awaiting_reconnect', true, true);
       acceptNanoHostAttemptHeartbeat(f.coreDb, {
         attemptId: binding.attemptId,
         workerSequence: 0,

@@ -27,7 +27,7 @@ it('replays and collects one terminal Task with more than 100 retained evidence 
   const coreDb = createTestCoreDb(dataRoot);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
-  const native = createNativeTaskAdmissionFixture(coreDb, store);
+  const native = await createNativeTaskAdmissionFixture(coreDb, store);
   const setup = createTestAgentSetup({
     requiredCapabilities: ['trusted-worker-inference-relay'],
   });
@@ -189,8 +189,8 @@ it('replays and collects one terminal Task with more than 100 retained evidence 
     if (productOwners.observeTurnAdmission === admissions) admissions.mockRestore();
     if (recoveryOwners.clearWorkerCheckpointAfterTerminalState === collector)
       collector.mockRestore();
-    await shutdownControlStoreWorkerClient();
     await native.restore();
+    await shutdownControlStoreWorkerClient();
     if (workspaceDb) closeTestCoreDb(workspaceDb);
     closeTestCoreDb(coreDb);
     rmSync(dataRoot, { recursive: true, force: true });

@@ -268,13 +268,17 @@ async function startPublicLlmGatewayCallOnOwner(
       singleUseRequestId: true,
     });
   }
-  const call = startCapabilityCall({
+  const call = await startCapabilityCall({
     ...callInput,
     family: 'llm',
     workspaceDb,
     owner: { kind: 'server' },
   });
-  persistLlmCapabilityCallSystemPromptDigest({ workspaceDb, callId: call.id, systemPromptDigest });
+  await persistLlmCapabilityCallSystemPromptDigest({
+    workspaceDb,
+    callId: call.id,
+    systemPromptDigest,
+  });
   return call;
 }
 

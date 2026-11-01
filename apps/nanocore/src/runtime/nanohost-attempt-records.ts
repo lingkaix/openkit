@@ -6,8 +6,8 @@ import {
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
 } from './execution-attempt-records.js';
-import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
-import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
+import { getWorkerBackendSession } from './worker-backend-session-records.js';
 
 /** Adapter-private native liveness and credentials extend the generic attempt, never its phases. */
 export interface NanoHostExecutionAttemptRecord extends SchedulerExecutionAttemptRecord {
@@ -336,6 +336,22 @@ export function adoptNanoHostAttemptReconnect(
   coreDb: CoreDb,
   input: AdoptNanoHostAttemptReconnectInput
 ): NanoHostExecutionAttemptRecord {
+  const reconnectKey = WorkerProcessKeySchema.parse(input.reconnectKey);
+  return adoptNanoHostAttemptReconnectHash(coreDb, {
+    ...input,
+    processKeyHash: createHash('sha256')
+      .update(Buffer.from(reconnectKey, 'base64url'))
+      .digest('base64url'),
+  });
+}
+
+/** Revalidates the same reconnect proof and tuple on the physical owner without transferring a raw key. */
+export function adoptNanoHostAttemptReconnectHash(
+  coreDb: CoreDb,
+  input: Omit<AdoptNanoHostAttemptReconnectInput, 'reconnectKey'> & {
+    readonly processKeyHash: string;
+  }
+): NanoHostExecutionAttemptRecord {
   const row = coreDb.sqlite
     .prepare(`${nanoHostExecutionAttemptSelectSql()} WHERE binding_ref = ?`)
     .get(input.sandboxBindingRef) as NanoHostExecutionAttemptRow | undefined;
@@ -362,10 +378,10 @@ export function adoptNanoHostAttemptReconnect(
   ) {
     throwReconnectRejected('sequence-stale', 'Worker reconnect must use the exact next sequence.');
   }
-  const reconnectKey = WorkerProcessKeySchema.parse(input.reconnectKey);
-  const presentedHash = createHash('sha256')
-    .update(Buffer.from(reconnectKey, 'base64url'))
-    .digest();
+  const presentedHash = Buffer.from(
+    WorkerProcessKeySchema.parse(input.processKeyHash),
+    'base64url'
+  );
   const storedHash = attempt.workerProcessKeyHash
     ? Buffer.from(attempt.workerProcessKeyHash, 'base64url')
     : Buffer.alloc(0);
@@ -777,6 +793,75 @@ export function bindNanoHostAttemptPreparation(
       input.bindingRef
     );
   if (updated.changes !== 1) throw new Error('Native preparation lost its exact attempt binding.');
+}
+
+/** Rechecks the existing reconnect eligibility from current native and backend records. */
+export function isNanoHostAttemptReconnectEligible(
+  native: NanoHostExecutionAttemptRecord,
+  session: NonNullable<ReturnType<typeof getWorkerBackendSession>>,
+  timestamp: string
+): boolean {
+  return (
+    session.attemptId === native.attemptId &&
+    session.workspaceId === native.workspaceId &&
+    session.threadId === native.threadId &&
+    session.turnId === native.turnId &&
+    session.agentSessionId === native.agentSessionId &&
+    session.packageSnapshotId === native.inputRef &&
+    native.phase === 'open' &&
+    native.deadline !== null &&
+    native.deadline > timestamp &&
+    session.state === 'launching' &&
+    session.workspaceHandoffState === 'complete' &&
+    native.lastWorkerSequence !== null &&
+    native.lastWorkerSequence >= 1 &&
+    native.workerProcessKeyHash !== null &&
+    (native.recoveryState === null || native.recoveryState === 'awaiting-reconnect') &&
+    (native.recoveryDeadline === null || native.recoveryDeadline > timestamp)
+  );
+}
+
+/** Arms only the current restored attempt; the first deadline never moves with FIFO wait. */
+export function armNanoHostAttemptReconnect(
+  coreDb: CoreDb,
+  input: {
+    readonly attemptId: string;
+    readonly classifiedAt: string;
+    readonly expectedRecoveryDeadline: string | null;
+    readonly now?: () => string;
+  }
+): void {
+  const native = requireNanoHostExecutionAttempt(coreDb, input.attemptId);
+  const session = getWorkerBackendSession(coreDb, input.attemptId);
+  const timestamp = input.now?.() ?? new Date().toISOString();
+  if (
+    !session ||
+    !isNanoHostAttemptReconnectEligible(native, session, timestamp) ||
+    native.recoveryDeadline !== input.expectedRecoveryDeadline
+  )
+    throw new Error('Native reconnect ownership changed.');
+  const deadline =
+    native.recoveryDeadline ??
+    new Date(
+      Math.min(Date.parse(native.deadline!), Date.parse(input.classifiedAt) + 300_000)
+    ).toISOString();
+  if (deadline <= timestamp) throw new Error('Native reconnect ownership changed.');
+  const armed = coreDb.sqlite
+    .prepare(
+      `UPDATE scheduler_execution_attempts SET recovery_state = 'awaiting-reconnect', recovery_deadline = ?
+     WHERE attempt_id = ? AND phase = 'open' AND recovery_deadline IS ?`
+    )
+    .run(deadline, input.attemptId, input.expectedRecoveryDeadline);
+  if (armed.changes !== 1) throw new Error('Native reconnect ownership changed.');
+}
+
+/** Keeps the existing conditional inspection projection as its own post-close stage. */
+export function markNanoHostAttemptNeedsEvidence(coreDb: CoreDb, attemptId: string): void {
+  coreDb.sqlite
+    .prepare(
+      "UPDATE scheduler_execution_attempts SET recovery_state = 'needs-evidence' WHERE attempt_id = ? AND phase = 'closing'"
+    )
+    .run(attemptId);
 }
 
 /** Adapter-private contradictions prevent a stopped-server no-effect proof from discarding owned execution. */

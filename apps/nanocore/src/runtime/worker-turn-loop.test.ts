@@ -36,7 +36,7 @@ import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recove
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
-} from './nanohost-harness-records.js';
+} from './nanohost-harness.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import {
@@ -596,7 +596,7 @@ function admittedWorker(
     if (hooks.interruptedRecovery) {
       const setup = createTestAgentSetup();
       admitTestNativeEnvironment(coreDb, manifest);
-      const target = recordTestNativeRuntimeTarget(coreDb);
+      const target = await recordTestNativeRuntimeTarget(coreDb);
       const db = openWorkspaceDb(coreDb.dataRoot, workspaceId);
       try {
         const environmentPackage = resolveAgentEnvironmentPackage({
@@ -623,7 +623,7 @@ function admittedWorker(
         const hex = turnId.slice(3).replaceAll('-', '');
         const backendSessionId = `nh-${hex.slice(0, 16)}-${hex.slice(16)}`;
         // This explicit outside peer allocates no physical process or Workspace inputs.
-        recordWorkerBackendSessionMaterializing(coreDb, {
+        await recordWorkerBackendSessionMaterializing(coreDb, {
           identity: {
             agentSessionId,
             backendKind: 'openshell',
@@ -639,12 +639,12 @@ function admittedWorker(
           lineage: { workspaceId, threadId, turnId },
           sandboxBindingRef: attempt.bindingRef!,
         });
-        transitionWorkerBackendSessionState(coreDb, {
+        await transitionWorkerBackendSessionState(coreDb, {
           attemptId: attempt.attemptId,
           fromState: 'materializing',
           toState: 'materialized',
         });
-        markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: attempt.attemptId });
+        await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: attempt.attemptId });
         const submitted = attempts.recordSchedulerExecutionOperation(coreDb, {
           attemptId: attempt.attemptId,
           operationId: `worker-loop:${turnId}`,
@@ -657,7 +657,7 @@ function admittedWorker(
             deadline: submitted.deadline!,
           })
         );
-        markWorkerBackendSessionLaunching(coreDb, { attemptId: attempt.attemptId });
+        await markWorkerBackendSessionLaunching(coreDb, { attemptId: attempt.attemptId });
         await endWorkerTurnMaterialization(store, db, turnId, 'completed', [backendSessionId]);
       } finally {
         db.sqlite.close();
@@ -1391,7 +1391,7 @@ it.each([
         ready, fresh_empty, physical_epoch, observed_at, slot_count
       ) VALUES ('nanohost', 'identity', 'deployment', 1, 1, 1, 1, ?, ?, 1)`)
         .run('e'.repeat(64), at);
-      createNanoHostHarnessRuntime(coreDb, {
+      await createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
         adapterVersion: '0.153.4',
         harnessBindingRef: 'harness-binding',
@@ -1406,7 +1406,7 @@ it.each([
         runtimeTargetId: 'nanohost',
         timestamp: at,
       });
-      openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'b'.repeat(64),
         agentSessionId: 'as_00000000-0000-7c9b-868b-c8bf0628ce98',
         agentSessionRuntimeBindingId: 'as-binding',

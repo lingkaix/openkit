@@ -86,7 +86,7 @@ export function registerWorkerControlRoutes({
     const authentication = workerControlTokenHashAuthentication(c);
     try {
       const response = c.json(
-        workerControlGateway.recordHeartbeat({
+        await workerControlGateway.recordHeartbeat({
           ...parsed.data,
           ...authentication.input,
         })
@@ -134,7 +134,7 @@ export function registerWorkerControlRoutes({
     const authentication = workerControlTokenHashAuthentication(c);
     try {
       const response = c.json({
-        artifact: workerControlGateway.recordArtifactNotice({
+        artifact: await workerControlGateway.recordArtifactNotice({
           artifact: parsed.data.artifact,
           ...authentication.input,
           lineage: parsed.data.lineage,
@@ -245,7 +245,7 @@ export function registerWorkerControlRoutes({
     const authentication = workerControlTokenHashAuthentication(c);
     try {
       const response = c.json(
-        workerControlGateway.recordFinalStatus({
+        await workerControlGateway.recordFinalStatus({
           ...authentication.input,
           ...(body.data.diagnostics ? { diagnostics: body.data.diagnostics } : {}),
           evidenceManifestDigests: body.data.evidenceManifestDigests,
@@ -312,7 +312,7 @@ export function registerWorkerControlRoutes({
 
     const authentication = workerControlTokenHashAuthentication(c);
     try {
-      const supplyRefreshAck = workerControlGateway.recordSupplyRefreshAck({
+      const supplyRefreshAck = await workerControlGateway.recordSupplyRefreshAck({
         ...authentication.input,
         lineage: parsed.data.lineage,
         message: body.data.message ?? null,
@@ -382,7 +382,7 @@ export function registerWorkerControlRoutes({
     const authentication = workerControlTokenHashAuthentication(c);
     try {
       const response = c.json({
-        response: workerControlGateway.recordCapabilitySummary({
+        response: await workerControlGateway.recordCapabilitySummary({
           ...authentication.input,
           lineage: parsed.data.lineage,
           summary: body.data,

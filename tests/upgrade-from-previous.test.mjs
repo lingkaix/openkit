@@ -300,6 +300,7 @@ test('revision-local corpus helpers join every current retained family before co
       workerPlatformImage: digest,
     },
     checkout: resolve('.'),
+    corpusProducer: 'current',
     appRoot,
     dataRoot,
     retainedRoot,

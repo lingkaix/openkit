@@ -19,7 +19,7 @@ import type { ExecutionJournalRef } from '../runtime/execution-step-journal.js';
 import {
   dispatchNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
-} from '../runtime/nanohost-harness-records.js';
+} from '../runtime/nanohost-harness.js';
 import type { NanoHostSessionEffectRequest } from '../runtime/nanohost-session-dispatch.js';
 import { runSchedulerDispatchLoop } from '../runtime/scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
@@ -40,7 +40,7 @@ import { recordTestNativeRuntimeTarget } from './native-environment.js';
  * @param outside Opaque outside peer facts retained across sequential stopped controllers.
  * @returns Outside facts, native executor, per-Turn gates, effects, runtime, admission, gateway and stop.
  */
-export function createNativeTaskAdmissionFixture(
+export async function createNativeTaskAdmissionFixture(
   coreDb: ReturnType<typeof openCoreDb>,
   store: FsStore,
   options: Pick<
@@ -71,7 +71,7 @@ export function createNativeTaskAdmissionFixture(
     },
   }
 ) {
-  recordTestNativeRuntimeTarget(coreDb);
+  await recordTestNativeRuntimeTarget(coreDb);
   const startup = observeNativeTaskStartup(store);
   const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n);
   const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
@@ -95,7 +95,7 @@ export function createNativeTaskAdmissionFixture(
       settled: boolean;
       started: boolean;
       acceptedStart?: boolean;
-      reportFinal?: (interrupted: boolean) => void;
+      reportFinal?: (interrupted: boolean) => Promise<void>;
       reported?: boolean;
       failure?: unknown;
       interrupt?: Promise<void>;
@@ -358,7 +358,7 @@ export function createNativeTaskAdmissionFixture(
         ? [outside.integrationBindingRef]
         : []) {
         if (stopped) break;
-        const command = dispatchNanoHostHarnessOperation(coreDb, {
+        const command = await dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: integrationRef,
         });
         if (!command) continue;
@@ -451,7 +451,7 @@ export function createNativeTaskAdmissionFixture(
             }
             const original = turn;
             const originalBinding = binding;
-            original.reportFinal = (interrupted) => {
+            original.reportFinal = async (interrupted) => {
               if (stopped || original.settled || !original.acceptedStart || original.reported)
                 return;
               original.reported = true;
@@ -469,13 +469,15 @@ export function createNativeTaskAdmissionFixture(
               const sequence = original.events.length + 1;
               original.events.push(terminalEvent({ lineage: nativeLineage, sequence, data }));
               expect(
-                workerControlGateway.recordFinalStatus({
-                  authorization: `Bearer ${wire.body.workerControlToken}`,
-                  tokenFamily: 'worker-control',
-                  lineage: nativeLineage,
-                  sequence,
-                  ...data,
-                }).accepted
+                (
+                  await workerControlGateway.recordFinalStatus({
+                    authorization: `Bearer ${wire.body.workerControlToken}`,
+                    tokenFamily: 'worker-control',
+                    lineage: nativeLineage,
+                    sequence,
+                    ...data,
+                  })
+                ).accepted
               ).toBe(true);
               originalBinding.state = 'completed';
             };
@@ -494,7 +496,7 @@ export function createNativeTaskAdmissionFixture(
             disposition: closeRefusal ? ('refused' as const) : ('succeeded' as const),
             body: closeRefusal ? { reasonCode: closeRefusal } : body,
           };
-          settleNanoHostHarnessOperation(coreDb, {
+          await settleNanoHostHarnessOperation(coreDb, {
             result,
             sandboxIntegrationBindingRef: integrationRef,
             timestamp: new Date().toISOString(),
@@ -516,14 +518,14 @@ export function createNativeTaskAdmissionFixture(
           } else if (command.operation === 'turn.interrupt') {
             if (!turn?.lineage) throw new Error('Native interrupt lacks its original execution.');
             // Interrupt uses the original launch credential and lineage, never a new final identity.
-            turn.reportFinal!(true);
+            await turn.reportFinal!(true);
             turn.completion.resolve();
           }
         } catch (error) {
           if (stopped) return;
           if (turn) failTurn(turn, error);
           if (!commandSettled) {
-            settleNanoHostHarnessOperation(coreDb, {
+            await settleNanoHostHarnessOperation(coreDb, {
               sandboxIntegrationBindingRef: integrationRef,
               result: {
                 schemaVersion: 2,
