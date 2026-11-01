@@ -9,6 +9,12 @@ decider: Coordinator fallback under the engineer-authorized coordination rule
 
 Keep backend-Provider attachment and delegated refresh disabled in the current release. Remove the empty NanoCore refresh-status polling service and its collector interface and forwarding methods. The [mechanism owner](../specs/20260703-openshell_mechanism_internalization.md) retains the attachment, grant, explicit delegation, exact-effective-policy-equality, redaction and canonical-evidence requirements for future enablement. This scope replaces the timer-relocation premise of #154; it does not implement native refresh collection or establish its acceptance.
 
+### Accepted v0.1.0 Scope Supplement
+
+The engineer's 2026-10-31 credential-delivery ruling accepts Provider placeholders and delegated refresh for generic HTTP bearer credentials in v0.1.0. This supersedes the release exclusion above when the existing attachment, explicit delegation, exact-effective-policy-equality, redaction and canonical-evidence prerequisites land together. Until then, the implementation remains disabled; removing the empty polling service remains valid.
+
+The [mechanism owner](../specs/20260703-openshell_mechanism_internalization.md#generic-http-bearer-release-scope) defines the accepted contract and dependency blocker. The scope contains no subscription token responder. Codex uses host-managed tokens; LLM Gateway subscription accounts retain their separate owner. No harness self-refresh lease or write-back path is built in v0.1.0.
+
 ## Reason
 
 Source: L-RT checkpoint Intent Revision 15, coordinator fallback notice at 17:52 UTC on 2026-10-16. The release-scope question remained unanswered beyond the engineer-authorized fifteen-minute coordinator fallback interval. The primary therefore applied the recommended disabled scope after independent Consultant scrutiny. This records that fallback, not a direct coordinator answer or a new engineer approval inferred from silence.

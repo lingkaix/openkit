@@ -39,7 +39,7 @@ updated: 2026-09-30
 
 OpenKit already has the correct security model for worker credentials: workers should consume tools, providers, local files, or endpoints, while NanoCore owns vault resolution, grants, injection records, receipts, and audit.
 
-The current implementation proves runtime-env materialization and selected Worker MCP gateway-only credentials; the persistent Worker image path rejects runtime-file materialization. It resolves sandbox-provider declarations and their durable grant lineage, but stock OpenShell provider attachment is fail-closed because Providers v2 would otherwise add profile-owned endpoints that are absent from the immutable AEP network policy. The MCP Gateway separately resolves only catalog-declared Workspace Vault grants into bounded stdio environment or HTTP header/query sinks and never exposes the material to the worker.
+The current implementation proves runtime-env materialization and selected Worker MCP gateway-only credentials; the generic protected file-binding path is implemented but remains unqualified by the full-service LOAD. It resolves sandbox-provider declarations and their durable grant lineage, but stock OpenShell provider attachment is fail-closed because Providers v2 would otherwise add profile-owned endpoints that are absent from the immutable AEP network policy. The MCP Gateway separately resolves only catalog-declared Workspace Vault grants into bounded stdio environment or HTTP header/query sinks and never exposes the material to the worker.
 
 This spec generalizes the worker launch-time credential path without adding a new secret system.
 
@@ -276,6 +276,14 @@ Representative error codes include `credential_declaration_invalid`, `vault_gran
 
 When one declaration fails, NanoCore MUST NOT partially launch the worker with the remaining declarations.
 
+### On-Demand Credential Channels
+
+The second placement-neutral channel is on-demand material over the existing outbound Worker carriage. A helper uses the AgentSession-local Integration endpoint and authoritative session carriage. Each request requires fresh vault.use authorization for the exact admitted binding. It cannot fetch arbitrary references, reuse a receipt as authority or place material on the uniform operation surface.
+
+One helper transport serves Git credential helper, Docker credential helper, AWS credential_process, kubectl ExecCredential and Google external-account executable-sourced credentials. Docker permits get and erase and refuses store. The SSH agent facade permits only identity listing and approved signing; signing occurs in NanoCore through Vault. There is no metadata listener or Docker socket.
+
+Codex host-managed tokens use the same outbound carriage and fresh authorization under the [adapter contract](20260716-codex_worker_adapter.md#host-managed-subscription-login). The [Vault Login owner](20260703-vault_secret_injection.md#harness-subscription-logins) owns selection and replacement. The HTTP placeholder and delegated generic bearer path belongs to [OpenShell Mechanism Internalization](20260703-openshell_mechanism_internalization.md#generic-http-bearer-release-scope). These channels add no credential store, daemon, durable queue, retry engine, polling service or token cache.
+
 ## Proposed Design
 
 ### Schema
@@ -298,7 +306,7 @@ The schema should reject secret-shaped inline fields through the existing AEP ra
 
 Add one shared NanoCore resolver that accepts declarations, package lineage, AgentSession id, Core DB, vault backend, and backend-private sinks.
 
-The resolver should replace the fixed GitHub MCP provider resolver and the fixed Codex auth runtime-file resolver.
+The generic resolver replaces bespoke resolution for supported declaration consumers. The historical Codex auth-file path is retired when its host-managed subscription replacement lands; a generated file declaration is not its target design.
 
 The resolver uses the accepted sequence: plan, audited vault resolution with `VaultUse`, successful backend-private materialization sink, then receipt.
 
@@ -328,15 +336,15 @@ Provider-derived network policy should remain under the OpenShell mechanism inte
 
 The GitHub MCP path should become a credential declaration with sandbox-provider visibility.
 
-The Codex auth JSON path should become a credential declaration with runtime-file visibility.
+Codex harness subscription access uses host-managed tokens under the adapter owner. The historical auth JSON file path is removed when that replacement lands; no self-refresh lease or write-back path is built in v0.1.0.
 
-The old fixed-id helper functions should be removed in the same change once equivalent declarations are generated from the current catalog/bootstrap inputs.
+Remove replaced fixed-id helper functions in the same change. Preserve supported generic declaration consumers; retire the Codex auth-file consumer with its host-managed replacement, without a compatibility reader.
 
 Because OpenKit is still internal, no compatibility reader for the old hard-coded helper path is required.
 
 ## Current Implementation Projection
 
-The current implementation is partial.
+The current implementation is partial. Harness Login selection, Codex host-managed tokens and mid-run replacement, on-demand helpers and generic HTTP bearer delegated refresh are accepted design and are not yet implemented. Existing generic file bindings remain a separate mechanism; a declared contract is not full-service qualification.
 
 `packages/config-schema/src/agent-environment.ts` accepts `sandbox-provider`, `runtime-file`, and `runtime-env` declarations.
 
@@ -350,7 +358,7 @@ The shared worker resolver creates the plan, performs audited Vault resolution, 
 
 The durable GitHub MCP and Codex auth JSON materialization paths have already moved to the shared declaration resolver.
 
-`apps/nanocore/src/runtime/worker-governance-backend.ts` defines backend-private credential materialization, and the production worker-turn path carries runtime-env values through the private NanoHost Harness route into the native child environment. It still rejects backend-private Provider credentials before any OpenShell Provider or Sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference Provider remains. The persistent Worker image path rejects runtime-file credentials. Runtime-env values travel only with the exact private per-Turn Harness dispatch, never Sandbox creation or durable Harness records, and native-start acknowledgement precedes success receipts. The shim admits all declared runtime-env credentials independently of the inference route and refuses missing or mismatched values before spawning. Sandbox-provider receipt support remains unavailable rather than overstated. The accepted design replaces per-Turn dispatch of runtime-env values into a fresh native child. Declared runtime-env credentials are session-static for the resident binding.
+`apps/nanocore/src/runtime/worker-governance-backend.ts` defines backend-private credential materialization, and the production worker-turn path carries runtime-env values through the private NanoHost Harness route into the native child environment. It still rejects backend-private Provider credentials before any OpenShell Provider or Sandbox effect and does not advertise `provider-attachments`; only the exact internally generated trusted-inference Provider remains. The generic runtime-file path prepares references only, then uses governed audited resolution, exact live binding delivery and realized-protection receipts. The carrier is implemented; full-service qualification remains pending. Runtime-env values travel only with the exact private per-Turn Harness dispatch, never Sandbox creation or durable Harness records, and native-start acknowledgement precedes success receipts. The shim admits all declared runtime-env credentials independently of the inference route and refuses missing or mismatched values before spawning. Sandbox-provider receipt support remains unavailable rather than overstated. The accepted design replaces per-Turn dispatch of runtime-env values into a fresh native child. Declared runtime-env credentials are session-static for the resident binding.
 
 `apps/nanocore/src/vault/vault-use-audited-backend.ts` already records vault resolve success and typed failure without storing secret material.
 
@@ -405,14 +413,14 @@ The next step should be one shared declaration resolver.
 2. Add a shared NanoCore credential declaration resolver with tests around grant validation, plan creation, receipt creation, audited vault resolution, and redaction.
 3. Extend worker materialization context and OpenShell backend support for generic runtime-env credentials.
 4. Convert the existing GitHub MCP credential path to a generated `sandbox-provider` declaration.
-5. Convert the existing Codex auth JSON path to a generated `runtime-file` declaration.
+5. Replace the historical Codex auth JSON materialization with the host-managed token path under the Codex adapter owner.
 6. Add generic runtime-file and runtime-env tests with non-GitHub, non-Codex fixture credentials.
 7. Add generic sandbox-provider tests using a built-in or generic OpenShell provider fixture.
 8. Update App API, Core Client, end-user operation-catalog, and readback surfaces only where existing redacted AEP or vault read models need to display generic declaration metadata.
 9. Remove replaced hard-coded helper paths in the same change.
 10. Add reusable requirement declarations, Workspace grant bindings, strict scope validation, and focused two-Workspace fixtures using one manifest with different grants.
 11. Carry the resolved backend-private credential arrays through the production NanoHost materialization seam and prove real sink effects before writing a success receipt.
-12. Implement and prove dynamic existing-provider replacement, and prove that a changed runtime-file or runtime-env declaration or value gives a successor AgentSession at the next Turn. Revocation interrupts and closes the binding at once.
+12. Implement and prove dynamic existing-provider replacement and live file-material replacement under the admitted binding. A changed declaration requires a new package and successor boundary; runtime-env values remain session-static and change through a successor at the next Turn. Revocation interrupts and closes the affected binding at once.
 
 ## Testing Strategy / Acceptance Criteria
 
@@ -424,10 +432,10 @@ The next step should be one shared declaration resolver.
 - L2 contract tests prove the generated schemas, OpenAPI, and end-user CLI projections expose only non-secret metadata when those surfaces are updated.
 - L3 NanoCore black-box tests prove a worker package can launch with one generic sandbox-provider credential and one generic runtime-file credential through a deterministic OpenShell stub.
 - L3 composition tests prove the same reusable Agent Manifest requirement resolves to different Workspace-scope grants in two Workspaces, fails before effects when one required binding is absent, and exposes the same non-secret worker target in both cases.
-- L3 lifecycle tests prove an existing OpenShell Provider value can be replaced in place when the backend supports it, while a newly added or changed runtime-file or runtime-env credential waits for the active Turn barrier and is installed by a successor AgentSession that resumes the same Thread. Revocation interrupts and closes the binding at once.
+- L3 lifecycle tests prove supported existing-Provider replacement and generic file-material replacement on the exact live binding. The file receipt proves its replacement view, not consumer reload; the consumer profile owns reread or restart-with-resume. Changed declarations require a new package and successor boundary. Runtime-env values remain session-static and change through a successor after the active Turn barrier, resuming the same Thread. Revocation interrupts and closes the affected binding at once.
 - L6 story acceptance can later prove a real OpenShell sandbox uses a provider placeholder to call an external HTTP API while NanoCore records the plan, receipt, vault-use, and redacted evidence chain.
 
-Acceptance requires that GitHub MCP and Codex auth JSON no longer need bespoke credential material resolver branches, reusable requirements bind independently per Workspace, successful receipts follow actual backend sink completion, documented replacement behavior is observed, and all current secret-leak redaction tests continue to pass.
+Acceptance requires that supported generic declaration consumers no longer need bespoke credential material resolver branches and the historical Codex auth-file consumer is retired with its host-managed replacement, reusable requirements bind independently per Workspace, successful receipts follow actual backend sink completion, documented replacement behavior is observed, and all current secret-leak redaction tests continue to pass.
 
 ## Risks & Mitigations
 
@@ -449,7 +457,7 @@ None.
 ## Deferred / Future Work
 
 - Custom OpenShell provider profile import and update.
-- Gateway-managed refresh metadata and refresh evidence import for generic declarations.
+- Generic HTTP bearer delegated refresh and its evidence import are accepted v0.1.0 work under the OpenShell owner; implementation is pending.
 - Dynamic token grants for endpoint-scoped credential placement.
 - NanoCore gateway-mediated upstream calls for capability APIs that should not expose even placeholder credentials to workers.
 - Product UI for creating, approving, and reviewing reusable credential declarations.

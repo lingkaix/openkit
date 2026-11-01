@@ -1265,6 +1265,10 @@ A point-in-time empty list is necessary but insufficient. Readiness requires pri
 
 If the NanoCore transport is unavailable after local fresh-empty proof, the NanoHost remains locally healthy but does not advertise capacity or accept new work until one authoritative session is established and the fixed readiness request receives its durable empty `204`. The initial order is successful `EpochCoordinator::start`, physical admission, readiness acknowledgement, then the first effect poll. Every healthy successor repeats admission and readiness before restoring effect carriage, without rebuilding or relaunching the still-live epoch.
 
+### Credential Channel Ownership
+
+[Worker Credential Access Declarations](20260709-worker_credential_access_declarations.md#on-demand-credential-channels) owns placement-neutral file and outbound-carriage channels. NanoHost realizes the carrier and authoritative session carriage; NanoCore retains Vault lifecycle and current authorization. [Harness Logins](20260703-vault_secret_injection.md#harness-subscription-logins), [Codex host-managed tokens](20260716-codex_worker_adapter.md#host-managed-subscription-login) and [generic HTTP bearer refresh](20260703-openshell_mechanism_internalization.md#generic-http-bearer-release-scope) are accepted design and are not yet implemented. Their owner contracts do not establish native qualification or alter the NanoHost transport credential lifecycle.
+
 ### Sandbox Credential Carrier
 
 The private Sandbox creation input may include transient credentialBindings. Each entry contains declarationId, planId, receiptId, material reference/version/UTF-8 format, a file target, access fixed to read-only, and required ephemeral/retained-storage/capture/export protection. NanoHost validates the closed shape, unique identities and nonoverlapping normalized targets before creating any carrier. Image seeding completes before empty no-follow mount-point admission. No caller-selected host path or arbitrary driver configuration is admitted.

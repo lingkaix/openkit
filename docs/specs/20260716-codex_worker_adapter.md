@@ -58,7 +58,7 @@ Codex starts with full access and full permission inside the Sandbox, with nativ
 
 ## AEP Inputs Consumed
 
-The shared Harness supplies the adapter with:
+For the currently implemented trusted-relay path, the shared Harness supplies the adapter with:
 
 - adapter id `codex`
 - turn input
@@ -181,15 +181,27 @@ NanoCore resolves approved static Skill and selected MCP supply into the AEP. Th
 
 The authored AgentManifest owns provider, model, credential, backend-capability, and network requirements. The resolved AEP owns the preferred logical model, exact allowed route set, credential bindings, and effective launch policy. NanoCore performs that resolution but does not own a second native-runtime configuration.
 
-The shared shim requires one unique AEP route for the preferred model and passes that preferred route and the exact admitted route set to the adapter, while native route projection remains adapter-specific. Neither NanoCore nor the shared Harness infers Codex provider configuration or falls back to another model. The adapter rejects any selected route whose exact endpoint, credential binding, model, or wire protocol the selected App Server cannot represent.
+For the current strict-v4 trusted-relay package, the shared shim requires one unique AEP route for the preferred model and passes that preferred route and the exact admitted route set to the adapter, while native route projection remains adapter-specific. Neither NanoCore nor the shared Harness infers Codex provider configuration or falls back to another model. The adapter rejects any selected route whose exact endpoint, credential binding, model, or wire protocol the selected App Server cannot represent.
 
 For the trusted NanoCore relay, the adapter uses the fixed adapter-owned provider id `openkit-worker-inference`. It never projects an arbitrary AEP provider id into Codex. Web search stays disabled. The base URL stays `http://127.0.0.1:17892/inference/v1`. The wire API stays Responses-only, and `requires_openai_auth` stays false. If the selected App Server cannot represent that route, the route fails closed before the native Turn is admitted. The inference bearer is the session loopback credential, not `OPENKIT_WORKER_INFERENCE_TOKEN`. The capability bearer is the capability loopback credential, not `OPENKIT_WORKER_CAPABILITY_TOKEN`. The native field or SDK call that carries each loopback credential is established by probe of the selected pin and is not named here. Codex has no per-Turn credential field, and a changed parent environment must not be assumed to update a running server.
 
-Mint, attribution, the Turn-barrier drain, and destruction of the two session loopback credentials belong to [Worker Agent Capability](20260703-worker_agent_capability.md). The collection check of those credentials belongs to [Workspace Synchronization](20260703-workspace_synchronization.md#snapshot-chain). The adapter consumes the two supplied loopback bearers and never passes upstream or worker-control tokens to the native runtime. Native credential configuration stays isolated from argv, native configuration text, diagnostics, and evidence. An unsupported route fails closed. The native carrier for each bearer is qualified by probe of the selected pin and is not named here. Idle refusal, sibling refusal, and Turn-barrier behavior are consumed from that contract. The selected server supports only the Responses wire API through the inference projection, so a Chat-Completions-only relay is unsupported.
+Mint, attribution, the Turn-barrier drain, and destruction of the two session loopback credentials belong to [Worker Agent Capability](20260703-worker_agent_capability.md). The collection check of those credentials belongs to [Workspace Synchronization](20260703-workspace_synchronization.md#snapshot-chain). For trusted-relay inference, the adapter consumes the two supplied loopback bearers and never passes an upstream token to the native runtime. The worker-control credential never enters the native runtime in either credential path. Native credential configuration stays isolated from argv, native configuration text, diagnostics, and evidence. An unsupported route fails closed. The native carrier for each bearer is qualified by probe of the selected pin and is not named here. Idle refusal, sibling refusal, and Turn-barrier behavior are consumed from that contract. The selected server supports only the Responses wire API through the inference projection, so a Chat-Completions-only relay is unsupported.
 
-Direct-provider routes are unsupported because the current AEP route does not carry a separately proved Responses wire protocol and exact credential target for truthful Codex projection. Direct, Chat Completions, Anthropic Messages, Gemini, and other non-relay routes fail closed before the native Turn is admitted. The adapter never substitutes a direct route for the trusted relay, and neither NanoCore nor the shared Harness knows a Codex config-file schema.
+For the current strict-v4 trusted-relay package, direct-provider routes are unsupported because its AEP route does not carry a separately proved Responses wire protocol and exact credential target for truthful Codex projection. Direct, Chat Completions, Anthropic Messages, Gemini, and other non-relay routes fail closed before the native Turn is admitted. The adapter never substitutes a direct route for the trusted relay, and neither NanoCore nor the shared Harness knows a Codex config-file schema.
 
 Declared runtime-env credentials are session-static. A changed declaration or value yields a successor AgentSession at the next Turn. A revocation interrupts and closes the binding at once.
+
+## Host-Managed Subscription Login
+
+Codex is the only v0.1.0 harness subscription consumer. This path consumes User-owned Logins and explicit Workspace sharing under the [Vault Login owner](20260703-vault_secret_injection.md#harness-subscription-logins). Existing Gateway subscription accounts and trusted-relay inference retain their separate contracts.
+
+The adapter uses native account/login/start with chatgptAuthTokens. Access material and account identity arrive privately from NanoCore through the existing outbound Worker-control carriage. Native account/chatgptAuthTokens/refresh requests are answered asynchronously through that carriage with fresh vault.use authorization. Resolve the exact admitted binding reference; the previous-account hint never selects authority. NanoCore is the sole refresher and retains the refresh token outside the Sandbox. There is no harness auth-file lease, write-back path or subscription token responder.
+
+The adapter maps account/rateLimits/updated and bounded account/rateLimits/read observations to the existing Login metadata. Unknown observations remain unknown. Selection, shared-account allowance, cooldown, quarantine and activation use the Vault owner; the adapter adds no quota store or poller. Replacement takes effect on the next refresh answer or reauthentication at the next Turn boundary. In-flight work retains its outgoing Login attribution; ambiguous late notifications are discarded. Responses and tools are never replayed or spliced.
+
+Acceptance must qualify cross-account continuation on the selected runtime or refuse it without rewriting sealed reasoning. Under a real host-managed Codex Login, acceptance must also prove server-side context compaction end to end through the Worker path and retain credential-free evidence. A schema snapshot, synthetic protocol response or direct host-only probe does not prove this deployed path.
+
+This is accepted design and is not yet implemented or qualified. Enabling it requires coordinated package, resolver, adapter and network-policy support under their existing owners. This section defines no package field, version, route variant or fallback. The current strict-v4 trusted-relay refusals remain in force until that support lands; its existing evidence does not qualify this subscription path.
 
 ## Manifest And Image Contract
 
@@ -244,14 +256,14 @@ Required adapter tests cover:
 - Native stop mappings above, including requested interruption versus runtime self-stop, bounded actor-neutral diagnostics, proved limits without false success, ambiguous/unsupported evidence, and unchanged failure and cleanup fencing
 
 - Native live-steer qualification above, including exact input correlation, zero fresh-Turn effects, terminal/interrupt races, lost-response non-redelivery, and no retained-input spill into later work
-- Credential-value absence from argv, native configuration text, diagnostics, and evidence, and direct-route rejection before the native Turn is admitted
+- Credential-value absence from argv, native configuration text, diagnostics, and evidence, and direct-route rejection for current strict-v4 trusted-relay inputs before the native Turn is admitted
 - Rejection of any environment variable, AEP extension, or image diagnostic that would replace the adapter-produced native operations
 - Distinct Thread-private `CODEX_HOME` roots, rejection of two current bindings for one Thread, preserved admitted native config and rules with proved external-authority isolation, and ignored configuration outside the admitted Sandbox roots, exact thread establishment, exact resume by a later server, sibling rejection, and close preserving `CODEX_HOME` while removing only the ephemeral control binding, image defaults in a fresh home, and a local Skill that remains available when the selected Skill set is empty
 - Rejection of `--last`, title, cwd, ambient-home, missing-handle, conflicting-handle, and unsupported interactive capability paths
 - The 16 MiB native-result bound and the 16 KiB redacted diagnostic prefix per stream
 - Unknown-model descriptor behavior only for the branch the selected binary still requires, including no caller-supplied catalog and no descriptor in retained `CODEX_HOME`
 - Two Turns on one thread against a synthetic Responses provider and a new server resuming that thread; if shared hosting is enabled, unsubscribe one binding while a sibling thread runs and prove the sibling is unaffected
-- The native process never holds the upstream token. Idle refusal, sibling refusal, and the Turn-barrier drain are consumed from [Worker Agent Capability](20260703-worker_agent_capability.md). Release does not affect a sibling once sharing is in the test. A terminal Turn result is not proof that background tools stopped
+- On the trusted-relay path, the native process never holds the upstream token. Idle refusal, sibling refusal, and the Turn-barrier drain are consumed from [Worker Agent Capability](20260703-worker_agent_capability.md). Release does not affect a sibling once sharing is in the test. A terminal Turn result is not proof that background tools stopped
 - Inspection distinguishes the surviving server and thread from a replacement or an unknown identity, launches no work on a mismatched identity, and `harness.drain` refuses new `session.open` and `turn.start` while admitted work and cleanup settle
 - A supply change between two Turns either shows the new supply on the second Turn or follows the probed setup-change successor. The check reads the model-visible schema
 - Full native permission at launch; unexpected permission requests receive the shortest-lived allow by default without Turn interruption, while the deny-capable response path and authored native deny rules remain available
@@ -273,7 +285,7 @@ The following qualification cases apply to this runtime on its accepted interfac
 - Compaction before close survives resume, with only observed lineage recorded and no duplicated canonical messages.
 - With no manifest-selected MCP server, the runtime still exposes the automatically supplied `openkit-work` tools through its authenticated capability route, and omission of the capability loopback credential fails before native work.
 - Missing or corrupt resume data fails explicitly and does not open an empty conversation labeled as continued.
-- Idle refusal, sibling refusal, and the Turn-barrier drain of loopback credentials are consumed from [Worker Agent Capability](20260703-worker_agent_capability.md). Upstream tokens never sit in the native environment.
+- Idle refusal, sibling refusal, and the Turn-barrier drain of loopback credentials are consumed from [Worker Agent Capability](20260703-worker_agent_capability.md). On the trusted-relay path, upstream tokens never sit in the native environment.
 - Two conversations on one shared server, if that hosting is enabled, stay independent. A shared-server failure invalidates every binding that server hosted.
 - Late output or a permission request from a released binding cannot attach to its successor.
 - Web and the remote MCP show the same running, reconnecting, closed, and resume-failed outcomes.

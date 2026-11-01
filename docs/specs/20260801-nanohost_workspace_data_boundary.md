@@ -378,6 +378,12 @@ An uncertain import prevents worker launch and requires exact sandbox deletion. 
 - A retry never changes the immutable source, destination precondition, attempt identity, import digest, or already-produced export digest merely to obtain success.
 - No conflict creates a NanoHost-owned merge, winner, settlement, or repair record.
 
+## Credential Channel Boundary
+
+Credential file material follows the [ephemeral carrier contract](20260709-worker_credential_access_declarations.md#runtime-file-visibility), outside retained, captured, backed-up and exported data. Its generic replacement changes the exact live binding under current authority and preserves the required protection. Native same-inode carrier rewriting belongs to the [NanoHost realization](20260802-nanohost_runtime_and_transport.md#sandbox-credential-carrier).
+
+On-demand helpers, the restricted SSH agent facade and Codex host-managed access material use the existing outbound Worker carriage under their [credential declaration owner](20260709-worker_credential_access_declarations.md#on-demand-credential-channels). They create no ordinary Workspace transfer descriptor or secret-bearing AEP, result, manifest or product record. These additional channels and Login replacement remain accepted design and are not yet implemented; file transfer evidence does not qualify them.
+
 ## Security And Privacy
 
 - Transfer authorization MUST be exact-attempt, exact-source, exact-destination, bounded, expiring where applicable, and independently revocable under the owning identity, permission, and Vault contracts.
