@@ -28,7 +28,7 @@ import {
   type SubscriptionProviderId,
   SubscriptionProviderIdSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId, isEntityId } from '@openkit/protocol';
+import { allocateEntityId, isEntityId, isRecord } from '@openkit/protocol';
 import { createDirectoryExclusive } from '@openkit/storage';
 
 import { type RecordServerAuditEventInput, recordServerAuditEvent } from '../audit-events.js';
@@ -2966,16 +2966,6 @@ function lstatOrNull(path: string): ReturnType<typeof lstatSync> | null {
     }
     throw persistenceError();
   }
-}
-
-/**
- * Checks whether an unknown value is a plain JSON object candidate.
- *
- * @param value Candidate value.
- * @returns True for a non-null, non-array object.
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
