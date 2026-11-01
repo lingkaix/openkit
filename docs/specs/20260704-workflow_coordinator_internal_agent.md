@@ -72,34 +72,32 @@ This specification fixes the implementation-facing deterministic interface share
 - It produces direct typed deterministic decisions; public route schemas validate the projections that leave NanoCore.
 - Mode services call Coordinator; Coordinator does not own product routes by itself.
 - Mode services perform authorized Knowledge Manager reads and provide the resulting source-traceable references to Coordinator. Coordinator owns their semantic inclusion in the structured worker request; the caller owns the read effect plus context persistence, materialization, and worker delivery.
-- Coordinator may recommend Task Mode or a Goal handoff, but the mode services apply decisions through the named durable owner tuples. Task Mode has no durable mode record. A Goal handoff calls the Goal owner's create operation. It does not call a Goal Plan or Goal stop function here.
+- Coordinator selects a worker and composes the request only for trusted explicit Task entry; mode services apply accepted decisions through the named durable owner tuples. Task Mode has no durable mode record. The Assistant calls the Goal owner's create operation for a Goal handoff; Workflow Coordinator does not classify that handoff or call a Goal Plan or Goal stop function.
 - The model Coordinator is one role over `docs/specs/20260813-internal_agent_runtime.md`, bound to one Goal, and `docs/specs/20261002-goal.md` owns that role. This specification admits no second mutation-capable coordinator.
 
 ## Contract / Expected Behavior
 
 ### Coordinator inputs
 
-The mode service supplies trusted entry intent distinguishing explicit bounded Task delegation from conversational routing. That value comes from the operation or accepted handoff, never caller prose, retrieved content, or a model-supplied authorization claim. The V1 routing input contains exactly that entry intent, the user prompt, optional `user_prompt` routing context, available worker candidates and their readiness summaries, one Workspace summary, one Thread state summary, optional redacted recent failures, optional prepared context references, and optional bounded `workerRequestDetails`. `workerRequestDetails` contains exactly acceptance criteria, resource declarations, expected artifacts, constraints, verification instructions, review policy, escalation conditions, and nullable Review context; it contains no objective, context references, schema version, request id, adapter payload, or durable owner fields. Task Mode may omit it and use the fixed bounded defaults in S12.
+The mode service supplies only trusted `explicit_task` entry intent for bounded Task delegation. That value comes from the operation or accepted handoff, never caller prose, retrieved content, or a model-supplied authorization claim. The V1 routing input contains exactly that entry intent, the user prompt, optional `user_prompt` routing context, available worker candidates and their readiness summaries, one Workspace summary, one Thread state summary, optional redacted recent failures, optional prepared context references, and optional bounded `workerRequestDetails`. `workerRequestDetails` contains exactly acceptance criteria, resource declarations, expected artifacts, constraints, verification instructions, review policy, escalation conditions, and nullable Review context; it contains no objective, context references, schema version, request id, adapter payload, or durable owner fields. Task Mode may omit it and use the fixed bounded defaults in S12.
 
 The V1 input has no request id, policy engine result, permission record, raw evidence, provider prompt, or durable lifecycle fields. Callers retain those responsibilities and MUST NOT pass raw secrets, full unrestricted workspace files, backend handles, or adapter-native launch payloads. The bounded details are authorized facts rather than a second worker request: the mode service owns their exact source reads, while Coordinator alone combines the immutable prompt and details with the ordered references, validates the exact output, and creates `workerRequest`.
 
 ### Request classification
 
-For explicit Task delegation, Workflow Coordinator deterministically selects only from the eligible worker candidates and composes the exact structured worker request from the preserved instruction and authorized context. It does not reclassify the instruction into quick Chat, review, retry, refinement, handoff, unsupported work, or Goal by keyword. Missing eligible supply remains `blocked`; malformed Coordinator output remains invalid. The request-scoped decision owns no durable state and grants no permission for downstream effects. Ordinary undecided conversation retains its existing classification.
+For trusted explicit Task delegation, Workflow Coordinator deterministically selects only from the eligible worker candidates and composes the exact structured worker request from the preserved instruction and authorized context. It does not classify undecided conversation or reclassify explicit Task instructions by keyword. The V1 decision is exactly `worker_turn` or `blocked`; missing eligible supply produces `blocked`, and malformed Coordinator output remains invalid. The request-scoped decision owns no durable state and grants no permission for downstream effects.
 
-The V1 conversational routing decision is exactly one of `quick_chat`, `worker_turn`, `goal`, `clarify`, `review`, `refinement`, `retry`, `handoff`, `unsupported`, or `blocked`.
+Every decision includes confidence, a user-safe explanation, `requiredUserAction`, and nullable selected worker, delegation draft, and structured worker request. Only `worker_turn` may carry those worker fields.
 
-Every routing decision includes confidence, a user-safe explanation, one required-user-action value, and nullable selected worker, delegation draft, and structured worker request. Only `worker_turn` may carry a selected worker, delegation draft, or worker request.
-
-For an accepted Task Mode `worker_turn`, `requiredUserAction=none` and the prelaunch approval list is empty. Explicit Task entry authorizes bounded delegation only; later governed effects use their existing approval gates. `clarify`, `blocked`, and other non-worker decisions may describe the required next user action but cannot create a checkpoint or worker Turn. Any `worker_turn` carrying another required-user-action value is invalid and the owning mode must reject it before mutation rather than treating it as an unowned prelaunch gate.
+For an accepted Task Mode `worker_turn`, `requiredUserAction=none` and the prelaunch approval list is empty. A `blocked` result uses `requiredUserAction=refine_request` and carries no worker payload. Explicit Task entry authorizes bounded delegation only; later governed effects use their existing approval gates. A blocked decision cannot create a checkpoint or worker Turn. Any `worker_turn` carrying another required-user-action value is invalid and the owning mode must reject it before mutation.
 
 ### Worker selection
 
-Worker selection consumes only the caller-supplied candidate id, display name, `codex` or `opencode` runtime label, `ready`, `blocked`, or `unknown` readiness, and optional redacted reasons. V1 may use prompt hints to prefer a runtime and otherwise selects only a ready candidate.
+Worker selection consumes only the caller-supplied candidate id, display name, `ready`, `blocked`, or `unknown` readiness, and optional bounded redacted reasons. Workflow Coordinator selects only a ready candidate and omits the runtime label until it has a consumer. Goal discovery additionally requires the supported `codex` or `opencode` runtime label under its owning contract because that discovery consumes it.
 
 When `task.start` supplies an exact `agentId`, the caller restricts the eligible candidates to that Agent. Workflow Coordinator selects it only when it is eligible and ready, and never substitutes another candidate. A missing, ineligible, or unready selection produces `blocked` with no worker payload; Task admission maps this to `409 task_mode_not_delegated` before effects. Omission keeps ordinary selection ([accepted #133 decision](../decisions/20261012-exact_task_agent_selection.md)).
 
-If no eligible candidate is ready, the decision is `blocked` and has no worker payload. The selected worker summary may be product-visible; adapter-native launch payloads remain internal to the owning runtime contracts. Runtime-family inference and the closed V1 runtime label set are audited by the Worker Agent Adapter Boundary plan, not expanded here.
+If no eligible candidate is ready, the decision is `blocked` and has no worker payload. The selected worker summary may be product-visible; adapter-native launch payloads remain internal to the owning runtime contracts. Goal discovery's runtime-family inference and closed product runtime labels remain with its existing owners; Workflow Coordinator adds no runtime preference or label.
 
 ### Bounded Source Projection
 
@@ -148,7 +146,7 @@ The deterministic explicit-Task routing, exact worker-request composition, and b
 
 ## Consequences
 
-- Chat and Task share one coordination contract. A Goal handoff is a classification the mode owner applies through the Goal create operation.
+- Direct Task entry and confirmed Chat-to-Task handoff share one explicit-delegation contract. Undecided conversation remains with the Assistant under the Work Model.
 - Coordinator behavior remains testable through structured outputs without a second runtime.
 
 ## Testing Strategy / Acceptance Criteria
@@ -165,7 +163,7 @@ Acceptance: Coordinator decisions match the one exact V1 shape, public projectio
 
 - Risk: Coordinator output becomes too free-form. Mitigation: closed TypeScript return shapes, exact deterministic unit tests, and public schema validation at route boundaries.
 - Risk: Coordinator hides important reasoning. Mitigation: record concise rationale and evidence references.
-- Risk: Coordinator over-calls workers. Mitigation: Assistant handles Chat Mode and conversational Coordinator routing classifies low-confidence cases as clarify or a Goal handoff. Explicit Task selection authorizes one bounded attempt under the Task owner's hard admission and effect controls.
+- Risk: Coordinator over-calls workers. Mitigation: Assistant handles Chat Mode; Coordinator accepts only trusted explicit Task delegation. Explicit Task selection authorizes one bounded attempt under the Task owner's hard admission and effect controls.
 
 ## Resolved Decisions
 

@@ -832,7 +832,7 @@ The target is proved at each actual collector and Storage boundary, not by metad
 
 - AgentSession-axis `unknown` has no accepted owner; this spec does not decide it.
 - A failed Plan proposal leaves the Goal open and does not clear a still-valid active version, as `docs/specs/20261002-goal.md` defines. That is not an open format question.
-- Whether the two live denial paths that write Turn `cancelled` versus `interrupted` should unify is a product-owner decision, not a format field.
+- The [four-terminal-state decision](../decisions/20260921-four_turn_terminal_states.md) retains `completed`, `interrupted`, `cancelled`, and `failed`, and delegates each producer's terminal mapping to its owning specification. The split between `cancelled` and `interrupted` is not an open format decision; this specification does not unify their producers.
 - Whether a mandatory UUIDv7 filter helper plus failing test is required, versus a review checklist, is not closed; this spec states the consumption rules and the present lack of a parser.
 - Adding `actor` to `StatusItem` was proposed so "who interrupted" is on the narrative axis; it is not authority to implement now. Until protocol admits it, structured interrupter identity stays on the observation row or an existing owner, not a silently dropped requirement.
 - Envelope extra header names (C8) and portable inventory (C6) are admitted by their existing owners. Kernel typed Item (C9) and quarantine `restricted-evidence` mapping remain pending their owners.
