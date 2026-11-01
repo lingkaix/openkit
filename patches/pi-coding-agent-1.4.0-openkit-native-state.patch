@@ -1,6 +1,6 @@
 --- a/dist/extensions/mcp/index.js
 +++ b/dist/extensions/mcp/index.js
-@@ -410,6 +410,7 @@
+@@ -440,6 +440,7 @@
                  tokensAtSignIn.delete(connection);
              else if (!tokensAtSignIn.has(connection))
                  tokensAtSignIn.set(connection, storedTokens(connection));

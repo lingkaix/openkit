@@ -5,6 +5,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
+  createCodingTools,
   createMcpExtension,
   createToolSearchExtension,
   DefaultResourceLoader,
@@ -138,8 +139,6 @@ export class PiRuntimeHost {
   #awaitingOpenKitMcp = false;
   #binding: Binding | null = null;
   readonly #io: PiRuntimeHostIo;
-  /** Native MCP gate for the resident session. It retains only this host's OpenKit transports. */
-  #mcpGate: OpenKitMcpGate | null = null;
   #opening: Promise<void> | null = null;
   #reportedUi = new Set<string>();
   #session: AgentSession | null = null;
@@ -400,10 +399,10 @@ export class PiRuntimeHost {
       });
       try {
         await session.prompt(prompt, {
-          // The SDK calls this synchronously just before it starts the agent run. An interrupt
-          // that arrived during the input hooks or pre-run compaction stops the run here.
+          // Pi 1.4 owns its busy flag before this callback. Request native abort instead of
+          // throwing outside its settlement finally; the pending abort fences the first request.
           preflightResult: () => {
-            if (cancelled(turn)) throw new TurnCancelledError();
+            if (cancelled(turn)) void session?.abort().catch(() => undefined);
           },
         });
       } catch (error) {
@@ -594,7 +593,6 @@ export class PiRuntimeHost {
       loadMcpConfig: piMcp.loadMcpConfig,
       secrets: [request.inferenceCredential, request.capabilityCredential],
     });
-    this.#mcpGate = gate;
     // The resident session keeps these Extensions for every later Turn. The gate reads the
     // current Turn on each hook invocation and never retains this first Turn's state. The MCP
     // factories are applied after native resources; authored exclusions cannot remove them.
@@ -610,20 +608,15 @@ export class PiRuntimeHost {
         replaceable: false,
       },
     ];
-    try {
-      return await this.#openResidentSession(
-        binding,
-        turn,
-        request,
-        model,
-        extensionFactories,
-        gate,
-        openkitServers
-      );
-    } catch (error) {
-      await gate.closeRetained();
-      throw error;
-    }
+    return this.#openResidentSession(
+      binding,
+      turn,
+      request,
+      model,
+      extensionFactories,
+      gate,
+      openkitServers
+    );
   }
 
   /**
@@ -727,8 +720,15 @@ export class PiRuntimeHost {
     await resourceLoader.reload();
     checkpoint();
     const protectedProvider = binding.runtime.getRegisteredProviderConfig(PI_PROVIDER_ALIAS);
+    // Explicit native startup selection keeps current defaults while leaving Extension/MCP
+    // registration unrestricted. Pi 1.4 otherwise restores the predecessor's transcript loadout.
+    const startupTools =
+      settingsManager.getDefaultTools() ??
+      createCodingTools(request.workingDirectory).map((tool) => tool.name);
     const { extensionsResult, session } = await createAgentSession({
       agentDir: request.agentDir,
+      noTools: 'builtin',
+      ...(startupTools.length > 0 ? { tools: startupTools.map((name) => `+${name}`) } : {}),
       cwd: request.workingDirectory,
       model,
       modelRuntime: binding.runtime,
@@ -810,9 +810,8 @@ export class PiRuntimeHost {
     return session;
   }
 
-  /** Closes retained OpenKit transports, then disposes the SDK session. `dispose` emits no shutdown. */
+  /** Emits native shutdown to close all MCP attempts, then disposes; `dispose` emits no shutdown. */
   async #releaseSession(session: AgentSession): Promise<void> {
-    await this.#mcpGate?.closeRetained();
     await session.extensionRunner
       .emit({ reason: 'quit', type: 'session_shutdown' })
       .catch(() => undefined);

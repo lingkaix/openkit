@@ -17,7 +17,11 @@ import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { zstdDecompressSync } from 'node:zlib';
 import {
-  ClientSideConnection,
+  type AgentRequestResponsesByMethod,
+  type ClientConnection,
+  type ClientContext,
+  client,
+  methods,
   ndJsonStream,
   PROTOCOL_VERSION,
   RequestError,
@@ -34,6 +38,7 @@ import { nativeStartupAdmission } from '../native-startup.js';
 import type { RuntimeObservation } from '../runtime-capture.js';
 import {
   failDeepSeekAdmission,
+  interceptDeepSeekRequest,
   withholdDeepSeekResumeAcknowledgement,
 } from '../test-support/deepseek-admission.js';
 import {
@@ -767,10 +772,11 @@ describe('deepseek resident adapter', () => {
       const active = await session.startTurn(
         turn(roots, inference, 'hold cancellation', [], 'join-interrupt')
       );
-      const native = session as unknown as { agent: { cancel(): Promise<void> } };
-      const cancel = vi
-        .spyOn(native.agent, 'cancel')
-        .mockImplementation(async () => new Promise(() => undefined));
+      const native = session as unknown as { connection: ClientConnection };
+      const notify = native.connection.agent.notify.bind(native.connection.agent);
+      const cancel = vi.fn(async (): Promise<void> => new Promise(() => undefined));
+      native.connection.agent.notify = (method, params) =>
+        method === methods.agent.session.cancel ? cancel() : notify(method, params);
       const owner = active.interrupt(new LifecycleDeadline(1000, 500));
       try {
         const joinStarted = performance.now();
@@ -783,6 +789,7 @@ describe('deepseek resident adapter', () => {
         expect(session.childState()).toBe('absent');
         expect((await active.settled).nativeEvidence).toMatchObject({ processExited: true });
       } finally {
+        native.connection.agent.notify = notify;
         cancel.mockRestore();
       }
     },
@@ -1963,14 +1970,14 @@ describe('deepseek resident adapter', () => {
       await waitFor(() => inference.requests.length > 0);
       const native = session as unknown as {
         stderr: Buffer;
-        agent: ClientSideConnection;
+        connection: ClientConnection;
         sessionId: string;
       };
       native.stderr = Buffer.alloc(0);
       // A failed drain must remain a close failure alongside the primary prompt cause.
-      native.agent.closeSession = async () => {
+      interceptDeepSeekRequest(native.connection.agent, methods.agent.session.close, async () => {
         throw new Error('flush failed');
-      };
+      });
       deliver(
         session,
         JSON.stringify({
@@ -2043,30 +2050,33 @@ describe('deepseek resident adapter', () => {
       const session = await open(roots, inference, null);
       await (await session.startTurn(turn(roots, inference, 'seed', [], 'seed'))).settled;
       const native = session as unknown as {
-        agent: ClientSideConnection;
+        connection: ClientConnection;
         sessionId: string;
         stopProcess(): Promise<boolean>;
       };
-      const nativeClose = native.agent.closeSession.bind(native.agent);
-      native.agent.closeSession = async (input) => {
-        const result = await nativeClose(input);
-        setTimeout(
-          () =>
-            deliver(
-              session,
-              JSON.stringify({
-                jsonrpc: '2.0',
-                method: 'session/update',
-                params: {
-                  sessionId: native.sessionId,
-                  update: { sessionUpdate: 'usage_update', used: 1 },
-                },
-              })
-            ),
-          5
-        );
-        return result;
-      };
+      interceptDeepSeekRequest(
+        native.connection.agent,
+        methods.agent.session.close,
+        async (input, close) => {
+          const result = await close(input);
+          setTimeout(
+            () =>
+              deliver(
+                session,
+                JSON.stringify({
+                  jsonrpc: '2.0',
+                  method: 'session/update',
+                  params: {
+                    sessionId: native.sessionId,
+                    update: { sessionUpdate: 'usage_update', used: 1 },
+                  },
+                })
+              ),
+            5
+          );
+          return result;
+        }
+      );
       const nativeStop = native.stopProcess.bind(native);
       native.stopProcess = async () => {
         await new Promise((resolve) => setTimeout(resolve, 25));
@@ -2304,14 +2314,82 @@ describe('deepseek resident adapter', () => {
           turn(roots, inference, 'first', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
         )
       ).settled;
-      const internals = session as unknown as { agent: { closeSession(): Promise<unknown> } };
-      internals.agent.closeSession = async () => {
-        throw new Error('flush failure');
-      };
+      const internals = session as unknown as { connection: ClientConnection };
+      interceptDeepSeekRequest(
+        internals.connection.agent,
+        methods.agent.session.close,
+        async () => {
+          throw new Error('flush failure');
+        }
+      );
       const closing = session.close();
       expect(session.close()).toBe(closing);
       await expect(closing).rejects.toThrow(/did not drain/);
       expect(session.childState()).toBe('absent');
+    },
+    LIVE
+  );
+
+  it(
+    'rejects a native session-not-found close response without claiming persistence drain',
+    async () => {
+      const inference = await startSyntheticInference(() => ({ text: 'retain' }));
+      closers.push(() => inference.close());
+      const roots = tempRoots();
+      const session = await open(roots, inference, null);
+      await (await session.startTurn(turn(roots, inference, 'retain', [], 'close-not-found')))
+        .settled;
+      const native = session as unknown as {
+        captureRequestIds(chunk: Buffer): void;
+        admitNativeLine(line: string): void;
+      };
+      const capture = native.captureRequestIds.bind(native);
+      const admit = native.admitNativeLine.bind(native);
+      let requestPrefix = '';
+      let closeRequestId: number | null = null;
+      let nativeCloseErrorObserved = false;
+      native.captureRequestIds = (chunk) => {
+        capture(chunk);
+        requestPrefix += chunk.toString('utf8');
+        let newline = requestPrefix.indexOf('\n');
+        while (newline >= 0) {
+          const request = JSON.parse(requestPrefix.slice(0, newline));
+          requestPrefix = requestPrefix.slice(newline + 1);
+          if (request.method === methods.agent.session.close && typeof request.id === 'number')
+            closeRequestId = request.id;
+          newline = requestPrefix.indexOf('\n');
+        }
+      };
+      native.admitNativeLine = (line) => {
+        const response = JSON.parse(line);
+        if (closeRequestId !== null && response.id === closeRequestId && 'result' in response) {
+          nativeCloseErrorObserved = true;
+          // Session Operations requires acknowledged close/flush; SDK idempotency is no proof.
+          admit(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: closeRequestId,
+              error: { code: -32002, message: 'Injected native session not found.' },
+            })
+          );
+          return;
+        }
+        admit(line);
+      };
+      const closing = session.close();
+      const outcome = await closing.then(
+        () => 'resolved',
+        () => 'rejected'
+      );
+      expect(nativeCloseErrorObserved).toBe(true);
+      expect.soft(outcome).toBe('rejected');
+      expect.soft(session.nativeEvidence?.()).toMatchObject({
+        processExited: true,
+        persistencePreservingClose: false,
+      });
+      expect(session.childState()).toBe('absent');
+      expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+      await expect(session.close()).rejects.toThrow(/did not drain/);
     },
     LIVE
   );
@@ -2328,8 +2406,12 @@ describe('deepseek resident adapter', () => {
           turn(roots, inference, 'first', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
         )
       ).settled;
-      const internals = session as unknown as { agent: { closeSession(): Promise<unknown> } };
-      internals.agent.closeSession = async () => new Promise(() => undefined);
+      const internals = session as unknown as { connection: ClientConnection };
+      interceptDeepSeekRequest(
+        internals.connection.agent,
+        methods.agent.session.close,
+        async () => new Promise(() => undefined)
+      );
       const closing = session.close();
       expect(session.close()).toBe(closing);
       await expect(closing).rejects.toThrow(/did not drain/);
@@ -2349,8 +2431,12 @@ describe('deepseek resident adapter', () => {
         turn(roots, inference, 'hang', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
       );
       await waitFor(() => inference.requests.length > 0);
-      const internals = session as unknown as { agent: { cancel(): Promise<unknown> } };
-      internals.agent.cancel = async () => new Promise(() => undefined);
+      const internals = session as unknown as { connection: ClientConnection };
+      const notify = internals.connection.agent.notify.bind(internals.connection.agent);
+      internals.connection.agent.notify = (method, params) =>
+        method === methods.agent.session.cancel
+          ? new Promise(() => undefined)
+          : notify(method, params);
       const interruptBoundMs = LIFECYCLE_DEFAULTS.nativeStopMs + INTERRUPT_SCHEDULING_MARGIN_MS;
       let watchdog: ReturnType<typeof setTimeout> | undefined;
       const interruptStarted = performance.now();
@@ -3021,29 +3107,34 @@ describe('deepseek resident adapter', () => {
       await (await session.startTurn(catalogTurn(roots, inference, [a, b], a, 'seed'))).settled;
       const calls = trackCatalogCalls(session);
       const internals = session as unknown as {
-        agent: ClientSideConnection;
+        connection: ClientConnection;
         stopProcess(): Promise<boolean>;
       };
-      internals.agent.setSessionConfigOption = async () => {
-        if (kind === 'rejected' || kind === 'unproved-stop') throw new Error('selection rejected');
-        return {
-          configOptions:
-            kind === 'missing-option'
-              ? []
-              : [
-                  {
-                    id: 'model',
-                    name: 'model',
-                    type: kind === 'unknown-type' ? 'unknown-core' : 'select',
-                    currentValue: JSON.stringify([
-                      'openkit-loopback',
-                      kind === 'unknown-type' ? 'catalog-b' : 'wrong-model',
-                    ]),
-                    options: [],
-                  },
-                ],
-        } as unknown as Awaited<ReturnType<ClientSideConnection['setSessionConfigOption']>>;
-      };
+      interceptDeepSeekRequest(
+        internals.connection.agent,
+        methods.agent.session.setConfigOption,
+        async () => {
+          if (kind === 'rejected' || kind === 'unproved-stop')
+            throw new Error('selection rejected');
+          return {
+            configOptions:
+              kind === 'missing-option'
+                ? []
+                : [
+                    {
+                      id: 'model',
+                      name: 'model',
+                      type: kind === 'unknown-type' ? 'unknown-core' : 'select',
+                      currentValue: JSON.stringify([
+                        'openkit-loopback',
+                        kind === 'unknown-type' ? 'catalog-b' : 'wrong-model',
+                      ]),
+                      options: [],
+                    },
+                  ],
+          } as unknown as AgentRequestResponsesByMethod['session/set_config_option'];
+        }
+      );
       const realStop = internals.stopProcess.bind(session);
       if (kind === 'unproved-stop') internals.stopProcess = async () => false;
       try {
@@ -3078,15 +3169,18 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null);
       await (await session.startTurn(turn(roots, inference, 'seed', [], 'seed'))).settled;
-      const native = session as unknown as { agent: ClientSideConnection };
-      const close = native.agent.closeSession.bind(native.agent);
+      const native = session as unknown as { connection: ClientConnection };
       let nativeClosed = false;
-      native.agent.closeSession = async (input) => {
-        const result = await close(input);
-        nativeClosed = true;
-        nativeStdout(session, Buffer.from('{"broken":true}\n'));
-        return result;
-      };
+      interceptDeepSeekRequest(
+        native.connection.agent,
+        methods.agent.session.close,
+        async (input, close) => {
+          const result = await close(input);
+          nativeClosed = true;
+          nativeStdout(session, Buffer.from('{"broken":true}\n'));
+          return result;
+        }
+      );
       await expect(session.close()).rejects.toThrow('DeepSeek close did not drain.');
       expect(nativeClosed).toBe(true);
       expect(session.childState()).toBe('absent');
@@ -3109,17 +3203,21 @@ describe('deepseek resident adapter', () => {
       await first.close();
       const resumed = await open(roots, inference, (handle as { reference: Uint8Array }).reference);
       const native = resumed as unknown as {
-        agent: ClientSideConnection;
+        connection: ClientConnection;
         spawnHost(record: unknown): Promise<void>;
       };
       const spawn = native.spawnHost.bind(resumed);
       let clientFailed = false;
       native.spawnHost = async (record) => {
         await spawn(record);
-        native.agent.resumeSession = async () => {
-          clientFailed = true;
-          throw new RequestError(-32603, 'Injected client failure without a native response.');
-        };
+        interceptDeepSeekRequest(
+          native.connection.agent,
+          methods.agent.session.resume,
+          async () => {
+            clientFailed = true;
+            throw new RequestError(-32603, 'Injected client failure without a native response.');
+          }
+        );
       };
       await expect(
         resumed.startTurn(catalogTurn(roots, inference, [a, b], a, 'must-not-prompt'))
@@ -3169,26 +3267,29 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null);
       const native = session as unknown as {
-        agent: ClientSideConnection;
+        connection: ClientConnection;
         spawnHost(record: unknown): Promise<void>;
       };
       const spawn = native.spawnHost.bind(session);
       let nativeCreated = false;
       native.spawnHost = async (record) => {
         await spawn(record);
-        const create = native.agent.newSession.bind(native.agent);
-        native.agent.newSession = async (input) => {
-          const result = await create(input);
-          nativeCreated = true;
-          return {
-            ...result,
-            ...(kind === 'identity'
-              ? { sessionId: '' }
-              : kind === 'identity-type'
-                ? { sessionId: 123 }
-                : { configOptions: [] }),
-          } as unknown as Awaited<ReturnType<ClientSideConnection['newSession']>>;
-        };
+        interceptDeepSeekRequest(
+          native.connection.agent,
+          methods.agent.session.new,
+          async (input, create) => {
+            const result = await create(input);
+            nativeCreated = true;
+            return {
+              ...result,
+              ...(kind === 'identity'
+                ? { sessionId: '' }
+                : kind === 'identity-type'
+                  ? { sessionId: 123 }
+                  : { configOptions: [] }),
+            } as unknown as AgentRequestResponsesByMethod['session/new'];
+          }
+        );
       };
       await expect(
         session.startTurn(turn(roots, inference, 'must-not-prompt', [], 'invalid'))
@@ -3220,20 +3321,23 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null);
       const internals = session as unknown as {
-        agent: ClientSideConnection;
+        connection: ClientConnection;
         spawnHost(record: unknown): Promise<void>;
       };
       const spawn = internals.spawnHost.bind(session);
       let requestedCreation = false;
       internals.spawnHost = async (record) => {
         await spawn(record);
-        const create = internals.agent.newSession.bind(internals.agent);
-        internals.agent.newSession = (input) => {
-          requestedCreation = true;
-          const pending = create(input);
-          nativeStdout(session, Buffer.from('{"broken":true}\n'));
-          return pending;
-        };
+        interceptDeepSeekRequest(
+          internals.connection.agent,
+          methods.agent.session.new,
+          (input, create) => {
+            requestedCreation = true;
+            const pending = create(input);
+            nativeStdout(session, Buffer.from('{"broken":true}\n'));
+            return pending;
+          }
+        );
       };
       await expect(
         session.startTurn(turn(roots, inference, 'must-not-prompt', [], 'invalid'))
@@ -3261,19 +3365,22 @@ describe('deepseek resident adapter', () => {
       await first.close();
       const resumed = await open(roots, inference, (handle as { reference: Uint8Array }).reference);
       const internals = resumed as unknown as {
-        agent: ClientSideConnection;
+        connection: ClientConnection;
         spawnHost(record: unknown): Promise<void>;
       };
       const spawn = internals.spawnHost.bind(resumed);
       let provedNativeResume = false;
       internals.spawnHost = async (record) => {
         await spawn(record);
-        const resume = internals.agent.resumeSession.bind(internals.agent);
-        internals.agent.resumeSession = async (input) => {
-          const result = await resume(input);
-          provedNativeResume = true;
-          return { ...result, configOptions: [] };
-        };
+        interceptDeepSeekRequest(
+          internals.connection.agent,
+          methods.agent.session.resume,
+          async (input, resume) => {
+            const result = await resume(input);
+            provedNativeResume = true;
+            return { ...result, configOptions: [] };
+          }
+        );
       };
       await expect(
         resumed.startTurn(catalogTurn(roots, inference, [a, b], a, 'must-not-prompt'))
@@ -3446,7 +3553,10 @@ async function resumeBeforePrompt(
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   const created = await runAgent(first, async (agent) => {
-    const session = await agent.newSession({ cwd: roots.work, mcpServers: [] });
+    const session = await agent.request(methods.agent.session.new, {
+      cwd: roots.work,
+      mcpServers: [],
+    });
     return session.sessionId;
   });
   if (typeof first.pid === 'number') process.kill(first.pid, 'SIGKILL');
@@ -3458,8 +3568,12 @@ async function resumeBeforePrompt(
   });
   try {
     await runAgent(second, async (agent) => {
-      await agent.resumeSession({ cwd: roots.work, mcpServers: [], sessionId: created });
-      await agent.closeSession({ sessionId: created });
+      await agent.request(methods.agent.session.resume, {
+        cwd: roots.work,
+        mcpServers: [],
+        sessionId: created,
+      });
+      await agent.request(methods.agent.session.close, { sessionId: created });
     });
   } finally {
     if (second.exitCode === null && typeof second.pid === 'number') {
@@ -3473,17 +3587,16 @@ async function resumeBeforePrompt(
 /** Initializes one ACP client and runs `body` without sending a prompt. */
 async function runAgent<T>(
   child: ReturnType<typeof spawn>,
-  body: (agent: ClientSideConnection) => Promise<T>
+  body: (agent: ClientContext) => Promise<T>
 ): Promise<T> {
   if (!child.stdin || !child.stdout) throw new Error('DeepSeek runtime is unavailable.');
-  const agent = new ClientSideConnection(
-    () => ({
-      requestPermission: () => ({ outcome: { outcome: 'cancelled' as const } }),
-      sessionUpdate: () => undefined,
-    }),
-    ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout))
-  );
-  await agent.initialize({
+  const agent = client()
+    .onRequest(methods.client.session.requestPermission, () => ({
+      outcome: { outcome: 'cancelled' as const },
+    }))
+    .onNotification(methods.client.session.update, () => undefined)
+    .connect(ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout))).agent;
+  await agent.request(methods.agent.initialize, {
     clientInfo: { name: 'openkit', version: '0' },
     protocolVersion: PROTOCOL_VERSION,
   });
@@ -3703,22 +3816,21 @@ function catalogTurn(
 /** Observes native SDK calls without replacing their real behavior. */
 function trackCatalogCalls(session: WorkerResidentSession): { method: string; params: unknown }[] {
   const calls: { method: string; params: unknown }[] = [];
-  const agent = (
-    session as unknown as { agent: Record<string, (...args: unknown[]) => Promise<unknown>> }
-  ).agent;
-  for (const method of [
-    'newSession',
-    'resumeSession',
-    'closeSession',
-    'setSessionConfigOption',
-    'prompt',
-  ]) {
-    const native = agent[method]!.bind(agent);
-    agent[method] = (...args) => {
-      calls.push({ method, params: args[0] });
-      return native(...args);
-    };
-  }
+  const agent = (session as unknown as { connection: ClientConnection }).connection.agent;
+  // Keep existing observation labels while forwarding actual ACP method names unchanged.
+  const labels = new Map<string, string>([
+    [methods.agent.session.new, 'newSession'],
+    [methods.agent.session.resume, 'resumeSession'],
+    [methods.agent.session.close, 'closeSession'],
+    [methods.agent.session.setConfigOption, 'setSessionConfigOption'],
+    [methods.agent.session.prompt, 'prompt'],
+  ]);
+  const request = agent.request.bind(agent);
+  agent.request = ((...args: Parameters<ClientContext['request']>) => {
+    const label = labels.get(args[0]);
+    if (label) calls.push({ method: label, params: args[1] });
+    return request(...args);
+  }) as ClientContext['request'];
   return calls;
 }
 
@@ -3867,9 +3979,8 @@ it('s4: rejects an unproved native effort acknowledgement before prompting', asy
     reasoningEffort: 'low' as const,
   };
   expect((await (await session.startTurn(input)).settled).status).toBe('completed');
-  const agent = (session as unknown as { agent: ClientSideConnection }).agent;
-  const select = agent.setSessionConfigOption.bind(agent);
-  vi.spyOn(agent, 'setSessionConfigOption').mockImplementation(async (params) => {
+  const agent = (session as unknown as { connection: ClientConnection }).connection.agent;
+  interceptDeepSeekRequest(agent, methods.agent.session.setConfigOption, async (params, select) => {
     const updated = await select(params);
     if (params.configId !== 'reasoning_effort') return updated;
     return {
@@ -3906,7 +4017,7 @@ it(
       runtimeCapture: {
         ...input.runtimeCapture,
         captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.2.0-rc.2' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.2.1-rc.5' },
         emit: async (record, body) => {
           received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
         },
@@ -3992,7 +4103,7 @@ it(
       runtimeCapture: {
         ...input.runtimeCapture,
         captureCoverage: { scope: 'task', value: 'on' },
-        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.2.0-rc.2' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.2.1-rc.5' },
         emit: async (record, body) => {
           received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
         },

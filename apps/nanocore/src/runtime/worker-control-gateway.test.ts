@@ -87,9 +87,9 @@ async function createWorkerControlFixture(
   // Codex uses the retained 0.153.4 rollout fixture; the other fixtures use their current pinned formats.
   agentSetup.manifest.runtime.version = {
     codex: '0.153.4',
-    deepseek: '0.2.0-rc.2',
-    opencode: '2.0.22',
-    pi: '1.0.2',
+    deepseek: '0.2.1-rc.5',
+    opencode: '2.2.5',
+    pi: '1.4.0',
   }[adapter];
   const environmentPackage = resolveAgentEnvironmentPackage({
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
@@ -574,17 +574,21 @@ describe('WorkerControlGateway', () => {
                 data: [{ id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID, enabled: true }],
               }),
             },
+            experimental: {
+              mcp: { add: async () => undefined },
+              session: { wait: async () => undefined },
+            },
             mcp: {
-              add: async () => undefined,
               list: async () => ({ data: [] }),
               remove: async () => undefined,
             },
             message: {
-              list: async () => {
+              list: async ({ order }: { order?: 'asc' | 'desc' }) => {
                 if (!sourceAvailable) throw new Error('Native history is unavailable');
+                const rows = prompted ? JSON.parse(readFileSync(historyPath, 'utf8')) : [];
                 return {
                   cursor: {},
-                  data: prompted ? JSON.parse(readFileSync(historyPath, 'utf8')) : [],
+                  data: order === 'desc' ? rows.reverse() : rows,
                 };
               },
             },
@@ -602,7 +606,6 @@ describe('WorkerControlGateway', () => {
               switchModel: async () => undefined,
               interrupt: async () => undefined,
               move: async () => undefined,
-              wait: async () => undefined,
               prompt: async () => {
                 prompted = true;
                 return { id: 'user' };

@@ -790,7 +790,7 @@ describe('private NanoHost Harness records', () => {
       createNanoHostHarnessRuntime(coreDb, {
         maxActiveTurns: 2,
         adapterId: 'pi',
-        adapterVersion: '1.0.2',
+        adapterVersion: '1.4.0',
         harnessBindingRef: 'harness-binding-2',
         harnessCompatibilityKey: 'c'.repeat(64),
         harnessInstanceId: 'harness-2',

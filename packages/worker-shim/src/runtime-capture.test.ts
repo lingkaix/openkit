@@ -441,7 +441,7 @@ function e1LogFact(start: number, bytes: number, logSource: 'stderr' | 'stdout-l
     coverage: 'collecting' as const,
     native: {
       harness: 'pi',
-      authoredVersion: '1.0.2',
+      authoredVersion: '1.4.0',
       measuredVersion: null,
       imageDigest: null,
       format: 'application/octet-stream',
@@ -464,7 +464,7 @@ it('RET E1 shares the selected log allowance across source publications and retr
     captureCoverage: { scope: 'task' as const, value: 'on' as const },
     credentialValues: ['e1-secret-value'],
     nativeLogMaxBytes: 7,
-    authoredVersion: '1.0.2',
+    authoredVersion: '1.4.0',
     emit: async (record: RuntimeObservation, body?: Uint8Array) => {
       received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
     },
@@ -528,7 +528,7 @@ it('RET E1 refuses native bytes without selected authority while preserving OFF 
   };
   const input = {
     packageSnapshotId: 'e1-missing',
-    authoredVersion: '1.0.2',
+    authoredVersion: '1.4.0',
     captureCoverage: { scope: 'task' as const, value: 'on' as const },
     credentialValues: ['e1-secret-value'],
     emit,
@@ -575,7 +575,7 @@ it('RET E REVIEW R1 refuses a decoded credential split across valid ACP native u
     packageSnapshotId: 'e-review-acp-package',
     captureCoverage: { scope: 'task', value: 'on' },
     nativeLogMaxBytes: 16 * 1024 * 1024,
-    authoredVersion: '0.2.0-rc.2',
+    authoredVersion: '0.2.1-rc.5',
     credentialValues: ['ret-e-synthetic-credential'],
     emit: async (record, body) => {
       received.push({
@@ -636,7 +636,7 @@ it('RET E REVIEW R4 preserves an ordinary Windows path and malformed escapes wit
       packageSnapshotId: 'e-review-log-package',
       captureCoverage: { scope: 'task', value: 'on' },
       nativeLogMaxBytes: 16 * 1024 * 1024,
-      authoredVersion: '1.0.2',
+      authoredVersion: '1.4.0',
       credentialValues: ['ret-e-synthetic-credential'],
       emit: async (record, body) => {
         received.push({
@@ -671,7 +671,7 @@ it('RET E r2 REVIEW R2 keeps a limit-only native hold labelled as a limit throug
     packageSnapshotId: 'e-r2-limit-package',
     captureCoverage: { scope: 'task', value: 'on' },
     nativeLogMaxBytes: 16 * 1024 * 1024,
-    authoredVersion: '0.2.0-rc.2',
+    authoredVersion: '0.2.1-rc.5',
     credentialValues: ['ret-e-synthetic-credential'],
     emit: async (record, body) => {
       received.push({

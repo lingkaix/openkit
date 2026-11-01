@@ -1,8 +1,9 @@
 // openkit-test-platform: posix
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, type IncomingHttpHeaders, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -79,6 +80,46 @@ function codexAdapter(): WorkerResidentAdapter {
   });
 }
 
+/** Native producer metadata carried on the exact Request received by the loopback. */
+const NATIVE_REQUEST_HEADER = 'x-openkit-test-native-request';
+
+/** Observes native selection without changing the request body, effort, or title policy. */
+function installNativeRequestProbe(layout: { root: string; work: string }): void {
+  const plugin = join(layout.root, 'native-request-observer');
+  mkdirSync(plugin);
+  writeFileSync(join(plugin, 'package.json'), '{"type":"module"}');
+  writeFileSync(
+    join(plugin, 'index.js'),
+    `export default {
+      id: 'openkit-test-native-request',
+      async setup(ctx) {
+        await ctx.session.hook('http.request', async (evt) => {
+          evt.request.headers.set(${JSON.stringify(NATIVE_REQUEST_HEADER)}, JSON.stringify({
+            kind: evt.kind,
+            variant: evt.model.variant,
+          }));
+        });
+      },
+    };`
+  );
+  writeFileSync(join(layout.work, 'opencode.json'), JSON.stringify({ plugins: [plugin] }));
+}
+
+/** Missing or unknown native kinds cannot exempt an actual request from the primary oracle. */
+function nativeRequestMetadata(headers: IncomingHttpHeaders): {
+  kind: 'primary' | 'title';
+  variant?: string;
+} {
+  const header = headers[NATIVE_REQUEST_HEADER];
+  if (typeof header !== 'string') throw new Error('Native request kind is missing.');
+  const metadata = JSON.parse(header) as { kind?: unknown; variant?: unknown };
+  if (metadata?.kind !== 'primary' && metadata?.kind !== 'title')
+    throw new Error('Native request kind is missing or unknown.');
+  if (metadata.variant !== undefined && typeof metadata.variant !== 'string')
+    throw new Error('Native selected variant is unknown.');
+  return metadata as { kind: 'primary' | 'title'; variant?: string };
+}
+
 it.each([
   'codex',
   'pi',
@@ -90,6 +131,8 @@ it.each([
   const sharedWork = join(root, 'workspace');
   await Promise.all([mkdir(imageHome), mkdir(sharedWork)]);
   vi.stubEnv('HOME', imageHome);
+  if (family === 'opencode') installNativeRequestProbe({ root, work: sharedWork });
+  const nativeClassificationErrors: string[] = [];
   const sessions: WorkerResidentSession[] = [];
   const openInputs: WorkerResidentOpenInput[] = [];
   const turns: WorkerResidentTurn[] = [];
@@ -114,15 +157,17 @@ it.each([
       model: string;
       messages?: Array<{ role: string; content: unknown }>;
     };
-    // The pin generates a title separately; that is not the admitted coding inference.
-    const firstMessage = body.messages?.[0];
-    const auxiliary =
-      family === 'opencode' &&
-      firstMessage?.role === 'system' &&
-      typeof firstMessage.content === 'string' &&
-      firstMessage.content.startsWith(
-        'You are a title generator. You output ONLY a thread title. Nothing else.'
-      );
+    // Only the native request producer can identify auxiliary title work.
+    let auxiliary = false;
+    if (family === 'opencode') {
+      try {
+        auxiliary = nativeRequestMetadata(req.headers).kind === 'title';
+      } catch (error) {
+        nativeClassificationErrors.push(
+          error instanceof Error ? error.message : 'Unknown native kind.'
+        );
+      }
+    }
     const index = names.indexOf(body.model.slice('model-'.length));
     if (index < 0) throw new Error('Unexpected native probe model.');
     requests.push({
@@ -281,6 +326,7 @@ it.each([
       return result.value;
     });
     await Promise.all(entered.map((entry) => entry.promise));
+    expect(nativeClassificationErrors).toEqual([]);
     expect(requests.filter((request) => !request.auxiliary)).toHaveLength(names.length);
     expect(heldResponses.size).toBe(names.length);
     for (const request of requests) {
@@ -356,6 +402,7 @@ it.each([
       await expect(successor.close()).resolves.toBeUndefined();
       expect(successor.nativeEvidence?.().persistencePreservingClose).toBe(true);
     }
+    expect(nativeClassificationErrors).toEqual([]);
     // Report native-created filenames, not bytes or argv, from one completed synthetic binding.
     const inventoryRoot = join(root, names[1]!);
     const nativeFiles = (await readdir(inventoryRoot, { recursive: true, withFileTypes: true }))

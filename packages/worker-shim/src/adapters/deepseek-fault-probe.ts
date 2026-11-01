@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { ClientConnection } from '@agentclientprotocol/sdk';
 import type { WorkerResidentSession, WorkerResidentTurnInput } from '../adapter-registry.js';
 import { startSyntheticInference } from '../test-support/inference.js';
 import { DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES, deepseekResidentAdapter } from './deepseek.js';
@@ -60,7 +61,7 @@ try {
     child: ChildProcessWithoutNullStreams;
     outbound: PassThrough;
     stopProcess(): Promise<boolean>;
-    agent: { closed: Promise<void> };
+    connection: ClientConnection;
     promptRequestId: number;
   };
   child = internals.child;
@@ -226,7 +227,7 @@ try {
     assert.equal((await session.nativeHandle()).state, 'unknown');
     if (!unproved)
       await deadline(
-        internals.agent.closed.then(() => true),
+        internals.connection.closed.then(() => true),
         1_000,
         false
       ).then((closed) => assert.equal(closed, true, 'SDK requests retired'));

@@ -19,12 +19,16 @@ import { PassThrough, Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { pathToFileURL } from 'node:url';
 import {
-  type Client,
-  ClientSideConnection,
+  type ClientConnection,
+  type ClientContext,
+  client,
+  methods,
+  type NewSessionResponse,
   ndJsonStream,
   PROTOCOL_VERSION,
   RequestError,
   type RequestPermissionRequest,
+  type ResumeSessionResponse,
   type SessionConfigOption,
   type SessionNotification,
   type SessionUpdate,
@@ -282,7 +286,7 @@ type DeepSeekCloseProof =
 /** One DeepSeek process and the ACP session it hosts. */
 class DeepSeekSession implements WorkerResidentSession {
   readonly exited: Promise<void>;
-  private agent: ClientSideConnection | null = null;
+  private connection: ClientConnection | null = null;
   private child: ChildProcessWithoutNullStreams | null = null;
   private closing = false;
   private readonly startupAbort = new AbortController();
@@ -319,6 +323,12 @@ class DeepSeekSession implements WorkerResidentSession {
   private promptRequestId: number | null = null;
   /** One in-flight idle proof resume, correlated by the existing outbound prefix reader. */
   private idleResumeRequest: { id: number | null } | null = null;
+  /** SDK close normalization is not native persistence acknowledgement. */
+  private nativeCloseRequest: {
+    id: number | null;
+    acknowledged: boolean;
+    replied: boolean;
+  } | null = null;
   private readonly promptTerminalIds = new Set<string | number | null>();
   /** Set only after native persistence and the sidecar needed for exact resume are both durable. */
   private ready = false;
@@ -462,11 +472,13 @@ class DeepSeekSession implements WorkerResidentSession {
       !this.processIsLive()
     )
       return;
-    if (!this.sessionId || !this.agent || !this.processIsLive()) {
+    if (!this.sessionId || !this.connection || !this.processIsLive()) {
       throw new Error('DeepSeek close did not drain.');
     }
     if (this.turn) {
-      void this.agent.cancel({ sessionId: this.sessionId }).catch(() => undefined);
+      void this.connection.agent
+        .notify(methods.agent.session.cancel, { sessionId: this.sessionId })
+        .catch(() => undefined);
       await this.turn.settled.catch(() => undefined);
       if (
         this.closeProof?.kind === 'native-drained' &&
@@ -479,7 +491,7 @@ class DeepSeekSession implements WorkerResidentSession {
     if (this.unknownIdentity || !this.processIsLive()) {
       throw new Error('DeepSeek close did not drain.');
     }
-    await this.rpc(() => this.agent!.closeSession({ sessionId: this.sessionId! }), deadline);
+    await this.rpc(() => this.closeNativeSession(this.sessionId!), deadline);
     // The acknowledgement cannot resurrect evidence invalidated while the RPC was pending.
     if (this.unknownIdentity) throw new Error('DeepSeek close did not drain.');
     this.closeProof = { kind: 'native-drained', generation: this.generation };
@@ -508,8 +520,8 @@ class DeepSeekSession implements WorkerResidentSession {
       const record = await readBindingRecord(this.input.stateRoot, sessionId);
       if (!record) throw new Error('DeepSeek resume did not prove the native session.');
       await this.spawnHost(record);
-      const resumed = await this.rpc(() =>
-        this.agentConnection().resumeSession({
+      const resumed = await this.rpc<ResumeSessionResponse>(() =>
+        this.agentConnection().request(methods.agent.session.resume, {
           cwd: record.cwd,
           mcpServers: [],
           sessionId: record.sessionId,
@@ -624,7 +636,7 @@ class DeepSeekSession implements WorkerResidentSession {
       if (reasoning && effort !== undefined) {
         const value = effort === 'none' ? 'off' : effort;
         const updated = await this.rpc(() =>
-          this.agentConnection().setSessionConfigOption({
+          this.agentConnection().request(methods.agent.session.setConfigOption, {
             configId: 'reasoning_effort',
             sessionId,
             value,
@@ -662,7 +674,7 @@ class DeepSeekSession implements WorkerResidentSession {
         throw new Error('DeepSeek preparation did not finish.');
       this.terminalEvidence = undefined;
       turn.deliveryDiagnostics = deliveryDiagnostics;
-      const pending = this.agentConnection().prompt({
+      const pending = this.agentConnection().request(methods.agent.session.prompt, {
         prompt: [{ type: 'text', text: input.turnInput }],
         sessionId,
       });
@@ -761,8 +773,8 @@ class DeepSeekSession implements WorkerResidentSession {
     await this.spawnHost(createdRecord);
     if (this.closing) throw new Error('DeepSeek binding is closing.');
     try {
-      const created = await this.rpc(() =>
-        this.agentConnection().newSession({
+      const created = await this.rpc<NewSessionResponse>(() =>
+        this.agentConnection().request(methods.agent.session.new, {
           cwd: input.workingDirectory,
           mcpServers: mcpServers(input.mcpServerIds, this.input.loopback),
         })
@@ -795,10 +807,10 @@ class DeepSeekSession implements WorkerResidentSession {
     if (this.closing) throw new Error('DeepSeek binding is closing.');
     const ids = [...input.mcpServerIds];
     if (ids.length > 0) {
-      await this.rpc(() => this.agentConnection().closeSession({ sessionId }));
+      await this.rpc(() => this.closeNativeSession(sessionId));
       if (this.closing) throw new Error('DeepSeek binding is closing.');
-      const resumed = await this.rpc(() =>
-        this.agentConnection().resumeSession({
+      const resumed = await this.rpc<ResumeSessionResponse>(() =>
+        this.agentConnection().request(methods.agent.session.resume, {
           cwd: record.cwd,
           mcpServers: mcpServers(ids, this.input.loopback),
           sessionId,
@@ -825,11 +837,11 @@ class DeepSeekSession implements WorkerResidentSession {
       skillTargetPaths: patch.skillTargetPaths,
     };
     await this.spawnHost(next);
-    let resumed: Awaited<ReturnType<ClientSideConnection['resumeSession']>>;
+    let resumed: ResumeSessionResponse;
     this.idleResumeRequest = { id: null };
     try {
       resumed = await this.rpc(() =>
-        this.agentConnection().resumeSession({
+        this.agentConnection().request(methods.agent.session.resume, {
           cwd: record.cwd,
           mcpServers: [],
           sessionId: record.sessionId,
@@ -878,13 +890,13 @@ class DeepSeekSession implements WorkerResidentSession {
       !turn.terminalPoisoned &&
       !this.unknownIdentity &&
       this.closeProof?.kind !== 'native-drained' &&
-      this.agent &&
+      this.connection &&
       this.sessionId
     ) {
       try {
         // The native close owns persistence drain. Process absence alone cannot replace it.
         await withTimeout(
-          this.agent.closeSession({ sessionId: this.sessionId }),
+          this.closeNativeSession(this.sessionId),
           deadline.workRemainingMs(),
           'DeepSeek close did not drain.'
         );
@@ -1130,10 +1142,25 @@ class DeepSeekSession implements WorkerResidentSession {
     turn.captureQueue.catch(() => undefined);
   }
 
+  /** Requires the actual correlated native success before accepting SDK-normalized close. */
+  private async closeNativeSession(sessionId: string): Promise<void> {
+    if (this.nativeCloseRequest) throw new Error('DeepSeek close did not drain.');
+    const request = { id: null as number | null, acknowledged: false, replied: false };
+    this.nativeCloseRequest = request;
+    try {
+      await this.agentConnection().request(methods.agent.session.close, { sessionId });
+      if (!request.acknowledged || this.unknownIdentity) {
+        throw new Error('DeepSeek close did not drain.');
+      }
+    } finally {
+      this.nativeCloseRequest = null;
+    }
+  }
+
   /** The live ACP client, or a setup failure when the process never connected. */
-  private agentConnection(): ClientSideConnection {
-    if (!this.agent) throw new Error('DeepSeek runtime is unavailable.');
-    return this.agent;
+  private agentConnection(): ClientContext {
+    if (!this.connection) throw new Error('DeepSeek runtime is unavailable.');
+    return this.connection.agent;
   }
 
   /**
@@ -1170,9 +1197,9 @@ class DeepSeekSession implements WorkerResidentSession {
       return;
     }
     turn.cancelRequested = true;
-    if (this.agent && this.sessionId && deadline.workRemainingMs() > 0) {
+    if (this.connection && this.sessionId && deadline.workRemainingMs() > 0) {
       await withTimeout(
-        this.agent.cancel({ sessionId: this.sessionId }),
+        this.connection.agent.notify(methods.agent.session.cancel, { sessionId: this.sessionId }),
         deadline.workRemainingMs(LIFECYCLE_DEFAULTS.nativeRequestMs),
         'DeepSeek cancel did not respond.'
       ).catch(() => undefined);
@@ -1301,7 +1328,7 @@ class DeepSeekSession implements WorkerResidentSession {
   private async selectModel(model: string, sessionId: string) {
     const value = JSON.stringify([PROVIDER_ID, model]);
     const updated = await this.rpc(() =>
-      this.agentConnection().setSessionConfigOption({
+      this.agentConnection().request(methods.agent.session.setConfigOption, {
         configId: 'model',
         sessionId,
         value,
@@ -1478,20 +1505,18 @@ class DeepSeekSession implements WorkerResidentSession {
       }
       lostChannel();
     });
-    const client: Client = {
-      requestPermission: (params) => this.onPermission(params),
-      sessionUpdate: (params) => this.onUpdate(params),
-    };
-    this.agent = new ClientSideConnection(
-      () => client,
-      ndJsonStream(Writable.toWeb(requests), Readable.toWeb(outbound))
-    );
+    this.connection = client()
+      .onRequest(methods.client.session.requestPermission, ({ params }) =>
+        this.onPermission(params)
+      )
+      .onNotification(methods.client.session.update, ({ params }) => this.onUpdate(params))
+      .connect(ndJsonStream(Writable.toWeb(requests), Readable.toWeb(outbound)));
     if (this.closing) {
       await this.stopProcess();
       throw new Error('DeepSeek binding is closing.');
     }
     const initialized = await this.rpc(() =>
-      this.agentConnection().initialize({
+      this.agentConnection().request(methods.agent.initialize, {
         clientInfo: { name: 'openkit', version: '0' },
         protocolVersion: PROTOCOL_VERSION,
       })
@@ -1622,7 +1647,7 @@ class DeepSeekSession implements WorkerResidentSession {
     }
   }
 
-  /** Correlates prompt and idle-resume responses using only their bounded outbound prefixes. */
+  /** Correlates prompt, idle-resume, and native-close responses from bounded outbound prefixes. */
   private captureRequestIds(chunk: Buffer): void {
     let offset = 0;
     while (offset < chunk.length) {
@@ -1633,12 +1658,19 @@ class DeepSeekSession implements WorkerResidentSession {
         .subarray(offset, Math.min(end, offset + remaining))
         .toString('ascii');
       if (newline < 0) return;
-      const match = /^\{"jsonrpc":"2\.0","id":(\d+),"method":"session\/(prompt|resume)"/.exec(
+      const match = /^\{"jsonrpc":"2\.0","id":(\d+),"method":"session\/(prompt|resume|close)"/.exec(
         this.requestPrefix
       );
       if (match?.[2] === 'prompt') this.promptRequestId = Number(match[1]);
       if (match?.[2] === 'resume' && this.idleResumeRequest?.id === null) {
         this.idleResumeRequest.id = Number(match[1]);
+      }
+      if (
+        match?.[2] === 'close' &&
+        this.nativeCloseRequest?.id === null &&
+        !this.nativeCloseRequest.replied
+      ) {
+        this.nativeCloseRequest.id = Number(match[1]);
       }
       this.requestPrefix = '';
       offset = newline + 1;
@@ -1714,6 +1746,11 @@ class DeepSeekSession implements WorkerResidentSession {
     }
     if ('id' in message && !('method' in message)) {
       const id = message.id as string | number | null;
+      const close = this.nativeCloseRequest;
+      if (close?.id != null && close.id === id && !close.replied) {
+        close.replied = true;
+        close.acknowledged = 'result' in message;
+      }
       if (this.idleResumeRequest?.id != null && this.idleResumeRequest.id === id) {
         // Only the first correlated reply decides this idle resume; a local error or late
         // response cannot invent refusal after the request's bounded lifetime ends.
@@ -1902,7 +1939,7 @@ class DeepSeekSession implements WorkerResidentSession {
 
 /**
  * Admits the closed JSON-RPC envelope core before SDK routing can discard invalid frames.
- * SDK 1.7.0 keeps its envelope guards private to jsonrpc.js; its public ACP API exposes no
+ * SDK 2.2.0 keeps its envelope guards private to jsonrpc.js; its public ACP API exposes no
  * suitable guard. Method payload validation and dispatch remain the SDK's responsibility.
  */
 function validNativeEnvelope(value: unknown): value is Record<string, unknown> {

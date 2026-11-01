@@ -132,7 +132,7 @@ describe('WorkerTranscriptWriter source retention', () => {
         coverage: 'collecting',
         native: {
           harness: 'pi',
-          authoredVersion: '1.0.2',
+          authoredVersion: '1.4.0',
           measuredVersion: null,
           imageDigest: null,
           format: 'application/octet-stream',

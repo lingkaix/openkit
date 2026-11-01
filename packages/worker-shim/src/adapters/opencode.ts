@@ -47,15 +47,15 @@ export const OPENCODE_PROVIDER_ID = 'openkit-worker-inference';
 /**
  * This adapter does not re-list tools at Turn start. A changed MCP server set or working
  * directory is a successor AgentSession. The resident contract has no declaration field, so
- * callers read this constant. `@opencode/cli@2.0.22` calls MCP `tools/list` when a server connects.
+ * callers read this constant. `@opencode/cli@2.2.5` calls MCP `tools/list` when a server connects.
  */
 export const OPENCODE_LISTS_TOOLS_AT_TURN_START = false;
 
 /** Native permission reply used when an ask still arrives. The shortest-lived grant is `once`. */
 export const OPENCODE_PERMISSION_REPLY = 'once';
 
-const CLIENT_PACKAGE = '@opencode/client@2.0.22';
-const CLI_PACKAGE = '@opencode/cli@2.0.22';
+const CLIENT_PACKAGE = '@opencode/client@2.2.5';
+const CLI_PACKAGE = '@opencode/cli@2.2.5';
 const CLI_NAME = '@opencode/cli';
 const RESULT_BYTE_LIMIT = 16 * 1024 * 1024;
 const DIAGNOSTIC_BYTE_LIMIT = 16 * 1024;
@@ -442,7 +442,7 @@ async function supervise(
       const activeAtClose = turnState === 'active';
       persistencePreservingClose = false;
       closePromise = (async () => {
-        // On 2.0.22 --stdio EOF returns normally from serve and runs scoped finalizers,
+        // On 2.2.5 --stdio EOF returns normally from serve and runs scoped finalizers,
         // including SQLite.close. Signals interrupt that scope and do not prove this path.
         if (!activeAtClose && !exitObserved && child.stdin) {
           gracefulRequested = true;
@@ -757,7 +757,10 @@ async function supervise(
               );
               // Move is itself a native inbox operation. Drain it before recording the
               // prompt boundary, so its idle event cannot settle the admitted Turn.
-              await rpc('session.wait after move', client.session.wait({ sessionID: sessionId }));
+              await rpc(
+                'session.wait after move',
+                client.experimental.session.wait({ sessionID: sessionId })
+              );
               await syncMcpServers(
                 client,
                 serverIds,
@@ -816,7 +819,7 @@ async function supervise(
               );
               await rpc(
                 'session.wait after model selection',
-                client.session.wait({ sessionID: sessionId })
+                client.experimental.session.wait({ sessionID: sessionId })
               );
             }
             const selected = await rpc(
@@ -1526,7 +1529,7 @@ async function proveConversation(
 /**
  * Reports whether a new process can read this conversation.
  *
- * `@opencode/cli@2.0.22` commits the id into `session_v2` of `$XDG_DATA_HOME/opencode/opencode.db`
+ * `@opencode/cli@2.2.5` commits the id into `session_v2` of `$XDG_DATA_HOME/opencode/opencode.db`
  * before `session.create` returns. A read-only select saw that row while the server was alive,
  * and after SIGKILL a second `opencode serve` on the same directory resumed it. The handle stays
  * pending until this select matches, and a later inspect keeps the first successful proof.
@@ -1696,14 +1699,17 @@ async function syncMcpServers(
     const before = toolGeneration(marker);
     // Native connect drains its startup and publishes ToolsChanged even when already connected.
     // Reuse the existing location-specific reload proof for native as well as managed supply.
-    await rpc('mcp.connect native', client.mcp.connect({ location, server: server.name }));
+    await rpc(
+      'mcp.connect native',
+      client.experimental.mcp.connect({ location, server: server.name })
+    );
     await waitForToolGeneration(marker, before, deadline);
   }
   for (const id of ids) {
     const before = toolGeneration(marker);
     await rpc(
       'mcp.add',
-      client.mcp.add({
+      client.experimental.mcp.add({
         location,
         config: {
           // Keep the pin's CodeMode default so execute and search see managed tools.

@@ -29,7 +29,7 @@ COPY packages/config-schema/package.json packages/config-schema/package.json
 COPY packages/worker-shim/package.json packages/worker-shim/package.json
 COPY packages/codex-app-server-schema/package.json packages/codex-app-server-schema/package.json
 COPY packages/pi-runtime-host/package.json packages/pi-runtime-host/package.json
-COPY patches/pi-coding-agent-1.0.2-openkit-native-state.patch patches/pi-coding-agent-1.0.2-openkit-native-state.patch
+COPY patches/pi-coding-agent-1.4.0-openkit-native-state.patch patches/pi-coding-agent-1.4.0-openkit-native-state.patch
 
 RUN pnpm install --frozen-lockfile
 
@@ -217,8 +217,8 @@ FROM worker-common AS worker-runtimes
 
 ARG TARGETARCH
 ARG CODEX_CLI_VERSION="0.166.0"
-ARG OPENCODE_VERSION="2.0.22"
-ARG DEEPSEEK_VERSION="0.2.0-rc.2"
+ARG OPENCODE_VERSION="2.2.5"
+ARG DEEPSEEK_VERSION="0.2.1-rc.5"
 
 LABEL org.openkit.image="worker-runtimes"
 LABEL org.openkit.worker.runtimes="codex,pi,opencode,deepseek"
@@ -283,7 +283,7 @@ RUN export HOME=/tmp/runtime-home \
 
 # Preserve the frozen workspace patch and every transitive production asset.
 COPY --chmod=0755 --from=worker-shim-builder /deploy/pi-runtime-host/ /usr/local/lib/openkit/pi-runtime-host/
-COPY --chmod=0644 patches/pi-coding-agent-1.0.2-openkit-native-state.patch /usr/local/lib/openkit/pi-native-state.patch
+COPY --chmod=0644 patches/pi-coding-agent-1.4.0-openkit-native-state.patch /usr/local/lib/openkit/pi-native-state.patch
 COPY --chmod=0644 containers/worker-runtimes/versions.json /usr/local/lib/openkit/worker-runtimes-versions.json
 COPY --chmod=0644 containers/worker-runtimes/smoke-package.json /usr/local/lib/openkit/image-smoke-package.json
 COPY --chmod=0755 containers/worker-runtimes/smoke.sh /usr/local/bin/openkit-worker-runtimes-smoke
