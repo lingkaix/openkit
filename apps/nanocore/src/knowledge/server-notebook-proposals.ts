@@ -24,6 +24,7 @@ import {
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { projectSelectedKnowledgeProposalPreview } from './notebook-proposal-preview.js';
 import {
+  assertNotebookProposalDecisionEvidence,
   type NotebookEdit,
   type NotebookPublicationAdmission,
   prepareNotebookProposalChanges,
@@ -257,10 +258,19 @@ export async function decideServerNotebookProposal(
   const prior = selected.reviews.find((review) => review.requestId === request.requestId);
   if (prior) {
     if (prior.decision !== request.decision) throw new NotebookError('conflict');
-    if (prior.decision !== 'accepted') return { review: prior, notebookRevision: null };
+    if (prior.decision !== 'accepted') {
+      assertNotebookProposalDecisionEvidence(
+        { kind: 'server', coreDb: context.coreDb },
+        request,
+        prior
+      );
+      return { review: prior, notebookRevision: null };
+    }
   }
   if (!prior && selected.reviews.some((review) => review.decision !== 'deferred'))
     throw new NotebookError('conflict');
+  if (!prior)
+    assertNotebookProposalDecisionEvidence({ kind: 'server', coreDb: context.coreDb }, request);
   const review =
     prior ??
     ServerKnowledgeReviewSchema.parse({

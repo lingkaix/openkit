@@ -25,6 +25,7 @@ import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { projectSelectedKnowledgeProposalPreview } from './notebook-proposal-preview.js';
 import {
+  assertNotebookProposalDecisionEvidence,
   type NotebookEdit,
   type NotebookPublicationAdmission,
   prepareNotebookProposalChanges,
@@ -293,12 +294,21 @@ export async function decideUserMemoryProposal(
   const prior = selected.reviews.find((review) => review.requestId === request.requestId);
   if (prior) {
     if (prior.decision !== request.decision) throw new NotebookError('conflict');
-    if (prior.decision !== 'accepted') return { review: prior, notebookRevision: null };
+    if (prior.decision !== 'accepted') {
+      assertNotebookProposalDecisionEvidence(
+        { kind: 'user', userDb: context.userDb },
+        request,
+        prior
+      );
+      return { review: prior, notebookRevision: null };
+    }
   }
   if (!prior && selected.reviews.some((review) => review.decision !== 'deferred'))
     throw new NotebookError('conflict');
   if (!prior && notebook(context).publishedRevision() !== proposal.baseRevision)
     throw new NotebookError('conflict');
+  if (!prior)
+    assertNotebookProposalDecisionEvidence({ kind: 'user', userDb: context.userDb }, request);
   const review =
     prior ??
     UserReviewSchema.parse({

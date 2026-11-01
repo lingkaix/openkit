@@ -116,6 +116,37 @@ export type NotebookPublicationOwner =
   | { readonly kind: 'user'; readonly userDb: UserDb }
   | { readonly kind: 'server'; readonly coreDb: CoreDb };
 
+/** Retained nonaccepted decisions need both original Review and Audit; retries never repair either. */
+export function assertNotebookProposalDecisionEvidence(
+  owner: Exclude<NotebookPublicationOwner, { kind: 'workspace' }>,
+  request: { readonly proposalId: string; readonly requestId: string },
+  review?: Pick<KnowledgeProposalReviewRecord, 'actor'>
+): void {
+  const db = owner.kind === 'user' ? owner.userDb : owner.coreDb;
+  const rows = db.sqlite
+    .prepare(
+      'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
+    )
+    .all(
+      request.requestId,
+      'knowledge.proposal.decide',
+      `knowledge-proposal:${request.proposalId}`
+    );
+  if (!review && rows.length === 0) return;
+  if (!review || rows.length !== 1) throw new NotebookError('recovery_required');
+  try {
+    const audit = readAuditEventRowV1(rows[0]);
+    if (
+      audit.category !== 'knowledge' ||
+      audit.outcome !== 'succeeded' ||
+      !isDeepStrictEqual(audit.actor, review.actor)
+    )
+      throw new NotebookError('recovery_required');
+  } catch {
+    throw new NotebookError('recovery_required');
+  }
+}
+
 /** One common publisher; native adapters own current scope, source and policy admission. */
 export type ScopedNotebookPublicationDependencies = Omit<
   NotebookPublicationDependencies,

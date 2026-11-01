@@ -1167,3 +1167,205 @@ it.each([
   expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([result.review]);
   expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
 });
+
+// S61:220-222: a retained nonaccepted Review without its required Audit is partial evidence.
+it.each([
+  'rejected',
+  'deferred',
+] as const)('refuses Server %s replay after the actual Audit write failed after Review retention', async (decision) => {
+  const f = fixture(false);
+  const context = {
+    ...f.dependencies,
+    actor: f.requestActor,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+  };
+  const baseRevision = f.notebook.publishedRevision();
+  const proposal = createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision,
+      summary: 'Inspect incomplete human decision evidence.',
+      changes: [
+        {
+          path: 'index.md',
+          content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nAn unpublished audit-fault candidate.\n`,
+        },
+      ],
+    },
+    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+    []
+  );
+  const selected = readServerNotebookProposal(context, proposal.id);
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision,
+  };
+  const invoke = createOperationInvocation({
+    coreDb: f.coreDb,
+    store: f.store,
+    serverKnowledgeMaintenance: f.dependencies,
+  });
+  const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
+  const auditRows = () =>
+    f.coreDb.sqlite
+      .prepare(
+        'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
+      )
+      .all(request.requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposal.id}`);
+  expect(auditRows()).toEqual([]);
+  expect(f.coreDb.sqlite.pragma('query_only', { simple: true })).toBe(0);
+  f.coreDb.sqlite.pragma('query_only = ON');
+  try {
+    await expect(invoke('knowledge.server.proposal.decide', request, human)).rejects.toMatchObject({
+      code: 'SQLITE_READONLY',
+    });
+  } finally {
+    f.coreDb.sqlite.pragma('query_only = OFF');
+  }
+  // These deciding checks refuse credit for an error before the actual Review/Audit boundary.
+  const afterFailure = readServerNotebookProposal(context, proposal.id);
+  expect(afterFailure.reviews).toHaveLength(1);
+  expect(afterFailure.reviews[0]).toMatchObject({ requestId: request.requestId, decision });
+  expect(auditRows()).toEqual([]);
+  expect(f.notebook.publishedRevision()).toBe(baseRevision);
+  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  const reviewPath = join(
+    f.coreDb.dataRoot,
+    'server',
+    'knowledge',
+    'reviews',
+    `${proposal.id}.json`
+  );
+  const retainedReviewBytes = readFileSync(reviewPath, 'utf8');
+  const proposalPath = join(
+    f.coreDb.dataRoot,
+    'server',
+    'knowledge',
+    'proposals',
+    `${proposal.id}.md`
+  );
+  const retainedProposalBytes = readFileSync(proposalPath, 'utf8');
+  await expect
+    .soft(invoke('knowledge.server.proposal.decide', request, human))
+    .rejects.toMatchObject({ code: 'recovery_required' });
+  expect(auditRows()).toEqual([]);
+  expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
+  expect(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual(afterFailure.reviews);
+  expect(f.notebook.publishedRevision()).toBe(baseRevision);
+  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+});
+
+// S61:220-222: an owner-produced deciding Audit cannot recreate a lost Review on retry.
+it.each([
+  'rejected',
+  'deferred',
+] as const)('refuses Server %s replay when its original Audit survives a lost Review file', async (decision) => {
+  const { existsSync, unlinkSync } = await import('node:fs');
+  const f = fixture(false);
+  const context = {
+    ...f.dependencies,
+    actor: f.requestActor,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+  };
+  const baseRevision = f.notebook.publishedRevision();
+  const proposal = createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision,
+      summary: 'Retain a complete decision before Review loss.',
+      changes: [
+        {
+          path: 'index.md',
+          content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nA retained audit control.\n`,
+        },
+      ],
+    },
+    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+    []
+  );
+  const selected = readServerNotebookProposal(context, proposal.id);
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision,
+  };
+  const invoke = createOperationInvocation({
+    coreDb: f.coreDb,
+    store: f.store,
+    serverKnowledgeMaintenance: f.dependencies,
+  });
+  const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
+  const auditRows = () =>
+    f.coreDb.sqlite
+      .prepare(
+        'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
+      )
+      .all(request.requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposal.id}`);
+  expect(auditRows()).toEqual([]);
+  const completed = await invoke('knowledge.server.proposal.decide', request, human);
+  expect(completed.notebookRevision).toBeNull();
+  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([completed.review]);
+  const retainedAudit = auditRows();
+  expect(retainedAudit).toHaveLength(1);
+  expect(retainedAudit[0]).toMatchObject({
+    request_id: request.requestId,
+    action: 'knowledge.proposal.decide',
+    resource: `knowledge-proposal:${proposal.id}`,
+    outcome: 'succeeded',
+  });
+  const reviewPath = join(
+    f.coreDb.dataRoot,
+    'server',
+    'knowledge',
+    'reviews',
+    `${proposal.id}.json`
+  );
+  const proposalPath = join(
+    f.coreDb.dataRoot,
+    'server',
+    'knowledge',
+    'proposals',
+    `${proposal.id}.md`
+  );
+  const retainedReviewBytes = readFileSync(reviewPath, 'utf8');
+  const retainedProposalBytes = readFileSync(proposalPath, 'utf8');
+  expect(f.notebook.publishedRevision()).toBe(baseRevision);
+  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(completed);
+  expect(auditRows()).toEqual(retainedAudit);
+  expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
+  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([completed.review]);
+  // Deliberate corruption after lawful public completion: remove this fixture's Review only.
+  unlinkSync(reviewPath);
+  expect(existsSync(reviewPath)).toBe(false);
+  expect(auditRows()).toEqual(retainedAudit);
+  await expect
+    .soft(invoke('knowledge.server.proposal.decide', request, human))
+    .rejects.toMatchObject({ code: 'recovery_required' });
+  expect.soft(existsSync(reviewPath)).toBe(false);
+  expect.soft(auditRows()).toEqual(retainedAudit);
+  expect.soft(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+  expect.soft(f.notebook.publishedRevision()).toBe(baseRevision);
+  expect.soft(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  // Missing original Review also forbids changing the same incomplete command into publication.
+  await expect
+    .soft(invoke('knowledge.server.proposal.decide', { ...request, decision: 'accepted' }, human))
+    .rejects.toMatchObject({ code: 'recovery_required' });
+  expect.soft(existsSync(reviewPath)).toBe(false);
+  expect.soft(auditRows()).toEqual(retainedAudit);
+  expect.soft(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+  expect.soft(f.notebook.publishedRevision()).toBe(baseRevision);
+  expect.soft(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+});

@@ -852,3 +852,215 @@ describe('User-private bounded Memory maintenance', () => {
     await prepared.fail();
   });
 });
+
+// S61:220-222: retries inspect reached evidence; they do not fill a missing decision Audit.
+it.each([
+  'rejected',
+  'deferred',
+] as const)('refuses User %s replay after reached Audit failure and preserves successful decision replay', async (decision) => {
+  const { readFileSync } = await import('node:fs');
+  const { createOperationInvocation } = await import('../operation-composition.js');
+  const f = fixture(false);
+  const pending = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
+  expect(pending.outcome).toBe('review-required');
+  const context = {
+    ...f.dependencies,
+    actor: f.input.requestActor,
+    revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
+      readUserMemoryNotebookAdmission(
+        { ...f.dependencies, actor: f.input.requestActor },
+        files,
+        paths
+      ),
+  };
+  const selected = readUserMemoryProposal(context, pending.proposalId!);
+  const proposal = selected.proposal;
+  const baseRevision = f.notebook().publishedRevision();
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision: proposal.baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision,
+  };
+  const invoke = createOperationInvocation(f.dependencies);
+  const human = {
+    kind: 'public' as const,
+    actor: f.input.requestActor,
+    delivery: 'human' as const,
+  };
+  const auditRows = (proposalId: string, requestId: string) =>
+    f.userDb.sqlite
+      .prepare(
+        'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
+      )
+      .all(requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposalId}`);
+  expect(auditRows(proposal.id, request.requestId)).toEqual([]);
+  // The public Memory owner opens its own User handle; this isolated trigger faults that real INSERT.
+  f.userDb.sqlite.exec(
+    "CREATE TRIGGER refuse_proposal_decision_audit BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.proposal.decide' BEGIN SELECT RAISE(ABORT, 'injected decision audit persistence failure'); END"
+  );
+  try {
+    await expect(invoke('memory.proposal.decide', request, human)).rejects.toMatchObject({
+      code: 'SQLITE_CONSTRAINT_TRIGGER',
+    });
+  } finally {
+    f.userDb.sqlite.exec('DROP TRIGGER refuse_proposal_decision_audit');
+  }
+  // The new public handle must have reached Review retention before the intended SQL refusal.
+  const afterFailure = readUserMemoryProposal(context, proposal.id);
+  expect(afterFailure.reviews).toHaveLength(1);
+  expect(afterFailure.reviews[0]).toMatchObject({ requestId: request.requestId, decision });
+  expect(auditRows(proposal.id, request.requestId)).toEqual([]);
+  expect(f.notebook().publishedRevision()).toBe(baseRevision);
+  expect(f.notebook().retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  const root = resolveScopedNotebookOwner({
+    coreDb: f.coreDb,
+    actor: f.input.requestActor,
+    target: { kind: 'user' },
+  }).notebookRoot;
+  const reviewPath = join(root, 'reviews', `${proposal.id}.json`);
+  const proposalPath = join(root, 'proposals', `${proposal.id}.md`);
+  const retainedReviewBytes = readFileSync(reviewPath, 'utf8');
+  const retainedProposalBytes = readFileSync(proposalPath, 'utf8');
+  await expect
+    .soft(invoke('memory.proposal.decide', request, human))
+    .rejects.toMatchObject({ code: 'recovery_required' });
+  expect(auditRows(proposal.id, request.requestId)).toEqual([]);
+  expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
+  expect(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+  expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual(afterFailure.reviews);
+  expect(f.notebook().publishedRevision()).toBe(baseRevision);
+  expect(f.notebook().retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  // A separate lawful request proves restored persistence and successful nonaccepted replay remain valid.
+  const control = await createUserMemoryProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision,
+      summary: 'Retain a complete human decision after restoring persistence.',
+      changes: [
+        {
+          path: 'index.md',
+          content: `${f.notebook().readRevision(baseRevision).files['index.md']}\nA separately reviewed control.\n`,
+        },
+      ],
+    },
+    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
+    []
+  );
+  const controlSelected = readUserMemoryProposal(context, control.id);
+  const controlRequest = {
+    requestId: randomUUID(),
+    proposalId: control.id,
+    proposalDigest: controlSelected.proposalDigest,
+    baseRevision: control.baseRevision,
+    candidateRevision: control.candidateRevision,
+    decision,
+  };
+  const completed = await invoke('memory.proposal.decide', controlRequest, human);
+  const completedAudit = auditRows(control.id, controlRequest.requestId);
+  expect(completedAudit).toHaveLength(1);
+  expect(await invoke('memory.proposal.decide', controlRequest, human)).toEqual(completed);
+  expect(auditRows(control.id, controlRequest.requestId)).toEqual(completedAudit);
+  expect(readUserMemoryProposal(context, control.id).reviews).toEqual([completed.review]);
+  expect(f.notebook().publishedRevision()).toBe(baseRevision);
+});
+
+// S61:220-222: retained User deciding Audit is incomplete without its original Review.
+it.each([
+  'rejected',
+  'deferred',
+] as const)('refuses User %s replay when its original Audit survives a lost Review file', async (decision) => {
+  const { existsSync, readFileSync, unlinkSync } = await import('node:fs');
+  const { createOperationInvocation } = await import('../operation-composition.js');
+  const f = fixture(false);
+  const pending = await runUserMemoryMaintenanceCommand(f.dependencies, f.input);
+  expect(pending.outcome).toBe('review-required');
+  const context = {
+    ...f.dependencies,
+    actor: f.input.requestActor,
+    revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
+      readUserMemoryNotebookAdmission(
+        { ...f.dependencies, actor: f.input.requestActor },
+        files,
+        paths
+      ),
+  };
+  const selected = readUserMemoryProposal(context, pending.proposalId!);
+  const proposal = selected.proposal;
+  const baseRevision = f.notebook().publishedRevision();
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision: proposal.baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision,
+  };
+  const invoke = createOperationInvocation(f.dependencies);
+  const human = {
+    kind: 'public' as const,
+    actor: f.input.requestActor,
+    delivery: 'human' as const,
+  };
+  const auditRows = () =>
+    f.userDb.sqlite
+      .prepare(
+        'SELECT * FROM audit_events WHERE workspace_id IS NULL AND request_id = ? AND action = ? AND resource = ? LIMIT 2'
+      )
+      .all(request.requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposal.id}`);
+  expect(auditRows()).toEqual([]);
+  const completed = await invoke('memory.proposal.decide', request, human);
+  expect(completed.application).toBeNull();
+  expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([completed.review]);
+  const retainedAudit = auditRows();
+  expect(retainedAudit).toHaveLength(1);
+  expect(retainedAudit[0]).toMatchObject({
+    request_id: request.requestId,
+    action: 'knowledge.proposal.decide',
+    resource: `knowledge-proposal:${proposal.id}`,
+    outcome: 'succeeded',
+  });
+  const ownerRoot = resolveScopedNotebookOwner({
+    coreDb: f.coreDb,
+    actor: f.input.requestActor,
+    target: { kind: 'user' },
+  }).notebookRoot;
+  const reviewPath = join(ownerRoot, 'reviews', `${proposal.id}.json`);
+  const proposalPath = join(ownerRoot, 'proposals', `${proposal.id}.md`);
+  const retainedReviewBytes = readFileSync(reviewPath, 'utf8');
+  const retainedProposalBytes = readFileSync(proposalPath, 'utf8');
+  expect(f.notebook().publishedRevision()).toBe(baseRevision);
+  expect(f.notebook().retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+  expect(await invoke('memory.proposal.decide', request, human)).toEqual(completed);
+  expect(auditRows()).toEqual(retainedAudit);
+  expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
+  expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([completed.review]);
+  // Deliberate corruption after lawful public completion: no SQL or synthetic Review is written.
+  unlinkSync(reviewPath);
+  expect(existsSync(reviewPath)).toBe(false);
+  expect(auditRows()).toEqual(retainedAudit);
+  await expect
+    .soft(invoke('memory.proposal.decide', request, human))
+    .rejects.toMatchObject({ code: 'recovery_required' });
+  expect.soft(existsSync(reviewPath)).toBe(false);
+  expect.soft(auditRows()).toEqual(retainedAudit);
+  expect.soft(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+  expect.soft(f.notebook().publishedRevision()).toBe(baseRevision);
+  expect
+    .soft(f.notebook().retainedCandidate(proposal.id).revision)
+    .toBe(proposal.candidateRevision);
+  // Missing original Review also forbids changing the same incomplete command into publication.
+  await expect
+    .soft(invoke('memory.proposal.decide', { ...request, decision: 'accepted' }, human))
+    .rejects.toMatchObject({ code: 'recovery_required' });
+  expect.soft(existsSync(reviewPath)).toBe(false);
+  expect.soft(auditRows()).toEqual(retainedAudit);
+  expect.soft(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
+  expect.soft(f.notebook().publishedRevision()).toBe(baseRevision);
+  expect
+    .soft(f.notebook().retainedCandidate(proposal.id).revision)
+    .toBe(proposal.candidateRevision);
+});
