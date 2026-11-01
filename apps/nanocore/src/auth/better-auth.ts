@@ -1,4 +1,3 @@
-import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { allocateEntityId } from '@openkit/protocol';
 import { betterAuth } from 'better-auth';
 import { APIError } from 'better-auth/api';
@@ -6,7 +5,7 @@ import { resolveBindHost, resolveBindPort } from '../config/bind-host.js';
 import type { CoreMode } from '../config/mode.js';
 import type { OpenKitConfig } from '../config/openkit-config.js';
 import { type CoreDb, getCoreDb } from '../storage/db.js';
-import * as betterAuthSchema from '../storage/schema/better-auth/index.js';
+import { commitBetterAuthStage, nativeBetterAuthAdapter } from './better-auth-adapter.js';
 import { isServerBootstrapComplete } from './bootstrap-token.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
@@ -45,7 +44,7 @@ interface CreateBetterAuthOptions {
 }
 
 /**
- * Creates a Better Auth instance backed by the Core Drizzle database.
+ * Creates Better Auth with Core Drizzle reads and acknowledged native mutation stages.
  *
  * @param coreDb Core database handles to bind.
  * @param options Resolved startup mode, config, and environment.
@@ -98,11 +97,28 @@ export function createBetterAuth(
         },
       },
     },
-    database: drizzleAdapter(coreDb.db, {
-      provider: 'sqlite',
-      schema: betterAuthSchema,
-    }),
+    database: nativeBetterAuthAdapter(coreDb, mode === 'server'),
     databaseHooks: {
+      account: {
+        delete: {
+          before: async (account, context) => {
+            const current = context?.context.session;
+            if (!current)
+              throw new APIError('UNAUTHORIZED', { message: 'Unauthorized', code: 'UNAUTHORIZED' });
+            await commitBetterAuthStage(coreDb, {
+              kind: 'account-unlink',
+              accountId: account.id,
+              userId: current.user.id,
+              sessionToken: current.session.token,
+              freshAgeSeconds: context.context.sessionConfig.freshAge,
+              allowUnlinkingAll:
+                context.context.options.account?.accountLinking?.allowUnlinkingAll ?? false,
+            });
+            // The SDK ignores deleteAccount's return. Suppress its default writer only after FULL ACK.
+            return false;
+          },
+        },
+      },
       user: {
         create: {
           before: async () => {

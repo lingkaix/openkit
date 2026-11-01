@@ -56,7 +56,7 @@ export const REQUIRED_FEATURE_REGISTRY = {
     id: 'openkit.workspace-resource-policy.v1',
     status: 'active',
     description:
-      'Workspace configuration carries managed resource boundaries and exact associations and prohibitions across export and import.',
+      'Workspace configuration carries managed resource boundaries and exact associations and prohibitions across verified export. Ordinary portable Workspace import is absent and does not carry them.',
   },
   'openkit.memory-suppression.v1': {
     id: 'openkit.memory-suppression.v1',
