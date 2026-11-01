@@ -39,13 +39,21 @@ import {
   writeWorkspacePortableFileState,
 } from './workspace-portable-file-state.js';
 
-/** Exact base owned by the authored directory, Notebook and trace fixture. */
-const PORTABLE_KNOWLEDGE_BASE_ID = 'kb_00000000-0000-7000-8000-000000000001';
 const JULY = '2026-07-01T00:00:00.000Z';
 const PORTABLE_TURN = {
   threadId: 'th_00000000-0000-7d57-bb9a-837e048d6465',
   turnId: 'tu_00000000-0000-7533-bc6b-7efa7795a620',
 } as const;
+/** Authored source config. The comment and spacing must survive the portable write byte for byte. */
+function authoredWorkspaceConfig(knowledgeBaseId: string): string {
+  return `{\n  // exact comment\n  "schemaVersion": 1,\n  "workspace": { "name": "Portable file fixture", "defaultKnowledgeBaseId": "${knowledgeBaseId}" }\n}\n`;
+}
+
+/** Target seed. Same Knowledge Base binding, different bytes, so equality requires the config write. */
+function distinctTargetWorkspaceConfig(knowledgeBaseId: string): string {
+  return `{\n  "schemaVersion": 1,\n  "workspace": { "name": "Distinct target seed", "defaultKnowledgeBaseId": "${knowledgeBaseId}" }\n}\n`;
+}
+
 /** Page bytes the portable reader must return from the selected Notebook commit. */
 const PORTABLE_PAGES = {
   'native.md':
@@ -166,28 +174,48 @@ async function publishPortablePages(input: {
 
 /** Copies the admitted SQL selection so a second root reads the same Notebook commit. */
 function copyAdmittedAuthority(sourceRoot: string, targetRoot: string): void {
+  const knowledgeBaseId = readAdmittedWorkspaceKnowledgeSelection(sourceRoot, basename(sourceRoot))
+    .head.knowledgeBaseId;
   closeWorkspaceProductReadHandles(sourceRoot);
   const workspaceDb = openWorkspaceDb(dirname(dirname(sourceRoot)), basename(sourceRoot));
   workspaceDb.sqlite.pragma('wal_checkpoint(TRUNCATE)');
   workspaceDb.sqlite.close();
-  for (const name of ['db', 'config', 'knowledge']) {
+  for (const name of ['db', 'knowledge']) {
     cpSync(join(sourceRoot, name), join(targetRoot, name), { recursive: true });
   }
+  mkdirSync(join(targetRoot, 'config'), { recursive: true });
+  writeFileSync(
+    join(targetRoot, 'config', 'workspace.jsonc'),
+    distinctTargetWorkspaceConfig(knowledgeBaseId)
+  );
 }
 
 /** Creates a real Workspace and writes the retained trace and Context Package files onto it. */
 async function portableSource(prefix: string): Promise<{
   root: string;
   owners: ReturnType<typeof portableOwners>;
+  knowledgeBaseId: string;
 }> {
   const admitted = await admittedWorkspace(prefix);
   await publishPortablePages(admitted);
-  writePortableTraces(admitted.workspaceRoot, admitted.workspaceId);
-  return { root: admitted.workspaceRoot, owners: portableOwners(admitted.workspaceId) };
+  const knowledgeBaseId = readAdmittedWorkspaceKnowledgeSelection(
+    admitted.workspaceRoot,
+    admitted.workspaceId
+  ).head.knowledgeBaseId;
+  writeFileSync(
+    join(admitted.workspaceRoot, 'config', 'workspace.jsonc'),
+    authoredWorkspaceConfig(knowledgeBaseId)
+  );
+  writePortableTraces(admitted.workspaceRoot, admitted.workspaceId, knowledgeBaseId);
+  return {
+    root: admitted.workspaceRoot,
+    owners: portableOwners(admitted.workspaceId),
+    knowledgeBaseId,
+  };
 }
 
 /** Writes the retained trace and Context Package files under one admitted Workspace. */
-function writePortableTraces(root: string, workspaceId: string): void {
+function writePortableTraces(root: string, workspaceId: string, knowledgeBaseId: string): void {
   const retrieval = {
     traceId: 'krt_00000000-0000-780e-b78f-51422afca1e9',
     queryContext: {
@@ -197,7 +225,7 @@ function writePortableTraces(root: string, workspaceId: string): void {
       threadId: PORTABLE_TURN.threadId,
       turnId: PORTABLE_TURN.turnId,
     },
-    sourceScope: `page/workspace/${workspaceId}/${PORTABLE_KNOWLEDGE_BASE_ID}`,
+    sourceScope: `page/workspace/${workspaceId}/${knowledgeBaseId}`,
     notebookRevision: null,
     caller: 'app-api',
     requestDigest: `sha256:${'0'.repeat(64)}`,
@@ -249,7 +277,7 @@ function writePortableTraces(root: string, workspaceId: string): void {
       schemaVersion: 1,
       threadId: PORTABLE_TURN.threadId,
       turnId: PORTABLE_TURN.turnId,
-      workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
+      workspaceId,
     })}\n`
   );
   writeFileSync(join(packageRoot, 'context-package', 'instructions.md'), 'Portable request.\n');
@@ -278,7 +306,7 @@ describe('workspace portable file-state IO', () => {
             scope: scope === 'workspace' ? `workspace:${owners.workspaceId}` : 'server',
             knowledgeBaseId:
               scope === 'workspace'
-                ? PORTABLE_KNOWLEDGE_BASE_ID
+                ? source.knowledgeBaseId
                 : 'kb_00000000-0000-7000-8000-000000000002',
             path: 'index.md',
             notebookRevision: 'a'.repeat(40),
@@ -427,7 +455,7 @@ describe('workspace portable file-state IO', () => {
     expect([...state.workerContextPackageFiles]).toEqual([
       [
         'threads/th_00000000-0000-7d57-bb9a-837e048d6465/turns/tu_00000000-0000-7533-bc6b-7efa7795a620/context-package.json',
-        '{"schemaVersion":1,"threadId":"th_00000000-0000-7d57-bb9a-837e048d6465","turnId":"tu_00000000-0000-7533-bc6b-7efa7795a620","workspaceId":"ws_00000000-0000-7e30-a961-1cf5d6540406"}\n',
+        `{"schemaVersion":1,"threadId":"th_00000000-0000-7d57-bb9a-837e048d6465","turnId":"tu_00000000-0000-7533-bc6b-7efa7795a620","workspaceId":"${owners.workspaceId}"}\n`,
       ],
       [
         'threads/th_00000000-0000-7d57-bb9a-837e048d6465/turns/tu_00000000-0000-7533-bc6b-7efa7795a620/context-package/instructions.md',
