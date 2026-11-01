@@ -453,11 +453,10 @@ describe('worker control routes', () => {
   });
 
   it('localizes withheld heartbeat acknowledgements and blocked carriage without renewing stale authority', async () => {
-    const fixture = await createWorkerControlRouteFixture();
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-heartbeat-gap-')));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const fixture = await createWorkerControlRouteFixture([], coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -761,7 +760,6 @@ describe('worker control routes', () => {
     ],
   ] as const)('accepts restart heartbeat only for the %s', async (_case, reconnectKey, accepted, clearRuntimeTargetReadiness, beginBackendCleanup, expectedStatus, expectedErrorCode) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-reconnect-route-')));
-    const fixture = await createWorkerControlRouteFixture();
     const originalKey = createHash('sha256').update('route-process-key').digest('base64url');
     const processKeyHash = createHash('sha256')
       .update(Buffer.from(originalKey, 'base64url'))
@@ -770,7 +768,7 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const fixture = await createWorkerControlRouteFixture([], coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1178,14 +1176,13 @@ describe('worker control routes', () => {
   it('never persists worker bearer tokens in sequenced control state', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-token-redaction-'));
     const coreDb = openCoreDb(dataRoot);
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture();
     const token = 'okw_sequence_fingerprint_secret';
 
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+        await createWorkerControlRouteFixture([], coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1829,13 +1826,12 @@ describe('worker control routes', () => {
 
   it('rejects non-lease tokens on the default database gateway', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-non-lease-')));
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture();
 
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+        await createWorkerControlRouteFixture([], coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1873,12 +1869,11 @@ describe('worker control routes', () => {
 
   it('keeps worker-control database failures as internal server errors', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-db-error-')));
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture();
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture([], coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2380,13 +2375,12 @@ describe('worker control routes', () => {
 
   it('resolves a live final-status binding inside its Core transaction', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-live-race-')));
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture();
 
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+        await createWorkerControlRouteFixture([], coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2469,14 +2463,13 @@ describe('worker control routes', () => {
 
   it('rejects exact final-status replay when the authority deadline expires at transaction entry', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-replay-race-')));
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture();
     let transactionCount = 0;
 
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+        await createWorkerControlRouteFixture([], coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2896,13 +2889,12 @@ describe('worker control routes', () => {
 
   it('replays only exact final status while its lease is releasing', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-replay-')));
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture();
 
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+        await createWorkerControlRouteFixture([], coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3360,13 +3352,12 @@ describe('worker control routes', () => {
   });
 
   it('retains Artifact notice digest and collection hint across the real client route and durable restart replay', async () => {
-    const fixture = await createWorkerControlRouteFixture();
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-notice-carriage-'));
     let coreDb = openCoreDb(dataRoot);
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const fixture = await createWorkerControlRouteFixture([], coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: fixture.lineage.workspaceId,
@@ -3468,14 +3459,13 @@ describe('worker control routes', () => {
   it('retries durable heartbeat acceptance after the transaction fails beyond its callback', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-heartbeat-transaction-tail-'));
     const coreDb = openCoreDb(dataRoot);
-    const { environmentPackage, lineage } = await createWorkerControlRouteFixture();
     const injectedFailure = new Error('injected heartbeat transaction tail failure');
     let failAfterCallback = true;
 
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const { environmentPackage, lineage } = await createWorkerControlRouteFixture([], coreDb);
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: lineage.workspaceId,
