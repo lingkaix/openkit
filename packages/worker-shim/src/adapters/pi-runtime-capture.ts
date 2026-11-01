@@ -1,5 +1,6 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
+import { isRecord } from '@openkit/protocol';
 import {
   NativeRuntimeCapture,
   RUNTIME_FRAME_MAX_BYTES,
@@ -396,9 +397,4 @@ export class PiRuntimeCapture {
       reason,
     });
   }
-}
-
-/** Narrows native event fields without importing the host or SDK into the shim. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

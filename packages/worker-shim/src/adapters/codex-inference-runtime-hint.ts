@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { isRecord } from '@openkit/protocol';
 import type { WorkerInferenceRuntimeHintMapping } from '../adapter-registry.js';
 
 /** Pinned Codex sub-agent classifications retained without adapter-private labels. */
@@ -125,16 +126,6 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   return (
     isRecord(value) && Object.values(value).every((candidate) => typeof candidate === 'string')
   );
-}
-
-/**
- * Checks whether an unknown value is a non-array object.
- *
- * @param value Candidate object.
- * @returns True when record access is safe.
- */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 /**
