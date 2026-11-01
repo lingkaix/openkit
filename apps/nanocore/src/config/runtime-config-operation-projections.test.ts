@@ -9,20 +9,23 @@ import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { initializeTestCore } from '../test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
 import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
 const roots: string[] = [];
+const executorCoreDbs: ReturnType<typeof createTestCoreDb>[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
+  for (const coreDb of executorCoreDbs.splice(0)) closeTestCoreDb(coreDb);
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -31,8 +34,12 @@ describe('runtime and provider subscription operation cutover', () => {
   it('reaches runtime.schemas and provider-subscription.provider-list through canonical JSON bindings', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b4-projections-'));
     roots.push(dataRoot);
-    initializeTestCore(dataRoot);
-    const app = createApp({ dataRoot });
+    const executorCoreDb = createTestCoreDb(dataRoot);
+    executorCoreDbs.push(executorCoreDb);
+    const app = createApp({
+      dataRoot,
+      turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
+    });
     for (const id of ['runtime.schemas', 'provider-subscription.provider-list']) {
       const response = await app.request(`/api/app/operations/${id}`, {
         method: 'POST',
@@ -62,8 +69,12 @@ it('retires all ten former runtime bindings for the authorized local actor witho
     baseUrl: 'https://provider.example.test/v1',
   });
   writeFileSync(path, content);
-  initializeTestCore(dataRoot);
-  const app = createApp({ dataRoot });
+  const executorCoreDb = createTestCoreDb(dataRoot);
+  executorCoreDbs.push(executorCoreDb);
+  const app = createApp({
+    dataRoot,
+    turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
+  });
   const read = await app.request('/api/app/operations/runtime.file-read', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -487,8 +498,12 @@ it('reaches all ten owned runtime responses with explicit local authority', asyn
   roots.push(dataRoot);
   mkdirSync(join(dataRoot, 'config'), { recursive: true });
   writeFileSync(join(dataRoot, 'config/server.jsonc'), '{"schemaVersion":1}');
-  initializeTestCore(dataRoot);
-  const app = createApp({ dataRoot });
+  const executorCoreDb = createTestCoreDb(dataRoot);
+  executorCoreDbs.push(executorCoreDb);
+  const app = createApp({
+    dataRoot,
+    turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
+  });
   const invoke = async (id: string, input: Record<string, unknown>, expectedStatus = 200) => {
     const response = await app.request(`/api/app/operations/${id}`, {
       method: 'POST',
