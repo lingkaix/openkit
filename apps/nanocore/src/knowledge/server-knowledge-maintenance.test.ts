@@ -1003,3 +1003,167 @@ it('keeps the producing human and another current Server administrator distinct 
   expect(current.metadata.producer).toEqual(producer);
   expect(current.files['index.md']).toBe(preview.after);
 });
+
+// Notebook editing:66 binds the deciding command, distinct from the candidate draft request.
+it('retains the exact human Server Proposal command receipt and Audit on accepted replay', async () => {
+  const { commandRequestKey, getCommandRequestRecord } = await import(
+    '../storage/command-request-records.js'
+  );
+  const { listServerAuditEvents } = await import('../audit-events.js');
+  const f = fixture(false);
+  const context = {
+    ...f.dependencies,
+    actor: f.requestActor,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+  };
+  const baseRevision = f.notebook.publishedRevision();
+  const proposal = createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision,
+      summary: 'Retain the original human deciding command.',
+      changes: [
+        {
+          path: 'index.md',
+          content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nA human-reviewed addition.\n`,
+        },
+      ],
+    },
+    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+    []
+  );
+  const selected = readServerNotebookProposal(context, proposal.id);
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision: 'accepted' as const,
+  };
+  const invoke = createOperationInvocation({
+    coreDb: f.coreDb,
+    store: f.store,
+    serverKnowledgeMaintenance: f.dependencies,
+  });
+  const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
+  const accepted = await invoke('knowledge.server.proposal.decide', request, human);
+  const scope = { coreId: 'server' as const, actorId: f.requestActor.userId };
+  const receipt = () =>
+    getCommandRequestRecord(
+      f.coreDb.dataRoot,
+      scope,
+      commandRequestKey('knowledge.proposal.decide', request.requestId, scope),
+      new Date().toISOString()
+    );
+  // This is the publisher's existing semantic command name, not a newly invented public alias.
+  expect.soft(receipt()).toMatchObject({
+    command: 'knowledge.proposal.decide',
+    requestId: request.requestId,
+    scope,
+    inputHash: commandInputHash(request),
+    response: { kind: 'knowledge_notebook_revision', id: proposal.candidateRevision },
+  });
+  expect
+    .soft(
+      getCommandRequestRecord(
+        f.coreDb.dataRoot,
+        scope,
+        commandRequestKey('knowledge.notebook.update', request.requestId, scope),
+        new Date().toISOString()
+      )
+    )
+    .toBeNull();
+  const audits = () =>
+    listServerAuditEvents(f.coreDb).filter((event) => event.requestId === request.requestId);
+  const beforeReplay = audits();
+  expect.soft(beforeReplay).toContainEqual(
+    expect.objectContaining({
+      action: 'knowledge.proposal.decide',
+      actor: { kind: 'user', id: f.requestActor.userId },
+      notebookAdmission: expect.objectContaining({
+        ownerScope: { kind: 'server' },
+        requestId: request.requestId,
+        inputDigest: commandInputHash(request),
+        baseRevision,
+        candidateRevision: proposal.candidateRevision,
+        authority: { kind: 'proposal', proposalId: proposal.id },
+      }),
+    })
+  );
+  const originalReceipt = receipt();
+  expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(accepted);
+  expect(receipt()).toEqual(originalReceipt);
+  expect(audits()).toEqual(beforeReplay);
+  expect(readServerNotebookProposal(context, proposal.id).reviews).toHaveLength(1);
+  expect(f.notebook.publishedRevision()).toBe(proposal.candidateRevision);
+});
+
+// Evidence Audit Producers requires the human decision, independently of content publication.
+it.each([
+  'rejected',
+  'deferred',
+] as const)('retains one Server Proposal %s Audit without relabeling it on exact replay', async (decision) => {
+  const { listServerAuditEvents } = await import('../audit-events.js');
+  const f = fixture(false);
+  const context = {
+    ...f.dependencies,
+    actor: f.requestActor,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+  };
+  const baseRevision = f.notebook.publishedRevision();
+  const proposal = createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision,
+      summary: 'Retain a human decision without publication.',
+      changes: [
+        {
+          path: 'index.md',
+          content: `${f.notebook.readRevision(baseRevision).files['index.md']}\nAn unpublished addition.\n`,
+        },
+      ],
+    },
+    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+    []
+  );
+  const selected = readServerNotebookProposal(context, proposal.id);
+  const request = {
+    requestId: randomUUID(),
+    proposalId: proposal.id,
+    proposalDigest: selected.proposalDigest,
+    baseRevision,
+    candidateRevision: proposal.candidateRevision,
+    decision,
+  };
+  const invoke = createOperationInvocation({
+    coreDb: f.coreDb,
+    store: f.store,
+    serverKnowledgeMaintenance: f.dependencies,
+  });
+  const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
+  const audits = () =>
+    listServerAuditEvents(f.coreDb).filter((event) => event.requestId === request.requestId);
+  expect(audits()).toEqual([]);
+  const result = await invoke('knowledge.server.proposal.decide', request, human);
+  const retainedAudit = audits();
+  expect.soft(retainedAudit).toEqual([
+    expect.objectContaining({
+      action: 'knowledge.proposal.decide',
+      category: 'knowledge',
+      outcome: 'succeeded',
+      actor: { kind: 'user', id: f.requestActor.userId },
+      resource: `knowledge-proposal:${proposal.id}`,
+    }),
+  ]);
+  expect(result.notebookRevision).toBeNull();
+  expect(f.notebook.publishedRevision()).toBe(baseRevision);
+  expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(result);
+  expect(audits()).toEqual(retainedAudit);
+  expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([result.review]);
+  expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
+});

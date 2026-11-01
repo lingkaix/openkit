@@ -8,6 +8,7 @@ import {
 import { type ActorRef, deriveEntityId } from '@openkit/protocol';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import { recordServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -308,6 +309,18 @@ export async function decideServerNotebookProposal(
       path,
       `${JSON.stringify(preserveDescriptiveRecord(raw, previous, next), null, 2)}\n`
     );
+    // Accepted decisions receive the common publisher's exact admission/completion Audit.
+    if (request.decision !== 'accepted')
+      recordServerAuditEvent({
+        coreDb: context.coreDb,
+        requestId: request.requestId,
+        actor: { kind: 'user', id: context.actor.userId },
+        category: 'knowledge',
+        action: 'knowledge.proposal.decide',
+        resource: `knowledge-proposal:${proposal.id}`,
+        outcome: 'succeeded',
+        summary: 'Server Knowledge Proposal decision retained.',
+      });
   };
   if (request.decision !== 'accepted') {
     recordDecision();
@@ -320,6 +333,7 @@ export async function decideServerNotebookProposal(
       inflightCommands: context.inflightCommands,
       notebook: notebook(context.coreDb),
       producer: proposal.producer,
+      command: { name: 'knowledge.proposal.decide', input: request },
       actor: { kind: 'user', id: context.actor.userId },
       reviewedCandidate: {
         proposalId: proposal.id,
