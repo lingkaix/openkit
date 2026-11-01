@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { initializeWorkspaceNotebook } from '../knowledge/notebook-initialization.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyNativeScopeMigrations, applyScopedMigrations } from './migrate.js';
@@ -29,6 +31,31 @@ function openWorkspace(id = workspaceId): WorkspaceDb {
   const handle = openWorkspaceDb(root, id);
   handles.push(handle);
   return handle;
+}
+
+/**
+ * Continues a predecessor journal through Knowledge activation on this exact connection.
+ * The second full apply has no pending activation and must not carry another transfer.
+ */
+async function admitPredecessorKnowledge(handle: WorkspaceDb): Promise<void> {
+  const knowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
+  await initializeWorkspaceNotebook({
+    workspaceRoot: join(root, 'workspaces', handle.workspaceId),
+    workspaceId: handle.workspaceId,
+    workspaceDb: handle,
+    initialization: {
+      requestId: randomUUID(),
+      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      instructionReference: 'fixture:predecessor-capture',
+    },
+    revalidate: () => ({
+      pageScopeId: `page/workspace/${handle.workspaceId}/${knowledgeBaseId}`,
+      scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+      reviewRequiredPageIds: [],
+      registeredSources: new Map(),
+      resolvedReferences: new Map(),
+    }),
+  });
 }
 
 /** Reads retained values directly so a returned object cannot conceal a changed SQL row. */
@@ -273,7 +300,7 @@ describe('DX5 Workspace capture-record lifecycle', () => {
     const historyBefore = upgraded.sqlite
       .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
       .all();
-    applyScopedMigrations(upgraded);
+    await admitPredecessorKnowledge(upgraded);
     const captureId = randomUUID();
     protectCapture(upgraded, otherWorkspaceId, captureId);
     completeCapture(upgraded, otherWorkspaceId, captureId);
@@ -355,7 +382,7 @@ describe('C-b capture origin authority', () => {
     }
   });
 
-  it('keeps predecessor captures inspectable through explicit abandonment and migration', () => {
+  it('keeps predecessor captures inspectable through explicit abandonment and migration', async () => {
     const journal = JSON.parse(readFileSync(new URL('meta/_journal.json', migrationRoot), 'utf8'));
     const previousRoot = join(root, 'pre-origin-migrations');
     mkdirSync(join(previousRoot, 'meta'), { recursive: true });
@@ -409,7 +436,7 @@ describe('C-b capture origin authority', () => {
       priorHistory
     );
     const beforeMigration = retainedRows(previous) as Record<string, unknown>[];
-    applyScopedMigrations(previous);
+    await admitPredecessorKnowledge(previous);
     expect(inspectCapture(previous, otherWorkspaceId, captureId)).toEqual(abandoned);
     expect(retainedRows(previous)).toEqual(
       beforeMigration.map((row) => ({ ...row, origin: 'manual' }))
