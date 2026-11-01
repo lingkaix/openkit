@@ -93,7 +93,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
-import { createTestStore } from './test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -119,6 +119,9 @@ vi.mock('node:timers/promises', async (original) => {
   };
 });
 
+/** Private Core handles explicitly opened by the control-envelope cases; drained before disposal. */
+const workerControlCoreFixtures: CoreDb[] = [];
+
 /**
  * Creates an app with one registered worker control session.
  *
@@ -127,8 +130,8 @@ vi.mock('node:timers/promises', async (original) => {
  * @returns App, gateway, token, package, and lineage fixtures.
  */
 async function createWorkerControlRouteFixture(
-  workspaceRoots: MaterializedWorkspaceRoot[] = [],
-  coreDb?: CoreDb
+  workspaceRoots: MaterializedWorkspaceRoot[],
+  coreDb: CoreDb
 ): Promise<{
   app: ReturnType<typeof createApp>;
   environmentPackage: AgentEnvironmentPackage;
@@ -139,7 +142,7 @@ async function createWorkerControlRouteFixture(
   workspaceMutationAdmission: WorkspaceMutationAdmission;
 }> {
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-  const store = await createDemoStore(coreDb ? { dataRoot: coreDb.dataRoot } : undefined);
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -151,7 +154,8 @@ async function createWorkerControlRouteFixture(
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
-      ...(coreDb ? { coreDb, captureCoverage: store.getTurnCaptureCoverage(turn.id)! } : {}),
+      coreDb,
+      captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup: createTestAgentSetup(),
       agentSessionId: testEntityId('as', 'as_control_route_1'),
       triggerActor: { kind: 'user', id: LOCAL_USER_ID },
@@ -196,7 +200,7 @@ async function createWorkerControlRouteFixture(
       store,
       workerControlGateway: gateway,
       workspaceMutationAdmission,
-      ...(coreDb ? { turnExecutor: new SimulatedTurnExecutor({ coreDb }) } : {}),
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     }),
     environmentPackage,
     workspaceMutationAdmission,
@@ -414,7 +418,10 @@ describe('worker control routes', () => {
     ['supply-refresh-ack', 'supply_refresh_ack'],
     ['capability-summary', 'capability_summary'],
   ])('observes early %s refusals without echoing attempted values', async (path, operation) => {
-    const { app, lineage, token } = await createWorkerControlRouteFixture();
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { app, lineage, token } = await createWorkerControlRouteFixture([], coreDb);
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       for (const attemptedOperation of ['heartbeat', operation]) {
@@ -605,8 +612,11 @@ describe('worker control routes', () => {
   });
 
   it('strips descriptive heartbeat, final-status and refresh additions before gateway admission', async () => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
     const { app, gateway, lineage, token, environmentPackage } =
-      await createWorkerControlRouteFixture();
+      await createWorkerControlRouteFixture([], coreDb);
     const heartbeat = heartbeatEnvelope(lineage, 1, 'running', 'alive');
     const cases = [
       {
@@ -675,8 +685,11 @@ describe('worker control routes', () => {
       { schemaVersion: 2, sequence: 1, operation: 'final_status', body: { status: 'completed' } },
     ],
   ])('refuses invalid known core in %s before admission', async (path, body) => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
     const { app, gateway, lineage, token, environmentPackage } =
-      await createWorkerControlRouteFixture();
+      await createWorkerControlRouteFixture([], coreDb);
     const response = await app.request(`/api/worker-control/${path}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -1909,8 +1922,11 @@ describe('worker control routes', () => {
     ['empty', { stopReason: '' }],
     ['whitespace', { stopReason: '   ' }],
   ])('rejects %s final-status stopReason', async (_label, bodyOverride) => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
     const { app, environmentPackage, gateway, lineage, token } =
-      await createWorkerControlRouteFixture();
+      await createWorkerControlRouteFixture([], coreDb);
     const response = await app.request('/api/worker-control/final-status', {
       body: JSON.stringify({
         body: { status: 'completed', ...bodyOverride },
@@ -1933,8 +1949,11 @@ describe('worker control routes', () => {
   });
 
   it('records final status as the exact canonical terminal event', async () => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
     const { app, environmentPackage, gateway, lineage, token } =
-      await createWorkerControlRouteFixture();
+      await createWorkerControlRouteFixture([], coreDb);
     const response = await app.request('/api/worker-control/final-status', {
       body: JSON.stringify({
         body: {
@@ -1979,8 +1998,11 @@ describe('worker control routes', () => {
     'turn.completed',
     'turn.failed',
   ] as const)('rejects direct %s event append outside final status', async (eventType) => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
     const { app, environmentPackage, gateway, lineage, token } =
-      await createWorkerControlRouteFixture();
+      await createWorkerControlRouteFixture([], coreDb);
     const response = await app.request('/api/worker-control/events/append', {
       body: JSON.stringify({
         lineage,
@@ -3010,8 +3032,11 @@ describe('worker control routes', () => {
   });
 
   it('accepts supply refresh acknowledgements through the control envelope', async () => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
     const { app, environmentPackage, gateway, lineage, token } =
-      await createWorkerControlRouteFixture();
+      await createWorkerControlRouteFixture([], coreDb);
 
     const res = await app.request('/api/worker-control/supply-refresh-ack', {
       body: JSON.stringify({
@@ -3196,8 +3221,11 @@ describe('worker control routes', () => {
   });
 
   it('accepts capability summaries through the control envelope', async () => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
     const { app, environmentPackage, gateway, lineage, token } =
-      await createWorkerControlRouteFixture();
+      await createWorkerControlRouteFixture([], coreDb);
 
     const res = await app.request('/api/worker-control/capability-summary', {
       body: JSON.stringify({
@@ -3241,7 +3269,10 @@ describe('worker control routes', () => {
   });
 
   it('rejects oversized simple control requests before sandbox authentication', async () => {
-    const { app, lineage } = await createWorkerControlRouteFixture();
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { app, lineage } = await createWorkerControlRouteFixture([], coreDb);
     const padding = 'x'.repeat(70 * 1024);
     const requests = [
       {
@@ -3295,7 +3326,10 @@ describe('worker control routes', () => {
   });
 
   it('accepts sandbox bearer heartbeats without a browser session cookie', async () => {
-    const { app, gateway, lineage, token } = await createWorkerControlRouteFixture();
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { app, gateway, lineage, token } = await createWorkerControlRouteFixture([], coreDb);
 
     const res = await app.request('/api/worker-control/heartbeat', {
       body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
@@ -3322,7 +3356,10 @@ describe('worker control routes', () => {
   });
 
   it('accepts worker artifact notices over HTTP', async () => {
-    const { app, lineage, token } = await createWorkerControlRouteFixture();
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { app, lineage, token } = await createWorkerControlRouteFixture([], coreDb);
 
     const res = await app.request('/api/worker-control/artifacts', {
       body: JSON.stringify({
@@ -3780,8 +3817,11 @@ describe('worker control routes', () => {
   });
 
   it('accepts canonical event append requests without a browser session cookie', async () => {
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
     const { app, environmentPackage, gateway, lineage, token } =
-      await createWorkerControlRouteFixture();
+      await createWorkerControlRouteFixture([], coreDb);
 
     const res = await app.request('/api/worker-control/events/append', {
       body: JSON.stringify({
@@ -3822,7 +3862,10 @@ describe('worker control routes', () => {
   });
 
   it('rejects oversized event append requests before schema handling', async () => {
-    const { app, lineage, token } = await createWorkerControlRouteFixture();
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { app, lineage, token } = await createWorkerControlRouteFixture([], coreDb);
 
     const res = await app.request('/api/worker-control/events/append', {
       body: JSON.stringify({
@@ -3854,7 +3897,10 @@ describe('worker control routes', () => {
   });
 
   it('projects event append sequence conflicts as worker-control API errors', async () => {
-    const { app, lineage, token } = await createWorkerControlRouteFixture();
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { app, lineage, token } = await createWorkerControlRouteFixture([], coreDb);
     const record = {
       event: {
         data: {
@@ -3904,7 +3950,10 @@ describe('worker control routes', () => {
   });
 
   it('rejects worker requests with invalid sandbox bearer tokens', async () => {
-    const { app, lineage } = await createWorkerControlRouteFixture();
+    const coreDb = createTestCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-route-')));
+    workerControlCoreFixtures.push(coreDb);
+    ensureLocalUser(coreDb);
+    const { app, lineage } = await createWorkerControlRouteFixture([], coreDb);
 
     const res = await app.request('/api/worker-control/heartbeat', {
       body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running')),
@@ -3992,4 +4041,9 @@ function beginOwnedAttemptCloseout(
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  for (const coreDb of workerControlCoreFixtures.splice(0)) {
+    closeWorkspaceProductReadHandles(coreDb.dataRoot);
+    closeTestCoreDb(coreDb);
+    rmSync(coreDb.dataRoot, { recursive: true, force: true });
+  }
 });
