@@ -185,6 +185,7 @@ import {
 } from '../storage/command-request-records.js';
 import {
   type ControlAdmission,
+  type ControlAdmissionResult,
   ControlAdmissionSchema,
 } from '../storage/control-store-admission.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
@@ -3287,7 +3288,7 @@ export class FsStore {
     admission?: Pick<ControlAdmission, 'receipt' | 'audit'>,
     journalIntents?: readonly ExecutionJournalIntent[],
     pending?: readonly ControlPendingCommandInput[]
-  ): Promise<string | undefined> {
+  ): Promise<ControlAdmissionResult | undefined> {
     const release =
       scope.owner.kind === 'workspace'
         ? this.enterWorkspaceMutation(scope.owner.workspaceId, 'capture')
@@ -3305,14 +3306,12 @@ export class FsStore {
         contentMount: scope.contentMount,
       });
       if (admission)
-        return (
-          await client.transition(database, {
-            ...admission,
-            products,
-            entries,
-            ...(pending?.length ? { pending: [...pending] } : {}),
-          })
-        ).response.id;
+        return await client.transition(database, {
+          ...admission,
+          products,
+          entries,
+          ...(pending?.length ? { pending: [...pending] } : {}),
+        });
       await client.products(database, {
         products,
         entries,
@@ -4410,13 +4409,20 @@ export class FsStore {
     });
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId });
-      const committedId = await this.writeNativeProducts(
+      const result = await this.writeNativeProducts(
         scope,
         [{ kind: 'thread', expectedRevision: 0, record: writeRetainedV1(thread) }],
         [],
         admission
       );
-      return this.getThread(workspaceId, committedId ?? thread.id);
+      // Private command admission can select existing history with this same ID without writing it.
+      if (
+        admission?.receipt.command === 'thread.create' &&
+        thread.visibility === 'private' &&
+        thread.entryPath === 'conversation'
+      )
+        return this.getThread(workspaceId, result?.response.id ?? thread.id);
+      return this.acknowledgedThreadResult(workspaceId, thread, result);
     }
     const threads = [...this.listThreads(workspaceId), thread];
     const workspace: WorkspaceRecord = {
@@ -4459,13 +4465,13 @@ export class FsStore {
         ...(input.status !== undefined ? { status: input.status } : {}),
         updatedAt: now(),
       });
-      const committedId = await this.writeNativeProducts(
+      const result = await this.writeNativeProducts(
         scope,
         [{ kind: 'thread', expectedRevision: previous.revision, record: writeRetainedV1(updated) }],
         [],
         admission
       );
-      return this.getThread(workspaceId, committedId ?? threadId);
+      return this.acknowledgedThreadResult(workspaceId, updated, result);
     }
     const thread = this.getThread(workspaceId, threadId);
     const updated: Thread = {
@@ -4489,8 +4495,26 @@ export class FsStore {
     return this.updateThread(workspaceId, threadId, { status: 'archived' });
   }
 
+  /** Returns this write's parsed record after acknowledgement and current checks, preserving native selection and replay. */
+  private acknowledgedThreadResult(
+    workspaceId: string,
+    candidate: Thread,
+    result: ControlAdmissionResult | undefined
+  ): Thread {
+    const selectedId = result?.response.id ?? candidate.id;
+    const current = this.readThreadRecord(workspaceId, selectedId);
+    return result?.replayed || selectedId !== candidate.id
+      ? ThreadSchema.parse(current)
+      : candidate;
+  }
+
   /** Reads the committed native Thread in its actual scope; no startup reconstruction or mutable file is authoritative. */
   public getThread(workspaceId: string, threadId: string): Thread {
+    return ThreadSchema.parse(this.readThreadRecord(workspaceId, threadId));
+  }
+
+  /** Reads current Thread metadata with its unchanged native admission, owner and physical refusal checks. */
+  private readThreadRecord(workspaceId: string, threadId: string): Thread {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
     let thread = this.threads.get(threadId);
     if (this.dataRoot) {
@@ -4517,7 +4541,7 @@ export class FsStore {
     }
     if (!thread || thread.owner.kind !== 'workspace' || thread.owner.workspaceId !== workspaceId)
       throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
-    return ThreadSchema.parse(thread);
+    return thread;
   }
 
   /**
