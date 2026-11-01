@@ -151,3 +151,7 @@ The missing-Core diagnostics authority fixture gives only its dormant determinis
 Post-terminal publication tests retain the reachable native outcomes and their replay and conflict checks. Retired ordinary Workspace import supplies no terminal-history fixtures.
 
 File Artifact review refusal fixtures share the App's real Core and Store and select the source Agent from that App's current manifest inventory.
+
+Dynamic resource serialization fixtures use the existing App current manifest projection on their prepared Store root and join actual coordinator boot before inspecting Workspace files. The original file scan excludes the SQLite db subtree.
+
+Artifact redo fixtures author and reload the current Agent manifest through the same RuntimeConfigManager. Exact receipt replay and missing-proof refusals retain their original owners.

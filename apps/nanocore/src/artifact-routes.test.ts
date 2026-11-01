@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,6 +15,7 @@ import {
   deriveArtifactReviewFollowUpTurnId,
   getArtifactReview,
 } from './artifact-reviews.js';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { listSchedulerExecutionAttemptsForTurn } from './runtime/execution-attempt-records.js';
@@ -35,7 +36,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { createTestAgentSetup } from './test-support/agent-environment.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
@@ -949,6 +950,27 @@ describe('Core artifact routes', () => {
 
   it('starts one exact redo and fails closed for replay and missing-receipt owner gaps', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-redo-'));
+    const setup = createTestAgentSetup();
+    const agentsRoot = join(dataRoot, 'config', 'agents');
+    const providersRoot = join(dataRoot, 'config', 'providers');
+    mkdirSync(agentsRoot, { recursive: true });
+    mkdirSync(providersRoot, { recursive: true });
+    const agentPath = join(agentsRoot, `${setup.manifest.id}.agent.jsonc`);
+    writeFileSync(agentPath, JSON.stringify(setup.manifest));
+    writeFileSync(
+      join(providersRoot, 'agent-openrouter.provider.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        displayName: 'Agent OpenRouter',
+        id: 'agent-openrouter',
+        kind: 'local',
+        models: ['openai/gpt-5.2'],
+      })
+    );
+    writeFileSync(
+      join(dataRoot, 'config', 'gateway.jsonc'),
+      JSON.stringify(createTestGatewayConfig())
+    );
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
@@ -967,21 +989,6 @@ describe('Core artifact routes', () => {
     });
     const store = await createDemoStore({ dataRoot });
     recordLocalWorkspaceAccess(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    const setup = createTestAgentSetup();
-    const runtimeAgent = {
-      id: setup.manifest.id,
-      name: setup.manifest.displayName,
-      kind: 'coder',
-      status: 'enabled',
-      modelId: null,
-      skillIds: [],
-      profiles: [],
-      defaultProfileId: null,
-      capabilities: [],
-      sandboxSummary: null,
-      health: { status: 'ready', message: null, checkedAt: new Date().toISOString() },
-    } as const;
-    store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', runtimeAgent);
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const thread = await store.createThread(
@@ -1054,8 +1061,9 @@ describe('Core artifact routes', () => {
       completedAt,
     });
     workspaceDb.sqlite.close();
+    const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
     const app = createApp({
-      agentManifests: [setup.manifest],
+      runtimeConfigManager,
       coreDb,
       dataRoot,
       providerRegistry: new ProviderRegistry([
@@ -1068,6 +1076,11 @@ describe('Core artifact routes', () => {
       ]),
       store,
     });
+    expect(
+      store
+        .getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001')
+        .agents.find((agent) => agent.id === setup.manifest.id)?.status
+    ).toBe('enabled');
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-artifact-review-repository-'));
     seedWritableGitRepository(repositoryPath);
     const decisionPath = [
@@ -1203,10 +1216,16 @@ describe('Core artifact routes', () => {
         code: 'idempotency_key_conflict',
       });
 
-      store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', {
-        ...runtimeAgent,
-        status: 'disabled',
-      });
+      writeFileSync(
+        agentPath,
+        JSON.stringify({ ...setup.manifest, readiness: { status: 'disabled' } })
+      );
+      expect(runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+      expect(
+        store
+          .getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001')
+          .agents.find((agent) => agent.id === setup.manifest.id)?.status
+      ).toBe('disabled');
       const disabledGapRes = await postJson(app, decisionPath, request);
       expect(disabledGapRes.status).toBe(409);
       await expect(disabledGapRes.json()).resolves.toMatchObject({ code: 'recovery_required' });

@@ -3,12 +3,14 @@ import { createHash } from 'node:crypto';
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
@@ -20,11 +22,13 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { prepareAuditEvent } from '../audit-events.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
+import * as goalCoordinator from '../runtime/goal-coordinator.js';
 import type { ControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -37,6 +41,8 @@ import {
   parseCanonicalWorkspaceHistory,
   readNativeProductEntries,
 } from '../storage/workspace-file-records.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -1741,9 +1747,18 @@ describe('FsStore persistence', () => {
 
   it('does not serialize dynamic execution resources under workspace storage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    const marker = 'runtime_only_test_marker';
+    const manifest = createTestAgentSetup({
+      agentId: `agent_${marker}`,
+      displayName: 'Runtime-only test agent',
+      logicalModelId: `model_${marker}`,
+      skillIds: [`skill_${marker}`],
+    }).manifest;
+    const agentsRoot = join(dataRoot, 'config', 'agents');
+    mkdirSync(agentsRoot, { recursive: true });
+    writeFileSync(join(agentsRoot, `${manifest.id}.agent.jsonc`), JSON.stringify(manifest));
     const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
-    const marker = 'runtime_only_test_marker';
     const resources = store.getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001');
 
     resources.models.push({
@@ -1757,23 +1772,50 @@ describe('FsStore persistence', () => {
       name: 'Runtime-only test skill',
       enabled: true,
     });
-    store.upsertAgent('ws_00000000-0000-7000-8000-000000000001', {
-      id: `agent_${marker}`,
-      name: 'Runtime-only test agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: `model_${marker}`,
-      skillIds: [`skill_${marker}`],
-      profiles: [],
-      defaultProfileId: null,
-      capabilities: [],
-      sandboxSummary: null,
-      health: {
-        status: 'unknown',
-        message: null,
-        checkedAt: null,
-      },
+    const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+    const createCoordinator = goalCoordinator.createGoalCoordinator;
+    const coordinators = vi
+      .spyOn(goalCoordinator, 'createGoalCoordinator')
+      .mockImplementation((options) => {
+        const coordinator = createCoordinator(options);
+        vi.spyOn(coordinator, 'boot');
+        return coordinator;
+      });
+    let app: ReturnType<typeof createApp>;
+    try {
+      app = createApp({ dataRoot, runtimeConfigManager, store });
+      expect(coordinators).toHaveBeenCalledOnce();
+      for (const { value: coordinator } of coordinators.mock.results) {
+        const boot = vi.mocked(coordinator.boot);
+        expect(boot).toHaveBeenCalledOnce();
+        await boot.mock.results[0]!.value;
+        boot.mockRestore();
+      }
+    } finally {
+      coordinators.mockRestore();
+    }
+    const projected = await app.request('/api/app/operations/workspace.resources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
     });
+    expect(projected.status).toBe(200);
+    const projectedResources = await projected.json();
+    expect(projectedResources.agents).toContainEqual(
+      expect.objectContaining({
+        id: manifest.id,
+        modelId: `model_${marker}`,
+        skillIds: [`skill_${marker}`],
+        status: 'enabled',
+      })
+    );
+    expect(projectedResources.models).toContainEqual(
+      expect.objectContaining({ id: `model_${marker}` })
+    );
+    expect(projectedResources.skills).toContainEqual(
+      expect.objectContaining({ id: `skill_${marker}` })
+    );
+    await shutdownControlStoreWorkerClient();
 
     expect(
       findStorageFilesContaining(
