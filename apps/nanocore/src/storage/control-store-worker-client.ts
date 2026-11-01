@@ -37,6 +37,7 @@ import type {
   ProjectWorkerBackendCleanupInput,
   WorkerBackendCleanupProjectionResult,
 } from '../runtime/worker-backend-cleanup-projection.js';
+import type { ControlWorkerRejectedEvidence } from '../runtime/worker-control-rejected-evidence-codecs.js';
 import {
   type ControlMaterialCommandInput,
   type ControlMaterialCommandResult,
@@ -662,7 +663,8 @@ class ControlStoreWorkerClient {
         entry.counted &&
         (entry.command.operation === 'observation' ||
           entry.command.operation === 'provenance' ||
-          entry.command.operation === 'generative-presentation') &&
+          entry.command.operation === 'generative-presentation' ||
+          entry.command.operation === 'worker-control-evidence') &&
         this.openings.get(entry.command.database)?.path === physical &&
         entry.command.input.turnId === turn
       )
@@ -1346,6 +1348,14 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'project-cleanup' }>).result;
   }
 
+  /** Retains the exact authenticated rejection row before returning its original public refusal. */
+  async workerControlEvidence(
+    database: string,
+    input: ControlWorkerRejectedEvidence
+  ): Promise<void> {
+    await this.request({ operation: 'worker-control-evidence', database, input });
+  }
+
   /** Publishes the exact existing presentation tuple under the native byte, Turn and FIFO accounts. */
   async generativePresentation(
     database: string,
@@ -1884,7 +1894,8 @@ class ControlStoreWorkerClient {
           CONTROL_WORKER_LIMITS.pendingTransitions) ||
       ((command.operation === 'observation' ||
         command.operation === 'provenance' ||
-        command.operation === 'generative-presentation') &&
+        command.operation === 'generative-presentation' ||
+        command.operation === 'worker-control-evidence') &&
         opening &&
         !borrowed &&
         this.pendingTurnPublications(JSON.stringify([opening.path, command.input.turnId])) >=

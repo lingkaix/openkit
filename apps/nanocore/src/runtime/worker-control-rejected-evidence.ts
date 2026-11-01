@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type { WorkerControlLineage } from './worker-control-gateway.js';
 
 /** Product-safe rejected worker-control evidence row. */
@@ -68,51 +70,40 @@ interface WorkerControlRejectedEvidenceRow {
 }
 
 /**
- * Stores one product-safe rejected worker-control evidence row.
+ * Stores one product-safe rejected worker-control evidence row through its covering native FULL ACK.
  *
  * @param coreDb Server-scope Core database.
  * @param input Rejected evidence input.
  */
-export function recordWorkerControlRejectedEvidence(
+export async function recordWorkerControlRejectedEvidence(
   coreDb: CoreDb,
   input: WorkerControlRejectedEvidenceInput
-): void {
-  coreDb.sqlite
-    .prepare(
-      `
-      INSERT INTO worker_control_rejected_evidence (
-        rejection_id,
-        workspace_id,
-        thread_id,
-        turn_id,
-        agent_session_id,
-        package_snapshot_id,
-        request_id,
-        route,
-        operation,
-        error_code,
-        http_status,
-        message,
-        rejected_at
-      )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-    )
-    .run(
-      randomUUID(),
-      input.lineage.workspaceId,
-      input.lineage.threadId,
-      input.lineage.turnId,
-      input.lineage.agentSessionId,
-      input.lineage.packageSnapshotId,
-      input.lineage.requestId ?? null,
-      input.route,
-      input.operation,
-      input.errorCode,
-      input.httpStatus,
-      input.message,
-      input.rejectedAt
-    );
+): Promise<void> {
+  // Capture the original rejected request before awaiting its existing Core owner.
+  const row = {
+    rejectionId: randomUUID(),
+    ...input.lineage,
+    requestId: input.lineage.requestId ?? null,
+    route: input.route,
+    operation: input.operation,
+    errorCode: input.errorCode,
+    httpStatus: input.httpStatus,
+    message: input.message,
+    rejectedAt: input.rejectedAt,
+  };
+  const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+  const database = `core:${scope.path}`;
+  const client = getControlStoreWorkerClient();
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: coreDb.dataRoot,
+    create: false,
+    initialize: 'core',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  await client.workerControlEvidence(database, row);
 }
 
 /**

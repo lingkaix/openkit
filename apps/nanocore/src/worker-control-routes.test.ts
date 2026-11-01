@@ -46,6 +46,7 @@ import {
   listWorkerControlAcceptedEvents,
   resolveWorkerControlFinalStatusTokenBinding,
 } from './runtime/worker-control-records.js';
+import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
 import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
 import {
   beginWorkerTurnJournalStep,
@@ -71,7 +72,14 @@ import {
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
+import {
+  CONTROL_WORKER_VERSION,
+  isControlWorkerRequest,
+} from './storage/control-store-worker-protocol.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -878,6 +886,11 @@ describe('worker control routes', () => {
         expect(reconnect.status).toBe(expectedStatus);
         expect(await reconnect.clone().json()).toMatchObject({ code: expectedErrorCode });
       }
+      if (expectedErrorCode === 'worker_control_reconnect_required') {
+        expect(
+          listWorkerControlRejectedEvidenceForWorkspace(coreDb, fixture.lineage.workspaceId)
+        ).toEqual([]);
+      }
       expect(lease).toMatchObject(
         accepted
           ? { lastWorkerSequence: 1, recoveryDeadline: null, recoveryState: null }
@@ -1363,24 +1376,47 @@ describe('worker control routes', () => {
         store,
         workerControlGateway: gateway,
       });
-      const response = await app.request('/api/worker-control/events/append', {
-        body: JSON.stringify({
-          lineage,
-          record: {
-            event: { data: { delta: 'hello', itemId: 'candidate_item_1' }, type: 'item.delta' },
-            kind: 'event',
-            lineage: { ...lineage, threadId: testEntityId('th', 'th_other') },
-            schemaVersion: 1,
-            sequence: 1,
+      const resumeNativeWrites = await getControlStoreWorkerClient().pauseForDataRootBackup(
+        `core:${coreDbPath(coreDb.dataRoot)}`
+      );
+      let responseSettled = false;
+      const responsePromise = app
+        .request('/api/worker-control/events/append', {
+          body: JSON.stringify({
+            lineage,
+            record: {
+              event: { data: { delta: 'hello', itemId: 'candidate_item_1' }, type: 'item.delta' },
+              kind: 'event',
+              lineage: { ...lineage, threadId: testEntityId('th', 'th_other') },
+              schemaVersion: 1,
+              sequence: 1,
+            },
+          }),
+          headers: {
+            authorization: `Bearer ${registration.token}`,
+            'content-type': 'application/json',
           },
-        }),
-        headers: {
-          authorization: `Bearer ${registration.token}`,
-          'content-type': 'application/json',
-        },
-        method: 'POST',
-      });
-      const body = (await response.json()) as { code: string };
+          method: 'POST',
+        })
+        .then((response) => {
+          responseSettled = true;
+          return response;
+        });
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(responseSettled).toBe(false);
+        expect(listWorkerControlRejectedEvidenceForWorkspace(coreDb, lineage.workspaceId)).toEqual(
+          []
+        );
+      } finally {
+        resumeNativeWrites();
+      }
+      const response = await responsePromise;
+      const body = (await response.json()) as { code: string; message: string };
+      const rejectedEvidence = listWorkerControlRejectedEvidenceForWorkspace(
+        coreDb,
+        lineage.workspaceId
+      );
       const rejectedRow = coreDb.sqlite
         .prepare(
           `
@@ -1404,6 +1440,45 @@ describe('worker control routes', () => {
 
       expect(response.status).toBe(403);
       expect(body.code).toBe('worker_control_lineage_mismatch');
+      expect(rejectedEvidence).toEqual([
+        {
+          agentSessionId: lineage.agentSessionId,
+          errorCode: 'worker_control_lineage_mismatch',
+          httpStatus: 403,
+          message: body.message,
+          operation: 'event_append',
+          packageSnapshotId: lineage.packageSnapshotId,
+          rejectedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+          rejectionId: expect.stringMatching(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+          ),
+          requestId: lineage.requestId,
+          route: '/api/worker-control/events/append',
+          threadId: lineage.threadId,
+          turnId: lineage.turnId,
+          workspaceId: lineage.workspaceId,
+        },
+      ]);
+      const nativeRequest = {
+        version: CONTROL_WORKER_VERSION,
+        id: 0,
+        database: `core:${coreDbPath(coreDb.dataRoot)}`,
+        operation: 'worker-control-evidence' as const,
+        input: rejectedEvidence[0]!,
+      };
+      expect(isControlWorkerRequest(nativeRequest)).toBe(true);
+      expect(
+        isControlWorkerRequest({
+          ...nativeRequest,
+          input: { ...nativeRequest.input, futureRequiredSemantics: true },
+        })
+      ).toBe(false);
+      expect(
+        isControlWorkerRequest({
+          ...nativeRequest,
+          input: { ...nativeRequest.input, workspaceId: 'not-a-canonical-workspace-id' },
+        })
+      ).toBe(false);
       expect(rejectedRow).toEqual({
         errorCode: 'worker_control_lineage_mismatch',
         httpStatus: 403,

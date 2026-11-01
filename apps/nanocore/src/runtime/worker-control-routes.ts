@@ -98,7 +98,7 @@ export function registerWorkerControlRoutes({
         error instanceof WorkerControlGatewayError ? error.status : 500,
         error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
       );
-      quarantineWorkerControlRejection({
+      await quarantineWorkerControlRejection({
         coreDb,
         error,
         lineage: authentication.authenticatedLineage(),
@@ -148,7 +148,7 @@ export function registerWorkerControlRoutes({
         error instanceof WorkerControlGatewayError ? error.status : 500,
         error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
       );
-      quarantineWorkerControlRejection({
+      await quarantineWorkerControlRejection({
         coreDb,
         error,
         lineage: authentication.authenticatedLineage(),
@@ -196,7 +196,7 @@ export function registerWorkerControlRoutes({
         error instanceof WorkerControlGatewayError ? error.status : 500,
         error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
       );
-      quarantineWorkerControlRejection({
+      await quarantineWorkerControlRejection({
         coreDb,
         error,
         lineage: authentication.authenticatedLineage(),
@@ -262,7 +262,7 @@ export function registerWorkerControlRoutes({
         error instanceof WorkerControlGatewayError ? error.status : 500,
         error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
       );
-      quarantineWorkerControlRejection({
+      await quarantineWorkerControlRejection({
         coreDb,
         error,
         lineage: authentication.authenticatedLineage(),
@@ -331,7 +331,7 @@ export function registerWorkerControlRoutes({
         error instanceof WorkerControlGatewayError ? error.status : 500,
         error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
       );
-      quarantineWorkerControlRejection({
+      await quarantineWorkerControlRejection({
         coreDb,
         error,
         lineage: authentication.authenticatedLineage(),
@@ -395,7 +395,7 @@ export function registerWorkerControlRoutes({
         error instanceof WorkerControlGatewayError ? error.status : 500,
         error instanceof WorkerControlGatewayError ? error.code : 'internal_error'
       );
-      quarantineWorkerControlRejection({
+      await quarantineWorkerControlRejection({
         coreDb,
         error,
         lineage: authentication.authenticatedLineage(),
@@ -482,13 +482,13 @@ function observeControlRequest(
  *
  * @param input Rejection metadata from a worker-control route.
  */
-function quarantineWorkerControlRejection(input: {
+async function quarantineWorkerControlRejection(input: {
   readonly coreDb: CoreDb | undefined;
   readonly error: unknown;
   readonly lineage: WorkerControlLineage | undefined;
   readonly operation: string;
   readonly route: string;
-}): void {
+}): Promise<void> {
   if (
     !input.coreDb ||
     !input.lineage ||
@@ -498,7 +498,7 @@ function quarantineWorkerControlRejection(input: {
     return;
   }
 
-  recordWorkerControlRejectedEvidence(input.coreDb, {
+  await recordWorkerControlRejectedEvidence(input.coreDb, {
     errorCode: input.error.code,
     httpStatus: input.error.status,
     lineage: input.lineage,

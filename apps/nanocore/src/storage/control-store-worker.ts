@@ -177,6 +177,7 @@ type WriteCommand = Extract<
       | 'event'
       | 'publication'
       | 'project-cleanup'
+      | 'worker-control-evidence'
       | 'generative-presentation'
       | 'provenance'
       | 'observation'
@@ -609,6 +610,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'publication':
     case 'observation':
+    case 'worker-control-evidence':
     case 'generative-presentation':
     case 'provenance':
     case 'project-cleanup':
@@ -1472,6 +1474,36 @@ function flush(owner: OwnedDatabase): void {
               operation: 'maintenance',
               result,
             };
+          } else if (request.operation === 'worker-control-evidence') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const row = request.input;
+            sqlite
+              .prepare(`INSERT INTO worker_control_rejected_evidence (
+              rejection_id, workspace_id, thread_id, turn_id, agent_session_id,
+              package_snapshot_id, request_id, route, operation, error_code,
+              http_status, message, rejected_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(
+                row.rejectionId,
+                row.workspaceId,
+                row.threadId,
+                row.turnId,
+                row.agentSessionId,
+                row.packageSnapshotId,
+                row.requestId,
+                row.route,
+                row.operation,
+                row.errorCode,
+                row.httpStatus,
+                row.message,
+                row.rejectedAt
+              );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'worker-control-evidence',
+            };
           } else if (request.operation === 'generative-presentation') {
             if (owner.scopeDb?.scope !== 'workspace' || !request.preparedGenerativePresentation)
               throw new ControlProductPreconditionError();
@@ -1972,6 +2004,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'event' ||
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
+      value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||
       value.operation === 'provenance' ||
       value.operation === 'observation' ||

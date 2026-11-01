@@ -38,6 +38,10 @@ import {
   WorkerBackendCleanupProjectionResultSchema,
 } from '../runtime/worker-backend-cleanup-projection.js';
 import {
+  type ControlWorkerRejectedEvidence,
+  ControlWorkerRejectedEvidenceSchema,
+} from '../runtime/worker-control-rejected-evidence-codecs.js';
+import {
   type ControlMaterialCommandResult,
   ControlMaterialCommandResultSchema,
   type ControlMaterialWireInput,
@@ -102,7 +106,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 25;
+export const CONTROL_WORKER_VERSION = 26;
 
 /** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
 export const ControlProvenanceInputSchema = z
@@ -251,6 +255,10 @@ export type ControlWorkerCommand =
           readonly content?: ArrayBuffer;
         }
       | { readonly operation: 'goal'; readonly input: ControlGoalInput }
+      | {
+          readonly operation: 'worker-control-evidence';
+          readonly input: ControlWorkerRejectedEvidence;
+        }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
@@ -405,6 +413,7 @@ export type ControlWorkerReply = {
         | 'open'
         | 'close'
         | 'shutdown'
+        | 'worker-control-evidence'
         | 'products'
         | 'publication'
         | 'recovery-cleanup'
@@ -658,6 +667,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     reply.operation === 'open' ||
     reply.operation === 'close' ||
     reply.operation === 'shutdown' ||
+    reply.operation === 'worker-control-evidence' ||
     reply.operation === 'products' ||
     reply.operation === 'recovery-cleanup' ||
     reply.operation === 'recovery-capture' ||
@@ -1049,6 +1059,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'worker-control-evidence')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkerRejectedEvidenceSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'generative-presentation') {
     const parsed = ControlGenerativePresentationWireSchema.safeParse(value.input);
     return (
