@@ -15,7 +15,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { BUILT_IN_SYSTEM_PROMPTS } from './internal-agents/builtin-prompts.js';
-import { KnowledgeNotebook } from './knowledge/notebook.js';
+import type { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { GatewayAttemptFailure } from './llm/gateway-execution.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
@@ -46,6 +46,7 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
+import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
@@ -186,17 +187,10 @@ function fixtureKnowledgeScope(dataRoot: string): string {
   return `page/workspace/${workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } })}`;
 }
 
-/** Opens the fixture's published Git Notebook for fixed-base edits and exact citation bytes. */
+/** Reads the demo Workspace SQL selection. Each call sees the head after the last publication. */
 function fixtureNotebook(dataRoot: string): KnowledgeNotebook {
-  return new KnowledgeNotebook({
-    repositoryPath: join(
-      dataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      'knowledge',
-      'notebook.git'
-    ),
-  });
+  return readTestWorkspaceNotebookSelection(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+    .notebook;
 }
 
 /** Composes public Timeline admission with the real durable conversation and Core owners. */
