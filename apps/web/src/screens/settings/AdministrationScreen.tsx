@@ -18,6 +18,7 @@ import {
   workerEnvironmentPurgeConfirmation,
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
+import { isRecord } from '@openkit/protocol';
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type ParseError, parse } from 'jsonc-parser';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
@@ -1549,10 +1550,6 @@ function sameCandidateRef(
     left.artifactVersion === right.artifactVersion &&
     left.contentDigest === right.contentDigest
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isAccessDenied(error: unknown): boolean {
