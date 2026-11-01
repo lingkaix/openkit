@@ -17,7 +17,8 @@ const STORAGE_TEST_GRANDFATHERED_PATHS = new Set([
   'apps/nanocore/e2e/migration-idempotency.spec.ts',
   'apps/nanocore/e2e/openkit-cli.spec.ts',
   'apps/nanocore/e2e/server-boot.spec.ts',
-  'apps/nanocore/e2e/workspace-portability.spec.ts',
+  // Export-half administrator seed moved unchanged from grandfathered workspace-portability.spec.ts.
+  'apps/nanocore/e2e/workspace-archive-download.spec.ts',
   'apps/nanocore/e2e/workspace-scope-admission.spec.ts',
   'apps/nanocore/src/action-center.test.ts',
   'apps/nanocore/src/administration/administration-capture.test.ts',

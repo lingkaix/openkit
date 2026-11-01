@@ -27,7 +27,7 @@ The unique first-release criterion is: for every class of information that will 
 - The two record families on different axes: the protocol Item stream and the observation ledger, including join, location, and family discrimination.
 - Observation-ledger split-envelope header semantics, the open `type` vocabulary, `ret`, B′ content bounds, `refs`, `corr`, `parent`, coverage binding, and the three uncertainty expressions that belong to this format.
 - Capture-time identity and configuration-fingerprint slots that the format must carry even when a producer is absent.
-- Import remint and reference-resolution closure for observation records.
+- Export closure for observation records: a reference must not bind to a different object.
 - Durability obligations of the observation append path relative to publication.
 
 ## Does Not Own
@@ -376,7 +376,7 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 
 **Lifecycle.** Append only. Identity fields that naturally exist in `payload` are also in the header and MUST cross-check on decode; mismatch is corrupt, not a pick-one merge. Same `id` with different content is a conflict, not an overwrite.
 
-**Failure.** Unknown optional `ext` fields follow envelope preserve-or-ignore rules. Unknown required features fail closed on portable import. A corrupt header (missing required `v`/`type`/`id`/`ts`/`seq`/`obs`, or `seq` not contiguous with surviving interior lines) fails that file's read, not a silent skip.
+**Failure.** Unknown optional `ext` fields follow envelope preserve-or-ignore rules. Unknown required features fail closed in the export verifier. A corrupt header (missing required `v`/`type`/`id`/`ts`/`seq`/`obs`, or `seq` not contiguous with surviving interior lines) fails that file's read, not a silent skip.
 
 **Acceptance.** A sweeper can classify `ret` without parsing `payload`. A reader can reject an unknown type without guessing. Family is visible from `v`.
 
@@ -417,7 +417,7 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 | `kind` | Target owner class; selects the resolver and uniqueness domain |
 | `scope` | Ancestor identifiers required for uniqueness (a bare id is often not enough) |
 | `locator` | That owner's durable locator |
-| `digest` | Conditional. Content-addressed targets self-verify. An owner-id target MAY carry a historical digest of declared source bytes; that digest MUST NOT be used as the post-remint identity criterion. Insufficient scope is repaired by sufficient scope plus the exact remint map, or the reference stays explicitly unresolved; adding a digest does not repair identity |
+| `digest` | Conditional. Content-addressed targets self-verify. An owner-id target MAY carry a historical digest of declared source bytes. Insufficient scope leaves the reference explicitly unresolved; adding a digest does not repair identity |
 | `edge` | `publication` or `association` |
 
 A `publication` edge, produced by the owner after successful commit and pointing at that exact material, is the only proof that the material was submitted. An `association` edge (AEP snapshot, audit row, configuration identity, decision record) neither proves nor disproves collection.
@@ -428,31 +428,31 @@ A reference MAY fail to resolve. A reference MUST NEVER be wrong: it MUST NOT bi
 
 **`corr` versus `parent`.** `corr` pairs one logical call's request and response inside that call's owning group and namespace. It is not an external referent and MUST NOT globally pair by the bare key. `parent` is the scalar anchor (observation or Item). One logical call has one `corr` even if several route attempts occurred; attempts hang off `parent`. A failed attempt MAY record its own failure fact; that fact is not the logical response and MUST NOT mint a second `corr`. Decision records are linked with an `association` ref, not with `corr`.
 
-**Per-owner scope (current, after later corrections).** Exact remint maps cannot be replaced by digest. Content-hash does not cancel `scope`. `scope: 'server'` names a class, not a license to rebind by the same id on a different deployment. EvidenceBundle `bundles/` versus `backend/` is a location class, not a second primary key. AEP logical resolution is workspace plus `snapshotId`; direct-file location additionally needs `agentSessionId`. MCP schema snapshots still need Workspace, catalog entry, and source even when the snapshot id embeds a digest. PermissionDecision and VaultUse need `ownerScope` and the Workspace identity when the value is workspace-scoped. AuditEvent homes include Core, Workspace, app `data.sqlite`, and user-owned audit; `ownerScope` is not a single database name.
+**Per-owner scope (current, after later corrections).** Content-hash does not cancel `scope`. `scope: 'server'` names a class, not a license to rebind by the same id on a different deployment. EvidenceBundle `bundles/` versus `backend/` is a location class, not a second primary key. AEP logical resolution is workspace plus `snapshotId`; direct-file location additionally needs `agentSessionId`. MCP schema snapshots still need Workspace, catalog entry, and source even when the snapshot id embeds a digest. PermissionDecision and VaultUse need `ownerScope` and the Workspace identity when the value is workspace-scoped. AuditEvent homes include Core, Workspace, app `data.sqlite`, and user-owned audit; `ownerScope` is not a single database name.
 
-| Target | Extra scope | Remint? |
-| --- | --- | --- |
-| AEP snapshot | `workspaceId`; file locator also `agentSessionId` | yes |
-| Artifact | `workspaceId` | yes |
-| Knowledge Source | `workspaceId` | yes |
-| EvidenceBundle | `workspaceId`; path class `bundles`/`backend` | yes |
-| RuntimeEvidence (provenance-linked) | `workspaceId` | yes for that record's own id when a provenance package exists (`apps/nanocore/src/storage/workspace-import.ts:2347-2365`, `createWorkerRuntimeProvenanceEvidenceId`); other RuntimeEvidence ids are preserved. Foreign-key remaps of `threadId`/`turnId`/`goalId`/`taskId` are distinct from whether the record's own id changes |
-| Goal task | thread + goal; taskId alone collides | yes |
-| AuditEvent | home (core / workspace / app / user) + `workspaceId` when workspace-scoped | no |
-| UsageRecord | `workspaceId` | no |
-| CapabilityCall | `workspaceId` (its `packageSnapshotId` remints) | no |
-| PermissionDecision | `ownerScope` + Workspace when applicable | no |
-| VaultUse | `ownerScope` + Workspace when applicable (`vaultReferenceId` remints) | no |
-| MCP tool schema snapshot | `workspaceId` + catalog entry + source | no |
-| Sandbox image digest | server-homed; not in portable export | unresolved after export |
+| Target | Extra scope |
+| --- | --- |
+| AEP snapshot | `workspaceId`; file locator also `agentSessionId` |
+| Artifact | `workspaceId` |
+| Knowledge Source | `workspaceId` |
+| EvidenceBundle | `workspaceId`; path class `bundles`/`backend` |
+| RuntimeEvidence (provenance-linked) | `workspaceId` |
+| Goal task | thread + goal; taskId alone collides |
+| AuditEvent | home (core / workspace / app / user) + `workspaceId` when workspace-scoped |
+| UsageRecord | `workspaceId` |
+| CapabilityCall | `workspaceId` |
+| PermissionDecision | `ownerScope` + Workspace when applicable |
+| VaultUse | `ownerScope` + Workspace when applicable |
+| MCP tool schema snapshot | `workspaceId` + catalog entry + source |
+| Sandbox image digest | server-homed; not in portable export |
 
-**Exclusions.** Do not use the pre-remint record digest as the post-remint identity criterion. Digest proves retrieved bytes match a recorded digest; it does not prove provenance, workspace membership, or source identity.
+**Exclusions.** Digest proves retrieved bytes match a recorded digest; it does not prove provenance, workspace membership, or source identity.
 
-**Lifecycle.** Written at citation time. On portable import, in-package owner ids remint through exact maps; `corr` does not remint and remains pairable only inside the reminted group; content-addressed blob digests do not remint; server-scoped refs stay unresolved under source identity.
+**Lifecycle.** Written at citation time. Server-scoped refs stay unresolved under source identity.
 
-**Failure.** Using a pre-remint record digest to verify a post-remint record that legally changed bytes is a false `mismatch`. Guessing a server-scoped id on the destination is a wrong reference. Two imported executions that both contain `corr=c1` MUST NOT join across groups.
+**Failure.** Guessing a server-scoped id on the destination is a wrong reference. Two groups that both contain `corr=c1` MUST NOT join across groups.
 
-**Acceptance.** See Import, Remint, And Resolution Closure.
+**Acceptance.** See Export Closure.
 
 ### Capture Coverage
 
@@ -596,19 +596,19 @@ These names encode existing one-role-per-Turn or sequence-owned projections. The
 
 **Exclusions.** Consumers MUST NOT parse a timestamp out of the id (`docs/core/core-concepts.md`, `Identifier Semantics`). Id order is never the correctness criterion; after a prefilter the implementation MUST recheck authoritative `ts` / `turn.json` timestamps. This repository currently has a generator (`apps/nanocore/src/runtime/session-id.ts`, `generateUuidV7`) and no UUIDv7 timestamp parser, so a "must consume only via helper" rule is not yet an executable invariant; until a unique helper plus a failing test exists, the two consumption rules are a review obligation, not a storage invariant. New UUIDv7 allocation MUST NOT replace existing request-derived Item identities.
 
-**Lifecycle.** Allocate at create. Remint on portable import for in-package owner ids.
+**Lifecycle.** Allocate at create.
 
 **Failure.** Sorting ids and slicing without reading `turn.json` is a review defect. Colliding or conflicting replay of a request-derived Item id follows protocol command-receipt rules; this spec does not add a second allocator.
 
 **Acceptance.** Correctness of time filters does not depend on id bits.
 
-### Import, Remint, And Resolution Closure
+### Export Closure
 
 **Export posture.** The existing export owner preserves retained native families and restricted originals under current source authorization and reference closure. Do not predict later use or apply capture-time purpose filters. Identity remapping, privacy processing, dataset conversion, and other use-specific transformations remain with the authorized use/export owner, not a new storage format or pipeline here. Existing exclusions, including other users' private Threads and system-managed Vault/provider/runtime secret material, remain binding. Snapshot/backup closure includes Workspace-managed message, prompt, definition, chunk and manifest blobs; server-scoped captures do not become Workspace export data.
 
-**Definition.** Portable import remints in-package owner identities through exact maps. The Work Observation Portability section of `docs/specs/20260704-workspace_backup_export_import.md` admits the family to the portable inventory (C6). Cold whole-tree backup does not process the family and MUST NOT fail closed solely for an observation `requiredFeatures` gate.
+**Definition.** The Work Observation Portability section of `docs/specs/20260704-workspace_backup_export_import.md` admits the family to the portable inventory (C6). Cold whole-tree backup does not process the family and MUST NOT fail closed solely for an observation `requiredFeatures` gate.
 
-Pre-import two-hop example. Turn `T` already exists at admission with bound coverage. First hop has a route fallback; second hop joins an Item `I`.
+Two-hop example. Turn `T` already exists at admission with bound coverage. First hop has a route fallback; second hop joins an Item `I`.
 
 | Record | Key fields | Meaning |
 | --- | --- | --- |
@@ -619,23 +619,7 @@ Pre-import two-hop example. Turn `T` already exists at admission with bound cove
 | `req₂` | `id: o5`, `corr: c2`, `parent: o4` | Second hop; nesting via `parent` |
 | `res₂` | `id: o6`, `corr: c2`, `parent: I` | Pairs with `req₂` by `corr`; Item join is this `parent` |
 
-After export into another Workspace:
-
-| Field | Before | After | Remap | Why |
-| --- | --- | --- | --- | --- |
-| `turnId` | `T` | `T'` | Turn map | In-package owner |
-| `parent` observation→observation | `o3` | `o3'` | Observation-family remint | `openkit.work-observations.v1` recognition (C8/C6) |
-| `parent` observation→Item | `I` | `I'` | Item map | In-package owner |
-| `corr` | `c1`/`c2` | unchanged inside the reminted group | none | Pairing key; MUST NOT globally pair two imported groups that both contain `c1` |
-| `refs` blob | digest of blob bytes | unchanged | none | Content-addressed; verify those bytes before import; do not rehash |
-| `refs` AEP snapshot | `snapshotId` plus optional historical source-byte digest | `snapshotId'` | AEP map | Identity is the map. A historical digest MAY travel with declared byte coverage; it MUST NOT be the post-remint identity criterion |
-| `refs` image digest `scope:'server'` | value plus source identity | unchanged, unresolved | none | Out of package. MUST NOT rebind by the same id on the destination |
-
-**Lifecycle.** Private Threads of other users remain excluded under the backup/export owner. Observation-family portable listing follows the admitted C6 inventory and reference closure.
-
-**Failure.** A wrong remint is a wrong reference. Using a pre-remint record digest as post-remint identity is forbidden.
-
-**Acceptance.** After import, in-package joins still resolve to the same relative objects; `corr` pairs only inside the reminted group; server-scoped refs stay unresolved rather than attaching to a different deployment's object. Two imported executions that both used `corr=c1` do not join. Provenance-linked RuntimeEvidence receives a new id from the provenance package; other RuntimeEvidence keeps its identifier while its Thread/Turn/Goal/task foreign keys still remap.
+**Lifecycle.** Private Threads of other users remain excluded under the backup/export owner. Observation-family portable listing follows the admitted C6 inventory and reference closure. A reference must not bind to a different object. Server-scoped refs stay unresolved under source identity. `corr` pairs only inside its owning group.
 
 ### Durability
 
@@ -704,7 +688,7 @@ Storage/schema migrations remain with their owners. Retained records keep their 
 
 ### Evidence Strength
 
-The following citations preserve the earlier source verification at `968f5a4e0af0938b8237c05ac044cc754fcf4f8e`, not a current completeness verdict. Current claims are limited to the named source boundaries above; inspected test files are not executed acceptance. Opened in this tree: `apps/nanocore/src/storage/workspace-file-records.ts:846-870`, `:2450-2488`, and `writeFileAtomic` at `:2498-2512`; `apps/nanocore/src/storage/workspace-import.ts:2347-2365` (`createWorkerRuntimeProvenanceEvidenceId`); `apps/nanocore/src/llm/gateway-routes.ts:137-145` and `:152-168`; `apps/nanocore/src/llm/gateway-converters.ts:63-74` (`convertChatCompletionToResponsesRequest`); `apps/nanocore/src/llm/pi-ai-client.ts:284-300` and `:802-808`; `apps/nanocore/src/runtime/session-id.ts:9-28`; `packages/protocol/src/models/turn.ts:21-29`; `packages/app-api-schemas/src/workspace-sync.ts:448`; `packages/app-api-schemas/src/evidence-bundles.ts:26-31`; `docs/core/protocol.md` Turn terminals; `docs/core/storage.md:123-131`, `:133-149`, and `:173-185`; `docs/core/core-concepts.md:81`, `:113`, and `:117`; `docs/core/agent-session.md:87`; `docs/core/mediation.md:70-84`; `docs/core/work-model.md:26`; `docs/core/core-concepts.md:151`; `docs/specs/20260703-storage_layout_record_ownership.md:16-24`, `:277-279`, `:287`, `:335`, and `:347-352`; `docs/specs/20260703-schema_evolution_record_envelope.md:165-173`; `docs/specs/20260703-runtime_scheduling_scale.md:126`; `docs/specs/20260704-workspace_backup_export_import.md:81` and `:141`; `docs/specs/20260908-generative_kernel_data_operations.md:122` and `:211`; `docs/specs/20260704-goal_mode_coordination.md:183`. The discussion record's facts were originally pinned at baseline `c1a8b6ad` and were not all re-verified at that commit. Carried without independent confirmation in this tree: third-party grep-first percentage claims; external-harness comparison tables; the note.md §10 inventory as of `c1a8b6ad`; `workerRequestDigest` internals; the AEP assembler writing `instructions: []`.
+The following citations preserve the earlier source verification at `968f5a4e0af0938b8237c05ac044cc754fcf4f8e`, not a current completeness verdict. Current claims are limited to the named source boundaries above; inspected test files are not executed acceptance. Opened in this tree: `apps/nanocore/src/storage/workspace-file-records.ts:846-870`, `:2450-2488`, and `writeFileAtomic` at `:2498-2512`; `apps/nanocore/src/llm/gateway-routes.ts:137-145` and `:152-168`; `apps/nanocore/src/llm/gateway-converters.ts:63-74` (`convertChatCompletionToResponsesRequest`); `apps/nanocore/src/llm/pi-ai-client.ts:284-300` and `:802-808`; `apps/nanocore/src/runtime/session-id.ts:9-28`; `packages/protocol/src/models/turn.ts:21-29`; `packages/app-api-schemas/src/workspace-sync.ts:448`; `packages/app-api-schemas/src/evidence-bundles.ts:26-31`; `docs/core/protocol.md` Turn terminals; `docs/core/storage.md:123-131`, `:133-149`, and `:173-185`; `docs/core/core-concepts.md:81`, `:113`, and `:117`; `docs/core/agent-session.md:87`; `docs/core/mediation.md:70-84`; `docs/core/work-model.md:26`; `docs/core/core-concepts.md:151`; `docs/specs/20260703-storage_layout_record_ownership.md:16-24`, `:277-279`, `:287`, `:335`, and `:347-352`; `docs/specs/20260703-schema_evolution_record_envelope.md:165-173`; `docs/specs/20260703-runtime_scheduling_scale.md:126`; `docs/specs/20260704-workspace_backup_export_import.md:81` and `:141`; `docs/specs/20260908-generative_kernel_data_operations.md:122` and `:211`; `docs/specs/20260704-goal_mode_coordination.md:183`. The discussion record's facts were originally pinned at baseline `c1a8b6ad` and were not all re-verified at that commit. Carried without independent confirmation in this tree: third-party grep-first percentage claims; external-harness comparison tables; the note.md §10 inventory as of `c1a8b6ad`; `workerRequestDigest` internals; the AEP assembler writing `instructions: []`.
 
 ## Required Owner Alignments
 
@@ -756,7 +740,7 @@ Listing an alignment is not approval of a change to another owner's document. Ea
 
 **What this format needs.** Observation files that live under a Thread directory need classification into the portable inventory so a Thread's work-data files cannot drop an unclassified family. Cold whole-root backup remains a separate path.
 
-**Disposition.** Admitted on 2026-09-22 in the backup/export owner, including inventory, audience and exact remint/reference closure.
+**Disposition.** Admitted on 2026-09-22 in the backup/export owner, including inventory, audience, and reference closure.
 
 ### C7 — Item-log persistence invariants
 
@@ -816,7 +800,7 @@ The target is proved at each actual collector and Storage boundary, not by metad
 - Segmentation: a Turn that exceeds the declared cap is not split mid-Turn; `thread.json` declares the delay; a conflicting second successor for `(parentThreadId, segment)` fails closed; inspecting an already-published exact successor after restart does not; a history read with a missing parent stays unresolved and is not rejected.
 - B′: a restricted body is not inlined on a `turn-evidence` row at any size.
 - References: `mismatch` is distinct from `absent` and from owner denial/unavailable; destination-side rebinding of a `scope:'server'` image digest fails; two imported groups that both contain `corr=c1` do not join.
-- Import table: the two-hop example remints `T`, observation ids, and Item `I`; `corr` pairs only inside the reminted group; blob digests stay; server-scoped refs stay unresolved; AEP identity follows the map, not a pre-remint record digest.
+- Observation `parent` and `corr`: the two-hop example keeps `parent` as the attempt or Item anchor and `corr` as the pair inside one group; blob digests stay content-addressed; server-scoped refs stay unresolved. A reference must not bind to a different object.
 - Uncertainty: no fixture may persist `Turn.status = 'unknown'`.
 - Durability: a committed publication never cites unpublished bytes; unendorsed orphan blobs may exist and are ignored; `fsync` presence alone is not a pass.
 - Identifiers: a time-range filter that sorts UUIDv7 ids without reading `turn.json` is not a passing correctness test.

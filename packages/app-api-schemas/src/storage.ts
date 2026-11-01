@@ -5,7 +5,6 @@ import {
   UserIdSchema,
   WorkspaceExportIdSchema,
   WorkspaceIdSchema,
-  WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { addRawSecretIssues } from './raw-secrets.js';
@@ -189,80 +188,6 @@ export const DataRootBackupVerifyRequestSchema = z
 /** Response returned after verifying one server-managed data-root backup. */
 export const DataRootBackupVerifyResponseSchema = DataRootBackupCreateResponseSchema;
 
-/** Request for validating a server-managed workspace export before import. */
-export const WorkspaceImportDryRunRequestSchema = z
-  .object({
-    sourceWorkspaceId: WorkspaceExportHandlePartSchema,
-    exportId: WorkspaceExportHandlePartSchema,
-  })
-  .strict();
-
-/** Verification summary for an import dry-run. */
-export const WorkspaceImportDryRunVerificationSchema = z
-  .object({
-    fileCount: z.number().int().nonnegative(),
-    totalBytes: z.number().int().nonnegative(),
-    checkedFiles: z.array(z.string().min(1)),
-  })
-  .strict();
-
-/** Workspace id collision preview for an import dry-run. */
-export const WorkspaceImportCollisionSchema = z.discriminatedUnion('status', [
-  z
-    .object({
-      status: z.literal('available'),
-      workspaceId: WorkspaceIdSchema,
-    })
-    .strict(),
-  z
-    .object({
-      status: z.literal('collides'),
-      workspaceId: WorkspaceIdSchema,
-      suggestedWorkspaceId: WorkspaceIdSchema,
-    })
-    .strict(),
-]);
-
-/** Response returned after verifying a workspace export without importing it. */
-export const WorkspaceImportDryRunResponseSchema = z
-  .object({
-    mode: z.literal('dry-run'),
-    exportId: WorkspaceExportIdSchema,
-    sourceWorkspaceId: WorkspaceIdSchema,
-    exportedWorkspaceId: WorkspaceIdSchema,
-    manifest: WorkspaceExportManifestSchema,
-    verification: WorkspaceImportDryRunVerificationSchema,
-    collision: WorkspaceImportCollisionSchema,
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
-
-/** Request for importing a server-managed workspace export. */
-export const WorkspaceImportRequestSchema = WorkspaceImportDryRunRequestSchema.extend({
-  requestId: z.string().min(1).optional(),
-}).strict();
-
-/** Response returned after importing one workspace export. */
-export const WorkspaceImportResponseSchema = z
-  .object({
-    mode: z.literal('imported'),
-    requestId: z.string().min(1).nullable(),
-    exportId: WorkspaceExportIdSchema,
-    sourceWorkspaceId: WorkspaceIdSchema,
-    exportedWorkspaceId: WorkspaceIdSchema,
-    importedWorkspaceId: WorkspaceIdSchema,
-    manifest: WorkspaceExportManifestSchema,
-    verification: WorkspaceImportDryRunVerificationSchema,
-    collision: WorkspaceImportCollisionSchema,
-    workspace: WorkspaceRecordSchema,
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
-
 /** Storage database migration status. */
 export type StorageDatabaseReportResponse = z.infer<typeof StorageDatabaseReportSchema>;
 /** Directory status for derived index storage. */
@@ -289,17 +214,3 @@ export type DataRootBackupCreateResponse = z.infer<typeof DataRootBackupCreateRe
 export type DataRootBackupVerifyRequest = z.infer<typeof DataRootBackupVerifyRequestSchema>;
 /** Response returned after verifying one server-managed data-root backup. */
 export type DataRootBackupVerifyResponse = z.infer<typeof DataRootBackupVerifyResponseSchema>;
-/** Request for validating a server-managed workspace export before import. */
-export type WorkspaceImportDryRunRequest = z.infer<typeof WorkspaceImportDryRunRequestSchema>;
-/** Verification summary for an import dry-run. */
-export type WorkspaceImportDryRunVerification = z.infer<
-  typeof WorkspaceImportDryRunVerificationSchema
->;
-/** Workspace id collision preview for an import dry-run. */
-export type WorkspaceImportCollision = z.infer<typeof WorkspaceImportCollisionSchema>;
-/** Response returned after verifying a workspace export without importing it. */
-export type WorkspaceImportDryRunResponse = z.infer<typeof WorkspaceImportDryRunResponseSchema>;
-/** Request for importing a server-managed workspace export. */
-export type WorkspaceImportRequest = z.infer<typeof WorkspaceImportRequestSchema>;
-/** Response returned after importing one workspace export. */
-export type WorkspaceImportResponse = z.infer<typeof WorkspaceImportResponseSchema>;

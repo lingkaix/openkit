@@ -288,7 +288,7 @@ NanoCore persists one immutable, redacted AEP snapshot with validated known core
 runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json
 ```
 
-Retained snapshot readers verify the original serialized redacted package before deriving a known-field view that ignores descriptive additions in attribution, Agent summaries, instruction facts, immutable image references and observability. Same-identity storage and source-evidence export preserve that original package and digest; execution and public views carry only supported fields. Executable declarations, bindings, credentials, policy and required backend semantics remain exact. Only the accepted portable import remint may rewrite owned references and recompute the digest over the representation actually written.
+Retained snapshot readers verify the original serialized redacted package before deriving a known-field view that ignores descriptive additions in attribution, Agent summaries, instruction facts, immutable image references and observability. Retained snapshot readers and same-identity export preserve the original package and digest. Execution and public views carry only supported fields. Ordinary import does not rewrite owned references. Executable declarations, bindings, credentials, policy and required backend semantics remain exact.
 
 The snapshot record binds `snapshotId`, `packageId`, Workspace, Thread, Turn, AgentSession, Agent, runtime kind, backend kind, `createdAt`, the redacted package, and a SHA-256 digest of the exact serialized redacted package.
 

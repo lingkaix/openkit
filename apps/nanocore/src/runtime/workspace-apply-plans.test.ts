@@ -7,7 +7,6 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
-  importWorkspaceApplyPlans,
   listExportableWorkspaceApplyPlans,
   listWorkspaceApplyPlans,
   recordWorkspaceApplyPlan,
@@ -33,28 +32,6 @@ describe('workspace apply plans', () => {
           items: listWorkspaceApplyPlans(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001'),
         })
       ).toEqual({ items: [plan] });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  });
-
-  it('rejects a conflicting same-id apply plan replay and preserves the original', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-conflict-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-
-    try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      const original = workspaceApplyPlan();
-      recordWorkspaceApplyPlan(workspaceDb, original);
-
-      expect(() =>
-        importWorkspaceApplyPlans(workspaceDb, [
-          { ...original, plannedWrites: ['src/different.ts'] },
-        ])
-      ).toThrow(/conflict/i);
-      expect(
-        listWorkspaceApplyPlans(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
-      ).toEqual([original]);
     } finally {
       workspaceDb.sqlite.close();
     }

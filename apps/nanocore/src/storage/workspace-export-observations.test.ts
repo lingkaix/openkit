@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
-import { findWorkspaceConfig, loadRuntimeConfig } from '../config/runtime-config.js';
 import {
   compactWorkspaceEvidenceBundles,
   listStoredWorkspaceEvidenceBundles,
@@ -31,10 +30,7 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import { appendWorkObservation, readWorkObservations } from './work-observations.js';
 import { verifyWorkspaceExportTree, WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
-import {
-  createVerifiedWorkspaceExport,
-  importVerifiedWorkspace,
-} from './workspace-transfer-routes.js';
+import { createVerifiedWorkspaceExport } from './workspace-transfer-routes.js';
 
 /** Opens the real Workspace evidence owner used by both production portability directions. */
 function workspaceDb(dataRoot: string, workspaceId: string) {
@@ -44,7 +40,7 @@ function workspaceDb(dataRoot: string, workspaceId: string) {
 }
 
 describe('work observation portable closure', () => {
-  it('preserves runtime recovery joins inside two reminted archive import groups', async () => {
+  it('recovers implicit callRef and explicit runtime corr before archive download', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-runtime-joins-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -168,52 +164,6 @@ describe('work observation portable closure', () => {
         `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
       );
       expect(archive.status).toBe(200);
-      const bytes = await archive.arrayBuffer();
-      const groupKeys: string[] = [];
-      const importedCallRefs: string[] = [];
-      for (const requestId of [
-        '00000000-0000-4000-8000-000000000062',
-        '00000000-0000-4000-8000-000000000063',
-      ]) {
-        const response = await app.request('/api/app/workspace-archives/import', {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
-            'x-openkit-request-id': requestId,
-          },
-          body: bytes,
-        });
-        const result = await response.text();
-        expect(response.status, result).toBe(200);
-        const { importedWorkspaceId } = JSON.parse(result) as { importedWorkspaceId: string };
-        const importedThread = store.listThreads(importedWorkspaceId)[0]!;
-        const importedTurn = store.listThreadTurns(importedWorkspaceId, importedThread.id)[0]!;
-        const importedDb = workspaceDb(dataRoot, importedWorkspaceId);
-        try {
-          const rows = readWorkObservations(importedDb, {
-            threadId: importedThread.id,
-            turnId: importedTurn.id,
-          });
-          expect(rows).toHaveLength(3);
-          const fact = rows[0]!.payload.fact as { callRef: string };
-          expect(fact.callRef).toMatch(/^rtc_/);
-          expect(fact.callRef).not.toBe('runtime-call-source');
-          expect(rows[2]?.payload).toEqual(reap.payload);
-          const unresolved = rows[2]!.payload.unresolvedCalls as { corr: string }[];
-          expect(unresolved[0]?.corr).toBe(rows[0]?.corr);
-          expect(rows[0]?.corr).toBe('runtime-call-source');
-          expect(unresolved[1]?.corr).toBe(rows[1]?.corr);
-          expect(rows[1]?.corr).toBe('explicit-runtime-group');
-          expect(rows.every((row) => row.turnId === importedTurn.id)).toBe(true);
-          groupKeys.push(JSON.stringify([importedWorkspaceId, importedTurn.id, rows[0]?.corr]));
-          importedCallRefs.push(fact.callRef);
-        } finally {
-          importedDb.sqlite.close();
-        }
-      }
-      expect(new Set(groupKeys).size).toBe(2);
-      expect(new Set(importedCallRefs).size).toBe(2);
-      expect(readWorkObservations(db, owner)).toEqual(sourceRows);
     } finally {
       db.sqlite.close();
       coreDb.sqlite.close();
@@ -382,123 +332,6 @@ describe('work observation portable closure', () => {
       expect(archive.status).toBe(200);
       const bytes = await archive.arrayBuffer();
       expect(Array.from(new Uint8Array(bytes).subarray(0, 4))).toEqual([0x28, 0xb5, 0x2f, 0xfd]);
-      const workspaceIds = store.listWorkspaces().map((workspace) => workspace.id);
-      const imported = await app.request('/api/app/workspace-archives/import', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
-          'x-openkit-request-id': '00000000-0000-4000-8000-000000000061',
-        },
-        body: bytes,
-      });
-      const result = await imported.text();
-      if (foreignOwner !== null) {
-        expect(imported.status, result).toBe(400);
-        await expect(
-          importVerifiedWorkspace({
-            authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            coreDb,
-            dataRoot,
-            requestId: null,
-            store,
-            verified: exported.verified,
-          })
-        ).rejects.toThrow(
-          'Portable env.bound belongs to another workspace: ws_00000000-0000-7f9c-aa14-53566c621405'
-        );
-        expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual(workspaceIds);
-        expect(
-          readWorkObservations(db, { threadId: demo.thread.id, turnId: turn.id })[0]?.payload
-        ).toEqual(environment);
-        return;
-      }
-      expect(imported.status, result).toBe(200);
-      const { importedWorkspaceId } = JSON.parse(result) as { importedWorkspaceId: string };
-      expect(importedWorkspaceId).not.toBe(demo.workspace.id);
-      expect(store.getWorkspace(importedWorkspaceId).importedFrom).toEqual({
-        sourceDeploymentId: exported.verified.manifest.sourceDeploymentId,
-        sourceWorkspaceId: demo.workspace.id,
-        exportCreatedAt: exported.verified.manifest.exportCreatedAt,
-        manifestDigest: exported.verified.manifestDigest,
-      });
-      const thread = store.listThreads(importedWorkspaceId)[0]!;
-      const importedTurn = store.listThreadTurns(importedWorkspaceId, thread.id)[0]!;
-      expect(thread.id).not.toBe(demo.thread.id);
-      expect(importedTurn.id).not.toBe(turn.id);
-      const importedDb = workspaceDb(dataRoot, importedWorkspaceId);
-      let importedEnvironmentId: string;
-      try {
-        const rows = readWorkObservations(importedDb, {
-          threadId: thread.id,
-          turnId: importedTurn.id,
-        });
-        expect(rows).toHaveLength(2);
-        expect(rows[0]?.payload).toEqual({ ...environment, workspaceId: importedWorkspaceId });
-        expect(rows[0]?.id).not.toBe(`env:${turn.id}`);
-        importedEnvironmentId = rows[0]!.id;
-        expect(rows[0]?.turnId).toBe(importedTurn.id);
-        expect(rows[1]?.payload).toEqual(recovery);
-        expect(rows[1]?.corr).toBe('recovery-group');
-        expect(rows[1]?.parent).toBe(rows[0]?.id);
-      } finally {
-        importedDb.sqlite.close();
-      }
-      const reexported = await createVerifiedWorkspaceExport({
-        fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
-        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        exportId: testEntityId('wsexp', 'export_environment_again'),
-        repositoryWorkspaceDb: (id) => workspaceDb(dataRoot, id),
-        store,
-        workspaceId: importedWorkspaceId,
-      });
-      const reexportedObservationFile = [...reexported.verified.fileContents.keys()].find((path) =>
-        path.endsWith('/observations.jsonl')
-      )!;
-      expect(
-        JSON.parse(reexported.verified.fileContents.get(reexportedObservationFile)!.split('\n')[0]!)
-          .payload.assistantSkillAdmission
-      ).toEqual(environment.assistantSkillAdmission);
-      const secondImport = await importVerifiedWorkspace({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        requestId: null,
-        store,
-        verified: reexported.verified,
-      });
-      const secondWorkspaceId = secondImport.importedWorkspaceId;
-      const secondThread = store.listThreads(secondWorkspaceId)[0]!;
-      const secondTurn = store.listThreadTurns(secondWorkspaceId, secondThread.id)[0]!;
-      expect([demo.workspace.id, importedWorkspaceId]).not.toContain(secondWorkspaceId);
-      expect([demo.thread.id, thread.id]).not.toContain(secondThread.id);
-      expect([turn.id, importedTurn.id]).not.toContain(secondTurn.id);
-      const secondDb = workspaceDb(dataRoot, secondWorkspaceId);
-      try {
-        const rows = readWorkObservations(secondDb, {
-          threadId: secondThread.id,
-          turnId: secondTurn.id,
-        });
-        expect(rows).toHaveLength(2);
-        expect(rows[0]?.payload).toEqual({ ...environment, workspaceId: secondWorkspaceId });
-        expect([`env:${turn.id}`, importedEnvironmentId!]).not.toContain(rows[0]?.id);
-        expect(rows.every((row) => row.turnId === secondTurn.id)).toBe(true);
-        expect(rows[1]?.parent).toBe(rows[0]?.id);
-        expect(rows[1]?.payload).toEqual(recovery);
-      } finally {
-        secondDb.sqlite.close();
-      }
-      for (const workspaceId of [importedWorkspaceId, secondWorkspaceId]) {
-        const catalog = loadWorkspaceResourceCatalog(dataRoot, workspaceId);
-        expect(catalog.skills.entries).toEqual([]);
-        expect(catalog.skills.versions).toEqual([]);
-        expect(catalog.skills.pins).toEqual([]);
-        const importedConfig = findWorkspaceConfig(loadRuntimeConfig(dataRoot), workspaceId);
-        expect(importedConfig).not.toBeNull();
-        expect(importedConfig!.config.workspace.assistant?.resources?.skillIds ?? []).toEqual([]);
-      }
       expect(
         readWorkObservations(db, { threadId: demo.thread.id, turnId: turn.id })[0]?.payload
       ).toEqual(environment);
@@ -508,7 +341,7 @@ describe('work observation portable closure', () => {
     }
   });
 
-  it('round-trips retained restricted originals through real storage with reminted publication closure', async () => {
+  it('exports retained restricted originals through publication, hold, and expiry', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-observations-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -645,98 +478,12 @@ describe('work observation portable closure', () => {
           ).equals(bytes)
         )
       ).toBe(true);
+      expect(
+        [...verified.binaryFileContents.values()].some((value) => Buffer.from(value).equals(bytes))
+      ).toBe(true);
       expect(verified.fileContents.get('records/evidence-bundles.jsonl')).not.toContain(
         'evb_unpublished'
       );
-      const result = await importVerifiedWorkspace({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        requestId: null,
-        store,
-        verified,
-      });
-      const targetWorkspaceId = result.importedWorkspaceId;
-      const targetThread = store.listThreads(targetWorkspaceId)[0]!;
-      const targetTurn = store.listThreadTurns(targetWorkspaceId, targetThread.id)[0]!;
-      expect(targetWorkspaceId).not.toBe(demo.workspace.id);
-      expect(targetThread.id).not.toBe(demo.thread.id);
-      expect(targetTurn.id).not.toBe(turn.id);
-      const importedDb = workspaceDb(dataRoot, targetWorkspaceId);
-      try {
-        const rows = readWorkObservations(importedDb, {
-          threadId: targetThread.id,
-          turnId: targetTurn.id,
-        });
-        expect(rows).toHaveLength(2);
-        expect(rows[0]!.id).not.toBe('model_response');
-        expect(rows[1]!.parent).toBe(rows[0]!.id);
-        expect(rows[0]!.corr).toBe('call_1');
-        const bundle = listStoredWorkspaceEvidenceBundles(importedDb, targetWorkspaceId)[0]!;
-        expect(listWorkspaceEvidenceBundles(importedDb, targetWorkspaceId)).toEqual([]);
-        expect(bundle.id).not.toBe(sourceBundle.id);
-        expect(bundle.importStatus).toBe('promoted');
-        expect(bundle.retentionClass).toBe(sourceBundle.retentionClass);
-        expect(bundle.sensitivityClass).toBe(sourceBundle.sensitivityClass);
-        expect(bundle.createdAt).toBe(sourceBundle.createdAt);
-        expect(bundle.contentDigests).toEqual([sha256]);
-        expect(bundle.rawEvidenceRefs).toEqual(sourceBundle.rawEvidenceRefs);
-        expect(rows[1]!.refs?.[0]).toMatchObject({
-          locator: bundle.id,
-          scope: { workspaceId: targetWorkspaceId },
-          digest: sha256,
-        });
-        expect(
-          readWorkObservationBody(importedDb, {
-            bundleId: bundle.id,
-            threadId: targetThread.id,
-            turnId: targetTurn.id,
-            createdAt: bundle.createdAt,
-            sha256,
-          })
-        ).toEqual(bytes);
-        expect(
-          existsSync(
-            join(dataRoot, 'workspaces', targetWorkspaceId, 'evidence', 'backend', bundle.id)
-          )
-        ).toBe(true);
-      } finally {
-        importedDb.sqlite.close();
-      }
-      expect(store.getTurnCaptureCoverage(targetTurn.id)).toEqual({
-        scope: 'workspace',
-        value: 'on',
-      });
-      const restarted = new FsStore({ dataRoot });
-      expect(restarted.getTurnCaptureCoverage(targetTurn.id)).toEqual({
-        scope: 'workspace',
-        value: 'on',
-      });
-      const reopenedDb = workspaceDb(dataRoot, targetWorkspaceId);
-      try {
-        const bundle = listStoredWorkspaceEvidenceBundles(reopenedDb, targetWorkspaceId)[0]!;
-        expect(
-          readWorkObservationBody(reopenedDb, {
-            bundleId: bundle.id,
-            threadId: targetThread.id,
-            turnId: targetTurn.id,
-            createdAt: bundle.createdAt,
-            sha256,
-          })
-        ).toEqual(bytes);
-      } finally {
-        reopenedDb.sqlite.close();
-      }
-      const targetDb = workspaceDb(dataRoot, targetWorkspaceId);
-      const rawTurn = JSON.parse(
-        (
-          targetDb.sqlite
-            .prepare('SELECT record_json FROM control_turns WHERE id=?')
-            .get(targetTurn.id) as { record_json: string }
-        ).record_json
-      );
-      targetDb.sqlite.close();
-      expect(rawTurn.requiredFeatures).toContain('openkit.work-observations.v1');
       db.sqlite
         .prepare(
           "UPDATE evidence_bundles SET retention_class = 'legal-hold' WHERE evidence_bundle_id = ?"
@@ -753,33 +500,14 @@ describe('work observation portable closure', () => {
         store,
         workspaceId: demo.workspace.id,
       });
-      const heldImport = await importVerifiedWorkspace({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        requestId: null,
-        store,
-        verified: heldExport.verified,
-      });
-      const heldDb = workspaceDb(dataRoot, heldImport.importedWorkspaceId);
-      try {
-        const heldBundle = listStoredWorkspaceEvidenceBundles(
-          heldDb,
-          heldImport.importedWorkspaceId
-        )[0]!;
-        expect(heldBundle.retentionClass).toBe('legal-hold');
-        expect(
-          readWorkObservationBody(heldDb, {
-            bundleId: heldBundle.id,
-            threadId: heldBundle.threadId!,
-            turnId: heldBundle.turnId!,
-            createdAt: heldBundle.createdAt,
-            sha256,
-          })
-        ).toEqual(bytes);
-      } finally {
-        heldDb.sqlite.close();
-      }
+      expect(
+        [...heldExport.verified.binaryFileContents.values()].some((value) =>
+          Buffer.from(value).equals(bytes)
+        )
+      ).toBe(true);
+      expect(heldExport.verified.fileContents.get('records/evidence-bundles.jsonl')).toContain(
+        'legal-hold'
+      );
       db.sqlite
         .prepare(
           "UPDATE evidence_bundles SET retention_class = 'restricted-raw' WHERE evidence_bundle_id = ?"
@@ -818,34 +546,6 @@ describe('work observation portable closure', () => {
           ).equals(bytes)
         )
       ).toBe(false);
-      const expiredImport = await importVerifiedWorkspace({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        coreDb,
-        dataRoot,
-        requestId: null,
-        store,
-        verified: expiredExport.verified,
-      });
-      const expiredDb = workspaceDb(dataRoot, expiredImport.importedWorkspaceId);
-      try {
-        const expiredBundle = listStoredWorkspaceEvidenceBundles(
-          expiredDb,
-          expiredImport.importedWorkspaceId
-        )[0]!;
-        expect(expiredBundle.importStatus).toBe('expired');
-        expect(expiredBundle.rawEvidenceRefs).toEqual([]);
-        expect(
-          readWorkObservationBody(expiredDb, {
-            bundleId: expiredBundle.id,
-            threadId: expiredBundle.threadId!,
-            turnId: expiredBundle.turnId!,
-            createdAt: expiredBundle.createdAt,
-            sha256,
-          })
-        ).toBeNull();
-      } finally {
-        expiredDb.sqlite.close();
-      }
     } finally {
       db.sqlite.close();
       coreDb.sqlite.close();

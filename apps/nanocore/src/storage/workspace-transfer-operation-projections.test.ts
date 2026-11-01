@@ -323,8 +323,7 @@ describe('Workspace JSON transfer cutover', () => {
 
   it('round-trips actual archive bytes and Knowledge through the Web session streaming bindings', async () => {
     const source = await fixture();
-    const target = await fixture();
-    // The test controls only session admission; export, streams, staging, import and reads use real owners.
+    // The test controls only session admission; export and archive download use real owners.
     const sessionApp = (f: Awaited<ReturnType<typeof fixture>>) =>
       createApp({
         dataRoot: f.root,
@@ -341,15 +340,13 @@ describe('Workspace JSON transfer cutover', () => {
           handler: async () => Response.json({ status: 'auth-ok' }),
         },
       });
-    for (const f of [source, target])
-      createOpenKitAccessTokenRecord(f.db, {
-        ownerUserId: FIXTURE_LOCAL_USER_ID,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2099-01-01T00:00:00.000Z',
-      });
+    createOpenKitAccessTokenRecord(source.db, {
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
     const sourceWeb = sessionApp(source);
-    const targetWeb = sessionApp(target);
     const content = 'Web session archive: café and exact retained content.';
     const notebookResponse = await sourceWeb.request(
       ...request('/api/app/operations/knowledge.notebook.list', { workspaceId: DEMO_WORKSPACE_ID })
@@ -387,99 +384,6 @@ describe('Workspace JSON transfer cutover', () => {
     expect(downloaded.status, await downloaded.clone().text()).toBe(200);
     const bytes = await downloaded.arrayBuffer();
     expect(bytes.byteLength).toBeGreaterThan(0);
-    const upload = (path: string, requestId?: string) =>
-      targetWeb.request(path, {
-        method: 'POST',
-        body: new Blob([bytes]),
-        headers: {
-          'content-type': downloaded.headers.get('content-type')!,
-          ...(requestId ? { 'x-openkit-request-id': requestId } : {}),
-        },
-      });
-    const dryRun = await upload('/api/app/workspace-archives/import-dry-run');
-    expect(dryRun.status, await dryRun.clone().text()).toBe(200);
-    expect(await dryRun.json()).toMatchObject({
-      mode: 'dry-run',
-      collision: { status: 'collides' },
-    });
-    const imported = await upload('/api/app/workspace-archives/import', randomUUID());
-    expect(imported.status, await imported.clone().text()).toBe(200);
-    const result = await imported.json();
-    expect(result.mode).toBe('imported');
-    const readback = await targetWeb.request(
-      ...request('/api/app/operations/knowledge.notebook.list', {
-        workspaceId: result.importedWorkspaceId,
-      })
-    );
-    expect(readback.status).toBe(200);
-    expect((await readback.json()).pages).toContainEqual(
-      expect.objectContaining({
-        id: 'web-archive-proof',
-        content: expect.stringContaining(content),
-      })
-    );
-  });
-
-  it.each([
-    'workspace.import-dry-run',
-    'workspace.import',
-  ] as const)('%s preserves canonical-user HTTP admission with a valid creator handle', async (operation) => {
-    const { app, db, root, store } = await fixture();
-    const exported = await app.request(
-      ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
-    );
-    expect(exported.status).toBe(200);
-    const { exportId } = await exported.json();
-    const input = { sourceWorkspaceId: DEMO_WORKSPACE_ID, exportId };
-    const sessionApp = createApp({
-      dataRoot: root,
-      coreDb: db,
-      store,
-      mode: 'server',
-      auth: {
-        api: {
-          getSession: async () => ({
-            session: { id: 'creator_session' },
-            user: { id: FIXTURE_LOCAL_USER_ID },
-          }),
-        },
-        handler: async () => Response.json({ status: 'auth-ok' }),
-      },
-    });
-    const ordinary = createOpenKitAccessTokenRecord(db, {
-      ownerUserId: FIXTURE_LOCAL_USER_ID,
-      scope: 'workspace',
-      workspaceIds: [DEMO_WORKSPACE_ID],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    const admin = createOpenKitAccessTokenRecord(db, {
-      ownerUserId: FIXTURE_LOCAL_USER_ID,
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    });
-    const registry = db.sqlite
-      .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
-      .all();
-    const published = readdirSync(join(root, 'workspaces'));
-    const [url, init] = request(`/api/app/operations/${operation}`, input);
-    const refused = await sessionApp.request(url, {
-      ...init,
-      headers: { ...init.headers, authorization: `Bearer ${ordinary.secret}` },
-    });
-    expect(refused.status).toBe(403);
-    expect(await refused.json()).toMatchObject({ code: 'workspace_access_denied' });
-    expect(
-      db.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
-    ).toEqual(registry);
-    expect(readdirSync(join(root, 'workspaces'))).toEqual(published);
-    const session = await sessionApp.request(url, init);
-    expect(session.status, await session.clone().text()).toBe(200);
-    const administrator = await sessionApp.request(url, {
-      ...init,
-      headers: { ...init.headers, authorization: `Bearer ${admin.secret}` },
-    });
-    expect(administrator.status, await administrator.clone().text()).toBe(200);
   });
 
   it('refuses private export consumption after its source-owner creator loses administrator eligibility', async () => {
@@ -536,17 +440,6 @@ describe('Workspace JSON transfer cutover', () => {
     });
     expect(eligible.status).toBe(200);
     expect((await eligible.arrayBuffer()).byteLength).toBeGreaterThan(0);
-    for (const operation of ['workspace.import-dry-run', 'workspace.import']) {
-      const [operationUrl, operationInit] = request(`/api/app/operations/${operation}`, {
-        sourceWorkspaceId: DEMO_WORKSPACE_ID,
-        exportId,
-      });
-      const response = await app.request(operationUrl, {
-        ...operationInit,
-        headers: { ...operationInit.headers, authorization: `Bearer ${token.secret}` },
-      });
-      expect(response.status, await response.clone().text()).toBe(200);
-    }
     revokeOpenKitAccessTokenRecord(db, token.record.tokenId);
     expect(
       isCurrentDeploymentAdministrator(db, { kind: 'session', userId: FIXTURE_LOCAL_USER_ID })
@@ -576,16 +469,6 @@ describe('Workspace JSON transfer cutover', () => {
       code: 'workspace_access_denied',
       message: 'Workspace access denied.',
     });
-    for (const operation of ['workspace.import-dry-run', 'workspace.import']) {
-      const response = await app.request(
-        ...request(`/api/app/operations/${operation}`, {
-          sourceWorkspaceId: DEMO_WORKSPACE_ID,
-          exportId,
-        })
-      );
-      expect.soft(response.status).toBe(403);
-      expect.soft(await response.json()).toMatchObject({ code: 'workspace_import_forbidden' });
-    }
     expect(
       db.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
     ).toEqual(registry);
@@ -610,49 +493,23 @@ describe('Workspace JSON transfer cutover', () => {
     expect(exportUsage(root)).toEqual(usage);
   });
 
-  it('canonical export, dry-run and import reach their existing owners', async () => {
-    const { app, store, db } = await fixture();
+  it('canonical export reaches its existing owner', async () => {
+    const { app } = await fixture();
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(exported.status, await exported.clone().text()).toBe(200);
-    const { exportId } = await exported.json();
-    const input = { sourceWorkspaceId: DEMO_WORKSPACE_ID, exportId };
-    const before = db.sqlite
-      .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
-      .all();
-    const preview = await app.request(
-      ...request('/api/app/operations/workspace.import-dry-run', input)
-    );
-    expect(preview.status, await preview.clone().text()).toBe(200);
-    expect((await preview.json()).mode).toBe('dry-run');
-    expect(
-      db.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
-    ).toEqual(before);
-    const [url, init] = request('/api/app/operations/workspace.import', input);
-    const imported = await app.request(url, {
-      ...init,
-      headers: { ...init.headers, 'x-openkit-request-id': '00000000-0000-4000-8000-000000000051' },
-    });
-    expect(imported.status, await imported.clone().text()).toBe(200);
-    const result = await imported.json();
-    expect(result.requestId).toBe('00000000-0000-4000-8000-000000000051');
-    expect(store.getWorkspace(result.importedWorkspaceId).id).toBe(result.importedWorkspaceId);
-    expect(
-      db.sqlite
-        .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-        .get(result.importedWorkspaceId)
-    ).toEqual({ owner_user_id: FIXTURE_LOCAL_USER_ID });
+    await exported.json();
   });
 
-  it('HTTP and MCP readiness refuse export and import without tree or registry writes', async () => {
+  it('HTTP and MCP readiness refuses export without tree or registry writes', async () => {
     let readiness = computeBootReadinessSnapshot({ bootId: 'b14-readiness' });
     const { app, db, root } = await fixture(() => readiness);
     const exportedResponse = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(exportedResponse.status).toBe(200);
-    const { exportId } = await exportedResponse.json();
+    await exportedResponse.json();
     const token = createOpenKitAccessTokenRecord(db, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
@@ -675,41 +532,31 @@ describe('Workspace JSON transfer cutover', () => {
         },
       },
     });
-    for (const [operation, input] of [
-      ['workspace.export', { workspaceId: DEMO_WORKSPACE_ID }],
-      ['workspace.import', { sourceWorkspaceId: DEMO_WORKSPACE_ID, exportId }],
-    ] as const) {
-      const response = await app.request(...request(`/api/app/operations/${operation}`, input));
-      expect(response.status).toBe(503);
-      expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
-      const rpc = await app.request('http://127.0.0.1/mcp', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: 'application/json, text/event-stream',
-          authorization: `Bearer ${token.secret}`,
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'tools/call',
-          params: { name: 'openkit_call', arguments: { operation, input } },
-        }),
-      });
-      expect(rpc.status).toBe(200);
-      const result = (await rpc.json()).result;
-      expect(result.isError).toBe(true);
-      expect(JSON.parse(result.content[0].text)).toMatchObject({
-        code: 'product_work_unavailable',
-      });
-    }
-    const preview = await app.request(
-      ...request('/api/app/operations/workspace.import-dry-run', {
-        sourceWorkspaceId: DEMO_WORKSPACE_ID,
-        exportId,
-      })
-    );
-    expect(preview.status).toBe(200);
+    const operation = 'workspace.export';
+    const input = { workspaceId: DEMO_WORKSPACE_ID };
+    const response = await app.request(...request(`/api/app/operations/${operation}`, input));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: 'product_work_unavailable' });
+    const rpc = await app.request('http://127.0.0.1/mcp', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${token.secret}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'openkit_call', arguments: { operation, input } },
+      }),
+    });
+    expect(rpc.status).toBe(200);
+    const result = (await rpc.json()).result;
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      code: 'product_work_unavailable',
+    });
     expect(readdirSync(exportsRoot)).toEqual(trees);
     expect(
       db.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
@@ -857,16 +704,6 @@ describe('Workspace JSON transfer cutover', () => {
     );
     expect(archive.status).toBe(403);
     expect(await archive.json()).toMatchObject({ code: 'workspace_export_archive_forbidden' });
-    for (const operation of ['workspace.import-dry-run', 'workspace.import']) {
-      const response = await app.request(
-        ...request(`/api/app/operations/${operation}`, {
-          sourceWorkspaceId: DEMO_WORKSPACE_ID,
-          exportId,
-        })
-      );
-      expect(response.status).toBe(403);
-      expect(await response.json()).toMatchObject({ code: 'workspace_import_forbidden' });
-    }
     expect(
       db.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
     ).toEqual(registry);

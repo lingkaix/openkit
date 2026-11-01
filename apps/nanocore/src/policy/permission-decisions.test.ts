@@ -23,7 +23,6 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import {
-  importWorkspacePermissionDecisions,
   listExportableWorkspacePermissionDecisions,
   listPolicyApprovalSourceDecisions,
   listServerPermissionDecisions,
@@ -37,10 +36,8 @@ import { retainPermissionDecision } from './retained-records-v1.js';
 describe('permission decision recorder', () => {
   it('roundtrips mediation and atomically consumes only final Workspace allows', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-consumption-'));
-    const importedRoot = mkdtempSync(join(tmpdir(), 'openkit-policy-import-'));
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    const importedDb = openWorkspaceDb(importedRoot, workspaceId);
     const digest = `sha256:${'a'.repeat(64)}`;
     const statement = { id: 'once-review', digest };
     const userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -98,7 +95,6 @@ describe('permission decision recorder', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await openTestNativeWorkspace(workspaceDb);
-      applyScopedMigrations(importedDb, undefined, 'pre-knowledge');
       const gateId = allocateEntityId('pd');
       await recordProductPermissionDecision({
         ...base,
@@ -213,10 +209,6 @@ describe('permission decision recorder', () => {
       const portable = decisions.map((decision) => retainPermissionDecision({ ...decision }));
       expect(portable[0]).not.toHaveProperty('subjectSummary');
       expect(portable[0]).not.toHaveProperty('enforcementPoint');
-      importWorkspacePermissionDecisions(importedDb, portable);
-      expect(listExportableWorkspacePermissionDecisions(importedDb, workspaceId)).toEqual(
-        decisions
-      );
 
       const policyWriteOutcome = {
         candidate: { artifactId: 'ar_00000000-0000-7000-8000-000000000001', version: 1, digest },
@@ -266,9 +258,7 @@ describe('permission decision recorder', () => {
     } finally {
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
-      importedDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
-      rmSync(importedRoot, { recursive: true, force: true });
     }
   });
 

@@ -17,6 +17,7 @@ import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import {
@@ -291,29 +292,25 @@ describe('exact Artifact file import and download', () => {
       `/api/app/workspaces/${source.workspace.id}/exports/${exportId}/archive`
     );
     expect(archive.status).toBe(200);
-    const imported = await source.app.request('/api/app/workspace-archives/import', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
-        'x-openkit-request-id': randomUUID(),
-      },
-      body: await archive.arrayBuffer(),
+    const verified = verifyWorkspaceExportTree({
+      exportRoot: join(
+        source.dataRoot,
+        'server',
+        'exports',
+        'workspaces',
+        source.workspace.id,
+        exportId
+      ),
     });
-    expect(imported.status).toBe(200);
-    const { importedWorkspaceId } = await imported.json();
-    const retained = source.store.listArtifacts(importedWorkspaceId);
+    const artifacts = source.store.listArtifacts(source.workspace.id);
     for (const original of originals) {
-      const artifact = retained.find(({ contentDigest }) => contentDigest === original.sha256);
+      const artifact = artifacts.find(({ contentDigest }) => contentDigest === original.sha256);
       expect(artifact).toBeDefined();
-      const response = await source.app.request(
-        `/api/app/operations/artifact.download?${new URLSearchParams({
-          workspaceId: importedWorkspaceId,
-          artifactId: artifact!.id,
-          artifactVersion: String(artifact!.version),
-        })}`
+      const payloadPath = verified.artifactPayloadFiles.get(
+        `artifacts/${artifact!.id}/versions/${artifact!.version}/payload`
       );
-      expect(response.status).toBe(200);
-      const bytes = Buffer.from(await response.arrayBuffer());
+      expect(payloadPath).toBeDefined();
+      const bytes = readFileSync(payloadPath!);
       expect(bytes).toEqual(Buffer.from(original.patternHex.repeat(original.repeats), 'hex'));
       expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(original.sha256);
     }
@@ -482,60 +479,32 @@ describe('exact Artifact file import and download', () => {
     }
   });
 
-  it('preserves exact binary originals through two authorized Workspace export and import cycles', async () => {
+  it('preserves exact binary originals through an authorized Workspace export', async () => {
     const state = await fixture();
     const original = corpus.originals.find((entry) => entry.id === 'binary-invalid-utf8')!;
     const acceptedResponse = await upload(state, original);
     expect(acceptedResponse.status).toBe(201);
     const accepted = (await acceptedResponse.json()) as { artifactId: string };
-    let workspaceId = state.workspace.id;
-    let previousArtifactId = accepted.artifactId;
-    for (let cycle = 0; cycle < 2; cycle++) {
-      const exported = await state.app.request(
-        ...operationRequest('workspace.export', { workspaceId })
-      );
-      expect(exported.status, await exported.clone().text()).toBe(200);
-      const { exportId } = await exported.json();
-      const imported = await state.app.request(
-        ...operationRequest(
-          'workspace.import',
-          {},
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              sourceWorkspaceId: workspaceId,
-              exportId,
-              requestId: randomUUID(),
-            }),
-          }
-        )
-      );
-      expect(imported.status, await imported.clone().text()).toBe(200);
-      const { importedWorkspaceId } = await imported.json();
-      const artifact = state.store
-        .listArtifacts(importedWorkspaceId)
-        .find((candidate) => candidate.contentDigest === original.sha256)!;
-      expect(artifact.id).not.toBe(previousArtifactId);
-      expect(artifact.workspaceId).toBe(importedWorkspaceId);
-      expect(artifact.content).toEqual({
-        format: 'file',
-        mediaType: 'application/octet-stream',
-        byteLength: original.size,
-      });
-      const downloaded = await state.app.request(
-        `/api/app/operations/artifact.download?${new URLSearchParams({ workspaceId: importedWorkspaceId, artifactId: artifact.id, artifactVersion: '1' })}`
-      );
-      expect(downloaded.status).toBe(200);
-      expect(downloaded.headers.get('x-openkit-content-digest')).toBe(original.sha256);
-      expect(Buffer.from(await downloaded.arrayBuffer())).toEqual(
-        Buffer.from(original.patternHex, 'hex')
-      );
-      const restarted = new FsStore({ dataRoot: state.dataRoot });
-      expect(restarted.getArtifact(importedWorkspaceId, artifact.id)).toEqual(artifact);
-      workspaceId = importedWorkspaceId;
-      previousArtifactId = artifact.id;
-    }
+    const exported = await state.app.request(
+      ...operationRequest('workspace.export', { workspaceId: state.workspace.id })
+    );
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const { exportId } = await exported.json();
+    const verified = verifyWorkspaceExportTree({
+      exportRoot: join(
+        state.dataRoot,
+        'server',
+        'exports',
+        'workspaces',
+        state.workspace.id,
+        exportId
+      ),
+    });
+    const payloadPath = verified.artifactPayloadFiles.get(
+      `artifacts/${accepted.artifactId}/versions/1/payload`
+    );
+    expect(payloadPath).toBeDefined();
+    expect(readFileSync(payloadPath!)).toEqual(Buffer.from(original.patternHex, 'hex'));
   });
 
   it('downloads an original when retained title text contains an unpaired surrogate', async () => {

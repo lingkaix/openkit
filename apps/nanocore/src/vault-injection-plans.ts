@@ -201,53 +201,6 @@ export function listExportableVaultInjectionPlans(
 }
 
 /**
- * Imports non-secret injection plan records.
- *
- * @param coreDb Open Core database handle.
- * @param plans Imported injection plan records.
- */
-export function importVaultInjectionPlans(
-  coreDb: CoreDb,
-  plans: readonly VaultInjectionPlanRecord[]
-): void {
-  for (const plan of plans) {
-    coreDb.sqlite
-      .prepare(
-        `INSERT OR IGNORE INTO vault_injection_plans (
-          plan_id,
-          grant_id,
-          package_snapshot_id,
-          capability_id,
-          injection_visibility,
-          target_path,
-          target_env_var_name,
-          expiration_behavior,
-          revocation_behavior,
-          redaction_rule,
-          backend_capability_requirement,
-          status,
-          created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        plan.planId,
-        plan.grantId,
-        plan.packageSnapshotId,
-        plan.capabilityId,
-        plan.injectionVisibility,
-        plan.targetPath,
-        plan.targetEnvVarName,
-        plan.expirationBehavior,
-        plan.revocationBehavior,
-        plan.redactionRule,
-        plan.backendCapabilityRequirement,
-        plan.status,
-        plan.createdAt
-      );
-  }
-}
-
-/**
  * Reads one injection plan or throws a readable error.
  *
  * @param coreDb Open Core database handle.

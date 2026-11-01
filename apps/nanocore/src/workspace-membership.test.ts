@@ -683,54 +683,29 @@ describe('workspace membership foundation', () => {
       );
       const exported = (await exportedResponse.json()) as { exportId: string };
       recordDataRootDeploymentMove(dataRoot, 'dep_00000000-0000-717e-ba4e-06034b3d4ea9');
-      const request = {
-        exportId: exported.exportId,
-        sourceWorkspaceId: source.id,
-      };
       const getWorkspace = vi.spyOn(store, 'getWorkspace');
 
       expect(exportedResponse.status).toBe(200);
 
-      for (const operation of ['workspace.import-dry-run', 'workspace.import'] as const) {
-        getWorkspace.mockClear();
-        const denied = await otherApp.request(
-          ...operationRequest(
-            operation,
-            {},
-            {
-              body: JSON.stringify(
-                operation === 'workspace.import-dry-run'
-                  ? request
-                  : { ...request, requestId: randomUUID() }
-              ),
-              headers: { 'content-type': 'application/json' },
-              method: 'POST',
-            }
-          )
-        );
+      getWorkspace.mockClear();
+      const denied = await otherApp.request(
+        `/api/app/workspaces/${source.id}/exports/${exported.exportId}/archive`
+      );
 
-        expect(denied.status, `${operation}: ${await denied.clone().text()}`).toBe(403);
-        await expect(denied.json()).resolves.toMatchObject({ code: 'workspace_import_forbidden' });
-        expect(getWorkspace).not.toHaveBeenCalled();
-      }
+      expect(denied.status, await denied.clone().text()).toBe(403);
+      // A non-member hits the existing Workspace access guard before archive creator proof.
+      await expect(denied.json()).resolves.toMatchObject({
+        code: 'workspace_access_denied',
+      });
+      expect(getWorkspace).not.toHaveBeenCalled();
 
       const missing = await otherApp.request(
-        ...operationRequest(
-          'workspace.import-dry-run',
-          {},
-          {
-            body: JSON.stringify({
-              exportId: 'wsexp_00000000-0000-76e9-a1ff-f4d43a476b8c',
-              sourceWorkspaceId: 'ws_00000000-0000-7490-845b-dcfa3ee49925',
-            }),
-            headers: { 'content-type': 'application/json' },
-            method: 'POST',
-          }
-        )
+        `/api/app/workspaces/${source.id}/exports/wsexp_00000000-0000-76e9-a1ff-f4d43a476b8c/archive`
       );
       const missingBody = await missing.text();
 
-      expect(missing.status).toBe(400);
+      expect(missing.status).toBe(403);
+      expect(missingBody).toContain('workspace_access_denied');
       expect(missingBody).not.toContain(dataRoot);
       expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual(workspaceIds);
     } finally {

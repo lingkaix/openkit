@@ -16,7 +16,7 @@ test('test image jobs reap orphaned processes through Docker init', () => {
   const jobs = Object.entries(workflow.jobs).filter(
     ([, job]) => job.container?.image === actionExpression('needs.test-image.outputs.image')
   );
-  assert.equal(jobs.length, 11);
+  assert.equal(jobs.length, 9);
   for (const [name, job] of jobs) {
     assert.equal(job.container.options, '--init', `${name} must reap orphaned processes`);
   }
@@ -401,18 +401,6 @@ test('release workflow runs the fixed-path NanoHost installer gate in one host j
   assert.doesNotMatch(commands, /pnpm .*nanohost.*installer|scripts\/test-env\.sh/u);
 });
 
-test('workspace portability uses two runners only behind release or manual gates', () => {
-  const source = workflow.jobs['workspace-portability-source'];
-  const target = workflow.jobs['workspace-portability-target'];
-
-  assert.equal(source.if, target.if);
-  assert.match(source.if, /github\.event_name == 'push'/u);
-  assert.match(source.if, /github\.event_name == 'workflow_dispatch'/u);
-  assert.doesNotMatch(source.if, /pull_request/u);
-  assert.ok(target.needs.includes('workspace-portability-source'));
-  assert.ok(workflow.jobs['package-release-assets'].needs.includes('workspace-portability-target'));
-});
-
 test('app-image recovery smoke is main-push or manual, host-placed, opted in, and root-Node pinned', () => {
   const job = workflow.jobs['app-image-admin-recovery'];
   assert.equal(
@@ -550,30 +538,26 @@ test('release notes are checked before publication and verified against the gene
 // The shard raw block changes only because its trailing temporary-probe comments are removed.
 const unchangedJobBaseline = {
   'container-image-matrix': 'aaf9dbadd90c16a7be23c7198f043c96a0903ed9673f9692d070ff9a6d18a88d',
-  'build-app-candidate': '11ee3d0655617efd27aaeaca35f343f331565e9423dac70191a178be29276e23',
+  'build-app-candidate': '1097b0a19282c8c3f2d056cb5f58f86002b51c32acd99ac47f26c6d5d1fb4252',
   'smoke-app-native': '2038f6417de2a540d8f1ae7e2cba81124fae00d9ebf63cd854b570fc8e82dc5a',
-  'publish-app-image': 'fd091214aaa75266c7e6556ce159ca083a1267906d8203c4a44888b6832c1b43',
+  'publish-app-image': '36827f0a18ad56e92933c012d075eac8a1ab2883197570e9374d0c689e286fe5',
   'test-image': 'eeae1d9c7553046e9cf830853571cd207733a866eabb4eddcccee0a1eea2f369',
   'pr-check': 'cd25e65862cb5e88de536194e5b12295c895d4135e447fa64674c29c6db0e876',
   'nanohost-installer': 'cca844e482336a7509a30d3c21f86a19ab1f516746bcebbffc12a2ffbbe7cf79',
   'release-preflight': '08f1323789664bc8fbf73981b43f4a6824671abd1b646d1f549dfa3a903f1b46',
-  'workspace-portability-source':
-    '3523621ad7a5e44d89f31c0fa8a16e36d52851bed3f7ed465fa524a0834d1cb3',
-  'workspace-portability-target':
-    '888af356cec6dcbda583fbd282374b15ff1b631039ed72fab02622c4cfb4d075',
   'web-e2e': 'e3cea381fd7e8d5b8e35ea3dae9de4b1cd861138f3846652daa0a09a2660a1c4',
   smoke: '3c5008e35fa7e6d3b985442158e07f2943b5d84486e2aec38007791bbcfc629f',
   'build-nanohost-amd64': '346b895871f280deff3d571843906b4952431d5dcf4870f64a53b7f140169180',
   'build-nanohost-arm64': 'd0b7cdb6291ef8eedacddda56ad81b8f602398ce35acd2ef3eb32a4ae9c9cf32',
-  'package-release-assets': '7ca8192b75b1e6edcc18311c9592fd1a32304aea9394e201952a7be794412d5c',
+  'package-release-assets': 'f6b374103fdcc18bdac1d6a7e8e1a02cd354b5d2c9bcb0f6b758c9837099c232',
   'qualify-nanohost': '9c42422c9716a0ad27688e745ac4ca1716671c9709349dfdca2fd01abe619474',
-  'publish-container-images': '6007299806f13e1efff7c11e96f3f471b060e09d8887d1c06324fdaf418df6f0',
+  'publish-container-images': '15b2451112e8984166de200954f02bdb38e175a02014512624473f33a2e00db0',
   'github-release': 'f8ce0250a5d129eda5de0c8e014221f3fe38ccff26b57fe2a920efd33025b720',
   'verify-release': '91c626072cb2dbe43b842c8ea833133a8b79ebedc3ac6e793e73f09423e2e592',
 };
 
 const candidateJobBaseline = {
-  'candidate-registry': '0c3c8d8b738e5ce1a8f3d254441eeeac45fa219e989a2c59879a7ede943d7588',
+  'candidate-registry': 'f9fcc5d71456fd7aa6fe7ab6d55f5b4a0dc2a863e7b84497afb03912ef36d451',
   'candidate-plan': 'db39756a270124246cc1baa3586d4102530fa2af0cf4bd0efe276bd6092dc68d',
   'candidate-images': 'a0740482ba092070384eaadcc824d002b6ab9e593a3bf4d4f028ff8b4da81c7a',
   'candidate-index': '70619d1d39162da573cf6081651c89affe331cde53eb95b073f86da848f4dd0a',
@@ -812,8 +796,6 @@ test('every main push runs the complete nonpublishing candidate gate without pub
     'l0-l2',
     'nano-core-e2e',
     'web-e2e',
-    'workspace-portability-source',
-    'workspace-portability-target',
     'smoke',
     'app-image-admin-recovery',
     'container-image-matrix',
@@ -992,7 +974,7 @@ test('Worker publication and final verification retain the reviewed cadence step
     ].map((match) => [match[1], match[2]])
   );
   const old = {
-    'publish-container-images': 'd815c292f966f1f5f99a1cb622304379c1c51101bbf85efb2f3517f2ebab11f5',
+    'publish-container-images': '488efd0e87eed0eb31978901f7c2d199f3cfc1ac3896edbc55f8da52982dfc4b',
     'github-release': '164bbfa536d6b14d53b74b960234a5e6038a6f5bfecf5088b14f6e501291ec9a',
     'verify-release': '670f751bd1aba453021c52f18bba320544d9e09aecda5f1d861807fa71e9f16c',
   };
@@ -1226,7 +1208,6 @@ test('registry admission runs after complete gates with read-only package author
     'nano-core-e2e',
     'web-e2e',
     'smoke',
-    'workspace-portability-target',
     'app-image-admin-recovery',
     'nanohost-installer',
   ]);

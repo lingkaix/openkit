@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
-  importWorkspaceAuditEvents,
   listPortableWorkspaceAuditEvents,
   listServerAuditEvents,
   listWorkspaceAuditEvents,
@@ -27,17 +26,14 @@ function createDataRoot(): string {
 }
 
 describe('workspace audit events', () => {
-  it('retains authentication attribution through storage and Workspace history import', () => {
+  it('retains authentication attribution through server storage and portable export', () => {
     const dataRoot = createDataRoot();
     const sourceId = testEntityId('ws', 'audit-auth-source');
-    const targetId = testEntityId('ws', 'audit-auth-target');
     const coreDb = openCoreDb(dataRoot);
     const source = openWorkspaceDb(dataRoot, sourceId);
-    const target = openWorkspaceDb(dataRoot, targetId);
     try {
       applyMigrations(coreDb);
       applyScopedMigrations(source, undefined, 'pre-knowledge');
-      applyScopedMigrations(target, undefined, 'pre-knowledge');
       const authentication = {
         credentialKind: 'token' as const,
         credentialId: testEntityId('tok', 'audit-presented'),
@@ -57,17 +53,7 @@ describe('workspace audit events', () => {
         workspaceDb: source,
         workspaceId: sourceId,
       });
-      const portable = listPortableWorkspaceAuditEvents(source, sourceId);
-      expect(portable).toEqual([original]);
-      importWorkspaceAuditEvents({
-        workspaceDb: target,
-        sourceWorkspaceId: sourceId,
-        targetWorkspaceId: targetId,
-        events: portable,
-      });
-      expect(listWorkspaceAuditEvents(target, targetId)).toEqual([
-        { ...original, workspaceId: targetId },
-      ]);
+      expect(listPortableWorkspaceAuditEvents(source, sourceId)).toEqual([original]);
       expect(() =>
         recordWorkspaceAuditEvent({
           ...facts,
@@ -79,7 +65,6 @@ describe('workspace audit events', () => {
       expect(listWorkspaceAuditEvents(source, sourceId)).toEqual([original]);
     } finally {
       source.sqlite.close();
-      target.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }

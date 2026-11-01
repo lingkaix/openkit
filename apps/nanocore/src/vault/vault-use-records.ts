@@ -211,21 +211,6 @@ export function listExportableWorkspaceVaultUseRecords(
 }
 
 /**
- * Imports workspace-scoped vault use records into a staged workspace database.
- *
- * @param db Workspace database handle.
- * @param records Imported non-secret vault use records.
- */
-export function importWorkspaceVaultUseRecords(
-  db: WorkspaceDb,
-  records: readonly VaultUseRecord[]
-): void {
-  for (const record of records) {
-    createVaultUseRecord(db, record);
-  }
-}
-
-/**
  * Reads one vault use record or throws a readable error.
  *
  * @param db Server- or workspace-scoped database handle.

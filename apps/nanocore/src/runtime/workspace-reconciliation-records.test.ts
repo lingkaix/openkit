@@ -21,7 +21,6 @@ import { recordWorkerBackendSessionMaterializing } from './worker-backend-sessio
 import { workerStorageScopeDigest } from './worker-storage-bindings.js';
 import {
   completeWorkspaceCaptureRecovery,
-  importWorkspaceReconciliationRecords,
   listWorkspaceReconciliationRecords,
   recordWorkspaceCaptureRecovery,
   recordWorkspaceReconciliationRecord,
@@ -308,9 +307,6 @@ describe('workspace reconciliation records', () => {
         'Unsupported retained record format.'
       );
       expect(() => recordWorkspaceReconciliationRecord(db, record)).toThrow(
-        'Unsupported retained record format.'
-      );
-      expect(() => importWorkspaceReconciliationRecords(db, [record])).toThrow(
         'Unsupported retained record format.'
       );
       expect(() =>

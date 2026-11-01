@@ -7,7 +7,6 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
-  importWorkspaceQuarantineRecords,
   listWorkspaceQuarantineRecords,
   recordWorkspaceQuarantineRecord,
 } from './workspace-quarantine-records.js';
@@ -95,9 +94,6 @@ describe('workspace quarantine records', () => {
           resolvedAt: timestamp,
         })
       ).toThrow('Unsupported retained record format.');
-      expect(() => importWorkspaceQuarantineRecords(db, [record])).toThrow(
-        'Unsupported retained record format.'
-      );
       expect(
         db.sqlite
           .prepare(

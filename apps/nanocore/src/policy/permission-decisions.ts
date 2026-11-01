@@ -32,7 +32,6 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/index.js';
 import {
   PermissionDecisionRetainedV1Schema,
-  projectPermissionDecision,
   readAuditEventRowV1,
   readPermissionDecisionRowV1,
 } from './retained-records-v1.js';
@@ -857,69 +856,6 @@ export function listServerPermissionDecisions(coreDb: CoreDb): ServerPermissionD
       )
       .all() as PermissionDecisionRow[]
   ).map(mapServerPermissionDecisionRow);
-}
-
-/**
- * Replays imported workspace permission decisions without emitting new audit rows.
- *
- * @param workspaceDb Open target workspace database handle.
- * @param decisions Permission decision rows to replay.
- */
-export function importWorkspacePermissionDecisions(
-  workspaceDb: WorkspaceDb,
-  decisions: readonly unknown[]
-): void {
-  for (const source of decisions) {
-    const decision = PermissionDecisionRetainedV1Schema.parse(projectPermissionDecision(source));
-    const retained = writeRetainedV1(decision);
-    if (decision.ownerScope !== 'workspace' || !decision.workspaceId) {
-      throw new Error('Workspace permission decision import record must be workspace-scoped.');
-    }
-
-    workspaceDb.sqlite
-      .prepare(
-        `INSERT OR IGNORE INTO permission_decisions (
-          decision_id,
-          schema_version,
-          owner_scope,
-          workspace_id,
-          policy_engine_version,
-          policy_snapshot_id,
-          subject_summary_json,
-          action,
-          resource_summary_json,
-          context_summary_json,
-          result,
-          reason_code,
-          enforcement_point,
-          mediation_json,
-          required_approval_kind,
-          approval_id,
-          audit_event_id,
-          created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        decision.decisionId,
-        retained.schemaVersion,
-        decision.ownerScope,
-        decision.workspaceId,
-        decision.policyEngineVersion,
-        decision.policySnapshotId,
-        JSON.stringify(decision.mediation ? null : decision.subjectSummary),
-        decision.action,
-        JSON.stringify(decision.resourceSummary),
-        JSON.stringify(decision.contextSummary),
-        decision.result,
-        decision.reasonCode,
-        decision.mediation ? '' : decision.enforcementPoint,
-        decision.mediation === undefined ? null : JSON.stringify(decision.mediation),
-        decision.requiredApprovalKind,
-        decision.approvalId,
-        decision.auditEventId,
-        decision.createdAt
-      );
-  }
 }
 
 /**

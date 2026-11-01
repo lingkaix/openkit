@@ -26,13 +26,13 @@ Capability admission captures the supplied actor in the existing linked Audit fa
 
 CapabilityCall uses one canonical owner union for both database scopes. The admitted database supplies storage authority; the existing nullable SQL Workspace column supplies none by itself. Exported Workspace calls retain their explicit owner, and Server calls remain in Core. Usage measurements keep their existing schema.
 
-Workspace ledger import validates every call owner against the target database before inserting calls. A Server or foreign Workspace owner refuses the batch before its first call write.
+Ordinary portable Workspace import is absent and does not insert call rows into a target database. Exported Workspace calls keep their explicit owner. A Server or foreign Workspace owner is not target access authority.
 
 The exported call ledger can project proved `upstreamContacted: false` from a retained correlated submission PermissionDecision. Only the exact denied captured-call submission reason and correlated call identity supply that fact. Missing knowledge is omitted; absence of usage alone does not prove no contact. This projection adds no call ledger, stored field or writer and does not change live protocol shapes.
 
 Workspace mutation facades return Promises and use the admitted database worker for the complete Call, usage, PermissionDecision and required Audit tuple. Await acknowledgement before dependent contact, publication or handle closure. Core and Server mutation branches remain synchronous. The `InDb` bodies are for the supplied native savepoint or an explicitly stopped private import; they are not a live Main fallback. Main reads worker-owned rows through existing read-only, query-only WAL views and rechecks current authority after native waits.
 
-Model measurements retain logical modelId, the actual dispatched providerModel and existing measured-profile providerRef together. Nullable historical providerModel stays unknown. Native wire, equivalent-measurement comparison, reads and portable import preserve that same fact without another ledger.
+Model measurements retain logical modelId, the actual dispatched providerModel and existing measured-profile providerRef together. Nullable historical providerModel stays unknown. Native wire, equivalent-measurement comparison, reads and portable export preserve that same fact without another ledger.
 
 A captured MCP submission refusal joins its existing PermissionDecision, linked Audit and failed Call finish in one native transition without Usage. A later refusal has a distinct decision identity, so the original allow remains immutable. Portable ledger reads derive known no-contact from the explicit retained refusal context; an error code alone never proves contact certainty.
 

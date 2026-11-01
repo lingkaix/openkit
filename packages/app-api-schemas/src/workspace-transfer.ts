@@ -1,13 +1,7 @@
 import { WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { OperationDefinition } from './operation-contract.js';
-import {
-  WorkspaceExportResponseSchema,
-  WorkspaceImportDryRunRequestSchema,
-  WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportRequestSchema,
-  WorkspaceImportResponseSchema,
-} from './storage.js';
+import { WorkspaceExportResponseSchema } from './storage.js';
 
 const canonicalUserCredentials = [
   'local-user',
@@ -28,32 +22,6 @@ export const WORKSPACE_TRANSFER_OPERATION_DEFINITIONS = {
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
     policyOperation: 'workspace.export',
-    mutating: true,
-  },
-  'workspace.import-dry-run': {
-    binding: 'json',
-    returnsOneTimeSecret: false,
-    successStatus: 200,
-    description: 'Verify a server-managed Workspace export without importing it.',
-    inputSchema: WorkspaceImportDryRunRequestSchema,
-    outputSchema: WorkspaceImportDryRunResponseSchema,
-    credentials: canonicalUserCredentials,
-    scope: { kind: 'user' },
-    target: { kind: 'user' },
-    policyOperation: 'workspace.write',
-    mutating: false,
-  },
-  'workspace.import': {
-    binding: 'json',
-    returnsOneTimeSecret: false,
-    successStatus: 200,
-    description: 'Import one verified server-managed Workspace export.',
-    inputSchema: WorkspaceImportRequestSchema,
-    outputSchema: WorkspaceImportResponseSchema,
-    credentials: canonicalUserCredentials,
-    scope: { kind: 'user' },
-    target: { kind: 'user' },
-    policyOperation: 'workspace.write',
     mutating: true,
   },
 } as const satisfies Record<string, OperationDefinition>;

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +28,7 @@ import { Hono } from 'hono';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { z } from 'zod';
 import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
+import { FsStore } from './lib/store.js';
 import {
   APP_OPENAPI_ROUTE_COVERAGE_EXCLUSIONS,
   APP_OPENAPI_ROUTE_METHODS,
@@ -39,7 +41,9 @@ import { closeWorkspaceProductReadHandles } from './storage/control-store-produc
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import { createTestStore } from './test-support/store.js';
+import { ensureLocalUser } from './test-support/local-user.js';
+import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
+import { listActiveWorkspaceIds, recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
   APP_OPENAPI_ROUTE_METHODS.map((method) => method.toUpperCase())
@@ -166,22 +170,21 @@ function unclassifiedAppApiRoutes(routes: readonly { method: string; path: strin
 }
 
 describe('app api openapi projection', () => {
-  it('projects the three JSON transfer definitions and removes their former bindings', () => {
+  it('projects workspace export and removes ordinary portable import', () => {
     const document = createAppOpenApiDocument();
-    for (const id of [
-      'workspace.export',
-      'workspace.import-dry-run',
-      'workspace.import',
-    ] as const) {
-      const operation = document.paths[operationHttpPath(id)]!.post!;
-      expect(operation.operationId).toBe(id);
-      expect(operation.responses).toHaveProperty('200');
-      expect(operation.requestBody).toHaveProperty('required', true);
-    }
+    const exportOperation = document.paths[operationHttpPath('workspace.export')]!.post!;
+    expect(exportOperation.operationId).toBe('workspace.export');
+    expect(exportOperation.responses).toHaveProperty('200');
+    expect(exportOperation.requestBody).toHaveProperty('required', true);
+    // Decision 20261027: ordinary portable import and its engine are removed completely.
+    for (const id of ['workspace.import-dry-run', 'workspace.import'] as const)
+      expect(document.paths).not.toHaveProperty(operationHttpPath(id));
     for (const path of [
       '/api/app/workspaces/{workspaceId}/export',
       '/api/app/workspace-imports/dry-run',
       '/api/app/workspace-imports',
+      '/api/app/workspace-archives/import-dry-run',
+      '/api/app/workspace-archives/import',
     ])
       expect(document.paths).not.toHaveProperty(path);
     expect(document.components.schemas['workspace.export.input']).toMatchObject({
@@ -1910,18 +1913,8 @@ describe('app api openapi projection', () => {
       policyOperation: 'workspace.write',
       scope: 'user',
     });
-    expect(PUBLIC_OPERATION_ACCESS['workspace.import-dry-run']).toMatchObject({
-      authentication: 'canonical-user',
-      mutating: false,
-      policyOperation: 'workspace.write',
-      scope: 'user',
-    });
-    expect(PUBLIC_OPERATION_ACCESS['workspace.import']).toMatchObject({
-      authentication: 'canonical-user',
-      mutating: true,
-      policyOperation: 'workspace.write',
-      scope: 'user',
-    });
+    expect(PUBLIC_OPERATION_ACCESS).not.toHaveProperty('workspace.import-dry-run');
+    expect(PUBLIC_OPERATION_ACCESS).not.toHaveProperty('workspace.import');
     expect(PUBLIC_OPERATION_ACCESS['bootstrap.consume']).toMatchObject({
       authentication: 'bootstrap-secret',
       mutating: true,
@@ -2177,8 +2170,6 @@ describe('app api openapi projection', () => {
     const store = createTestStore({ dataRoot });
     expect(getRegisteredAppApiOperationIds(createApp({ store }))).toEqual([
       'workspace.archive-download',
-      'workspace.archive-import-dry-run',
-      'workspace.archive-import',
       'workspace.backup-download',
       'knowledge.package.export',
       'knowledge.package.import',
@@ -2417,6 +2408,104 @@ describe('automation, scheduler and recovery OpenAPI projection', () => {
       '/api/app/workspaces/{workspaceId}/threads/{threadId}/recovery/interrupted-worker/{turnId}/retry',
     ])
       expect(document.paths).not.toHaveProperty(path);
+  });
+});
+
+/** Accepts the existing unknown-operation or unregistered-route response. */
+function retiredOrdinaryImport(
+  status: number,
+  body: string
+): {
+  readonly retired: boolean;
+  readonly status: number;
+  readonly body: string;
+} {
+  let code = '';
+  try {
+    const parsed = JSON.parse(body) as { code?: unknown };
+    code = typeof parsed.code === 'string' ? parsed.code : '';
+  } catch {
+    code = '';
+  }
+  const unknownOperation =
+    status === 400 && code === 'unsupported_operation' && body.includes('Unknown operation.');
+  const notFound =
+    (status === 404 && body === '404 Not Found') || (status === 404 && code === 'not_found');
+  return { retired: unknownOperation || notFound, status, body: body.slice(0, 240) };
+}
+
+describe('ordinary portable import removal', () => {
+  it('refuses JSON import and a valid archive import without creating a Workspace', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-removal-'));
+    const coreDb = createTestCoreDb(dataRoot);
+    const userId = ensureLocalUser(coreDb);
+    try {
+      const store = new FsStore({ dataRoot });
+      const workspace = await store.createWorkspace('Private export for removed import');
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+      await store.createThread(workspace.id, 'Private history', undefined, 'conversation', {
+        visibility: 'private',
+        privateOwnerUserId: userId,
+      });
+      // Local mode's canonical user is the current deployment administrator.
+      const app = createApp({ coreDb, dataRoot, store });
+      const exported = await app.request('/api/app/operations/workspace.export', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: workspace.id }),
+      });
+      expect(exported.status, await exported.clone().text()).toBe(200);
+      const { exportId } = (await exported.json()) as { exportId: string };
+      const downloaded = await app.request(
+        `/api/app/workspaces/${workspace.id}/exports/${exportId}/archive`
+      );
+      expect(downloaded.status, await downloaded.clone().text()).toBe(200);
+      const bytes = await downloaded.arrayBuffer();
+      expect(bytes.byteLength).toBeGreaterThan(0);
+      const beforeWorkspaces = store
+        .listWorkspaces()
+        .map((item) => item.id)
+        .sort();
+      const beforeRegistry = listActiveWorkspaceIds(coreDb);
+      const json = await app.request('/api/app/operations/workspace.import', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-openkit-request-id': randomUUID(),
+        },
+        body: JSON.stringify({ sourceWorkspaceId: workspace.id, exportId }),
+      });
+      const jsonText = await json.text();
+      const archived = await app.request('/api/app/workspace-archives/import', {
+        method: 'POST',
+        headers: {
+          'content-type':
+            downloaded.headers.get('content-type') ??
+            'application/vnd.openkit.workspace-export+tar.zstd',
+          'x-openkit-request-id': randomUUID(),
+        },
+        body: bytes,
+      });
+      const archiveText = await archived.text();
+      expect({
+        json: retiredOrdinaryImport(json.status, jsonText),
+        archive: retiredOrdinaryImport(archived.status, archiveText),
+        workspaceIds: store
+          .listWorkspaces()
+          .map((item) => item.id)
+          .sort(),
+        registryIds: listActiveWorkspaceIds(coreDb),
+      }).toMatchObject({
+        json: { retired: true },
+        archive: { retired: true },
+        workspaceIds: beforeWorkspaces,
+        registryIds: beforeRegistry,
+      });
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      closeTestCoreDb(coreDb);
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 });
 

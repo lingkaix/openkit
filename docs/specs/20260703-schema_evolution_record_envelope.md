@@ -253,7 +253,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 | `runtime.evidence.v1` | active | Runtime evidence retains execution outcomes, backend summaries, and evidence bundle linkage. |
 | `worker.runtime-provenance.v1` | active | Worker runtime provenance links admitted Agent Environment Packages to retained transcript evidence. |
 | `evidence.bundle.v1` | active | Evidence bundles retain exact lineage, content digests, retention, sensitivity, and import disposition. |
-| `openkit.workspace-resource-policy.v1` | active | Workspace configuration carries managed resource boundaries and exact associations and prohibitions across export and import. |
+| `openkit.workspace-resource-policy.v1` | active | Workspace configuration carries managed resource boundaries and exact associations and prohibitions across verified export. Ordinary portable Workspace import is absent and does not carry them. |
 | `openkit.memory-suppression.v1` | active | User Memory suppression reserves forgotten page identities and requires current and historical disclosure suppression. |
 | `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |
 | `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |

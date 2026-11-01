@@ -173,60 +173,6 @@ export const WorkerRuntimeOriginIndexRowSchema = z
 /** Product-safe normalized runtime origin row. */
 export type NormalizedRuntimeOriginRow = z.infer<typeof WorkerRuntimeOriginIndexRowSchema>;
 
-/**
- * Remints the outer lineage of one verified product-safe runtime provenance index.
- *
- * @param text Exact source JSONL index text.
- * @param sourceLineage Expected source outer lineage.
- * @param targetLineage Imported target outer lineage.
- * @returns Canonical reminted JSONL text, digest, and source-to-target origin refs.
- */
-export function remintWorkerRuntimeProvenanceIndex(
-  text: string,
-  sourceLineage: WorkerLineage,
-  targetLineage: WorkerLineage
-): { text: string; digest: string; runtimeOriginRefs: ReadonlyMap<string, string> } {
-  const lines = text.trim().split('\n').filter(Boolean);
-  if (lines.length === 0) {
-    throw new Error('Runtime provenance index is empty.');
-  }
-  const rows = lines.map((line) =>
-    readRetainedV1(JSON.parse(line), (value) => WorkerRuntimeOriginIndexRowSchema.parse(value))
-  );
-  if (rows.some((row) => !isDeepStrictEqual(row.lineage, sourceLineage))) {
-    throw new Error('Runtime provenance index lineage does not match its source package.');
-  }
-  const runtimeOriginRefs = new Map(
-    [...new Set(rows.flatMap((row) => (row.runtimeOriginRef ? [row.runtimeOriginRef] : [])))].map(
-      (ref) => [ref, opaqueRef('rto', `${targetLineage.packageSnapshotId}:${ref}`)]
-    )
-  );
-  const remintedText = `${rows
-    .map((row) =>
-      JSON.stringify(
-        writeRetainedV1({
-          ...row,
-          lineage: targetLineage,
-          runtimeOriginRef: row.runtimeOriginRef
-            ? (runtimeOriginRefs.get(row.runtimeOriginRef) ?? null)
-            : null,
-          parentRuntimeOriginRef: row.parentRuntimeOriginRef
-            ? opaqueRef('rto', `${targetLineage.packageSnapshotId}:${row.parentRuntimeOriginRef}`)
-            : null,
-          runtimeTurnRef: row.runtimeTurnRef
-            ? opaqueRef('rtt', `${targetLineage.packageSnapshotId}:${row.runtimeTurnRef}`)
-            : null,
-        })
-      )
-    )
-    .join('\n')}\n`;
-  return {
-    text: remintedText,
-    digest: sha256(Buffer.from(remintedText)),
-    runtimeOriginRefs,
-  };
-}
-
 /** Parsed and verified capture state used by storage promotion. */
 interface VerifiedRuntimeProvenance {
   /** Product-safe verification errors. */

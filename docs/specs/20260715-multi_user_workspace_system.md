@@ -13,7 +13,7 @@ updated: "2026-10-06"
 - Workspace owner identity, member, invitation, equal-member access, leave, removal, transfer, disable, and deletion invariants.
 - The owner-independent canonical workspace storage root and the one-way migration from user-nested workspace roots.
 - Central per-request workspace access resolution and the active-membership projection into the existing NGAC-aligned policy kernel.
-- Actor attribution, shared-write concurrency, human-decision authority, token intersection, import/export membership behavior, and multi-user acceptance criteria.
+- Actor attribution, shared-write concurrency, human-decision authority, token intersection, export membership behavior, and multi-user acceptance criteria. Ordinary portable Workspace import is absent.
 - Governed Workspace deletion, its single-process mutation-admission fence, file-backed intermediate request lifecycle, registry tombstone, and same-deployment recovery authority.
 
 ## Does Not Own
@@ -28,7 +28,7 @@ updated: "2026-10-06"
 - Long-lived compatibility for App API, Core Client, CLI, Skill, or Web projections.
 - Outbound email delivery or pre-account invitation onboarding.
 - Runtime Epoch lifecycle, sandbox termination, cleanup, and runtime transport, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
-- Portable archive bytes and import verification, owned by `docs/specs/20260704-workspace_backup_export_import.md`, and deletion-closure bytes and retention, owned by `docs/specs/20260703-audit_usage_evidence_records.md`.
+- Portable archive bytes, owned by `docs/specs/20260704-workspace_backup_export_import.md`. Ordinary portable import is absent. Deletion-closure bytes and retention are owned by `docs/specs/20260703-audit_usage_evidence_records.md`.
 
 ## Core References
 
@@ -371,7 +371,7 @@ The current durable actor-attribution boundary is closed to these four families:
 
 | Family | Unique durable authority and exact field | Lifecycle and failure semantics |
 | --- | --- | --- |
-| Turn trigger | The durable `Turn` record carries one required immutable `triggerActor: ActorRef`; responsible user is derived from that value. | Every new Turn copies the already-authenticated or scheduler-carried actor at creation. Portable import preserves it only as historical lineage and never as an access grant. Canonical load validates the complete Workspace file-record set before publishing any of it: a missing or invalid required Turn or Item attribution rejects that Workspace set and makes NanoCore boot or portable import fail closed rather than omitting one record or loading a partial Thread. |
+| Turn trigger | The durable `Turn` record carries one required immutable `triggerActor: ActorRef`; responsible user is derived from that value. | Every new Turn copies the already-authenticated or scheduler-carried actor at creation. Historical imported attribution remains lineage and never an access grant. Canonical load validates the complete Workspace file-record set before publishing any of it: a missing or invalid required Turn or Item attribution rejects that Workspace set and makes NanoCore boot fail closed rather than omitting one record or loading a partial Thread. |
 | Human-authored Items | `user-message`, `approval-decision`, and `user-input-response` Items each carry one required immutable `actor: ActorRef`; no field is added to `BaseItem` or to agent/system Item variants. | A newly authored user message records its authenticated source actor. Any copy or projection of an existing user message preserves the source Item's actor and never stamps the copier or current session. Approval decisions and user-input responses require `actor.kind = user`; they also keep the winning command request ID in existing `causationId`. An Approval decision Item projects the winning PendingRequest resolution and its actual deciding actor under [Pending Requests](20260930-pending_requests.md#canonical-load-validation). A retrier's current session supplies no replacement identity. Missing actor, invalid actor kind, or missing request lineage rejects the write and the complete Workspace record set on reload rather than inferring identity from role, text, membership, or current membership. |
 | User-input eligibility | A `user-input-request` Item carries one required immutable `responsibleUserId`, copied at creation from the exact responsible-user derivation of its owning Turn's immutable `triggerActor`. | That same active user with current Workspace authority may answer, and a currently usable administrator credential may answer under the administrator eligibility rule. The recorded actor is the user who answered, and `responsibleUserId` is not rewritten. If derivation yields `null`, the producer returns the existing protocol-wide `recovery_required` outcome with a product-safe message naming the missing responsible user and writes no request Item or gate; it does not select another user or add a new error family. Missing or invalid persisted ownership rejects the complete Workspace record set under the same strict-load rule. V1 adds no optional-field compatibility union, owner inference, or gate takeover. |
 | Policy Approval winner | [Pending Requests](20260930-pending_requests.md#canonical-load-validation) owns the winning resolution, actual deciding actor, and request lineage. PermissionDecision and linked immutable AuditEvent records retain their policy and audit evidence; neither is a second winner. | Request admission, single-winner resolution, exact replay, claims, execution, publication, and fail-closed canonical load follow Pending Requests. Policy and audit owners retain their required linked evidence. Items and receipts remain projections and never reconstruct a missing or contradictory request winner. |
@@ -628,7 +628,7 @@ The current automation facade is an in-memory definition store with no executor,
 - Membership removal clears future personal projections without deleting shared history.
 - Product surfaces show actor attribution for user messages, approvals, reviews, membership changes, and ownership transfer.
 
-## Export, Import, Backup, And Restore
+## Export, Backup, And Restore
 
 Portable Workspace export contains Workspace-owned product truth but excludes deployment-local access relationships:
 
@@ -639,7 +639,7 @@ Portable Workspace export contains Workspace-owned product truth but excludes de
 - MOVE uses the complete explicit injective account map and current target account authority; source grants and invitations never supply target authority
 - keep restored or moved Vault references unbound and repository resources target-bound under their owners; retained imported historical grants remain non-authorizing evidence
 
-Portable export preflight rejects a Workspace that contains any unresolved `user-input-request` before creating an export root or manifest. The V2 verifier and importer independently reject any input that nevertheless contains one, including input from another implementation or deployment. Product-safe diagnostics identify the blocking Item ids. Completed historical request and response Items retain source actor and responsible-user lineage, but target authorization never derives from those source identifiers. Full data-root backup is not subject to this portable-export restriction because it restores the same deployment authority records.
+Portable export preflight rejects a Workspace that contains any unresolved `user-input-request` before creating an export root or manifest. The V2 verifier rejects any input that nevertheless contains one, including input from another implementation or deployment. Product-safe diagnostics identify the blocking Item ids. Completed historical request and response Items retain source actor and responsible-user lineage, but target authorization never derives from those source identifiers. Full data-root backup is not subject to this portable-export restriction because it restores the same deployment authority records.
 
 A full data-root backup includes the Core database and therefore preserves users, memberships, invitations, and owner relationships when restored as the same deployment. Portable Workspace export and full deployment backup are distinct contracts.
 
@@ -672,7 +672,7 @@ The following foundation is already implemented:
 - per-request authentication followed by centralized active-membership, token-binding, read-only posture, and policy checks
 - candidate-first authorized Workspace collections, idempotent local-boot or active-session provisioning plus actor-derived owner-only Quick Chat resolution, and uniform non-enumerating Workspace access denial
 - handler-owned child-lineage checks that retain global not-found only when an existing owner can prove it, otherwise collapsing scoped missing and mismatch to the documented access denial
-- presented usable server-admin bearer access to active Workspaces without membership and current administrator eligibility in the central private-Thread audience check. The retiring portable-import implementation retains its same-deployment source-authorization checks before collision or content reads.
+- presented usable server-admin bearer access to active Workspaces without membership and current administrator eligibility in the central private-Thread audience check.
 - the fifteen-operation App API sharing and deletion surface, including authenticated invitee discovery and decisions, active-member invitation/member management, non-owner leave, ordinary member-authorized owner transfer, content-free administrator recovery, one-way user disable, member-initiated deletion, and tombstone recovery
 - one Core transaction for each accepted lifecycle authority mutation, immutable actor/subject/revision audit, and pointer-only command receipt, with receipt-only exact no-ops and `recovery_required` for a request-proven effect lacking its receipt
 - direct invitation, membership, ownership-transfer, and administrator-recovery conditional writes with the terminal, stale, missing, disabled-invitee, inactive-Workspace, re-invitation, Quick Chat, and recovery/invitation interleaving semantics above. The native acceptance command in `apps/nanocore/src/workspace-sharing-operations.ts` rechecks the retained inviter through the common current Workspace Kernel evaluator inside the Core transaction before the conditional membership effect
@@ -687,7 +687,6 @@ The following foundation is already implemented:
 - the explicit bounded apply-handoff and already-submitted worker-native compromises above, with stale publication rejected at the next NanoCore or worker-control boundary
 - current-authority-first Workspace list and search candidates plus request-time Action Center and dashboard eligibility for policy Approval, exact-responsible-user input, Artifact Review, Knowledge Review, and Workspace Synchronization Review rows without a new assignment or notification owner
 - Workspace Vault reference metadata under its separate current-administrator gate and rebind access under `vault.admin`, redacted VaultUse history under `audit.read`, and use-time enforcement of the exact current target-issued grant plus `vault.use`
-- ordinary portable import that treats source users, owners, memberships, invitations, tokens, grants, and actor lineage as non-authorizing and installs only the importing user as target owner/member, while deleted-Workspace recovery takes its owner from the tombstone and full same-deployment backup preserves the complete Core relationship graph
 - all fifteen sharing and deletion operations in the Core Client with the same App API schemas and typed conflicts, plus the bearer-reachable subset and the local/session tombstone-recovery operation in the transport-neutral catalog, bundled CLI, and remote MCP
 - the four session-capable own-invitation list, accept, decline, and exact own-receipt leave operations retained as the explicit known-partial for ordinary CLI/MCP bearers above instead of adding a second credential system
 
@@ -858,9 +857,9 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 - Every public Workspace operation uses shared schemas and the central access resolver.
 - A two-user fixture proves one canonical Workspace root and identical durable history.
 - One table-driven active-member/non-member matrix covers all registered Workspace operation families, with independent token/Policy/Vault/gate restrictions; owner identity alone changes no ordinary operation eligibility.
-- Portable export excludes access relationships and import creates only the target owner membership.
+- Portable export excludes access relationships.
 - Deletion contract tests bind the two public operations, `WorkspaceDeletionState`, request inputs, shared typed `409` blocker refusal, typed hold and in-progress errors, server-mode credential exclusions, and Core Client/local-mode catalog projections without exposing paths or content.
-- Actor and responsible-user lineage survives export/import without becoming authority.
+- Actor and responsible-user lineage survives Workspace export without becoming authority.
 
 ### L3 NanoCore Black-Box Tests
 
@@ -875,7 +874,7 @@ Each invariant is proved once at the lowest sufficient layer. Higher-layer cover
 
 - The stopped-process migration fixture proves V1 human and automation AEP transformation, digest-valid V2 records, top-level publication, V2-only readers, and reviewed external-backup/report evidence; built NanoCore smoke separately proves the packaged server starts and serves public operations on the current layout.
 - Generated OpenAPI, Core Client, operation catalog, CLI, and Skill artifacts share one exact contract identity.
-- Focused portable export/import artifact coverage proves new target ownership and no imported memberships or invitations; it is not coupled to the process lifecycle story.
+- Focused portable export artifact coverage proves the exported closure carries no membership or invitation authority; it is not coupled to the process lifecycle story.
 - A focused temporary-data-root process smoke proves listener-preflight fence reconstruction and exact same-request continuation without starting, stopping, or replacing any existing deployment process or service.
 
 ### L6 Agentic Story Acceptance
@@ -997,4 +996,4 @@ The release-coupled membership and deletion payloads are fixed above. The equal-
 
 ### Current Implementation Projection: Deleted Recovery
 
-The live deletion owner borrows one exact nonwaiting freeze for its final operational capture, native close and destructive cleanup. Its existing request and immutable closure bind the operational backup; the original target admission joins placement, deleted-row reactivation, attributed Audit and retained result. Serving activation remains a separate checked boundary. Original-request replay preserves later healthy work; uncertain placement retains its exact target exclusion. Ordinary portable import removal remains a separate pending cutover.
+The live deletion owner borrows one exact nonwaiting freeze for its final operational capture, native close and destructive cleanup. Its existing request and immutable closure bind the operational backup; the original target admission joins placement, deleted-row reactivation, attributed Audit and retained result. Serving activation remains a separate checked boundary. Original-request replay preserves later healthy work; uncertain placement retains its exact target exclusion. Ordinary portable import is removed.

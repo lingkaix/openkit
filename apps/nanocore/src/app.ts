@@ -2069,11 +2069,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   registerWorkspaceTransferRoutes({
-    reloadConfiguration: () => {
-      runtimeConfigManager.reload({ dryRun: false, mode: 'safe' });
-    },
     app,
-    fileAdmission,
     coreDb: options.coreDb,
     dataRoot,
     requestStore,

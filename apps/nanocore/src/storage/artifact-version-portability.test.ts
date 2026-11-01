@@ -6,7 +6,6 @@ import {
   CandidateSetRecordSchema,
   type JsonOperationId,
   WorkspaceExportResponseSchema,
-  WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, onTestFinished } from 'vitest';
@@ -16,18 +15,12 @@ import { correctMaterialRange } from '../material-range-corrections.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import {
-  createWorkspaceMaterial,
-  getWorkspaceMaterialRevision,
-  listWorkspaceMaterials,
-  saveWorkspaceMaterialRevision,
-} from '../workspace-materials.js';
+import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { verifyWorkspaceExportTree } from './workspace-export.js';
-import { readWorkspaceImportSnapshot } from './workspace-import.js';
 import { existingWorkspaceExportRoot } from './workspace-transfer-routes.js';
 
 /** Hashes the expected original bytes independently of upload and export readers. */
@@ -35,7 +28,7 @@ function digest(bytes: Uint8Array): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 
-it('preserves exact historical bytes, parents and publication lineage through Workspace import and reopen', async () => {
+it('preserves exact historical bytes, parents and publication lineage through the verified Workspace export', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-portability-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
@@ -134,162 +127,55 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
     ).toEqual(readFileSync(join(sourceVersionRoot, String(version), 'version-record.json')));
   }
   const verified = verifyWorkspaceExportTree({ exportRoot });
-  const descriptorPath = `artifacts/${artifactId}/versions/2/version-record.json`;
-  const rawHead = JSON.parse(verified.fileContents.get(descriptorPath)!);
-  const invalidHeads = [
-    { ...rawHead, schemaVersion: 2 },
-    // The parent derives from the canonical version; contradict that path-bound version.
-    { ...rawHead, artifact: { ...rawHead.artifact, version: 3 } },
-    {
-      ...rawHead,
-      version: {
-        ...rawHead.version,
-        actor: { kind: 'system', id: 'different-publisher', responsibleUserId: null },
-      },
-    },
-    {
-      ...rawHead,
-      artifact: { ...rawHead.artifact, title: 'Contradictory head' },
-      version: { ...rawHead.version, title: 'Contradictory head' },
-    },
-    {
-      ...rawHead,
-      artifact: {
-        ...rawHead.artifact,
-        origin: { ...rawHead.artifact.origin, sourceDigest: digest(Buffer.from('different')) },
-      },
-    },
-  ];
-  for (const descriptor of invalidHeads) {
-    const files = new Map(verified.fileContents);
-    files.set(descriptorPath, JSON.stringify(descriptor));
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, fileContents: files },
-        targetWorkspaceId: workspace.id,
-      })
-    ).toThrow();
-  }
-  const missingOriginals = new Map(verified.artifactPayloadFiles);
-  missingOriginals.delete(`artifacts/${artifactId}/versions/1/payload`);
-  expect(() =>
-    readWorkspaceImportSnapshot({
-      verified: { ...verified, artifactPayloadFiles: missingOriginals },
-      targetWorkspaceId: workspace.id,
-    })
-  ).toThrow(/original/);
-  expect(() =>
-    readWorkspaceImportSnapshot({
-      verified: {
-        ...verified,
-        manifest: {
-          ...verified.manifest,
-          contentInventory: [
-            ...verified.manifest.contentInventory,
-            {
-              path: `artifacts/${artifactId}/versions/3/payload`,
-              digest: digest(Buffer.alloc(0)),
-              bytes: 0,
-            },
-          ],
-        },
-      },
-      targetWorkspaceId: workspace.id,
-    })
-  ).toThrow(/extra/);
-  const importedResponse = await app.request(
-    ...operationRequest(
-      'workspace.import',
-      {},
-      {
-        body: JSON.stringify({
-          sourceWorkspaceId: workspace.id,
-          exportId: exported.exportId,
-          requestId: randomUUID(),
-        }),
-      }
-    )
+  const firstRecord = JSON.parse(
+    verified.fileContents.get(`artifacts/${artifactId}/versions/1/version-record.json`)!
   );
-  expect(importedResponse.status, await importedResponse.clone().text()).toBe(200);
-  const imported = WorkspaceImportResponseSchema.parse(await importedResponse.json());
-  const importedArtifact = store.listArtifacts(imported.importedWorkspaceId)[0]!;
-  expect(
-    store.listArtifactVersions(imported.importedWorkspaceId, importedArtifact.id)
-  ).toHaveLength(2);
-  const reopened = new FsStore({ dataRoot });
-  const restored = reopened
-    .listArtifacts(imported.importedWorkspaceId)
-    .find((item) => item.title === 'Revised output');
-  expect(restored).toBeDefined();
-  if (!restored) throw new Error('The imported Artifact is missing.');
-  expect(restored.id).not.toBe(artifactId);
-  expect(restored.origin).toMatchObject({ kind: 'imported', sourceDigest: digest(original) });
-  expect(restored.threadId).toBeNull();
-  expect(restored.turnId).toBeNull();
-  for (const version of [1, 2]) {
-    const raw = JSON.parse(
-      readFileSync(
-        join(
-          dataRoot,
-          'workspaces',
-          imported.importedWorkspaceId,
-          'artifacts',
-          restored.id,
-          'versions',
-          String(version),
-          'version-record.json'
-        ),
-        'utf8'
-      )
-    );
-    expect(raw.extensions).toEqual({ sourceArtifactId: artifactId, sourceThreadId: thread.id });
-    expect(raw.version.actor.description).toBe('Original publisher');
-    expect(raw.artifact.origin.actor.description).toBe('Original importer');
-    expect(raw.artifact.content.description).toBe(`Exact original ${version}`);
-    expect(raw.artifact.id).toBe(restored.id);
-    expect(raw.version).not.toHaveProperty('artifactId');
-    expect(raw.version).not.toHaveProperty('workspaceId');
-    expect(raw.artifact.workspaceId).toBe(imported.importedWorkspaceId);
-  }
-  const first = reopened.getArtifactVersion(imported.importedWorkspaceId, restored.id, 1);
-  const second = reopened.getArtifactVersion(imported.importedWorkspaceId, restored.id, 2);
-  expect(first.version).toMatchObject({
-    artifactVersion: 1,
-    parentVersion: null,
-    actor,
-    threadId: null,
-    turnId: null,
+  const secondRecord = JSON.parse(
+    verified.fileContents.get(`artifacts/${artifactId}/versions/2/version-record.json`)!
+  );
+  expect(firstRecord.artifact.version).toBe(1);
+  expect(firstRecord.version).not.toHaveProperty('artifactId');
+  expect(firstRecord.version).not.toHaveProperty('workspaceId');
+  expect(firstRecord.extensions).toEqual({
+    sourceArtifactId: artifactId,
+    sourceThreadId: thread.id,
   });
-  expect(second.version).toMatchObject({ artifactVersion: 2, parentVersion: 1, actor });
-  expect(second.artifact.content).toEqual({ format: 'text', body: replacement });
-  expect(second.version.threadId).not.toBe(thread.id);
-  expect(second.version.turnId).not.toBeNull();
-  const publication = reopened.getTurn(
-    imported.importedWorkspaceId,
-    second.version.threadId!,
-    second.version.turnId!
-  );
-  expect(publication.items).toContainEqual(
+  expect(firstRecord.version.actor.description).toBe('Original publisher');
+  expect(firstRecord.artifact.origin.actor.description).toBe('Original importer');
+  expect(firstRecord.artifact.content.description).toBe('Exact original 1');
+  expect(secondRecord.artifact.version).toBe(2);
+  expect(secondRecord.version).not.toHaveProperty('artifactId');
+  expect(secondRecord.version).not.toHaveProperty('workspaceId');
+  expect(
+    readFileSync(verified.artifactPayloadFiles.get(`artifacts/${artifactId}/versions/2/payload`)!)
+  ).toEqual(Buffer.from(replacement));
+  expect(secondRecord.extensions).toEqual({
+    sourceArtifactId: artifactId,
+    sourceThreadId: thread.id,
+  });
+  expect(secondRecord.version.actor.description).toBe('Original publisher');
+  expect(secondRecord.artifact.origin.actor.description).toBe('Original importer');
+  expect(secondRecord.artifact.content.description).toBe('Exact original 2');
+  expect(
+    readFileSync(verified.artifactPayloadFiles.get(`artifacts/${artifactId}/versions/1/payload`)!)
+  ).toEqual(original);
+  const publishedItems = verified.fileContents
+    .get('records/turns.jsonl')!
+    .trim()
+    .split('\n')
+    .flatMap(
+      (line) => (JSON.parse(line) as { items?: readonly Record<string, unknown>[] }).items ?? []
+    );
+  expect(publishedItems).toContainEqual(
     expect.objectContaining({
       type: 'artifact-reference',
-      artifactId: restored.id,
+      artifactId,
       artifactVersion: 2,
     })
   );
-  const downloaded = await app.request(
-    `/api/app/operations/artifact.download?${new URLSearchParams({
-      workspaceId: imported.importedWorkspaceId,
-      artifactId: restored.id,
-      artifactVersion: '1',
-    })}`
-  );
-  expect(downloaded.status, await downloaded.clone().text()).toBe(200);
-  const downloadedBytes = new Uint8Array(await downloaded.arrayBuffer());
-  expect(Buffer.from(downloadedBytes)).toEqual(original);
-  expect(digest(downloadedBytes)).toBe(first.version.contentDigest);
 });
 
-it('retains historical Artifact event snapshots and Item deltas after a newer version is imported', async () => {
+it('retains historical Artifact event snapshots and Item deltas in the verified Workspace export', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-events-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
@@ -389,50 +275,58 @@ it('retains historical Artifact event snapshots and Item deltas after a newer ve
   );
   expect(exportedResponse.status, await exportedResponse.clone().text()).toBe(200);
   const exported = WorkspaceExportResponseSchema.parse(await exportedResponse.json());
-  const importedResponse = await app.request(
-    ...operationRequest(
-      'workspace.import',
-      {},
-      {
-        body: JSON.stringify({
-          sourceWorkspaceId: workspace.id,
-          exportId: exported.exportId,
-          requestId: randomUUID(),
-        }),
-      }
-    )
-  );
-  expect(importedResponse.status, await importedResponse.clone().text()).toBe(200);
-  const imported = WorkspaceImportResponseSchema.parse(await importedResponse.json());
-  const reopened = new FsStore({ dataRoot });
-  const restored = reopened.listArtifacts(imported.importedWorkspaceId)[0]!;
-  const first = reopened.getArtifactVersion(imported.importedWorkspaceId, restored.id, 1);
-  const events = reopened.getTurnEventsForExport(first.version.turnId!);
-  expect(restored.version).toBe(2);
-  expect(events.find((event) => event.data.type === 'artifact-created')?.data).toEqual({
-    type: 'artifact-created',
-    artifact: first.artifact,
+  const verified = verifyWorkspaceExportTree({
+    exportRoot: existingWorkspaceExportRoot(dataRoot, workspace.id, exported.exportId),
   });
-  expect(events.find((event) => event.data.type === 'item-delta')?.data).toMatchObject({
+  const versionOne = JSON.parse(
+    verified.fileContents.get(`artifacts/${artifact.id}/versions/1/version-record.json`)!
+  );
+  const versionTwo = JSON.parse(
+    verified.fileContents.get(`artifacts/${artifact.id}/versions/2/version-record.json`)!
+  );
+  expect(versionOne.artifact.version).toBe(1);
+  expect(
+    readFileSync(verified.artifactPayloadFiles.get(`artifacts/${artifact.id}/versions/1/payload`)!)
+  ).toEqual(Buffer.from('Original retained output'));
+  expect(versionTwo.artifact.version).toBe(2);
+  expect(
+    readFileSync(verified.artifactPayloadFiles.get(`artifacts/${artifact.id}/versions/2/payload`)!)
+  ).toEqual(Buffer.from('Current retained output'));
+  const events = verified.fileContents
+    .get('records/turn-events.jsonl')!
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as { data?: Record<string, unknown> });
+  expect(events.find((event) => event.data?.type === 'artifact-created')?.data).toMatchObject({
+    type: 'artifact-created',
+    artifact: {
+      id: artifact.id,
+      version: 1,
+      content: { format: 'text', body: 'Original retained output' },
+    },
+  });
+  expect(events.find((event) => event.data?.type === 'item-delta')?.data).toMatchObject({
     type: 'item-delta',
     deltaKind: 'artifact-updated',
-    artifactId: restored.id,
+    artifactId: artifact.id,
   });
-  const importedTurn = reopened.getTurn(
-    imported.importedWorkspaceId,
-    first.version.threadId!,
-    first.version.turnId!
-  );
-  expect(importedTurn.items).toContainEqual(
+  const publishedItems = verified.fileContents
+    .get('records/turns.jsonl')!
+    .trim()
+    .split('\n')
+    .flatMap(
+      (line) => (JSON.parse(line) as { items?: readonly Record<string, unknown>[] }).items ?? []
+    );
+  expect(publishedItems).toContainEqual(
     expect.objectContaining({
       type: 'artifact-reference',
-      artifactId: restored.id,
+      artifactId: artifact.id,
       artifactVersion: 1,
     })
   );
 });
 
-it('round trips target-owned judgements, exact range results and candidate choices with reminted references', async () => {
+it('exports target-owned judgements, exact range results and candidate choices', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'evaluation-portability-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
@@ -509,7 +403,6 @@ it('round trips target-owned judgements, exact range results and candidate choic
   const db = openWorkspaceDb(dataRoot, workspace.id);
   let originalRevisionId: string;
   let materialId: string;
-  let correction: ReturnType<typeof correctMaterialRange>;
   try {
     applyScopedMigrations(db);
     createArtifactReview(db, {
@@ -541,7 +434,7 @@ it('round trips target-owned judgements, exact range results and candidate choic
       content,
       contentDigest,
     }));
-    correction = db.sqlite.transaction(() =>
+    db.sqlite.transaction(() =>
       correctMaterialRange(db, {
         workspaceId: workspace.id,
         actor,
@@ -581,20 +474,18 @@ it('round trips target-owned judgements, exact range results and candidate choic
       201
     )
   );
-  const selected = CandidateSetRecordSchema.parse(
-    await post(
-      'evaluation.candidate-set-select',
-      {
-        workspaceId: workspace.id,
-        candidateSetId: set.candidateSetId,
-        requestId: 'portable-selection',
-        choice: candidates[0],
-        note: 'Preferred original',
-      },
-      200
-    )
+  await post(
+    'evaluation.candidate-set-select',
+    {
+      workspaceId: workspace.id,
+      candidateSetId: set.candidateSetId,
+      requestId: 'portable-selection',
+      choice: candidates[0],
+      note: 'Preferred original',
+    },
+    200
   );
-  const assessment = await post(
+  await post(
     'evaluation.judgement-add',
     {
       workspaceId: workspace.id,
@@ -609,7 +500,7 @@ it('round trips target-owned judgements, exact range results and candidate choic
     201
   );
   const selectionRequestId = 'portable-version-selection';
-  const versionSelection = await post(
+  await post(
     'artifact.review.select',
     {
       workspaceId: workspace.id,
@@ -688,190 +579,52 @@ it('round trips target-owned judgements, exact range results and candidate choic
   const verified = verifyWorkspaceExportTree({
     exportRoot: existingWorkspaceExportRoot(dataRoot, workspace.id, exported.exportId),
   });
-  const files = new Map(verified.fileContents);
-  const revisionsPath = 'records/workspace-material-revisions.jsonl';
-  const invalidRevisions = files
-    .get(revisionsPath)!
-    .trimEnd()
+  const candidateSet = JSON.parse(
+    verified.fileContents.get('records/evaluation-candidate-sets.jsonl')!.trim()
+  );
+  const review = JSON.parse(verified.fileContents.get('records/artifact-reviews.jsonl')!.trim());
+  const revisions = verified.fileContents
+    .get('records/workspace-material-revisions.jsonl')!
+    .trim()
     .split('\n')
-    .map((line) => JSON.parse(line));
-  invalidRevisions.find(
-    (revision) => revision.revisionId === originalRevisionId
-  ).judgements[0].target.originalText = 'xx';
-  files.set(
-    revisionsPath,
-    `${invalidRevisions.map((revision) => JSON.stringify(revision)).join('\n')}\n`
+    .map(
+      (line) =>
+        JSON.parse(line) as {
+          content: string;
+          judgements: Array<{
+            description?: unknown;
+            actor: { description?: string };
+            target: { description?: string };
+            choice?: {
+              description?: string;
+              resultingRevision?: { description?: string };
+            };
+          }>;
+        }
+    );
+  expect(candidateSet.candidateSetId).toBe(set.candidateSetId);
+  expect(candidateSet.description).toEqual(description);
+  expect(candidateSet.createdBy.description).toBe('Historical creator');
+  expect(candidateSet.candidates[0].description).toBe('Historical member');
+  expect(revisions.map((revision) => revision.content)).toEqual(
+    expect.arrayContaining(['Original 😀 source\r\n', 'Original new source\r\n'])
   );
-  expect(() =>
-    readWorkspaceImportSnapshot({
-      verified: { ...verified, fileContents: files },
-      targetWorkspaceId: workspace.id,
-    })
-  ).toThrow('Portable judgement contradicts its exact original UTF-16 Material range.');
-  const imported = WorkspaceImportResponseSchema.parse(
-    await post(
-      'workspace.import',
-      { sourceWorkspaceId: workspace.id, exportId: exported.exportId, requestId: randomUUID() },
-      200
-    )
-  );
-  const restoredWorkspace = imported.importedWorkspaceId;
-  const reopened = new FsStore({ dataRoot });
-  const restoredArtifact = reopened
-    .listArtifacts(restoredWorkspace)
-    .find((item) => item.title === 'First original');
-  expect(restoredArtifact).toBeDefined();
-  const listedResponse = await app.request(
-    ...operationRequest('evaluation.candidate-set-list', { workspaceId: restoredWorkspace })
-  );
-  expect(listedResponse.status).toBe(200);
-  const listed = (await listedResponse.json()) as { items: unknown[] };
-  const restoredSet = CandidateSetRecordSchema.parse(listed.items[0]);
-  expect(restoredSet.workspaceId).toBe(restoredWorkspace);
-  expect(restoredSet.candidates[0]).toEqual({ ...candidates[0], artifactId: restoredArtifact!.id });
-  expect(restoredSet.judgements[0]).toMatchObject({
-    actor,
-    recordedAt: selected.judgements[0]!.recordedAt,
+  expect(review.judgements).toHaveLength(2);
+  expect(review.judgements[1]).toMatchObject({
     kind: 'select',
-    choice: {
-      artifactId: restoredArtifact!.id,
-      artifactVersion: 1,
-      contentDigest: candidates[0]!.contentDigest,
-    },
-  });
-  const reviewResponse = await app.request(
-    ...operationRequest('artifact.review-list', {
-      workspaceId: restoredWorkspace,
-      artifactId: restoredArtifact!.id,
-    })
-  );
-  expect(reviewResponse.status).toBe(200);
-  const reviews = (await reviewResponse.json()) as {
-    reviews: Array<{ judgements: unknown[]; candidateSelections: unknown[] }>;
-  };
-  expect(reviews.reviews[0]!.judgements[0]).toMatchObject({
-    actor,
-    recordedAt: assessment.judgement.recordedAt,
-    kind: 'accept',
-    target: { kind: 'artifact-version', artifactId: restoredArtifact!.id, artifactVersion: 1 },
-  });
-  // Imported requests are historical lineage, so they cannot retain a live command identity.
-  const importedSelectionRequestId = `import-lineage:${digest(
-    Buffer.from(
-      [verified.manifest.sourceDeploymentId, workspace.id, selectionRequestId].join('\0'),
-      'utf8'
-    )
-  )}`;
-  const retainedSelection = {
-    schemaVersion: 1,
-    workspaceId: restoredWorkspace,
-    actor,
-    requestId: importedSelectionRequestId,
-    recordedAt: versionSelection.review.candidateSelections[0].selectedAt,
-    kind: 'select',
-    target: {
-      kind: 'artifact-version',
-      artifactId: restoredArtifact!.id,
-      artifactVersion: 1,
-      contentDigest: candidates[0]!.contentDigest,
-    },
-    choice: {
-      artifactId: restoredArtifact!.id,
-      artifactVersion: 1,
-      contentDigest: candidates[0]!.contentDigest,
-    },
     note: 'Use this exact original.',
-    extensions: {},
-  };
-  expect(reviews.reviews[0]!.judgements).toHaveLength(2);
-  expect(reviews.reviews[0]!.judgements[1]).toEqual(retainedSelection);
-  expect(reviews.reviews[0]!.judgements[1]).not.toMatchObject({ requestId: selectionRequestId });
-  expect(reviews.reviews[0]!.candidateSelections).toEqual([
-    {
-      actorId: userId,
-      requestId: retainedSelection.requestId,
-      reason: retainedSelection.note,
-      selectedAt: retainedSelection.recordedAt,
-    },
-  ]);
-  const restoredDb = openWorkspaceDb(dataRoot, restoredWorkspace);
-  try {
-    const material = listWorkspaceMaterials(restoredDb).find(
-      (item) => item.title === 'Portable feedback'
-    )!;
-    expect(material.materialId).not.toBe(materialId);
-    const result = getWorkspaceMaterialRevision(
-      restoredDb,
-      material.materialId,
-      material.currentRevisionId!
-    );
-    const original = getWorkspaceMaterialRevision(
-      restoredDb,
-      material.materialId,
-      result.parentRevisionId!
-    );
-    expect(original.revisionId).not.toBe(originalRevisionId);
-    expect(original.content).toBe('Original 😀 source\r\n');
-    expect(result.content).toBe('Original new source\r\n');
-    expect(original.judgements[0]).toMatchObject({
-      actor,
-      recordedAt: correction.recordedAt,
-      kind: 'correct',
-      target: {
-        materialId: material.materialId,
-        revisionId: original.revisionId,
-        originalText: '😀',
-      },
-      choice: {
-        outcome: 'apply',
-        resultingRevision: {
-          materialId: material.materialId,
-          revisionId: result.revisionId,
-          contentDigest: result.contentDigest,
-        },
-      },
-    });
-    const rawSet = JSON.parse(
-      (
-        restoredDb.sqlite
-          .prepare(
-            'SELECT payload_json AS payload FROM evaluation_candidate_sets WHERE candidate_set_id = ?'
-          )
-          .get(restoredSet.candidateSetId) as { payload: string }
-      ).payload
-    );
-    expect(rawSet.description).toEqual(description);
-    expect(rawSet.createdBy.description).toBe('Historical creator');
-    expect(rawSet.candidates[0].description).toBe('Historical member');
-    const rawReview = JSON.parse(
-      (
-        restoredDb.sqlite
-          .prepare(
-            'SELECT judgements FROM artifact_reviews WHERE artifact_id = ? AND artifact_version = 1'
-          )
-          .get(restoredArtifact!.id) as { judgements: string }
-      ).judgements
-    );
-    expect(rawReview).toHaveLength(2);
-    expect(rawReview[1]).toEqual(retainedSelection);
-    const rawRange = JSON.parse(
-      (
-        restoredDb.sqlite
-          .prepare(
-            'SELECT judgements FROM workspace_material_revisions WHERE material_id = ? AND revision_id = ?'
-          )
-          .get(material.materialId, original.revisionId) as { judgements: string }
-      ).judgements
-    );
-    for (const judgement of [rawSet.judgements[0], rawReview[0], rawRange[0]]) {
-      expect(judgement.description).toEqual(description);
-      expect(judgement.actor.description).toBe('Historical actor');
-      expect(judgement.target.description).toBe('Historical target');
-    }
-    expect(rawSet.judgements[0].choice.description).toBe('Historical choice');
-    expect(rawRange[0].choice.description).toBe('Historical choice');
-    expect(rawRange[0].choice.resultingRevision.description).toBe('Historical correction result');
-  } finally {
-    restoredDb.sqlite.close();
+    requestId: selectionRequestId,
+  });
+  const range = revisions.find((revision) => revision.content === 'Original 😀 source\r\n');
+  if (!range) throw new Error('The historical Material revision is missing from the export.');
+  for (const judgement of [candidateSet.judgements[0], review.judgements[0], range.judgements[0]]) {
+    expect(judgement.description).toEqual(description);
+    expect(judgement.actor.description).toBe('Historical actor');
+    expect(judgement.target.description).toBe('Historical target');
   }
+  expect(candidateSet.judgements[0].choice.description).toBe('Historical choice');
+  expect(range.judgements[0].choice.description).toBe('Historical choice');
+  expect(range.judgements[0].choice.resultingRevision.description).toBe(
+    'Historical correction result'
+  );
 });

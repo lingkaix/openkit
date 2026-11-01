@@ -1,23 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   KnowledgeRetrievalResponseSchema,
   WorkspaceExportResponseSchema,
-  WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createApp } from '../app.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { assertPortableWorkspaceNotebookDisclosure } from '../knowledge/notebook-workspace-portability.js';
-import {
-  parseOkfDocument,
-  stringFrontmatterField,
-  updateOkfFrontmatter,
-} from '../knowledge/okf.js';
+import { parseOkfDocument, updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -46,7 +41,6 @@ import {
   readAdmittedWorkspaceKnowledgeSelection,
   readWorkspaceKnowledgePage,
 } from './workspace-file-records.js';
-import { readWorkspaceImportSnapshot } from './workspace-import.js';
 import {
   readWorkspacePortableFileState,
   writeWorkspacePortableFileState,
@@ -223,7 +217,7 @@ describe('workspace portable file state', () => {
     ).toBe(0);
   });
 
-  it('preserves authoritative workspace files, append history, and reminted references', async () => {
+  it('preserves authoritative workspace files and append history through verified export', async () => {
     const {
       dataRoot,
       coreDb,
@@ -493,255 +487,9 @@ describe('workspace portable file state', () => {
     expect(verified.fileContents.get('workspace-files/config/workspace.jsonc')).toBe(
       workspaceConfig
     );
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified,
-        targetWorkspaceId: testEntityId('ws', 'portable-import-validation'),
-        targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
-      })
-    ).not.toThrow();
-    for (const [name, alter] of [
-      ['missing', (files: Map<string, string>) => files.delete(acceptedExportPath)],
-      [
-        'contradictory',
-        (files: Map<string, string>) =>
-          files.set(
-            acceptedExportPath,
-            acceptedPageBytes.replace(
-              'Exact accepted proposal bytes survive portable transfer.',
-              'Contradictory page content must fail import.'
-            )
-          ),
-      ],
-      [
-        'duplicate-record',
-        (files: Map<string, string>) => {
-          const records = files.get('records/knowledge.jsonl');
-          if (!records) {
-            throw new Error('Knowledge records are unavailable in the export fixture.');
-          }
-          files.set('records/knowledge.jsonl', `${records}${records.split('\n')[0]}\n`);
-        },
-      ],
-    ] as const) {
-      const fileContents = new Map(verified.fileContents);
-      alter(fileContents);
-      expect(
-        () =>
-          readWorkspaceImportSnapshot({
-            verified: { ...verified, fileContents },
-            targetWorkspaceId: testEntityId('ws', `ws_${name}_page_import`),
-          }),
-        name
-      ).toThrow(/Knowledge Page/i);
-    }
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId,
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d901',
-          }),
-        }
-      )
-    );
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const imported = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedWorkspaceId = imported.importedWorkspaceId;
-    const importedRoot = join(dataRoot, 'workspaces', importedWorkspaceId);
-    const importedKnowledgeBaseId = readDefaultKnowledgeBaseId({
-      dataRoot,
-      scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
-    });
-    expect(importedKnowledgeBaseId).not.toBe(sourceKnowledgeBaseId);
-    const importedPageScopeId = `page/workspace/${importedWorkspaceId}/${importedKnowledgeBaseId}`;
-    const importedSelection = readAdmittedWorkspaceKnowledgeSelection(
-      importedRoot,
-      importedWorkspaceId
-    );
-    const importedPages = store.listKnowledge(importedWorkspaceId);
-    const importedKnowledge = importedPages.find((page) => {
-      const parsed = parseOkfDocument({ path: page.path, content: page.content });
-      return (
-        parsed.document && stringFrontmatterField(parsed.document, 'title') === 'Portable contract'
-      );
-    });
-    const importedAcceptedKnowledge = importedPages.find((page) => {
-      const parsed = parseOkfDocument({ path: page.path, content: page.content });
-      return (
-        parsed.document &&
-        stringFrontmatterField(parsed.document, 'title') === 'Portable accepted proposal'
-      );
-    });
-    expect(importedKnowledge).toBeDefined();
-    expect(importedAcceptedKnowledge).toBeDefined();
-    if (!importedKnowledge || !importedAcceptedKnowledge) {
-      coreDb.sqlite.close();
-      return;
-    }
-
-    const importedFact = (id: string) => {
-      const parsed = parseOkfDocument({
-        path: `${id}.md`,
-        content: readWorkspaceKnowledgePage(importedSelection, id)!,
-      });
-      if (!parsed.ok) throw new Error('Imported canonical fact must remain valid OKF.');
-      return parsed.document.frontmatter;
-    };
-    expect(importedFact(firstClaimId)).toMatchObject({
-      type: 'Claim',
-      confidence: 0.8,
-      scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
-    });
-    expect(importedFact(secondClaimId)).toMatchObject({ type: 'Claim', confidence: 1 });
-    expect(importedFact('assessments/first')).toMatchObject({
-      type: 'Observation',
-      conflict_status: 'unresolved',
-      subject_refs: [formatReferenceUri({ scopeId: importedPageScopeId, objectId: firstClaimId })],
-    });
-    expect(importedFact(secondClaimId).source_refs).toEqual([
-      formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id }),
-    ]);
-    const importedSubjectBytes = readWorkspaceKnowledgePage(importedSelection, secondClaimId)!;
-    expect(importedFact('assessments/resolved')).toMatchObject({
-      type: 'Observation',
-      conflict_status: 'resolved',
-      subject_refs: [
-        formatReferenceUri(
-          { scopeId: importedPageScopeId, objectId: secondClaimId },
-          `sha256:${createHash('sha256').update(importedSubjectBytes).digest('hex')}`
-        ),
-      ],
-    });
     for (const kind of ['observations', 'claims', 'conflicts']) {
-      expect(existsSync(join(importedRoot, 'knowledge', kind))).toBe(false);
       expect(verified.fileContents.has(`records/knowledge-${kind}.jsonl`)).toBe(false);
     }
-
-    expect(existsSync(join(importedRoot, 'knowledge', 'traces'))).toBe(false);
-
-    const importedConfigPath = join(importedRoot, 'config', 'workspace.jsonc');
-    expect
-      .soft(existsSync(importedConfigPath) ? readFileSync(importedConfigPath, 'utf8') : null)
-      .toBe(workspaceConfig.replaceAll(sourceKnowledgeBaseId, importedKnowledgeBaseId));
-    const importedSchemaPath = join(importedRoot, 'knowledge', 'schema', 'scope-schema.yaml');
-    expect
-      .soft(existsSync(importedSchemaPath) ? readFileSync(importedSchemaPath, 'utf8') : null)
-      .toBe(workspaceSchema);
-    expect(existsSync(join(importedRoot, 'knowledge', 'pages'))).toBe(false);
-    const importedPage = readWorkspaceKnowledgePage(importedSelection, 'portable-file')!;
-    expect(importedPage).toBe(
-      updateOkfFrontmatter({
-        path: 'portable-file.md',
-        content: portablePage,
-        updates: {
-          scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
-          source_refs: [
-            formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id }),
-          ],
-        },
-      })
-    );
-    const importedNativePage = readWorkspaceKnowledgePage(importedSelection, importedKnowledge.id)!;
-    const importedKnowledgeReference = formatReferenceUri(
-      { scopeId: importedPageScopeId, objectId: importedKnowledge.id },
-      `sha256:${createHash('sha256').update(importedNativePage).digest('hex')}`
-    );
-    expect(
-      parseOkfDocument({ path: importedKnowledge.path, content: importedNativePage })
-    ).toMatchObject({
-      ok: true,
-      document: { frontmatter: { openkit_entry_id: importedKnowledge.id } },
-    });
-    const expectedImportedAcceptedPageBytes = updateOkfFrontmatter({
-      path: `${importedAcceptedKnowledge.id}.md`,
-      content: acceptedPageBytes,
-      updates: {
-        scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
-        source_refs: [importedKnowledgeReference],
-      },
-    });
-    expect(readWorkspaceKnowledgePage(importedSelection, importedAcceptedKnowledge.id)).toBe(
-      expectedImportedAcceptedPageBytes
-    );
-    expect(store.listKnowledgeProposals(importedWorkspaceId)).toEqual([]);
-    expect(store.listKnowledgeProposalReviewDecisions(importedWorkspaceId)).toEqual([]);
-
-    await store.updateWorkspace(importedWorkspaceId, { name: 'Persist unrelated imported change' });
-    expect(readWorkspaceKnowledgePage(importedSelection, importedAcceptedKnowledge.id)).toBe(
-      expectedImportedAcceptedPageBytes
-    );
-    const restartedStore = new FsStore({ dataRoot });
-    expect(
-      restartedStore
-        .listKnowledge(importedWorkspaceId)
-        .some((entry) => entry.id === importedAcceptedKnowledge.id)
-    ).toBe(true);
-    expect(readWorkspaceKnowledgePage(importedSelection, importedAcceptedKnowledge.id)).toBe(
-      expectedImportedAcceptedPageBytes
-    );
-
-    const reopenedApp = createApp({
-      dataRoot,
-      coreDb,
-      store: restartedStore,
-      workspaceMutationAdmission,
-    });
-    const disputed = await reopenedApp.request(
-      ...knowledgeOperationRequest(
-        'knowledge.retrieval',
-        { workspaceId: importedWorkspaceId },
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            query: 'zzqvxc01portable',
-            pinnedReferences: [{ scopeId: importedPageScopeId, objectId: firstClaimId }],
-          }),
-        }
-      )
-    );
-    expect(disputed.status, await disputed.clone().text()).toBe(200);
-    expect(await disputed.json()).toMatchObject({
-      selected: [],
-      excluded: expect.arrayContaining([
-        expect.objectContaining({
-          reference: { scopeId: importedPageScopeId, objectId: firstClaimId },
-          reason: 'lower_conformance',
-        }),
-      ]),
-    });
-
-    const importedRetrievalRes = await app.request(
-      ...knowledgeOperationRequest(
-        'knowledge.retrieval',
-        { workspaceId: importedWorkspaceId },
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ query: 'Exact accepted proposal bytes', limit: 1 }),
-        }
-      )
-    );
-    expect(importedRetrievalRes.status, await importedRetrievalRes.clone().text()).toBe(200);
-    const importedRetrieval = KnowledgeRetrievalResponseSchema.parse(
-      await importedRetrievalRes.json()
-    );
-    expect(importedRetrieval.selected).toEqual([
-      expect.objectContaining({
-        reference: {
-          scopeId: importedPageScopeId,
-          objectId: importedAcceptedKnowledge.id,
-        },
-        sourceReferences: [importedKnowledgeReference],
-      }),
-    ]);
-
     coreDb.sqlite.close();
   });
 

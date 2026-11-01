@@ -439,26 +439,6 @@ const archiveBindings = {
       return { downloaded: true };
     },
   },
-  'workspace.archive-import-dry-run': {
-    clientMethod: 'app.dryRunWorkspaceArchiveImport',
-    inputSchema: strictShared(
-      appSchemas.WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS[
-        'workspace.archive-import-dry-run'
-      ].inputSchema.safeExtend({ sourcePath: z.string().min(1) })
-    ),
-    handler: ({ client }, input) =>
-      client.app.dryRunWorkspaceArchiveImport(openWorkspaceArchive(input.sourcePath)),
-  },
-  'workspace.archive-import': {
-    clientMethod: 'app.importWorkspaceArchive',
-    inputSchema: strictShared(
-      appSchemas.WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS[
-        'workspace.archive-import'
-      ].inputSchema.safeExtend({ sourcePath: z.string().min(1) })
-    ),
-    handler: ({ client }, input) =>
-      client.app.importWorkspaceArchive(openWorkspaceArchive(input.sourcePath), input.requestId),
-  },
 };
 
 /** Public capability exclusions that keep unsupported scope out of the operation catalog. */
@@ -494,7 +474,7 @@ export const operationExclusions = [
     source: 'core-projection',
     name: 'subscribeTurnEvents',
     reason:
-      'The CLI has no event subscription mode; bounded durable reads and the three owned archive streams remain available.',
+      'The CLI has no event subscription mode; bounded durable reads and workspace.archive-download remain available.',
     owner: 'docs/specs/20260910-agent_operator_skill.md',
   },
 ];

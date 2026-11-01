@@ -20,7 +20,6 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
-import { writeRetainedV1 } from '@openkit/protocol';
 import {
   type WorkerLineage,
   type WorkerRuntimeNativeOriginIndexEntry,
@@ -46,7 +45,6 @@ import {
   createWorkerRuntimeOriginRef,
   createWorkerRuntimeProvenanceBundleId,
   importWorkerRuntimeProvenance,
-  remintWorkerRuntimeProvenanceIndex,
   WorkerRuntimeOriginIndexRowSchema,
 } from './worker-runtime-provenance.js';
 
@@ -118,72 +116,6 @@ interface ImportFixture {
 }
 
 describe('worker runtime provenance import', () => {
-  it('refuses missing or unknown normalized row versions before interpreting payload fields', async () => {
-    const fixture = await createImportFixture('openkit-provenance-format-');
-    try {
-      for (const marker of [{}, { schemaVersion: 2 }]) {
-        const invalid = JSON.stringify({ ...marker, parseStatus: 'future' });
-        expect(() =>
-          remintWorkerRuntimeProvenanceIndex(invalid, fixture.lineage, fixture.lineage)
-        ).toThrow('Unsupported retained record format.');
-      }
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      fixture.workspaceDb.sqlite.close();
-      rmSync(fixture.workspaceDb.dataRoot, { recursive: true, force: true });
-    }
-  });
-  it('remints only parsed normalized fields with a recomputed digest and exact producer assertions', async () => {
-    const fixture = await createImportFixture('openkit-provenance-remint-extension-');
-    const row = {
-      lineage: fixture.lineage,
-      streamRef: 'stream-0000.jsonl',
-      frameSequence: 0,
-      byteOffset: 0,
-      byteLength: 1,
-      frameSha256: `sha256:${'a'.repeat(64)}`,
-      eventKind: 'session_meta',
-      parseStatus: 'parsed',
-      runtimeOriginRef: `rto_${'a'.repeat(24)}`,
-      parentRuntimeOriginRef: null,
-      runtimeTurnRef: null,
-    };
-    try {
-      const source = `${JSON.stringify(writeRetainedV1({ ...row, futureNote: 'ignored' }))}\n`;
-      const targetLineage = { ...fixture.lineage, packageSnapshotId: 'package_reminted' };
-      const reminted = remintWorkerRuntimeProvenanceIndex(source, fixture.lineage, targetLineage);
-      const { schemaVersion, ...retainedPayload } = JSON.parse(reminted.text);
-      expect(schemaVersion).toBe(1);
-      expect(retainedPayload).toMatchObject({ lineage: targetLineage });
-      expect(reminted.text).not.toContain('futureNote');
-      expect(WorkerRuntimeOriginIndexRowSchema.strict().parse(retainedPayload)).toMatchObject({
-        lineage: targetLineage,
-      });
-      expect(reminted.digest).toBe(sha256(Buffer.from(reminted.text)));
-      expect(reminted.digest).not.toBe(sha256(Buffer.from(source)));
-      expect(
-        WorkerRuntimeOriginIndexRowSchema.strict().safeParse({ ...row, futureNote: 'typo' }).success
-      ).toBe(false);
-      expect(() =>
-        remintWorkerRuntimeProvenanceIndex(
-          JSON.stringify(writeRetainedV1({ ...row, requiredFeatures: ['unsupported.required'] })),
-          fixture.lineage,
-          targetLineage
-        )
-      ).toThrow();
-      expect(() =>
-        remintWorkerRuntimeProvenanceIndex(
-          JSON.stringify(writeRetainedV1({ ...row, parseStatus: 'invented' })),
-          fixture.lineage,
-          targetLineage
-        )
-      ).toThrow();
-    } finally {
-      await shutdownControlStoreWorkerClient();
-      fixture.workspaceDb.sqlite.close();
-    }
-  });
-
   it('preserves original extension-bearing raw bytes and digests while publishing only normalized known fields', async () => {
     const fixture = await createImportFixture('openkit-provenance-extensions-');
     const capture = createRuntimeCaptureFixture(

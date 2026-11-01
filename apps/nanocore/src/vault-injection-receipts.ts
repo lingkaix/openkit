@@ -183,47 +183,6 @@ export function listExportableVaultInjectionReceipts(
 }
 
 /**
- * Imports non-secret injection receipt records.
- *
- * @param coreDb Open Core database handle.
- * @param receipts Imported injection receipt records.
- */
-export function importVaultInjectionReceipts(
-  coreDb: CoreDb,
-  receipts: readonly VaultInjectionReceiptRecord[]
-): void {
-  for (const receipt of receipts) {
-    coreDb.sqlite
-      .prepare(
-        `INSERT OR IGNORE INTO vault_injection_receipts (
-          receipt_id,
-          plan_id,
-          grant_id,
-          agent_session_id,
-          capability_call_id,
-          backend_summary,
-          injected_at,
-          expires_at,
-          revocation_status,
-          audit_event_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        receipt.receiptId,
-        receipt.planId,
-        receipt.grantId,
-        receipt.agentSessionId,
-        receipt.capabilityCallId,
-        receipt.backendSummary,
-        receipt.injectedAt,
-        receipt.expiresAt,
-        receipt.revocationStatus,
-        receipt.auditEventId
-      );
-  }
-}
-
-/**
  * Reads one injection receipt or throws a readable error.
  *
  * @param coreDb Open Core database handle.

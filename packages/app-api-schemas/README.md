@@ -68,7 +68,7 @@ Workspace grant creation and narrowing share exact supported Agent, AgentSession
 
 Workspace export response schemas reuse the format version owned by `@openkit/config-schema` so manifests cannot drift between the storage and App API contracts.
 
-Workspace export manifests include optional `knowledgeNotebookRevision` provenance for the exact published source Notebook commit. An imported Workspace creates its own Notebook authority; this source value grants no access and does not become the target revision.
+Workspace export manifests include optional `knowledgeNotebookRevision` provenance for the exact published source Notebook commit. Ordinary import does not create a target Notebook from this source value, and the value grants no access.
 
 Authentication schemas include optional exact-owner access-token issuance plus canonical-user and current-administrator redacted `server-admin` Token inventory and default-selection contracts; none of these response shapes accepts Token plaintext or hashes.
 
@@ -155,7 +155,7 @@ Direct `task.start` accepts optional exact `agentId`. The selector narrows exist
 
 `automation-operations.ts`, `external-trigger-operations.ts`, `scheduler-operations.ts` and `recovery-operations.ts` declare eleven browser-safe operation definitions and are imported statically into the composed product tables. Strict complete inputs retain opaque automation ids, selected Workspace queue identities and full recovery Turn/request lineage. Automation creation declares HTTP 201; deletion declares logical `null` and HTTP 204. Model views derive from those same schemas.
 
-`src/workspace-transfer.ts` defines `workspace.export`, `workspace.import-dry-run`, and `workspace.import`, reusing complete storage response and import request schemas. `operation-definitions.ts` composes the family statically; model schema views retain the existing handle refinements.
+`src/workspace-transfer.ts` defines `workspace.export`, reusing the complete storage response schema. `operation-definitions.ts` composes the family statically; model schema views retain the existing handle refinements. The archive method that remains is the download method.
 
 `generative-operations.ts` declares the remaining eight Kernel operations and all five Generative UI operations using their existing schemas; `operation-definitions.ts` composes them statically with the Kernel pair. Model views omit trusted identity fields while retaining object refinements.
 

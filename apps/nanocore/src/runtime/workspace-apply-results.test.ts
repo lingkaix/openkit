@@ -8,7 +8,6 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   getWorkspaceApplyResult,
-  importWorkspaceApplyResults,
   listExportableWorkspaceApplyResults,
   type RecordWorkspaceApplyResultInput,
   recordWorkspaceApplyResult,
@@ -145,9 +144,6 @@ describe('workspace apply results', () => {
       expect(() => recordWorkspaceApplyResult(db, input)).toThrow(
         'Unsupported retained record format.'
       );
-      expect(() =>
-        importWorkspaceApplyResults(db, [{ ...input.result, requestId: input.requestId }])
-      ).toThrow('Unsupported retained record format.');
       expect(
         db.sqlite
           .prepare(

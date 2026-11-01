@@ -275,68 +275,6 @@ export function listExportableWorkspaceApplyResults(
 }
 
 /**
- * Replays imported workspace apply results without emitting new apply-finish audit events.
- *
- * @param workspaceDb Open target workspace database handle.
- * @param results Exported workspace apply results to replay.
- */
-export function importWorkspaceApplyResults(
-  workspaceDb: WorkspaceDb,
-  results: readonly ExportedWorkspaceApplyResult[]
-): void {
-  for (const record of results) {
-    const { requestId, ...publicRecord } = record;
-    const result = StoredWorkspaceApplyResultV1Schema.parse(publicRecord);
-    if (typeof requestId !== 'string' || requestId.length === 0) {
-      throw new Error('Workspace apply result import record is missing requestId.');
-    }
-    const existing = getWorkspaceApplyResultRow(workspaceDb, result.workspaceId, result.id);
-    if (existing) {
-      requireMatchingWorkspaceApplyResultReplay(existing, result, requestId);
-      continue;
-    }
-
-    workspaceDb.sqlite
-      .prepare(
-        `INSERT INTO workspace_apply_results (
-          apply_result_id,
-          workspace_id,
-          review_id,
-          change_set_id,
-          status,
-          applied_paths_json,
-          skipped_paths_json,
-          conflict_records_json,
-          verification_json,
-          commit_ids_json,
-          applied_at,
-          request_id,
-          created_at,
-          updated_at,
-          schema_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        result.id,
-        result.workspaceId,
-        result.reviewId,
-        result.changeSetId,
-        result.status,
-        JSON.stringify(result.appliedPaths),
-        JSON.stringify(result.skippedPaths),
-        JSON.stringify(result.conflictRecords),
-        JSON.stringify(result.verification),
-        JSON.stringify(result.commitIds),
-        result.appliedAt,
-        requestId,
-        result.appliedAt,
-        result.appliedAt,
-        writeRetainedV1({}).schemaVersion
-      );
-  }
-}
-
-/**
  * Reads one durable workspace apply result or throws.
  *
  * @param workspaceDb Open workspace-scope database handle.

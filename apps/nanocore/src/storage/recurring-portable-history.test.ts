@@ -1,9 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveEntityId } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listSqliteAuditEvents } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
@@ -15,22 +13,15 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
-import {
-  insertExternalTriggerAdmission,
-  listWorkspaceExternalTriggerAdmissions,
-} from './external-trigger-admissions.js';
+import { insertExternalTriggerAdmission } from './external-trigger-admissions.js';
 import { applyMigrations } from './migrate.js';
 import {
   exportRecurringPortableHistory,
   RECURRING_PORTABLE_CORE_TABLES,
   readRecurringPortableHistory,
-  remapRecurringPortableHistory,
   validateRecurringPortableHistory,
 } from './recurring-portable-history.js';
-import { writeWorkspaceExportTree } from './workspace-export.js';
 import { readPublishedTurnFileRecords } from './workspace-file-records.js';
-import { readWorkspaceImportSnapshot } from './workspace-import.js';
-import { readWorkspacePortableFileState } from './workspace-portable-file-state.js';
 
 describe('recurring portable history', () => {
   let localUserId: string;
@@ -169,67 +160,6 @@ describe('recurring portable history', () => {
     ).toThrow();
   });
 
-  it('rewrites only admitted import-map identities and keeps source authority inert across repeated transfer', async () => {
-    const { schedule, occurrence } = await acceptedHistory();
-    const source = exportRecurringPortableHistory(coreDb, workspace.id, null, [
-      { id: occurrence.turnId!, threadId: thread.id },
-    ]);
-    const maps = {
-      workspaceId: testEntityId('ws', 'ws_target'),
-      scheduleIds: new Map([[schedule.id, testEntityId('auto', 'auto_target')]]),
-      occurrenceIds: new Map([
-        [
-          occurrence.id,
-          deriveEntityId('occ', [testEntityId('auto', 'auto_target'), occurrence.scheduledAt]),
-        ],
-      ]),
-      rangeIds: new Map<string, string>(),
-      threadIds: new Map([[thread.id, testEntityId('th', 'th_target')]]),
-      turnIds: new Map([[occurrence.turnId!, testEntityId('tu', 'tu_target')]]),
-    };
-    const imported = remapRecurringPortableHistory(source, maps);
-    expect(imported.schedules[0]).toMatchObject({
-      id: testEntityId('auto', 'auto_target'),
-      workspaceId: testEntityId('ws', 'ws_target'),
-      threadId: testEntityId('th', 'th_target'),
-      originScheduleId: schedule.id,
-      originActor: schedule.actor,
-      status: 'active',
-    });
-    expect(imported.occurrences[0]).toMatchObject({
-      id: deriveEntityId('occ', [testEntityId('auto', 'auto_target'), occurrence.scheduledAt]),
-      scheduleId: testEntityId('auto', 'auto_target'),
-      workspaceId: testEntityId('ws', 'ws_target'),
-      turnId: testEntityId('tu', 'tu_target'),
-      originRequestId: occurrence.requestId,
-      originQueueEntryId: occurrence.queueEntryId,
-      originTurnId: occurrence.turnId,
-      snapshot: { threadId: testEntityId('th', 'th_target'), originActor: schedule.actor },
-    });
-    expect(
-      exportRecurringPortableHistory(
-        undefined,
-        testEntityId('ws', 'ws_target'),
-        JSON.stringify(imported),
-        []
-      )
-    ).toEqual(imported);
-    expect(() => remapRecurringPortableHistory(source, { ...maps, turnIds: new Map() })).toThrow(
-      'Turn import mapping'
-    );
-    for (const table of [
-      'recurring_schedules',
-      'recurring_occurrences',
-      'recurring_expired_ranges',
-      'scheduler_admission_entries',
-    ])
-      expect(
-        coreDb.sqlite
-          .prepare(`SELECT count(*) AS n FROM ${table} WHERE workspace_id = ?`)
-          .get(testEntityId('ws', 'ws_target'))
-      ).toEqual({ n: 0 });
-  });
-
   it('preserves external event joins as remapped inert history without target queue authority', async () => {
     const { schedule, occurrence } = await acceptedHistory();
     const targetThread = await files.createThread(
@@ -259,37 +189,6 @@ describe('recurring portable history', () => {
     )();
     const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
     expect(graph.schedules[0]!.externalAdmissions).toEqual([join]);
-    const targetScheduleId = testEntityId('auto', 'auto_external_imported');
-    const targetPollTurnId = testEntityId('tu', 'tu_external_poll_imported');
-    const targetPollThreadId = testEntityId('th', 'th_external_poll_imported');
-    const targetWorkspaceId = testEntityId('ws', 'ws_external_imported');
-    const imported = remapRecurringPortableHistory(graph, {
-      workspaceId: targetWorkspaceId,
-      scheduleIds: new Map([[schedule.id, targetScheduleId]]),
-      occurrenceIds: new Map([
-        [occurrence.id, deriveEntityId('occ', [targetScheduleId, occurrence.scheduledAt])],
-      ]),
-      rangeIds: new Map(),
-      threadIds: new Map([[thread.id, targetPollThreadId]]),
-      turnIds: new Map([[occurrence.turnId!, targetPollTurnId]]),
-    });
-    expect(imported.schedules[0]!.externalAdmissions).toEqual([
-      {
-        scheduleId: targetScheduleId,
-        eventKey: join.eventKey,
-        sourceTurnId: targetPollTurnId,
-        queueEntryId: entry.queueEntryId,
-      },
-    ]);
-    expect(
-      exportRecurringPortableHistory(undefined, targetWorkspaceId, JSON.stringify(imported), [])
-    ).toEqual(imported);
-    expect(listWorkspaceExternalTriggerAdmissions(coreDb, targetWorkspaceId)).toEqual([]);
-    expect(
-      coreDb.sqlite
-        .prepare('SELECT count(*) AS n FROM scheduler_admission_entries WHERE workspace_id = ?')
-        .get(targetWorkspaceId)
-    ).toEqual({ n: 0 });
     expect(() =>
       readRecurringPortableHistory({
         ...graph,
@@ -303,127 +202,6 @@ describe('recurring portable history', () => {
     expect(() =>
       exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns())
     ).toThrow('requires inspection');
-  });
-
-  it('imports the three-file graph as reminted inert history through the real snapshot reader', async () => {
-    const { schedule, occurrence } = await acceptedHistory();
-    // One long-interval range exercises all three portable families without expanding missed work.
-    store.updateAutomation(localUserId, schedule.id, { expectedRevision: 2, status: 'paused' });
-    store.updateAutomation(localUserId, schedule.id, {
-      expectedRevision: 3,
-      intervalSeconds: 3600,
-    });
-    store.updateAutomation(localUserId, schedule.id, {
-      expectedRevision: 4,
-      status: 'active',
-      scheduledAt: '2026-10-16T01:00:00.000Z',
-    });
-    instant = '2026-10-16T04:00:00.000Z';
-    store.collectScanCandidates(instant);
-    const turns = retainedTurns();
-    const history = exportRecurringPortableHistory(coreDb, workspace.id, null, turns);
-    const verified = writeWorkspaceExportTree({
-      exportRoot: join(dataRoot, 'portable-export'),
-      exportId: testEntityId('wsexp', 'wsexp_recurring'),
-      sourceDeploymentId: testEntityId('dep', 'dep_source'),
-      createdAt: instant,
-      workspace: files.getWorkspace(workspace.id),
-      threads: [files.getThread(workspace.id, thread.id)],
-      turns,
-      itemRevisions: turns.flatMap((turn) => turn.items),
-      artifacts: [],
-      artifactReviews: [],
-      threadMaterialBindings: [],
-      workspaceMaterialRevisions: [],
-      workspaceMaterials: [],
-      agentSessions: [],
-      turnEvents: turns.map((turn) => [turn.id, []]),
-      knowledge: [],
-      recurringHistory: history,
-      auditEvents: listSqliteAuditEvents(coreDb.sqlite, workspace.id, true),
-      portableFileState: readWorkspacePortableFileState(
-        join(dataRoot, 'workspaces', workspace.id),
-        {
-          workspaceId: workspace.id,
-          threads: [{ threadId: thread.id }],
-          turns: turns.map((turn) => ({ threadId: turn.threadId, turnId: turn.id })),
-        }
-      ),
-    });
-    const imported = readWorkspaceImportSnapshot({
-      verified,
-      targetWorkspaceId: testEntityId('ws', 'ws_imported_recurring'),
-    });
-    const graph = JSON.parse(imported.portableFileState.recurringHistory!);
-    expect(graph.schedules).toEqual([
-      expect.objectContaining({
-        id: expect.not.stringMatching(schedule.id),
-        originScheduleId: schedule.id,
-        workspaceId: testEntityId('ws', 'ws_imported_recurring'),
-        originActor: schedule.actor,
-        status: 'active',
-      }),
-    ]);
-    expect(imported.turns).toHaveLength(1);
-    expect(imported.turns[0]!.id).not.toBe(occurrence.turnId);
-    expect(graph.occurrences).toHaveLength(history.occurrences.length);
-    const importedAccepted = graph.occurrences.find(
-      (row: { originRequestId: string }) => row.originRequestId === occurrence.requestId
-    );
-    expect(importedAccepted).toMatchObject({
-      id: deriveEntityId('occ', [graph.schedules[0].id, occurrence.scheduledAt]),
-      scheduleId: graph.schedules[0].id,
-      originRequestId: occurrence.requestId,
-      originQueueEntryId: occurrence.queueEntryId,
-      originTurnId: occurrence.turnId,
-      turnId: imported.turns[0]!.id,
-      snapshot: { threadId: imported.threads[0]!.id },
-    });
-    expect(importedAccepted.id).not.toBe(occurrence.id);
-    for (const row of graph.occurrences)
-      expect(row.id).toBe(deriveEntityId('occ', [graph.schedules[0].id, row.scheduledAt]));
-    expect(graph.expiredRanges).toEqual([
-      expect.objectContaining({
-        id: expect.not.stringMatching(history.expiredRanges[0]!.id),
-        scheduleId: graph.schedules[0].id,
-        count: 3,
-        firstScheduledAt: '2026-10-16T01:00:00.000Z',
-        lastScheduledAt: '2026-10-16T03:00:00.000Z',
-        snapshot: expect.objectContaining({
-          threadId: imported.threads[0]!.id,
-          originActor: schedule.actor,
-        }),
-      }),
-    ]);
-    expect(
-      imported.auditEvents.find((event) => event.action === 'recurring.expired-range.record')
-    ).toMatchObject({ resource: graph.expiredRanges[0].id, actor: schedule.actor });
-    expect(
-      imported.auditEvents.find((event) => event.action === 'recurring.occurrence.terminal')
-    ).toMatchObject({
-      resource: importedAccepted.id,
-      actor: schedule.actor,
-      requestId: occurrence.requestId,
-      threadId: imported.threads[0]!.id,
-      turnId: null,
-      workspaceId: testEntityId('ws', 'ws_imported_recurring'),
-    });
-    expect(
-      imported.auditEvents
-        .filter((event) => event.action.startsWith('recurring.schedule.'))
-        .every((event) => event.resource === graph.schedules[0].id)
-    ).toBe(true);
-    for (const table of [
-      'recurring_schedules',
-      'recurring_occurrences',
-      'recurring_expired_ranges',
-      'scheduler_admission_entries',
-    ])
-      expect(
-        coreDb.sqlite
-          .prepare(`SELECT count(*) AS n FROM ${table} WHERE workspace_id = ?`)
-          .get(testEntityId('ws', 'ws_imported_recurring'))
-      ).toEqual({ n: 0 });
   });
 
   it('rejects duplicate tuples, contradictory range arithmetic, overlapping coverage and attempt violations', async () => {

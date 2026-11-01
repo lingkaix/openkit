@@ -7,7 +7,6 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import {
-  importResolvedAgentSetups,
   listExportableResolvedAgentSetups,
   recordResolvedAgentSetup,
   requireResolvedAgentSetup,
@@ -145,7 +144,7 @@ describe('resolved agent setup ledger', () => {
     }
   });
 
-  it('refuses an unknown setup version before JSON decode, replacement or import collision', () => {
+  it('refuses an unknown setup version before JSON decode or replacement', () => {
     const workspaceDb = createWorkspaceDb();
     const setup = resolvedSetup();
     const input = {
@@ -169,12 +168,11 @@ describe('resolved agent setup ledger', () => {
       expect(() => listExportableResolvedAgentSetups(workspaceDb, record.workspaceId)).toThrow(
         'Unsupported retained record format.'
       );
-      const otherWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       expect(() =>
-        recordResolvedAgentSetup(workspaceDb, { ...input, workspaceId: otherWorkspaceId })
-      ).toThrow('Unsupported retained record format.');
-      expect(() =>
-        importResolvedAgentSetups(workspaceDb, [{ ...record, workspaceId: otherWorkspaceId }])
+        recordResolvedAgentSetup(workspaceDb, {
+          ...input,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        })
       ).toThrow('Unsupported retained record format.');
       expect(
         workspaceDb.sqlite
@@ -346,90 +344,6 @@ describe('resolved agent setup ledger', () => {
         'filesystem-secret',
         'workspace-input-secret',
         'logical-route-secret',
-      ]) {
-        expect(exportableJson).not.toContain(secret);
-      }
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  });
-
-  it('reprojects imported setup JSON before making it durable or exportable', () => {
-    const workspaceDb = createWorkspaceDb();
-    const setup = resolvedSetup();
-    const redactedSetup = {
-      manifest: {
-        id: setup.manifest.id,
-        requiredFeatures: setup.manifest.requiredFeatures,
-        runtime: setup.manifest.runtime,
-        sandbox: {
-          credentialDeclarations: setup.manifest.sandbox?.credentialDeclarations ?? [],
-          network: setup.manifest.sandbox?.network ?? [],
-        },
-      },
-      logicalModels: {
-        preferredLogicalModelId: setup.logicalModels.preferredLogicalModelId,
-        allowed: setup.logicalModels.allowed.map((model) => ({
-          id: model.id,
-          capabilities: model.capabilities,
-          modelFamilyId: model.modelFamilyId,
-        })),
-      },
-    };
-    const suppliedSetup = {
-      ...redactedSetup,
-      manifest: {
-        ...redactedSetup.manifest,
-        extensions: { apiKey: 'import-extension-secret' },
-        modelRoutes: [{ token: 'import-route-secret' }],
-        workspace: {
-          env: { API_KEY: 'import-workspace-secret' },
-          inputs: [{ target: '/workspace/input', token: 'import-passthrough-secret' }],
-        },
-      },
-      logicalModels: {
-        ...redactedSetup.logicalModels,
-        privateRoutes: [{ token: 'import-logical-route-secret' }],
-      },
-    };
-
-    try {
-      importResolvedAgentSetups(workspaceDb, [
-        {
-          id: 'ras_imported',
-          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          turnId: null,
-          requestId: null,
-          agentId: setup.manifest.id,
-          logicalModelId: setup.logicalModels.preferredLogicalModelId,
-          runtimeKind: setup.manifest.runtime.kind,
-          runtimeAdapter: setup.manifest.runtime.adapter,
-          requiredFeatures: setup.manifest.requiredFeatures,
-          setup: suppliedSetup,
-          createdAt: '2026-07-06T00:00:00.000Z',
-        },
-      ]);
-
-      const stored = workspaceDb.sqlite
-        .prepare('SELECT setup_json FROM resolved_agent_setups WHERE setup_record_id = ?')
-        .get('ras_imported') as { setup_json: string };
-      expect(JSON.parse(stored.setup_json)).toEqual(redactedSetup);
-      expect(
-        requireResolvedAgentSetup(
-          workspaceDb,
-          'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          'ras_imported'
-        ).setup
-      ).toEqual(redactedSetup);
-      const exportableJson = JSON.stringify(
-        listExportableResolvedAgentSetups(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201')
-      );
-      for (const secret of [
-        'import-extension-secret',
-        'import-route-secret',
-        'import-workspace-secret',
-        'import-passthrough-secret',
-        'import-logical-route-secret',
       ]) {
         expect(exportableJson).not.toContain(secret);
       }

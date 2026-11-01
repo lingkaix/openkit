@@ -41,28 +41,6 @@ interface EvidenceBundleRow {
   readonly created_at: string;
 }
 
-const knownImportedEvidenceRefKinds = new Set([
-  'artifact',
-  'agent-session',
-  'goal',
-  'item',
-  'thread',
-  'turn',
-  'worker',
-  'workspace',
-  'workspace-apply-result',
-  'workspace-change-set',
-  'workspace-review',
-  'workspace-sync-patch',
-  'work-observation-body',
-  'worker-runtime-provenance-index',
-  'worker-runtime-provenance-manifest',
-  'worker-runtime-provenance-native-index',
-  'worker-runtime-provenance-stream',
-]);
-
-const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.strip();
-
 /** Input for compacting expired workspace evidence bundle refs. */
 export interface CompactWorkspaceEvidenceBundlesInput {
   /** Workspace database that owns the evidence bundle rows. */
@@ -92,21 +70,6 @@ export function recordWorkspaceEvidenceBundle(
 ): EvidenceBundleRecord {
   const parsed = EvidenceBundleRecordSchema.parse(record);
   return insertEvidenceBundle(workspaceDb, parsed);
-}
-
-/**
- * Imports workspace-owned evidence bundles into a workspace database.
- *
- * @param workspaceDb Workspace database that owns the imported records.
- * @param records Evidence bundle records with the target workspace id.
- */
-export function importWorkspaceEvidenceBundles(
-  workspaceDb: WorkspaceDb,
-  records: readonly EvidenceBundleRecord[]
-): void {
-  for (const record of records) {
-    insertEvidenceBundle(workspaceDb, quarantineUnknownEvidenceKinds(record));
-  }
 }
 
 /**
@@ -270,25 +233,6 @@ function insertEvidenceBundle<T extends EvidenceBundleRecord | ServerEvidenceBun
     );
 
   return record;
-}
-
-function quarantineUnknownEvidenceKinds(record: unknown): EvidenceBundleRecord {
-  const parsed = ImportedEvidenceBundleRecordSchema.parse(record);
-  const refs = [...parsed.rawEvidenceRefs, ...parsed.redactedEvidenceRefs];
-
-  if (refs.every((ref) => isKnownImportedEvidenceRefKind(ref.kind))) {
-    return parsed;
-  }
-
-  return EvidenceBundleRecordSchema.parse({ ...parsed, importStatus: 'quarantined' });
-}
-
-function isKnownImportedEvidenceRefKind(kind: string): boolean {
-  return (
-    knownImportedEvidenceRefKinds.has(kind) ||
-    kind.startsWith('backend.') ||
-    kind.startsWith('sandbox.')
-  );
 }
 
 /**

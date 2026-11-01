@@ -158,10 +158,6 @@ import {
   WorkspaceChangeSetSchema,
   WorkspaceDashboardResponseSchema,
   WorkspaceExportResponseSchema,
-  WorkspaceImportDryRunRequestSchema,
-  WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportRequestSchema,
-  WorkspaceImportResponseSchema,
   WorkspaceInputSnapshotSchema,
   WorkspaceMaterializationRecordSchema,
   WorkspaceQuarantineRecordSchema,
@@ -1738,128 +1734,6 @@ describe('app api schemas', () => {
         checkedFiles: ['server/db/core.sqlite'],
       })
     ).toMatchObject({ backupId: 'drb_00000000-0000-795e-9322-0c2b42caa5d0' });
-  });
-
-  it('accepts workspace import dry-run reports and rejects unsafe export handles', () => {
-    expect(
-      WorkspaceImportDryRunRequestSchema.parse({
-        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        exportId: 'wsexp_00000000-0000-7f8f-a228-c5edd2ef12d4',
-      })
-    ).toEqual({
-      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      exportId: 'wsexp_00000000-0000-7f8f-a228-c5edd2ef12d4',
-    });
-    expect(() =>
-      WorkspaceImportDryRunRequestSchema.parse({
-        sourceWorkspaceId: '..',
-        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-      })
-    ).toThrow();
-
-    expect(
-      WorkspaceImportDryRunResponseSchema.parse({
-        mode: 'dry-run',
-        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        manifest: {
-          schemaVersion: 1,
-          recordType: 'workspace-export',
-          id: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-          ownerScope: 'workspace',
-          lineage: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          contentDigest: 'sha256:manifest',
-          redactionLevel: 'metadata',
-          sensitivity: 'internal',
-          requiredFeatures: [],
-          extensions: {},
-          sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          exportCreatedAt: timestamp,
-          exportFormatVersion: 3,
-          contentInventory: [],
-        },
-        verification: { fileCount: 0, totalBytes: 0, checkedFiles: [] },
-        collision: {
-          status: 'collides',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          suggestedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
-        },
-      }).collision.status
-    ).toBe('collides');
-  });
-
-  it('accepts workspace import responses and request ids', () => {
-    expect(
-      WorkspaceImportRequestSchema.parse({
-        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-        requestId: 'req_import',
-      })
-    ).toEqual({
-      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-      requestId: 'req_import',
-    });
-
-    expect(
-      WorkspaceImportResponseSchema.parse({
-        mode: 'imported',
-        requestId: 'req_import',
-        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        importedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
-        manifest: {
-          schemaVersion: 1,
-          recordType: 'workspace-export',
-          id: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-          ownerScope: 'workspace',
-          lineage: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          createdAt: timestamp,
-          updatedAt: timestamp,
-          contentDigest: 'sha256:manifest',
-          redactionLevel: 'metadata',
-          sensitivity: 'internal',
-          requiredFeatures: [],
-          extensions: {},
-          sourceDeploymentId: 'dep_00000000-0000-7562-9a88-afe7e367ea27',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          exportCreatedAt: timestamp,
-          exportFormatVersion: 3,
-          contentInventory: [],
-        },
-        workspace: {
-          id: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
-          name: 'Demo workspace',
-          kind: 'general',
-          status: 'active',
-          counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 1 },
-          importedFrom: {
-            sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportCreatedAt: timestamp,
-            manifestDigest:
-              'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          },
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        },
-        verification: {
-          fileCount: 4,
-          totalBytes: 16,
-          checkedFiles: ['records/workspace-record.json'],
-        },
-        collision: {
-          status: 'collides',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          suggestedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
-        },
-      }).workspace.importedFrom?.sourceWorkspaceId
-    ).toBe('ws_00000000-0000-7000-8000-000000000001');
   });
 
   it('keeps credential-pattern rejection on secret-adjacent Vault metadata', () => {

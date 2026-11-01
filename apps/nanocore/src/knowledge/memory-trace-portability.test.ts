@@ -1,16 +1,14 @@
 // openkit-test-platform: posix
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId, WorkspaceRecordSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
-import {
-  findAssistantTimeline,
-  openAssistantTimeline,
-} from '../internal-agents/assistant-timeline.js';
+import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -22,16 +20,20 @@ import {
   retrieveUserMemory,
 } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { readRetrievalTrace } from '../storage/retrieval-traces.js';
+import {
+  allocateRetrievalTraceId,
+  publishRetrievalTrace,
+  readRetrievalTrace,
+  retrievalTraceRelativePath,
+} from '../storage/retrieval-traces.js';
 import { verifyWorkspaceExportTree } from '../storage/workspace-export.js';
-import { readWorkspaceImportSnapshot } from '../storage/workspace-import.js';
 import {
   createVerifiedWorkspaceExport,
   existingWorkspaceExportRoot,
-  importVerifiedWorkspace,
 } from '../storage/workspace-transfer-routes.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readMemoryPage, saveMemoryPage } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -195,49 +197,86 @@ describe('User Memory selection trace portability', () => {
     ])
       expect(allBytes).not.toContain(text);
     expect(allBytes).not.toContain('"score"');
-
-    const snapshot = readWorkspaceImportSnapshot({
-      verified,
-      targetWorkspaceId: source.workspace.id,
-      targetServerId,
-    });
-    const [tracePath, importedTrace] = [...snapshot.portableFileState.retrievalTraceFiles][0]!;
-    expect(importedTrace).toEqual({
-      ...original,
-      queryContext: {
-        ...original.queryContext,
-        workspaceId: snapshot.workspace.id,
-        threadId: snapshot.threads[0]!.id,
-      },
-    });
-    expect(importedTrace.queryContext.serverId).toBe(sourceServerId);
-    expect(importedTrace.selected[0]).toMatchObject({
+    const traceRelative = retrievalTraceRelativePath(selected.retrievalTraceRef!);
+    const exportedTraceText = verified.fileContents.get(`workspace-files/${traceRelative}`)!;
+    expect(JSON.parse(exportedTraceText)).toEqual(
+      JSON.parse(
+        readFileSync(
+          join(source.dataRoot, 'workspaces', source.workspace.id, traceRelative),
+          'utf8'
+        )
+      )
+    );
+    const exportedTrace = JSON.parse(exportedTraceText);
+    expect(exportedTrace.queryContext).toEqual(original.queryContext);
+    expect(exportedTrace.queryContext.serverId).toBe(sourceServerId);
+    expect(exportedTrace.queryContext.workspaceId).toBe(source.workspace.id);
+    expect(exportedTrace.selected[0]).toMatchObject({
       reference: { scopeId: userPageScope(source), objectId: 'preferences' },
       revision: saved.notebookRevision,
       sourceReferences: sourceRefs,
     });
-    expect(tracePath).toBe(
-      `threads/${snapshot.threads[0]!.id}/retrieval-traces/${original.traceId}.json`
-    );
 
     const targetPage = readMemoryPage(target.writer, 'preferences')!;
-    const imported = await importVerifiedWorkspace({
-      authorityUserId: target.userId,
-      coreDb: target.coreDb,
-      dataRoot: target.dataRoot,
-      requestId: randomUUID(),
-      store: target.store,
-      verified,
+    const importedId = allocateEntityId('ws');
+    const imported = await target.store.importWorkspaceSnapshot({
+      ...notebookImportFixture({
+        workspaceId: importedId,
+        knowledge: [],
+        userId: target.userId,
+      }),
+      workspace: WorkspaceRecordSchema.parse({
+        id: importedId,
+        name: 'Imported memory trace',
+        kind: 'general',
+        status: 'active',
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        importedFrom: {
+          sourceDeploymentId: sourceServerId,
+          sourceWorkspaceId: source.workspace.id,
+          exportCreatedAt: verified.manifest.exportCreatedAt,
+          manifestDigest: verified.manifestDigest,
+        },
+        createdAt: '2026-10-17T00:00:00.000Z',
+        updatedAt: '2026-10-17T00:00:00.000Z',
+      }),
+      threads: [],
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
     });
-    const workspaceId = imported.workspace.id;
-    const timeline = findAssistantTimeline(target.store, workspaceId, target.userId)!;
-    const access = { ...target.access, outputThreadId: timeline.id };
+    recordWorkspaceOwnerMembership({
+      coreDb: target.coreDb,
+      workspaceId: imported.id,
+      ownerUserId: target.userId,
+    });
+    const foreignThread = await openAssistantTimeline(
+      target.store,
+      imported.id,
+      target.userId,
+      'Imported trace owner'
+    );
+    const foreignTraceId = allocateRetrievalTraceId();
     const reference = {
-      scopeId: `retrieval-trace/thread/${workspaceId}/${timeline.id}`,
-      objectId: original.traceId,
+      scopeId: `retrieval-trace/thread/${imported.id}/${foreignThread.id}`,
+      objectId: foreignTraceId,
     };
+    publishRetrievalTrace(join(target.dataRoot, 'workspaces', imported.id), reference, {
+      ...original,
+      traceId: foreignTraceId,
+      queryContext: {
+        ...original.queryContext,
+        serverId: sourceServerId,
+        workspaceId: imported.id,
+        threadId: foreignThread.id,
+      },
+    });
+    const access = { ...target.access, outputThreadId: foreignThread.id };
     const persisted = readRetrievalTrace(
-      join(target.dataRoot, 'workspaces', workspaceId),
+      join(target.dataRoot, 'workspaces', imported.id),
       reference
     )!;
     expect(persisted.queryContext.serverId).toBe(sourceServerId);
@@ -247,7 +286,7 @@ describe('User Memory selection trace portability', () => {
     expect(() =>
       assertKnowledgeRetrievalTraceReadable({
         dataRoot: target.dataRoot,
-        workspaceId,
+        workspaceId: imported.id,
         access,
         retrievalTraceRef: reference,
       })
@@ -255,7 +294,7 @@ describe('User Memory selection trace portability', () => {
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
         dataRoot: target.dataRoot,
-        workspaceId,
+        workspaceId: imported.id,
         access,
         retrievalTraceRef: reference,
         caller: 'app-api',
@@ -263,7 +302,7 @@ describe('User Memory selection trace portability', () => {
     ).toThrowError(expect.objectContaining({ status: 403 }));
     const fresh = await retrieveUserMemory({
       dataRoot: target.dataRoot,
-      workspaceId,
+      workspaceId: imported.id,
       access,
       caller: 'app-api',
       query,
@@ -278,31 +317,73 @@ describe('User Memory selection trace portability', () => {
     expect(
       assertKnowledgeRetrievalTraceReadable({
         dataRoot: target.dataRoot,
-        workspaceId,
+        workspaceId: imported.id,
         access,
         retrievalTraceRef: fresh.retrievalTraceRef!,
       }).traceId
     ).toBe(fresh.retrievalTraceRef!.objectId);
 
-    const sameDeployment = await importVerifiedWorkspace({
-      authorityUserId: source.userId,
-      coreDb: source.coreDb,
-      dataRoot: source.dataRoot,
-      requestId: randomUUID(),
-      store: source.store,
-      verified,
+    const sameId = allocateEntityId('ws');
+    const sameWorkspace = await source.store.importWorkspaceSnapshot({
+      ...notebookImportFixture({
+        workspaceId: sameId,
+        knowledge: [],
+        userId: source.userId,
+      }),
+      workspace: WorkspaceRecordSchema.parse({
+        id: sameId,
+        name: 'Same deployment memory trace',
+        kind: 'general',
+        status: 'active',
+        counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+        importedFrom: {
+          sourceDeploymentId: sourceServerId,
+          sourceWorkspaceId: source.workspace.id,
+          exportCreatedAt: verified.manifest.exportCreatedAt,
+          manifestDigest: verified.manifestDigest,
+        },
+        createdAt: '2026-10-17T00:00:00.000Z',
+        updatedAt: '2026-10-17T00:00:00.000Z',
+      }),
+      threads: [],
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [],
+      turnEvents: [],
     });
-    const sameWorkspaceId = sameDeployment.workspace.id;
-    const sameTimeline = findAssistantTimeline(source.store, sameWorkspaceId, source.userId)!;
+    recordWorkspaceOwnerMembership({
+      coreDb: source.coreDb,
+      workspaceId: sameWorkspace.id,
+      ownerUserId: source.userId,
+    });
+    const sameThread = await openAssistantTimeline(
+      source.store,
+      sameWorkspace.id,
+      source.userId,
+      'Same deployment owner'
+    );
+    const sameTraceId = allocateRetrievalTraceId();
+    const sameReference = {
+      scopeId: `retrieval-trace/thread/${sameWorkspace.id}/${sameThread.id}`,
+      objectId: sameTraceId,
+    };
+    publishRetrievalTrace(join(source.dataRoot, 'workspaces', sameWorkspace.id), sameReference, {
+      ...original,
+      traceId: sameTraceId,
+      queryContext: {
+        ...original.queryContext,
+        workspaceId: sameWorkspace.id,
+        threadId: sameThread.id,
+      },
+    });
     expect(
       assertKnowledgeRetrievalTraceReadable({
         dataRoot: source.dataRoot,
-        workspaceId: sameWorkspaceId,
-        access: { ...source.access, outputThreadId: sameTimeline.id },
-        retrievalTraceRef: {
-          scopeId: `retrieval-trace/thread/${sameWorkspaceId}/${sameTimeline.id}`,
-          objectId: original.traceId,
-        },
+        workspaceId: sameWorkspace.id,
+        access: { ...source.access, outputThreadId: sameThread.id },
+        retrievalTraceRef: sameReference,
       }).selected
     ).toEqual(original.selected);
   });

@@ -181,7 +181,7 @@ LLM usage rows:
 - source: OpenKit vocabulary that distinguishes input, output, cache-read, cache-write, total fallback, and cost estimate without storing a provider-native payload
 - requestId and capabilityCallId
 
-The Gateway supplies `providerModel` where it already knows the selected member, alongside its existing measured-profile `providerRef`. A fallback, retry or runtime route change cannot relabel an earlier measurement. Historical absent values remain unknown/null; do not infer or backfill them from current configuration, a logical route or a response alias. The additive field belongs to the existing usage row and survives its ordinary native publication, reads, export/import and equivalent-measurement replay. It introduces no second ledger, routing authority or lifecycle.
+The Gateway supplies `providerModel` where it already knows the selected member, alongside its existing measured-profile `providerRef`. A fallback, retry or runtime route change cannot relabel an earlier measurement. Historical absent values remain unknown/null; do not infer or backfill them from current configuration, a logical route or a response alias. The additive field belongs to the existing usage row and survives its ordinary native publication, reads, Workspace export, and equivalent-measurement replay.  It introduces no second ledger, routing authority or lifecycle.
 
 MCP usage rows:
 

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
@@ -14,7 +14,6 @@ import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
-import { WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE } from './workspace-archive.js';
 
 const fixtures: Array<{ coreDb: ReturnType<typeof openCoreDb>; dataRoot: string }> = [];
 
@@ -103,7 +102,7 @@ function workspaceAuthority(fixture: Awaited<ReturnType<typeof archiveFixture>>)
 }
 
 describe('retained archive primary admission', () => {
-  it('shares disk capacity admission across export and archive staging', async () => {
+  it('shares disk capacity admission across export publication', async () => {
     let availableBytes = 1_000_000_000n;
     const admission = new FileStorageAdmission(
       '.',
@@ -111,7 +110,7 @@ describe('retained archive primary admission', () => {
       () => availableBytes
     );
     const fixture = await archiveFixture(admission);
-    const archive = await exportedArchive(fixture);
+    await exportedArchive(fixture);
     const before = workspaceAuthority(fixture);
     // The existing App-owned reservation can consume capacity before the next transfer.
     const pending = admission.reserve({
@@ -128,18 +127,7 @@ describe('retained archive primary admission', () => {
           { method: 'POST' }
         )
       );
-      const imported = await fixture.app.request(
-        'http://127.0.0.1/api/app/workspace-archives/import',
-        {
-          body: archive.bytes,
-          headers: {
-            'content-type': WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE,
-            'x-openkit-request-id': '00000000-0000-4000-8000-000000000017',
-          },
-          method: 'POST',
-        }
-      );
-      expect([exported.status === 200, imported.status === 200]).toEqual([false, false]);
+      expect(exported.status).not.toBe(200);
       expect(workspaceAuthority(fixture)).toEqual(before);
     } finally {
       pending.release();
@@ -147,51 +135,6 @@ describe('retained archive primary admission', () => {
     // Releasing a different request's unused capacity permits a fresh transfer.
     availableBytes = 1_000_000_000n;
     await exportedArchive(fixture);
-  });
-
-  it.each([
-    ['workspace', 'import-dry-run'],
-    ['workspace', 'import'],
-    ['workspace-readonly', 'import-dry-run'],
-    ['workspace-readonly', 'import'],
-  ] as const)('refuses %s bearer foreign archive %s before staging or ownership changes', async (scope, operation) => {
-    const source = await archiveFixture();
-    const archive = await exportedArchive(source);
-    const target = await archiveFixture(undefined, source.workspaceMutationAdmission);
-    const credential = target.token(scope);
-    const before = workspaceAuthority(target);
-    const staging = join(target.dataRoot, 'server', 'files', 'workspace-archive-requests');
-    expect(existsSync(staging)).toBe(false);
-    const response = await target.app.request(
-      `http://127.0.0.1/api/app/workspace-archives/${operation}`,
-      {
-        body: archive.bytes,
-        headers: {
-          authorization: `Bearer ${credential.secret}`,
-          'content-type': WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE,
-          'x-openkit-request-id': '00000000-0000-4000-8000-000000000015',
-        },
-        method: 'POST',
-      }
-    );
-    // Observe effect absence even on a vulnerable revision that returns success.
-    const after = workspaceAuthority(target);
-    const staged = existsSync(staging);
-    expect({
-      status: response.status,
-      body: await response.json(),
-      staged,
-      authority: after,
-    }).toEqual({
-      status: 403,
-      body: {
-        code: 'workspace_access_denied',
-        message: 'Workspace access denied.',
-        protocolVersion: PROTOCOL_VERSION,
-      },
-      staged: false,
-      authority: before,
-    });
   });
 
   it.each([
@@ -216,50 +159,5 @@ describe('retained archive primary admission', () => {
     const resumed = await fixture.app.request(`http://127.0.0.1${archive.path}`, { headers });
     expect(resumed.status).toBe(200);
     expect(await resumed.arrayBuffer()).toEqual(archive.bytes);
-  });
-
-  it.each([
-    'session',
-    'administrator',
-  ] as const)('preserves %s foreign archive dry-run and import', async (actor) => {
-    const source = await archiveFixture();
-    const archive = await exportedArchive(source);
-    const target = await archiveFixture(undefined, source.workspaceMutationAdmission);
-    const headers = {
-      ...(actor === 'administrator'
-        ? { authorization: `Bearer ${target.token('server-admin').secret}` }
-        : {}),
-      'content-type': WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE,
-      'x-openkit-request-id': '00000000-0000-4000-8000-000000000016',
-    };
-    const before = workspaceAuthority(target);
-    const dryRun = await target.app.request(
-      'http://127.0.0.1/api/app/workspace-archives/import-dry-run',
-      { body: archive.bytes.slice(0), headers, method: 'POST' }
-    );
-    expect(dryRun.status).toBe(200);
-    expect(await dryRun.json()).toMatchObject({
-      mode: 'dry-run',
-      sourceWorkspaceId: source.workspace.id,
-    });
-    expect(workspaceAuthority(target)).toEqual(before);
-    const imported = await target.app.request(
-      'http://127.0.0.1/api/app/workspace-archives/import',
-      { body: archive.bytes, headers, method: 'POST' }
-    );
-    expect(imported.status).toBe(200);
-    const result = (await imported.json()) as { mode: string; importedWorkspaceId: string };
-    expect(result.mode).toBe('imported');
-    expect(target.store.getWorkspace(result.importedWorkspaceId)).not.toBeNull();
-    expect(
-      target.coreDb.sqlite
-        .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id = ?')
-        .get(result.importedWorkspaceId)
-    ).toEqual({ owner_user_id: 'usr_00000000-0000-7000-8000-000000000001' });
-    expect(
-      target.coreDb.sqlite
-        .prepare('SELECT user_id, status FROM workspace_members WHERE workspace_id = ?')
-        .all(result.importedWorkspaceId)
-    ).toEqual([{ user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' }]);
   });
 });

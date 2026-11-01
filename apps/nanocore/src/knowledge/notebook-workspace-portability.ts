@@ -1,9 +1,5 @@
 import { createHash } from 'node:crypto';
 import {
-  KnowledgeRetrievalTraceSchema,
-  type ProductRetrievalTrace,
-} from '@openkit/app-api-schemas';
-import {
   formatReferenceUri,
   KnowledgeBaseIdSchema,
   KnowledgeOwnerScopeSchema,
@@ -225,54 +221,4 @@ export function assertPortableWorkspaceNotebookDisclosure(input: {
     if (input.pages.get(`knowledge/pages/${page.path}`) !== page.content)
       throw new NotebookError('recovery_required');
   }
-}
-
-/** Binds reminted current-tree selections only after the target Notebook actually exists. */
-export function bindImportedWorkspaceNotebookTraces(input: {
-  readonly workspaceRoot: string;
-  readonly workspaceId: string;
-  readonly knowledgeBaseId: string;
-  readonly traces: ReadonlyMap<string, ProductRetrievalTrace>;
-  readonly selection: WorkspaceNotebookSelection;
-}): ReadonlyMap<string, ProductRetrievalTrace> {
-  if (!input.selection || input.selection.workspaceRoot !== input.workspaceRoot)
-    throw new NotebookError('recovery_required');
-  const notebook = input.selection.notebook;
-  const revision = notebook.publishedRevision();
-  const { files } = notebook.readRevision(revision);
-  return new Map(
-    [...input.traces].map(([path, trace]) => {
-      if (
-        'sourceKind' in trace ||
-        trace.sourceScope !==
-          `page/workspace/${input.workspaceId}/${KnowledgeBaseIdSchema.parse(input.knowledgeBaseId)}`
-      )
-        return [path, trace];
-      const bind = <
-        T extends {
-          reference: { objectId: string };
-          contentDigest: string | null;
-          revision: string | null;
-        },
-      >(
-        entry: T
-      ): T => {
-        if (entry.contentDigest !== null) {
-          const content = files[`${entry.reference.objectId}.md`];
-          if (content === undefined || entry.contentDigest !== pageDigest(content))
-            throw new NotebookError('invalid_request');
-        }
-        return { ...entry, revision: entry.revision === null ? null : revision };
-      };
-      return [
-        path,
-        KnowledgeRetrievalTraceSchema.parse({
-          ...trace,
-          notebookRevision: revision,
-          selected: trace.selected.map(bind),
-          excluded: trace.excluded.map(bind),
-        }),
-      ];
-    })
-  );
 }

@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   compactWorkspaceEvidenceBundles,
-  importWorkspaceEvidenceBundles,
   listWorkspaceEvidenceBundles,
   recordWorkspaceEvidenceBundle,
 } from './evidence-bundles.js';
@@ -38,10 +37,7 @@ function restrictedBundle(workspaceId: string, id: string): EvidenceBundleRecord
 }
 
 describe('evidence bundles', () => {
-  it.each([
-    'record',
-    'import',
-  ] as const)('refuses the shared digest namespace at %s admission and preserves canonical bytes', (admission) => {
+  it('refuses the shared digest namespace at record admission and preserves canonical bytes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-namespace-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const bytes = Buffer.from('Canonical content shared by retained records.');
@@ -63,8 +59,7 @@ describe('evidence bundles', () => {
       const record = restrictedBundle(workspaceDb.workspaceId, 'sha256');
       expect
         .soft(() => {
-          if (admission === 'record') recordWorkspaceEvidenceBundle(workspaceDb, record);
-          else importWorkspaceEvidenceBundles(workspaceDb, [record]);
+          recordWorkspaceEvidenceBundle(workspaceDb, record);
         })
         .toThrow(/reserved evidence bundle id/i);
       expect
@@ -587,124 +582,6 @@ describe('evidence bundles', () => {
           expect.objectContaining({ id: indexBundleId, importStatus: 'promoted' }),
         ])
       );
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  });
-
-  it('quarantines imported evidence bundles with unknown evidence kinds', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-kind-quarantine-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-
-    try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-
-      importWorkspaceEvidenceBundles(workspaceDb, [
-        {
-          id: 'evb_imported_known',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: null,
-          goalId: null,
-          turnId: null,
-          agentSessionId: null,
-          backendType: null,
-          sourceKind: 'manual',
-          summary: 'Known imported evidence.',
-          rawEvidenceRefs: [
-            { kind: 'worker-runtime-provenance-manifest', ref: 'raw-streams.json' },
-            {
-              kind: 'worker-runtime-provenance-native-index',
-              ref: 'native-origin-index.jsonl',
-            },
-            { kind: 'worker-runtime-provenance-stream', ref: 'raw/stream-0000.jsonl' },
-          ],
-          redactedEvidenceRefs: [
-            { kind: 'workspace', ref: 'ws_00000000-0000-7000-8000-000000000001' },
-            { kind: 'item', ref: 'item_demo' },
-            { kind: 'agent-session', ref: 'as_00000000-0000-7860-9e37-d1a60b30c856' },
-            { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
-          ],
-          contentDigests: ['sha256:known'],
-          retentionClass: 'workspace-audit',
-          sensitivityClass: 'product-safe',
-          importStatus: 'promoted',
-          requiredFeatures: ['evidence.bundle.v1'],
-          createdAt: '2026-07-01T00:00:00.000Z',
-        },
-        {
-          id: 'evb_imported_unknown',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: null,
-          goalId: null,
-          turnId: null,
-          agentSessionId: null,
-          backendType: 'future-backend',
-          sourceKind: 'future-backend',
-          summary: 'Unknown imported evidence.',
-          rawEvidenceRefs: [],
-          redactedEvidenceRefs: [{ kind: 'future.backend.trace', ref: 'trace_1' }],
-          contentDigests: ['sha256:unknown'],
-          retentionClass: 'workspace-audit',
-          sensitivityClass: 'product-safe',
-          importStatus: 'promoted',
-          requiredFeatures: ['evidence.bundle.v1'],
-          createdAt: '2026-07-01T00:00:01.000Z',
-        },
-      ]);
-
-      expect(
-        listWorkspaceEvidenceBundles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
-      ).toEqual([
-        expect.objectContaining({
-          id: 'evb_imported_known',
-          importStatus: 'promoted',
-        }),
-        expect.objectContaining({
-          id: 'evb_imported_unknown',
-          importStatus: 'quarantined',
-          redactedEvidenceRefs: [{ kind: 'future.backend.trace', ref: 'trace_1' }],
-        }),
-      ]);
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  });
-
-  it('strips unknown optional fields from imported evidence bundles', () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-unknown-fields-'));
-    const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-
-    try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-
-      importWorkspaceEvidenceBundles(workspaceDb, [
-        {
-          id: 'evb_imported_extra',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: null,
-          goalId: null,
-          turnId: null,
-          agentSessionId: null,
-          backendType: null,
-          sourceKind: 'manual',
-          summary: 'Imported evidence with a future optional field.',
-          rawEvidenceRefs: [],
-          redactedEvidenceRefs: [
-            { kind: 'workspace', ref: 'ws_00000000-0000-7000-8000-000000000001' },
-          ],
-          contentDigests: ['sha256:extra'],
-          retentionClass: 'workspace-audit',
-          sensitivityClass: 'product-safe',
-          importStatus: 'promoted',
-          requiredFeatures: ['evidence.bundle.v1'],
-          createdAt: '2026-07-01T00:00:00.000Z',
-          futureOptionalNote: 'ignored by this reader',
-        } as unknown as Parameters<typeof importWorkspaceEvidenceBundles>[1][number],
-      ]);
-
-      expect(
-        listWorkspaceEvidenceBundles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
-      ).toEqual([expect.not.objectContaining({ futureOptionalNote: expect.anything() })]);
     } finally {
       workspaceDb.sqlite.close();
     }

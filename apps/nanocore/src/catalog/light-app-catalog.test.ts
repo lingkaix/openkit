@@ -10,7 +10,6 @@ import {
   verifyWorkspaceExportTree,
   writeWorkspaceExportTree,
 } from '../storage/workspace-export.js';
-import { readWorkspaceImportSnapshot } from '../storage/workspace-import.js';
 import {
   projectWorkspaceCatalogExport,
   readPortableAgentResourceCatalog,
@@ -536,7 +535,7 @@ describe('Light App definition catalog', () => {
     expect(readFileSync(path, 'utf8')).toBe(before);
   });
 
-  it('carries exact definition history through the verified Workspace export and import reader', () => {
+  it('carries exact definition history through the verified Workspace export', () => {
     const input = fixture();
     const first = add(input);
     const second = add(input, first.catalog.revision, 'Admissions v2');
@@ -596,19 +595,14 @@ describe('Light App definition catalog', () => {
       },
       agentResourceCatalog: projectWorkspaceCatalogExport(input.dataRoot, input.workspaceId),
     });
-    const imported = readWorkspaceImportSnapshot({
-      verified: verifyWorkspaceExportTree({ exportRoot }),
-      targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000002',
-      targetServerId: 'server_test_target',
-    });
-    expect(imported.agentResourceCatalog?.lightApps.versions).toEqual([
-      first.version,
-      second.version,
-    ]);
-    expect(imported.agentResourceCatalog?.lightApps.entries[0].currentDigest).toBeNull();
-    expect(imported.agentResourceCatalog?.lightApps.pins).toEqual([]);
-    expect(imported.lightApps).toEqual([]);
-    expect(imported.lightAppRecords).toEqual([]);
+    const portable = readPortableAgentResourceCatalog(
+      verifyWorkspaceExportTree({ exportRoot }).fileContents.get(
+        'records/agent-resource-catalog.json'
+      )!
+    );
+    expect(portable.lightApps.versions).toEqual([first.version, second.version]);
+    expect(portable.lightApps.entries[0].sourceCurrentDigest).toBe(second.version.digest);
+    expect(portable.lightApps.pins).toEqual(second.catalog.lightApps.pins);
   });
 
   it('round-trips inline definitions through the existing Workspace catalog portability path', () => {

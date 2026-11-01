@@ -10,16 +10,11 @@ import {
   type SubmitKnowledgeProposalDecisionRequest,
   type VaultAdminBootstrapCodexAuthJsonRequest,
   type VaultAdminUnlockRequest,
-  type WorkspaceImportDryRunResponse,
-  WorkspaceImportDryRunResponseSchema,
-  type WorkspaceImportResponse,
-  WorkspaceImportResponseSchema,
   type WorkspaceSharingError,
   WorkspaceSharingErrorSchema,
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { ApiCallError } from './errors.js';
-import { createRequestId } from './request-id.js';
 import type { ClientTransport } from './transport.js';
 
 /** Knowledge Manager answer request input. */
@@ -75,10 +70,6 @@ export interface AppApiClient {
     workspaceId: string,
     exportId: string
   ): Promise<ReadableStream<Uint8Array>>;
-  /** Verifies one raw Workspace archive stream without importing it. */
-  dryRunWorkspaceArchiveImport(body: BodyInit): Promise<WorkspaceImportDryRunResponse>;
-  /** Imports one raw Workspace archive stream with a caller-selected or generated request id. */
-  importWorkspaceArchive(body: BodyInit, requestId?: string): Promise<WorkspaceImportResponse>;
 }
 
 /** Creates the NanoCore App API client. */
@@ -88,23 +79,6 @@ export function createAppApiClient(transport: ClientTransport): AppApiClient {
       transport.getStream(
         `/api/app/workspaces/${workspaceId}/exports/${exportId}/archive`,
         'application/vnd.openkit.workspace-export+tar.zstd'
-      ),
-    dryRunWorkspaceArchiveImport: (body) =>
-      transport.postStream(
-        '/api/app/workspace-archives/import-dry-run',
-        body,
-        { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
-        WorkspaceImportDryRunResponseSchema
-      ),
-    importWorkspaceArchive: (body, requestId) =>
-      transport.postStream(
-        '/api/app/workspace-archives/import',
-        body,
-        {
-          'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
-          'x-openkit-request-id': requestId ?? createRequestId(),
-        },
-        WorkspaceImportResponseSchema
       ),
   };
 }

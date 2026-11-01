@@ -27,6 +27,17 @@ describe('canonical operation names', () => {
     assertOperationNames(Object.keys(OPERATION_DEFINITIONS));
   });
 
+  it('removes ordinary portable import from the operation catalog', () => {
+    // Decision 20261027: ordinary portable import and its engine are removed completely.
+    for (const id of [
+      'workspace.import',
+      'workspace.import-dry-run',
+      'workspace.archive-import',
+      'workspace.archive-import-dry-run',
+    ])
+      expect(Object.keys(OPERATION_DEFINITIONS), id).not.toContain(id);
+  });
+
   it('accepts canonical segments, the exact model limit, and reused contracts', () => {
     expect(() =>
       assertOperationNames(['work.read-item', 'work.read-item', `a.${'b'.repeat(38)}`])

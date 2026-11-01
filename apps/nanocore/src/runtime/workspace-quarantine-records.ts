@@ -118,21 +118,3 @@ export function listExportableWorkspaceQuarantineRecords(
 ): WorkspaceQuarantineRecord[] {
   return [...listWorkspaceQuarantineRecords(workspaceDb, workspaceId)].reverse();
 }
-
-/**
- * Replays imported workspace quarantine records.
- *
- * @param workspaceDb Open target workspace database handle.
- * @param records Exported quarantine records to replay.
- */
-export function importWorkspaceQuarantineRecords(
-  workspaceDb: WorkspaceDb,
-  records: readonly WorkspaceQuarantineRecord[]
-): void {
-  for (const record of records) {
-    persistWorkspaceQuarantineRecordV1(
-      workspaceDb,
-      StoredWorkspaceQuarantineRecordV1Schema.parse(record)
-    );
-  }
-}

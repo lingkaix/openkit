@@ -546,61 +546,6 @@ export function listExportableWorkerCheckpoints(
 }
 
 /**
- * Replays imported worker checkpoints without emitting checkpoint audit events.
- *
- * @param workspaceDb Open target workspace database handle.
- * @param checkpoints Worker checkpoint rows to replay.
- */
-export function importWorkerCheckpoints(
-  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
-  checkpoints: readonly WorkerCheckpointRecord[]
-): void {
-  for (const checkpoint of checkpoints) {
-    workspaceDb.sqlite
-      .prepare(
-        `INSERT OR IGNORE INTO worker_turn_checkpoints (
-          checkpoint_id,
-          workspace_id,
-          thread_id,
-          turn_id,
-          goal_id,
-          task_id,
-          request_id,
-          request_input_hash,
-          stage,
-          iteration,
-          worker_session_id,
-          context_digest,
-          stop_reason,
-          diagnostics_summary,
-          replay_instruction,
-          created_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        checkpoint.checkpointId,
-        checkpoint.workspaceId,
-        checkpoint.threadId,
-        checkpoint.turnId,
-        checkpoint.goalId,
-        checkpoint.taskId,
-        checkpoint.requestId,
-        checkpoint.requestInputHash,
-        checkpoint.stage,
-        checkpoint.iteration,
-        checkpoint.workerSessionId,
-        checkpoint.contextDigest,
-        checkpoint.stopReason,
-        checkpoint.diagnosticsSummary,
-        0,
-        checkpoint.createdAt,
-        checkpoint.updatedAt
-      );
-  }
-}
-
-/**
  * Builds the shared worker checkpoint SELECT fragment.
  *
  * @returns SQL fragment selecting every checkpoint column.

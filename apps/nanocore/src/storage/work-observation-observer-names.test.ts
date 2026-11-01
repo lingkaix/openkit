@@ -34,10 +34,7 @@ import {
   type WorkObservationRecord,
 } from './work-observations.js';
 import { verifyWorkspaceExportTree, WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
-import {
-  createVerifiedWorkspaceExport,
-  importVerifiedWorkspace,
-} from './workspace-transfer-routes.js';
+import { createVerifiedWorkspaceExport } from './workspace-transfer-routes.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const roots: string[] = [];
@@ -449,37 +446,17 @@ describe('retained observer names', () => {
     const manifestBytes = readFileSync(manifestPath);
     const verified = verifyWorkspaceExportTree({ exportRoot });
     expect(Buffer.from(verified.fileContents.get(observationPath)!)).toEqual(bytes);
-    const result = await importVerifiedWorkspace({
-      authorityUserId: userId,
-      coreDb: f.coreDb,
-      dataRoot: f.dataRoot,
-      requestId: null,
-      store: f.store,
-      verified,
-    });
-    const targetWorkspaceId = result.importedWorkspaceId;
-    const thread = f.store.listThreads(targetWorkspaceId)[0]!;
-    const turn = f.store.listThreadTurns(targetWorkspaceId, thread.id)[0]!;
-    const importedDb = workspaceDb(f.dataRoot, targetWorkspaceId);
-    const owner = { threadId: thread.id, turnId: turn.id };
-    const rows = readWorkObservations(importedDb, owner);
-    expect.soft(rows.map((row) => row.obs)).toEqual(['llm-gateway', 'llm-gateway']);
+    const rows = verified.fileContents
+      .get(observationPath)!
+      .trimEnd()
+      .split('\n')
+      .map((line) => JSON.parse(line));
     expect(rows).toHaveLength(2);
-    expect(targetWorkspaceId).not.toBe(f.db.workspaceId);
-    expect(thread.id).not.toBe(f.owner.threadId);
-    expect(turn.id).not.toBe(f.owner.turnId);
-    expect(rows[0]!.id).not.toBe(historical[0]!.id);
     expect(rows[1]!.parent).toBe(rows[0]!.id);
     expect(rows[0]!.corr).toBe('call-one');
     expect(rows.map((row) => row.ext)).toEqual(historical.map((row) => row.ext));
     const sourceRef = historical[1]!.refs![0]!;
-    const targetRef = rows[1]!.refs![0]!;
-    expect(targetRef.locator).not.toBe(sourceRef.locator);
-    expect(targetRef).toEqual({
-      ...sourceRef,
-      locator: targetRef.locator,
-      scope: { ...sourceRef.scope, workspaceId: targetWorkspaceId },
-    });
+    expect(rows[1]!.refs![0]!).toEqual(sourceRef);
     const sourceBody = readWorkObservationBody(f.db, {
       ...f.owner,
       bundleId: sourceRef.locator,
@@ -490,18 +467,7 @@ describe('retained observer names', () => {
     expect(JSON.parse(Buffer.from(sourceBody!).toString()).messages).toEqual([
       { role: 'user', content: '  exact original é\n\tfinal  ' },
     ]);
-    expect(createHash('sha256').update(sourceBody!).digest('hex')).toBe(targetRef.digest);
-    expect(
-      readWorkObservationBody(importedDb, {
-        ...owner,
-        bundleId: targetRef.locator,
-        createdAt: rows[1]!.ts,
-        sha256: targetRef.digest!,
-      })
-    ).toEqual(sourceBody);
-    expect
-      .soft(nativeRows(importedDb, turn.id).map((row) => row.obs))
-      .toEqual(['llm-gateway', 'llm-gateway']);
+    expect(createHash('sha256').update(sourceBody!).digest('hex')).toBe(sourceRef.digest);
     expect(readFileSync(join(exportRoot, observationPath))).toEqual(bytes);
     expect(readFileSync(manifestPath)).toEqual(manifestBytes);
     expect(nativeBytes(f.db, f.turn.id)).toEqual(sourceLedger);

@@ -75,9 +75,6 @@ const deferredComparisons = {
     'left.path.localeCompare(right.path)': 1,
     'recordSortKey(left).localeCompare(recordSortKey(right))': 1,
   },
-  'apps/nanocore/src/storage/workspace-import.ts': {
-    'left.localeCompare(right)': 1,
-  },
   'apps/nanocore/src/storage/workspace-restore.ts': {
     'a.sourceAccountId.localeCompare(b.sourceAccountId)': 1,
     'a.targetAccountId.localeCompare(b.targetAccountId)': 1,

@@ -28,13 +28,7 @@ import {
 } from './nanohost.js';
 import { SkillCatalogCandidateSchema } from './resource-catalog.js';
 import { AgentNativeEnvironmentResponseSchema } from './runtime-config.js';
-import {
-  DataRootBackupManifestSchema,
-  WorkspaceExportManifestSchema,
-  WorkspaceImportCollisionSchema,
-  WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportResponseSchema,
-} from './storage.js';
+import { DataRootBackupManifestSchema, WorkspaceExportManifestSchema } from './storage.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
 import { WorkspaceVaultInjectionReceiptSchema } from './vault-injection.js';
 import { VAULT_OPERATION_DEFINITIONS } from './vault-operations.js';
@@ -153,18 +147,6 @@ const fields = [
     schema: TransferWorkspaceOwnershipRequestSchema.shape.targetUserId,
     derived: false,
   },
-  {
-    kind: 'ws',
-    schema: WorkspaceImportCollisionSchema.options[1].shape.suggestedWorkspaceId,
-    derived: true,
-  },
-  {
-    kind: 'ws',
-    schema: WorkspaceImportDryRunResponseSchema.shape.exportedWorkspaceId,
-    derived: true,
-  },
-  { kind: 'ws', schema: WorkspaceImportResponseSchema.shape.exportedWorkspaceId, derived: true },
-  { kind: 'ws', schema: WorkspaceImportResponseSchema.shape.importedWorkspaceId, derived: true },
   {
     kind: 'usr',
     schema:

@@ -324,24 +324,6 @@ export function listExportableWorkspaceReconciliationRecords(
   return [...listWorkspaceReconciliationRecords(workspaceDb, workspaceId)].reverse();
 }
 
-/**
- * Replays imported workspace reconciliation records.
- *
- * @param workspaceDb Open target workspace database handle.
- * @param records Exported reconciliation records to replay.
- */
-export function importWorkspaceReconciliationRecords(
-  workspaceDb: WorkspaceDb,
-  records: readonly WorkspaceReconciliationRecord[]
-): void {
-  for (const record of records) {
-    persistWorkspaceReconciliationRecordV1(
-      workspaceDb,
-      StoredWorkspaceReconciliationRecordV1Schema.parse(record)
-    );
-  }
-}
-
 /** Derives original capture lineage from admitted records, never replacement attachment state. */
 function originalCaptureIdentity(
   db: WorkspaceDb,

@@ -118,7 +118,7 @@ Resource changes use later AEP resolution and the existing session compatibility
 
 ### Workspace portability
 
-`docs/specs/20260704-workspace_backup_export_import.md` owns portable Workspace export/import and complete data-root backup. Portable export carries independently readable Skill content and redacted package/MCP lineage, excludes original Plugin roots, executable MCP configuration, and mutable process data, and restores no active source selection or binding. Original-plugin export remains the separately restricted operation above. Retained source digests are provenance, not permission to fetch or activate missing content.
+`docs/specs/20260704-workspace_backup_export_import.md` owns portable Workspace export, backup, restore, MOVE, and complete data-root backup.  Portable export carries independently readable Skill content and redacted package/MCP lineage, excludes original Plugin roots, executable MCP configuration, and mutable process data, and restores no active source selection or binding. Original-plugin export remains the separately restricted operation above. Retained source digests are provenance, not permission to fetch or activate missing content.
 
 ## Proposed Design
 

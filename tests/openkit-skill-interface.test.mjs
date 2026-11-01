@@ -663,6 +663,20 @@ test('one catalog covers the checked App API and public Core projection', async 
     new Set(appOperationIds),
     new Set(Object.keys(appSchemas.OPERATION_DEFINITIONS))
   );
+  // Decision 20261027: ordinary portable import and its engine are removed completely.
+  for (const id of [
+    'workspace.import',
+    'workspace.import-dry-run',
+    'workspace.archive-import',
+    'workspace.archive-import-dry-run',
+  ]) {
+    assert.equal(appOperationIds.includes(id), false, id);
+    assert.equal(
+      operationCatalog.some((entry) => entry.id === id),
+      false,
+      id
+    );
+  }
   assert.deepEqual(
     Object.entries(appSchemas.OPERATION_DEFINITIONS)
       .filter(([, definition]) => !appSchemas.operationMcpEligible(definition))
@@ -679,8 +693,6 @@ test('one catalog covers the checked App API and public Core projection', async 
       'token.create',
       'token.rotate',
       'workspace.archive-download',
-      'workspace.archive-import',
-      'workspace.archive-import-dry-run',
       'workspace.backup-download',
     ]
   );
@@ -1105,7 +1117,7 @@ test('one catalog covers the checked App API and public Core projection', async 
     idsWithAccess(
       'canonical user: implicit local actor or server-admin bearer token; secret-safe local archive files'
     ),
-    ['workspace.archive-download', 'workspace.archive-import', 'workspace.archive-import-dry-run']
+    ['workspace.archive-download']
   );
   assert.deepEqual(
     idsWithAccess('implicit local actor; bundled CLI operation is local-mode only'),
@@ -2364,25 +2376,12 @@ test('portable archive operations stream bytes and refuse local path replacement
   t.after(() => rmSync(root, { force: true, recursive: true }));
   const bytes = Buffer.from([40, 181, 47, 253]);
   const destinationPath = join(root, 'workspace.openkit-workspace.tar.zst');
-  const sourcePath = join(root, 'source.openkit-workspace.tar.zst');
-  const linkedSourcePath = join(root, 'linked.openkit-workspace.tar.zst');
-  const uploads = [];
   const { operationCatalog } = await operations();
   const download = operationCatalog.find((entry) => entry.id === 'workspace.archive-download');
-  const dryRun = operationCatalog.find((entry) => entry.id === 'workspace.archive-import-dry-run');
-  const importArchive = operationCatalog.find((entry) => entry.id === 'workspace.archive-import');
   const client = {
     app: {
       downloadWorkspaceExportArchive() {
         return Promise.resolve(new Response(bytes).body);
-      },
-      async dryRunWorkspaceArchiveImport(body) {
-        uploads.push(Buffer.from(await new Response(body).arrayBuffer()));
-        return { mode: 'dry-run' };
-      },
-      async importWorkspaceArchive(body, requestId) {
-        uploads.push(Buffer.from(await new Response(body).arrayBuffer()));
-        return { mode: 'imported', requestId };
       },
     },
   };
@@ -2487,23 +2486,6 @@ test('portable archive operations stream bytes and refuse local path replacement
   );
   assert.equal(existsSync(partialDestination), true);
   assert.equal(statSync(partialDestination).mode & 0o777, 0o600);
-
-  writeFileSync(sourcePath, bytes);
-  assert.deepEqual(await dryRun.handler({ client }, { sourcePath }), { mode: 'dry-run' });
-  assert.deepEqual(
-    await importArchive.handler(
-      { client },
-      { sourcePath, requestId: '00000000-0000-4000-8000-000000000001' }
-    ),
-    { mode: 'imported', requestId: '00000000-0000-4000-8000-000000000001' }
-  );
-  assert.deepEqual(uploads, [bytes, bytes]);
-
-  symlinkSync(sourcePath, linkedSourcePath);
-  await assert.rejects(
-    Promise.resolve().then(() => dryRun.handler({ client }, { sourcePath: linkedSourcePath })),
-    (error) => error.code === 'invalid_archive_source'
-  );
 });
 
 test('the encrypted-file Vault cutover removes only the obsolete NanoCore Keychain path', () => {

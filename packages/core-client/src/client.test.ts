@@ -60,16 +60,6 @@ function sseResponse(events: unknown[]): Response {
   });
 }
 
-/** Creates one reusable single-chunk byte stream. */
-function byteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue(bytes);
-      controller.close();
-    },
-  });
-}
-
 /** Creates a client with a path-indexed fake fetch implementation. */
 function createFakeClient(routes: RouteMap): {
   client: CoreClient;
@@ -1208,51 +1198,6 @@ function serverVaultUseRecordsResponse() {
   };
 }
 
-/** Returns one workspace import dry-run response fixture. */
-function workspaceImportDryRunResponse() {
-  return {
-    mode: 'dry-run',
-    exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-    sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    manifest: workspaceExportResponse().manifest,
-    verification: { fileCount: 1, totalBytes: 16, checkedFiles: ['records/workspace-record.json'] },
-    collision: {
-      status: 'collides',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      suggestedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
-    },
-  };
-}
-
-/** Returns one workspace import response fixture. */
-function workspaceImportResponse() {
-  return {
-    mode: 'imported',
-    requestId: 'req_import',
-    exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-    sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    importedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
-    manifest: workspaceExportResponse().manifest,
-    verification: { fileCount: 1, totalBytes: 16, checkedFiles: ['records/workspace-record.json'] },
-    collision: {
-      status: 'collides',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      suggestedWorkspaceId: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
-    },
-    workspace: {
-      id: 'ws_00000000-0000-7089-bb95-d4e3b1944597',
-      name: 'Imported workspace',
-      kind: 'general',
-      status: 'active',
-      counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    },
-  };
-}
-
 /** Returns one safe deleted-Workspace recovery projection. */
 function deletedWorkspaceRecoveryResponse() {
   return {
@@ -1511,7 +1456,7 @@ describe('createCoreClient', () => {
     ).rejects.toThrow();
     expect(requests).toHaveLength(1);
   });
-  it('streams portable Workspace archive downloads and uploads without JSON encoding', async () => {
+  it('streams portable Workspace archive downloads without JSON encoding', async () => {
     const archive = new Uint8Array([40, 181, 47, 253]);
     const requests: Array<{ body: Uint8Array; headers: Headers; method: string; path: string }> =
       [];
@@ -1535,18 +1480,11 @@ describe('createCoreClient', () => {
           method: init?.method ?? 'GET',
           path,
         });
-        if (init?.method === 'GET') {
-          return new Response(archive, {
-            headers: {
-              'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
-            },
-          });
-        }
-        return jsonResponse(
-          path.endsWith('import-dry-run')
-            ? workspaceImportDryRunResponse()
-            : workspaceImportResponse()
-        );
+        return new Response(archive, {
+          headers: {
+            'content-type': 'application/vnd.openkit.workspace-export+tar.zstd',
+          },
+        });
       },
     });
 
@@ -1555,33 +1493,13 @@ describe('createCoreClient', () => {
       'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4'
     );
     expect(new Uint8Array(await new Response(downloaded).arrayBuffer())).toEqual(archive);
-    await expect(client.app.dryRunWorkspaceArchiveImport(byteStream(archive))).resolves.toEqual(
-      workspaceImportDryRunResponse()
-    );
-    await expect(
-      client.app.importWorkspaceArchive(byteStream(archive), requestId)
-    ).resolves.toEqual(workspaceImportResponse());
     expect(requests).toMatchObject([
       {
         body: new Uint8Array(),
         method: 'GET',
         path: '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/wsexp_00000000-0000-7693-ae39-6c3f6020c3c4/archive',
       },
-      {
-        body: archive,
-        method: 'POST',
-        path: '/api/app/workspace-archives/import-dry-run',
-      },
-      {
-        body: archive,
-        method: 'POST',
-        path: '/api/app/workspace-archives/import',
-      },
     ]);
-    expect(requests[1]?.headers.get('content-type')).toBe(
-      'application/vnd.openkit.workspace-export+tar.zstd'
-    );
-    expect(requests[2]?.headers.get('x-openkit-request-id')).toBe(requestId);
   });
 
   it('exports only the ordinary product SSE envelope type', () => {
@@ -3034,10 +2952,6 @@ describe('createCoreClient', () => {
       },
       'POST /api/app/operations/backup.verify': { body: dataRootBackupResponse() },
       'POST /api/app/operations/workspace.export': { body: workspaceExportResponse() },
-      'POST /api/app/operations/workspace.import-dry-run': {
-        body: workspaceImportDryRunResponse(),
-      },
-      'POST /api/app/operations/workspace.import': { body: workspaceImportResponse() },
       'POST /api/app/operations/vault.reference-rebind': {
         body: {
           backendKind: 'encrypted-file',
@@ -3547,30 +3461,9 @@ describe('createCoreClient', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).resolves.toEqual(workspaceExportResponse());
-    await expect(
-      client.operations['workspace.import-dry-run']({
-        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-      })
-    ).resolves.toEqual(workspaceImportDryRunResponse());
-    await expect(
-      client.operations['workspace.import']({
-        sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-        requestId: 'req_import',
-      })
-    ).resolves.toEqual(workspaceImportResponse());
     expect(
       requests.find(({ path }) => path === '/api/app/operations/workspace.export')?.body
     ).toEqual({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' });
-    const importRequest = requests.find(
-      ({ path }) => path === '/api/app/operations/workspace.import'
-    );
-    expect(importRequest?.headers['x-openkit-request-id']).toBe('req_import');
-    expect(importRequest?.body).toEqual({
-      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
-    });
     await expect(
       client.operations['vault.reference-rebind']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3949,8 +3842,6 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/bootstrap.consume',
       'POST /api/app/operations/backup.verify',
       'POST /api/app/operations/workspace.export',
-      'POST /api/app/operations/workspace.import-dry-run',
-      'POST /api/app/operations/workspace.import',
       'POST /api/app/operations/vault.reference-rebind',
       'POST /api/app/operations/vault.reference-list',
       'POST /api/app/operations/vault.grant-list',
@@ -3996,7 +3887,7 @@ describe('createCoreClient', () => {
       token: 'okt_bootstrap_secret',
       tokenExpiresAt: timestamp,
     });
-    expect(requests[11]?.body).toEqual({
+    expect(requests[9]?.body).toEqual({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       referenceId: 'vault_00000000-0000-7f9a-ae09-1112bc878c49',
       materialBase64: Buffer.from('ws_00000000-0000-7610-8fe3-da032db53ed3').toString('base64'),

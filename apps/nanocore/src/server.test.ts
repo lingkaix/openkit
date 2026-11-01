@@ -45,8 +45,6 @@ import {
   SubmitConversationResponseSchema,
   SubmitWorkspaceRecoveryDecisionResponseSchema,
   WorkspaceExportResponseSchema,
-  WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
@@ -186,11 +184,6 @@ import {
 } from './runtime/workspace-reconciliation-records.js';
 import {
   getWorkspaceSyncReview,
-  listBackendWorkspaceHandles,
-  listWorkspaceChangeSets,
-  listWorkspaceInputSnapshots,
-  listWorkspaceMaterializationRecords,
-  listWorkspaceSyncReviews,
   recordWorkspaceBackendHandoff,
   recordWorkspaceSyncReview,
   updateWorkspaceSyncReviewDecision,
@@ -210,15 +203,10 @@ import {
   openWorkspaceDbAtRoot,
   type WorkspaceDb,
 } from './storage/db.js';
-import {
-  coreDbPath,
-  readDataRootLayoutMarker,
-  recordDataRootDeploymentMove,
-} from './storage/fs-layout.js';
+import { coreDbPath, recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
-import { readWorkspaceImportSnapshot } from './storage/workspace-import.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import {
   createAppWithWorkspaceAuthority,
@@ -240,25 +228,14 @@ import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
-import {
-  captureWorkspaceSourceFixture,
-  readWorkspaceSourceFixture,
-} from './test-support/workspace-source.js';
+import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { startTurn as startNativeTurn } from './turn-routes.js';
-import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
-import {
-  createVaultReference,
-  getVaultReference,
-  listVaultReferences,
-  rebindWorkspaceVaultReference,
-} from './vault/vault-references.js';
+import { createVaultGrant } from './vault/vault-grants.js';
+import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUseRecord, listVaultUseRecords } from './vault/vault-use-records.js';
-import { createVaultInjectionPlan, listVaultInjectionPlans } from './vault-injection-plans.js';
-import {
-  createVaultInjectionReceipt,
-  listVaultInjectionReceipts,
-} from './vault-injection-receipts.js';
+import { createVaultInjectionPlan } from './vault-injection-plans.js';
+import { createVaultInjectionReceipt } from './vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -988,6 +965,23 @@ function submitKnowledgeProposalReversal(
  */
 function workspaceExportRoot(dataRoot: string, workspaceId: string, exportId: string): string {
   return join(dataRoot, 'server', 'exports', 'workspaces', workspaceId, exportId);
+}
+
+/**
+ * Verifies one App API export tree and returns its root.
+ *
+ * @param dataRoot Data root that owns the export.
+ * @param exportId Export id returned by workspace.export.
+ * @returns Absolute verified export root.
+ */
+function verifiedExportRoot(dataRoot: string, exportId: string): string {
+  const exportRoot = workspaceExportRoot(
+    dataRoot,
+    'ws_00000000-0000-7000-8000-000000000001',
+    exportId
+  );
+  verifyWorkspaceExportTree({ exportRoot });
+  return exportRoot;
 }
 
 /**
@@ -2146,155 +2140,7 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
-  it('dry-runs workspace import through the App API without creating a workspace', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-dry-run-route-'));
-    const store = await createDemoStore({ dataRoot });
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const app = await createApp({ coreDb, dataRoot, store });
-    const beforeCount = store.listWorkspaces().length;
-    const exportRes = await app.request(
-      ...operationRequest(
-        'workspace.export',
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        { method: 'POST' }
-      )
-    );
-    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-
-    const dryRunRes = await app.request(
-      ...operationRequest(
-        'workspace.import-dry-run',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-          }),
-        }
-      )
-    );
-
-    expect(dryRunRes.status).toBe(200);
-    const body = WorkspaceImportDryRunResponseSchema.parse(await dryRunRes.json());
-    expect(body).toMatchObject({
-      mode: 'dry-run',
-      exportId: exported.exportId,
-      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      collision: { status: 'collides', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      verification: { fileCount: 24 },
-    });
-    expect(store.listWorkspaces()).toHaveLength(beforeCount);
-    expect(JSON.stringify(body)).not.toContain(dataRoot);
-    coreDb.sqlite.close();
-  });
-
-  it('imports one workspace through the App API with collision reminting', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Import source thread');
-
-    const app = await createApp({ coreDb, dataRoot, store });
-    await createKnowledgeFixture(app, store, {
-      title: 'Import source knowledge',
-      content: 'Import this knowledge.',
-    });
-    const sourceDeploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
-    const exportRes = await app.request(
-      ...operationRequest(
-        'workspace.export',
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        { method: 'POST' }
-      )
-    );
-    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d701',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    expect(body).toMatchObject({
-      mode: 'imported',
-      requestId: '00000000-0000-4000-8000-00000000d701',
-      sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      exportedWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      importedWorkspaceId: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
-      collision: { status: 'collides', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-      workspace: {
-        id: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
-        counts: { threadCount: 2, knowledgeEntryCount: 2 },
-        importedFrom: {
-          sourceDeploymentId,
-          sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          exportCreatedAt: exported.manifest.exportCreatedAt,
-        },
-      },
-    });
-    expect(body.workspace.importedFrom?.manifestDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(store.getWorkspace('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6').name).toBe(
-      'Demo Workspace'
-    );
-    expect(
-      store.getWorkspace('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6').importedFrom?.sourceWorkspaceId
-    ).toBe('ws_00000000-0000-7000-8000-000000000001');
-    expect(store.listThreads('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6')).toHaveLength(2);
-    expect(
-      store
-        .listKnowledge('ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6')
-        .map(
-          (page) =>
-            parseOkfDocument({ path: page.path, content: page.content }).document?.frontmatter.title
-        )
-    ).toContain('Import source knowledge');
-    expect(
-      coreDb.sqlite
-        .prepare(
-          `SELECT user_id, status
-           FROM workspace_members
-           WHERE workspace_id = ?`
-        )
-        .get(body.importedWorkspaceId)
-    ).toEqual({ status: 'active', user_id: 'usr_00000000-0000-7000-8000-000000000001' });
-    const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6');
-    try {
-      const audit = workspaceDb.sqlite
-        .prepare('SELECT * FROM audit_events WHERE action = ?')
-        .get('workspace.import') as Record<string, unknown> | undefined;
-      expect(audit).toMatchObject({
-        workspace_id: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
-        request_id: '00000000-0000-4000-8000-00000000d701',
-        category: 'system',
-        resource: 'workspace:ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
-        outcome: 'succeeded',
-        severity: 'info',
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-    expect(JSON.stringify(body)).not.toContain(dataRoot);
-  });
-
-  it('exports and imports workspace audit events as line-oriented records', async () => {
+  it('exports workspace audit events as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-audit-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2328,67 +2174,13 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/audit-events.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d722',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      const auditRows = importedDb.sqlite
-        .prepare(
-          'SELECT audit_event_id, workspace_id, request_id, action, resource FROM audit_events ORDER BY action DESC'
-        )
-        .all() as Array<Record<string, unknown>>;
-
-      expect(auditRows).toHaveLength(8);
-      expect(auditRows).toEqual(
-        expect.arrayContaining([
-          {
-            audit_event_id: 'aud_00000000-0000-70d3-9ee0-ff6d0e353d12',
-            workspace_id: body.importedWorkspaceId,
-            request_id: '00000000-0000-4000-8000-00000000d721',
-            action: 'workspace.source_event',
-            resource: `workspace:${body.importedWorkspaceId}`,
-          },
-          expect.objectContaining({
-            workspace_id: body.importedWorkspaceId,
-            request_id: '00000000-0000-4000-8000-00000000d722',
-            action: 'workspace.import',
-            resource: `workspace:${body.importedWorkspaceId}`,
-          }),
-          expect.objectContaining({
-            workspace_id: body.importedWorkspaceId,
-            request_id: '00000000-0000-4000-8000-00000000d722',
-            action: 'capability.admit',
-            resource: 'capability:storage.workspace_import',
-          }),
-          expect.objectContaining({
-            workspace_id: body.importedWorkspaceId,
-            request_id: '00000000-0000-4000-8000-00000000d722',
-            action: 'capability.finish',
-            resource: 'capability:storage.workspace_import',
-          }),
-        ])
-      );
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const auditText = readFileSync(join(exportRoot, 'records/audit-events.jsonl'), 'utf8');
+    expect(auditText).toContain('aud_00000000-0000-70d3-9ee0-ff6d0e353d12');
+    expect(auditText).toContain('workspace.source_event');
+    expect(auditText).toContain('00000000-0000-4000-8000-00000000d721');
+    expect(auditText).toContain('ws_00000000-0000-7000-8000-000000000001');
+    coreDb.sqlite.close();
   });
 
   it('uses the data-root deployment id for workspace export lineage', async () => {
@@ -2479,84 +2271,7 @@ describe('nanocore server', () => {
     }
   });
 
-  it('records storage usage when a workspace import is written', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-storage-usage-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const app = await createApp({ coreDb, dataRoot, store });
-
-    try {
-      const exportRes = await app.request(
-        ...operationRequest(
-          'workspace.export',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          { method: 'POST' }
-        )
-      );
-      const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-      const importRes = await app.request(
-        ...operationRequest(
-          'workspace.import',
-          {},
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              exportId: exported.exportId,
-              requestId: '00000000-0000-4000-8000-00000000d733',
-            }),
-          }
-        )
-      );
-
-      expect(importRes.status, await importRes.clone().text()).toBe(200);
-      const imported = WorkspaceImportResponseSchema.parse(await importRes.json());
-      const usageRes = await app.request(
-        ...operationRequest('usage.read', { workspaceId: imported.importedWorkspaceId }, {})
-      );
-
-      expect(usageRes.status, await usageRes.clone().text()).toBe(200);
-      const usage = CapabilityUsageResponseSchema.parse(await usageRes.json());
-      expect(usage.capabilityCalls).toEqual([
-        expect.objectContaining({
-          capabilityId: 'storage.workspace_import',
-          family: 'storage',
-          operation: 'workspace.import.write',
-          providerRef: 'nanocore-storage',
-          serviceRef: 'workspace-import',
-          status: 'succeeded',
-          owner: { kind: 'workspace', workspaceId: imported.importedWorkspaceId },
-        }),
-      ]);
-      expect(usage.usageRecords).toHaveLength(2);
-      expect(usage.usageRecords).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            category: 'storage',
-            providerRef: 'nanocore-storage',
-            quantity: imported.verification.fileCount,
-            source: 'workspace-import-inventory',
-            unit: 'files',
-            workspaceId: imported.importedWorkspaceId,
-          }),
-          expect.objectContaining({
-            category: 'storage',
-            providerRef: 'nanocore-storage',
-            quantity: imported.verification.totalBytes,
-            source: 'workspace-import-inventory',
-            unit: 'bytes',
-            workspaceId: imported.importedWorkspaceId,
-          }),
-        ])
-      );
-    } finally {
-      coreDb.sqlite.close();
-    }
-  });
-
-  it('exports and imports capability usage ledger rows as line-oriented records', async () => {
+  it('exports capability usage ledger rows as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-usage-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2616,60 +2331,20 @@ describe('nanocore server', () => {
 
     expect(exported.checkedFiles).toContain('records/capability-calls.jsonl');
     expect(exported.checkedFiles).toContain('records/usage-records.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d732',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      const callRow = importedDb.sqlite
-        .prepare(
-          'SELECT call_id, workspace_id, capability_id, status, provider_ref FROM capability_calls WHERE call_id = ?'
-        )
-        .get(callId) as Record<string, unknown> | undefined;
-      const usageRow = importedDb.sqlite
-        .prepare(
-          'SELECT usage_id, workspace_id, capability_call_id, category, unit, quantity FROM usage_records WHERE usage_id = ?'
-        )
-        .get('use_00000000-0000-7b13-9f7f-fef1eecae052') as Record<string, unknown> | undefined;
-
-      expect(callRow).toEqual({
-        call_id: callId,
-        workspace_id: body.importedWorkspaceId,
-        capability_id: 'inference.local.quick_chat',
-        status: 'succeeded',
-        provider_ref: 'provider:test',
-      });
-      expect(usageRow).toEqual({
-        usage_id: 'use_00000000-0000-7b13-9f7f-fef1eecae052',
-        workspace_id: body.importedWorkspaceId,
-        capability_call_id: callId,
-        category: 'llm',
-        unit: 'tokens',
-        quantity: 42,
-      });
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const calls = readFileSync(join(exportRoot, 'records/capability-calls.jsonl'), 'utf8');
+    const usage = readFileSync(join(exportRoot, 'records/usage-records.jsonl'), 'utf8');
+    expect(calls).toContain(callId);
+    expect(calls).toContain('inference.local.quick_chat');
+    expect(calls).toContain('succeeded');
+    expect(calls).toContain('provider:test');
+    expect(usage).toContain('use_00000000-0000-7b13-9f7f-fef1eecae052');
+    expect(usage).toContain(callId);
+    expect(usage).toContain('"quantity":42');
+    coreDb.sqlite.close();
   });
 
-  it('exports and imports canonical Source pointers and exact originals', async () => {
+  it('exports canonical Source pointers and exact originals', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-knowledge-state-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2703,11 +2378,12 @@ describe('nanocore server', () => {
       },
       content: sourceContent,
     });
-    const sourceNotebook = fixtureNotebook(store);
+    const selection = readTestWorkspaceNotebookSelection(dataRoot, originalSource.workspaceId);
     const originalPointer = parseSourcePointer(
       { dataRoot, ownerScope: { kind: 'workspace', workspaceId: originalSource.workspaceId } },
       originalSource.id,
-      sourceNotebook.readSourcePointers(sourceNotebook.publishedRevision())[originalSource.id]!
+      selection.notebook.readSourcePointers(selection.head.notebookCommit)[originalSource.id]!,
+      selection
     );
     const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
@@ -2741,71 +2417,9 @@ describe('nanocore server', () => {
         'utf8'
       )
     ).toBe(sourceContent);
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d736',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedSourceId = store.listKnowledgeSources(body.importedWorkspaceId)[0]!.id;
-    expect(importedSourceId).toMatch(entityIdPattern('ks'));
-    expect(importedSourceId).not.toBe('ks_00000000-0000-7088-ae57-04f7708ec242');
-    expect(store.listKnowledgeSources(body.importedWorkspaceId)).toEqual([
-      expect.objectContaining({
-        id: importedSourceId,
-        workspaceId: body.importedWorkspaceId,
-        kind: 'document',
-        contentDigest: sourceDigest,
-      }),
-    ]);
-    expect(
-      await readWorkspaceSourceFixture({
-        dataRoot,
-        store,
-        coreDb,
-        userId: LOCAL_USER_ID,
-        workspaceId: body.importedWorkspaceId,
-        sourceId: importedSourceId,
-      })
-    ).toEqual({ status: 'ok', value: sourceContent });
-    const importedNotebook = new KnowledgeNotebook({
-      repositoryPath: join(
-        dataRoot,
-        'workspaces',
-        body.importedWorkspaceId,
-        'knowledge',
-        'notebook.git'
-      ),
+    verifyWorkspaceExportTree({
+      exportRoot: workspaceExportRoot(dataRoot, originalSource.workspaceId, exported.exportId),
     });
-    const importedPointer = parseSourcePointer(
-      { dataRoot, ownerScope: { kind: 'workspace', workspaceId: body.importedWorkspaceId } },
-      importedSourceId,
-      importedNotebook.readSourcePointers(importedNotebook.publishedRevision())[importedSourceId]!
-    );
-    expect(importedPointer.fields.contentRef).toMatchObject({
-      knowledgeBaseId: readDefaultKnowledgeBaseId({
-        dataRoot,
-        scope: { kind: 'workspace', workspaceId: body.importedWorkspaceId },
-      }),
-      contentDigest: sourceDigest,
-      locator: { ownerScope: { kind: 'workspace', workspaceId: body.importedWorkspaceId } },
-    });
-    expect(importedPointer.fields.contentRef.knowledgeBaseId).not.toBe(
-      originalPointer.fields.contentRef.knowledgeBaseId
-    );
     expect(
       store.getKnowledgeSource(
         'ws_00000000-0000-7000-8000-000000000001',
@@ -2816,7 +2430,7 @@ describe('nanocore server', () => {
     coreDb.sqlite.close();
   });
 
-  it('round-trips representative workspace records through export import export', async () => {
+  it('exports representative workspace records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-round-trip-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2882,7 +2496,7 @@ describe('nanocore server', () => {
     const app = await createApp({ coreDb, dataRoot, store });
     await createKnowledgeFixture(app, store, {
       title: 'Round trip knowledge',
-      content: 'Keep this entry through import.',
+      content: 'Keep this entry in the export.',
     });
 
     const exportRes = await app.request(
@@ -2898,262 +2512,64 @@ describe('nanocore server', () => {
       'ws_00000000-0000-7000-8000-000000000001',
       exported.exportId
     );
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d747',
-          }),
-        }
-      )
-    );
-    const importPayload = await importRes.json();
-    expect(importRes.status, JSON.stringify(importPayload)).toBe(200);
-    const imported = WorkspaceImportResponseSchema.parse(importPayload);
-    const reExportRes = await app.request(
-      ...operationRequest(
-        'workspace.export',
-        { workspaceId: imported.importedWorkspaceId },
-        { method: 'POST' }
-      )
-    );
-    const reExported = WorkspaceExportResponseSchema.parse(await reExportRes.json());
-    const reExportRoot = workspaceExportRoot(
-      dataRoot,
-      imported.importedWorkspaceId,
-      reExported.exportId
-    );
-
-    const sourceNotebook = fixtureNotebook(store);
-    const originalPointer = parseSourcePointer(
-      { dataRoot, ownerScope: { kind: 'workspace', workspaceId: originalSource.workspaceId } },
-      originalSource.id,
-      sourceNotebook.readSourcePointers(sourceNotebook.publishedRevision())[originalSource.id]!
-    );
-    const importedSource = store.listKnowledgeSources(imported.importedWorkspaceId)[0]!;
-    const importedNotebook = new KnowledgeNotebook({
-      repositoryPath: join(
-        dataRoot,
-        'workspaces',
-        imported.importedWorkspaceId,
-        'knowledge',
-        'notebook.git'
-      ),
-    });
-    const importedPointer = parseSourcePointer(
-      { dataRoot, ownerScope: { kind: 'workspace', workspaceId: imported.importedWorkspaceId } },
-      importedSource.id,
-      importedNotebook.readSourcePointers(importedNotebook.publishedRevision())[importedSource.id]!
-    );
-    const mappedFiles = exported.checkedFiles.map((path) =>
-      path
-        .replace(`/sources/${originalSource.id}.md`, `/sources/${importedSource.id}.md`)
-        .replace(
-          `/raw/${originalPointer.fields.contentRef.locator.path}`,
-          `/raw/${importedPointer.fields.contentRef.locator.path}`
-        )
-    );
-    expect(reExported.checkedFiles).toEqual(expect.arrayContaining(mappedFiles));
+    verifyWorkspaceExportTree({ exportRoot: sourceRoot });
     expect(readExportJson(sourceRoot, 'records/workspace-record.json')).not.toHaveProperty(
       'counts'
     );
-    expect(readExportJson(reExportRoot, 'records/workspace-record.json')).not.toHaveProperty(
-      'counts'
-    );
     expect(
-      readExportJsonl(reExportRoot, 'records/threads.jsonl')
-        .map((thread) => thread.name)
-        .sort()
-    ).toEqual(
-      readExportJsonl(sourceRoot, 'records/threads.jsonl')
-        .map((thread) => thread.name)
-        .sort()
-    );
+      readExportJsonl(sourceRoot, 'records/threads.jsonl').map((thread) => thread.name)
+    ).toContain('Round trip thread');
     expect(
-      readExportJsonl(reExportRoot, 'records/knowledge.jsonl').map(
-        (page) =>
-          parseOkfDocument({ path: page.path, content: page.content }).document?.frontmatter.title
-      )
-    ).toEqual(
       readExportJsonl(sourceRoot, 'records/knowledge.jsonl').map(
         (page) =>
           parseOkfDocument({ path: page.path, content: page.content }).document?.frontmatter.title
       )
+    ).toContain('Round trip knowledge');
+    expect(exported.checkedFiles).not.toContain('records/knowledge-sources.jsonl');
+    const selection = readTestWorkspaceNotebookSelection(
+      dataRoot,
+      'ws_00000000-0000-7000-8000-000000000001'
     );
-    expect(reExported.checkedFiles).not.toContain('records/knowledge-sources.jsonl');
-    const pointerPath = reExported.checkedFiles.find((path) =>
-      path.endsWith(`/sources/${importedSource.id}.md`)
-    )!;
-    expect(readFileSync(join(reExportRoot, pointerPath), 'utf8')).toBe(importedPointer.content);
-    expect(importedSource).toMatchObject({
-      contentDigest: sourceDigest,
-      uri: `workspace://${imported.importedWorkspaceId}/docs/round-trip.md`,
-      workspaceId: imported.importedWorkspaceId,
-    });
-    expect(
-      await readWorkspaceSourceFixture({
-        dataRoot,
-        store,
-        coreDb,
-        userId: LOCAL_USER_ID,
-        workspaceId: imported.importedWorkspaceId,
-        sourceId: importedSource.id,
-      })
-    ).toEqual({ status: 'ok', value: sourceContent });
-    expect(readExportJsonl(reExportRoot, 'records/audit-events.jsonl')).toEqual(
+    const originalPointer = parseSourcePointer(
+      { dataRoot, ownerScope: { kind: 'workspace', workspaceId: originalSource.workspaceId } },
+      originalSource.id,
+      selection.notebook.readSourcePointers(selection.head.notebookCommit)[originalSource.id]!,
+      selection
+    );
+    const pointerPath = exported.checkedFiles.find((path) =>
+      path.endsWith(`/sources/${originalSource.id}.md`)
+    );
+    expect(pointerPath).toBeDefined();
+    expect(readFileSync(join(sourceRoot, pointerPath!), 'utf8')).toBe(originalPointer.content);
+    const rawPath = exported.checkedFiles.find((path) =>
+      path.endsWith(`/raw/${originalPointer.fields.contentRef.locator.path}`)
+    );
+    expect(rawPath).toBeDefined();
+    expect(readFileSync(join(sourceRoot, rawPath!), 'utf8')).toBe(sourceContent);
+    expect(readExportJsonl(sourceRoot, 'records/audit-events.jsonl')).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           action: 'workspace.round_trip_source',
           requestId: '00000000-0000-4000-8000-00000000d746',
-          workspaceId: imported.importedWorkspaceId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         }),
       ])
     );
-    expect(readExportJsonl(reExportRoot, 'records/vault-references.jsonl')).toEqual([
-      expect.objectContaining({
-        backendKind: sourceReference.backendKind,
-        displayName: sourceReference.displayName,
-        secretKind: sourceReference.secretKind,
-      }),
-    ]);
-    expect(readExportJsonl(reExportRoot, 'records/vault-references.jsonl')[0]).not.toMatchObject({
-      sourceReferenceId: sourceReference.referenceId,
-    });
-    expect(JSON.stringify(reExported)).not.toContain(dataRoot);
+    expect(readExportJsonl(sourceRoot, 'records/vault-references.jsonl')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          backendKind: sourceReference.backendKind,
+          displayName: sourceReference.displayName,
+          secretKind: sourceReference.secretKind,
+          sourceReferenceId: sourceReference.referenceId,
+        }),
+      ])
+    );
+    expect(JSON.stringify(exported)).not.toContain(dataRoot);
     coreDb.sqlite.close();
   });
 
-  it('rejects workspace imports containing os-keychain vault references', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-vault-route-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    const sourceReference = createVaultReference(coreDb, {
-      backendKind: 'os-keychain' as never,
-      backendLocator: 'os-keychain:redacted-source',
-      displayName: 'Workspace provider key',
-      ownerScope: 'workspace',
-      referenceId: 'vault_00000000-0000-7c6f-bd57-1bcdd97ac656',
-      secretKind: 'provider-api-key',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      now: () => '2026-07-06T00:00:00.000Z',
-    });
-    const app = await createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request(
-      ...operationRequest(
-        'workspace.export',
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        { method: 'POST' }
-      )
-    );
-    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-
-    expect(exported.checkedFiles).toContain('records/vault-references.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d711',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(400);
-    expect(
-      listVaultReferences(coreDb).filter(
-        (reference) => reference.workspaceId === 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6'
-      )
-    ).toEqual([]);
-    expect(getVaultReference(coreDb, sourceReference.referenceId)).toEqual(sourceReference);
-    coreDb.sqlite.close();
-  });
-
-  it('rolls back the published workspace and Core rows when Core import fails', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-core-rollback-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    for (const suffix of ['1', '2']) {
-      createVaultReference(coreDb, {
-        backendKind: 'encrypted-file',
-        backendLocator: `encrypted-file://source-${suffix}`,
-        displayName: `Workspace provider key ${suffix}`,
-        ownerScope: 'workspace',
-        referenceId: testEntityId('vault', `vault_ws_demo_${suffix}`),
-        secretKind: 'provider-api-key',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        now: () => `2026-07-06T00:00:0${suffix}.000Z`,
-      });
-    }
-    const targetWorkspaceId = 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6';
-    // Independent import IDs cannot be preclaimed; fail the second real Core insert instead.
-    coreDb.sqlite.exec(`CREATE TRIGGER reject_second_imported_reference
-      BEFORE INSERT ON vault_references
-      WHEN NEW.workspace_id = '${targetWorkspaceId}'
-        AND (SELECT COUNT(*) FROM vault_references WHERE workspace_id = '${targetWorkspaceId}') >= 1
-      BEGIN SELECT RAISE(ABORT, 'fixture_core_import_failure'); END`);
-    const coreRowCounts = coreDb.sqlite.prepare(`SELECT
-      (SELECT COUNT(*) FROM vault_references) AS vaultReferences,
-      (SELECT COUNT(*) FROM vault_grants) AS vaultGrants,
-      (SELECT COUNT(*) FROM vault_injection_plans) AS injectionPlans,
-      (SELECT COUNT(*) FROM vault_injection_receipts) AS injectionReceipts`);
-    const beforeCoreRows = coreRowCounts.get();
-    const app = await createApp({ coreDb, dataRoot, store });
-    const exportRes = await app.request(
-      ...operationRequest(
-        'workspace.export',
-        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-        { method: 'POST' }
-      )
-    );
-    const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d712',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(400);
-    expect({
-      coreRows: coreRowCounts.get(),
-      finalWorkspaceRootExists: existsSync(join(dataRoot, 'workspaces', targetWorkspaceId)),
-      storeHasWorkspace: store
-        .listWorkspaces()
-        .some((workspace) => workspace.id === targetWorkspaceId),
-    }).toEqual({
-      coreRows: beforeCoreRows,
-      finalWorkspaceRootExists: false,
-      storeHasWorkspace: false,
-    });
-    coreDb.sqlite.close();
-  });
-
-  it('exports and imports workspace vault use records as line-oriented records', async () => {
+  it('exports workspace vault use records as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-vault-use-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -3197,53 +2613,18 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-use-records.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d842',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedReferences = listVaultReferences(coreDb).filter(
-      (reference) => reference.workspaceId === body.importedWorkspaceId
-    );
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      expect(listVaultUseRecords(importedDb)).toEqual([
-        expect.objectContaining({
-          useId: 'vu_00000000-0000-71ee-950d-3889f5c6eae6',
-          ownerScope: 'workspace',
-          workspaceId: body.importedWorkspaceId,
-          vaultReferenceId: importedReferences[0]?.referenceId,
-          materialVersion: 3,
-          backendKind: 'encrypted-file',
-          resolvingPath: 'provider',
-          grantId: null,
-          receiptId: null,
-          outcome: 'succeeded',
-          auditEventId: 'aud_00000000-0000-754b-b414-a4452aa3ecc1',
-        }),
-      ]);
-      expect(JSON.stringify(listVaultUseRecords(importedDb))).not.toContain('redacted-source');
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const useText = readFileSync(join(exportRoot, 'records/vault-use-records.jsonl'), 'utf8');
+    expect(useText).toContain('vu_00000000-0000-71ee-950d-3889f5c6eae6');
+    expect(useText).toContain('vault_00000000-0000-73d3-b1a3-1e62326fe390');
+    expect(useText).toContain('encrypted-file');
+    expect(useText).toContain('"materialVersion":3');
+    expect(useText).toContain('aud_00000000-0000-754b-b414-a4452aa3ecc1');
+    expect(useText).not.toContain('redacted-source');
+    coreDb.sqlite.close();
   });
 
-  it('exports and imports workspace vault grants as line-oriented records', async () => {
+  it('exports workspace vault grants as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-vault-grant-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -3283,86 +2664,20 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-grants.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d852',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedReference = listVaultReferences(coreDb).find(
-      (reference) => reference.workspaceId === body.importedWorkspaceId
-    );
-    const importedGrants = listVaultGrants(coreDb).filter(
-      (grant) => grant.workspaceId === body.importedWorkspaceId
-    );
-
-    expect(importedGrants).toEqual([
-      expect.objectContaining({
-        grantId: expect.stringMatching(entityIdPattern('grant')),
-        issuance: 'imported-history',
-        vaultReferenceId: importedReference?.referenceId,
-        ownerScope: 'workspace',
-        workspaceId: body.importedWorkspaceId,
-        subjectSummary: 'GitHub MCP read access',
-        allowedInjectionPaths: ['backend-provider'],
-        lifetime: 'workspace',
-        status: 'active',
-        policyDecisionId: 'pd_00000000-0000-7c23-a787-0184e39daa30',
-        approvalId: null,
-        expiresAt: '2026-07-07T00:00:00.000Z',
-      }),
-    ]);
-    expect(importedGrants[0]?.grantId).not.toBe('grant_00000000-0000-7d2a-8f88-5d41a9feb840');
-    expect(importedGrants[0]?.vaultReferenceId).not.toBe(sourceReference.referenceId);
-    expect(JSON.stringify(importedGrants)).not.toContain('redacted-source');
-
-    if (!importedReference || !importedGrants[0]) {
-      throw new Error('Imported Vault authority fixture is incomplete.');
-    }
-    expect(
-      rebindWorkspaceVaultReference(coreDb, {
-        backendKind: 'encrypted-file',
-        backendLocator: 'encrypted-file://target/rebound',
-        currentVersion: 1,
-        referenceId: importedReference.referenceId,
-        workspaceId: body.importedWorkspaceId,
-      })
-    ).toMatchObject({ status: 'active', currentVersion: 1 });
-    expect(() =>
-      createVaultInjectionPlan(coreDb, {
-        backendCapabilityRequirement: 'encrypted-file:resolve',
-        expirationBehavior: 'grant-lifetime',
-        grantId: importedGrants[0].grantId,
-        injectionVisibility: 'gateway-only',
-        planId: 'plan_rebound_imported_grant',
-        redactionRule: 'status-only',
-        revocationBehavior: 'deny-new-use',
-      })
-    ).toThrow('Vault grant is portable-import history and cannot authorize effects.');
-    expect(listVaultGrants(coreDb)).toContainEqual(
-      expect.objectContaining({
-        grantId: importedGrants[0].grantId,
-        policyDecisionId: 'pd_00000000-0000-7c23-a787-0184e39daa30',
-        status: 'active',
-      })
-    );
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const grantText = readFileSync(join(exportRoot, 'records/vault-grants.jsonl'), 'utf8');
+    expect(grantText).toContain('grant_00000000-0000-7d2a-8f88-5d41a9feb840');
+    expect(grantText).toContain('vault_00000000-0000-73d3-b1a3-1e62326fe390');
+    expect(grantText).toContain('GitHub MCP read access');
+    expect(grantText).toContain('backend-provider');
+    expect(grantText).toContain('pd_00000000-0000-7c23-a787-0184e39daa30');
+    expect(grantText).toContain('2026-07-07T00:00:00.000Z');
+    expect(grantText).not.toContain('redacted-source');
+    expect(grantText).not.toContain('imported-history');
     coreDb.sqlite.close();
   });
 
-  it('exports and imports workspace injection plans as line-oriented records', async () => {
+  it('exports workspace injection plans as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-injection-plan-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -3411,71 +2726,19 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-injection-plans.jsonl');
-    const verified = verifyWorkspaceExportTree({
-      exportRoot: workspaceExportRoot(
-        dataRoot,
-        'ws_00000000-0000-7000-8000-000000000001',
-        exported.exportId
-      ),
-    });
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        targetWorkspaceId: 'ws_00000000-0000-7868-a83c-e2f0148a685a',
-        verified: {
-          ...verified,
-          fileContents: new Map(verified.fileContents).set('records/injection-plans.jsonl', ''),
-        },
-      })
-    ).toThrow('Unsupported workspace export record path: records/injection-plans.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d862',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedGrant = listVaultGrants(coreDb).find(
-      (grant) => grant.workspaceId === body.importedWorkspaceId
-    );
-    const importedPlans = listVaultInjectionPlans(coreDb).filter(
-      (plan) => plan.grantId === importedGrant?.grantId
-    );
-
-    expect(importedPlans).toEqual([
-      expect.objectContaining({
-        planId: `plan_imported_${body.importedWorkspaceId}_1`,
-        grantId: importedGrant?.grantId,
-        packageSnapshotId: null,
-        capabilityId: 'runtime.codex_auth',
-        injectionVisibility: 'runtime-file',
-        targetPath: '/sandbox/.codex/auth.json',
-        targetEnvVarName: null,
-        expirationBehavior: 'expire-with-agent-session',
-        revocationBehavior: 'mark-stale-session',
-        redactionRule: 'path-only',
-        backendCapabilityRequirement: 'runtime-file-upload',
-        status: 'active',
-      }),
-    ]);
-    expect(importedPlans[0]?.planId).not.toBe('plan_ws_demo_codex_auth');
-    expect(importedPlans[0]?.grantId).not.toBe('grant_00000000-0000-7d8f-874f-223ba3091d31');
-    expect(JSON.stringify(importedPlans)).not.toContain('redacted-source');
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const planText = readFileSync(join(exportRoot, 'records/vault-injection-plans.jsonl'), 'utf8');
+    expect(planText).toContain('plan_ws_demo_codex_auth');
+    expect(planText).toContain('grant_00000000-0000-7d8f-874f-223ba3091d31');
+    expect(planText).toContain('runtime.codex_auth');
+    expect(planText).toContain('/sandbox/.codex/auth.json');
+    expect(planText).toContain('expire-with-agent-session');
+    expect(planText).toContain('path-only');
+    expect(planText).not.toContain('redacted-source');
     coreDb.sqlite.close();
   });
 
-  it('exports and imports workspace injection receipts as line-oriented records', async () => {
+  it('exports workspace injection receipts as line-oriented records', async () => {
     const dataRoot = mkdtempSync(
       join(tmpdir(), 'openkit-workspace-import-injection-receipt-route-')
     );
@@ -3557,87 +2820,26 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/vault-injection-receipts.jsonl');
-    const verified = verifyWorkspaceExportTree({
-      exportRoot: workspaceExportRoot(
-        dataRoot,
-        'ws_00000000-0000-7000-8000-000000000001',
-        exported.exportId
-      ),
-    });
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        targetWorkspaceId: 'ws_00000000-0000-7a86-bd40-afa19368e338',
-        verified: {
-          ...verified,
-          fileContents: new Map(verified.fileContents).set('records/injection-receipts.jsonl', ''),
-        },
-      })
-    ).toThrow('Unsupported workspace export record path: records/injection-receipts.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d872',
-          }),
-        }
-      )
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const receiptText = readFileSync(
+      join(exportRoot, 'records/vault-injection-receipts.jsonl'),
+      'utf8'
     );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedGrant = listVaultGrants(coreDb).find(
-      (grant) => grant.workspaceId === body.importedWorkspaceId
-    );
-    const importedPlan = listVaultInjectionPlans(coreDb).find(
-      (plan) => plan.grantId === importedGrant?.grantId
-    );
-    const importedReceipts = listVaultInjectionReceipts(coreDb).filter(
-      (receipt) => receipt.planId === importedPlan?.planId
-    );
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-
-    try {
-      expect(importedReceipts).toEqual([
-        expect.objectContaining({
-          receiptId: `receipt_imported_${body.importedWorkspaceId}_1`,
-          planId: importedPlan?.planId,
-          grantId: importedGrant?.grantId,
-          agentSessionId: null,
-          capabilityCallId: 'cap_00000000-0000-7688-9d5d-2e36e0d9825a',
-          backendSummary: 'encrypted-file material v7 injected as backend handle',
-          injectedAt: '2026-07-06T00:13:02.000Z',
-          expiresAt: '2026-07-06T00:18:02.000Z',
-          revocationStatus: 'active',
-          auditEventId: 'aud_00000000-0000-76e0-9243-800f96a0f153',
-        }),
-      ]);
-      expect(listVaultUseRecords(importedDb)).toEqual([
-        expect.objectContaining({
-          useId: 'vu_00000000-0000-7f50-b749-23194ce8d0c8',
-          workspaceId: body.importedWorkspaceId,
-          vaultReferenceId: importedGrant?.vaultReferenceId,
-          planId: importedPlan?.planId,
-          receiptId: importedReceipts[0]?.receiptId,
-        }),
-      ]);
-      expect(importedReceipts[0]?.receiptId).not.toBe('receipt_ws_demo_github');
-      expect(importedReceipts[0]?.planId).not.toBe('plan_ws_demo_github_receipt');
-      expect(importedReceipts[0]?.grantId).not.toBe('grant_00000000-0000-76c8-a30c-dafaa6d843fb');
-      expect(JSON.stringify(importedReceipts)).not.toContain('redacted-source');
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    const useText = readFileSync(join(exportRoot, 'records/vault-use-records.jsonl'), 'utf8');
+    expect(receiptText).toContain('receipt_ws_demo_github');
+    expect(receiptText).toContain('plan_ws_demo_github_receipt');
+    expect(receiptText).toContain('grant_00000000-0000-76c8-a30c-dafaa6d843fb');
+    expect(receiptText).toContain('cap_00000000-0000-7688-9d5d-2e36e0d9825a');
+    expect(receiptText).toContain('encrypted-file material v7 injected as backend handle');
+    expect(receiptText).toContain('aud_00000000-0000-76e0-9243-800f96a0f153');
+    expect(useText).toContain('vu_00000000-0000-7f50-b749-23194ce8d0c8');
+    expect(useText).toContain('receipt_ws_demo_github');
+    expect(receiptText).not.toContain('redacted-source');
+    expect(useText).not.toContain('redacted-source');
+    coreDb.sqlite.close();
   });
 
-  it('exports and imports workspace data source catalogs', async () => {
+  it('exports workspace data source catalogs', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-data-sources-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -3682,46 +2884,16 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/data-sources.json');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d741',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedCatalog = parseWorkspaceDataSourceCatalog(
-      JSON.parse(
-        readFileSync(
-          join(dataRoot, 'workspaces', body.importedWorkspaceId, 'config', 'data-sources.jsonc'),
-          'utf8'
-        )
-      )
-    );
-
-    expect(importedCatalog.sources).toEqual([
-      expect.objectContaining({
-        id: 'repo_default',
-        kind: 'git',
-        locator: { repositoryResourceId: 'repo_default' },
-      }),
-    ]);
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const catalog = readFileSync(join(exportRoot, 'records/data-sources.json'), 'utf8');
+    expect(catalog).toContain('repo_default');
+    expect(catalog).toContain('git');
+    expect(catalog).toContain('worktree');
     expect(JSON.stringify(exported)).not.toContain(dataRoot);
     coreDb.sqlite.close();
   });
 
-  it('exports and imports workspace sync records as line-oriented records', async () => {
+  it('exports workspace sync records as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-sync-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -3799,89 +2971,27 @@ describe('nanocore server', () => {
     expect(exported.checkedFiles).toContain('records/workspace-input-snapshots.jsonl');
     expect(exported.checkedFiles).toContain('records/workspace-materialization-records.jsonl');
     expect(exported.checkedFiles).toContain('records/backend-workspace-handles.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d762',
-          }),
-        }
-      )
-    );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedArtifact = store.listArtifacts(body.importedWorkspaceId)[0];
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      expect(listWorkspaceInputSnapshots(importedDb, body.importedWorkspaceId)).toEqual([
-        expect.objectContaining({
-          id: 'wis_route_1',
-          workspaceId: body.importedWorkspaceId,
-          resourceId: 'repo_default',
-        }),
-      ]);
-      expect(listWorkspaceMaterializationRecords(importedDb, body.importedWorkspaceId)).toEqual([
-        expect.objectContaining({
-          id: 'wmr_route_1',
-          workspaceId: body.importedWorkspaceId,
-          inputSnapshotId: 'wis_route_1',
-          materializedRootRef: `workspace://${body.importedWorkspaceId}/repo_default`,
-        }),
-      ]);
-      expect(listBackendWorkspaceHandles(importedDb, body.importedWorkspaceId)).toEqual([
-        expect.objectContaining({
-          id: 'bwh_wmr_route_1',
-          workspaceId: body.importedWorkspaceId,
-          materializationRecordId: 'wmr_route_1',
-          transportRefs: [
-            {
-              kind: 'materialized-root',
-              ref: `workspace://${body.importedWorkspaceId}/repo_default`,
-            },
-          ],
-        }),
-      ]);
-      expect(listWorkspaceChangeSets(importedDb, body.importedWorkspaceId)).toEqual([
-        expect.objectContaining({
-          id: 'wcs_route_1',
-          workspaceId: body.importedWorkspaceId,
-          materializationRecordId: 'wmr_route_1',
-        }),
-      ]);
-      expect(listWorkspaceSyncReviews(importedDb, body.importedWorkspaceId)).toEqual([
-        expect.objectContaining({
-          artifactId: importedArtifact?.id,
-          changeSet: expect.objectContaining({
-            id: 'wcs_route_1',
-            workspaceId: body.importedWorkspaceId,
-          }),
-          patchPayload: expect.objectContaining({ digest: sourceReview.patchPayload?.digest }),
-          review: expect.objectContaining({
-            id: 'swr_route_1',
-            changeSetId: 'wcs_route_1',
-            workspaceId: body.importedWorkspaceId,
-          }),
-        }),
-      ]);
-      const stagedAuditRows = importedDb.sqlite
-        .prepare('SELECT action FROM audit_events WHERE action = ?')
-        .all('workspace.review.stage') as Array<Record<string, unknown>>;
-      expect(stagedAuditRows).toHaveLength(1);
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const syncText = [
+      'records/staged-workspace-reviews.jsonl',
+      'records/workspace-change-sets.jsonl',
+      'records/workspace-input-snapshots.jsonl',
+      'records/workspace-materialization-records.jsonl',
+      'records/backend-workspace-handles.jsonl',
+    ]
+      .map((path) => readFileSync(join(exportRoot, path), 'utf8'))
+      .join('\n');
+    expect(syncText).toContain('wis_route_1');
+    expect(syncText).toContain('wmr_route_1');
+    expect(syncText).toContain('bwh_wmr_route_1');
+    expect(syncText).toContain('wcs_route_1');
+    expect(syncText).toContain('swr_route_1');
+    expect(syncText).toContain('ws_00000000-0000-7000-8000-000000000001');
+    expect(syncText).toContain(sourceReview.patchPayload?.digest);
+    coreDb.sqlite.close();
   });
 
-  it('exports and imports workspace apply results as line-oriented records', async () => {
+  it('exports workspace apply results as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-apply-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -3971,49 +3081,22 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/workspace-apply-results.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d772',
-          }),
-        }
-      )
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const applyText = readFileSync(
+      join(exportRoot, 'records/workspace-apply-results.jsonl'),
+      'utf8'
     );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      expect(listWorkspaceApplyResults(importedDb, body.importedWorkspaceId)).toEqual([
-        expect.objectContaining({
-          appliedPaths: ['docs/sync.md'],
-          changeSetId: 'wcs_route_1',
-          commitIds: ['commit_route_1'],
-          id: 'war_route_1',
-          reviewId: 'swr_route_1',
-          status: 'applied',
-          workspaceId: body.importedWorkspaceId,
-        }),
-      ]);
-      const applyAuditRows = importedDb.sqlite
-        .prepare('SELECT action FROM audit_events WHERE action = ?')
-        .all('workspace.apply.finish') as Array<Record<string, unknown>>;
-      expect(applyAuditRows).toHaveLength(1);
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    expect(applyText).toContain('war_route_1');
+    expect(applyText).toContain('docs/sync.md');
+    expect(applyText).toContain('wcs_route_1');
+    expect(applyText).toContain('commit_route_1');
+    expect(applyText).toContain('swr_route_1');
+    expect(applyText).toContain('applied');
+    expect(applyText).toContain('ws_00000000-0000-7000-8000-000000000001');
+    coreDb.sqlite.close();
   });
 
-  it('exports and imports workspace permission decisions as line-oriented records', async () => {
+  it('exports workspace permission decisions as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-permission-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -4120,72 +3203,20 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/permission-decisions.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d782',
-          }),
-        }
-      )
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const decisionText = readFileSync(
+      join(exportRoot, 'records/permission-decisions.jsonl'),
+      'utf8'
     );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      const decision = importedDb.sqlite
-        .prepare(
-          `SELECT
-            decision_id,
-            owner_scope,
-            workspace_id,
-            action,
-            result,
-            reason_code,
-            audit_event_id
-          FROM permission_decisions
-          WHERE decision_id = ?`
-        )
-        .get('pd_00000000-0000-79a4-ab33-cdc8e2bb484e') as Record<string, unknown> | undefined;
-
-      expect(decision).toEqual({
-        action: 'runtime.launch',
-        audit_event_id: expect.stringMatching(/^aud_/),
-        decision_id: 'pd_00000000-0000-79a4-ab33-cdc8e2bb484e',
-        owner_scope: 'workspace',
-        reason_code: 'worker_turn_start_allowed',
-        result: 'allow',
-        workspace_id: body.importedWorkspaceId,
-      });
-      const importedApprovalId = `apr_imported_${body.importedWorkspaceId}_1`;
-      expect(() => store.getApproval(importedApprovalId)).toThrow(
-        `Approval request not found: ${importedApprovalId}`
-      );
-      expect(
-        importedDb.sqlite
-          .prepare(
-            `SELECT approval_id AS approvalId, result
-             FROM permission_decisions
-             WHERE decision_id = ?`
-          )
-          .get('pd_00000000-0000-76c9-96e8-a09110d16732')
-      ).toEqual({ approvalId: importedApprovalId, result: 'allow' });
-      const permissionAuditRows = importedDb.sqlite
-        .prepare('SELECT action FROM audit_events WHERE action = ?')
-        .all('permission.decision') as Array<Record<string, unknown>>;
-      expect(permissionAuditRows).toHaveLength(2);
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    expect(decisionText).toContain('pd_00000000-0000-79a4-ab33-cdc8e2bb484e');
+    expect(decisionText).toContain('runtime.launch');
+    expect(decisionText).toContain('worker_turn_start_allowed');
+    expect(decisionText).toContain('pd_00000000-0000-76c9-96e8-a09110d16732');
+    expect(decisionText).toContain('repo.push');
+    expect(decisionText).toContain('repo_push_approved');
+    expect(decisionText).toContain('ap_source_repo_push');
+    expect(decisionText).not.toContain('apr_imported_');
+    coreDb.sqlite.close();
   });
 
   it('lists workspace-filtered scheduler admissions through App API', async () => {
@@ -5072,7 +4103,7 @@ describe('nanocore server', () => {
   it.each([
     true,
     false,
-  ])('exports and imports worker checkpoints as line-oriented records (source session=%s)', async (hasSourceSession) => {
+  ])('exports worker checkpoints as line-oriented records (source session=%s)', async (hasSourceSession) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-checkpoint-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -5128,84 +4159,24 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/worker-turn-checkpoints.jsonl');
-
-    const beforeImportWorkspaces = store
-      .listWorkspaces()
-      .map((workspace) => workspace.id)
-      .sort();
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d802',
-          }),
-        }
-      )
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const checkpointText = readFileSync(
+      join(exportRoot, 'records/worker-turn-checkpoints.jsonl'),
+      'utf8'
     );
-
-    if (!hasSourceSession) {
-      expect(importRes.status).toBe(400);
-      expect(
-        store
-          .listWorkspaces()
-          .map((workspace) => workspace.id)
-          .sort()
-      ).toEqual(beforeImportWorkspaces);
-      coreDb.sqlite.close();
-      return;
-    }
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      const importedCheckpoint = importedDb.sqlite
-        .prepare(
-          'SELECT thread_id AS threadId, turn_id AS turnId, worker_session_id AS workerSessionId FROM worker_turn_checkpoints'
-        )
-        .get() as { threadId: string; turnId: string; workerSessionId: string };
-      const importedThreadId = importedCheckpoint.threadId;
-      const importedTurnId = importedCheckpoint.turnId;
-      expect(importedThreadId).toMatch(entityIdPattern('th'));
-      expect(importedTurnId).toMatch(entityIdPattern('tu'));
-      expect(importedCheckpoint.workerSessionId).toMatch(entityIdPattern('as'));
-      expect(importedCheckpoint.workerSessionId).not.toBe(
-        'as_00000000-0000-7652-8f43-7ca66c6bda3b'
-      );
-      expect(
-        getWorkerCheckpoint(importedDb, body.importedWorkspaceId, importedThreadId, importedTurnId)
-      ).toEqual(
-        expect.objectContaining({
-          checkpointId: `${body.importedWorkspaceId}:${importedThreadId}:${importedTurnId}`,
-          contextDigest: 'sha256:checkpoint-context',
-          goalId: null,
-          iteration: 3,
-          requestId: 'req_checkpoint',
-          requestInputHash: 'sha256:checkpoint-request',
-          stage: 'running_worker',
-          taskId: null,
-          threadId: importedThreadId,
-          turnId: importedTurnId,
-          workerSessionId: importedCheckpoint.workerSessionId,
-          workspaceId: body.importedWorkspaceId,
-        })
-      );
-      const checkpointAuditRows = importedDb.sqlite
-        .prepare('SELECT action FROM audit_events WHERE action = ?')
-        .all('worker.checkpoint.terminal') as Array<Record<string, unknown>>;
-      expect(checkpointAuditRows).toHaveLength(0);
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    expect(checkpointText).toContain('sha256:checkpoint-context');
+    expect(checkpointText).toContain('sha256:checkpoint-request');
+    expect(checkpointText).toContain('running_worker');
+    expect(checkpointText).toContain('req_checkpoint');
+    expect(checkpointText).toContain('th_00000000-0000-7000-8000-000000000001');
+    expect(checkpointText).toContain('tu_00000000-0000-7851-a62b-6cb43a950fd2');
+    expect(checkpointText).toContain('as_00000000-0000-7652-8f43-7ca66c6bda3b');
+    expect(checkpointText).toContain('ws_00000000-0000-7000-8000-000000000001');
+    expect(checkpointText).toContain('"iteration":3');
+    coreDb.sqlite.close();
   });
 
-  it('exports and imports MCP tool schema snapshots as line-oriented records', async () => {
+  it('exports MCP tool schema snapshots as line-oriented records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-mcp-schema-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -5258,64 +4229,20 @@ describe('nanocore server', () => {
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
     expect(exported.checkedFiles).toContain('records/mcp-tool-schema-snapshots.jsonl');
-
-    const importRes = await app.request(
-      ...operationRequest(
-        'workspace.import',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            sourceWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            exportId: exported.exportId,
-            requestId: '00000000-0000-4000-8000-00000000d832',
-          }),
-        }
-      )
+    const exportRoot = verifiedExportRoot(dataRoot, exported.exportId);
+    const snapshotText = readFileSync(
+      join(exportRoot, 'records/mcp-tool-schema-snapshots.jsonl'),
+      'utf8'
     );
-
-    expect(importRes.status, await importRes.clone().text()).toBe(200);
-    const body = WorkspaceImportResponseSchema.parse(await importRes.json());
-    const importedDb = openTestWorkspaceDb(coreDb, body.importedWorkspaceId);
-    try {
-      const row = importedDb.sqlite
-        .prepare(
-          `SELECT
-            snapshot_id,
-            workspace_id,
-            catalog_entry_id,
-            source_ref,
-            server_version,
-            content_digest,
-            tools_json,
-            source,
-            captured_at
-          FROM mcp_tool_schema_snapshots
-          WHERE snapshot_id = ?`
-        )
-        .get('mcpsnap_import_1') as Record<string, unknown> | undefined;
-
-      expect(row).toMatchObject({
-        captured_at: '2026-07-06T00:07:00.000Z',
-        catalog_entry_id: 'github-mcp',
-        content_digest: schemaDigest,
-        server_version: '1.0.0',
-        snapshot_id: 'mcpsnap_import_1',
-        source: 'aep',
-        source_ref: 'mcp/github',
-        workspace_id: body.importedWorkspaceId,
-      });
-      expect(JSON.parse(String(row?.tools_json))).toEqual([
-        {
-          inputSchema: { type: 'object', properties: { owner: { type: 'string' } } },
-          name: 'repo_status',
-        },
-      ]);
-    } finally {
-      importedDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
+    expect(snapshotText).toContain('mcpsnap_import_1');
+    expect(snapshotText).toContain('github-mcp');
+    expect(snapshotText).toContain('mcp/github');
+    expect(snapshotText).toContain('1.0.0');
+    expect(snapshotText).toContain(schemaDigest);
+    expect(snapshotText).toContain('repo_status');
+    expect(snapshotText).toContain('2026-07-06T00:07:00.000Z');
+    expect(snapshotText).toContain('ws_00000000-0000-7000-8000-000000000001');
+    coreDb.sqlite.close();
   });
 
   it('serves the App API OpenAPI projection', async () => {
@@ -5349,11 +4276,6 @@ describe('nanocore server', () => {
         '/api/app/operations/workspace.export': {
           post: {
             operationId: 'workspace.export',
-          },
-        },
-        '/api/app/operations/workspace.import-dry-run': {
-          post: {
-            operationId: 'workspace.import-dry-run',
           },
         },
       },

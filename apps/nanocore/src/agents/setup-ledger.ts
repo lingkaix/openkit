@@ -194,54 +194,6 @@ export function listExportableResolvedAgentSetups(
 }
 
 /**
- * Replays exported resolved setup records through the same redacted projection.
- *
- * @param workspaceDb Open target workspace database.
- * @param records Exported records already rewritten to the target workspace id.
- */
-export function importResolvedAgentSetups(
-  workspaceDb: WorkspaceDb,
-  records: readonly ResolvedAgentSetupRecord[]
-): void {
-  const insert = workspaceDb.sqlite.prepare(
-    `INSERT OR IGNORE INTO resolved_agent_setups (
-      setup_record_id,
-      workspace_id,
-      turn_id,
-      request_id,
-      agent_id,
-      logical_model_id,
-      runtime_kind,
-      runtime_adapter,
-      required_features_json,
-      setup_json,
-      created_at,
-      schema_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-
-  for (const record of records) {
-    guardExistingResolvedAgentSetup(workspaceDb, record.id);
-    const requiredFeatures = StoredSetupRequiredFeaturesV1Schema.parse(record.requiredFeatures);
-    const setup = StoredResolvedAgentSetupV1Schema.parse(redactResolvedAgentSetup(record.setup));
-    insert.run(
-      record.id,
-      record.workspaceId,
-      record.turnId,
-      record.requestId,
-      record.agentId,
-      record.logicalModelId,
-      record.runtimeKind,
-      record.runtimeAdapter,
-      JSON.stringify(requiredFeatures),
-      JSON.stringify(setup),
-      record.createdAt,
-      writeRetainedV1({}).schemaVersion
-    );
-  }
-}
-
-/**
  * Maps one database row to a resolved setup record.
  *
  * @param row Resolved setup row.

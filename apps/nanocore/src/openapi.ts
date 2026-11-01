@@ -35,8 +35,6 @@ import {
   VaultAdminWorkspaceReferenceSchema,
   WorkspaceAccessRecoveryResponseSchema,
   WorkspaceDeletionResponseSchema,
-  WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportResponseSchema,
   WorkspaceInvitationMutationResponseSchema,
   WorkspaceMemberMutationResponseSchema,
   WorkspaceOwnershipMutationResponseSchema,
@@ -84,7 +82,6 @@ const JSON_CONTENT_TYPE = 'application/json';
 const APP_API_VERSION = '0.1.0';
 /** Deployment-admin operations accept a presented server-admin bearer or a derived-admin session cookie. */
 const DEPLOYMENT_ADMIN_SECURITY = [{ bearerAuth: [] }, { sessionCookie: [] }];
-const SESSION_COOKIE_SECURITY = [{ sessionCookie: [] }];
 const WORKSPACE_ID_PARAMETER = {
   name: 'workspaceId',
   in: 'path',
@@ -627,82 +624,6 @@ function appApiPaths() {
         },
       },
     },
-    '/api/app/workspace-archives/import-dry-run': {
-      post: {
-        operationId: 'workspace.archive-import-dry-run',
-        tags: ['storage'],
-        summary: OPERATION_DEFINITIONS['workspace.archive-import-dry-run'].description,
-        security: SESSION_COOKIE_SECURITY,
-        requestBody: {
-          required: true,
-          content: {
-            'application/vnd.openkit.workspace-export+tar.zstd': {
-              schema: { type: 'string', format: 'binary' },
-            },
-          },
-        },
-        responses: {
-          '200': {
-            description: 'Workspace archive import dry-run report.',
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/WorkspaceImportDryRunResponse' },
-              },
-            },
-          },
-          default: {
-            description: 'Protocol error envelope.',
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ApiError' },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/api/app/workspace-archives/import': {
-      post: {
-        operationId: 'workspace.archive-import',
-        tags: ['storage'],
-        summary: OPERATION_DEFINITIONS['workspace.archive-import'].description,
-        security: SESSION_COOKIE_SECURITY,
-        parameters: [
-          {
-            name: 'x-openkit-request-id',
-            in: 'header',
-            required: true,
-            schema: { type: 'string', minLength: 1 },
-          },
-        ],
-        requestBody: {
-          required: true,
-          content: {
-            'application/vnd.openkit.workspace-export+tar.zstd': {
-              schema: { type: 'string', format: 'binary' },
-            },
-          },
-        },
-        responses: {
-          '200': {
-            description: 'Imported workspace and verification summary.',
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/WorkspaceImportResponse' },
-              },
-            },
-          },
-          default: {
-            description: 'Protocol error envelope.',
-            content: {
-              [JSON_CONTENT_TYPE]: {
-                schema: { $ref: '#/components/schemas/ApiError' },
-              },
-            },
-          },
-        },
-      },
-    },
   } as const satisfies AppOpenApiDocument['paths'];
 }
 
@@ -796,8 +717,6 @@ export function createAppOpenApiDocument() {
           VaultAdminRebindWorkspaceReferenceRequestSchema
         ),
         VaultAdminUnlockRequest: toJsonSchema(VaultAdminUnlockRequestSchema),
-        WorkspaceImportDryRunResponse: toJsonSchema(WorkspaceImportDryRunResponseSchema),
-        WorkspaceImportResponse: toJsonSchema(WorkspaceImportResponseSchema),
         WorkspaceId: toJsonSchema(WorkspaceIdSchema),
       },
     },

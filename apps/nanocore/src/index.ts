@@ -133,7 +133,6 @@ import {
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
 import { appendRecoveredTurnObservation } from './storage/work-observation-recovery.js';
-import { cleanupWorkspaceArchiveRequestStaging } from './storage/workspace-archive.js';
 import {
   runWorkspaceSnapshotMaintenance,
   WORKSPACE_BACKUP_POLICY,
@@ -273,7 +272,6 @@ const bootResult = await runBootPhases({
       critical: true,
       run: () => {
         dataRootLock = acquireDataRootLock(dataRoot, { bootId });
-        cleanupWorkspaceArchiveRequestStaging(dataRoot);
         return { status: 'ok' };
       },
     },

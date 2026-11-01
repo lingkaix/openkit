@@ -1,13 +1,13 @@
 // openkit-test-platform: posix
 // Workspace transfer consumes actual canonical Sources, Git and managed Storage originals.
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { allocateEntityId, ContentReferenceSchema } from '@openkit/protocol';
 import { LocalStorage } from '@openkit/storage';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
+import { readKnowledgeMounts } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { deriveManagedSourceAccess } from '../knowledge/managed-source-access.js';
 import type { NotebookUpdate } from '../knowledge/notebook-publication.js';
@@ -24,11 +24,7 @@ import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
-import {
-  createVerifiedWorkspaceExport,
-  existingWorkspaceExportRoot,
-  importVerifiedWorkspace,
-} from './workspace-transfer-routes.js';
+import { createVerifiedWorkspaceExport } from './workspace-transfer-routes.js';
 
 const original = Uint8Array.from(
   Buffer.from(
@@ -172,10 +168,11 @@ async function capturedSource() {
 }
 
 describe('canonical Source originals in Workspace transfer', () => {
-  it('exports and remints a binary Source into a new current Workspace KB that reopens and reads through Storage', async () => {
+  it('exports a binary Source and still reads it from the source Workspace', async () => {
     const f = await capturedSource();
     const exported = await f.exportWorkspace();
-    const inventory = exported.verified.manifest.contentInventory;
+    const verified = exported.verified;
+    const inventory = verified.manifest.contentInventory;
     const paths = inventory.map(({ path }) => path);
     expect(paths).not.toContain('records/knowledge-sources.jsonl');
     expect(paths.some((path) => /(^|\/)sources\/(registry|materials)(\/|$)/.test(path))).toBe(
@@ -185,86 +182,25 @@ describe('canonical Source originals in Workspace transfer', () => {
       (path) => path === `sources/${f.source.id}.md` || path.endsWith(`/sources/${f.source.id}.md`)
     );
     expect(pointers).toHaveLength(1);
-    const exportRoot = existingWorkspaceExportRoot(
-      f.dataRoot,
-      f.workspace.id,
-      exported.verified.manifest.id
-    );
-    expect(readFileSync(join(exportRoot, pointers[0]!), 'utf8')).toBe(f.pointer);
+    expect(verified.fileContents.get(pointers[0]!)).toBe(f.pointer);
     const originals = inventory.filter(
       (entry) => entry.digest === digest && entry.bytes === original.byteLength
     );
     expect(originals).toHaveLength(1);
-    expect(readFileSync(join(exportRoot, originals[0]!.path))).toEqual(Buffer.from(original));
-    const imported = await importVerifiedWorkspace({
-      authorityUserId: f.userId,
-      coreDb: f.coreDb,
-      dataRoot: f.dataRoot,
-      requestId: randomUUID(),
-      store: f.store,
-      verified: exported.verified,
-    });
-    expect(imported.workspace.id).not.toBe(f.workspace.id);
-    const scope = { kind: 'workspace' as const, workspaceId: imported.workspace.id };
-    const owner = { dataRoot: f.dataRoot, ownerScope: scope };
-    const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope });
-    expect(knowledgeBaseId).not.toBe(f.reference.knowledgeBaseId);
-    const reopened = new FsStore({ dataRoot: f.dataRoot });
-    const targetRoot = join(f.dataRoot, 'workspaces', imported.workspace.id, 'knowledge');
-    const importedSelection = readTestWorkspaceNotebookSelection(f.dataRoot, imported.workspace.id);
-    const sources = reopened.listKnowledgeSources(imported.workspace.id);
-    expect(sources).toHaveLength(1);
-    const source = sources[0]!;
-    expect(source.id).not.toBe(f.source.id);
-    const thread = reopened
-      .listThreads(imported.workspace.id)
-      .find((entry) => entry.title === f.thread.title)!;
-    const turns = reopened.listThreadTurns(imported.workspace.id, thread.id);
-    expect(turns).toHaveLength(1);
-    expect(thread.id).not.toBe(f.thread.id);
-    expect(turns[0]!.id).not.toBe(f.turn.id);
-    expect(source).toMatchObject({
-      contentDigest: digest,
-      originatingThreadId: thread.id,
-      originatingTurnId: turns[0]!.id,
-      originatingFileId: null,
-    });
-    const revision = importedSelection.head.notebookCommit;
-    const pointerBytes = importedSelection.notebook.readSourcePointers(revision)[source.id]!;
-    const pointer = parseSourcePointer(owner, source.id, pointerBytes, importedSelection);
-    expect(pointer.fields).toMatchObject({
-      byteLength: original.byteLength,
-      mediaType: 'image/png',
-      contentRef: {
-        knowledgeBaseId,
-        contentDigest: digest,
-        availability: 'available',
-        locator: { ownerScope: scope, mount: 'managed' },
-      },
-    });
-    expect(pointer.fields.contentRef.locator.path).toBe(
-      f.reference.locator.path
-        .split('/')
-        .map((segment) => (segment === f.source.id ? source.id : segment))
-        .join('/')
+    expect(readFileSync(verified.artifactPayloadFiles.get(originals[0]!.path)!)).toEqual(
+      Buffer.from(original)
     );
-    const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: pointerBytes });
-    expect(parsed.document?.frontmatter).toMatchObject({
-      type: 'SourceSummary',
-      scope,
-      originatingThreadId: thread.id,
-      originatingTurnId: turns[0]!.id,
-    });
-    const rawRoot = resolve(targetRoot, 'raw');
-    const rawPath = resolve(rawRoot, pointer.fields.contentRef.locator.path);
-    const confined = relative(rawRoot, rawPath);
-    expect(isAbsolute(confined) || confined === '..' || confined.startsWith('../')).toBe(false);
-    expect(readFileSync(rawPath)).toEqual(Buffer.from(original));
+    const scope = f.scope;
+    const owner = { dataRoot: f.dataRoot, ownerScope: scope };
+    const knowledgeBaseId = f.reference.knowledgeBaseId;
+    const selection = readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id);
+    const pointer = parseSourcePointer(owner, f.source.id, f.pointer, selection);
+    const rawRoot = resolve(f.dataRoot, 'workspaces', f.workspace.id, 'knowledge', 'raw');
     const mount = readKnowledgeMounts({ dataRoot: f.dataRoot, scope }).find(
       (entry) => entry.default
     )!;
     const access = {
-      store: reopened,
+      store: f.store,
       coreDb: f.coreDb,
       actor: { kind: 'user' as const, id: f.userId },
       requestActor: { kind: 'local' as const, userId: f.userId },
@@ -278,13 +214,13 @@ describe('canonical Source originals in Workspace transfer', () => {
       mode: 'read-only' as const,
     };
     expect(
-      deriveManagedSourceAccess({ ...admission, knowledgeBaseId: f.reference.knowledgeBaseId })
+      deriveManagedSourceAccess({ ...admission, knowledgeBaseId: allocateEntityId('kb') })
     ).toBeNull();
     const storage = new LocalStorage({
       mounts: [
         { name: mount.name, ownerScope: scope, knowledgeBaseId, root: rawRoot, managed: true },
       ],
-      stagingRoot: join(targetRoot, '.source-staging'),
+      stagingRoot: join(f.dataRoot, 'workspaces', f.workspace.id, 'knowledge', '.source-staging'),
     });
     try {
       const result = await readSourceByteRange({
@@ -295,41 +231,21 @@ describe('canonical Source originals in Workspace transfer', () => {
         length: 13,
       });
       expect(result.status).toBe('ok');
-      if (result.status !== 'ok')
-        throw new Error('Imported current original must remain available.');
+      if (result.status !== 'ok') throw new Error('The current original must remain available.');
       expect(Array.from(result.value)).toEqual(Array.from(original.subarray(8, 21)));
     } finally {
       await storage.close();
     }
-    expect(importedSelection.notebook.readSourcePointers(revision)[source.id]).toBe(pointerBytes);
     expect(f.notebook.readSourcePointers(f.revision)[f.source.id]).toBe(f.pointer);
     expect(readFileSync(f.rawPath)).toEqual(Buffer.from(original));
   });
 
-  it('refuses a changed supposedly-available original before any import destination effects', async () => {
+  it('refuses a changed supposedly-available original during export and leaves the source unchanged', async () => {
     const f = await capturedSource();
-    const target = deployment();
-    const targetWorkspaces = join(target.dataRoot, 'workspaces');
-    const before = existsSync(targetWorkspaces) ? readdirSync(targetWorkspaces) : null;
     const changed = Uint8Array.from(original);
     changed[10] = changed[10]! ^ 0xff;
     writeFileSync(f.rawPath, changed);
-    let destinationStarted = false;
-    await expect(async () => {
-      const exported = await f.exportWorkspace();
-      destinationStarted = true;
-      await importVerifiedWorkspace({
-        authorityUserId: target.userId,
-        coreDb: target.coreDb,
-        dataRoot: target.dataRoot,
-        requestId: randomUUID(),
-        store: target.store,
-        verified: exported.verified,
-      });
-    }).rejects.toThrow();
-    expect.soft(destinationStarted).toBe(false);
-    expect(target.store.listWorkspaces()).toEqual([]);
-    expect(existsSync(targetWorkspaces) ? readdirSync(targetWorkspaces) : null).toEqual(before);
+    await expect(f.exportWorkspace()).rejects.toThrow();
     expect(f.notebook.publishedRevision()).toBe(f.revision);
     expect(f.notebook.readSourcePointers(f.revision)[f.source.id]).toBe(f.pointer);
     expect(

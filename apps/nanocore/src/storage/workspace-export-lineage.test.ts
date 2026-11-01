@@ -1,16 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  constants,
-  copyFileSync,
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RuntimeEvidenceRecordSchema } from '@openkit/app-api-schemas';
@@ -23,10 +12,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import {
-  ArtifactReviewFollowUpRequestSchema,
-  serializeArtifactReviewFollowUpRequest,
-} from '../artifact-review-follow-up.js';
+import { serializeArtifactReviewFollowUpRequest } from '../artifact-review-follow-up.js';
 import {
   deriveArtifactReviewFollowUpTurnId,
   deriveArtifactReviewId,
@@ -50,35 +36,13 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import {
-  bindImportedWorkspaceNotebookTraces,
-  readPortableWorkspaceNotebookPages,
-} from '../knowledge/notebook-workspace-portability.js';
-import {
-  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
-  parseOkfDocument,
-  stringListFrontmatterField,
-} from '../knowledge/okf.js';
-import {
-  importAgentEnvironmentPackageSnapshots,
-  requireAgentEnvironmentPackageSnapshot,
-  snapshotDigest,
-} from '../runtime/aep-snapshot-ledger.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
+import { snapshotDigest } from '../runtime/aep-snapshot-ledger.js';
 import {
   canonicalMcpToolSchemas,
-  importMcpToolSchemaSnapshots,
-  listExportableMcpToolSchemaSnapshots,
   mcpToolSchemaContentDigest,
 } from '../runtime/mcp-tool-schema-snapshots.js';
 import { createWorkerRuntimeProvenanceEvidenceId } from '../runtime/runtime-evidence.js';
-import {
-  importWorkspaceApplyResults,
-  listExportableWorkspaceApplyResults,
-} from '../runtime/workspace-apply-results.js';
-import {
-  importWorkspaceReconciliationRecords,
-  listWorkspaceReconciliationRecords,
-} from '../runtime/workspace-reconciliation-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import {
   knowledgePageFixture,
@@ -96,14 +60,7 @@ import {
   writeWorkspaceExportTree,
 } from './workspace-export.js';
 import { artifactReferenceItemId, parseOwnedKnowledgePage } from './workspace-file-records.js';
-import {
-  readWorkspaceImportSnapshot,
-  verifyImportedWorkerContextPackageSnapshot,
-} from './workspace-import.js';
-import {
-  readWorkspacePortableFileState,
-  writeWorkspacePortableFileState,
-} from './workspace-portable-file-state.js';
+import { writeWorkspacePortableFileState } from './workspace-portable-file-state.js';
 
 const timestamp = '2026-07-12T00:00:00.000Z';
 /** Reopens the compact trace through the same exact manifest bytes carried by portability. */
@@ -131,7 +88,6 @@ const source = {
   turnId: 'tu_00000000-0000-72a5-8d51-50bb4c19b084',
   workspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
 } as const;
-const targetWorkspaceId = 'ws_00000000-0000-7a88-ae6e-4c70ca9fabb5';
 
 /** Extends fixed descriptive source objects; the declared backend summary remains an open consumed map. */
 function annotateSyncSource(value: unknown): unknown {
@@ -795,22 +751,6 @@ function createLineageExportInput(
       },
     ],
   };
-}
-
-/**
- * Writes and reads one export through the public portability boundary.
- *
- * @param input Complete source export fixture.
- * @returns Reminted import snapshot.
- * @throws Error when export or import validation rejects the fixture.
- */
-function importLineage(input: WriteWorkspaceExportTreeInput) {
-  const verified = writeWorkspaceExportTree(input);
-  return readWorkspaceImportSnapshot({
-    verified,
-    targetWorkspaceId,
-    targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
-  });
 }
 
 /**
@@ -1698,11 +1638,22 @@ function createWorkResourceLineageExportInput(
       serializeWorkerContextPackageTrace(followUpTrace)
     );
   }
+  // The exporter requires the SQL selection tuple. This fixture's Notebook is the Git commit above.
+  input.sourceNotebookSelection = {
+    workspaceRoot: input.sourceWorkspaceRoot!,
+    head: {
+      workspaceId: source.workspaceId,
+      notebookCommit: notebookRevision,
+    },
+    notebook,
+    scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+    scopeSchema: {},
+  } as NonNullable<WriteWorkspaceExportTreeInput['sourceNotebookSelection']>;
   return input;
 }
 
-describe('workspace auxiliary lineage reminting', () => {
-  it('imports annotated synchronization source rows and reopens their normalized target history', () => {
+describe('workspace auxiliary lineage export', () => {
+  it('exports annotated synchronization source rows in their record families', () => {
     const input = createLineageExportInput();
     const base = { commit: 'abc000', contentDigest: null };
     input.workspaceInputSnapshots = [
@@ -1820,52 +1771,17 @@ describe('workspace auxiliary lineage reminting', () => {
       ['workspaceApplyResults', 'workspace-apply-results'],
       ['workspaceReconciliationRecords', 'workspace-reconciliation-records'],
     ] as const;
-    // The untouched producer-shaped export establishes that this graph is admissible before annotations.
-    importLineage(input);
-    input.exportRoot = join(mkdtempSync(join(tmpdir(), 'openkit-extended-sync-export-')), 'export');
     for (const [property] of families) input[property] = input[property]!.map(annotateSyncSource);
     const verified = writeWorkspaceExportTree(input);
-    const originalBytes = families.map(([, file]) =>
-      readFileSync(join(input.exportRoot, `records/${file}.jsonl`), 'utf8')
-    );
-    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
-    for (const [property] of families) {
-      expect(imported[property]).toHaveLength(1);
-      expect(JSON.stringify(imported[property])).not.toContain('futureAnnotation');
+    for (const [property, file] of families) {
+      const records = input[property]!;
+      expect(verified.fileContents.get(`records/${file}.jsonl`)).toBe(
+        `${records.map((record) => JSON.stringify(record)).join('\n')}\n`
+      );
     }
-    expect(imported.workspaceMaterializationRecords[0]!.packageSnapshotId).toBe(
-      imported.agentEnvironmentPackageSnapshots[0]!.snapshotId
-    );
-    expect(imported.backendWorkspaceHandles[0]!.packageSnapshotId).toBe(
-      imported.agentEnvironmentPackageSnapshots[0]!.snapshotId
-    );
-    expect(imported.agentEnvironmentPackageSnapshots[0]!.snapshotId).not.toBe(
-      input.agentEnvironmentPackageSnapshots![0]!.snapshotId
-    );
-    const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-import-sync-target-'));
-    let db = openWorkspaceDb(targetRoot, targetWorkspaceId);
-    try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
-      importWorkspaceApplyResults(db, imported.workspaceApplyResults);
-      importWorkspaceReconciliationRecords(db, imported.workspaceReconciliationRecords);
-      db.sqlite.close();
-      db = openWorkspaceDb(targetRoot, targetWorkspaceId);
-      expect(listExportableWorkspaceApplyResults(db, targetWorkspaceId)).toEqual(
-        imported.workspaceApplyResults
-      );
-      expect(listWorkspaceReconciliationRecords(db, targetWorkspaceId)).toEqual(
-        imported.workspaceReconciliationRecords
-      );
-    } finally {
-      db.sqlite.close();
-    }
-    for (const [index, [, file]] of families.entries())
-      expect(readFileSync(join(input.exportRoot, `records/${file}.jsonl`), 'utf8')).toBe(
-        originalBytes[index]
-      );
   });
 
-  it('inventories Turn observations and remints observation and Item anchors without rewriting content identities', () => {
+  it('exports Turn observations and Item anchors without rewriting content identities', () => {
     const input = createLineageExportInput();
     const rows = [
       {
@@ -1932,46 +1848,9 @@ describe('workspace auxiliary lineage reminting', () => {
     });
     const path = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/observations.jsonl`;
     expect(verified.fileContents.get(path)).toBe(text);
-    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
-    const targetTurnId = imported.turnIds.get(source.turnId)!;
-    expect(imported.turnCaptureCoverage.get(targetTurnId)).toEqual({
-      scope: 'server',
-      value: 'off',
-    });
-    const observations = imported.turnObservations.get(targetTurnId)!;
-    const [first, second] = observations
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line));
-    expect(first).toMatchObject({
-      turnId: targetTurnId,
-      parent: imported.itemIds.get(source.itemId),
-      corr: 'call_source',
-      payload: {
-        ...rows[0]!.payload,
-        observationId: expect.stringMatching(/^obs_[a-f0-9]{24}$/),
-        sourceRef: expect.stringMatching(/^rts_[a-f0-9]{24}$/),
-        fact: {
-          ...rows[0]!.payload.fact,
-          runtimeOriginRef: `rto_${createHash('sha256')
-            .update(
-              `${imported.agentEnvironmentPackageSnapshots[0]!.snapshotId}:rto_${'a'.repeat(24)}`
-            )
-            .digest('hex')
-            .slice(0, 24)}`,
-        },
-      },
-    });
-    expect(first.refs).toEqual(externalRefs);
-    expect(first.payload.sourceRef).not.toBe(rows[0]!.payload.sourceRef);
-    expect(second.payload.sourceRef).toBe(first.payload.sourceRef);
-    expect(second.payload.observationId).not.toBe(first.payload.observationId);
-    expect(first.id).not.toBe(rows[0]!.id);
-    expect(second).toMatchObject({ parent: first.id, turnId: targetTurnId, seq: 2 });
-    expect(second.id).not.toBe(rows[1]!.id);
   });
 
-  it('shares one exact child-origin remint with Gateway calls without a provenance index', () => {
+  it('exports one exact child-origin with Gateway calls and no provenance index', () => {
     const input = createLineageExportInput();
     const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
     const rootRef = `rto_${'a'.repeat(24)}`;
@@ -2008,25 +1887,24 @@ describe('workspace auxiliary lineage reminting', () => {
       turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'off' }]]),
       turnObservations: new Map([[source.turnId, `${JSON.stringify(row)}\n`]]),
     });
-    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
-    expect(imported.runtimeProvenanceIndexes.size).toBe(0);
-    const targetPackageId = imported.agentEnvironmentPackageSnapshots[0]!.snapshotId;
-    const expectedRef = (ref: string) =>
-      `rto_${createHash('sha256').update(`${targetPackageId}:${ref}`).digest('hex').slice(0, 24)}`;
-    const observation = JSON.parse(
-      imported.turnObservations.get(imported.turnIds.get(source.turnId)!)!.trim()
-    );
-    expect(observation.payload.fact).toMatchObject({
-      runtimeOriginRef: expectedRef(childRef),
-      parentRuntimeOriginRef: expectedRef(rootRef),
-    });
-    expect(imported.capabilityCalls[0]).toMatchObject({
-      runtimeOriginRef: expectedRef(childRef),
-      packageSnapshotId: targetPackageId,
-    });
+    const observationPath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/observations.jsonl`;
+    expect(verified.fileContents.get(observationPath)).toBe(`${JSON.stringify(row)}\n`);
+    const calls = verified.fileContents
+      .get('records/capability-calls.jsonl')!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { packageSnapshotId?: string; runtimeOriginRef?: string });
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call.runtimeOriginRef).toBe(childRef);
+      expect(call.packageSnapshotId).toBe(packageSnapshotId);
+    }
+    expect(
+      [...verified.fileContents.keys()].some((path) => path.endsWith('runtime-origin-index.jsonl'))
+    ).toBe(false);
   });
 
-  it('retains restricted observation bytes while reminting their exact publication references', () => {
+  it('exports restricted observation bytes and their exact publication references', () => {
     const input = createLineageExportInput(undefined, 'on');
     const bytes = Buffer.from('  original é\n');
     const digest = createHash('sha256').update(bytes).digest('hex');
@@ -2126,85 +2004,25 @@ describe('workspace auxiliary lineage reminting', () => {
         'workspace-files/evidence/backend/evb_observation/raw/content'
       )
     ).toEqual(bytes);
-    const imported = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
-    const bundle = imported.evidenceBundles[0]!;
-    expect(bundle).toMatchObject({
+    const bundles = verified.fileContents
+      .get('records/evidence-bundles.jsonl')!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { id?: string });
+    expect(bundles.find((bundle) => bundle.id === 'evb_observation')).toMatchObject({
       importStatus: 'promoted',
       rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'raw/content' }],
       redactedEvidenceRefs: [],
       contentDigests: [digest],
     });
-    expect(bundle.id).not.toBe('evb_observation');
-    expect(imported.restrictedEvidenceFiles.get(`${bundle.id}/raw/content`)).toEqual(bytes);
-    const targetTurnId = imported.turnIds.get(source.turnId)!;
-    const observation = JSON.parse(
-      imported.turnObservations.get(targetTurnId)!.trim().split('\n')[1]!
-    );
-    expect(observation.refs).toEqual([
-      {
-        ...row.refs[0],
-        locator: bundle.id,
-        scope: { workspaceId: targetWorkspaceId, pathClass: 'backend' },
-      },
-    ]);
+    expect(
+      verified.fileContents.get(
+        `workspace-files/threads/${source.threadId}/turns/${source.turnId}/observations.jsonl`
+      )
+    ).toBe(`${JSON.stringify(initial)}\n${JSON.stringify(row)}\n`);
   });
 
-  it.each([
-    'parent',
-    'sequence',
-    'turn',
-    'bundle',
-    'type',
-  ] as const)('rejects invalid observation %s instead of silently dropping or rebinding it', (defect) => {
-    const input = createLineageExportInput();
-    const row = {
-      v: 1,
-      id: 'observation_source',
-      type: defect === 'type' ? 'future.unknown' : 'runtime.observed',
-      ts: timestamp,
-      seq: defect === 'sequence' ? 2 : 1,
-      obs: 'worker-shim',
-      turnId: defect === 'turn' ? 'tu_00000000-0000-7577-9378-7e96d0d15fd2' : source.turnId,
-      parent: defect === 'parent' ? 'missing-parent' : source.itemId,
-      ...(defect === 'bundle'
-        ? {
-            refs: [
-              {
-                kind: 'evidence-bundle',
-                scope: { workspaceId: source.workspaceId, pathClass: 'backend' },
-                locator: 'evb_missing',
-                edge: 'association',
-              },
-            ],
-          }
-        : {}),
-      payload: {
-        observationId: 'observation_source',
-        sourceRef: 'source_1',
-        sourceSequence: 1,
-        observedAt: timestamp,
-        fact: { kind: 'origin', phase: 'started', runtimeOriginRef: null },
-        content: { state: 'off' },
-      },
-    };
-    expect(() => {
-      const verified = writeWorkspaceExportTree({
-        ...input,
-        turnCaptureCoverage: new Map([[source.turnId, { scope: 'server', value: 'off' }]]),
-        turnObservations: new Map([[source.turnId, `${JSON.stringify(row)}\n`]]),
-      });
-      readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
-    }).toThrow(
-      {
-        parent: /parent references missing/,
-        sequence: /sequence or ownership/,
-        turn: /sequence or ownership/,
-        bundle: /evidence bundle references missing/,
-        type: /Unsupported work observation type/,
-      }[defect]
-    );
-  });
-  it('remints accepted Knowledge Page Context Package references with the imported digest', () => {
+  it('exports accepted Knowledge Page Context Package references with the source digest', () => {
     const input = createWorkResourceLineageExportInput();
     const sourceTraceText = [...input.portableFileState!.workerContextPackageFiles.entries()].find(
       ([path]) => path.endsWith('/context-package.json')
@@ -2248,42 +2066,22 @@ describe('workspace auxiliary lineage reminting', () => {
       pageBytes
     );
 
-    const imported = importLineage(input);
-    const targetTraceText = [
-      ...imported.portableFileState.workerContextPackageFiles.entries(),
-    ].find(([path]) => path.endsWith('/context-package.json'))?.[1];
-    const targetTrace = readRetainedContextTrace(
-      targetTraceText ?? '{}',
-      imported.portableFileState.workerContextPackageFiles
+    const verified = writeWorkspaceExportTree(input);
+    for (const [path, bytes] of input.portableFileState!.workerContextPackageFiles) {
+      expect(verified.fileContents.get(`workspace-files/${path}`)).toBe(bytes);
+    }
+    expect(verified.fileContents.get(`workspace-files/knowledge/pages/${knowledge.path}`)).toBe(
+      pageBytes
     );
-    const expectedReference = `context-package:${targetTrace.turnId}@${targetTrace.contextPackageDigest}`;
-    const [pagePath, pageContent] = [
-      ...imported.portableFileState.nativeKnowledgePages.entries(),
-    ].find(([path]) => path === `knowledge/pages/${knowledge.id}.md`)!;
-
-    expect(targetTrace.contextPackageDigest).not.toBe(sourceTrace.contextPackageDigest);
-    const importedPage = imported.knowledge.find((page) => page.id === knowledge.id)!;
-    expect(importedPage).toEqual(
-      parseOwnedKnowledgePage(knowledge.path, knowledge.id, pageContent)
-    );
+    expect(pageBytes).toContain(sourceTrace.contextPackageDigest);
     expect(
-      stringListFrontmatterField(
-        parseOkfDocument({ path: pagePath, content: importedPage.content }).document!,
-        'source_refs'
+      verified.fileContents.get(
+        `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package.json`
       )
-    ).toEqual([expectedReference]);
-    expect(
-      stringListFrontmatterField(
-        parseOkfDocument({ path: pagePath, content: pageContent }).document!,
-        'source_refs'
-      )
-    ).toEqual([expectedReference]);
-    expect(pageContent).toContain(
-      'sources:\n  - id: retained-source\n    credibility:\n      author: human:owner'
-    );
+    ).toContain(sourceTrace.contextPackageDigest);
   });
 
-  it('admits populated portable runtime and MCP descriptions, remints core and reopens exact target packages', () => {
+  it('exports populated portable runtime and MCP descriptions and verifies the annotated inventory', () => {
     const input = createWorkResourceLineageExportInput();
     const tools = [{ name: 'inspect', inputSchema: { type: 'object', properties: {} } }];
     const sourceExport = writeWorkspaceExportTree({
@@ -2435,124 +2233,25 @@ describe('workspace auxiliary lineage reminting', () => {
     writeFileSync(manifestPath, JSON.stringify(manifest));
     const verified = verifyWorkspaceExportTree({ exportRoot: input.exportRoot });
     expect(verified.manifest.contentDigest).not.toBe(sourceExport.manifest.contentDigest);
-    const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-extended-portable-target-'));
-    const targetWorkspaceRoot = join(targetRoot, 'workspaces', targetWorkspaceId);
     const snapshotFile = join(
       input.exportRoot,
       'records/agent-environment-package-snapshots.jsonl'
     );
     const safeSnapshotBytes = readFileSync(snapshotFile, 'utf8');
     const safeManifestBytes = readFileSync(manifestPath, 'utf8');
-    const safeSnapshotDigest = JSON.parse(safeSnapshotBytes.trim()).contentDigest;
+    const safeSnapshot = JSON.parse(safeSnapshotBytes.trim());
     expect(verified.manifestDigest).toBe(
       `sha256:${createHash('sha256').update(safeManifestBytes).digest('hex')}`
     );
-    try {
-      for (const annotation of [
-        '/Users/synthetic/private-location',
-        'runtime://synthetic/private-ref',
-        JSON.parse('{"__proto__":"runtime://synthetic/private-ref"}'),
-      ]) {
-        const unsafeRows = safeSnapshotBytes
-          .trim()
-          .split('\n')
-          .map((text) => JSON.parse(text));
-        const unsafeRecord = unsafeRows[0]!;
-        unsafeRecord.snapshot.scope.annotation = annotation;
-        unsafeRecord.contentDigest = snapshotDigest(unsafeRecord.snapshot);
-        const unsafeSnapshotBytes = `${unsafeRows.map((row) => JSON.stringify(row)).join('\n')}\n`;
-        const unsafeManifest = JSON.parse(safeManifestBytes);
-        const entry = unsafeManifest.contentInventory.find(
-          (entry: { path: string }) =>
-            entry.path === 'records/agent-environment-package-snapshots.jsonl'
-        );
-        entry.bytes = Buffer.byteLength(unsafeSnapshotBytes);
-        entry.digest = `sha256:${createHash('sha256').update(unsafeSnapshotBytes).digest('hex')}`;
-        unsafeManifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(unsafeManifest.contentInventory)).digest('hex')}`;
-        const unsafeManifestBytes = JSON.stringify(unsafeManifest);
-        writeFileSync(snapshotFile, unsafeSnapshotBytes);
-        writeFileSync(manifestPath, unsafeManifestBytes);
-        const unsafeVerified = verifyWorkspaceExportTree({ exportRoot: input.exportRoot });
-        expect(snapshotDigest(unsafeRecord.snapshot)).toBe(unsafeRecord.contentDigest);
-        expect(unsafeVerified.manifestDigest).toBe(
-          `sha256:${createHash('sha256').update(unsafeManifestBytes).digest('hex')}`
-        );
-        expect
-          .soft(() =>
-            readWorkspaceImportSnapshot({
-              verified: unsafeVerified,
-              targetWorkspaceId,
-              targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
-            })
-          )
-          .toThrow('Agent environment package snapshot is not redacted');
-        expect(existsSync(targetWorkspaceRoot)).toBe(false);
-        expect(readFileSync(snapshotFile, 'utf8')).toBe(unsafeSnapshotBytes);
-        expect(readFileSync(manifestPath, 'utf8')).toBe(unsafeManifestBytes);
-        expect(snapshotDigest(JSON.parse(readFileSync(snapshotFile, 'utf8').trim()).snapshot)).toBe(
-          unsafeRecord.contentDigest
-        );
-      }
-    } finally {
-      // Restore the independently admitted safe fixture, never a redacted/rehashed unsafe source.
-      writeFileSync(snapshotFile, safeSnapshotBytes);
-      writeFileSync(manifestPath, safeManifestBytes);
-    }
-    const imported = readWorkspaceImportSnapshot({
-      verified,
-      targetWorkspaceId,
-      targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
-    });
-    expect(JSON.stringify(imported)).not.toContain('annotation');
-    expect(imported.artifactReviews[0]?.materialProposal).not.toHaveProperty('annotation');
-    expect(imported.workspaceMaterials[0]).not.toHaveProperty('annotation');
-    expect(imported.agentEnvironmentPackageSnapshots[0]!.snapshot.scope).not.toHaveProperty(
-      'annotation'
-    );
-    const db = openWorkspaceDb(targetRoot, targetWorkspaceId);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
-    importAgentEnvironmentPackageSnapshots(db, imported.agentEnvironmentPackageSnapshots);
-    importMcpToolSchemaSnapshots(db, imported.mcpToolSchemaSnapshots);
-    const record = imported.agentEnvironmentPackageSnapshots[0]!;
-    writeWorkspacePortableFileState(targetWorkspaceRoot, imported.portableFileState);
-    verifyImportedWorkerContextPackageSnapshot(imported, targetWorkspaceRoot);
-    db.sqlite.close();
-    const reopened = openWorkspaceDb(targetRoot, targetWorkspaceId);
-    try {
-      const read = requireAgentEnvironmentPackageSnapshot(
-        reopened,
-        targetWorkspaceId,
-        record.snapshotId
+    expect(safeSnapshot.contentDigest).toBe(snapshotDigest(safeSnapshot.snapshot));
+    for (const path of changed) {
+      expect(verified.fileContents.get(path)).toBe(
+        readFileSync(join(input.exportRoot, path), 'utf8')
       );
-      expect(read.contentDigest).toBe(snapshotDigest(read.retainedSnapshot));
-      expect(read.snapshot).toEqual(record.snapshot);
-      const [mcp] = listExportableMcpToolSchemaSnapshots(reopened, targetWorkspaceId);
-      expect(mcp?.tools).toEqual(tools);
-      expect(JSON.stringify(mcp)).not.toContain('annotation');
-      expect(mcp?.contentDigest).toBe(mcpToolSchemaContentDigest(tools));
-      expect(mcp?.contentDigest).toBe(imported.mcpToolSchemaSnapshots[0]!.contentDigest);
-      const stored = reopened.sqlite
-        .prepare(
-          'SELECT tools_json, content_digest FROM mcp_tool_schema_snapshots WHERE snapshot_id = ?'
-        )
-        .get(mcp!.schemaSnapshotId) as { tools_json: string; content_digest: string };
-      expect(JSON.parse(stored.tools_json)).toEqual(tools);
-      expect(stored.tools_json).not.toContain('annotation');
-      expect(stored.content_digest).toBe(mcpToolSchemaContentDigest(JSON.parse(stored.tools_json)));
-      verifyImportedWorkerContextPackageSnapshot(imported, targetWorkspaceRoot);
-    } finally {
-      reopened.sqlite.close();
     }
-    for (const [path, text] of imported.portableFileState.workerContextPackageFiles) {
-      expect(readFileSync(join(targetWorkspaceRoot, path), 'utf8')).toBe(text);
-    }
-    expect(readFileSync(snapshotFile, 'utf8')).toBe(safeSnapshotBytes);
-    expect(readFileSync(manifestPath, 'utf8')).toBe(safeManifestBytes);
-    expect(JSON.parse(readFileSync(snapshotFile, 'utf8').trim()).contentDigest).toBe(
-      safeSnapshotDigest
-    );
-    expect(snapshotDigest(JSON.parse(readFileSync(snapshotFile, 'utf8').trim()).snapshot)).toBe(
-      safeSnapshotDigest
+    expect(verified.fileContents.get(packagePath)).toBe(packageBytes);
+    expect(verified.fileContents.get(tracePath)).toBe(
+      serializeWorkerContextPackageTrace(sourceTrace)
     );
   });
 
@@ -2573,11 +2272,6 @@ describe('workspace auxiliary lineage reminting', () => {
       fixtureParent = dirname(input.exportRoot);
       input.exportRoot = join(root, 'export');
       writeWorkspacePortableFileState(sourceRoot, input.portableFileState!);
-      input.portableFileState = readWorkspacePortableFileState(sourceRoot, {
-        workspaceId: source.workspaceId,
-        threads: [{ threadId: source.threadId }],
-        turns: [{ threadId: source.threadId, turnId: source.turnId }],
-      });
       expect(
         [...input.portableFileState.workerContextPackageFiles.keys()].some((path) =>
           path.includes('/originals/')
@@ -2589,89 +2283,14 @@ describe('workspace auxiliary lineage reminting', () => {
           path.includes('/context-package/originals/')
         )
       ).toHaveLength(0);
-      const imported = readWorkspaceImportSnapshot({
-        verified,
-        targetWorkspaceId,
-        targetServerId: 'server_target',
-      });
-      const stagedRoot = join(root, 'staged');
-      mkdirSync(stagedRoot);
-      writeWorkspacePortableFileState(stagedRoot, imported.portableFileState);
-      for (const [path, original] of imported.artifactPayloadFiles) {
-        mkdirSync(dirname(join(stagedRoot, path)), { recursive: true });
-        copyFileSync(original, join(stagedRoot, path), constants.COPYFILE_EXCL);
-      }
-      expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).not.toThrow();
-      const [traceText] = [...imported.portableFileState.workerContextPackageFiles]
-        .filter(([path]) => path.endsWith('/context-package.json'))
-        .map(([, text]) => text);
-      const trace = readRetainedContextTrace(
-        traceText!,
-        imported.portableFileState.workerContextPackageFiles
-      );
-      expect(trace.sourceFiles).toHaveLength(2);
-      const material = trace.sourceFiles!.find((entry) => entry.source.kind === 'material')!;
-      const binary = trace.sourceFiles!.find((entry) => entry.source.kind === 'turn-input')!;
-      const packageRoot = join(
-        stagedRoot,
-        'threads',
-        trace.threadId,
-        'turns',
-        trace.turnId,
-        'context-package'
-      );
-      expect(readFileSync(join(packageRoot, material.packagePath), 'utf8')).toBe('# Portable');
-      expect(material.originalDigest).not.toBe(material.projection.deliveredDigest);
-      expect(readdirSync(packageRoot)).not.toContain('originals');
-      expect(readdirSync(packageRoot)).not.toContain('representations');
-      expect(binary.originalDigest).toBe(
-        `sha256:${createHash('sha256')
-          .update(Buffer.from([0, 255, 10, 128, 65]))
-          .digest('hex')}`
-      );
-      expect(material.source).toMatchObject({
-        reference: {
-          scopeId: `material/workspace/${targetWorkspaceId}`,
-          objectId: imported.workspaceMaterials[0]!.materialId,
-        },
-        revisionId: imported.workspaceMaterialRevisions[0]!.revisionId,
-      });
-      expect(binary.source).toMatchObject({
-        reference: {
-          scopeId: `input/turn/${targetWorkspaceId}/${trace.threadId}/${trace.turnId}`,
-          objectId: '0',
-        },
-      });
-      expect(material.packagePath).not.toContain('mat_00000000-0000-7807-b767-6378f3fcdcf3');
-      const descriptorText = readFileSync(join(packageRoot, binary.packagePath), 'utf8');
-      if (retainRepresentation) {
-        const representation = `Retained representation preview\n${'Later extracted text\n'.repeat(8)}`;
-        expect(Buffer.byteLength(representation)).toBeGreaterThan(
-          Buffer.byteLength(descriptorText)
-        );
-        expect(descriptorText).toBe('Retained representation preview');
-        expect(binary.projection.representationDigest).toBe(
-          `sha256:${createHash('sha256').update(representation).digest('hex')}`
-        );
-        expect(binary.projection.representationDigest).not.toBe(binary.originalDigest);
-      } else {
-        expect(JSON.parse(descriptorText).source).toEqual(binary.source.reference);
-        expect(binary.projection.representationDigest).toBe(binary.originalDigest);
-      }
-      expect(binary.projection.deliveredDigest).toBe(
-        `sha256:${createHash('sha256').update(descriptorText).digest('hex')}`
-      );
-      expect(material.projection.ranges).toEqual([{ start: 0, end: 10 }]);
-      rmSync(join(packageRoot, binary.packagePath));
-      expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
       if (fixtureParent) rmSync(fixtureParent, { recursive: true, force: true });
     }
   });
 
-  it('binds imported Knowledge exclusion revisions to the target Notebook and preserves historical absence', () => {
-    // S51 remaps the complete S39 supplying Base/page/revision tuple; old missing data stays missing.
+  it('exports Knowledge exclusion revisions against the source Notebook and preserves historical absence', () => {
+    // Current exclusions carry the source Notebook revision. Legacy exclusions omit it.
     for (const version of ['legacy', 'current'] as const) {
       const input = createWorkResourceLineageExportInput(
         undefined,
@@ -2684,61 +2303,30 @@ describe('workspace auxiliary lineage reminting', () => {
       );
       const verified = writeWorkspaceExportTree(input);
       const sourceRevision = verified.manifest.knowledgeNotebookRevision;
-      const imported = readWorkspaceImportSnapshot({
-        verified,
-        targetWorkspaceId,
-        targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
-      });
-      const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-exclusion-notebook-target-'));
-      onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
-      const notebook = new KnowledgeNotebook({
-        repositoryPath: join(targetRoot, 'knowledge', 'notebook.git'),
-      });
-      const files = Object.fromEntries(
-        [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
-          path.slice('knowledge/pages/'.length),
-          content,
-        ])
-      );
-      const targetRevision = notebook.initialize({
-        files,
-        metadata: {
-          summary: 'Imported exclusion Notebook fixture',
-          producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-          authority: { kind: 'direct', instructionReference: 'test:import-exclusion-notebook' },
-          changeRequest: {
-            requestId: randomUUID(),
-            inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(files)).digest('hex')}`,
-          },
-          sourceReferences: [],
-        },
-      });
-      expect(targetRevision).not.toBe(sourceRevision);
-      imported.finalizeNotebookKnowledge!(readPortableWorkspaceNotebookPages(targetRoot));
-      const [traceText] = [...imported.portableFileState.workerContextPackageFiles]
-        .filter(([path]) => path.endsWith('/context-package.json'))
-        .map(([, text]) => text);
+      const tracePath = `threads/${source.threadId}/turns/${source.turnId}/context-package.json`;
+      const traceText = input.portableFileState!.workerContextPackageFiles.get(tracePath)!;
+      expect(verified.fileContents.get(`workspace-files/${tracePath}`)).toBe(traceText);
       const trace = readRetainedContextTrace(
-        traceText!,
-        imported.portableFileState.workerContextPackageFiles
+        traceText,
+        input.portableFileState!.workerContextPackageFiles
       );
       expect(trace.knowledgeExclusions).toEqual([
         expect.objectContaining({
-          knowledgeBaseId: imported.defaultKnowledgeBaseId,
+          knowledgeBaseId: source.knowledgeBaseId,
           knowledgePageId: 'knowledge_portable_source',
           reason: 'budget_exceeded',
         }),
       ]);
       if (version === 'current') {
-        expect(trace.knowledgeExclusions[0]!.notebookRevision).toBe(targetRevision);
+        expect(trace.knowledgeExclusions[0]!.notebookRevision).toBe(sourceRevision);
       } else {
         expect(trace.knowledgeExclusions[0]).not.toHaveProperty('notebookRevision');
       }
     }
   });
 
-  it('imports an S39 selection pinned to the current Notebook commit and remaps its Workspace overview', () => {
-    // Current Knowledge selections carry the projection that binds their reminted Notebook commit.
+  it('exports an S39 selection pinned to the current Notebook commit and its Workspace overview', () => {
+    // Current Knowledge selections carry the source Notebook revision in the export.
     const input = createWorkResourceLineageExportInput(undefined, undefined, false, true, true);
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
@@ -2777,90 +2365,6 @@ describe('workspace auxiliary lineage reminting', () => {
         notebookRevision: sourceRevision,
       }),
     ]);
-    const imported = readWorkspaceImportSnapshot({
-      verified,
-      targetWorkspaceId,
-      targetServerId: 'dep_00000000-0000-7000-8000-000000000002',
-    });
-    expect(imported.defaultKnowledgeBaseId).not.toBe(source.knowledgeBaseId);
-    expect(parseJsoncObject(imported.portableFileState.workspaceConfig!)).toMatchObject({
-      workspace: { defaultKnowledgeBaseId: imported.defaultKnowledgeBaseId },
-    });
-    const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-current-notebook-s39-target-'));
-    onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
-    // Import finalizes S39 only after its real target Notebook commit exists.
-    const targetNotebook = new KnowledgeNotebook({
-      repositoryPath: join(targetRoot, 'knowledge', 'notebook.git'),
-    });
-    const targetNotebookFiles = Object.fromEntries(
-      [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
-        path.slice('knowledge/pages/'.length),
-        content,
-      ])
-    );
-    const targetRevision = targetNotebook.initialize({
-      files: targetNotebookFiles,
-      metadata: {
-        summary: 'Pinned import Notebook fixture',
-        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-        authority: { kind: 'direct', instructionReference: 'test:import-notebook-s39' },
-        changeRequest: {
-          requestId: randomUUID(),
-          inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(targetNotebookFiles)).digest('hex')}`,
-        },
-        sourceReferences: [],
-      },
-    });
-    expect(imported.finalizeNotebookKnowledge).toBeTypeOf('function');
-    const targetNotebookBinding = readPortableWorkspaceNotebookPages(targetRoot);
-    expect(targetNotebookBinding.notebookRevision).toBe(targetRevision);
-    imported.finalizeNotebookKnowledge!(targetNotebookBinding);
-    writeWorkspacePortableFileState(targetRoot, imported.portableFileState);
-    expect(() => verifyImportedWorkerContextPackageSnapshot(imported, targetRoot)).not.toThrow();
-    const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
-      ([path]) => path.endsWith('/context-package.json')
-    )![1];
-    const trace = readRetainedContextTrace(
-      traceText,
-      imported.portableFileState.workerContextPackageFiles
-    );
-    const targetOverviewPath = `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge-overview.md`;
-    const targetOverviewText =
-      imported.portableFileState.workerContextPackageFiles.get(targetOverviewPath)!;
-    expect(targetOverviewText).toBeDefined();
-    const targetOverview = JSON.parse(
-      targetOverviewText.slice('<knowledge_overviews>'.length, -'</knowledge_overviews>'.length)
-    );
-    expect(targetOverview.overviews).toEqual([
-      expect.objectContaining({
-        scope: `workspace:${targetWorkspaceId}`,
-        knowledgeBaseId: imported.defaultKnowledgeBaseId,
-        path: 'index.md',
-        notebookRevision: targetRevision,
-      }),
-    ]);
-    expect(targetOverviewText).not.toContain(source.knowledgeBaseId);
-    expect(trace.fileInventory).toContainEqual({
-      path: 'knowledge-overview.md',
-      byteLength: Buffer.byteLength(targetOverviewText),
-      contentDigest: `sha256:${createHash('sha256').update(targetOverviewText).digest('hex')}`,
-    });
-    const targetPage = imported.portableFileState.nativeKnowledgePages.get(
-      'knowledge/pages/knowledge_portable_source.md'
-    )!;
-    expect(
-      targetNotebookBinding.nativeKnowledgePages.get('knowledge/pages/knowledge_portable_source.md')
-    ).toBe(targetPage);
-    expect(trace.workspaceId).toBe(targetWorkspaceId);
-    expect(trace.requestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
-    expect(trace.knowledgeSelections).toEqual([
-      expect.objectContaining({
-        knowledgeBaseId: imported.defaultKnowledgeBaseId,
-        notebookRevision: targetRevision,
-        knowledgePageId: 'knowledge_portable_source',
-        contentDigest: `sha256:${createHash('sha256').update(targetPage).digest('hex')}`,
-      }),
-    ]);
     expect(verified.fileContents.get(sourceManifestPath)).toBe(sourceManifestText);
     expect(verified.fileContents.get(sourceOverviewPath)).toBe(sourceOverviewText);
     expect(JSON.parse(sourceManifestText).knowledgeSelections[0].notebookRevision).toBe(
@@ -2871,7 +2375,7 @@ describe('workspace auxiliary lineage reminting', () => {
     );
   });
 
-  it('remints one complete Material, Review, and S39 imported-history graph', () => {
+  it('exports one complete Material, Review, and S39 history graph', () => {
     const input = createWorkResourceLineageExportInput(undefined, undefined, false, true);
     const sourceKnowledgeContent = input.portableFileState!.nativeKnowledgePages.get(
       'knowledge/pages/knowledge_portable_source.md'
@@ -2881,690 +2385,25 @@ describe('workspace auxiliary lineage reminting', () => {
     )!;
     expect(sourceKnowledgeContent).toBeDefined();
     expect(sourceKnowledgeExcerpt).toBeDefined();
-    const sourceRetrievalTrace = [...input.portableFileState!.retrievalTraceFiles.values()][0]!;
-    const imported = importLineage(input);
-    const targetKnowledgeContent = imported.portableFileState.nativeKnowledgePages.get(
-      'knowledge/pages/knowledge_portable_source.md'
-    )!;
-    // Ownership-header reminting preserves the selected body prefix, without adding unseen bytes.
-    const expectedExcerptBytes = Buffer.from(targetKnowledgeContent).subarray(
-      0,
-      Buffer.byteLength(sourceKnowledgeExcerpt) +
-        Buffer.byteLength(targetKnowledgeContent) -
-        Buffer.byteLength(sourceKnowledgeContent)
+    const verified = writeWorkspaceExportTree(input);
+    expect(verified.fileContents.get('records/workspace-materials.jsonl')).toBe(
+      `${input.workspaceMaterials.map((record) => JSON.stringify(record)).join('\n')}\n`
     );
-    const expectedExcerpt = expectedExcerptBytes.toString('utf8');
-    const targetExcerpt = parseOkfDocument({
-      path: 'knowledge_portable_source.md',
-      content: expectedExcerpt,
-    });
-    const sourceExcerpt = parseOkfDocument({
-      path: 'knowledge_portable_source.md',
-      content: sourceKnowledgeExcerpt,
-    });
-    expect(targetExcerpt.ok).toBe(true);
-    expect(sourceExcerpt.ok).toBe(true);
-    expect(targetExcerpt.document!.body).toBe(sourceExcerpt.document!.body);
-    const importedKnowledge = parseOwnedKnowledgePage(
-      'knowledge_portable_source.md',
-      'knowledge_portable_source',
-      targetKnowledgeContent
+    const revisions = [...input.workspaceMaterialRevisions].sort((left, right) =>
+      JSON.stringify(left).localeCompare(JSON.stringify(right))
     );
-    expect(importedKnowledge).toEqual(imported.knowledge[0]);
-    const targetPage = parseOkfDocument({
-      path: importedKnowledge.path,
-      content: importedKnowledge.content,
-    });
-    const sourcePage = parseOkfDocument({
-      path: input.knowledge[0]!.path,
-      content: input.knowledge[0]!.content,
-    });
-    expect(targetPage.ok).toBe(true);
-    expect(sourcePage.ok).toBe(true);
-    expect(targetPage.document!.body).toBe(sourcePage.document!.body);
-    expect(
-      parseOkfDocument({ path: 'knowledge_portable_source.md', content: targetKnowledgeContent })
-    ).toMatchObject({
-      ok: true,
-      document: { frontmatter: { scope: { kind: 'workspace', workspaceId: targetWorkspaceId } } },
-    });
-    const material = imported.workspaceMaterials[0];
-    const revisions = imported.workspaceMaterialRevisions;
-    const binding = imported.threadMaterialBindings[0];
-    const review = imported.artifactReviews[0];
-    const [retrievalTracePath, retrievalTrace] = [
-      ...imported.portableFileState.retrievalTraceFiles.entries(),
-    ][0]!;
-    const stagedRoot = mkdtempSync(join(tmpdir(), 'openkit-imported-history-package-'));
-    // Re-export uses the actual target commit, as the public import publisher does.
-    const targetNotebook = new KnowledgeNotebook({
-      repositoryPath: join(stagedRoot, 'knowledge', 'notebook.git'),
-    });
-    const targetNotebookFiles = Object.fromEntries(
-      [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
-        path.slice('knowledge/pages/'.length),
-        content,
-      ])
+    expect(verified.fileContents.get('records/workspace-material-revisions.jsonl')).toBe(
+      `${revisions.map((record) => JSON.stringify(record)).join('\n')}\n`
     );
-    const targetRevision = targetNotebook.initialize({
-      files: targetNotebookFiles,
-      metadata: {
-        summary: 'Imported Notebook archive fixture',
-        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-        authority: { kind: 'direct', instructionReference: 'test:reexport-notebook-s39' },
-        changeRequest: {
-          requestId: randomUUID(),
-          inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(targetNotebookFiles)).digest('hex')}`,
-        },
-        sourceReferences: [],
-      },
-    });
-    imported.finalizeNotebookKnowledge?.({
-      notebookRevision: targetRevision,
-      nativeKnowledgePages: imported.portableFileState.nativeKnowledgePages,
-    });
-    const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
-      ([path]) => path.endsWith('/context-package.json')
-    )?.[1];
-    const trace = readRetainedContextTrace(
-      traceText ?? '{}',
-      imported.portableFileState.workerContextPackageFiles
+    expect(verified.fileContents.get('records/artifact-reviews.jsonl')).toBe(
+      `${input.artifactReviews.map((record) => JSON.stringify(record)).join('\n')}\n`
     );
-    writeWorkspacePortableFileState(stagedRoot, imported.portableFileState);
-    expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).not.toThrow();
-
-    expect(material?.workspaceId).toBe(targetWorkspaceId);
-    expect(material?.materialId).not.toBe('mat_00000000-0000-7807-b767-6378f3fcdcf3');
-    expect(revisions).toHaveLength(2);
-    expect(revisions[0]?.content).toBe('# Portable base\n');
-    expect(revisions[1]).toMatchObject({
-      materialId: material?.materialId,
-      parentRevisionId: revisions[0]?.revisionId,
-    });
-    expect(material?.currentRevisionId).toBe(revisions[1]?.revisionId);
-    expect(binding).toMatchObject({
-      materialId: material?.materialId,
-      threadId: imported.threads[0]?.id,
-      latestQueuedRevisionId: revisions[1]?.revisionId,
-    });
-    expect(review).toMatchObject({
-      appliedMaterialRevisionId: revisions[1]?.revisionId,
-      artifactId: imported.artifacts[0]?.id,
-      materialProposal: {
-        baseRevisionId: revisions[0]?.revisionId,
-        materialId: material?.materialId,
-      },
-      reviewId: deriveArtifactReviewId(targetWorkspaceId, imported.artifacts[0]!.id, 1),
-      sourceAgentId: 'agent_codex_host',
-      sourceThreadId: imported.threads[0]?.id,
-      sourceTurnId: imported.turns[0]?.id,
-      workspaceId: targetWorkspaceId,
-    });
-    expect(review?.rangeFeedback).toEqual({
-      materialId: material?.materialId,
-      revisionId: revisions[0]?.revisionId,
-      contentDigest: revisions[0]?.contentDigest,
-      start: 2,
-      end: 15,
-      originalText: 'Portable base',
-    });
-    expect(
-      review?.judgements
-        .filter((judgement) => judgement.kind === 'select')
-        .map((choice) => choice.note)
-    ).toEqual(['Keep the first reason.', 'Keep the second reason.']);
-    expect(
-      review?.judgements
-        .filter((judgement) => judgement.kind === 'select')
-        .every((choice) => choice.requestId.startsWith('import-lineage:sha256:'))
-    ).toBe(true);
-    expect(material?.lastMutationRequestId).toBe(review?.decisionRequestId);
-    expect(revisions[1]?.createdByRequestId).toBe(review?.decisionRequestId);
-    expect(binding?.lastMutationRequestId).toBe(review?.decisionRequestId);
-    expect(review?.decisionRequestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
-    expect(retrievalTracePath).toBe(
-      `threads/${imported.threads[0]?.id}/turns/${imported.turns[0]?.id}/retrieval-traces/${sourceRetrievalTrace.traceId}.json`
-    );
-    expect(retrievalTrace).toMatchObject({
-      traceId: sourceRetrievalTrace.traceId,
-      requestDigest: sourceRetrievalTrace.requestDigest,
-      queryContext: {
-        serverId: 'dep_00000000-0000-7000-8000-000000000002',
-        workspaceId: targetWorkspaceId,
-        threadId: imported.threads[0]?.id,
-        turnId: imported.turns[0]?.id,
-      },
-      sourceScope: `page/workspace/${targetWorkspaceId}/${imported.defaultKnowledgeBaseId}`,
-      selected: [
-        expect.objectContaining({
-          reference: {
-            scopeId: `page/workspace/${targetWorkspaceId}/${imported.defaultKnowledgeBaseId}`,
-            objectId: 'knowledge_portable_source',
-          },
-        }),
-      ],
-    });
-    expect(trace).toMatchObject({
-      agentSessionId: imported.agentSessions[0]?.id,
-      contextPackageId: `ctxpkg_${imported.turns[0]?.id}`,
-      knowledgeSelectionInput: {
-        retrievalTraceRef: {
-          scopeId: `retrieval-trace/turn/${targetWorkspaceId}/${imported.threads[0]?.id}/${imported.turns[0]?.id}`,
-          objectId: 'krt_00000000-0000-780e-b78f-51422afca1e9',
-        },
-      },
-      knowledgeSelections: [
-        {
-          knowledgeBaseId: imported.defaultKnowledgeBaseId,
-          contentDigest: `sha256:${createHash('sha256')
-            .update(targetKnowledgeContent)
-            .digest('hex')}`,
-          knowledgePageId: 'knowledge_portable_source',
-          notebookRevision: targetRevision,
-          projection: expect.objectContaining({
-            kind: 'excerpt',
-            sourceRevision: targetRevision,
-            representationDigest: `sha256:${createHash('sha256').update(targetKnowledgeContent).digest('hex')}`,
-            representationByteLength: Buffer.byteLength(targetKnowledgeContent),
-            deliveredDigest: `sha256:${createHash('sha256').update(expectedExcerptBytes).digest('hex')}`,
-            byteLength: expectedExcerptBytes.byteLength,
-            ranges: [{ start: 0, end: expectedExcerptBytes.byteLength }],
-            truncated: true,
-          }),
-          packagePath: 'knowledge/pages/knowledge_portable_source.md',
-          sourceRefs: [],
-        },
-      ],
-      materialSelections: [
-        {
-          materialId: material?.materialId,
-          revisionId: revisions[0]?.revisionId,
-        },
-      ],
-      packageSnapshotId: imported.agentEnvironmentPackageSnapshots[0]?.snapshotId,
-      requestId: expect.stringMatching(/^import-lineage:sha256:[a-f0-9]{64}$/),
-      threadId: imported.threads[0]?.id,
-      turnId: imported.turns[0]?.id,
-      workerRequestItemId: imported.turns[0]?.items[0]?.id,
-      workspaceId: targetWorkspaceId,
-      workspaceInputSnapshotId: imported.workspaceInputSnapshots[0]?.id,
-      workspaceMaterializationRecordId: imported.workspaceMaterializationRecords[0]?.id,
-    });
-    const requestText =
-      imported.turns[0]?.items[0]?.type === 'user-message' ? imported.turns[0].items[0].text : null;
-    expect(trace.requestId).not.toBe('request_source');
-    expect(imported.threads[0]?.preview).toBe(requestText);
-    expect(requestText).toContain(targetWorkspaceId);
-    expect(JSON.parse(requestText!).resources).toEqual([
-      { kind: 'artifact', reference: imported.artifacts[0]!.id, reason: 'Proposal output.' },
-      {
-        kind: 'policy',
-        resource: {
-          kind: 'mcp-tool',
-          workspaceId: targetWorkspaceId,
-          serverId: 'sis',
-          toolName: 'read',
-        },
-        reason: 'Retain the exact Tool selector without an imported grant.',
-      },
-      {
-        kind: 'policy',
-        resource: {
-          kind: 'container',
-          container: {
-            owner: { kind: 'workspace', workspaceId: targetWorkspaceId },
-            kind: 'thread',
-            id: imported.threads[0]!.id,
-          },
-        },
-        reason: 'Retain the exact Thread selector.',
-      },
-      {
-        kind: 'policy',
-        resource: {
-          kind: 'container',
-          container: {
-            owner: { kind: 'workspace', workspaceId: targetWorkspaceId },
-            kind: 'turn',
-            id: imported.turns[0]!.id,
-          },
-        },
-        reason: 'Retain the exact Turn selector.',
-      },
-    ]);
-    expect(requestText).toContain(imported.threads[0]?.id);
-    expect(requestText).not.toContain(source.workspaceId);
-    expect(requestText).not.toContain(source.threadId);
-    expect(imported.turnEvents[0]?.[1][0]?.data).toEqual({
-      type: 'thread-created',
-      thread: imported.threads[0],
-    });
-    expect(imported.turnEvents[0]?.[1][1]?.data).toEqual({
-      type: 'thread-updated',
-      thread: imported.threads[0],
-    });
-    expect(imported.workspaceMaterializationRecords[0]?.workerSessionId).toBe(
-      `import-history-worker_${trace.packageSnapshotId}`
-    );
-    expect([...imported.portableFileState.workerContextPackageFiles.keys()]).toEqual(
-      expect.arrayContaining([
-        `threads/${trace.threadId}/turns/${trace.turnId}/context-package.json`,
-        `threads/${trace.threadId}/turns/${trace.turnId}/context-package/package.json`,
-      ])
-    );
-    expect(imported.portableFileState.nativeKnowledgePages).toEqual(
-      new Map([
-        [
-          'knowledge/pages/index.md',
-          input.portableFileState!.nativeKnowledgePages.get('knowledge/pages/index.md')!,
-        ],
-        ['knowledge/pages/knowledge_portable_source.md', targetKnowledgeContent],
-      ])
-    );
-    expect(
-      imported.portableFileState.workerContextPackageFiles.get(
-        `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge/pages/knowledge_portable_source.md`
-      )
-    ).toBe(expectedExcerpt);
-    expect(targetKnowledgeContent.length).toBeGreaterThan(51_200);
-    expect(imported.turnEvents[0]?.[1][2]?.data).toMatchObject({
-      itemId: imported.turns[0]?.items[0]?.id,
-      item: imported.turns[0]?.items[0],
-    });
-    expect(imported.turnEvents[0]?.[1][3]?.data).toMatchObject({
-      type: 'item-delta',
-      itemId: imported.artifacts[0]
-        ? artifactReferenceItemId(imported.artifacts[0].id, imported.turns[0]!.id)
-        : undefined,
-      artifactId: imported.artifacts[0]?.id,
-    });
-
-    const reExportFileState = {
-      ...imported.portableFileState,
-      notebookRevision: targetRevision,
-      retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
-        workspaceRoot: stagedRoot,
-        workspaceId: targetWorkspaceId,
-        knowledgeBaseId: imported.defaultKnowledgeBaseId,
-        traces: imported.portableFileState.retrievalTraceFiles,
-      }),
-    };
-    for (const [path, text] of imported.artifactVersionRecords) {
-      mkdirSync(dirname(join(stagedRoot, path)), { recursive: true });
-      writeFileSync(join(stagedRoot, path), text);
-    }
-    for (const [path, original] of imported.artifactPayloadFiles) {
-      mkdirSync(dirname(join(stagedRoot, path)), { recursive: true });
-      copyFileSync(original, join(stagedRoot, path), constants.COPYFILE_EXCL);
-    }
-    const reExported = writeWorkspaceExportTree({
-      sourceWorkspaceRoot: stagedRoot,
-      agentEnvironmentPackageSnapshots: imported.agentEnvironmentPackageSnapshots,
-      agentSessions: imported.agentSessions,
-      artifactReviews: imported.artifactReviews,
-      artifacts: imported.artifacts,
-      createdAt: timestamp,
-      exportId: 'wsexp_00000000-0000-75d0-b908-ecd78e49177b',
-      exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-reexported-history-')), 'export'),
-      itemRevisions: imported.itemRevisions,
-      knowledge: imported.knowledge,
-      portableFileState: reExportFileState,
-      sourceDeploymentId: 'dep_00000000-0000-7000-8000-000000000002',
-      threadMaterialBindings: imported.threadMaterialBindings,
-      threads: imported.threads,
-      turnEvents: imported.turnEvents,
-      turns: imported.turns,
-      workspace: imported.workspace,
-      workspaceInputSnapshots: imported.workspaceInputSnapshots,
-      workspaceMaterialRevisions: imported.workspaceMaterialRevisions,
-      workspaceMaterializationRecords: imported.workspaceMaterializationRecords,
-      workspaceMaterials: imported.workspaceMaterials,
-    });
-    for (const [path, bytes] of reExported.fileContents) {
-      if (path.includes('/retrieval-traces/') && path.endsWith('.json')) {
-        expect(JSON.parse(bytes).queryContext.serverId).toBe(
-          reExported.manifest.sourceDeploymentId
-        );
-      }
-    }
-    const reimported = readWorkspaceImportSnapshot({
-      verified: reExported,
-      targetWorkspaceId: 'ws_00000000-0000-75c2-b6dd-fdd26f61df2a',
-      targetServerId: 'server_reimport_target',
-    });
-    expect(reimported.defaultKnowledgeBaseId).not.toBe(imported.defaultKnowledgeBaseId);
-    expect(reimported.defaultKnowledgeBaseId).not.toBe(source.knowledgeBaseId);
-    expect(parseJsoncObject(reimported.portableFileState.workspaceConfig!)).toMatchObject({
-      workspace: { defaultKnowledgeBaseId: reimported.defaultKnowledgeBaseId },
-    });
-    const reimportedRoot = mkdtempSync(join(tmpdir(), 'openkit-reimported-history-package-'));
-    const reimportedNotebook = new KnowledgeNotebook({
-      repositoryPath: join(reimportedRoot, 'knowledge', 'notebook.git'),
-    });
-    const reimportedRevision = reimportedNotebook.initialize({
-      files: Object.fromEntries(
-        [...reimported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
-          path.slice('knowledge/pages/'.length),
-          content,
-        ])
-      ),
-      metadata: {
-        summary: 'Reimported Notebook fixture',
-        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
-        authority: { kind: 'direct', instructionReference: 'test:reimport-notebook-s39' },
-        changeRequest: {
-          requestId: randomUUID(),
-          inputDigest: `sha256:${createHash('sha256')
-            .update(JSON.stringify([...reimported.portableFileState.nativeKnowledgePages]))
-            .digest('hex')}`,
-        },
-        sourceReferences: [],
-      },
-    });
-    reimported.finalizeNotebookKnowledge?.({
-      notebookRevision: reimportedRevision,
-      nativeKnowledgePages: reimported.portableFileState.nativeKnowledgePages,
-    });
-    writeWorkspacePortableFileState(reimportedRoot, reimported.portableFileState);
-    expect(() =>
-      verifyImportedWorkerContextPackageSnapshot(reimported, reimportedRoot)
-    ).not.toThrow();
-    expect(reimported.workspaceMaterialRevisions).toHaveLength(
-      imported.workspaceMaterialRevisions.length
-    );
-    const importedBase = imported.workspaceMaterialRevisions.find(
-      (revision) => revision.parentRevisionId === null
-    );
-    const reimportedBase = reimported.workspaceMaterialRevisions.find(
-      (revision) => revision.parentRevisionId === null
-    );
-    expect(importedBase).toBeDefined();
-    expect(reimportedBase).toBeDefined();
-    expect(reimportedBase?.content).toBe(importedBase!.content);
-    const importedChild = imported.workspaceMaterialRevisions.find(
-      (revision) => revision.parentRevisionId === importedBase!.revisionId
-    );
-    const reimportedChild = reimported.workspaceMaterialRevisions.find(
-      (revision) => revision.parentRevisionId === reimportedBase!.revisionId
-    );
-    expect(importedChild).toBeDefined();
-    expect(reimportedChild?.content).toBe(importedChild!.content);
-    expect(
-      [...reimported.portableFileState.workerContextPackageFiles.entries()].find(([path]) =>
-        path.endsWith('/context-package.json')
-      )?.[1]
-    ).toContain('import-lineage:sha256:');
-  });
-
-  it('preserves a Thread preview that is not the exact traced worker request', () => {
-    const input = createWorkResourceLineageExportInput();
-    const preview = `User note: ${input.threads[0]!.preview}`;
-    input.threads = input.threads.map((thread) => ({ ...thread, preview }));
-    input.turnEvents = input.turnEvents.map(([turnId, events]) => [
-      turnId,
-      events.map((event) =>
-        event.data.type === 'thread-created' || event.data.type === 'thread-updated'
-          ? { ...event, data: { ...event.data, thread: { ...event.data.thread, preview } } }
-          : event
-      ),
-    ]);
-
-    const imported = importLineage(input);
-
-    expect(imported.threads[0]?.preview).toBe(preview);
-    expect(imported.turnEvents[0]?.[1][0]?.data).toEqual({
-      type: 'thread-created',
-      thread: imported.threads[0],
-    });
-    expect(imported.turnEvents[0]?.[1][1]?.data).toEqual({
-      type: 'thread-updated',
-      thread: imported.threads[0],
-    });
-  });
-
-  it('preserves compatible Artifact Review follow-up media through remint', () => {
-    const imported = importLineage(createWorkResourceLineageExportInput({}));
-    const review = imported.artifactReviews[0]!;
-    const turn = imported.turns.find((candidate) => candidate.id === review.followUpTurnId);
-    const item = turn?.items[0];
-    const request = ArtifactReviewFollowUpRequestSchema.parse(
-      JSON.parse(item?.type === 'user-message' ? item.text : '{}')
-    );
-
-    expect(request.rangeFeedback).toEqual(review.rangeFeedback);
-    expect(request.artifactMediaType).toBe('text/markdown');
-    expect(request.materialProposal?.materialId).toBe(imported.workspaceMaterials[0]?.materialId);
-    expect(request.decisionRequestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
-  });
-
-  it('rejects an artifact update delta detached from its artifact-reference Item', () => {
-    const input = createWorkResourceLineageExportInput();
-    const content = '# Independently valid Artifact';
-    const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
-    input.artifacts = [
-      ...input.artifacts,
-      {
-        id: 'ar_00000000-0000-7dcf-9e49-194b732024ae',
-        workspaceId: source.workspaceId,
-        threadId: null,
-        turnId: null,
-        kind: 'file',
-        title: 'Other Artifact',
-        status: 'ready',
-        summary: null,
-        version: 1,
-        content: { format: 'markdown', body: content },
-        contentDigest,
-        lastMutationRequestId: 'request_other_artifact',
-        origin: {
-          kind: 'imported',
-          sourceKind: 'direct-import',
-          sourceId: 'request_other_artifact',
-          sourceDigest: contentDigest,
-          actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-          requestId: 'request_other_artifact',
-          recordedAt: timestamp,
-        },
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    ];
-    retainInitialArtifact(input.sourceWorkspaceRoot!, input.artifacts.at(-1), null);
-    input.turnEvents = input.turnEvents.map(([turnId, events]) => [
-      turnId,
-      events.map((event) =>
-        event.data.type === 'item-delta' && event.data.deltaKind === 'artifact-updated'
-          ? {
-              ...event,
-              data: { ...event.data, artifactId: 'ar_00000000-0000-7dcf-9e49-194b732024ae' },
-            }
-          : event
-      ),
-    ]);
-
-    expect(() => importLineage(input)).toThrow(
-      'Artifact update delta has contradictory artifact-reference lineage.'
-    );
-  });
-
-  it.each([
-    {
-      name: 'forked Material history',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.workspaceMaterialRevisions = [
-          ...(input.workspaceMaterialRevisions ?? []),
-          {
-            ...(input.workspaceMaterialRevisions?.[1] as Record<string, unknown>),
-            revisionId: 'mrev_00000000-0000-7269-8285-6d92cf591190',
-          },
-        ];
-      },
-    },
-    {
-      name: 'digest-invalid revision',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.workspaceMaterialRevisions = (input.workspaceMaterialRevisions ?? []).map(
-          (revision, index) =>
-            index === 1
-              ? { ...(revision as Record<string, unknown>), content: 'Changed.' }
-              : revision
-        );
-      },
-    },
-    {
-      name: 'dangling Review result',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.artifactReviews = (input.artifactReviews ?? []).map((review) => ({
-          ...(review as Record<string, unknown>),
-          appliedMaterialRevisionId: 'mrev_00000000-0000-7dd6-ad6d-05f41582f248',
-        }));
-      },
-    },
-    {
-      name: 'Material mutation proof detached from its current revision',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.workspaceMaterials = (input.workspaceMaterials ?? []).map((material) => ({
-          ...(material as Record<string, unknown>),
-          lastMutationRequestId: 'request_other',
-        }));
-      },
-    },
-    {
-      name: 'stale bound Material queue',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.threadMaterialBindings = (input.threadMaterialBindings ?? []).map((binding) => ({
-          ...(binding as Record<string, unknown>),
-          latestQueuedRevisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
-        }));
-      },
-    },
-    {
-      name: 'future decided Review version',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.artifactReviews = (input.artifactReviews ?? []).map((review) => ({
-          ...(review as Record<string, unknown>),
-          reviewId: deriveArtifactReviewId(source.workspaceId, source.artifactId, 2),
-          artifactVersion: 2,
-        }));
-      },
-    },
-    {
-      name: 'media-incompatible Review follow-up proposal',
-      createInput: () => createWorkResourceLineageExportInput({ artifactMediaType: 'text/plain' }),
-      error: 'Artifact Review follow-up Turn lineage is contradictory.',
-      alter: () => undefined,
-    },
-    {
-      name: 'malformed import-lineage follow-up request',
-      createInput: () =>
-        createWorkResourceLineageExportInput({
-          decisionRequestId: 'import-lineage:not-a-digest',
-        }),
-      error: 'Artifact Review follow-up Turn lineage is contradictory.',
-      alter: () => undefined,
-    },
-    {
-      name: 'self-referential Review follow-up Turn',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.artifactReviews = (input.artifactReviews ?? []).map((review) => ({
-          ...(review as Record<string, unknown>),
-          appliedMaterialRevisionId: null,
-          decision: 'redo',
-          feedback: 'Try again.',
-          followUpTurnId: source.turnId,
-        }));
-      },
-    },
-    {
-      name: 'untraced sibling Review follow-up Turn',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.turns = [
-          ...input.turns,
-          {
-            ...(input.turns[0] as Record<string, unknown>),
-            agentSessionId: null,
-            id: 'tu_00000000-0000-77d9-ad4d-ea2f2a5f70aa',
-            items: [],
-          },
-        ];
-        input.artifactReviews = (input.artifactReviews ?? []).map((review) => ({
-          ...(review as Record<string, unknown>),
-          appliedMaterialRevisionId: null,
-          decision: 'redo',
-          feedback: 'Try again.',
-          followUpTurnId: 'tu_00000000-0000-77d9-ad4d-ea2f2a5f70aa',
-        }));
-      },
-    },
-    {
-      name: 'media-incompatible unresolved proposal',
-      error: 'Artifact Review proposal media type is contradictory.',
-      createInput: () =>
-        createWorkResourceLineageExportInput(undefined, undefined, false, false, false, 'text'),
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        const baseRevision = input.workspaceMaterialRevisions?.[0] as Record<string, unknown>;
-        input.workspaceMaterialRevisions = [baseRevision];
-        input.workspaceMaterials = (input.workspaceMaterials ?? []).map((material) => ({
-          ...(material as Record<string, unknown>),
-          currentRevisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
-          lastMutationRequestId: baseRevision.createdByRequestId,
-        }));
-        input.threadMaterialBindings = (input.threadMaterialBindings ?? []).map((binding) => ({
-          ...(binding as Record<string, unknown>),
-          latestQueuedRevisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
-        }));
-        input.artifactReviews = (input.artifactReviews ?? []).map((review) => ({
-          ...(review as Record<string, unknown>),
-          decision: null,
-          decisionActorId: null,
-          decisionRequestId: null,
-          decidedAt: null,
-          appliedMaterialRevisionId: null,
-          rangeFeedback: null,
-        }));
-      },
-    },
-    {
-      name: 'missing S39 package for a worker Turn',
-      alter: (input: WriteWorkspaceExportTreeInput) => {
-        input.artifactReviews = [];
-        input.portableFileState = {
-          ...input.portableFileState!,
-          workerContextPackageFiles: new Map(),
-        };
-      },
-    },
-  ])('rejects a $name before target writes', (testCase) => {
-    const input =
-      'createInput' in testCase ? testCase.createInput() : createWorkResourceLineageExportInput();
-    testCase.alter(input);
-
-    if ('error' in testCase) {
-      expect(() => importLineage(input)).toThrow(testCase.error);
-    } else {
-      expect(() => importLineage(input)).toThrow();
+    for (const [path, bytes] of input.portableFileState!.workerContextPackageFiles) {
+      expect(verified.fileContents.get(`workspace-files/${path}`)).toBe(bytes);
     }
   });
 
-  it.each([
-    ['aep-item', 'it_00000000-0000-7cd6-8d25-15aa6e49eadb'],
-    ['aep-session', /lineage|as_missing/i],
-    ['capability-thread', 'th_00000000-0000-70ca-938d-c2a0530f9882'],
-    ['checkpoint-turn', 'tu_00000000-0000-7577-9378-7e96d0d15fd2'],
-    ['git-approval', 'apr_missing'],
-    ['permission-approval', 'apr_missing'],
-    ['repository-grant', 'grant_00000000-0000-7278-b714-46e2d53cb316'],
-    ['resolved-turn', 'tu_00000000-0000-7577-9378-7e96d0d15fd2'],
-    ['runtime-turn', 'tu_00000000-0000-7577-9378-7e96d0d15fd2'],
-    ['sync-artifact', 'ar_00000000-0000-7aa2-bfd7-c36b2d13b35a'],
-    ['usage-session', 'as_00000000-0000-7fdd-8f71-4a23eb7a922b'],
-    ['vault-approval', 'apr_missing'],
-    ['vault-session', 'as_00000000-0000-7fdd-8f71-4a23eb7a922b'],
-  ] as const)('fails closed when %s references state outside the export', (missing, error) => {
-    expect(() => importLineage(createLineageExportInput(missing))).toThrow(error);
-  });
-
-  it('exports and remints exact binary runtime provenance alongside its product-safe index', () => {
+  it('exports exact binary runtime provenance alongside its product-safe index', () => {
     const input = createLineageExportInput();
     const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
     const rawBundleId = 'evb_runtime_raw_source';
@@ -3731,79 +2570,6 @@ describe('workspace auxiliary lineage reminting', () => {
         `workspace-files/evidence/bundles/${indexBundleId}/runtime-origin-index.jsonl`
       )
     ).toBe(indexText);
-    const missingBinary = new Map(verified.binaryFileContents);
-    missingBinary.delete(rawPath);
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, binaryFileContents: missingBinary },
-        targetWorkspaceId,
-      })
-    ).toThrow(/Restricted evidence bytes are missing or invalid/);
-    const tamperedBinary = new Map(verified.binaryFileContents);
-    tamperedBinary.set(rawPath, Buffer.from([0]));
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...verified, binaryFileContents: tamperedBinary },
-        targetWorkspaceId,
-      })
-    ).toThrow(/Restricted evidence bytes are missing or invalid/);
-
-    const imported = readWorkspaceImportSnapshot({
-      verified,
-      targetWorkspaceId,
-    }) as ReturnType<typeof readWorkspaceImportSnapshot> & {
-      runtimeProvenanceIndexes: ReadonlyMap<string, string>;
-    };
-    const importedRawBundle = imported.evidenceBundles.find(
-      (bundle) => bundle.sourceKind === 'worker-runtime-provenance-raw'
-    );
-    const importedIndexBundle = imported.evidenceBundles.find(
-      (bundle) => bundle.sourceKind === 'worker-runtime-provenance-index'
-    );
-    expect(importedRawBundle).toMatchObject({
-      importStatus: 'promoted',
-      rawEvidenceRefs: [{ kind: 'worker-runtime-provenance-stream', ref: 'raw/native-canary.bin' }],
-      contentDigests: [rawDigest],
-    });
-    expect(importedRawBundle?.id).not.toBe(rawBundleId);
-    expect(
-      imported.restrictedEvidenceFiles.get(`${importedRawBundle?.id}/raw/native-canary.bin`)
-    ).toEqual(rawBytes);
-    expect(importedIndexBundle?.id).not.toBe(indexBundleId);
-    expect(imported.runtimeEvidence[0]?.id).not.toBe(runtimeEvidenceId);
-    expect(imported.runtimeEvidence[0]?.evidenceBundleIds).toEqual([
-      importedRawBundle?.id,
-      importedIndexBundle?.id,
-    ]);
-    const importedIndexText = imported.runtimeProvenanceIndexes.get(importedIndexBundle?.id ?? '');
-    expect(importedIndexText).not.toContain(source.workspaceId);
-    expect(importedIndexText).not.toContain(source.threadId);
-    expect(importedIndexText).not.toContain(source.turnId);
-    expect(importedIndexText).not.toContain(source.sessionId);
-    expect(importedIndexText).not.toContain(packageSnapshotId);
-    expect(importedIndexText).not.toContain(sourceOriginRef);
-    expect(importedIndexText).not.toContain(sourceTurnRef);
-    const importedIndexRow = JSON.parse(importedIndexText?.trim() ?? '{}') as {
-      lineage?: { packageSnapshotId?: string };
-      runtimeOriginRef?: string;
-      runtimeTurnRef?: string;
-    };
-    expect(importedIndexRow.runtimeTurnRef).toMatch(/^rtt_[a-f0-9]{24}$/);
-    expect(imported.capabilityCalls[0]).toMatchObject({
-      packageSnapshotId: importedIndexRow.lineage?.packageSnapshotId,
-      runtimeOriginRef: importedIndexRow.runtimeOriginRef,
-    });
-    expect(imported.capabilityCalls[0]?.runtimeCacheLineageRef).toMatch(/^rcl_[a-f0-9]{24}$/);
-    expect(imported.capabilityCalls[0]?.runtimeCacheLineageRef).not.toBe(sourceCacheLineageRef);
-    expect(imported.capabilityCalls[1]?.runtimeCacheLineageRef).toBe(
-      imported.capabilityCalls[0]?.runtimeCacheLineageRef
-    );
-    expect(importedIndexBundle?.contentDigests).toEqual([
-      `sha256:${createHash('sha256')
-        .update(importedIndexText ?? '')
-        .digest('hex')}`,
-    ]);
-
     const failedRaw = writeWorkspaceExportTree({
       ...input,
       exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-provenance-failed-')), 'export'),
@@ -3825,127 +2591,6 @@ describe('workspace auxiliary lineage reminting', () => {
       capabilityCalls: createLineageExportInput().capabilityCalls,
     });
     expect(failedRaw.binaryFileContents.get(rawPath)).toEqual(rawBytes);
-    const importedFailed = readWorkspaceImportSnapshot({
-      verified: failedRaw,
-      targetWorkspaceId: 'ws_00000000-0000-7aa7-be6a-dcdb6a885d4a',
-    });
-    const importedFailedRaw = importedFailed.evidenceBundles.find(
-      (bundle) => bundle.sourceKind === 'worker-runtime-provenance-raw'
-    )!;
-    expect(importedFailed.evidenceBundles).toHaveLength(1);
-    expect(importedFailedRaw.importStatus).toBe('quarantined');
-    expect(importedFailedRaw.id).not.toBe(rawBundleId);
-    expect(importedFailed.runtimeEvidence[0]?.evidenceBundleIds).toEqual([importedFailedRaw.id]);
-    expect(
-      importedFailed.restrictedEvidenceFiles.get(`${importedFailedRaw.id}/raw/native-canary.bin`)
-    ).toEqual(rawBytes);
-    const mismatchedOwnerFiles = new Map(failedRaw.fileContents);
-    for (const path of ['records/evidence-bundles.jsonl', 'records/runtime-evidence.jsonl']) {
-      const record = JSON.parse(mismatchedOwnerFiles.get(path)!) as Record<string, unknown>;
-      mismatchedOwnerFiles.set(path, `${JSON.stringify({ ...record, agentSessionId: null })}\n`);
-    }
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: { ...failedRaw, fileContents: mismatchedOwnerFiles },
-        targetWorkspaceId: 'ws_00000000-0000-70ec-b895-5081a8a2dcea',
-      })
-    ).toThrow(/Runtime provenance bundle linkage is incomplete/);
-    for (const mismatch of [
-      { backendType: 'other-backend' },
-      { contentDigests: [`sha256:${'f'.repeat(64)}`] },
-    ]) {
-      const fileContents = new Map(failedRaw.fileContents);
-      const path = 'records/runtime-evidence.jsonl';
-      const record = JSON.parse(fileContents.get(path)!) as Record<string, unknown>;
-      fileContents.set(path, `${JSON.stringify({ ...record, ...mismatch })}\n`);
-      expect(() =>
-        readWorkspaceImportSnapshot({
-          verified: { ...failedRaw, fileContents },
-          targetWorkspaceId: 'ws_00000000-0000-7545-858a-3d46b350bbc3',
-        })
-      ).toThrow(/Runtime provenance bundle linkage is incomplete/);
-    }
-    const duplicateRawId = 'evb_runtime_raw_source_duplicate';
-    const duplicateFiles = new Map(failedRaw.fileContents);
-    const rawRecord = JSON.parse(duplicateFiles.get('records/evidence-bundles.jsonl')!) as Record<
-      string,
-      unknown
-    >;
-    duplicateFiles.set(
-      'records/evidence-bundles.jsonl',
-      `${JSON.stringify(rawRecord)}\n${JSON.stringify({ ...rawRecord, id: duplicateRawId })}\n`
-    );
-    const runtimeRecord = JSON.parse(
-      duplicateFiles.get('records/runtime-evidence.jsonl')!
-    ) as Record<string, unknown>;
-    duplicateFiles.set(
-      'records/runtime-evidence.jsonl',
-      `${JSON.stringify({
-        ...runtimeRecord,
-        evidenceBundleIds: [rawBundleId, duplicateRawId],
-        contentDigests: [rawDigest, rawDigest],
-      })}\n`
-    );
-    const duplicateBinary = new Map(failedRaw.binaryFileContents);
-    duplicateBinary.set(
-      `workspace-files/evidence/backend/${duplicateRawId}/raw/native-canary.bin`,
-      rawBytes
-    );
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: {
-          ...failedRaw,
-          fileContents: duplicateFiles,
-          binaryFileContents: duplicateBinary,
-        },
-        targetWorkspaceId: 'ws_00000000-0000-7f94-8d9a-a38dbeb79435',
-      })
-    ).toThrow(/Runtime provenance bundle linkage is incomplete/);
-
-    const unlinkedRoot = join(
-      mkdtempSync(join(tmpdir(), 'openkit-workspace-provenance-unlinked-')),
-      'export'
-    );
-    const unlinked = writeWorkspaceExportTree({
-      ...input,
-      exportRoot: unlinkedRoot,
-      runtimeEvidence: [],
-    });
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: unlinked,
-        targetWorkspaceId: 'ws_00000000-0000-7643-964e-afa983ac66f6',
-      })
-    ).toThrow(/runtime provenance.*link/i);
-
-    const alternateImport = readWorkspaceImportSnapshot({
-      verified,
-      targetWorkspaceId: 'ws_00000000-0000-7f0d-9740-60fe82c12b26',
-    });
-    expect(alternateImport.capabilityCalls[0]?.runtimeCacheLineageRef).not.toBe(
-      imported.capabilityCalls[0]?.runtimeCacheLineageRef
-    );
-
-    const unmatchedRoot = join(
-      mkdtempSync(join(tmpdir(), 'openkit-workspace-provenance-unmatched-')),
-      'export'
-    );
-    const unmatched = writeWorkspaceExportTree({
-      ...input,
-      exportRoot: unmatchedRoot,
-      capabilityCalls: [
-        {
-          ...(input.capabilityCalls?.[0] as Record<string, unknown>),
-          runtimeOriginRef: `rto_${'f'.repeat(24)}`,
-        },
-      ],
-    });
-    expect(() =>
-      readWorkspaceImportSnapshot({
-        verified: unmatched,
-        targetWorkspaceId: 'ws_00000000-0000-7655-ba52-0131487ca8c0',
-      })
-    ).toThrow(/runtime origin.*normalized index/i);
   });
 });
 
@@ -3959,7 +2604,7 @@ vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
 });
 
 describe('slice 1d portable call fields', () => {
-  it('preserves route extensions and present or absent system-prompt digests through archive export and import', () => {
+  it('preserves route extensions and present or absent system-prompt digests through archive export', () => {
     const input = createLineageExportInput();
     const digest = `sha256:${'b'.repeat(64)}`;
     const lineage = {
@@ -4018,188 +2663,22 @@ describe('slice 1d portable call fields', () => {
     }
     const exportRoot = join(mkdtempSync(join(tmpdir(), 'gateway-call-export-')), 'export');
     const verified = writeWorkspaceExportTree({ ...input, exportRoot });
-    const snapshot = readWorkspaceImportSnapshot({ verified, targetWorkspaceId });
-    const db = openWorkspaceDb(
-      mkdtempSync(join(tmpdir(), 'gateway-call-import-')),
-      targetWorkspaceId
-    );
-    try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
-      importWorkspaceCapabilityUsageLedger({
-        workspaceDb: db,
-        capabilityCalls: snapshot.capabilityCalls,
-        usageRecords: snapshot.usageRecords,
-      });
-      const imported = listWorkspaceCapabilityCalls(db, targetWorkspaceId);
-      expect(
-        imported.find((call) => call.id === 'cap_00000000-0000-711a-9c64-db220d6b90dc')
-      ).toMatchObject({
-        systemPromptDigest: digest,
-        extensions: {
-          'openkit.gateway/routeLineage': lineage,
-          'future.example/evidence': { label: 'retained' },
-        },
-      });
-      expect(
-        imported.find((call) => call.id === 'cap_00000000-0000-7ff2-b713-d35db1d00ca0')
-      ).not.toHaveProperty('systemPromptDigest');
-      expect(
-        imported.find((call) => call.id === 'cap_00000000-0000-7ff2-b713-d35db1d00ca0')
-      ).not.toHaveProperty('extensions');
-      const row = db.sqlite
-        .prepare(
-          'SELECT system_prompt_digest, extensions_json FROM capability_calls WHERE call_id = ?'
-        )
-        .get('cap_00000000-0000-711a-9c64-db220d6b90dc') as {
-        system_prompt_digest: string;
-        extensions_json: string;
-      };
-      expect(row.system_prompt_digest).toBe(digest);
-      expect(JSON.parse(row.extensions_json)).toEqual({
+    const calls = verified.fileContents
+      .get('records/capability-calls.jsonl')!
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { id?: string });
+    expect(
+      calls.find((call) => call.id === 'cap_00000000-0000-711a-9c64-db220d6b90dc')
+    ).toMatchObject({
+      systemPromptDigest: digest,
+      extensions: {
         'openkit.gateway/routeLineage': lineage,
         'future.example/evidence': { label: 'retained' },
-      });
-    } finally {
-      db.sqlite.close();
-    }
-  });
-});
-
-it('carries current Goal records through portability without changing approved bytes or restoring grants', () => {
-  const input = createLineageExportInput();
-  const goalThread = 'th_00000000-0000-720d-b93a-e3ab6e5c756b';
-  const commitment = {
-    intentBasis: { revision: 0, intent: 'Review the schema' },
-    cards: [{ cardId: 'gc_portable', revision: 0, description: 'Review', priority: 0 }],
-    permittedAdjustments: 'Review only',
-    completionEvidence: ['Review evidence'],
-    boundaries: 'No publication',
-  };
-  const bytes = JSON.stringify(commitment);
-  const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  input.threads = [
-    ...input.threads,
-    { ...(input.threads[0] as Record<string, unknown>), id: goalThread, name: 'Goal Coordinator' },
-  ];
-  input.goalState = {
-    goals: [
-      {
-        goalId: 'g_portable',
-        workspaceId: source.workspaceId,
-        threadId: goalThread,
-        responsibleUserId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
-        responsibleActorContext: {
-          kind: 'session',
-          userId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
-        },
-        intent: 'Review current schema',
-        intentRevision: 1,
-        intentHistory: [
-          {
-            revision: 0,
-            intent: 'Review the schema',
-            actorId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
-            at: timestamp,
-          },
-          {
-            revision: 1,
-            intent: 'Review current schema',
-            actorId: 'usr_00000000-0000-7431-921d-ea7bcc58a6f2',
-            at: timestamp,
-          },
-        ],
-        activePlanVersionId: 'gp_portable',
-        proposedPlanVersionId: null,
-        disposition: null,
-        changeRevision: 5,
-        consideredRevision: 5,
-        createdAt: timestamp,
-        updatedAt: timestamp,
       },
-    ],
-    cards: [
-      {
-        cardId: 'gc_portable',
-        goalId: 'g_portable',
-        description: 'Review current schema',
-        priority: 0,
-        revision: 1,
-        cancelled: false,
-        cancellationReason: null,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-    ],
-    versions: [
-      {
-        planVersionId: 'gp_portable',
-        goalId: 'g_portable',
-        sequence: 1,
-        bytes,
-        digest,
-        commitment,
-        pendingRequestId: 'ap_source_grant',
-        createdAt: timestamp,
-      },
-    ],
-    tasks: [
-      {
-        goalId: 'g_portable',
-        cardId: 'gc_portable',
-        threadId: source.threadId,
-        planVersionId: 'gp_portable',
-        cardRevision: 0,
-        admittedAt: timestamp,
-      },
-    ],
-    terminalFacts: [],
-  };
-  const imported = importLineage(input);
-  expect(imported.goalState.versions[0]!.bytes).toBe(bytes);
-  expect(imported.goalState.versions[0]!.digest).toBe(digest);
-  expect(imported.goalState.goals[0]).toMatchObject({
-    workspaceId: targetWorkspaceId,
-    intentRevision: 1,
-    activePlanVersionId: 'gp_portable',
-    changeRevision: 6,
-    consideredRevision: 5,
+    });
+    const absent = calls.find((call) => call.id === 'cap_00000000-0000-7ff2-b713-d35db1d00ca0');
+    expect(absent).not.toHaveProperty('systemPromptDigest');
+    expect(absent).not.toHaveProperty('extensions');
   });
-  expect(imported.goalState.goals[0]!.threadId).toBe(imported.threadIds.get(goalThread));
-  expect(imported.goalState.tasks[0]!.threadId).toBe(imported.threadIds.get(source.threadId));
-  expect(imported.goalState.cards[0]!.revision).toBe(1);
-  expect('pendingRequests' in imported.goalState).toBe(false);
-  // Lost ordinary history remains missing; its committed result must still be portable.
-  const absentFact = {
-    id: 'tu_00000000-0000-70da-9270-28693b06ee06',
-    workspaceId: source.workspaceId,
-    threadId: 'th_00000000-0000-749e-a37d-2ae7769a39a8',
-    status: 'failed',
-    error: { code: 'worker_failed', message: 'Retained failure' },
-    completedAt: timestamp,
-    durationMs: 0,
-  };
-  input.goalState = {
-    ...(input.goalState as Record<string, unknown>),
-    terminalFacts: [absentFact],
-  };
-  const absentHistory = importLineage({
-    ...input,
-    exportRoot: join(mkdtempSync(join(tmpdir(), 'goal-absent-task-')), 'export'),
-  });
-  expect(absentHistory.goalState.terminalFacts[0]).toEqual({
-    ...absentFact,
-    workspaceId: targetWorkspaceId,
-  });
-  expect(absentHistory.threadIds.has(absentFact.threadId)).toBe(false);
-  expect(absentHistory.turnIds.has(absentFact.id)).toBe(false);
-  input.goalState = {
-    ...(input.goalState as Record<string, unknown>),
-    terminalFacts: [{ ...absentFact, workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405' }],
-  };
-  expect(() =>
-    importLineage({
-      ...input,
-      exportRoot: join(mkdtempSync(join(tmpdir(), 'goal-foreign-task-')), 'export'),
-    })
-  ).toThrow('Task terminal fact');
 });

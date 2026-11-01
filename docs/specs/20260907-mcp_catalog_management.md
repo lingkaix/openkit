@@ -106,7 +106,7 @@ Reuse the normal request-id ledger, expected-revision checks, staged publication
 
 Removal blocks future selection but retains version and call lineage. Physical purge refuses versions needed by current selection, installed or explicitly retained plugin versions, unexpired AEP/call evidence, or legal holds. A retained MCP version needing a package root retains that exact PluginVersion-owned source tree even after plugin uninstall. Removed-package metadata may retain digest-only unavailable-content history only after all such dependencies and byte-retention obligations end. Credential deletion belongs to Vault and is never a plugin-uninstall cascade. Mutable process data follows the binding-key purge rule, not rollback. A reconnect is a fresh Gateway attempt under current authority, not an import transaction retry across effect domains.
 
-Portable Workspace export uses only redacted MCP version/source lineage under `docs/specs/20260704-workspace_backup_export_import.md`; executable configuration, active bindings, package-data keys, mutable process data, and source authority do not travel. Import leaves required content unavailable and the entry inactive until exact authorized reimport, rebinding, and current selection. Full data-root backup retains complete same-deployment state.
+Portable export uses only redacted MCP version and source lineage. Executable configuration, active bindings, and source authority do not travel. Export does not activate an entry. Current catalog selection and Vault rebinding stay with the catalog owner. Full data-root backup retains complete same-deployment state.
 
 ## Proposed Design
 

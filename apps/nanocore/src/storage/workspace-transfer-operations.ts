@@ -1,26 +1,17 @@
 import type { WORKSPACE_TRANSFER_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-import { WorkspaceImportDryRunResponseSchema } from '@openkit/app-api-schemas';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type {
   OperationImplementations,
   OperationInvocationContext,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { dryRunWorkspaceImport, verifyWorkspaceExportTree } from './workspace-export.js';
-import {
-  assertRequestedExportHandles,
-  canReadWorkspaceExport,
-  createVerifiedWorkspaceExport,
-  existingWorkspaceExportRoot,
-  importedWorkspaceExists,
-  importVerifiedWorkspace,
-} from './workspace-transfer-routes.js';
+import { createVerifiedWorkspaceExport } from './workspace-transfer-routes.js';
 
-/** Joins JSON transfer definitions to the existing verified-tree and staged publication owners. */
+/** Joins the JSON workspace export definition to the existing verified-tree export owner. */
 export function createWorkspaceTransferOperationImplementations(
   dependencies: Pick<
     OperationInvocationDependencies,
-    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'fileAdmission' | 'runtimeConfigManager'
+    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'fileAdmission'
   >
 ) {
   const { coreDb, repositoryWorkspaceDb, store, fileAdmission } = dependencies;
@@ -47,95 +38,6 @@ export function createWorkspaceTransferOperationImplementations(
           workspaceId: input.workspaceId,
         })
       ).response;
-    },
-    'workspace.import-dry-run': (input, context) => {
-      const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
-      const dataRoot = store?.getDataRoot();
-      if (!dataRoot)
-        throw new OperationError(
-          'workspace_import_unavailable',
-          'Workspace import dry-run is unavailable.',
-          503
-        );
-      try {
-        const verified = verifyWorkspaceExportTree({
-          exportRoot: existingWorkspaceExportRoot(
-            dataRoot,
-            input.sourceWorkspaceId,
-            input.exportId
-          ),
-        });
-        if (!canReadWorkspaceExport(dataRoot, store!, actor, verified, coreDb))
-          throw new OperationError(
-            'workspace_import_forbidden',
-            'Workspace export is unavailable.',
-            403
-          );
-        const report = dryRunWorkspaceImport({
-          verified,
-          workspaceExists: (workspaceId) =>
-            importedWorkspaceExists(coreDb, store!, dataRoot, workspaceId),
-        });
-        assertRequestedExportHandles(report, input.sourceWorkspaceId, input.exportId);
-        return WorkspaceImportDryRunResponseSchema.parse(report);
-      } catch (error) {
-        if (error instanceof OperationError) throw error;
-        throw new OperationError(
-          'workspace_import_dry_run_failed',
-          'Workspace import dry-run could not verify the requested export.',
-          400
-        );
-      }
-    },
-    'workspace.import': async (input, context) => {
-      const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
-      const dataRoot = store?.getDataRoot();
-      if (!dataRoot || !fileAdmission)
-        throw new OperationError(
-          'workspace_import_unavailable',
-          'Workspace import is unavailable.',
-          503
-        );
-      try {
-        const verified = verifyWorkspaceExportTree({
-          exportRoot: existingWorkspaceExportRoot(
-            dataRoot,
-            input.sourceWorkspaceId,
-            input.exportId
-          ),
-        });
-        if (!canReadWorkspaceExport(dataRoot, store!, actor, verified, coreDb))
-          throw new OperationError(
-            'workspace_import_forbidden',
-            'Workspace export is unavailable.',
-            403
-          );
-        const report = dryRunWorkspaceImport({
-          verified,
-          workspaceExists: (workspaceId) =>
-            importedWorkspaceExists(coreDb, store!, dataRoot, workspaceId),
-        });
-        assertRequestedExportHandles(report, input.sourceWorkspaceId, input.exportId);
-        return await importVerifiedWorkspace({
-          reloadConfiguration: () => {
-            dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
-          },
-          authorityUserId: actor.userId,
-          coreDb,
-          dataRoot,
-          fileAdmission,
-          requestId: input.requestId ?? null,
-          store: store!,
-          verified,
-        });
-      } catch (error) {
-        if (error instanceof OperationError) throw error;
-        throw new OperationError(
-          'workspace_import_failed',
-          'Workspace import could not verify or publish the requested export.',
-          400
-        );
-      }
     },
   } satisfies Pick<OperationImplementations, keyof typeof WORKSPACE_TRANSFER_OPERATION_DEFINITIONS>;
 }

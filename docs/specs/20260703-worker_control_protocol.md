@@ -190,7 +190,7 @@ Worker-to-NanoCore reports, canonical transcript candidates, observation metadat
 
 Lineage bindings and Turn capture-coverage admission carry authority and remain exact. Worker-supplied actor or responsible-user fields remain invalid rather than supplying authority. Effect instructions, including private Harness command bodies, remain exact under [Contract Evolution](../core/contract-evolution.md#closed-core-open-extension). Emitters and known-core fixtures MUST retain exact assertions that catch an unknown emitted key, including when all required fields are present.
 
-Runtime provenance readers MUST verify digests over the original stored bytes before parsing a stripped view. Retained raw streams and index files keep their original bytes; a reminted normalized index uses only parsed known fields and recomputes its existing digest. This creates no compatibility reader, migration, dual write or new lifecycle.
+Runtime provenance readers MUST verify digests over the original stored bytes before parsing a stripped view. Retained raw streams and index files keep their original bytes. Ordinary portable Workspace import is absent and does not remint a normalized index. Export retains the normalized index and does not recompute an import digest. This creates no compatibility reader, migration, dual write or new lifecycle.
 
 ## Worker-To-NanoCore Messages
 

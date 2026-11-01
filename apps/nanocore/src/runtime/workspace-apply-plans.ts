@@ -185,18 +185,3 @@ export function listExportableWorkspaceApplyPlans(
     .all(workspaceId) as WorkspaceApplyPlanRow[];
   return rows.map(readStoredApplyPlanV1);
 }
-
-/**
- * Replays imported workspace apply plans.
- *
- * @param workspaceDb Open target workspace database handle.
- * @param plans Exported apply plans to replay.
- */
-export function importWorkspaceApplyPlans(
-  workspaceDb: WorkspaceDb,
-  plans: readonly WorkspaceApplyPlan[]
-): void {
-  for (const plan of plans) {
-    persistWorkspaceApplyPlanV1(workspaceDb, StoredWorkspaceApplyPlanV1Schema.parse(plan));
-  }
-}

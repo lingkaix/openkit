@@ -35,8 +35,6 @@ describe('definition-derived client operations', () => {
     ))
       expect(client.operations).not.toHaveProperty(id);
     expect(client.app).toHaveProperty('downloadWorkspaceExportArchive');
-    expect(client.app).toHaveProperty('dryRunWorkspaceArchiveImport');
-    expect(client.app).toHaveProperty('importWorkspaceArchive');
     expect(client.app).not.toHaveProperty('getDiagnostics');
     expect(client.app).not.toHaveProperty('getSetupDiagnostics');
     expect(client.app).not.toHaveProperty('getLightApp');

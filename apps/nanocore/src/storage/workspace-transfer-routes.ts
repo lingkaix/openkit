@@ -1,17 +1,7 @@
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  chmodSync,
-  constants,
-  copyFileSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { createHash } from 'node:crypto';
+import { constants, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -20,8 +10,6 @@ import {
   type CandidateSetRecord,
   CandidateSetRecordReaderSchema,
   WorkspaceExportResponseSchema,
-  WorkspaceImportDryRunResponseSchema,
-  WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
 import { parseWorkspaceDataSourceCatalog, WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
@@ -31,38 +19,22 @@ import {
   type Item,
   isEntityId,
   readRetainedV1,
-  writeRetainedV1,
 } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
-import {
-  importResolvedAgentSetups,
-  listExportableResolvedAgentSetups,
-} from '../agents/setup-ledger.js';
+import { listExportableResolvedAgentSetups } from '../agents/setup-ledger.js';
 import { asApiError } from '../api-errors.js';
 import { listExportableArtifactReviews } from '../artifact-reviews.js';
-import {
-  importWorkspaceAuditEvents,
-  listPortableWorkspaceAuditEvents,
-  recordWorkspaceAuditEvent,
-} from '../audit-events.js';
+import { listPortableWorkspaceAuditEvents } from '../audit-events.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
-import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
   finishCapabilityCall,
-  finishCapabilityCallInDb,
-  importWorkspaceCapabilityUsageLedger,
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
   recordUsage,
-  recordUsageInDb,
   startCapabilityCall,
-  startCapabilityCallInDb,
 } from '../capability/usage-ledger.js';
-import {
-  projectWorkspaceCatalogExport,
-  writeImportedWorkspaceCatalog,
-} from '../catalog/catalog-portability.js';
+import { projectWorkspaceCatalogExport } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
@@ -70,116 +42,43 @@ import {
   parseWorkerContextPackageTrace,
   verifyPortableWorkerContextPackageTrace,
 } from '../context/worker-context-package.js';
-import {
-  importWorkspaceEvidenceBundles,
-  listStoredWorkspaceEvidenceBundles,
-} from '../evidence-bundles.js';
+import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { listExportableGenerativePresentations } from '../generative-ui/commands.js';
-import {
-  bindImportedWorkspaceNotebookTraces,
-  importedWorkspaceNotebookFiles,
-  readPortableWorkspaceNotebookPages,
-} from '../knowledge/notebook-workspace-portability.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
-import type { FsStore, ImportWorkspaceStage } from '../lib/store.js';
+import type { FsStore } from '../lib/store.js';
 import { registerAppApiRoute } from '../openapi.js';
-import {
-  importWorkspacePermissionDecisions,
-  listExportableWorkspacePermissionDecisions,
-} from '../policy/permission-decisions.js';
+import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
-import {
-  importAgentEnvironmentPackageSnapshots,
-  listExportableAgentEnvironmentPackageSnapshots,
-} from '../runtime/aep-snapshot-ledger.js';
+import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import { listExportableGoalState } from '../runtime/goal-owner.js';
-import {
-  importMcpToolSchemaSnapshots,
-  listExportableMcpToolSchemaSnapshots,
-} from '../runtime/mcp-tool-schema-snapshots.js';
+import { listExportableMcpToolSchemaSnapshots } from '../runtime/mcp-tool-schema-snapshots.js';
 import { recurringCanonicalTurnPublicationIssue } from '../runtime/recurring-turn-publication.js';
-import {
-  importWorkspaceRuntimeEvidence,
-  listWorkspaceRuntimeEvidence,
-} from '../runtime/runtime-evidence.js';
-import {
-  importWorkerCheckpoints,
-  listExportableWorkerCheckpoints,
-} from '../runtime/worker-checkpoints.js';
-import {
-  importWorkspaceApplyPlans,
-  listExportableWorkspaceApplyPlans,
-} from '../runtime/workspace-apply-plans.js';
-import {
-  importWorkspaceApplyResults,
-  listExportableWorkspaceApplyResults,
-} from '../runtime/workspace-apply-results.js';
-import {
-  importWorkspaceQuarantineRecords,
-  listExportableWorkspaceQuarantineRecords,
-} from '../runtime/workspace-quarantine-records.js';
-import {
-  importWorkspaceReconciliationRecords,
-  listExportableWorkspaceReconciliationRecords,
-} from '../runtime/workspace-reconciliation-records.js';
-import {
-  importWorkspaceSyncRecords,
-  listExportableWorkspaceSyncRecords,
-} from '../runtime/workspace-sync-records.js';
+import { listWorkspaceRuntimeEvidence } from '../runtime/runtime-evidence.js';
+import { listExportableWorkerCheckpoints } from '../runtime/worker-checkpoints.js';
+import { listExportableWorkspaceApplyPlans } from '../runtime/workspace-apply-plans.js';
+import { listExportableWorkspaceApplyResults } from '../runtime/workspace-apply-results.js';
+import { listExportableWorkspaceQuarantineRecords } from '../runtime/workspace-quarantine-records.js';
+import { listExportableWorkspaceReconciliationRecords } from '../runtime/workspace-reconciliation-records.js';
+import { listExportableWorkspaceSyncRecords } from '../runtime/workspace-sync-records.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
-import {
-  importWorkspaceVaultGrants,
-  listExportableWorkspaceVaultGrants,
-} from '../vault/vault-grants.js';
-import {
-  importUnboundWorkspaceVaultReference,
-  listWorkspaceVaultReferences,
-} from '../vault/vault-references.js';
-import {
-  importWorkspaceVaultUseRecords,
-  listExportableWorkspaceVaultUseRecords,
-} from '../vault/vault-use-records.js';
-import {
-  importVaultInjectionPlans,
-  listExportableVaultInjectionPlans,
-} from '../vault-injection-plans.js';
-import {
-  importVaultInjectionReceipts,
-  listExportableVaultInjectionReceipts,
-} from '../vault-injection-receipts.js';
+import { listExportableWorkspaceVaultGrants } from '../vault/vault-grants.js';
+import { listWorkspaceVaultReferences } from '../vault/vault-references.js';
+import { listExportableWorkspaceVaultUseRecords } from '../vault/vault-use-records.js';
+import { listExportableVaultInjectionPlans } from '../vault-injection-plans.js';
+import { listExportableVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { assertWorkspaceDeletionRecoveryExportAuthority } from '../workspace-deletion-request.js';
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { readArtifactVersionRecord } from './artifacts/artifact-version-records.js';
 import type { FileStorageAdmission } from './artifacts/file-admission.js';
-import {
-  reserveCanonicalFileWrite,
-  withCanonicalFileWriteAdmission,
-} from './canonical-write-capacity.js';
-import {
-  type CoreDb,
-  openBootVerifiedWorkspaceDb,
-  openWorkspaceDbAtRoot,
-  type WorkspaceDb,
-} from './db.js';
+import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
+import { type CoreDb, openBootVerifiedWorkspaceDb, type WorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import {
   assertExportableGenerativePresentations,
-  importGenerativePresentations,
-  importLightAppFamilies,
   listExportableLightAppFamilies,
 } from './generative-portability.js';
-import { applyScopedMigrations } from './migrate.js';
 import { exportRecurringPortableHistory } from './recurring-portable-history.js';
 import { findAcceptedRecurringOccurrenceForQueue } from './recurring-records.js';
 import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
-import {
-  artifactReviews,
-  evaluationCandidateSets,
-  threadMaterialBindings,
-  workspaceMaterialRevisions,
-  workspaceMaterials,
-} from './schema/index.js';
 import {
   parseWorkObservationRecord,
   readWorkObservations,
@@ -187,17 +86,13 @@ import {
 } from './work-observations.js';
 import {
   assertWorkspaceArchiveFilePath,
-  stageWorkspaceArchive,
   WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE,
   workspaceArchiveHeader,
 } from './workspace-archive.js';
 import {
-  dryRunWorkspaceImport,
-  parsePortableWorkObservations,
   type VerifiedWorkspaceExportTree,
   verifyWorkspaceExportTree,
   WORKSPACE_EXPORT_MANIFEST_FILE,
-  type WorkspaceImportDryRunReport,
   writeWorkspaceExportTree,
 } from './workspace-export.js';
 import {
@@ -206,81 +101,16 @@ import {
   type CaptureCoverageBinding,
   listNativeProducts,
   nativeProductScope,
-  preserveDescriptiveRecord,
-  readAdmittedWorkspaceKnowledgeSelection,
   readCanonicalFile,
   readNativeProduct,
   readNativeTurnHistory,
   readWorkspaceTurnEvents,
-  writeFileAtomic,
 } from './workspace-file-records.js';
-import {
-  readWorkspaceImportSnapshot,
-  verifyImportedWorkerContextPackageSnapshot,
-  type WorkspaceImportSnapshot,
-} from './workspace-import.js';
 import {
   parseWorkspaceRetrievalTraceFile,
   readWorkspacePortableFileState,
   serializeWorkspaceRetrievalTrace,
-  writeWorkspacePortableFileState,
 } from './workspace-portable-file-state.js';
-
-/**
- * Returns the first available owner-derived imported Workspace identity.
- *
- * @param sourceWorkspaceId Complete canonical source Workspace identity.
- * @param exists Target workspace existence predicate.
- * @returns Available workspace id.
- */
-function nextImportedWorkspaceId(
-  sourceWorkspaceId: string,
-  exists: (workspaceId: string) => boolean
-): string {
-  let ordinal = 1;
-  let workspaceId = deriveEntityId('ws', ['imported', sourceWorkspaceId, ordinal]);
-  while (exists(workspaceId)) {
-    ordinal += 1;
-    workspaceId = deriveEntityId('ws', ['imported', sourceWorkspaceId, ordinal]);
-  }
-  return workspaceId;
-}
-
-/**
- * Returns whether an imported workspace id is occupied in memory or on disk.
- *
- * @param coreDb Optional Core database carrying the deployment-wide workspace registry.
- * @param store Current user Store.
- * @param dataRoot Canonical data root.
- * @param workspaceId Candidate workspace id.
- * @returns True when either owner already has the id.
- */
-export function importedWorkspaceExists(
-  coreDb: CoreDb | undefined,
-  store: FsStore,
-  dataRoot: string,
-  workspaceId: string
-): boolean {
-  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-  if (
-    coreDb?.sqlite
-      .prepare('SELECT 1 FROM workspace_registry WHERE workspace_id = ? LIMIT 1')
-      .get(workspaceId)
-  ) {
-    return true;
-  }
-
-  try {
-    store.getWorkspace(workspaceId);
-    return true;
-  } catch {
-    return Boolean(
-      lstatSync(join(dataRoot, 'workspaces', workspaceId), {
-        throwIfNoEntry: false,
-      })
-    );
-  }
-}
 
 /**
  * Requires the creating actor's current source-export authority and persisted export attribution.
@@ -388,36 +218,6 @@ export function canReadWorkspaceExport(
   }
 }
 
-/**
- * Checks whether an archive may cross the target deployment trust boundary.
- *
- * Foreign archives use the authenticated importer as target authority. Current or predecessor
- * archives still require current source Workspace eligibility and workspace.export authority.
- *
- * @param dataRoot Canonical target data root.
- * @param store Current user Store.
- * @param actor Authenticated importing actor.
- * @param verified Verified archive tree.
- * @param coreDb Optional Core membership and policy authority.
- * @returns True when the archive may be previewed or imported.
- */
-function canImportWorkspaceArchive(
-  dataRoot: string,
-  store: FsStore,
-  actor: AuthVariables['actor'],
-  verified: VerifiedWorkspaceExportTree,
-  coreDb: CoreDb | undefined
-): boolean {
-  const marker = readDataRootLayoutMarker(dataRoot);
-  if (
-    verified.manifest.sourceDeploymentId !== marker.deploymentId &&
-    verified.manifest.sourceDeploymentId !== marker.predecessorDeploymentId
-  ) {
-    return true;
-  }
-  return canReadWorkspaceExport(dataRoot, store, actor, verified, coreDb);
-}
-
 /** Yields one strict POSIX USTAR entry from already bounded metadata bytes. */
 function* workspaceArchiveEntry(
   path: string,
@@ -499,7 +299,7 @@ async function* workspaceArchiveChunks(
 /**
  * Verifies that request path handles identify the manifest stored at that path.
  *
- * @param report Verified import preview.
+ * @param report Verified export handles from the manifest.
  * @param sourceWorkspaceId Requested source workspace handle.
  * @param exportId Requested export handle.
  */
@@ -509,7 +309,7 @@ export function assertRequestedExportHandles(
   exportId: string
 ): void {
   if (report.sourceWorkspaceId !== sourceWorkspaceId || report.exportId !== exportId) {
-    throw new Error('Workspace import path handles do not match the export manifest.');
+    throw new Error('Workspace export handles do not match the export manifest.');
   }
 }
 
@@ -655,668 +455,6 @@ function collectWorkspaceExportRows(
   } finally {
     workspaceDb.sqlite.close();
   }
-}
-
-/**
- * Replays every portable workspace-database row into one staged workspace database.
- *
- * @param input Core database, staged workspace, verified snapshot, and import lineage.
- * @throws Error when migration, row replay, or usage recording fails.
- */
-function importWorkspaceDatabaseRows({
-  authorityUserId,
-  ownerUserId,
-  coreDb,
-  workspaceRoot,
-  importedWorkspaceId,
-  requestId,
-  report,
-  snapshot,
-  appIds,
-}: {
-  /** Exact authenticated user that authorized the workspace import. */
-  readonly authorityUserId: string;
-  /** Restored tombstone owner for deleted recovery, or the importing user for ordinary imports. */
-  readonly ownerUserId: string;
-  readonly coreDb: CoreDb;
-  readonly workspaceRoot: string;
-  readonly importedWorkspaceId: string;
-  readonly requestId: string | null;
-  readonly report: WorkspaceImportDryRunReport;
-  readonly snapshot: WorkspaceImportSnapshot;
-  readonly appIds: ReadonlyMap<string, string>;
-}): void {
-  const workspaceDb = openWorkspaceDbAtRoot({
-    dataRoot: coreDb.dataRoot,
-    workspaceId: importedWorkspaceId,
-    workspaceRoot,
-  });
-
-  try {
-    applyScopedMigrations(workspaceDb);
-    workspaceDb.sqlite.transaction(() => {
-      if (snapshot.workspaceMaterials.length > 0) {
-        workspaceDb.db.insert(workspaceMaterials).values(snapshot.workspaceMaterials).run();
-      }
-      if (snapshot.workspaceMaterialRevisions.length > 0) {
-        workspaceDb.db
-          .insert(workspaceMaterialRevisions)
-          .values(snapshot.workspaceMaterialRevisions)
-          .run();
-      }
-      if (snapshot.threadMaterialBindings.length > 0) {
-        workspaceDb.db.insert(threadMaterialBindings).values(snapshot.threadMaterialBindings).run();
-      }
-      if (snapshot.artifactReviews.length > 0) {
-        workspaceDb.db
-          .insert(artifactReviews)
-          .values(
-            snapshot.artifactReviews.map(({ materialProposal, ...review }) => ({
-              ...review,
-              schemaVersion: writeRetainedV1({}).schemaVersion,
-              rangeFeedback: review.rangeFeedback ?? null,
-              proposalMaterialId: materialProposal?.materialId ?? null,
-              proposalBaseRevisionId: materialProposal?.baseRevisionId ?? null,
-              proposalBaseContentDigest: materialProposal?.baseContentDigest ?? null,
-            }))
-          )
-          .run();
-      }
-      if (snapshot.evaluationCandidateSets.length > 0) {
-        workspaceDb.db
-          .insert(evaluationCandidateSets)
-          .values(
-            snapshot.evaluationCandidateSets.map((record) => ({
-              workspaceId: importedWorkspaceId,
-              candidateSetId: record.candidateSetId,
-              payloadJson: record,
-            }))
-          )
-          .run();
-      }
-    })();
-    importWorkspaceCapabilityUsageLedger({
-      workspaceDb,
-      capabilityCalls: snapshot.capabilityCalls,
-      usageRecords: snapshot.usageRecords,
-    });
-    importWorkspaceAuditEvents({
-      workspaceDb,
-      sourceWorkspaceId: report.exportedWorkspaceId,
-      targetWorkspaceId: importedWorkspaceId,
-      events: snapshot.auditEvents,
-    });
-    importWorkspaceEvidenceBundles(workspaceDb, snapshot.evidenceBundles);
-    importWorkspaceRuntimeEvidence(workspaceDb, snapshot.runtimeEvidence);
-    importWorkspaceSyncRecords(workspaceDb, {
-      backendWorkspaceHandles: snapshot.backendWorkspaceHandles,
-      changeSets: snapshot.workspaceChangeSets,
-      inputSnapshots: snapshot.workspaceInputSnapshots,
-      materializationRecords: snapshot.workspaceMaterializationRecords,
-      stagedReviews: snapshot.stagedWorkspaceReviews,
-      workerOutputManifests: snapshot.workerOutputManifests,
-    });
-    importWorkspaceApplyPlans(workspaceDb, snapshot.workspaceApplyPlans);
-    importWorkspaceApplyResults(workspaceDb, snapshot.workspaceApplyResults);
-    importWorkspaceReconciliationRecords(workspaceDb, snapshot.workspaceReconciliationRecords);
-    importWorkspaceQuarantineRecords(workspaceDb, snapshot.workspaceQuarantineRecords);
-    importWorkspacePermissionDecisions(workspaceDb, snapshot.permissionDecisions);
-    workspaceDb.sqlite.transaction(() => {
-      for (const goal of snapshot.goalState.goals)
-        workspaceDb.sqlite
-          .prepare(
-            'INSERT INTO goals (goal_id,thread_id,payload_json,schema_version) VALUES (?,?,?,?)'
-          )
-          .run(
-            goal.goalId,
-            goal.threadId,
-            JSON.stringify({
-              ...goal,
-              responsibleUserId: ownerUserId,
-              responsibleActorContext: { kind: 'session', userId: ownerUserId },
-            }),
-            writeRetainedV1({}).schemaVersion
-          );
-      for (const card of snapshot.goalState.cards)
-        workspaceDb.sqlite
-          .prepare(
-            'INSERT INTO goal_cards (card_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
-          )
-          .run(card.cardId, card.goalId, JSON.stringify(card), writeRetainedV1({}).schemaVersion);
-      for (const version of snapshot.goalState.versions)
-        workspaceDb.sqlite
-          .prepare(
-            'INSERT INTO goal_plan_versions (plan_version_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
-          )
-          .run(
-            version.planVersionId,
-            version.goalId,
-            JSON.stringify(version),
-            writeRetainedV1({}).schemaVersion
-          );
-      for (const link of snapshot.goalState.tasks)
-        workspaceDb.sqlite
-          .prepare(
-            'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json,schema_version) VALUES (?,?,?,?,?)'
-          )
-          .run(
-            link.threadId,
-            link.goalId,
-            link.cardId,
-            JSON.stringify(link),
-            writeRetainedV1({}).schemaVersion
-          );
-      for (const fact of snapshot.goalState.terminalFacts)
-        workspaceDb.sqlite
-          .prepare(
-            'INSERT INTO task_turn_terminal_facts (turn_id,thread_id,payload_json,schema_version) VALUES (?,?,?,?)'
-          )
-          .run(fact.id, fact.threadId, JSON.stringify(fact), writeRetainedV1({}).schemaVersion);
-    })();
-    importMcpToolSchemaSnapshots(workspaceDb, snapshot.mcpToolSchemaSnapshots);
-    importGenerativePresentations({
-      workspaceDb,
-      presentations: snapshot.generativePresentations,
-      targetWorkspaceId: importedWorkspaceId,
-      threadIds: snapshot.threadIds,
-      turnIds: snapshot.turnIds,
-      itemIds: snapshot.itemIds,
-      appIds,
-      presentationIds: snapshot.presentationIds,
-    });
-    importResolvedAgentSetups(workspaceDb, snapshot.resolvedAgentSetups);
-    importWorkspaceVaultUseRecords(workspaceDb, snapshot.vaultUseRecords);
-    importWorkerCheckpoints(workspaceDb, snapshot.workerCheckpoints);
-    importAgentEnvironmentPackageSnapshots(workspaceDb, snapshot.agentEnvironmentPackageSnapshots);
-    recordWorkspaceAuditEvent({
-      workspaceDb,
-      workspaceId: importedWorkspaceId,
-      requestId,
-      category: 'system',
-      action: 'workspace.import',
-      resource: `workspace:${importedWorkspaceId}`,
-      outcome: 'succeeded',
-      severity: 'info',
-      summary: `Workspace import created ${importedWorkspaceId} from ${report.exportedWorkspaceId}.`,
-    });
-    const now = new Date();
-    const call = startCapabilityCallInDb({
-      authorityActor: { kind: 'user', id: authorityUserId },
-      workspaceDb,
-      workspaceId: importedWorkspaceId,
-      requestId,
-      family: 'storage',
-      operation: 'workspace.import.write',
-      capabilityId: 'storage.workspace_import',
-      providerRef: 'nanocore-storage',
-      serviceRef: 'workspace-import',
-      redactionClass: 'metadata-only',
-      summary: `Workspace import ${importedWorkspaceId}`,
-      now,
-    });
-    recordUsageInDb({
-      workspaceDb,
-      call,
-      records: [
-        {
-          category: 'storage',
-          unit: 'files',
-          quantity: report.verification.fileCount,
-          providerRef: 'nanocore-storage',
-          source: 'workspace-import-inventory',
-        },
-        {
-          category: 'storage',
-          unit: 'bytes',
-          quantity: report.verification.totalBytes,
-          providerRef: 'nanocore-storage',
-          source: 'workspace-import-inventory',
-        },
-      ],
-      now,
-    });
-    finishCapabilityCallInDb({ workspaceDb, callId: call.id, status: 'succeeded', now });
-  } finally {
-    workspaceDb.sqlite.close();
-  }
-}
-
-/** Carries descriptive observation additions through the existing verified identity remint. */
-function retainedImportedObservations(
-  snapshot: WorkspaceImportSnapshot,
-  verified: VerifiedWorkspaceExportTree
-): Map<string, string> {
-  const sourceTurns = new Map([...snapshot.turnIds].map(([source, target]) => [target, source]));
-  const sourceThreads = new Map(
-    [...snapshot.threadIds].map(([source, target]) => [target, source])
-  );
-  const result = new Map<string, string>();
-  for (const [turnId, text] of snapshot.turnObservations) {
-    const turn = snapshot.turns.find((candidate) => candidate.id === turnId);
-    const sourceTurn = sourceTurns.get(turnId);
-    const sourceThread = turn && sourceThreads.get(turn.threadId);
-    const source =
-      sourceTurn &&
-      sourceThread &&
-      verified.fileContents.get(
-        `workspace-files/threads/${sourceThread}/turns/${sourceTurn}/observations.jsonl`
-      );
-    if (!turn || !sourceTurn || !sourceThread || source === undefined)
-      throw new Error('Imported observations require their exact verified source.');
-    const sourceLines = source
-      .slice(0, source.lastIndexOf('\n') + 1)
-      .split('\n')
-      .slice(0, -1);
-    const targetRows = parsePortableWorkObservations(text, turnId);
-    if (sourceLines.length !== targetRows.length)
-      throw new Error('Imported observations changed the committed row census.');
-    const retained = targetRows.map((target, index) => {
-      const original = JSON.parse(sourceLines[index]!);
-      const previous = parseWorkObservationRecord(original);
-      if (
-        previous.turnId !== sourceTurn ||
-        previous.seq !== target.seq ||
-        previous.type !== target.type
-      )
-        throw new Error('Imported observation remint changed its source order or type.');
-      // These two identity fields are explicit parser-owned aliases, even when the payload decoder omits them.
-      const aliases = Object.fromEntries(
-        ['id', 'turnId']
-          .filter((key) => Object.hasOwn(original.payload, key))
-          .map((key) => [key, key === 'id' ? target.id : target.turnId])
-      );
-      const raw = {
-        ...original,
-        id: target.id,
-        turnId: target.turnId,
-        payload: { ...original.payload, ...aliases },
-      };
-      const before = {
-        ...previous,
-        id: target.id,
-        turnId: target.turnId,
-        payload: { ...previous.payload, ...aliases },
-      };
-      const next = { ...target, payload: { ...target.payload, ...aliases } };
-      const value = preserveDescriptiveRecord(raw, before, next);
-      if (!isDeepStrictEqual(parseWorkObservationRecord(value), target))
-        throw new Error('Imported descriptive observation fields changed known semantics.');
-      return JSON.stringify(value);
-    });
-    result.set(turnId, retained.map((line) => `${line}\n`).join(''));
-  }
-  return result;
-}
-
-/** Installs observations only in a stopped, unpublished Workspace after native history and evidence initialization. */
-function finalizeImportedWorkObservations(
-  dataRoot: string,
-  stage: ImportWorkspaceStage,
-  snapshot: WorkspaceImportSnapshot,
-  observations: ReadonlyMap<string, string>
-): void {
-  if (!observations.size) return;
-  if (
-    dirname(stage.workspaceRoot) !== join(dataRoot, 'workspaces', '.staging') ||
-    existsSync(join(dataRoot, 'workspaces', stage.workspaceId))
-  )
-    throw new Error('Observation import requires the stopped private Workspace stage.');
-  assertCanonicalDirectory(stage.workspaceRoot);
-  const db = openWorkspaceDbAtRoot({
-    dataRoot,
-    workspaceId: stage.workspaceId,
-    workspaceRoot: stage.workspaceRoot,
-  });
-  try {
-    const bundles = new Map(
-      listStoredWorkspaceEvidenceBundles(db, stage.workspaceId).map((bundle) => [bundle.id, bundle])
-    );
-    const prepared = [...observations].map(([turnId, text]) => {
-      const turn = snapshot.turns.find((candidate) => candidate.id === turnId);
-      const coverage = snapshot.turnCaptureCoverage.get(turnId);
-      if (!turn || !coverage || (text.length > 0 && !text.endsWith('\n')))
-        throw new Error('Imported observations require exact Turn ownership and capture coverage.');
-      const rows = parsePortableWorkObservations(text, turnId);
-      const lines = text.split('\n').slice(0, -1);
-      if (rows.length !== lines.length)
-        throw new Error('Imported observation row census conflicts.');
-      // Immutable originals were copied in the earlier stage. Verify bytes before opening the deciding SQL transaction.
-      for (const row of rows) {
-        if (row.type !== 'content.published') continue;
-        for (const body of row.payload.bodies as {
-          bundleId: string;
-          sha256: string;
-          bytes: number;
-        }[]) {
-          const bundle = bundles.get(body.bundleId);
-          if (
-            !bundle ||
-            bundle.workspaceId !== stage.workspaceId ||
-            bundle.threadId !== turn.threadId ||
-            bundle.turnId !== turnId ||
-            bundle.sourceKind !== 'work-observation-body' ||
-            bundle.createdAt !== row.ts ||
-            !['restricted-raw', 'legal-hold'].includes(bundle.retentionClass) ||
-            bundle.sensitivityClass !== 'restricted' ||
-            bundle.contentDigests.length !== 1 ||
-            bundle.contentDigests[0]!.replace(/^sha256:/, '') !== body.sha256 ||
-            !['promoted', 'expired'].includes(bundle.importStatus)
-          )
-            throw new Error('Imported observation publication lacks its exact evidence owner.');
-          if (bundle.importStatus === 'expired') continue;
-          assertSafeWorkspacePathSegment(bundle.id, 'Observation evidence bundle');
-          const bytes = readCanonicalFile(
-            join(stage.workspaceRoot, 'evidence', 'backend', bundle.id, 'raw', 'content')
-          );
-          if (
-            bytes.byteLength !== body.bytes ||
-            createHash('sha256').update(bytes).digest('hex') !== body.sha256
-          )
-            throw new Error('Imported observation original bytes conflict with their publication.');
-        }
-      }
-      return { turn, coverage, rows, lines };
-    });
-    db.sqlite.transaction(() => {
-      if (db.sqlite.prepare('SELECT 1 FROM control_work_observations LIMIT 1').get())
-        throw new Error('Observation import requires an empty native observation scope.');
-      const insert = db.sqlite.prepare(
-        'INSERT INTO control_work_observations (turn_id,sequence,id,schema_version,record_json) VALUES (?,?,?,1,?)'
-      );
-      for (const { turn, coverage, rows, lines } of prepared) {
-        const binding = readWorkObservationTurnBinding(db, {
-          threadId: turn.threadId,
-          turnId: turn.id,
-        });
-        if (!isDeepStrictEqual(binding.coverage, coverage))
-          throw new Error('Imported native capture coverage differs from the verified binding.');
-        const record = {
-          ...binding.raw,
-          requiredFeatures: [
-            ...new Set([...(binding.turn.requiredFeatures ?? []), 'openkit.work-observations.v1']),
-          ],
-        };
-        readRetainedV1(record, () => StoredTurnV1Schema.parse(record));
-        const text = JSON.stringify(record);
-        if (Buffer.byteLength(text) > 64 * 1024)
-          throw new Error('Imported observation Turn metadata exceeds its native bound.');
-        db.sqlite
-          .prepare('UPDATE control_turns SET revision=revision+1,record_json=? WHERE id=?')
-          .run(text, turn.id);
-        for (const [index, row] of rows.entries()) {
-          const line = lines[index]!;
-          if (Buffer.byteLength(line) > 64 * 1024)
-            throw new Error('Imported observation metadata exceeds its native bound.');
-          insert.run(turn.id, row.seq, row.id, line);
-        }
-        // The current native owner decides format, sequence, causal/reference lineage and publication coherence.
-        if (
-          !isDeepStrictEqual(
-            readWorkObservations(db, { threadId: turn.threadId, turnId: turn.id }),
-            rows
-          )
-        )
-          throw new Error('Imported native observation rows differ from the verified remint.');
-      }
-    })();
-  } finally {
-    db.sqlite.close();
-  }
-}
-
-/**
- * Publishes one staged workspace with its Core-owned portable rows as one recoverable operation.
- *
- * @param coreDb Optional Core database for Vault and injection records.
- * @param store Current user Store.
- * @param ownerUserId Importing user or verified deleted-resource tombstone owner.
- * @param snapshot Verified and reminted import snapshot.
- * @param stageWorkspace Staged file and workspace-database writer.
- * @param initialization Actual current importer and command attribution for the new Notebook.
- * @param fileWriteAdmission Request file capacity owner, scoped only to synchronous file publication.
- * @param finalizeNativeWorkspace Stopped private dependent SQL, after native product initialization and before publication.
- * @returns Imported workspace record after publication and the separate Core transaction.
- * @throws Error when staged publication or transactional Core replay fails.
- */
-async function publishImportedWorkspace(
-  coreDb: CoreDb | undefined,
-  store: FsStore,
-  ownerUserId: string,
-  snapshot: WorkspaceImportSnapshot,
-  stageWorkspace: (stage: ImportWorkspaceStage) => void,
-  initialization: NonNullable<
-    Parameters<FsStore['importWorkspaceSnapshot']>[0]['notebookInitialization']
-  >,
-  fileWriteAdmission?: FileStorageAdmission,
-  finalizeNativeWorkspace?: (stage: ImportWorkspaceStage) => void
-): ReturnType<FsStore['importWorkspaceSnapshot']> {
-  const importWorkspaceState = () =>
-    store.importWorkspaceSnapshot({
-      ...snapshot,
-      ...(fileWriteAdmission ? { fileWriteAdmission } : {}),
-      stageWorkspace,
-      ...(finalizeNativeWorkspace ? { finalizeNativeWorkspace } : {}),
-      notebookInitialization: initialization,
-      initialNotebookFiles: importedWorkspaceNotebookFiles(
-        snapshot.portableFileState.nativeKnowledgePages
-      ),
-      ...(snapshot.portableFileState.workspaceSchema === null
-        ? {}
-        : { initialNotebookSchemaText: snapshot.portableFileState.workspaceSchema }),
-    });
-  if (!coreDb) {
-    return importWorkspaceState();
-  }
-
-  // Private Workspace initialization completes before the separate Core SQL transaction.
-  const imported = await importWorkspaceState();
-  try {
-    return coreDb.sqlite.transaction(() => {
-      recordWorkspaceOwnerMembership({
-        coreDb,
-        ownerUserId,
-        workspaceId: imported.id,
-      });
-      for (const reference of snapshot.vaultReferences) {
-        importUnboundWorkspaceVaultReference(coreDb, reference);
-      }
-      importWorkspaceVaultGrants(coreDb, snapshot.vaultGrants);
-      importVaultInjectionPlans(coreDb, snapshot.vaultInjectionPlans);
-      importVaultInjectionReceipts(coreDb, snapshot.vaultInjectionReceipts);
-      return imported;
-    })();
-  } catch (error) {
-    store.rollbackImportedWorkspace(imported.id);
-    throw error;
-  }
-}
-
-/**
- * Publishes one verified export through the existing coordinated import owner.
- *
- * @param input Verified bytes, target authorities, and request identity.
- * @returns Existing public Workspace import response.
- */
-export async function importVerifiedWorkspace({
-  authorityUserId,
-  recoveryOwnerUserId,
-  coreDb,
-  dataRoot,
-  requestId,
-  store,
-  verified,
-  reloadConfiguration,
-  fileAdmission,
-}: {
-  readonly fileAdmission?: FileStorageAdmission;
-  readonly reloadConfiguration?: () => void;
-  readonly authorityUserId: string;
-  /** Trusted tombstone owner for deleted-resource recovery; ordinary imports use the invoking actor. */
-  readonly recoveryOwnerUserId?: string;
-  readonly coreDb: CoreDb | undefined;
-  readonly dataRoot: string;
-  readonly requestId: string | null;
-  readonly store: FsStore;
-  readonly verified: VerifiedWorkspaceExportTree;
-}) {
-  const workspaceExists = (workspaceId: string) =>
-    importedWorkspaceExists(coreDb, store, dataRoot, workspaceId);
-  const report = dryRunWorkspaceImport({ verified, workspaceExists });
-  const importedWorkspaceId =
-    report.collision.status === 'available'
-      ? report.collision.workspaceId
-      : nextImportedWorkspaceId(report.collision.workspaceId, workspaceExists);
-  const snapshot = readWorkspaceImportSnapshot({
-    verified,
-    targetWorkspaceId: importedWorkspaceId,
-    targetServerId: readDataRootLayoutMarker(dataRoot).deploymentId,
-    resourcePolicySubjectEligible: (subject) => {
-      // An exact deployment identity establishes the source namespace. A bare User id from another Server never does.
-      if (
-        verified.manifest.sourceDeploymentId !== readDataRootLayoutMarker(dataRoot).deploymentId ||
-        subject.userId !== (recoveryOwnerUserId ?? authorityUserId) ||
-        !coreDb ||
-        !isCanonicalUserActive(coreDb, subject.userId)
-      )
-        return false;
-      return (
-        subject.kind === 'user' ||
-        store
-          .getWorkspaceResources(verified.manifest.workspaceId)
-          .agents.some((agent) => agent.id === subject.agentId)
-      );
-    },
-  });
-  const observations = retainedImportedObservations(snapshot, verified);
-  const stageWorkspace = ({ workspaceRoot }: ImportWorkspaceStage) => {
-    snapshot.finalizeNotebookKnowledge?.(
-      readPortableWorkspaceNotebookPages(
-        workspaceRoot,
-        readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, importedWorkspaceId)
-      )
-    );
-    writeWorkspacePortableFileState(workspaceRoot, {
-      ...snapshot.portableFileState,
-      retrievalTraceFiles: bindImportedWorkspaceNotebookTraces({
-        workspaceRoot,
-        workspaceId: importedWorkspaceId,
-        knowledgeBaseId: snapshot.defaultKnowledgeBaseId,
-        selection: readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, importedWorkspaceId),
-        traces: snapshot.portableFileState.retrievalTraceFiles,
-      }),
-    });
-    for (const [path, bytes] of snapshot.restrictedEvidenceFiles) {
-      assertWorkspaceArchiveFilePath(path);
-      const target = join(workspaceRoot, 'evidence', 'backend', path);
-      mkdirSync(dirname(target), { recursive: true });
-      writeFileAtomic(target, bytes);
-    }
-    for (const [path, source] of snapshot.artifactPayloadFiles) {
-      assertWorkspaceArchiveFilePath(path);
-      const target = join(workspaceRoot, path);
-      mkdirSync(dirname(target), { recursive: true });
-      const byteLength = lstatSync(source).size;
-      const reservation = reserveCanonicalFileWrite(byteLength);
-      let release = false;
-      try {
-        copyFileSync(source, target, constants.COPYFILE_EXCL);
-        reservation?.recordWritten(byteLength);
-        if (/^threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\//.test(path))
-          chmodSync(target, 0o444);
-        release = true;
-      } catch (error) {
-        rmSync(target, { force: true });
-        release = true;
-        throw error;
-      } finally {
-        if (release) reservation?.release();
-      }
-    }
-    snapshot.verifySourceOriginals(workspaceRoot);
-    for (const [path, text] of snapshot.artifactVersionRecords) {
-      assertWorkspaceArchiveFilePath(path);
-      const target = join(workspaceRoot, path);
-      mkdirSync(dirname(target), { recursive: true });
-      writeFileAtomic(target, text);
-    }
-    for (const artifact of snapshot.artifacts) {
-      for (let version = 1; version <= artifact.version; version += 1) {
-        readArtifactVersionRecord(workspaceRoot, artifact.id, version);
-      }
-    }
-    verifyImportedWorkerContextPackageSnapshot(snapshot, workspaceRoot);
-    for (const [bundleId, text] of snapshot.runtimeProvenanceIndexes) {
-      assertSafeWorkspacePathSegment(bundleId, 'Evidence bundle id');
-      const path = join(
-        workspaceRoot,
-        'evidence',
-        'bundles',
-        bundleId,
-        'runtime-origin-index.jsonl'
-      );
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, text);
-    }
-    if (snapshot.dataSourceCatalog) {
-      const catalogRoot = join(workspaceRoot, 'config');
-      mkdirSync(catalogRoot, { recursive: true });
-      writeFileSync(
-        join(catalogRoot, 'data-sources.jsonc'),
-        `${JSON.stringify(snapshot.dataSourceCatalog, null, 2)}\n`
-      );
-    }
-    if (snapshot.agentResourceCatalog) {
-      writeImportedWorkspaceCatalog(
-        workspaceRoot,
-        snapshot.agentResourceCatalog,
-        snapshot.importedSkillPayloads
-      );
-    }
-    const appIds = importLightAppFamilies({
-      workspaceRoot,
-      sourceWorkspaceId: report.exportedWorkspaceId,
-      targetWorkspaceId: importedWorkspaceId,
-      apps: snapshot.lightApps as never,
-      definitions: snapshot.lightAppDefinitions as never,
-      records: snapshot.lightAppRecords as never,
-    });
-    if (coreDb) {
-      importWorkspaceDatabaseRows({
-        authorityUserId,
-        ownerUserId: recoveryOwnerUserId ?? authorityUserId,
-        coreDb,
-        workspaceRoot,
-        importedWorkspaceId,
-        requestId,
-        report,
-        snapshot,
-        appIds,
-      });
-    }
-  };
-  const workspace = await publishImportedWorkspace(
-    coreDb,
-    store,
-    recoveryOwnerUserId ?? authorityUserId,
-    snapshot,
-    stageWorkspace,
-    {
-      requestId: requestId ?? randomUUID(),
-      producer: { kind: 'user', id: authorityUserId },
-      instructionReference: `workspace.import:${verified.manifest.id}${verified.manifest.knowledgeNotebookRevision ? `:notebook:${verified.manifest.knowledgeNotebookRevision}` : ''}`,
-    },
-    fileAdmission,
-    (stage) => finalizeImportedWorkObservations(dataRoot, stage, snapshot, observations)
-  );
-
-  reloadConfiguration?.();
-  return WorkspaceImportResponseSchema.parse({
-    ...report,
-    mode: 'imported',
-    requestId,
-    importedWorkspaceId: workspace.id,
-    workspace,
-  });
 }
 
 /** Returns the only recovery export id owned by one Workspace deletion request. */
@@ -1803,23 +941,19 @@ export async function createVerifiedWorkspaceExport(
 }
 
 /**
- * Registers the three Workspace archive streaming bindings; JSON transfer joins use the native owners above.
+ * Registers the Workspace archive download binding. JSON export uses the verified export owner.
  *
- * @param dependencies Hono app and workspace portability storage dependencies.
+ * @param dependencies Hono app and workspace export storage dependencies.
  */
 export function registerWorkspaceTransferRoutes({
   app,
   coreDb,
   dataRoot,
-  fileAdmission,
   requestStore,
-  reloadConfiguration,
 }: {
-  readonly reloadConfiguration?: () => void;
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly dataRoot: string | null;
-  readonly fileAdmission: FileStorageAdmission;
   readonly requestStore: (context: Context<{ Variables: AuthVariables }>) => FsStore;
 }): void {
   registerAppApiRoute(app, 'workspace.archive-download', (c) => {
@@ -1874,99 +1008,6 @@ export function registerWorkspaceTransferRoutes({
         'workspace_export_archive_failed',
         400
       );
-    }
-  });
-
-  registerAppApiRoute(app, 'workspace.archive-import-dry-run', async (c) => {
-    if (!dataRoot) {
-      return asApiError(
-        'Workspace archive import dry-run is unavailable.',
-        'workspace_archive_import_unavailable',
-        503
-      );
-    }
-
-    let staged: Awaited<ReturnType<typeof stageWorkspaceArchive>> | null = null;
-    try {
-      staged = await stageWorkspaceArchive(c.req.raw, dataRoot, fileAdmission);
-      const store = requestStore(c);
-      const verified = verifyWorkspaceExportTree({ exportRoot: staged.exportRoot });
-      if (!canImportWorkspaceArchive(dataRoot, store, c.get('actor'), verified, coreDb)) {
-        return asApiError(
-          'Workspace archive is unavailable.',
-          'workspace_archive_import_forbidden',
-          403
-        );
-      }
-      return c.json(
-        WorkspaceImportDryRunResponseSchema.parse(
-          dryRunWorkspaceImport({
-            verified,
-            workspaceExists: (workspaceId) =>
-              importedWorkspaceExists(coreDb, store, dataRoot, workspaceId),
-          })
-        )
-      );
-    } catch {
-      return asApiError(
-        'Workspace archive import dry-run could not verify the request body.',
-        'workspace_archive_import_dry_run_failed',
-        400
-      );
-    } finally {
-      staged?.remove();
-    }
-  });
-
-  registerAppApiRoute(app, 'workspace.archive-import', async (c) => {
-    if (!dataRoot) {
-      return asApiError(
-        'Workspace archive import is unavailable.',
-        'workspace_archive_import_unavailable',
-        503
-      );
-    }
-    const requestId = c.req.header('x-openkit-request-id');
-    if (!requestId || requestId.trim().length === 0) {
-      return asApiError(
-        'Workspace archive import requires x-openkit-request-id.',
-        'invalid_request',
-        400
-      );
-    }
-
-    let staged: Awaited<ReturnType<typeof stageWorkspaceArchive>> | null = null;
-    try {
-      staged = await stageWorkspaceArchive(c.req.raw, dataRoot, fileAdmission);
-      const store = requestStore(c);
-      const verified = verifyWorkspaceExportTree({ exportRoot: staged.exportRoot });
-      if (!canImportWorkspaceArchive(dataRoot, store, c.get('actor'), verified, coreDb)) {
-        return asApiError(
-          'Workspace archive is unavailable.',
-          'workspace_archive_import_forbidden',
-          403
-        );
-      }
-      return c.json(
-        await importVerifiedWorkspace({
-          ...(reloadConfiguration ? { reloadConfiguration } : {}),
-          authorityUserId: c.get('actor').userId,
-          coreDb,
-          dataRoot,
-          fileAdmission,
-          requestId,
-          store,
-          verified,
-        })
-      );
-    } catch {
-      return asApiError(
-        'Workspace archive import could not verify or publish the request body.',
-        'workspace_archive_import_failed',
-        400
-      );
-    } finally {
-      staged?.remove();
     }
   });
 }

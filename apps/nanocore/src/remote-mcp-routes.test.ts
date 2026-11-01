@@ -191,8 +191,6 @@ describe('remote MCP App endpoint', () => {
         'artifact.download',
         'artifact.version-file-commit',
         'workspace.archive-download',
-        'workspace.archive-import-dry-run',
-        'workspace.archive-import',
       ]) {
         const search = await f.call('openkit_search', { query: operation }, admin.secret);
         expect(
@@ -241,7 +239,14 @@ describe('remote MCP App endpoint', () => {
       expect(
         f.coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
       ).toEqual(registryBefore);
-      for (const operation of ['connection.meta', 'health', 'diagnostics', 'openapi']) {
+      for (const operation of [
+        'connection.meta',
+        'health',
+        'diagnostics',
+        'openapi',
+        'workspace.archive-import-dry-run',
+        'workspace.archive-import',
+      ]) {
         const result = await f.call('openkit_describe', { operation }, admin.secret);
         expect(result.isError).toBe(true);
         expect(JSON.parse(result.content[0].text)).toMatchObject({
@@ -1044,8 +1049,6 @@ describe('remote MCP App endpoint', () => {
         'token.create',
         'token.rotate',
         'workspace.archive-download',
-        'workspace.archive-import',
-        'workspace.archive-import-dry-run',
         'workspace.backup-download',
       ]);
       for (const [operation, definition] of Object.entries(OPERATION_DEFINITIONS)) {

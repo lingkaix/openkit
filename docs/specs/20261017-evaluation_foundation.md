@@ -62,7 +62,7 @@ The next step uses the selected candidate's exact version through existing pinne
 
 The Workspace owns each set and judgement. Current access must admit the target and every candidate before a read, judgement or selection. References do not widen the audience of private source work. Historical actor, strategy and source references grant no current access.
 
-The target's existing owner retains Artifact judgements and Material feedback. The candidate-set owner retains set membership and selection judgements. Lists and current selections are projections over those records. Export, import and restart preserve exact references and attribution within the Workspace's existing portability boundary. These records contain no credentials or copies of runtime configuration.
+The target's existing owner retains Artifact judgements and Material feedback. The candidate-set owner retains set membership and selection judgements. Lists and current selections are projections over those records. Verified export and restart preserve exact references and attribution within the Workspace. Ordinary portable import is absent and does not remap those references. These records contain no credentials or copies of runtime configuration.
 
 An exact retry of an accepted request returns its recorded result without adding another judgement or set. Reuse of a request identity with different input returns a conflict. Missing, inaccessible or digest-invalid targets produce a clear error without a new accepted judgement. A stale Material base or a conflicting correction preserves the owner's truthful result and never changes another revision.
 
@@ -74,7 +74,7 @@ Retained judgement and candidate-set records use only the shared `schemaVersion:
 
 ## Acceptance
 
-- An inspected judgement identifies its human actor, exact target, time, kind, typed choice and note after restart and Workspace round trip.
+- An inspected judgement identifies its human actor, exact target, time, kind, typed choice and note after restart and in the verified Workspace export.
 - An Artifact judgement uses its existing Review and cannot bypass Review decision or Material apply authority.
 - A candidate set preserves membership and every selection. Selection rejects a non-member and cannot disclose an inaccessible candidate.
 - Explicit next-step submission uses the selected exact version through ordinary pinned-input admission, including after a newer version exists.

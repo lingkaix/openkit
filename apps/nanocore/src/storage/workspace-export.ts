@@ -13,7 +13,6 @@ import {
 } from '@openkit/config-schema';
 import {
   type ArtifactVersionRecord,
-  deriveEntityId,
   type ItemSchema,
   KnowledgeNotebookPageSchema,
   readRetainedV1,
@@ -338,41 +337,6 @@ export interface WriteWorkspaceExportTreeInput {
   generativePresentations?: readonly unknown[];
   /** Portable Skill/MCP/plugin catalog projection and retained Skill payloads. */
   agentResourceCatalog?: WorkspaceCatalogExportProjection;
-}
-
-/** Input for previewing a workspace import without writing target state. */
-export interface DryRunWorkspaceImportInput {
-  /** Already verified export tree whose exact bytes are being previewed. */
-  verified: VerifiedWorkspaceExportTree;
-  /** Returns whether a workspace id already exists in the target deployment. */
-  workspaceExists: (workspaceId: string) => boolean;
-}
-
-/** Result returned after verifying an export and previewing import collision handling. */
-export interface WorkspaceImportDryRunReport {
-  /** Operation mode marker. */
-  mode: 'dry-run';
-  /** Export record id from the verified manifest. */
-  exportId: string;
-  /** Source workspace handle used to locate the export. */
-  sourceWorkspaceId: string;
-  /** Workspace id recorded inside the export manifest. */
-  exportedWorkspaceId: string;
-  /** Verified export manifest. */
-  manifest: WorkspaceExportManifest;
-  /** Offline verification summary. */
-  verification: {
-    /** Number of checked inventory files. */
-    fileCount: number;
-    /** Total checked inventory bytes. */
-    totalBytes: number;
-    /** Checked inventory file paths. */
-    checkedFiles: string[];
-  };
-  /** Collision preview for the exported workspace id. */
-  collision:
-    | { status: 'available'; workspaceId: string }
-    | { status: 'collides'; workspaceId: string; suggestedWorkspaceId: string };
 }
 
 /**
@@ -1018,44 +982,6 @@ export function parsePortableWorkObservations(
 /** Returns whether one unknown value is a non-array object. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * Verifies a workspace export and previews import id collision without writing state.
- *
- * @param input Export root and target workspace lookup.
- * @returns Dry-run report with verification and collision summary.
- * @throws Error when the export tree fails offline verification.
- */
-export function dryRunWorkspaceImport(
-  input: DryRunWorkspaceImportInput
-): WorkspaceImportDryRunReport {
-  const verified = input.verified;
-  const workspaceId = verified.manifest.workspaceId;
-  const collision = input.workspaceExists(workspaceId)
-    ? {
-        status: 'collides' as const,
-        workspaceId,
-        suggestedWorkspaceId: deriveEntityId('ws', ['imported', workspaceId, 1]),
-      }
-    : { status: 'available' as const, workspaceId };
-
-  return {
-    mode: 'dry-run',
-    exportId: verified.manifest.id,
-    sourceWorkspaceId: verified.manifest.workspaceId,
-    exportedWorkspaceId: workspaceId,
-    manifest: verified.manifest,
-    verification: {
-      fileCount: verified.checkedFiles.length,
-      totalBytes: verified.manifest.contentInventory.reduce(
-        (total, entry) => total + entry.bytes,
-        0
-      ),
-      checkedFiles: verified.checkedFiles,
-    },
-    collision,
-  };
 }
 
 /**

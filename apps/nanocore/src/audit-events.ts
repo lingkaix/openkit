@@ -377,32 +377,6 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
 }
 
 /**
- * Imports exported workspace audit events into the target workspace database.
- *
- * @param input Target database, source workspace id, target workspace id, and events.
- */
-export function importWorkspaceAuditEvents(input: {
-  workspaceDb: WorkspaceDb;
-  sourceWorkspaceId: string;
-  targetWorkspaceId: string;
-  events: readonly AuditEvent[];
-}): void {
-  for (const event of input.events) {
-    insertAuditEvent(
-      input.workspaceDb.sqlite,
-      AuditEventSchema.parse({
-        ...event,
-        workspaceId: input.targetWorkspaceId,
-        resource:
-          event.resource === `workspace:${input.sourceWorkspaceId}`
-            ? `workspace:${input.targetWorkspaceId}`
-            : event.resource,
-      })
-    );
-  }
-}
-
-/**
  * Stores one validated audit event in the provided database handle.
  *
  * @param sqlite SQLite handle that owns an `audit_events` table.

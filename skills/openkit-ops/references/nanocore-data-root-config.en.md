@@ -282,7 +282,7 @@ Check `savedRevision` and `reloadStatus` separately. Only an applied reload chan
 
 For an Agent assignment, use `subject: {"kind":"agent","userId":"RESPONSIBLE-USER","agentId":"REGISTERED-AGENT"}`. A human grant does not become an Agent grant. The actual AgentSession is a mapped process, not the stored Policy subject.
 
-Export retains current effective boundaries and refuses saved/effective disagreement. Import remints resource identifiers and keeps last-revoke boundaries. It rejects unsupported restrictions or unvalidated principal bindings before publication; it never falls back to full-member access. Current cross-deployment imports support closed boundaries without assignments; active source assignments require verified target bindings, and matching bare identifiers are insufficient. Keep the original archive when import refuses.
+Export retains current effective boundaries and refuses saved/effective disagreement and a managed entry without its included canonical shared Thread. Source principals in that document do not grant target membership. Ordinary import does not publish those bindings.
 
 ## `users/<userId>/config/user.jsonc`
 
@@ -424,7 +424,7 @@ This offline command reads the existing `DISCORD_OPENKIT_COMMAND` descriptor fro
 
 Every configured Discord adapter requires an HTTPS `server.publicBaseUrl` for authenticated App link-back. For attention sending, also configure `channels.discord.botTokenRef`. This field accepts an `env:` reference to an operator-held variable. Supply the credential through the deployment environment. Never put its value in configuration, command arguments, logs, or evidence. An absent send credential does not prevent fake-backed verification, account pairing, or signed request responses. The bot account and a specifically authorized real send are needed for real delivery proof.
 
-Discord source references, account bindings, pairing digests, disclosures, inbound event receipts, and send attempts live in the Core database. Inbound receipts retain the signed external actor and each admitted response's Core actor and exact request source before dispatch. Rebinding does not relabel earlier responses. Missing historical attribution stays unknown. These facts do not prove a response was accepted or executed. Full deployment backup retains them. Portable Workspace import does not restore account control or replay external effects. Restart preserves incomplete sends and response dispatch as unknown. Inspect Core outcomes before any new request or explicit no-send retry.
+Discord source references, account bindings, pairing digests, disclosures, inbound event receipts, and send attempts live in the Core database. Inbound receipts retain the signed external actor and each admitted response's Core actor and exact request source before dispatch. Rebinding does not relabel earlier responses. Missing historical attribution stays unknown. These facts do not prove a response was accepted or executed. Full deployment backup retains them. Ordinary portable Workspace import is removed and does not restore account control or replay external effects. Restart preserves incomplete sends and response dispatch as unknown. Inspect Core outcomes before any new request or explicit no-send retry.
 
 ## Governed Policy Changes
 

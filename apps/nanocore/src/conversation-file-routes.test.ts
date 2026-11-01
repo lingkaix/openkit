@@ -22,6 +22,7 @@ import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { turnFilePayloadPath } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
@@ -803,7 +804,7 @@ describe('Turn-owned conversation originals', () => {
     ).toEqual([]);
   });
 
-  it('exports, remints, imports, and re-exports exact binary originals under their new Turn owners', async () => {
+  it('exports exact conversation file originals', async () => {
     const state = await fixture();
     const bytes = [new Uint8Array(), new Uint8Array([0xff, 0, 0xc0, 0x80])];
     const input = {
@@ -825,42 +826,37 @@ describe('Turn-owned conversation originals', () => {
     });
     expect(acceptedResponse.status, await acceptedResponse.clone().text()).toBe(200);
     const accepted = await acceptedResponse.json();
-    let workspaceId = state.workspaceId;
-    for (let cycle = 0; cycle < 2; cycle += 1) {
-      const exported = await state.app.request(
-        ...operationRequest('workspace.export', { workspaceId })
-      );
-      expect(exported.status, await exported.clone().text()).toBe(200);
-      const { exportId } = await exported.json();
-      const imported = await state.app.request(
-        ...operationRequest(
-          'workspace.import',
-          {},
-          {
-            body: JSON.stringify({
-              sourceWorkspaceId: workspaceId,
-              exportId,
-              requestId: randomUUID(),
-            }),
-          }
-        )
-      );
-      expect(imported.status, await imported.clone().text()).toBe(200);
-      const { importedWorkspaceId } = await imported.json();
-      expect(importedWorkspaceId).not.toBe(workspaceId);
-      workspaceId = importedWorkspaceId;
-      const turn = state.store
-        .listThreads(workspaceId)
-        .flatMap((thread) => state.store.listThreadTurns(workspaceId, thread.id))
-        .find((candidate) => candidate.fileInputs?.length)!;
-      expect(turn.id).not.toBe(accepted.turn.id);
-      expect(turn.fileInputs).toEqual(input.fileInputs);
-      const root = join(state.dataRoot, 'workspaces', workspaceId);
-      for (const [ordinal, part] of bytes.entries())
-        expect(readFileSync(turnFilePayloadPath(root, turn.threadId, turn.id, ordinal))).toEqual(
-          Buffer.from(part)
-        );
-    }
+    const exported = await state.app.request(
+      ...operationRequest('workspace.export', { workspaceId: state.workspaceId })
+    );
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const { exportId } = await exported.json();
+    const exportRoot = join(
+      state.dataRoot,
+      'server',
+      'exports',
+      'workspaces',
+      state.workspaceId,
+      exportId
+    );
+    const verified = verifyWorkspaceExportTree({ exportRoot });
+    const turns = (verified.fileContents.get('records/turns.jsonl') ?? '')
+      .trim()
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as { id: string; fileInputs?: unknown });
+    expect(turns).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: accepted.turn.id,
+          fileInputs: input.fileInputs,
+        }),
+      ])
+    );
+    for (const [ordinal, part] of bytes.entries())
+      expect(
+        readFileSync(turnFilePayloadPath(exportRoot, state.thread.id, accepted.turn.id, ordinal))
+      ).toEqual(Buffer.from(part));
   });
 
   it('retains ordered empty and invalid UTF-8 originals without creating an Artifact, then replays without retry bytes', async () => {
