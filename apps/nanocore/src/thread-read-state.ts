@@ -12,6 +12,8 @@ interface ThreadReadOwner {
   userId: string;
   workspaceId: string;
   threadId: string;
+  /** Existing dispatcher admission; remains on Main across native opening. */
+  recheckAdmission?: (() => Promise<void>) | undefined;
 }
 
 /** Selects completed displayed-message kinds, excluding the viewer's own input and hidden gate input. */
@@ -52,7 +54,7 @@ export function readThreadReadState(owner: ThreadReadOwner) {
 }
 
 /** Unions actual displayed identities; omitted identities mean the caller explicitly selected Mark read. */
-export function markThreadRead(
+export async function markThreadRead(
   owner: ThreadReadOwner & { itemIds?: readonly string[] | undefined }
 ) {
   const eligible = receiptMessageItemIds(
@@ -73,7 +75,13 @@ export function markThreadRead(
     applyScopedMigrations(db);
     return projectReadState(
       eligible,
-      advanceThreadReadReceipt(db, owner.workspaceId, owner.threadId, selected)
+      await advanceThreadReadReceipt(
+        db,
+        owner.workspaceId,
+        owner.threadId,
+        selected,
+        owner.recheckAdmission
+      )
     );
   } finally {
     db.sqlite.close();

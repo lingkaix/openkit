@@ -98,6 +98,12 @@ import type {
 } from './control-store-recovery.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
+  type ControlThreadReadMembershipWire,
+  ControlThreadReadMembershipWireSchema,
+  THREAD_READ_RECEIPT_INVALID,
+  ThreadReadMembershipResultSchema,
+} from './thread-read-membership-codecs.js';
+import {
   ControlWorkObservationChunkInputSchema,
   type ControlWorkObservationCommandInput,
   ControlWorkObservationInputSchema,
@@ -106,7 +112,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 26;
+export const CONTROL_WORKER_VERSION = 27;
 
 /** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
 export const ControlProvenanceInputSchema = z
@@ -254,6 +260,11 @@ export type ControlWorkerCommand =
           readonly input: ControlGenerativePresentationWire;
           readonly content?: ArrayBuffer;
         }
+      | {
+          readonly operation: 'thread-read-membership';
+          readonly input: ControlThreadReadMembershipWire;
+          readonly content?: ArrayBuffer;
+        }
       | { readonly operation: 'goal'; readonly input: ControlGoalInput }
       | {
           readonly operation: 'worker-control-evidence';
@@ -305,7 +316,8 @@ export function controlWorkerInputBytes(
           !(
             (command.operation === 'capability' ||
               command.operation === 'observation' ||
-              command.operation === 'generative-presentation') &&
+              command.operation === 'generative-presentation' ||
+              command.operation === 'thread-read-membership') &&
             key === 'content' &&
             this === command
           )
@@ -380,6 +392,7 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 export interface ControlWorkerDomainRefusal {
   readonly operation:
     | 'provenance'
+    | 'thread-read-membership'
     | 'generative-presentation'
     | 'goal'
     | 'capability'
@@ -431,6 +444,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'provenance';
       readonly result: z.infer<typeof ControlProvenanceResultSchema>;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'thread-read-membership';
+      readonly itemIds: string[];
     }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
@@ -581,6 +599,10 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'item' || value.operation === 'event') &&
         value.code === 'conflict' &&
         value.status === 409) ||
+      (value.operation === 'thread-read-membership' &&
+        value.status === 409 &&
+        value.code === 'recovery_required' &&
+        value.message === THREAD_READ_RECEIPT_INVALID) ||
       (value.operation === 'generative-presentation' &&
         value.status === 409 &&
         ((value.code === 'idempotency_key_conflict' &&
@@ -657,6 +679,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
     );
+  if (reply.operation === 'thread-read-membership')
+    return ThreadReadMembershipResultSchema.safeParse(reply.itemIds).success;
   if (reply.operation === 'generative-presentation')
     return typeof reply.presentationId === 'string';
   if (reply.operation === 'provenance')
@@ -1065,6 +1089,14 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       ControlWorkerRejectedEvidenceSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  if (value.operation === 'thread-read-membership') {
+    const parsed = ControlThreadReadMembershipWireSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
   if (value.operation === 'generative-presentation') {
     const parsed = ControlGenerativePresentationWireSchema.safeParse(value.input);
     return (

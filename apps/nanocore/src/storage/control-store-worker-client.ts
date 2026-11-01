@@ -106,6 +106,10 @@ import {
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
 import type { WorkspaceDb } from './db.js';
+import {
+  type ControlThreadReadMembership,
+  THREAD_READ_RECEIPT_INVALID,
+} from './thread-read-membership-codecs.js';
 import type {
   ControlWorkObservationCommandInput,
   ControlWorkObservationResult,
@@ -1348,6 +1352,34 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'project-cleanup' }>).result;
   }
 
+  /** Returns the exact native User-owned union only after its covering FULL commit. */
+  async threadReadMembership(
+    database: string,
+    input: ControlThreadReadMembership
+  ): Promise<string[]> {
+    const json = JSON.stringify(input.itemIds);
+    const wire = {
+      userId: input.userId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      byteLength: Buffer.byteLength(json),
+    };
+    try {
+      const reply = await this.request(
+        { operation: 'thread-read-membership', database, input: wire },
+        [json]
+      );
+      return (reply as Extract<Success, { operation: 'thread-read-membership' }>).itemIds;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'thread-read-membership'
+      )
+        throw new Error(THREAD_READ_RECEIPT_INVALID, { cause: error });
+      throw error;
+    }
+  }
+
   /** Retains the exact authenticated rejection row before returning its original public refusal. */
   async workerControlEvidence(
     database: string,
@@ -1929,12 +1961,14 @@ class ControlStoreWorkerClient {
       command.operation === 'material' ||
       command.operation === 'capability' ||
       command.operation === 'observation' ||
-      command.operation === 'generative-presentation'
+      command.operation === 'generative-presentation' ||
+      command.operation === 'thread-read-membership'
     ) {
       const size =
         command.operation === 'material'
           ? controlMaterialTransferSize(command.input)
-          : command.operation === 'generative-presentation'
+          : command.operation === 'generative-presentation' ||
+              command.operation === 'thread-read-membership'
             ? { byteLength: command.input.byteLength, replyByteLength: 0 }
             : command.operation === 'observation'
               ? {

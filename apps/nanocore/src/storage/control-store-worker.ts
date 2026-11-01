@@ -145,9 +145,14 @@ import {
 } from './control-store-worker-protocol.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
 import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
-import { coreDbPath, workspaceDbPath } from './fs-layout.js';
+import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import { applyNativeScopeMigrations } from './migrate.js';
+import {
+  THREAD_READ_RECEIPT_INVALID,
+  ThreadReadItemIdsSchema,
+} from './thread-read-membership-codecs.js';
+import { applyControlThreadReadReceipt } from './thread-read-membership-native.js';
 import {
   applyControlWorkObservation,
   type ControlWorkObservationInput,
@@ -177,6 +182,7 @@ type WriteCommand = Extract<
       | 'event'
       | 'publication'
       | 'project-cleanup'
+      | 'thread-read-membership'
       | 'worker-control-evidence'
       | 'generative-presentation'
       | 'provenance'
@@ -205,6 +211,7 @@ type WriteRequest = WriteCommand & {
   ready: boolean;
   predecessorFailed: boolean;
   refusal?: ControlWorkerReply;
+  readonly preparedThreadReadItemIds?: readonly string[];
   readonly preparedGenerativePresentation?: PreparedControlGenerativePresentation;
   readonly preparedPublication?: PreparedControlPublication | undefined;
   readonly preparedEvent?: Awaited<ReturnType<typeof prepareControlEventAppend>> | undefined;
@@ -291,6 +298,17 @@ function failure(
 
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
+  if (
+    operation === 'thread-read-membership' &&
+    error instanceof Error &&
+    error.message === THREAD_READ_RECEIPT_INVALID
+  )
+    return {
+      operation,
+      code: 'recovery_required',
+      message: THREAD_READ_RECEIPT_INVALID,
+      status: 409,
+    };
   let domain: ControlWorkerDomainRefusal | undefined;
   if (
     operation === 'generative-presentation' &&
@@ -1474,6 +1492,26 @@ function flush(owner: OwnedDatabase): void {
               operation: 'maintenance',
               result,
             };
+          } else if (request.operation === 'thread-read-membership') {
+            const { userId, workspaceId, threadId } = request.input;
+            const dataRoot = dirname(dirname(dirname(dirname(owner.path))));
+            if (owner.path !== userDbPath(dataRoot, userId) || owner.productOwner)
+              throw new ControlProductPreconditionError();
+            const itemIds = request.preparedThreadReadItemIds;
+            if (!itemIds) throw new ControlProductPreconditionError();
+            const stored = applyControlThreadReadReceipt(
+              { scope: 'user', sqlite, dataRoot, userId },
+              workspaceId,
+              threadId,
+              itemIds
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'thread-read-membership',
+              itemIds: stored,
+            };
           } else if (request.operation === 'worker-control-evidence') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const row = request.input;
@@ -2004,6 +2042,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'event' ||
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
+      value.operation === 'thread-read-membership' ||
       value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||
       value.operation === 'provenance' ||
@@ -2064,6 +2103,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           published: new Set(),
         };
         const prepare = async () => {
+          let preparedThreadReadItemIds: readonly string[] | undefined;
           let preparedGenerativePresentation: PreparedControlGenerativePresentation | undefined;
           let preparedPublication: PreparedControlPublication | undefined;
           let preparedItem: WriteRequest['preparedItem'];
@@ -2081,6 +2121,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedProvenance: WorkerRuntimeProvenanceMetadataInput | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
           try {
+            if (value.operation === 'thread-read-membership') {
+              preparedThreadReadItemIds = ThreadReadItemIdsSchema.parse(
+                JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value.content))
+              );
+            }
             if (value.operation === 'pending' && !value.input.terminal) {
               if (!owner.productOwner) throw new ControlProductPreconditionError();
               preparedEntries = await prepareControlEntries(
@@ -2310,6 +2355,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               throw new ControlProductPreconditionError();
             Object.assign(queued, {
               ready: true,
+              preparedThreadReadItemIds,
               preparedEntries,
               preparedGenerativePresentation,
               preparedGoal,

@@ -774,7 +774,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
     if (!sql.readItemId) {
       throw new Error('B01 Turn must have its real request Item before SQL corpus seeding.');
     }
-    o.reads.advanceThreadReadReceipt(user, workspaceId, threadId, [sql.readItemId]);
+    await o.reads.advanceThreadReadReceipt(user, workspaceId, threadId, [sql.readItemId]);
     sql.materialId = o.materials.createWorkspaceMaterial(workspace, {
       acceptedAt: NOW,
       actor,

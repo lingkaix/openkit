@@ -1,88 +1,41 @@
-import {
-  ItemIdSchema,
-  readRetainedV1,
-  ThreadIdSchema,
-  WorkspaceIdSchema,
-  writeRetainedV1,
-} from '@openkit/protocol';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import type { UserDb } from './db.js';
+import { userDbPath } from './fs-layout.js';
+import { ThreadReadItemIdsSchema } from './thread-read-membership-codecs.js';
+import { readThreadReadReceipt } from './thread-read-membership-native.js';
 
-const itemIdsSchema = ItemIdSchema.array();
-
-/**
- * Reads the User-owned set of recorded read message identities without advancing it.
- * Callers enforce current Workspace/Thread access and message eligibility.
- *
- * @param userDb Existing database of the authenticated User.
- * @param workspaceId Workspace that contains the Thread.
- * @param threadId Thread whose read receipt is requested.
- * @returns Recorded Item membership in deterministic serialization order, or an empty set.
- * @throws When required receipt content is invalid or SQLite cannot read it.
- */
-export function readThreadReadReceipt(
-  userDb: UserDb,
-  workspaceId: string,
-  threadId: string
-): string[] {
-  WorkspaceIdSchema.parse(workspaceId);
-  ThreadIdSchema.parse(threadId);
-  const row = userDb.sqlite
-    .prepare(
-      'SELECT schema_version AS schemaVersion, item_ids_json FROM thread_read_receipts WHERE workspace_id = ? AND thread_id = ?'
-    )
-    .get(workspaceId, threadId) as { schemaVersion: unknown; item_ids_json: string } | undefined;
-  if (!row) return [];
-
-  try {
-    return readRetainedV1(row, () => {
-      const itemIds = itemIdsSchema.parse(JSON.parse(row.item_ids_json));
-      if (new Set(itemIds).size !== itemIds.length) {
-        throw new Error('Receipt membership must be a set.');
-      }
-      return itemIds.sort();
-    });
-  } catch (cause) {
-    throw new Error('Thread read receipt storage content is invalid.', { cause });
-  }
-}
+export { readThreadReadReceipt } from './thread-read-membership-native.js';
 
 /**
- * Unions admitted read Item identities with the User-owned Thread receipt.
- * The immediate transaction serializes devices before reading existing membership.
- * Identifier order is serialization only and has no chronological meaning.
- *
- * @param userDb Existing database of the authenticated User.
- * @param workspaceId Workspace that contains the Thread.
- * @param threadId Thread whose receipt advances.
- * @param itemIds Eligible completed message identities validated by the caller.
- * @returns Stored union in deterministic serialization order.
- * @throws When identifiers or required stored content are invalid, or SQLite fails.
+ * Unions exact displayed identities under the User database's existing native FIFO and FULL ACK.
+ * Reads of an empty selection do not create a row. Admission is rechecked on Main after opening;
+ * neither its callback nor a SQL statement crosses the message boundary.
+ * @param userDb Caller-owned User scope, kept open until acknowledgement.
+ * @param workspaceId Original Workspace identity.
+ * @param threadId Original Thread identity.
+ * @param itemIds Already eligible completed message identities.
+ * @param recheckAdmission Existing operation admission, when invoked through the public dispatcher.
+ * @returns The exact committed union in deterministic serialization order.
  */
-export function advanceThreadReadReceipt(
+export async function advanceThreadReadReceipt(
   userDb: UserDb,
   workspaceId: string,
   threadId: string,
-  itemIds: readonly string[]
-): string[] {
-  const observedItemIds = itemIdsSchema.parse(itemIds);
-  if (observedItemIds.length === 0) {
-    return readThreadReadReceipt(userDb, workspaceId, threadId);
-  }
-
-  return userDb.sqlite
-    .transaction(() => {
-      const previous = readThreadReadReceipt(userDb, workspaceId, threadId);
-      const union = [...new Set([...previous, ...observedItemIds])].sort();
-      if (union.length !== previous.length) {
-        userDb.sqlite
-          .prepare(
-            `INSERT INTO thread_read_receipts (workspace_id, thread_id, schema_version, item_ids_json)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT (workspace_id, thread_id) DO UPDATE SET schema_version = excluded.schema_version, item_ids_json = excluded.item_ids_json`
-          )
-          .run(workspaceId, threadId, writeRetainedV1({}).schemaVersion, JSON.stringify(union));
-      }
-      return union;
-    })
-    .immediate();
+  itemIds: readonly string[],
+  recheckAdmission?: () => Promise<void>
+): Promise<string[]> {
+  const observed = ThreadReadItemIdsSchema.parse(itemIds);
+  if (observed.length === 0) return readThreadReadReceipt(userDb, workspaceId, threadId);
+  const { dataRoot, userId } = userDb;
+  const path = userDbPath(dataRoot, userId);
+  const database = `user:${path}`;
+  const client = getControlStoreWorkerClient();
+  await client.open({ database, path, create: false, initialize: 'user' });
+  await recheckAdmission?.();
+  return client.threadReadMembership(database, {
+    userId,
+    workspaceId,
+    threadId,
+    itemIds: observed,
+  });
 }

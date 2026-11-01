@@ -127,10 +127,11 @@ export function createThreadOperationImplementations(
         threadCommandFailure(error, 'thread_read_state_failed');
       }
     },
-    'thread.mark-read': (input, context) => {
+    'thread.mark-read': async (input, context) => {
       try {
-        return markThreadRead({
+        return await markThreadRead({
           ...input,
+          recheckAdmission: context.recheckAdmission,
           store: dependencies.store!,
           coreDb: dependencies.coreDb!,
           userId: publicOperationActor(context).userId,
