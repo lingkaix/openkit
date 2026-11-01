@@ -155,6 +155,7 @@ export function createDefaultWorkerMcpGateway(
 class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   private closed = false;
   private readonly activeUses = new Map<string, number>();
+  private readonly toolRequests = new WeakMap<AbortSignal, { requestEntered: boolean }>();
   private readonly sessions = new Map<string, Promise<WorkerMcpSession>>();
   private readonly sessionInputs = new Map<string, WorkerMcpGatewayServerInput>();
   private readonly health = new Map<string, WorkerMcpServerHealth>();
@@ -314,6 +315,8 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       throw normalizeMcpCallError(error, 'not-contacted', error === cancellationReason);
     }
 
+    const requestEvidence = { requestEntered: false };
+    this.toolRequests.set(cancellation.signal, requestEvidence);
     try {
       let result: Awaited<ReturnType<Client['callTool']>>;
       try {
@@ -324,7 +327,11 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       } catch (error) {
         const normalized = normalizeMcpCallError(
           error,
-          mcpUpstreamWasContacted(error) ? 'contacted' : 'unknown',
+          requestEvidence.requestEntered
+            ? mcpUpstreamWasContacted(error)
+              ? 'contacted'
+              : 'unknown'
+            : 'not-contacted',
           error === cancellationReason
         );
         if (this.sessions.get(key) === pending) {
@@ -381,6 +388,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       }
       return result;
     } finally {
+      this.toolRequests.delete(cancellation.signal);
       try {
         await this.release(key, pending, true);
       } finally {
@@ -513,6 +521,35 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     return pending;
   }
 
+  /**
+   * Proves no target contact when the SDK rejects a cached output schema before request entry.
+   * Entry alone preserves the existing contacted/unknown classification; it is not send proof.
+   */
+  private observeToolRequestEntry(client: Client): void {
+    const toolRequests = this.toolRequests;
+    // A Proxy preserves both public overloads, the receiver and the original Promise/error.
+    client.request = new Proxy(client.request, {
+      apply(target, receiver, args: unknown[]) {
+        const request = args[0];
+        const options = args.length > 1 ? args[args.length - 1] : undefined;
+        if (
+          typeof request === 'object' &&
+          request !== null &&
+          'method' in request &&
+          request.method === 'tools/call' &&
+          typeof options === 'object' &&
+          options !== null &&
+          'signal' in options &&
+          options.signal instanceof AbortSignal
+        ) {
+          const evidence = toolRequests.get(options.signal);
+          if (evidence) evidence.requestEntered = true;
+        }
+        return Reflect.apply(target, receiver, args);
+      },
+    });
+  }
+
   /** Connects one catalog-declared transport through the official MCP SDK. */
   private async connect(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpSession> {
     if (
@@ -532,6 +569,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       { name: 'openkit-nanocore', version: '1.0.0' },
       { listMaxPages: MCP_TOOL_LIST_MAX_PAGES, versionNegotiation: { mode: 'auto' } }
     );
+    this.observeToolRequestEntry(client);
     const key = workerMcpSessionKey(input);
     let transportClosed = false;
     client.onclose = () => {
@@ -1135,7 +1173,7 @@ function mcpCancellationReason(): SdkError {
   return new SdkError(SdkErrorCode.RequestTimeout, 'MCP caller cancelled request.');
 }
 
-/** Returns whether the upstream answered this failed exchange with an HTTP response or a JSON-RPC error. */
+/** Recognizes protocol/HTTP errors; Tool callers must first exclude proved pre-request failures. */
 function mcpUpstreamWasContacted(error: unknown): boolean {
   return error instanceof ProtocolError || error instanceof SdkHttpError;
 }

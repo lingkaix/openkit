@@ -249,6 +249,169 @@ function recordMcpWorkerLineage(
 
 describe('worker MCP routes', () => {
   it.each([
+    '$ref',
+    'after-header-mismatch',
+  ] as const)('accounts actual SDK output-schema failure %s through the Worker route', async (outputSchemaFault) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-schema-usage-'));
+    const upstream = await createMcpHttpStub({ outputSchemaFault, protocolEra: '2026-07-28' });
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
+    const turn = await store.createTurn(
+      workspaceId,
+      'th_00000000-0000-7000-8000-000000000001',
+      'Call schema-qualified MCP',
+      actor
+    );
+    const catalog = {
+      schemaVersion: 1 as const,
+      servers: [
+        {
+          id: 'echo',
+          enabled: true,
+          allowedTools: ['echo', 'valid-sibling'],
+          credentialBindings: [],
+          pinnedSchemaSnapshotId: null,
+          schemaPolicy: 'tracking' as const,
+          timeoutMs: 2_000,
+          transport: { kind: 'http' as const, endpoint: upstream.url },
+        },
+      ],
+    };
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSessionId: testEntityId('as', 'mcp-schema-usage'),
+      agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
+      backend: { kind: 'openshell' },
+      createdAt: '2026-11-01T00:00:00.000Z',
+      requestId: 'req_mcp_schema_usage',
+      triggerActor: actor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceMcpServerCatalog: catalog,
+      workspaceRoots: [],
+    });
+    recordMcpWorkerLineage(coreDb, environmentPackage);
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    recordAgentEnvironmentPackageSnapshot(db, {
+      environmentPackage,
+      createdAt: '2026-11-01T00:00:00.000Z',
+    });
+    await openTestNativeWorkspace(db);
+    const gateway = createDefaultWorkerMcpGateway(coreDb);
+    const app = new Hono();
+    registerWorkerMcpRoutes({
+      app,
+      coreDb,
+      store,
+      workerMcpGateway: gateway,
+      runtimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          workspaceMcpServerCatalogs: [
+            { catalog, path: join(dataRoot, 'catalog.json'), workspaceId },
+          ],
+        }),
+      workerControlGateway: {
+        authenticatePackageToken: vi.fn(() => environmentPackage),
+      } as unknown as WorkerControlGateway,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    });
+    // Raw Worker requests keep output compilation inside the actual Gateway SDK client.
+    const call = async (id: number, name: string) => {
+      const response = await app.request('/api/worker-capabilities/mcp/echo', {
+        method: 'POST',
+        headers: {
+          accept: 'application/json, text/event-stream',
+          authorization: 'Bearer schema-fixture',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id,
+          method: 'tools/call',
+          params: { name, arguments: { message: 'schema usage' } },
+        }),
+      });
+      return response.json();
+    };
+    try {
+      expect(await call(1, 'valid-sibling')).toMatchObject({
+        result: { content: [{ text: 'schema usage' }] },
+      });
+      expect(upstream.observed.filter((request) => request.startsWith('handler|'))).toEqual([
+        'handler|tools/call|valid-sibling',
+        'handler|tools/call|valid-sibling',
+      ]);
+      const before = listWorkspaceCapabilityCalls(db, workspaceId);
+      expect(before).toHaveLength(1);
+      expect(before[0]).toMatchObject({ status: 'succeeded' });
+      expect(listWorkspaceUsageRecords(db, workspaceId)).toEqual([
+        expect.objectContaining({
+          capabilityCallId: before[0]!.id,
+          category: 'tool',
+          unit: 'tool_calls',
+          quantity: 1,
+        }),
+      ]);
+      const response = await call(2, 'echo');
+      const contacted = outputSchemaFault === 'after-header-mismatch';
+      expect(
+        upstream.observed.filter((request) => request === 'handler|tools/call|echo')
+      ).toHaveLength(contacted ? 1 : 0);
+      expect(response).toMatchObject({
+        error: {
+          message: contacted
+            ? 'MCP tool call failed.'
+            : 'MCP call ended failed. The requested Tool was not contacted.',
+          data: { code: contacted ? 'mcp-call-failed' : 'mcp-server-unavailable' },
+        },
+      });
+      if (!contacted)
+        expect(response.error.data.details).toMatchObject({
+          outcome: 'failed',
+          upstreamEffect: 'not-contacted',
+        });
+      else expect(response.error.data.details?.upstreamEffect).not.toBe('not-contacted');
+      expect(JSON.stringify(response)).not.toContain('sdk-schema-canary');
+      const calls = listWorkspaceCapabilityCalls(db, workspaceId).filter(
+        (record) => record.id !== before[0]!.id
+      );
+      expect(calls).toEqual([
+        expect.objectContaining({ status: 'failed', completedAt: expect.any(String) }),
+      ]);
+      const failed = calls[0]!;
+      const usage = listWorkspaceUsageRecords(db, workspaceId).filter(
+        (row) => row.capabilityCallId === failed.id
+      );
+      expect(usage).toEqual(
+        contacted
+          ? [expect.objectContaining({ category: 'tool', unit: 'tool_calls', quantity: 1 })]
+          : []
+      );
+      expect(store.listAllItems().filter((item) => item.id === failed.itemId)).toEqual([
+        expect.objectContaining({ type: 'tool-call', status: 'failed', causationId: failed.id }),
+      ]);
+      expect(
+        listWorkspaceAuditEvents(db, workspaceId).filter(
+          (event) => event.capabilityCallId === failed.id && event.action === 'capability.finish'
+        )
+      ).toHaveLength(1);
+    } finally {
+      await gateway.close();
+      await upstream.close();
+      await shutdownControlStoreWorkerClient();
+      db.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     'member',
     'nonmember admin revoked',
     'nonmember admin disabled',

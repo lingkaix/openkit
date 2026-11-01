@@ -43,6 +43,8 @@ export async function createMcpHttpStub(
     readonly delayedResult?: Promise<void>;
     readonly hangDelete?: boolean;
     readonly listError?: boolean;
+    /** Exercises real client output compilation before or after a header-mismatch call. */
+    readonly outputSchemaFault?: '$id' | '$ref' | 'after-header-mismatch';
     /** Synthetic initialization metadata for the complete preview response bound. */
     readonly serverVersion?: string;
     /** Holds a real tools/list response at its server boundary for revocation/deadline tests. */
@@ -56,6 +58,18 @@ export async function createMcpHttpStub(
   const observed: string[] = [];
   const observedHeaders: Headers[] = [];
   let answering = true;
+  // Modern requests get separate Server instances; the external server state spans requests.
+  let headerMismatchAnswered = false;
+  let siblingHeaderMismatchAnswered = false;
+  const validOutputSchema = {
+    type: 'object' as const,
+    properties: { message: { type: 'string' as const } },
+    required: ['message'],
+  };
+  const invalidOutputSchema = {
+    ...validOutputSchema,
+    [options.outputSchemaFault === '$ref' ? '$ref' : '$id']: '1invalid://sdk-schema-canary',
+  };
   const sessions = new Map<
     string,
     { mcp: Server; transport: WebStandardStreamableHTTPServerTransport }
@@ -97,9 +111,55 @@ export async function createMcpHttpStub(
         }
         return { nextCursor: 'page-2', tools: [echo] };
       }
+      if (options.outputSchemaFault) {
+        const inputSchema = {
+          ...echoInputSchema,
+          properties: {
+            message: { type: 'string' as const, 'x-mcp-header': 'Message' },
+          },
+        };
+        return {
+          tools: [
+            {
+              ...echo,
+              inputSchema,
+              outputSchema:
+                options.outputSchemaFault === 'after-header-mismatch' && !headerMismatchAnswered
+                  ? validOutputSchema
+                  : invalidOutputSchema,
+            },
+            { name: 'valid-sibling', inputSchema, outputSchema: validOutputSchema },
+          ],
+        };
+      }
       return { tools: [echo] };
     });
     mcp.setRequestHandler('tools/call', async (request) => {
+      if (options.outputSchemaFault) {
+        observed.push(`handler|tools/call|${request.params.name}`);
+        // A real successful recovery fills the SDK cache without a private cache hook.
+        if (request.params.name === 'valid-sibling' && !siblingHeaderMismatchAnswered) {
+          siblingHeaderMismatchAnswered = true;
+          throw new ProtocolError(-32020, 'Injected sibling header mismatch.');
+        }
+        if (
+          options.outputSchemaFault === 'after-header-mismatch' &&
+          request.params.name === 'echo'
+        ) {
+          headerMismatchAnswered = true;
+          throw new ProtocolError(-32020, 'Injected header mismatch.');
+        }
+        if (request.params.arguments?.message === 'delayed' && options.delayedResult) {
+          await options.delayedResult;
+        }
+        return mcp.projectCallToolResult(
+          {
+            content: [{ type: 'text', text: String(request.params.arguments?.message) }],
+            structuredContent: { message: String(request.params.arguments?.message) },
+          },
+          undefined
+        );
+      }
       if (request.params.arguments?.message === 'delayed' && options.delayedResult) {
         await options.delayedResult;
       }
