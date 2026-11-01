@@ -30,7 +30,7 @@ import {
 } from './runtime/nanohost-runtime-target.js';
 import { projectWorkerBackendCleanup } from './runtime/worker-backend-cleanup-projection.js';
 import {
-  type getWorkerBackendSession,
+  getWorkerBackendSession,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
@@ -47,7 +47,15 @@ import {
   resolveWorkerControlFinalStatusTokenBinding,
 } from './runtime/worker-control-records.js';
 import { createWorkerControlSequenceRecorder } from './runtime/worker-control-sequences.js';
+import {
+  beginWorkerTurnJournalStep,
+  endWorkerTurnJournalRelease,
+  endWorkerTurnJournalStep,
+  endWorkerTurnMaterialization,
+  prepareWorkerTurnJournalIntents,
+} from './runtime/worker-governance-turn-executor.js';
 import { importWorkerTranscript } from './runtime/worker-transcript.js';
+import { workerTurnTerminalPublication } from './runtime/worker-turn-failure.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -107,10 +115,12 @@ vi.mock('node:timers/promises', async (original) => {
  * Creates an app with one registered worker control session.
  *
  * @param workspaceRoots Workspace inputs declared by the package fixture.
+ * @param coreDb Existing migrated Core owner for an explicitly native product fixture.
  * @returns App, gateway, token, package, and lineage fixtures.
  */
 async function createWorkerControlRouteFixture(
-  workspaceRoots: MaterializedWorkspaceRoot[] = []
+  workspaceRoots: MaterializedWorkspaceRoot[] = [],
+  coreDb?: CoreDb
 ): Promise<{
   app: ReturnType<typeof createApp>;
   environmentPackage: AgentEnvironmentPackage;
@@ -121,7 +131,7 @@ async function createWorkerControlRouteFixture(
   workspaceMutationAdmission: WorkspaceMutationAdmission;
 }> {
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-  const store = await createDemoStore();
+  const store = await createDemoStore(coreDb ? { dataRoot: coreDb.dataRoot } : undefined);
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -133,6 +143,7 @@ async function createWorkerControlRouteFixture(
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
     resolveAgentEnvironmentPackage({
+      ...(coreDb ? { coreDb, captureCoverage: store.getTurnCaptureCoverage(turn.id)! } : {}),
       agentSetup: createTestAgentSetup(),
       agentSessionId: testEntityId('as', 'as_control_route_1'),
       triggerActor: { kind: 'user', id: LOCAL_USER_ID },
@@ -177,6 +188,7 @@ async function createWorkerControlRouteFixture(
       store,
       workerControlGateway: gateway,
       workspaceMutationAdmission,
+      ...(coreDb ? { turnExecutor: new SimulatedTurnExecutor({ coreDb }) } : {}),
     }),
     environmentPackage,
     workspaceMutationAdmission,
@@ -2501,22 +2513,24 @@ describe('worker control routes', () => {
   it('retains the backend handle in the canonical Workspace across final-status replay', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-workspace-')));
     const sourceCommit = 'a'.repeat(40);
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture([
-        {
-          access: 'read-write',
-          id: 'repo_default',
-          sourceCommit,
-          sourceKind: 'remote-git',
-          workerPath: '/workspace/repo',
-        },
-      ]);
     let preparedWorkspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
 
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+        await createWorkerControlRouteFixture(
+          [
+            {
+              access: 'read-write',
+              id: 'repo_default',
+              sourceCommit,
+              sourceKind: 'remote-git',
+              workerPath: '/workspace/repo',
+            },
+          ],
+          coreDb
+        );
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
       preparedWorkspaceDb = workspaceDb;
       recordWorkspaceOwnerMembership({
@@ -2524,12 +2538,35 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
-      const binding = createDurableWorkerControlLease(
-        coreDb,
+      const fixtureSuffix = 'final_status_workspace';
+      const binding = `lease-binding:lease_${fixtureSuffix}`;
+      createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+        profileRef: environmentPackage.agent.profileId,
+        queueEntryId: `queue_${fixtureSuffix}`,
+        requestId: lineage.requestId,
+        requestedAgentId: environmentPackage.agent.agentId,
+        threadId: lineage.threadId,
+        turnId: lineage.turnId,
+        turnInput: 'Run durable worker-control test',
+        workspaceId: lineage.workspaceId,
+      });
+      const submittedAttempt = recordTestExecutionAttempt(coreDb, {
+        entry: requireSchedulerAdmissionEntry(coreDb, `queue_${fixtureSuffix}`),
+        attemptId: testEntityId('attempt', `lease_${fixtureSuffix}`),
+        agentSessionId: lineage.agentSessionId,
+        inputRef: lineage.packageSnapshotId,
+        bindingRef: binding,
+        sessionCompatibilityKey: 'fixture-compatibility',
+        now: () => new Date().toISOString(),
+        operationId: `fixture-submit:${String(testEntityId('attempt', `lease_${fixtureSuffix}`))}`,
+      });
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: environmentPackage.createdAt,
         environmentPackage,
-        lineage,
-        'final_status_workspace'
-      );
+      });
       const backendLeaseId = recordWorkerControlBackendSession(
         coreDb,
         environmentPackage,
@@ -2537,7 +2574,40 @@ describe('worker control routes', () => {
         binding,
         'sandbox_final_status_workspace'
       );
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      const backendSession = getWorkerBackendSession(coreDb, backendLeaseId)!;
+      const sessionCreatedAt = new Date().toISOString();
+      await store.createAgentSession({
+        id: lineage.agentSessionId,
+        agentId: environmentPackage.agent.agentId,
+        workspaceId: lineage.workspaceId,
+        threadId: lineage.threadId,
+        status: 'busy',
+        message: null,
+        environmentPackageSnapshotId: lineage.packageSnapshotId,
+        sessionCompatibilityKey: requireNanoHostExecutionAttempt(coreDb, submittedAttempt.attemptId)
+          .sessionCompatibilityKey,
+        createdAt: sessionCreatedAt,
+        updatedAt: sessionCreatedAt,
+      });
+      await store.updateTurn(
+        lineage.turnId,
+        {
+          agentId: environmentPackage.agent.agentId,
+          agentSessionId: lineage.agentSessionId,
+        },
+        {
+          journalIntents: prepareWorkerTurnJournalIntents(
+            workspaceDb,
+            environmentPackage,
+            submittedAttempt,
+            {
+              backendKind: 'nanohost',
+              targetId: backendSession.runtimeTargetId,
+              allocationRef: submittedAttempt.bindingRef,
+            }
+          ),
+        }
+      );
       const inputSnapshots = buildWorkspaceInputSnapshots({
         backendCapabilities: environmentPackage.backend.requiredCapabilities,
         backendKind: 'openshell',
@@ -2561,6 +2631,35 @@ describe('worker control routes', () => {
       });
       recordWorkspaceInputSnapshots(workspaceDb, inputSnapshots);
       recordWorkspaceMaterializationRecords(workspaceDb, materializations);
+      markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendLeaseId });
+      await endWorkerTurnMaterialization(store, workspaceDb, lineage.turnId, 'completed', [
+        backendSession.backendSessionId,
+      ]);
+      const delivery = await beginWorkerTurnJournalStep(
+        store,
+        workspaceDb,
+        lineage.turnId,
+        'deliver-start',
+        undefined,
+        submittedAttempt
+      );
+      attemptActionOwners.acceptSchedulerExecutionObservation(coreDb, {
+        ...attemptActionOwners.schedulerExecutionCorrelation(submittedAttempt),
+        disposition: 'accepted',
+        execution: 'running',
+        fenceRef: null,
+        outcomeRef: null,
+      });
+      await endWorkerTurnJournalStep(store, workspaceDb, delivery, 'completed', [
+        submittedAttempt.operationId!,
+      ]);
+      bindNanoHostAttemptRouteTokenHashes(coreDb, {
+        attemptId: testEntityId('attempt', `lease_${fixtureSuffix}`),
+        sandboxBindingRef: binding,
+        workerCapabilityTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'capability')),
+        workerControlTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'worker-control')),
+        workerInferenceTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'inference')),
+      });
       const gateway = createDefaultWorkerControlGateway(coreDb);
       const app = createApp({
         workspaceMutationAdmission,
@@ -2622,6 +2721,12 @@ describe('worker control routes', () => {
           expect(session.state).toBe('cleaned');
           // This transport fixture has no physical worker; the normal terminal callback settles its actual Workspace projection before modeled release.
           const completedAt = session.physicalCleanedAt!;
+          const collection = await beginWorkerTurnJournalStep(
+            store,
+            workspaceDb,
+            lineage.turnId,
+            'collect'
+          );
           const projection = await projectWorkerBackendCleanup(workspaceDb, {
             agentSessionId: lineage.agentSessionId,
             backendType: session.backendKind,
@@ -2639,15 +2744,12 @@ describe('worker control routes', () => {
             workspaceId: lineage.workspaceId,
           });
           expect(projection.workspaceHandoffComplete).toBe(true);
-          await store.createAgentSession({
-            id: lineage.agentSessionId,
-            agentId: environmentPackage.agent.agentId,
-            workspaceId: lineage.workspaceId,
-            threadId: lineage.threadId,
+          await endWorkerTurnJournalStep(store, workspaceDb, collection, 'completed', [
+            projection.evidence.id,
+          ]);
+          await store.updateAgentSession(lineage.agentSessionId, {
             status: 'idle',
             message: null,
-            environmentPackageSnapshotId: lineage.packageSnapshotId,
-            createdAt: completedAt,
             updatedAt: completedAt,
           });
           const terminal = await store.completeTurn(
@@ -2658,7 +2760,11 @@ describe('worker control routes', () => {
               status: 'completed',
               completedAt,
             },
-            { requestId: lineage.requestId, stopReason: 'completed' }
+            {
+              requestId: lineage.requestId,
+              stopReason: 'completed',
+              ...(await workerTurnTerminalPublication(workspaceDb, lineage.turnId)),
+            }
           );
           // Reuse the exact completion event already committed by the terminal owner.
           const terminalEvent = await store.persistTurnEvent(lineage.turnId, {
@@ -2670,11 +2776,17 @@ describe('worker control routes', () => {
             data: { type: 'turn-completed', stopReason: 'completed', turn: terminal },
           });
           store.emitTurnEvent(lineage.turnId, terminalEvent);
-          await closeOwnedExecutionAttempt(coreDb, {
+          const closedAttempt = await closeOwnedExecutionAttempt(coreDb, {
             attemptId: session.attemptId,
             firstTerminalCause: 'turn-completed',
             outcome: `turn:${lineage.turnId}:completed`,
           });
+          await endWorkerTurnJournalRelease(
+            store,
+            workspaceDb,
+            lineage.turnId,
+            closedAttempt.fenceRef!
+          );
         }
       );
       await runNanoHostAttemptRecoveryMaintenance(coreDb, {
@@ -2699,8 +2811,11 @@ describe('worker control routes', () => {
         )?.phase
       ).toBe('closed');
     } finally {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(coreDb.dataRoot);
       preparedWorkspaceDb?.sqlite.close();
       coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
     }
   });
 

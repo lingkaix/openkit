@@ -121,7 +121,7 @@ Worker recovery fixtures open handles after actual Demo Workspace publication in
 
 Server history tests read current Items through canonical Turn projections and complete events through the canonical transcript. The unused Item-list and bounded-event convenience methods are removed; live append, reload and Workspace cursor bounds keep their existing owners.
 
-Four direct Core-owned Worker-control fixtures use those same native roots before Thread creation. Their original acceptance, rollback, heartbeat replay and supply ACK owners stay unchanged. The shared route helper remains rootless until its session-bound terminal fixture uses the existing execution-acceptance owner.
+Four direct Core-owned Worker-control fixtures use those same native roots before Thread creation. Their original acceptance, rollback, heartbeat replay and supply ACK owners stay unchanged. The shared route helper's terminal fixture reuses its existing Core for the native Store, actual AEP and pre-effect Session/journal. Its original modeled handoff, acceptance, cleanup evidence and returned release fence settle those obligations; the other 25 callers retain their setup.
 
 RuntimeTarget refusal, conversation navigation and member-management fixtures give the deterministic executor their existing Core handle. Their App authority inputs and all read, refusal and recovery assertions stay unchanged; these fixtures do not claim Worker execution.
 
