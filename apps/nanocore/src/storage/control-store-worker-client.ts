@@ -120,6 +120,7 @@ import type {
   ControlWorkObservationResult,
 } from './work-observations.js';
 import { nativeProductScope } from './workspace-file-records.js';
+import type { ControlCoreSharing, ControlCoreSharingResult } from './workspace-sharing-codecs.js';
 
 /** A refusal or uncertain result, never a substitute for the original SQL command receipt. */
 export class ControlStoreWorkerError extends Error {
@@ -1658,6 +1659,29 @@ class ControlStoreWorkerClient {
         if (error.domain.code === 'idempotency_key_conflict')
           throw new IdempotencyKeyConflictError();
         throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
+  }
+
+  /** Commits the exact Core sharing mutation, Audit and original receipt in one covering FULL acknowledgement. */
+  async coreSharing(
+    database: string,
+    input: ControlCoreSharing
+  ): Promise<ControlCoreSharingResult> {
+    try {
+      const reply = await this.request({ operation: 'core-sharing', database, input });
+      return (reply as Extract<Success, { operation: 'core-sharing' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'core-sharing') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new OperationError(
+          error.domain.code,
+          error.domain.message,
+          error.domain.status,
+          'details' in error.domain ? { details: error.domain.details } : undefined
+        );
       }
       throw error;
     }

@@ -70,6 +70,14 @@ export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   'generative-ui.publish',
   'evaluation.candidate-set-create',
   'evaluation.candidate-set-select',
+  'workspace.invitation.create',
+  'workspace.invitation.accept',
+  'workspace.invitation.decline',
+  'workspace.invitation.revoke',
+  'workspace.member.remove',
+  'workspace.leave',
+  'workspace.ownership.transfer',
+  'workspace.access.recover',
 ] as const satisfies readonly CommandRequestName[];
 
 /** Workspace Knowledge commands commit their original receipt with SQL publication; other scopes retain their current writer. */

@@ -120,9 +120,17 @@ import {
   type ControlWorkObservationResult,
   parseWorkObservationRecord,
 } from './work-observations.js';
+import {
+  type ControlCoreSharing,
+  type ControlCoreSharingRefusal,
+  ControlCoreSharingRefusalSchema,
+  type ControlCoreSharingResult,
+  ControlCoreSharingResultSchema,
+  ControlCoreSharingSchema,
+} from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 29;
+export const CONTROL_WORKER_VERSION = 30;
 
 /** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
 export const ControlProvenanceInputSchema = z
@@ -289,6 +297,7 @@ export type ControlWorkerCommand =
           readonly input: ControlMaterialWireInput;
           readonly content?: ArrayBuffer;
         }
+      | { readonly operation: 'core-sharing'; readonly input: ControlCoreSharing }
       | { readonly operation: 'evaluation-candidate'; readonly input: ControlEvaluationCandidate }
       | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
       | { readonly operation: 'terminal'; readonly input: ControlTerminalTransition }
@@ -401,7 +410,7 @@ export const CONTROL_WORKER_FAILURE_CODES = [
 export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[number];
 
 /** Trusted domain refusals preserve the existing public contract; native SQL diagnostics never enter this projection. */
-export interface ControlWorkerDomainRefusal {
+interface OrdinaryControlWorkerDomainRefusal {
   readonly operation:
     | 'provenance'
     | 'admin-recovery'
@@ -424,6 +433,11 @@ export interface ControlWorkerDomainRefusal {
   /** Trusted original owner class for this capability refusal. */
   readonly kind?: 'operation' | 'mcp' | 'turn' | 'pending';
 }
+
+/** Existing native refusals plus the sharing family's exact current-record projection. */
+export type ControlWorkerDomainRefusal =
+  | OrdinaryControlWorkerDomainRefusal
+  | ControlCoreSharingRefusal;
 
 /**
  * Worker reply. Success for writes follows the outer FULL-durability COMMIT.
@@ -469,6 +483,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'evaluation-candidate';
       readonly result: import('@openkit/app-api-schemas').CandidateSetRecord;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'core-sharing';
+      readonly result: ControlCoreSharingResult;
     }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
@@ -599,6 +618,8 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'core-sharing')
+    return ControlCoreSharingRefusalSchema.safeParse(value).success;
   return (
     isRecord(value) &&
     exactFields(value, ['operation', 'code', 'message', 'status'], ['kind']) &&
@@ -783,6 +804,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     );
   if (reply.operation === 'review')
     return ControlReviewCommandResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'core-sharing')
+    return ControlCoreSharingResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'evaluation-candidate')
     return ControlEvaluationCandidateResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'material')
@@ -1168,30 +1191,33 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     value.operation === 'goal' ||
     value.operation === 'maintenance' ||
     value.operation === 'review' ||
+    value.operation === 'core-sharing' ||
     value.operation === 'evaluation-candidate' ||
     value.operation === 'terminal'
   ) {
     try {
       const schema =
-        value.operation === 'evaluation-candidate'
-          ? ControlEvaluationCandidateSchema
-          : value.operation === 'publication'
-            ? ControlPublicationInputSchema
-            : value.operation === 'pending'
-              ? ControlPendingTransitionSchema
-              : value.operation === 'journal'
-                ? ControlExecutionJournalInputSchema
-                : value.operation === 'project-cleanup'
-                  ? ProjectWorkerBackendCleanupInputSchema
-                  : value.operation === 'goal'
-                    ? ControlGoalInputSchema
-                    : value.operation === 'review'
-                      ? ControlReviewCommandInputSchema
-                      : value.operation === 'maintenance'
-                        ? ControlMaintenanceAdmissionInputSchema
-                        : value.operation === 'terminal'
-                          ? ControlTerminalTransitionSchema
-                          : ControlWorkObservationInputSchema;
+        value.operation === 'core-sharing'
+          ? ControlCoreSharingSchema
+          : value.operation === 'evaluation-candidate'
+            ? ControlEvaluationCandidateSchema
+            : value.operation === 'publication'
+              ? ControlPublicationInputSchema
+              : value.operation === 'pending'
+                ? ControlPendingTransitionSchema
+                : value.operation === 'journal'
+                  ? ControlExecutionJournalInputSchema
+                  : value.operation === 'project-cleanup'
+                    ? ProjectWorkerBackendCleanupInputSchema
+                    : value.operation === 'goal'
+                      ? ControlGoalInputSchema
+                      : value.operation === 'review'
+                        ? ControlReviewCommandInputSchema
+                        : value.operation === 'maintenance'
+                          ? ControlMaintenanceAdmissionInputSchema
+                          : value.operation === 'terminal'
+                            ? ControlTerminalTransitionSchema
+                            : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

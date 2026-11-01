@@ -53,6 +53,7 @@ import type { OperationImplementations } from './operation-contract.js';
 import { publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { readAuditEventRowV1 } from './policy/retained-records-v1.js';
+import type { IdempotentCommandReceipt } from './runtime/idempotent-command.js';
 import {
   commandInputHash,
   IdempotencyKeyConflictError,
@@ -63,42 +64,96 @@ import {
   getCommandRequestRecordFromDb,
   recordCommandRequestRecordInDb,
 } from './storage/command-request-records.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
+import { nativeProductScope } from './storage/workspace-file-records.js';
+import {
+  ControlCoreSharingSchema,
+  type CoreSharingDraft,
+} from './storage/workspace-sharing-codecs.js';
 import {
   isTerminalWorkspaceDeletionRequest,
   listWorkspaceDeletionRequests,
 } from './workspace-deletion-request.js';
 import {
-  acceptWorkspaceInvitation,
-  type CreateWorkspaceInvitationResult,
-  createWorkspaceInvitation,
-  declineWorkspaceInvitation,
   getWorkspaceAccessRecoveryState,
   getWorkspaceInvitation,
   getWorkspaceMember,
   getWorkspaceRegistryFact,
   getWorkspaceRegistryLifecycleFact,
-  leaveWorkspace,
   listMyWorkspaceInvitations,
   listWorkspaceInvitations,
   listWorkspaceMembers,
-  type RecoverWorkspaceAccessResult,
-  recoverWorkspaceAccess,
-  removeWorkspaceMember,
   retireQuarantinedWorkspaceRegistry,
-  revokeWorkspaceInvitation,
-  type TransferWorkspaceOwnershipResult,
-  transferWorkspaceOwnership,
-  type WorkspaceInvitationTransitionResult,
-  type WorkspaceMemberMutationResult,
-  type WorkspaceRegistryFact,
 } from './workspace-sharing.js';
 
 /** Stable Core scope selector shared by every Stage 5 lifecycle receipt. */
 const CORE_RECEIPT_OWNER = { coreId: 'server' } as const;
 
+/** Submits only a complete Core sharing tuple after existing public admission and readonly preparation. */
+async function executeCoreSharing<T>(
+  coreDb: CoreDb,
+  store: FsStore,
+  draft: CoreSharingDraft,
+  receipt: IdempotentCommandReceipt,
+  recheck?: () => Promise<void>
+): Promise<T> {
+  const snapshot = structuredClone(draft);
+  const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+  const database = `core:${scope.path}`;
+  const client = getControlStoreWorkerClient();
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: coreDb.dataRoot,
+    create: false,
+    initialize: 'core',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  await recheck?.();
+  if (snapshot.command === 'workspace.invitation.accept') {
+    const current = getWorkspaceInvitation(coreDb, snapshot.invitationId);
+    if (
+      !current ||
+      !currentWorkspaceAuthority(
+        coreDb,
+        current.workspaceId,
+        { kind: 'user', id: current.inviterUserId },
+        'membership.manage',
+        true,
+        undefined,
+        { retainedPolicyAuthor: true, dependencyFailure: 'throw' }
+      )
+    )
+      throw accessDenied();
+  }
+  const prepared = ControlCoreSharingSchema.parse({
+    ...snapshot,
+    receipt,
+    ...(snapshot.command === 'workspace.ownership.transfer'
+      ? { workspace: store.getWorkspace(snapshot.workspaceId) }
+      : {}),
+  });
+  const result = await client.coreSharing(database, prepared);
+  const expectedKind = snapshot.command.startsWith('workspace.invitation.')
+    ? 'invitation'
+    : snapshot.command === 'workspace.ownership.transfer'
+      ? 'workspace'
+      : snapshot.command === 'workspace.access.recover'
+        ? 'recovery'
+        : 'member';
+  if (result.kind !== expectedKind)
+    throw new OperationError(
+      'recovery_required',
+      'The command outcome cannot be proven from its current durable owners.',
+      409
+    );
+  return result.value as T;
+}
+
 /**
- * Joins sharing commands to their existing Core transaction, receipt and audit owners.
+ * Joins public sharing commands to the native Core tuple owner and current readonly projections.
  * Existing receipt hashes retain the original command bodies; logical selectors remain in their canonical receipt scopes.
  */
 export function createWorkspaceSharingOperationImplementations(
@@ -145,41 +200,20 @@ export function createWorkspaceSharingOperationImplementations(
         requireShareableWorkspace(coreDb, workspaceId);
         const invitation = await runIdempotentCommand({
           command: 'workspace.invitation.create',
-          coreDb,
-          coreTransaction: true,
-          execute: () => {
-            requireNoLifecycleAudit(coreDb, {
-              action: 'workspace.invitation.create',
-              actorId,
-              requestId: request.requestId,
-              workspaceId,
-            });
-            const result = createWorkspaceInvitation({
+          receiptDb: coreDb,
+          execute: (receipt) =>
+            executeCoreSharing<WorkspaceInvitation>(
               coreDb,
-              inviterUserId: actorId,
-              authorization: evaluateProductAuthorization(
-                coreDb,
-                publicOperationActor(context),
-                { kind: 'workspace', workspaceId },
-                'membership.manage',
-                true
-              ),
-              inviteeEmail: request.inviteeEmail,
-              workspaceId,
-            });
-            const created = requireCreatedInvitation(result);
-            recordLifecycleAudit(coreDb, {
-              action: 'workspace.invitation.create',
-              actorId,
-              requestId: request.requestId,
-              resource: `workspace-invitation:${created.invitationId}`,
-              resourceRevision: created.revision,
-              subjectId: created.inviteeUserId,
-              summary: 'Workspace invitation created.',
-              workspaceId,
-            });
-            return created;
-          },
+              store,
+              {
+                command: 'workspace.invitation.create',
+                actor: publicOperationActor(context),
+                workspaceId,
+                request,
+              },
+              receipt,
+              context.recheckAdmission
+            ),
           inflightCommands,
           input: request,
           replay: (record) => {
@@ -228,41 +262,10 @@ export function createWorkspaceSharingOperationImplementations(
           )
         );
         const invitation = await runInvitationTransition({
+          recheckAdmission: context.recheckAdmission,
           action: 'workspace.invitation.accept',
           actorId,
           coreDb,
-          execute: () => {
-            const current = getWorkspaceInvitation(coreDb, invitationId);
-            // Pending invitations grant membership only while their inviter remains authorized.
-            if (
-              !current ||
-              !currentWorkspaceAuthority(
-                coreDb,
-                current.workspaceId,
-                { kind: 'user', id: current.inviterUserId },
-                'membership.manage',
-                true,
-                undefined,
-                { retainedPolicyAuthor: true, dependencyFailure: 'throw' }
-              )
-            )
-              throw accessDenied();
-            return acceptWorkspaceInvitation({
-              coreDb,
-              expectedRevision: request.expectedRevision,
-              invitationId,
-              inviteeUserId: invitationInviteeUserId(
-                coreDb,
-                invitationId,
-                publicOperationActor(context)
-              ),
-              workspaceId: invitationWorkspaceIdForInvitee(
-                coreDb,
-                invitationId,
-                publicOperationActor(context)
-              ),
-            });
-          },
           inflightCommands,
           invitationId,
           actor: publicOperationActor(context),
@@ -290,25 +293,10 @@ export function createWorkspaceSharingOperationImplementations(
           )
         );
         const invitation = await runInvitationTransition({
+          recheckAdmission: context.recheckAdmission,
           action: 'workspace.invitation.decline',
           actorId,
           coreDb,
-          execute: () =>
-            declineWorkspaceInvitation({
-              coreDb,
-              expectedRevision: request.expectedRevision,
-              invitationId,
-              inviteeUserId: invitationInviteeUserId(
-                coreDb,
-                invitationId,
-                publicOperationActor(context)
-              ),
-              workspaceId: invitationWorkspaceIdForInvitee(
-                coreDb,
-                invitationId,
-                publicOperationActor(context)
-              ),
-            }),
           inflightCommands,
           invitationId,
           actor: publicOperationActor(context),
@@ -339,24 +327,10 @@ export function createWorkspaceSharingOperationImplementations(
           )
         );
         const invitation = await runInvitationTransition({
+          recheckAdmission: context.recheckAdmission,
           action: 'workspace.invitation.revoke',
           actorId,
           coreDb,
-          execute: () =>
-            revokeWorkspaceInvitation({
-              coreDb,
-              expectedRevision: request.expectedRevision,
-              invitationId,
-              actorUserId: actorId,
-              authorization: evaluateProductAuthorization(
-                coreDb,
-                publicOperationActor(context),
-                { kind: 'workspace', workspaceId },
-                'membership.manage',
-                true
-              ),
-              workspaceId,
-            }),
           inflightCommands,
           invitationId,
           actor: publicOperationActor(context),
@@ -387,24 +361,11 @@ export function createWorkspaceSharingOperationImplementations(
           )
         );
         const member = await runMemberMutation({
+          actor: publicOperationActor(context),
+          recheckAdmission: context.recheckAdmission,
           action: 'workspace.member.remove',
           actorId,
           coreDb,
-          execute: () =>
-            removeWorkspaceMember({
-              coreDb,
-              expectedRevision: request.expectedRevision,
-              memberUserId,
-              actorUserId: actorId,
-              authorization: evaluateProductAuthorization(
-                coreDb,
-                publicOperationActor(context),
-                { kind: 'workspace', workspaceId },
-                'membership.manage',
-                true
-              ),
-              workspaceId,
-            }),
           inflightCommands,
           memberUserId,
           request,
@@ -453,16 +414,11 @@ export function createWorkspaceSharingOperationImplementations(
           throw accessDenied();
         }
         const member = await runMemberMutation({
+          actor: publicOperationActor(context),
+          recheckAdmission: context.recheckAdmission,
           action: 'workspace.leave',
           actorId,
           coreDb,
-          execute: () =>
-            leaveWorkspace({
-              coreDb,
-              expectedRevision: request.expectedRevision,
-              memberUserId: actorId,
-              workspaceId,
-            }),
           inflightCommands,
           memberUserId: actorId,
           request,
@@ -492,57 +448,20 @@ export function createWorkspaceSharingOperationImplementations(
         requireShareableWorkspace(coreDb, workspaceId);
         const workspace = await runIdempotentCommand({
           command: 'workspace.ownership.transfer',
-          coreDb,
-          coreTransaction: true,
-          execute: () => {
-            requireNoLifecycleAudit(coreDb, {
-              action: 'workspace.ownership.transfer',
-              actorId,
-              requestId: request.requestId,
-              resource: `workspace:${workspaceId}`,
-            });
-            const result = transferWorkspaceOwnership({
-              coreDb,
-              actorUserId: actorId,
-              authorization: evaluateProductAuthorization(
-                coreDb,
-                publicOperationActor(context),
-                { kind: 'workspace', workspaceId },
-                'membership.manage',
-                true
-              ),
-              expectedRegistryRevision: request.expectedRegistryRevision,
-              targetUserId: request.targetUserId,
-              workspaceId,
-            });
-            const registry = requireTransferResult(
-              result,
+          receiptDb: coreDb,
+          execute: (receipt) =>
+            executeCoreSharing<AuthorizedWorkspaceSummary>(
               coreDb,
               store,
-              actorId,
-              workspaceId,
-              isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
-            );
-            if (result.kind === 'transferred') {
-              recordLifecycleAudit(coreDb, {
-                action: 'workspace.ownership.transfer',
-                actorId,
-                requestId: request.requestId,
-                resource: `workspace:${workspaceId}`,
-                resourceRevision: registry.registryRevision,
-                subjectId: request.targetUserId,
-                summary: 'Workspace ownership transferred.',
+              {
+                command: 'workspace.ownership.transfer',
+                actor: publicOperationActor(context),
                 workspaceId,
-              });
-            }
-            return authorizedWorkspaceSummary(
-              coreDb,
-              store,
-              actorId,
-              workspaceId,
-              isCurrentDeploymentAdministrator(coreDb, publicOperationActor(context))
-            );
-          },
+                request,
+              },
+              receipt,
+              context.recheckAdmission
+            ),
           inflightCommands,
           input: request,
           replay: (record) => {
@@ -698,47 +617,15 @@ export function createWorkspaceSharingOperationImplementations(
         );
         const recovery = await runIdempotentCommand({
           command: 'workspace.access.recover',
-          coreDb,
-          coreTransaction: true,
-          execute: () => {
-            const action = `workspace.access.recover.${request.action}`;
-            requireNoLifecycleAudit(coreDb, {
-              action,
-              actorId,
-              requestId: request.requestId,
-              resource: `workspace:${workspaceId}`,
-            });
-            const formerOwnerUserId = getWorkspaceAccessRecoveryState(
+          receiptDb: coreDb,
+          execute: (receipt) =>
+            executeCoreSharing<WorkspaceAccessRecoveryState>(
               coreDb,
-              workspaceId,
-              actorId
-            )?.ownerUserId;
-            const result = recoverWorkspaceAccess({
-              action: request.action,
-              administratorUserId: actorId,
-              coreDb,
-              expectedRegistryRevision: request.expectedRegistryRevision,
-              workspaceId,
-            });
-            const current = requireRecoveryResult(result);
-            if (result.kind === 'recovered') {
-              recordLifecycleAudit(coreDb, {
-                action,
-                actorId,
-                requestId: request.requestId,
-                resource: `workspace:${workspaceId}`,
-                resourceRevision: current.registryRevision,
-                ...(request.action === 'transfer-ownership-to-self' &&
-                formerOwnerUserId &&
-                formerOwnerUserId !== actorId
-                  ? { subjectId: formerOwnerUserId }
-                  : {}),
-                summary: 'Workspace access recovered.',
-                workspaceId,
-              });
-            }
-            return current;
-          },
+              store,
+              { command: 'workspace.access.recover', actor, workspaceId, request },
+              receipt,
+              context.recheckAdmission
+            ),
           inflightCommands,
           input: request,
           replay: (record) => {
@@ -929,8 +816,8 @@ interface RunInvitationTransitionInput {
   readonly actorId: string;
   /** Open Core database. */
   readonly coreDb: CoreDb;
-  /** Domain transition executed inside the Core transaction. */
-  readonly execute: () => WorkspaceInvitationTransitionResult;
+  /** Existing public admission rechecked after native opening. */
+  readonly recheckAdmission?: (() => Promise<void>) | undefined;
   /** Existing in-flight collapse owner. */
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   /** Exact path invitation id. */
@@ -953,31 +840,28 @@ async function runInvitationTransition(
 ): Promise<WorkspaceInvitation> {
   return runIdempotentCommand({
     command: input.action,
-    coreDb: input.coreDb,
-    coreTransaction: true,
-    execute: () => {
-      requireNoLifecycleAudit(input.coreDb, {
-        action: input.action,
-        actorId: input.actorId,
-        requestId: input.request.requestId,
-        resource: `workspace-invitation:${input.invitationId}`,
-      });
-      const result = input.execute();
-      const invitation = requireInvitationTransition(result);
-      recordLifecycleAudit(input.coreDb, {
-        action: input.action,
-        actorId: input.actorId,
-        requestId: input.request.requestId,
-        resource: `workspace-invitation:${invitation.invitationId}`,
-        resourceRevision: invitation.revision,
-        ...(input.action === 'workspace.invitation.revoke'
-          ? { subjectId: invitation.inviteeUserId }
-          : {}),
-        summary: input.summary,
-        workspaceId: invitation.workspaceId,
-      });
-      return invitation;
-    },
+    receiptDb: input.coreDb,
+    execute: (receipt) =>
+      executeCoreSharing<WorkspaceInvitation>(
+        input.coreDb,
+        input.store,
+        input.action === 'workspace.invitation.revoke'
+          ? {
+              command: input.action,
+              actor: input.actor,
+              request: input.request,
+              invitationId: input.invitationId,
+              workspaceId: input.workspaceId!,
+            }
+          : {
+              command: input.action,
+              actor: input.actor,
+              request: input.request,
+              invitationId: input.invitationId,
+            },
+        receipt,
+        input.recheckAdmission
+      ),
     inflightCommands: input.inflightCommands,
     input: input.request,
     replay: (record) => {
@@ -1019,14 +903,16 @@ interface RunMemberMutationInput {
   readonly actorId: string;
   /** Open Core database. */
   readonly coreDb: CoreDb;
-  /** Domain mutation executed inside the Core transaction. */
-  readonly execute: () => WorkspaceMemberMutationResult;
+  /** Exact authenticated actor; the native owner evaluates current Core facts. */
+  readonly actor: Actor;
+  /** Existing public admission rechecked after native opening. */
+  readonly recheckAdmission?: (() => Promise<void>) | undefined;
   /** Existing in-flight collapse owner. */
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   /** Membership subject and response pointer id. */
   readonly memberUserId: string;
   /** Parsed request used for input hashing. */
-  readonly request: Readonly<Record<string, unknown>> & { readonly requestId: string };
+  readonly request: { readonly requestId: string; readonly expectedRevision: number };
   /** Existing shared Workspace store. */
   readonly store: FsStore;
   /** Redacted lifecycle audit summary. */
@@ -1039,29 +925,21 @@ interface RunMemberMutationInput {
 async function runMemberMutation(input: RunMemberMutationInput): Promise<WorkspaceMember> {
   return runIdempotentCommand({
     command: input.action,
-    coreDb: input.coreDb,
-    coreTransaction: true,
-    execute: () => {
-      requireNoLifecycleAudit(input.coreDb, {
-        action: input.action,
-        actorId: input.actorId,
-        requestId: input.request.requestId,
-        resource: `workspace-member:${input.workspaceId}:${input.memberUserId}`,
-      });
-      const result = input.execute();
-      const member = requireMemberMutation(result);
-      recordLifecycleAudit(input.coreDb, {
-        action: input.action,
-        actorId: input.actorId,
-        requestId: input.request.requestId,
-        resource: `workspace-member:${input.workspaceId}:${input.memberUserId}`,
-        resourceRevision: member.revision,
-        subjectId: input.memberUserId,
-        summary: input.summary,
-        workspaceId: input.workspaceId,
-      });
-      return member;
-    },
+    receiptDb: input.coreDb,
+    execute: (receipt) =>
+      executeCoreSharing<WorkspaceMember>(
+        input.coreDb,
+        input.store,
+        {
+          command: input.action,
+          actor: input.actor,
+          request: input.request,
+          workspaceId: input.workspaceId,
+          memberUserId: input.memberUserId,
+        },
+        receipt,
+        input.recheckAdmission
+      ),
     inflightCommands: input.inflightCommands,
     input: input.request,
     replay: (record) => {
@@ -1150,7 +1028,8 @@ function projectWorkspaceRelation(
   };
 }
 
-function accessDenied(): OperationError {
+/** Creates the existing uniform family denial for caller admission and native publication. */
+export function accessDenied(): OperationError {
   return new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
 }
 
@@ -1172,28 +1051,6 @@ function authorizedWorkspaceSummary(
     ...projectWorkspaceRelation(coreDb, userId, workspaceId, administratorEligible),
     workspace: store.getWorkspace(workspaceId),
   });
-}
-
-/** Reads the exact invitee-bound Workspace id without exposing another invitation. */
-function invitationWorkspaceIdForInvitee(
-  coreDb: CoreDb,
-  invitationId: string,
-  actor: Actor
-): string {
-  const invitation = getWorkspaceInvitation(coreDb, invitationId);
-  if (
-    !invitation ||
-    evaluateProductAuthorization(
-      coreDb,
-      actor,
-      { kind: 'invitation', invitationId },
-      'invitation.respond',
-      true
-    ).effect !== 'allow'
-  ) {
-    throw accessDenied();
-  }
-  return invitation.workspaceId;
 }
 
 /** Fails closed when a request-owned lifecycle effect exists without its Core receipt. */
@@ -1269,121 +1126,6 @@ function recordLifecycleAudit(coreDb: CoreDb, input: LifecycleAuditInput): void 
     summary: input.summary,
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
   });
-}
-
-/** Requires one successful invitation creation result. */
-function requireCreatedInvitation(result: CreateWorkspaceInvitationResult): WorkspaceInvitation {
-  if (result.kind === 'created') {
-    return result.invitation;
-  }
-  throwDomainFailure(result);
-}
-
-/** Requires one successful invitation terminal transition. */
-function requireInvitationTransition(
-  result: WorkspaceInvitationTransitionResult
-): WorkspaceInvitation {
-  if (result.kind === 'accepted' || result.kind === 'declined' || result.kind === 'revoked') {
-    return result.invitation;
-  }
-  throwDomainFailure(result);
-}
-
-/** Requires one successful membership tombstone mutation. */
-function requireMemberMutation(result: WorkspaceMemberMutationResult): WorkspaceMember {
-  if (result.kind === 'removed') {
-    return result.member;
-  }
-  throwDomainFailure(result);
-}
-
-/** Requires one successful or exact no-op recovery result. */
-function requireRecoveryResult(result: RecoverWorkspaceAccessResult): WorkspaceAccessRecoveryState {
-  if (result.kind === 'recovered' || result.kind === 'unchanged') {
-    return result.recovery;
-  }
-  throwDomainFailure(result);
-}
-
-/** Requires one successful or no-op ownership transfer and maps its conflict safely. */
-function requireTransferResult(
-  result: TransferWorkspaceOwnershipResult,
-  coreDb: CoreDb,
-  store: FsStore,
-  actorId: string,
-  workspaceId: string,
-  administratorEligible = false
-): WorkspaceRegistryFact {
-  if (result.kind === 'transferred' || result.kind === 'unchanged') {
-    return result.registry;
-  }
-  if (result.kind === 'revision_conflict') {
-    throw new OperationError('revision_conflict', 'Workspace revision conflict.', 409, {
-      details: {
-        current: authorizedWorkspaceSummary(
-          coreDb,
-          store,
-          actorId,
-          workspaceId,
-          administratorEligible
-        ),
-        resource: 'workspace',
-      },
-    });
-  }
-  throw accessDenied();
-}
-
-/** Maps one closed domain failure to the exact public error family. */
-function throwDomainFailure(
-  result:
-    | CreateWorkspaceInvitationResult
-    | WorkspaceInvitationTransitionResult
-    | WorkspaceMemberMutationResult
-    | RecoverWorkspaceAccessResult
-): never {
-  switch (result.kind) {
-    case 'workspace_access_denied':
-      throw accessDenied();
-    case 'invitee_unavailable':
-      throw new OperationError('invitee_unavailable', 'The invitation target is unavailable.', 404);
-    case 'owner_transfer_required':
-      throw new OperationError(
-        'owner_transfer_required',
-        'Workspace ownership must be transferred first.',
-        409
-      );
-    case 'invitation_not_pending':
-      throw new OperationError(
-        'invitation_not_pending',
-        'Workspace invitation is not pending.',
-        409,
-        { details: { current: result.invitation } }
-      );
-    case 'revision_conflict': {
-      if ('invitation' in result) {
-        throw new OperationError(
-          'revision_conflict',
-          'Workspace invitation revision conflict.',
-          409,
-          { details: { current: result.invitation, resource: 'invitation' } }
-        );
-      }
-      if ('member' in result) {
-        throw new OperationError(
-          'revision_conflict',
-          'Workspace membership revision conflict.',
-          409,
-          { details: { current: result.member, resource: 'membership' } }
-        );
-      }
-      throw new OperationError('revision_conflict', 'Workspace recovery revision conflict.', 409, {
-        details: { current: result.recovery, resource: 'workspace_recovery' },
-      });
-    }
-    default:
-      throw new Error('Unexpected successful Workspace sharing result.');
-  }
 }
 
 /** Reads one invitation pointer for central receipt replay. */
@@ -1501,12 +1243,6 @@ function throwSharingError(error: unknown): never {
 /** Requires a child to remain in the declared Workspace without transport types. */
 function assertWorkspaceLineage(workspaceId: string, actual: string | null): void {
   if (actual !== workspaceId) throw accessDenied();
-}
-
-/** Resolves the bound invitee while preserving truthful administrator attribution. */
-function invitationInviteeUserId(coreDb: CoreDb, invitationId: string, actor: Actor): string {
-  invitationWorkspaceIdForInvitee(coreDb, invitationId, actor);
-  return getWorkspaceInvitation(coreDb, invitationId)!.inviteeUserId;
 }
 
 /** Projects only the candidate set already admitted by the unique Workspace authorizer. */

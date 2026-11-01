@@ -15,6 +15,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import { writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
+import { ZodError } from 'zod';
 import {
   ArtifactReviewError,
   applyControlReviewCommand,
@@ -163,6 +164,8 @@ import {
   prepareControlWorkObservationCommand,
 } from './work-observations.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
+import { ControlCoreSharingRefusalSchema } from './workspace-sharing-codecs.js';
+import { applyControlCoreSharing } from './workspace-sharing-native.js';
 
 if (isMainThread || parentPort === null) {
   throw new Error('The database writer entrypoint requires a dedicated worker thread.');
@@ -191,6 +194,7 @@ type WriteCommand = Extract<
       | 'worker-control-evidence'
       | 'generative-presentation'
       | 'evaluation-candidate'
+      | 'core-sharing'
       | 'provenance'
       | 'observation'
       | 'capability'
@@ -321,6 +325,26 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       error instanceof IdempotencyKeyConflictError)
   )
     return { operation, code: error.code, message: error.message, status: error.status };
+  if (operation === 'core-sharing' && error instanceof ZodError)
+    return {
+      operation,
+      code: 'invalid_request',
+      message: 'The retained record could not be read.',
+      status: 400,
+    };
+  if (
+    operation === 'core-sharing' &&
+    (error instanceof OperationError || error instanceof IdempotencyKeyConflictError)
+  ) {
+    const projected = ControlCoreSharingRefusalSchema.safeParse({
+      operation,
+      code: error.code,
+      message: error.message,
+      status: error.status,
+      ...('details' in error && error.details ? { details: error.details } : {}),
+    });
+    return projected.success ? projected.data : undefined;
+  }
   let domain: ControlWorkerDomainRefusal | undefined;
   if (
     operation === 'admin-recovery' &&
@@ -1421,6 +1445,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'review',
               result,
             };
+          } else if (request.operation === 'core-sharing') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlCoreSharing(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'core-sharing',
+              result,
+            };
           } else if (request.operation === 'evaluation-candidate') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             const result = applyControlEvaluationCandidate(owner.scopeDb, request.input);
@@ -2099,6 +2133,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'journal' ||
       value.operation === 'goal' ||
       value.operation === 'maintenance' ||
+      value.operation === 'core-sharing' ||
       value.operation === 'evaluation-candidate' ||
       value.operation === 'material' ||
       value.operation === 'review' ||

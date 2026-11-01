@@ -7,7 +7,10 @@ import * as policyKernel from '@openkit/policy-kernel';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { recordServerAuditEvent } from './audit-events.js';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
@@ -15,15 +18,23 @@ import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { getRegisteredAppApiOperationIds } from './openapi.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { workspaceMembershipDecisionFixture } from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
-import { getWorkspaceInvitation, getWorkspaceMember } from './workspace-sharing.js';
+import {
+  getWorkspaceInvitation,
+  getWorkspaceMember,
+  removeWorkspaceMember,
+} from './workspace-sharing.js';
 import { readAuthorizedWorkspaces } from './workspace-sharing-operations.js';
 
 const openDatabases: CoreDb[] = [];
@@ -65,6 +76,23 @@ interface RouteFixture {
   workspaceId: string;
   /** Second Workspace used for lineage denial. */
   foreignWorkspaceId: string;
+}
+
+/** Sends one typed sharing mutation through its public JSON route. */
+function requestSharingMutation(
+  fixture: RouteFixture,
+  operation: Parameters<typeof operationRequest>[0],
+  selectors: Record<string, unknown>,
+  body: Record<string, unknown>,
+  method: 'PATCH' | 'POST' = 'POST'
+): Promise<Response> {
+  return fixture.app.request(
+    ...operationRequest(operation, selectors, {
+      method,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  );
 }
 
 /** Inserts one active canonical user. */
@@ -839,6 +867,254 @@ describe('Workspace sharing routes', () => {
           'SELECT COUNT(*) AS count FROM workspace_members WHERE workspace_id = ? AND user_id = ?'
         )
         .get(workspaceId, 'usr_00000000-0000-768a-8658-44c33d82c1f5')
+    ).toEqual({ count: 0 });
+  });
+
+  it('native sharing owner commits invitation create and accept while Main Core is read-only', async () => {
+    const fixture = await createFixture();
+    const ownerId = 'usr_00000000-0000-7011-88df-c2b1e8466b6f';
+    const inviteeId = 'usr_00000000-0000-7a9e-8345-2bce44a3dce0';
+    const createInput = {
+      inviteeEmail: 'invitee@example.com',
+      requestId: '00000000-0000-4000-8000-000000120001',
+    } as const;
+    fixture.coreDb.sqlite.pragma('query_only = ON');
+
+    const created = await requestSharingMutation(
+      fixture,
+      'workspace.invitation-create',
+      { workspaceId: fixture.workspaceId },
+      createInput
+    );
+    expect(created.status).toBe(201);
+    const createdBody = (await created.json()) as {
+      invitation: { invitationId: string; revision: number };
+    };
+    const acceptInput = {
+      expectedRevision: createdBody.invitation.revision,
+      requestId: '00000000-0000-4000-8000-000000120002',
+    } as const;
+    fixture.actorState.current = { kind: 'session', userId: inviteeId };
+    const accepted = await requestSharingMutation(
+      fixture,
+      'workspace.my-invitation-accept',
+      { invitationId: createdBody.invitation.invitationId },
+      acceptInput
+    );
+    expect(accepted.status).toBe(200);
+    const acceptedBody = await accepted.json();
+    expect(acceptedBody).toMatchObject({ invitation: { effectiveStatus: 'accepted' } });
+
+    fixture.actorState.current = { kind: 'session', userId: ownerId };
+    const createReplay = await requestSharingMutation(
+      fixture,
+      'workspace.invitation-create',
+      { workspaceId: fixture.workspaceId },
+      createInput
+    );
+    fixture.actorState.current = { kind: 'session', userId: inviteeId };
+    const acceptReplay = await requestSharingMutation(
+      fixture,
+      'workspace.my-invitation-accept',
+      { invitationId: createdBody.invitation.invitationId },
+      acceptInput
+    );
+    expect(createReplay.status).toBe(201);
+    // Invitation receipts retain the exact pointer. A replay projects the
+    // current invitation after its separately committed acceptance.
+    expect(await createReplay.json()).toEqual(acceptedBody);
+    expect(acceptReplay.status).toBe(200);
+    expect(await acceptReplay.json()).toEqual(acceptedBody);
+    expect(getWorkspaceMember(fixture.coreDb, fixture.workspaceId, inviteeId)).toMatchObject({
+      status: 'active',
+    });
+    expect(
+      fixture.coreDb.sqlite
+        .prepare(
+          "SELECT action FROM audit_events WHERE action IN ('workspace.invitation.create', 'workspace.invitation.accept') ORDER BY action"
+        )
+        .all()
+    ).toEqual([
+      { action: 'workspace.invitation.accept' },
+      { action: 'workspace.invitation.create' },
+    ]);
+    expect(
+      fixture.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM idempotency_requests').get()
+    ).toEqual({ count: 2 });
+  });
+
+  it('native sharing owner rechecks current membership after opening the writer', async () => {
+    const fixture = await createFixture();
+    const editorId = 'usr_00000000-0000-7609-aed5-db4b5c95e76c';
+    const ownerId = 'usr_00000000-0000-7011-88df-c2b1e8466b6f';
+    fixture.actorState.current = { kind: 'session', userId: editorId };
+    const client = getControlStoreWorkerClient();
+    const open = client.open.bind(client);
+    let opened = false;
+    vi.spyOn(client, 'open').mockImplementationOnce(async (input) => {
+      await open(input);
+      opened = true;
+      fixture.coreDb.sqlite.transaction(() => {
+        const removed = removeWorkspaceMember({
+          actorUserId: ownerId,
+          authorization: workspaceMembershipDecisionFixture(
+            fixture.coreDb,
+            ownerId,
+            fixture.workspaceId
+          ),
+          coreDb: fixture.coreDb,
+          expectedRevision: 1,
+          memberUserId: editorId,
+          workspaceId: fixture.workspaceId,
+        });
+        expect(removed.kind).toBe('removed');
+      })();
+    });
+
+    const response = await requestSharingMutation(
+      fixture,
+      'workspace.leave',
+      { workspaceId: fixture.workspaceId },
+      {
+        expectedRevision: 1,
+        requestId: '00000000-0000-4000-8000-000000120003',
+      }
+    );
+
+    expect(opened).toBe(true);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    expect(
+      fixture.coreDb.sqlite
+        .prepare("SELECT COUNT(*) AS count FROM audit_events WHERE action = 'workspace.leave'")
+        .get()
+    ).toEqual({ count: 0 });
+    expect(
+      fixture.coreDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM idempotency_requests WHERE command_name = 'workspace.leave'"
+        )
+        .get()
+    ).toEqual({ count: 0 });
+  });
+
+  it('native sharing owner rolls ownership and its receipt back together', async () => {
+    const fixture = await createFixture();
+    const ownerId = 'usr_00000000-0000-7011-88df-c2b1e8466b6f';
+    const editorId = 'usr_00000000-0000-7609-aed5-db4b5c95e76c';
+    const input = {
+      expectedRegistryRevision: 1,
+      requestId: '00000000-0000-4000-8000-000000120004',
+    } as const;
+    fixture.coreDb.sqlite.exec(`
+      CREATE TRIGGER refuse_sharing_receipt
+      BEFORE INSERT ON idempotency_requests
+      WHEN NEW.command_name = 'workspace.ownership.transfer'
+      BEGIN SELECT RAISE(ABORT, 'private sharing receipt fault'); END
+    `);
+    const request = () =>
+      requestSharingMutation(
+        fixture,
+        'workspace.ownership-transfer',
+        { targetUserId: editorId, workspaceId: fixture.workspaceId },
+        input,
+        'PATCH'
+      );
+
+    const refused = await request();
+    expect(refused.status).toBe(500);
+    expect(
+      fixture.coreDb.sqlite
+        .prepare(
+          'SELECT owner_user_id AS ownerUserId, revision FROM workspace_registry WHERE workspace_id = ?'
+        )
+        .get(fixture.workspaceId)
+    ).toEqual({ ownerUserId: ownerId, revision: 1 });
+    expect(
+      fixture.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()
+    ).toEqual({ count: 0 });
+    expect(
+      fixture.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM idempotency_requests').get()
+    ).toEqual({ count: 0 });
+
+    fixture.coreDb.sqlite.exec('DROP TRIGGER refuse_sharing_receipt');
+    const retried = await request();
+    const retriedBody = await retried.json();
+    const replayed = await request();
+    expect(retried.status).toBe(200);
+    expect(replayed.status).toBe(200);
+    expect(await replayed.json()).toEqual(retriedBody);
+    expect(
+      fixture.coreDb.sqlite
+        .prepare(
+          'SELECT owner_user_id AS ownerUserId, revision FROM workspace_registry WHERE workspace_id = ?'
+        )
+        .get(fixture.workspaceId)
+    ).toEqual({ ownerUserId: editorId, revision: 2 });
+    expect(
+      fixture.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()
+    ).toEqual({ count: 1 });
+    expect(
+      fixture.coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM idempotency_requests').get()
+    ).toEqual({ count: 1 });
+  });
+
+  it('native sharing owner rechecks deployment-admin recovery after opening the writer', async () => {
+    const fixture = await createFixture();
+    const adminId = 'usr_00000000-0000-768a-8658-44c33d82c1f5';
+    const tokenId = 'token_native_recovery';
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: adminId,
+      scope: 'server-admin',
+      tokenId,
+      workspaceIds: [],
+    });
+    fixture.actorState.current = {
+      kind: 'token',
+      tokenId,
+      tokenScope: 'server-admin',
+      userId: adminId,
+    };
+    const client = getControlStoreWorkerClient();
+    const open = client.open.bind(client);
+    let opened = false;
+    vi.spyOn(client, 'open').mockImplementationOnce(async (input) => {
+      await open(input);
+      opened = true;
+      expect(revokeOpenKitAccessTokenRecord(fixture.coreDb, tokenId)).toMatchObject({
+        status: 'revoked',
+      });
+    });
+
+    const response = await requestSharingMutation(
+      fixture,
+      'workspace.access-recover',
+      { workspaceId: fixture.workspaceId },
+      {
+        action: 'add-self-as-member',
+        expectedRegistryRevision: 1,
+        requestId: '00000000-0000-4000-8000-000000120005',
+      }
+    );
+
+    expect(opened).toBe(true);
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ code: 'deployment_admin_required' });
+    expect(getWorkspaceMember(fixture.coreDb, fixture.workspaceId, adminId)).toBeNull();
+    expect(
+      fixture.coreDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM audit_events WHERE action LIKE 'workspace.access.recover.%'"
+        )
+        .get()
+    ).toEqual({ count: 0 });
+    expect(
+      fixture.coreDb.sqlite
+        .prepare(
+          "SELECT COUNT(*) AS count FROM idempotency_requests WHERE command_name = 'workspace.access.recover'"
+        )
+        .get()
     ).toEqual({ count: 0 });
   });
 });
