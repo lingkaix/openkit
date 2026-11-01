@@ -7,6 +7,7 @@ import { Readable } from 'node:stream';
 import { CommitArtifactVersionResponseSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { AgentManifest } from './agents/manifest.js';
 import { importArtifactFile } from './artifact-file-commands.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
@@ -18,6 +19,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import {
@@ -51,8 +53,11 @@ afterEach(async () => {
   vi.mocked(open).mockClear();
 });
 
-/** Uses real canonical files, Workspace receipts, local authority, and the composed App routes. */
-async function fixture() {
+/**
+ * Uses real canonical files, Workspace receipts, local authority, and the composed App routes.
+ * @param agentManifests Optional source manifests selected by the existing App configuration owner.
+ */
+async function fixture(agentManifests?: AgentManifest[]) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-files-'));
   cleanups.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -62,7 +67,18 @@ async function fixture() {
   const store = await createDemoStore({ dataRoot });
   const workspace = store.listWorkspaces()[0]!;
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: workspace.id });
-  return { dataRoot, coreDb, store, workspace, app: createApp({ coreDb, dataRoot, store }) };
+  return {
+    dataRoot,
+    coreDb,
+    store,
+    workspace,
+    app: createApp({
+      coreDb,
+      dataRoot,
+      store,
+      ...(agentManifests !== undefined ? { agentManifests } : {}),
+    }),
+  };
 }
 
 /** Sends actual binary request bytes; file metadata remains separate from the body. */
@@ -323,24 +339,11 @@ describe('exact Artifact file import and download', () => {
     'retained-lines',
   ] as const)('refuses %s before effects when a reviewed original has no exact Worker delivery', async (kind) => {
     const decision = kind === 'binary-file' ? 'needs_refinement' : 'redo';
-    const state = await fixture();
-    const { coreDb, dataRoot, workspace } = state;
-    // This domain fixture owns its roster directly; App catalog projection is tested separately.
-    const store = new FsStore({ dataRoot });
     const agentId = 'review-file-agent';
-    store.upsertAgent(workspace.id, {
-      id: agentId,
-      name: 'Review file agent',
-      kind: 'coder',
-      status: 'enabled',
-      modelId: null,
-      skillIds: [],
-      profiles: [],
-      defaultProfileId: null,
-      capabilities: [],
-      sandboxSummary: null,
-      health: { status: 'ready', message: null, checkedAt: new Date().toISOString() },
-    });
+    const state = await fixture([
+      createTestAgentSetup({ agentId, displayName: 'Review file agent' }).manifest,
+    ]);
+    const { coreDb, dataRoot, workspace, store } = state;
     const thread = await store.createThread(
       workspace.id,
       'File Review',

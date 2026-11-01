@@ -149,3 +149,5 @@ Direct Simulator lifecycle fixtures prepare their original scheduler admission, 
 The missing-Core diagnostics authority fixture gives only its dormant deterministic executor the fixture's existing Core. App authority remains absent, and the original unavailable-authority refusal stays required.
 
 Post-terminal publication tests retain the reachable native outcomes and their replay and conflict checks. Retired ordinary Workspace import supplies no terminal-history fixtures.
+
+File Artifact review refusal fixtures share the App's real Core and Store and select the source Agent from that App's current manifest inventory.
