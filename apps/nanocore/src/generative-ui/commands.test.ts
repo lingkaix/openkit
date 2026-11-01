@@ -7,8 +7,8 @@ import {
   GENERATIVE_UI_PROTOCOL_VERSION,
   type LightAppSchemaInput,
 } from '@openkit/app-api-schemas';
-import { allocateEntityId } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   createLightApp,
   createRecord,
@@ -332,17 +332,24 @@ describe('Generative UI commands', () => {
         source: { kind: 'answer' as const, text: 'Retained answer.' },
         actions: [],
       };
-      const createItem = context.store.createItem.bind(context.store);
-      const interrupted = vi.spyOn(context.store, 'createItem').mockImplementation(async (item) => {
-        const retained = await createItem(item);
-        if (item.type === 'assistant-message')
-          throw new Error('Injected source publication interruption');
-        return retained;
+      await context.store.createItem({
+        id: deriveEntityId('it', [
+          'generative-ui.publish',
+          context.workspaceId,
+          context.actor.id,
+          context.requestId,
+          'answer-source',
+        ]),
+        owner: { kind: 'workspace', workspaceId: context.workspaceId },
+        threadId: input.threadId,
+        turnId: input.turnId,
+        type: 'assistant-message',
+        status: 'completed',
+        text: input.source.text,
+        createdAt: turn.startedAt ?? new Date().toISOString(),
+        completedAt: turn.startedAt ?? new Date().toISOString(),
+        causationId: context.requestId,
       });
-      await expect(publishGenerativePresentation(context, input)).rejects.toThrow(
-        'Injected source publication interruption'
-      );
-      interrupted.mockRestore();
       expect(
         context.store
           .listAllItems()

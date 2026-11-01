@@ -67,6 +67,7 @@ export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   'material.restore',
   'material.range-correct',
   'worker.recovery.retry',
+  'generative-ui.publish',
 ] as const satisfies readonly CommandRequestName[];
 
 /** Workspace Knowledge commands commit their original receipt with SQL publication; other scopes retain their current writer. */

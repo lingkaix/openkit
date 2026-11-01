@@ -22,6 +22,12 @@ import {
   prepareControlReviewCommand,
   readControlReviewMaterialId,
 } from '../artifact-reviews.js';
+import { KernelCommandError } from '../generative-kernel/errors.js';
+import {
+  applyControlGenerativePresentation,
+  type PreparedControlGenerativePresentation,
+  prepareControlGenerativePresentation,
+} from '../generative-ui/native-publication.js';
 import { applyControlMaintenanceAdmission } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
@@ -171,6 +177,7 @@ type WriteCommand = Extract<
       | 'event'
       | 'publication'
       | 'project-cleanup'
+      | 'generative-presentation'
       | 'provenance'
       | 'observation'
       | 'capability'
@@ -197,6 +204,7 @@ type WriteRequest = WriteCommand & {
   ready: boolean;
   predecessorFailed: boolean;
   refusal?: ControlWorkerReply;
+  readonly preparedGenerativePresentation?: PreparedControlGenerativePresentation;
   readonly preparedPublication?: PreparedControlPublication | undefined;
   readonly preparedEvent?: Awaited<ReturnType<typeof prepareControlEventAppend>> | undefined;
   readonly preparedItem?: Awaited<ReturnType<typeof prepareControlItemAppend>> | undefined;
@@ -283,6 +291,22 @@ function failure(
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
   let domain: ControlWorkerDomainRefusal | undefined;
+  if (
+    operation === 'generative-presentation' &&
+    (error instanceof IdempotencyKeyConflictError ||
+      (error instanceof KernelCommandError &&
+        error.code === 'recovery_required' &&
+        [
+          'Interrupted presentation publication requires recovery.',
+          'Interrupted answer publication requires recovery.',
+        ].includes(error.message)))
+  )
+    return {
+      operation,
+      code: error instanceof IdempotencyKeyConflictError ? 'idempotency_key_conflict' : error.code,
+      message: error.message,
+      status: 409,
+    };
   if (
     operation === 'provenance' &&
     error instanceof OperationError &&
@@ -585,6 +609,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'publication':
     case 'observation':
+    case 'generative-presentation':
     case 'provenance':
     case 'project-cleanup':
     case 'maintenance':
@@ -1447,6 +1472,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'maintenance',
               result,
             };
+          } else if (request.operation === 'generative-presentation') {
+            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedGenerativePresentation)
+              throw new ControlProductPreconditionError();
+            const presentationId = applyControlGenerativePresentation(
+              owner.scopeDb,
+              request.preparedGenerativePresentation
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'generative-presentation',
+              presentationId,
+            };
           } else if (request.operation === 'provenance') {
             if (owner.scopeDb?.scope !== 'workspace' || !request.preparedProvenance)
               throw new ControlProductPreconditionError();
@@ -1933,6 +1972,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'event' ||
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
+      value.operation === 'generative-presentation' ||
       value.operation === 'provenance' ||
       value.operation === 'observation' ||
       value.operation === 'capability' ||
@@ -1991,6 +2031,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           published: new Set(),
         };
         const prepare = async () => {
+          let preparedGenerativePresentation: PreparedControlGenerativePresentation | undefined;
           let preparedPublication: PreparedControlPublication | undefined;
           let preparedItem: WriteRequest['preparedItem'];
           let preparedEvent: WriteRequest['preparedEvent'];
@@ -2028,9 +2069,20 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 'event',
                 'observation',
                 'provenance',
+                'generative-presentation',
               ].includes(value.operation)
             )
               await prepareAfterPredecessors(owner, queued, earlier);
+            if (value.operation === 'generative-presentation') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              preparedGenerativePresentation = await prepareControlGenerativePresentation(
+                owner.scopeDb,
+                value.input,
+                value.content,
+                owner.contentMount,
+                newDirectories
+              );
+            }
             if (value.operation === 'provenance') {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
               preparedProvenance = await prepareWorkerRuntimeProvenance(owner.scopeDb, value.input);
@@ -2226,6 +2278,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             Object.assign(queued, {
               ready: true,
               preparedEntries,
+              preparedGenerativePresentation,
               preparedGoal,
               preparedReview,
               preparedPending,

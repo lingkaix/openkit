@@ -1,5 +1,7 @@
 # NanoCore Source
 
+Generative UI publication sends one typed presentation tuple to the existing native Workspace writer. Its optional answer Item, presentation revision, reference Item, Audit and original receipt share one savepoint and covering FULL acknowledgement. Large domain bodies use the existing binary byte account; Item preparation, physical file/WAL admission and per-database/per-Turn bounds stay unchanged. Main retains current source/Kernel admission and rechecks authority after opening, immediately before submission; refresh stays read-only and Light App action writes stay Kernel-owned. Historical partial publication refuses automatic repair.
+
 WorkBody ordinary publication and Worker chunk staging use the existing native observation preparation FIFO. The native owner verifies exact binary bytes and the retained declaration, synchronizes evidence files, and independently commits collected or promoted evidence before its publication-reference transaction acknowledges. Main keeps an admitted readonly Workspace handle; original Core receipts follow the native acknowledgement. Existing binary and physical-capacity accounts cover chunk descriptors and possible final adoption; failed publication preserves a durable prefix, and expired content is never recreated.
 
 Kernel discovery exposes the shared fixed admission limits and supported operations. Native revision refusals carry expected and current revisions, and validation refusals identify the relevant input path. These metadata fields add no operation or authority.

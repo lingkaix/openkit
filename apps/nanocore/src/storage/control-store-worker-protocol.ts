@@ -15,6 +15,10 @@ import {
   ControlReviewCommandResultSchema,
 } from '../artifact-reviews.js';
 import {
+  type ControlGenerativePresentationWire,
+  ControlGenerativePresentationWireSchema,
+} from '../generative-ui/native-publication-codecs.js';
+import {
   type ControlExecutionJournalInput,
   ControlExecutionJournalInputSchema,
 } from '../runtime/execution-journal.js';
@@ -98,7 +102,7 @@ import {
 } from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 24;
+export const CONTROL_WORKER_VERSION = 25;
 
 /** Exact admitted provenance sources; bytes stay on the affected filesystem, never in the message. */
 export const ControlProvenanceInputSchema = z
@@ -241,6 +245,11 @@ export type ControlWorkerCommand =
           readonly content?: ArrayBuffer;
         }
       | { readonly operation: 'provenance'; readonly input: ControlProvenanceInput }
+      | {
+          readonly operation: 'generative-presentation';
+          readonly input: ControlGenerativePresentationWire;
+          readonly content?: ArrayBuffer;
+        }
       | { readonly operation: 'goal'; readonly input: ControlGoalInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
@@ -286,7 +295,9 @@ export function controlWorkerInputBytes(
         if (
           command.operation !== 'material' &&
           !(
-            (command.operation === 'capability' || command.operation === 'observation') &&
+            (command.operation === 'capability' ||
+              command.operation === 'observation' ||
+              command.operation === 'generative-presentation') &&
             key === 'content' &&
             this === command
           )
@@ -361,6 +372,7 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 export interface ControlWorkerDomainRefusal {
   readonly operation:
     | 'provenance'
+    | 'generative-presentation'
     | 'goal'
     | 'capability'
     | 'maintenance'
@@ -412,6 +424,11 @@ export type ControlWorkerReply = {
       readonly result: z.infer<typeof ControlProvenanceResultSchema>;
     }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'generative-presentation';
+      readonly presentationId: string;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'item';
@@ -555,6 +572,15 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'item' || value.operation === 'event') &&
         value.code === 'conflict' &&
         value.status === 409) ||
+      (value.operation === 'generative-presentation' &&
+        value.status === 409 &&
+        ((value.code === 'idempotency_key_conflict' &&
+          value.message === 'The requestId was already used for different command input.') ||
+          (value.code === 'recovery_required' &&
+            [
+              'Interrupted presentation publication requires recovery.',
+              'Interrupted answer publication requires recovery.',
+            ].includes(String(value.message))))) ||
       value.operation === 'goal' ||
       value.operation === 'capability' ||
       value.operation === 'pending' ||
@@ -622,6 +648,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
     );
+  if (reply.operation === 'generative-presentation')
+    return typeof reply.presentationId === 'string';
   if (reply.operation === 'provenance')
     return ControlProvenanceResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'event') return SseEventEnvelopeSchema.safeParse(reply.result).success;
@@ -1020,6 +1048,14 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     } catch {
       return false;
     }
+  }
+  if (value.operation === 'generative-presentation') {
+    const parsed = ControlGenerativePresentationWireSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
   }
   if (value.operation === 'provenance')
     return (

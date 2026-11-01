@@ -1412,7 +1412,14 @@ export async function prepareControlItemAppend(
   );
   const previous = stored.find((value) => value.id === item.id);
   if (checkControlItemAppend(item, turn, previous, stored, input.category))
-    return { item: previous!, head, sequence: 0, revision: prior!.revision, replay: true };
+    return {
+      item: previous!,
+      previous,
+      head,
+      sequence: 0,
+      revision: prior!.revision,
+      replay: true,
+    };
   const sequence =
     (
       db.sqlite
@@ -1429,6 +1436,7 @@ export async function prepareControlItemAppend(
           item
         ) as z.infer<typeof ItemSchema>)
       : item,
+    previous,
     head,
     sequence: sequence + 1,
     revision: prior?.revision ?? 0,

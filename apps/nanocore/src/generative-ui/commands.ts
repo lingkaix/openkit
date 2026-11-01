@@ -27,7 +27,6 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
   canDiscloseThreadToAudience,
   isThreadIdVisible,
@@ -45,7 +44,9 @@ import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   type AdmittedDeclaration,
   admitProducerMessages,
@@ -108,7 +109,7 @@ export async function publishGenerativePresentation(
     input: { actor: context.actor, ...input },
     responseKind: 'generative_presentation',
     workspaceDb: context.workspaceDb,
-    execute: async () => {
+    execute: async (receipt) => {
       assertWritableTurn(
         context.store,
         context.actor,
@@ -203,39 +204,70 @@ export async function publishGenerativePresentation(
         actions_json: JSON.stringify(input.actions),
         observed_at: createdAt,
       };
-      if (answer && source.kind === 'item') {
-        await context.store.createItem({
-          id: source.itemId,
-          owner: { kind: 'workspace', workspaceId: context.workspaceId },
-          threadId: input.threadId,
-          turnId: input.turnId,
-          type: 'assistant-message',
-          status: 'completed',
-          text: answer.text,
-          createdAt,
-          completedAt: createdAt,
-          causationId: context.requestId,
-        });
-      }
-      context.workspaceDb.sqlite.transaction(() => {
-        insertPresentation(context.workspaceDb, row);
-        recordWorkspaceAuditEvent({
-          workspaceDb: context.workspaceDb,
-          workspaceId: context.workspaceId,
-          threadId: input.threadId,
-          turnId: input.turnId,
-          itemId,
-          actor: context.actor,
-          requestId: context.requestId,
-          category: 'system',
-          action: 'generative-ui.publish',
-          resource: `generative-presentation:${presentationId}`,
-          outcome: 'succeeded',
-          summary: 'generative-ui.publish',
-        });
-      })();
-      await appendPresentationItem(context.store, row);
-      return presentationId;
+      const answerItem: Item | null =
+        answer && source.kind === 'item'
+          ? {
+              id: source.itemId,
+              owner: { kind: 'workspace', workspaceId: context.workspaceId },
+              threadId: input.threadId,
+              turnId: input.turnId,
+              type: 'assistant-message',
+              status: 'completed',
+              text: answer.text,
+              createdAt,
+              completedAt: createdAt,
+              causationId: context.requestId,
+            }
+          : null;
+      const sourceItem =
+        !answer && source.kind === 'item'
+          ? requireVisibleItemSource(
+              context,
+              source,
+              new KernelCommandError('not_found', 'Source item was not found.')
+            )
+          : null;
+      const scope = nativeProductScope(context.dataRoot, {
+        kind: 'workspace',
+        workspaceId: context.workspaceId,
+      });
+      const client = getControlStoreWorkerClient();
+      const database = `workspace:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: context.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      // Native opening is awaited; admission must still hold immediately before posting the exact tuple.
+      assertWritableTurn(
+        context.store,
+        context.actor,
+        context.workspaceId,
+        input.threadId,
+        input.turnId,
+        context.administratorEligible
+      );
+      assertItemSourcePublishable(context, input.source, input.threadId);
+      if (!answer) readAuthorizedSource(context, source, admitted, input.actions);
+      const { publication: _publication, ...presentation } = projectPresentation(
+        context.store,
+        row
+      );
+      return client.generativePresentation(database, {
+        presentation,
+        answer: answerItem,
+        sourceItem,
+        receipt: {
+          ...receipt,
+          command: 'generative-ui.publish',
+          responseKind: 'generative_presentation',
+          scope: { workspaceId: context.workspaceId, actorId: context.actor.id },
+        },
+      });
     },
     replay: (record) => {
       const row = requirePresentationRow(
@@ -625,50 +657,6 @@ function buildSourceDataModel(
   return { records: data.records ?? [], schemaRevision: data.schemaRevision };
 }
 
-function insertPresentation(workspaceDb: WorkspaceDb, row: PresentationRow): void {
-  try {
-    workspaceDb.sqlite
-      .prepare(
-        `INSERT INTO generative_presentations (
-          schema_version, presentation_id, workspace_id, thread_id, turn_id, item_id, created_at, actor_json,
-          request_id, origin_request_id, semantic_input_hash, title, fallback_text, protocol_version,
-          catalog_id, messages_json, content_digest, source_json, actions_json, observed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        row.schema_version,
-        row.presentation_id,
-        row.workspace_id,
-        row.thread_id,
-        row.turn_id,
-        row.item_id,
-        row.created_at,
-        row.actor_json,
-        row.request_id,
-        row.origin_request_id,
-        row.semantic_input_hash,
-        row.title,
-        row.fallback_text,
-        row.protocol_version,
-        row.catalog_id,
-        row.messages_json,
-        row.content_digest,
-        row.source_json,
-        row.actions_json,
-        row.observed_at
-      );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('UNIQUE constraint failed')) {
-      throw new KernelCommandError(
-        'recovery_required',
-        'Interrupted presentation publication requires recovery.'
-      );
-    }
-    throw error;
-  }
-}
-
 function findPresentationByRequest(
   workspaceDb: WorkspaceDb,
   workspaceId: string,
@@ -696,30 +684,6 @@ function requirePresentationRow(
   }
   readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   return row;
-}
-
-async function appendPresentationItem(store: FsStore, row: PresentationRow): Promise<void> {
-  const existing = store
-    .listWorkspaceItemRevisions(row.workspace_id)
-    .find((item) => item.id === row.item_id);
-  if (existing) {
-    return;
-  }
-  const item: Item = {
-    id: row.item_id,
-    owner: { kind: 'workspace', workspaceId: row.workspace_id },
-    threadId: row.thread_id,
-    turnId: row.turn_id,
-    type: 'generative-ui-reference',
-    status: 'completed',
-    presentationId: row.presentation_id,
-    title: row.title,
-    fallbackText: row.fallback_text,
-    createdAt: row.created_at,
-    completedAt: row.created_at,
-    causationId: row.request_id,
-  };
-  await store.createItem(item);
 }
 
 function projectPresentation(store: FsStore, row: PresentationRow): GenerativePresentation {

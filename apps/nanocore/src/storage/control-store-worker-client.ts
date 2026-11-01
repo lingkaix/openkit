@@ -13,6 +13,8 @@ import {
   type ControlReviewCommandResult,
 } from '../artifact-reviews.js';
 import { prepareAuditEventStatement } from '../audit-events.js';
+import { KernelCommandError } from '../generative-kernel/errors.js';
+import type { ControlGenerativePresentation } from '../generative-ui/native-publication-codecs.js';
 import type {
   ControlMaintenanceAdmissionInput,
   ControlMaintenanceAdmissionResult,
@@ -658,7 +660,9 @@ class ControlStoreWorkerClient {
     for (const entry of this.pending.values())
       if (
         entry.counted &&
-        (entry.command.operation === 'observation' || entry.command.operation === 'provenance') &&
+        (entry.command.operation === 'observation' ||
+          entry.command.operation === 'provenance' ||
+          entry.command.operation === 'generative-presentation') &&
         this.openings.get(entry.command.database)?.path === physical &&
         entry.command.input.turnId === turn
       )
@@ -1342,6 +1346,39 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'project-cleanup' }>).result;
   }
 
+  /** Publishes the exact existing presentation tuple under the native byte, Turn and FIFO accounts. */
+  async generativePresentation(
+    database: string,
+    input: ControlGenerativePresentation
+  ): Promise<string> {
+    // The domain JSON may contain a 2-MiB data model; it uses the existing binary account, never a larger envelope.
+    const json = JSON.stringify(input);
+    const wire = {
+      workspaceId: input.presentation.workspaceId,
+      turnId: input.presentation.turnId,
+      byteLength: Buffer.byteLength(json),
+    };
+    try {
+      const reply = await this.request(
+        { operation: 'generative-presentation', database, input: wire },
+        [json]
+      );
+      return (reply as Extract<Success, { operation: 'generative-presentation' }>).presentationId;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'generative-presentation'
+      ) {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new KernelCommandError('recovery_required', error.domain.message, {
+          status: error.domain.status,
+        });
+      }
+      throw error;
+    }
+  }
+
   /** Prepares exact WorkBody bytes in the native owner before its covering SQL acknowledgement. */
   async observation(
     database: string,
@@ -1845,7 +1882,9 @@ class ControlStoreWorkerClient {
       (database !== undefined &&
         (this.outstanding.get(database) ?? 0) - (borrowed ? 1 : 0) >=
           CONTROL_WORKER_LIMITS.pendingTransitions) ||
-      ((command.operation === 'observation' || command.operation === 'provenance') &&
+      ((command.operation === 'observation' ||
+        command.operation === 'provenance' ||
+        command.operation === 'generative-presentation') &&
         opening &&
         !borrowed &&
         this.pendingTurnPublications(JSON.stringify([opening.path, command.input.turnId])) >=
@@ -1878,17 +1917,23 @@ class ControlStoreWorkerClient {
     if (
       command.operation === 'material' ||
       command.operation === 'capability' ||
-      command.operation === 'observation'
+      command.operation === 'observation' ||
+      command.operation === 'generative-presentation'
     ) {
       const size =
         command.operation === 'material'
           ? controlMaterialTransferSize(command.input)
-          : command.operation === 'observation'
-            ? { byteLength: controlWorkObservationTransferSize(command.input), replyByteLength: 0 }
-            : {
-                byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
-                replyByteLength: 0,
-              };
+          : command.operation === 'generative-presentation'
+            ? { byteLength: command.input.byteLength, replyByteLength: 0 }
+            : command.operation === 'observation'
+              ? {
+                  byteLength: controlWorkObservationTransferSize(command.input),
+                  replyByteLength: 0,
+                }
+              : {
+                  byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
+                  replyByteLength: 0,
+                };
       if (!size || size.byteLength === undefined)
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       materialBytes = size.byteLength + size.replyByteLength;
