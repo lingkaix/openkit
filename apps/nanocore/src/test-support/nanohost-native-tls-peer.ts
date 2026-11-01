@@ -99,7 +99,7 @@ coreDb.sqlite
   .prepare(`INSERT INTO nanohost_integration_identities
   (identity_id, deployment_id, status, created_at) VALUES (?, ?, 'active', ?)`)
   .run(identityId, deploymentId, now.toISOString());
-const token = createNanoHostTransportTokenRecord(coreDb, {
+const token = await createNanoHostTransportTokenRecord(coreDb, {
   deploymentId,
   expiresAt: new Date(now.getTime() + 60_000).toISOString(),
   now,

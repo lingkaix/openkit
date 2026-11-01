@@ -23,6 +23,11 @@ import {
   type ControlBetterAuthResult,
   isBetterAuthRefusal,
 } from '../auth/better-auth-codecs.js';
+import {
+  type ControlNanoHostTransportInput,
+  type ControlNanoHostTransportResult,
+  isNanoHostTransportAdminRefusal,
+} from '../auth/nanohost-transport-codecs.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import {
   type ControlAppInput,
@@ -1434,6 +1439,32 @@ class ControlStoreWorkerClient {
         error.domain?.operation === 'thread-read-membership'
       )
         throw new Error(THREAD_READ_RECEIPT_INVALID, { cause: error });
+      throw error;
+    }
+  }
+
+  /** Commits one complete original credential or separate Audit stage before its result is published. */
+  async nanoHostTransport(
+    database: string,
+    input: ControlNanoHostTransportInput
+  ): Promise<ControlNanoHostTransportResult> {
+    try {
+      const reply = await this.request({ operation: 'nanohost-transport', database, input });
+      return (reply as Extract<Success, { operation: 'nanohost-transport' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'nanohost-transport' &&
+        isNanoHostTransportAdminRefusal(
+          error.domain.code,
+          error.domain.message,
+          error.domain.status
+        )
+      )
+        throw new OperationError(error.domain.code, error.domain.message, error.domain.status, {
+          cause: error,
+        });
       throw error;
     }
   }

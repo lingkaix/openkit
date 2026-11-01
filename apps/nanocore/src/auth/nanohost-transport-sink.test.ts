@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from '
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -66,7 +67,7 @@ describe('NanoHost transport named safe-sink delivery', () => {
     expect(statSync(sink.companionPath).mode & 0o777).toBe(0o600);
   });
 
-  it('fails closed when the sink write is unproved and leaves the token unusable', () => {
+  it('fails closed when the sink write is unproved and leaves the token unusable', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-sink-fail-'));
     const coreDb = openCoreDb(dataRoot);
     const blocked = join(dataRoot, 'blocked-as-file');
@@ -81,7 +82,7 @@ describe('NanoHost transport named safe-sink delivery', () => {
           ) VALUES ('integration_nanohost_primary', 'deploy_primary', 'active', ?)`
         )
         .run('2026-08-08T00:00:00.000Z');
-      const issued = createNanoHostTransportTokenRecord(coreDb, {
+      const issued = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: 'deploy_primary',
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
@@ -106,16 +107,17 @@ describe('NanoHost transport named safe-sink delivery', () => {
         })
       ).toThrow();
 
-      revokeNanoHostTransportTokenRecord(coreDb, issued.tokenId, {
+      await revokeNanoHostTransportTokenRecord(coreDb, issued.tokenId, {
         now: new Date('2026-08-08T00:00:01.000Z'),
       });
 
       expect(
-        verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
+        await verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
           now: new Date('2026-08-08T00:00:02.000Z'),
         })
       ).toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

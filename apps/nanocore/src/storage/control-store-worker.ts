@@ -28,6 +28,8 @@ import { ADMIN_RECOVERY_REQUIRED, AdminRecoveryError } from '../auth/admin-recov
 import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
 import { BETTER_AUTH_REFUSALS, BetterAuthNativeError } from '../auth/better-auth-codecs.js';
 import { applyControlBetterAuth } from '../auth/better-auth-native.js';
+import { isNanoHostTransportAdminRefusal } from '../auth/nanohost-transport-codecs.js';
+import { applyControlNanoHostTransport } from '../auth/nanohost-transport-native.js';
 import { assertWritable, mapAppSqliteError } from '../generative-kernel/app-model.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import {
@@ -214,6 +216,7 @@ type WriteCommand = Extract<
       | 'thread-read-membership'
       | 'admin-recovery'
       | 'better-auth'
+      | 'nanohost-transport'
       | 'worker-control-evidence'
       | 'generative-presentation'
       | 'evaluation-candidate'
@@ -445,6 +448,12 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     });
     return projected.success ? projected.data : undefined;
   }
+  if (
+    operation === 'nanohost-transport' &&
+    error instanceof OperationError &&
+    isNanoHostTransportAdminRefusal(error.code, error.message, error.status)
+  )
+    return { operation, code: error.code, message: error.message, status: error.status };
   if (operation === 'better-auth' && error instanceof BetterAuthNativeError) {
     const refusal = BETTER_AUTH_REFUSALS[error.code];
     return { operation, code: error.code, message: refusal.message, status: refusal.status };
@@ -1689,6 +1698,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'thread-read-membership',
               itemIds: stored,
             };
+          } else if (request.operation === 'nanohost-transport') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlNanoHostTransport(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'nanohost-transport',
+              result,
+            };
           } else if (request.operation === 'better-auth') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlBetterAuth(owner.scopeDb, request.input);
@@ -2490,6 +2509,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'thread-read-membership' ||
       value.operation === 'admin-recovery' ||
       value.operation === 'better-auth' ||
+      value.operation === 'nanohost-transport' ||
       value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||
       value.operation === 'provenance' ||

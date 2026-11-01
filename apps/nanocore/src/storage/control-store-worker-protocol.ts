@@ -27,6 +27,13 @@ import {
   isBetterAuthRefusal,
 } from '../auth/better-auth-codecs.js';
 import {
+  type ControlNanoHostTransportInput,
+  ControlNanoHostTransportInputSchema,
+  type ControlNanoHostTransportResult,
+  ControlNanoHostTransportResultSchema,
+  isNanoHostTransportAdminRefusal,
+} from '../auth/nanohost-transport-codecs.js';
+import {
   ControlAppRefusalSchema,
   type ControlAppResult,
   ControlAppResultSchema,
@@ -146,7 +153,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 32;
+export const CONTROL_WORKER_VERSION = 33;
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z
@@ -352,6 +359,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'admin-recovery'; readonly input: ControlAdminRecoveryInput }
       | { readonly operation: 'better-auth'; readonly input: ControlBetterAuthInput }
+      | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
@@ -480,6 +488,7 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'provenance'
     | 'admin-recovery'
     | 'better-auth'
+    | 'nanohost-transport'
     | 'thread-read-membership'
     | 'generative-presentation'
     | 'evaluation-candidate'
@@ -538,6 +547,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'recovery-safety';
       readonly result: ControlRecoverySafetyResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'nanohost-transport';
+      readonly result: ControlNanoHostTransportResult;
     }
   | { readonly status: 'ok'; readonly operation: 'admin-recovery'; readonly auditEventId: string }
   | {
@@ -727,6 +741,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'item' || value.operation === 'event') &&
         value.code === 'conflict' &&
         value.status === 409) ||
+      (value.operation === 'nanohost-transport' &&
+        isNanoHostTransportAdminRefusal(value.code, value.message, value.status)) ||
       (value.operation === 'better-auth' &&
         isBetterAuthRefusal(value.code, value.message, value.status)) ||
       (value.operation === 'admin-recovery' &&
@@ -815,6 +831,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
     );
+  if (reply.operation === 'nanohost-transport')
+    return ControlNanoHostTransportResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'better-auth')
     return ControlBetterAuthResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'admin-recovery')
@@ -1240,6 +1258,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
+  if (value.operation === 'nanohost-transport')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlNanoHostTransportInputSchema.safeParse(value.input).success
+    );
   if (value.operation === 'better-auth')
     return (
       exactFields(value, [...scoped, 'input']) &&

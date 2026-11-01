@@ -11361,7 +11361,7 @@ describe('nanocore server', () => {
         ) VALUES ('integration_nanohost_main', 'deployment-main', 'active', ?)`
       )
       .run('2026-08-10T00:00:00.000Z');
-    const issued = createNanoHostTransportTokenRecord(coreDb, {
+    const issued = await createNanoHostTransportTokenRecord(coreDb, {
       deploymentId: 'deployment-main',
       expiresAt: '2999-01-01T00:00:00.000Z',
       now: new Date('2026-08-10T00:00:00.000Z'),
@@ -12047,6 +12047,7 @@ describe('nanocore server', () => {
       thirdClient?.destroy();
       fourthClient?.destroy();
       server.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

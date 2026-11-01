@@ -1,27 +1,23 @@
-/**
- * NanoHost transport rotation cutover, abort, revoke/expiry fencing, and
- * decommission helpers.
- *
- * Composes the existing Token store, named-slot sink, and process-local session
- * authority. Does not invent a parallel credential framework or durable session
- * store. Durable RuntimeTarget readiness is cleared with the same fencing event.
- */
-
+/** Composes original native credential tuples with separately owned file/process/readiness effects. */
 import { recordNanoHostRuntimeTargetConnectionClose } from '../runtime/nanohost-runtime-target.js';
 import type { CoreDb } from '../storage/db.js';
+import type { Actor } from './identity.js';
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
   clearNanoHostCredentialSlot,
   type NanoHostCredentialSinkPaths,
+  readNanoHostCredentialSlotTokenId,
 } from './nanohost-transport-sink.js';
 import { evaluateNanoHostTransportTokenUsability } from './nanohost-transport-token.js';
 import {
-  abortNanoHostTransportTokenRotation,
-  decommissionNanoHostIntegrationIdentity,
-  decommissionNanoHostTransportTokens,
   getNanoHostTransportTokenRecord,
   type NanoHostTransportTokenRecord,
-  revokeNanoHostTransportTokenRecord,
+  nanoHostTransportCommitState,
+  prepareNanoHostTransportWriter,
+  recordNanoHostTransportAudit,
+  submitNanoHostTransportDecommission,
+  submitNanoHostTransportRevocation,
+  submitNanoHostTransportRotationAbort,
 } from './nanohost-transport-token-store.js';
 
 /** Input for aborting an in-flight rotation. */
@@ -32,6 +28,8 @@ export interface AbortNanoHostTransportRotationInput {
   readonly successorTokenId: string;
   /** Declared successor slot paths to clear. */
   readonly successorSink: NanoHostCredentialSinkPaths;
+  /** Existing responsible request actor for the approved failed-abort Audit; never an authorization bypass. */
+  readonly auditActorUserId?: string;
   /** Optional abort clock. */
   readonly now?: Date;
 }
@@ -80,14 +78,7 @@ export interface DecommissionNanoHostTransportAndFenceInput {
   readonly now?: Date;
 }
 
-/**
- * Fences process authority and clears the same identity's durable readiness witness without changing enrollment or credentials.
- *
- * @param coreDb Existing Core database handle.
- * @param authority Process-local NanoHost transport authority.
- * @param identityId Exact configured predecessor identity.
- * @param observedAt Server observation timestamp.
- */
+/** Fences process authority before attempting the existing durable readiness close. */
 export function fenceNanoHostTransportAuthority(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
@@ -113,74 +104,21 @@ export function fenceNanoHostTransportAuthority(
   });
 }
 
-/**
- * Aborts rotation by revoking the successor, clearing its slot, and restoring
- * the predecessor as the sole usable authoritative credential.
- *
- * @param coreDb Open Core database handles.
- * @param authority Process-local NanoHost transport session authority.
- * @param input Predecessor/successor Token ids and successor sink.
- * @returns Updated predecessor and successor records.
- */
-export function abortNanoHostTransportRotation(
+/** Preserves the original uncertain write when the separately attempted readiness close also fails. */
+function fenceUncertainNanoHostCredential(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
-  input: AbortNanoHostTransportRotationInput
-): AbortNanoHostTransportRotationResult {
-  const aborted = abortNanoHostTransportTokenRotation(coreDb, {
-    predecessorTokenId: input.predecessorTokenId,
-    successorTokenId: input.successorTokenId,
-    ...(input.now ? { now: input.now } : {}),
-  });
-  if (!aborted) {
-    throw new Error('NanoHost transport rotation abort requires known predecessor and successor.');
+  identityId: string,
+  observedAt: string
+): void {
+  try {
+    fenceNanoHostTransportAuthority(coreDb, authority, identityId, observedAt);
+  } catch {
+    /* Process fencing ran first; secondary readiness refusal cannot prove this credential's rollback. */
   }
-
-  clearNanoHostCredentialSlot(input.successorSink);
-  authority.discardPendingSuccessor(aborted.predecessor.ownerNanoHostIdentityId);
-  return aborted;
 }
 
-/**
- * Revokes one NanoHost transport Token and fences any live authoritative session.
- *
- * @param coreDb Open Core database handles.
- * @param authority Process-local NanoHost transport session authority.
- * @param input Token id and optional clock.
- * @returns Revoked Token record, or null when missing.
- */
-export function revokeNanoHostTransportTokenAndFence(
-  coreDb: CoreDb,
-  authority: NanoHostTransportSessionAuthority,
-  input: RevokeNanoHostTransportTokenAndFenceInput
-): NanoHostTransportTokenRecord | null {
-  const record = revokeNanoHostTransportTokenRecord(coreDb, input.tokenId, {
-    ...(input.now ? { now: input.now } : {}),
-  });
-  if (!record) {
-    return null;
-  }
-  fenceNanoHostTransportAuthority(
-    coreDb,
-    authority,
-    record.ownerNanoHostIdentityId,
-    (input.now ?? new Date()).toISOString()
-  );
-  return record;
-}
-
-/**
- * Fences the live authoritative session when a known Token is no longer usable.
- *
- * Covers expiry and overlap-deadline failure without inventing cross-restart
- * durable session state: process-local authority is fenced; recovery requires
- * explicit re-issuance and re-admit.
- *
- * @param coreDb Open Core database handles.
- * @param authority Process-local NanoHost transport session authority.
- * @param input Identity, Token id, and evaluation clock.
- * @returns Usability and whether fencing occurred.
- */
+/** Evaluates the existing retained Token without introducing another writer or lifecycle. */
 export function fenceNanoHostTransportOnTokenUnusable(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
@@ -220,30 +158,138 @@ export function fenceNanoHostTransportOnTokenUnusable(
   return { usable: false, fenced: hadAuthority };
 }
 
-/**
- * Revokes every Token for one NanoHost identity and fences live authoritative work.
- *
- * @param coreDb Open Core database handles.
- * @param authority Process-local NanoHost transport session authority.
- * @param input Identity and optional clock.
- * @returns Token records revoked by this call.
- */
-export function decommissionNanoHostTransportAndFence(
+/** Awaits the abort tuple before slot clear/discard; unknown submission never authorizes file deletion. */
+export async function abortNanoHostTransportRotation(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
-  input: DecommissionNanoHostTransportAndFenceInput
-): NanoHostTransportTokenRecord[] {
-  const revoked = coreDb.sqlite.transaction(() => {
-    const options = input.now ? { now: input.now } : {};
-    const records = decommissionNanoHostTransportTokens(coreDb, input.identityId, options);
-    decommissionNanoHostIntegrationIdentity(coreDb, input.identityId, input.deploymentId, options);
-    return records;
-  })();
+  input: AbortNanoHostTransportRotationInput,
+  actor?: Actor,
+  beforeSubmit?: () => Promise<void>
+): Promise<AbortNanoHostTransportRotationResult> {
+  const snapshot = {
+    ...input,
+    successorSink: { ...input.successorSink },
+    ...(input.now ? { now: new Date(input.now.getTime()) } : {}),
+  };
+  const admin = actor ? { ...actor } : undefined;
+  const predecessor = getNanoHostTransportTokenRecord(coreDb, snapshot.predecessorTokenId);
+  const writer = await prepareNanoHostTransportWriter(coreDb);
+  await beforeSubmit?.();
+  let aborted: AbortNanoHostTransportRotationResult | null;
+  try {
+    aborted = await submitNanoHostTransportRotationAbort(
+      writer,
+      {
+        predecessorTokenId: snapshot.predecessorTokenId,
+        successorTokenId: snapshot.successorTokenId,
+        ...(snapshot.now ? { now: snapshot.now } : {}),
+      },
+      admin
+    );
+  } catch (error) {
+    if (nanoHostTransportCommitState(error) === 'unknown' && predecessor)
+      authority.discardPendingSuccessor(predecessor.ownerNanoHostIdentityId);
+    throw error;
+  }
+  if (!aborted)
+    throw new Error('NanoHost transport rotation abort requires known predecessor and successor.');
+  let cleanupFailure: unknown;
+  try {
+    const currentSlot = readNanoHostCredentialSlotTokenId(snapshot.successorSink);
+    if (currentSlot !== null && currentSlot !== aborted.successor.tokenId)
+      throw new Error('NanoHost successor slot changed before rotation cleanup.');
+    clearNanoHostCredentialSlot(snapshot.successorSink);
+    authority.discardPendingSuccessor(aborted.predecessor.ownerNanoHostIdentityId);
+  } catch (error) {
+    cleanupFailure = error;
+  }
+  // Terminal revocation is not undone by abort; report the proved pair after attempting mandatory cleanup.
+  if (aborted.predecessor.status !== 'active') {
+    try {
+      await recordNanoHostTransportAudit(coreDb, {
+        kind: 'lifecycle-audit',
+        action: 'nanohost.transport.rotate',
+        record: aborted.successor,
+        actorUserId:
+          snapshot.auditActorUserId ??
+          admin?.userId ??
+          aborted.successor.responsibleServerAdminActorId,
+      });
+    } catch (error) {
+      if (cleanupFailure === undefined) throw error;
+    }
+  }
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+  return aborted;
+}
+
+/** Awaits revocation before its original process fence and readiness stage. */
+export async function revokeNanoHostTransportTokenAndFence(
+  coreDb: CoreDb,
+  authority: NanoHostTransportSessionAuthority,
+  input: RevokeNanoHostTransportTokenAndFenceInput,
+  actor?: Actor,
+  beforeSubmit?: () => Promise<void>
+): Promise<NanoHostTransportTokenRecord | null> {
+  const tokenId = input.tokenId;
+  const now = input.now ? new Date(input.now.getTime()) : undefined;
+  const admin = actor ? { ...actor } : undefined;
+  const prior = getNanoHostTransportTokenRecord(coreDb, tokenId);
+  const writer = await prepareNanoHostTransportWriter(coreDb);
+  await beforeSubmit?.();
+  let record: NanoHostTransportTokenRecord | null;
+  try {
+    record = await submitNanoHostTransportRevocation(writer, tokenId, now ? { now } : {}, admin);
+  } catch (error) {
+    if (nanoHostTransportCommitState(error) === 'unknown' && prior)
+      fenceUncertainNanoHostCredential(
+        coreDb,
+        authority,
+        prior.ownerNanoHostIdentityId,
+        (now ?? new Date()).toISOString()
+      );
+    throw error;
+  }
+  if (!record) return null;
   fenceNanoHostTransportAuthority(
     coreDb,
     authority,
-    input.identityId,
-    (input.now ?? new Date()).toISOString()
+    record.ownerNanoHostIdentityId,
+    (now ?? new Date()).toISOString()
+  );
+  return record;
+}
+
+/** Keeps all Token revocations and the exact active identity transition in one native SQL stage. */
+export async function decommissionNanoHostTransportAndFence(
+  coreDb: CoreDb,
+  authority: NanoHostTransportSessionAuthority,
+  input: DecommissionNanoHostTransportAndFenceInput,
+  actor?: Actor,
+  beforeSubmit?: () => Promise<void>
+): Promise<NanoHostTransportTokenRecord[]> {
+  const snapshot = { ...input, ...(input.now ? { now: new Date(input.now.getTime()) } : {}) };
+  const admin = actor ? { ...actor } : undefined;
+  const writer = await prepareNanoHostTransportWriter(coreDb);
+  await beforeSubmit?.();
+  let revoked: NanoHostTransportTokenRecord[];
+  try {
+    revoked = await submitNanoHostTransportDecommission(writer, snapshot, admin);
+  } catch (error) {
+    if (nanoHostTransportCommitState(error) === 'unknown')
+      fenceUncertainNanoHostCredential(
+        coreDb,
+        authority,
+        snapshot.identityId,
+        (snapshot.now ?? new Date()).toISOString()
+      );
+    throw error;
+  }
+  fenceNanoHostTransportAuthority(
+    coreDb,
+    authority,
+    snapshot.identityId,
+    (snapshot.now ?? new Date()).toISOString()
   );
   return revoked;
 }

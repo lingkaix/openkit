@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { getNanoHostRuntimeTarget } from '../runtime/nanohost-runtime-target.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { AuthVariables } from './middleware.js';
@@ -32,14 +33,14 @@ import { createNanoHostTransportTokenRecord } from './nanohost-transport-token-s
  * @param coreDb Core database handles.
  * @returns Issued secret plus identity and deployment ids.
  */
-function issueTransportToken(
+async function issueTransportToken(
   coreDb: CoreDb,
   clock = new Date('2026-08-08T00:00:00.000Z')
-): {
+): Promise<{
   deploymentId: string;
   identityId: string;
   secret: string;
-} {
+}> {
   const identityId = 'integration_nanohost_primary';
   const deploymentId = 'deploy_primary';
   coreDb.sqlite
@@ -49,7 +50,7 @@ function issueTransportToken(
       ) VALUES (?, ?, 'active', ?)`
     )
     .run(identityId, deploymentId, '2026-08-08T00:00:00.000Z');
-  const issued = createNanoHostTransportTokenRecord(coreDb, {
+  const issued = await createNanoHostTransportTokenRecord(coreDb, {
     deploymentId,
     expiresAt: new Date(clock.getTime() + 31 * 24 * 60 * 60 * 1000).toISOString(),
     now: clock,
@@ -63,7 +64,7 @@ describe('NanoHost transport production admission', () => {
   it('requires the shared transport revision before allocation and accepts a matching native admission', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-admit-reader-')));
     applyMigrations(coreDb);
-    const token = issueTransportToken(coreDb, new Date());
+    const token = await issueTransportToken(coreDb, new Date());
     const authority = createNanoHostTransportSessionAuthority();
     const app = new Hono<{ Variables: AuthVariables }>();
     registerNanoHostTransportAdmissionRoutes({ app, coreDb, sessionAuthority: authority });
@@ -169,20 +170,21 @@ describe('NanoHost transport production admission', () => {
       client?.destroy();
       server.close();
       await once(server, 'close');
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('rejects unauthenticated or missing native connection context before allocation', () => {
+  it('rejects unauthenticated or missing native connection context before allocation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-nanohost-admit-bad-'));
     const coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
-      const { secret } = issueTransportToken(coreDb);
+      const { secret } = await issueTransportToken(coreDb);
       const authority = createNanoHostTransportSessionAuthority();
 
-      const denied = admitNanoHostTransportConnection(coreDb, authority, {
+      const denied = await admitNanoHostTransportConnection(coreDb, authority, {
         transportRevision: String(transportRevision),
         physicalConnection: null as never,
         secret: 'okt_not_a_real_nanohost_transport_token_aaaaaaaaaaaa',
@@ -194,7 +196,7 @@ describe('NanoHost transport production admission', () => {
       expect(authority.authoritativeGeneration('integration_nanohost_primary')).toBeNull();
       expect(getNanoHostRuntimeTarget(coreDb, 'runtime-target-primary')).toBeNull();
 
-      const missingContext = admitNanoHostTransportConnection(coreDb, authority, {
+      const missingContext = await admitNanoHostTransportConnection(coreDb, authority, {
         transportRevision: String(transportRevision),
         physicalConnection: null as never,
         secret,
@@ -204,6 +206,7 @@ describe('NanoHost transport production admission', () => {
       expect(missingContext).toEqual({ ok: false, reason: 'missing_connection_context' });
       expect(getNanoHostRuntimeTarget(coreDb, 'runtime-target-primary')).toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

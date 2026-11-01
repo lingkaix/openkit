@@ -2,12 +2,12 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { admitNanoHostTransportConnection } from './nanohost-transport-admission.js';
@@ -134,13 +134,13 @@ function usableSlotCount(slots: ReturnType<typeof slotPair>): number {
 }
 
 describe('NanoHost transport lifecycle (WP-2b R3)', () => {
-  it('rotation_abort_clears_successor_and_keeps_predecessor_usable', () => {
+  it('rotation_abort_clears_successor_and_keeps_predecessor_usable', async () => {
     const coreDb = openMigratedCoreDb();
     const slots = slotPair();
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
-      const predecessor = createNanoHostTransportTokenRecord(coreDb, {
+      const predecessor = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
@@ -157,7 +157,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         tokenId: predecessor.tokenId,
         writeDisposition: 'replace',
       });
-      const rotated = rotateNanoHostTransportTokenRecord(coreDb, predecessor.tokenId, {
+      const rotated = await rotateNanoHostTransportTokenRecord(coreDb, predecessor.tokenId, {
         now: new Date('2026-08-08T01:00:00.000Z'),
         overlapSeconds: 3600,
       });
@@ -172,7 +172,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         writeDisposition: 'replace',
       });
 
-      const aborted = abortNanoHostTransportRotation(coreDb, authority, {
+      const aborted = await abortNanoHostTransportRotation(coreDb, authority, {
         now: new Date('2026-08-08T01:10:00.000Z'),
         predecessorTokenId: predecessor.tokenId,
         successorSink: slots.B,
@@ -182,12 +182,12 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       expect(aborted.predecessor.status).toBe('active');
       expect(aborted.successor.status).toBe('revoked');
       expect(
-        verifyNanoHostTransportTokenRecord(coreDb, predecessor.secret, {
+        await verifyNanoHostTransportTokenRecord(coreDb, predecessor.secret, {
           now: new Date('2026-08-08T01:10:00.000Z'),
         })
       ).not.toBeNull();
       expect(
-        verifyNanoHostTransportTokenRecord(coreDb, rotated!.secret, {
+        await verifyNanoHostTransportTokenRecord(coreDb, rotated!.secret, {
           now: new Date('2026-08-08T01:10:00.000Z'),
         })
       ).toBeNull();
@@ -195,24 +195,25 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       expect(slotHoldsUsableMaterial(slots.B)).toBe(false);
       expect(usableSlotCount(slots)).toBe(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('revocation rejects reauthentication without creating process-local authority', () => {
+  it('revocation rejects reauthentication without creating process-local authority', async () => {
     const coreDb = openMigratedCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
       seedReadyRuntimeTarget(coreDb);
-      const issued = createNanoHostTransportTokenRecord(coreDb, {
+      const issued = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
-      const revoked = revokeNanoHostTransportTokenAndFence(coreDb, authority, {
+      const revoked = await revokeNanoHostTransportTokenAndFence(coreDb, authority, {
         now: new Date('2026-08-08T02:00:00.000Z'),
         tokenId: issued.tokenId,
       });
@@ -220,12 +221,12 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
       expectRuntimeTargetUnready(coreDb);
       expect(
-        verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
+        await verifyNanoHostTransportTokenRecord(coreDb, issued.secret, {
           now: new Date('2026-08-08T02:00:00.000Z'),
         })
       ).toBeNull();
       expect(
-        admitNanoHostTransportConnection(coreDb, authority, {
+        await admitNanoHostTransportConnection(coreDb, authority, {
           transportRevision: String(transportRevision),
           physicalConnection: null,
           secret: issued.secret,
@@ -233,17 +234,18 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         })
       ).toEqual({ ok: false, reason: 'unauthorized' });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('expiry rejects stale authentication without creating process-local authority', () => {
+  it('expiry rejects stale authentication without creating process-local authority', async () => {
     const coreDb = openMigratedCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
       seedReadyRuntimeTarget(coreDb);
-      const issued = createNanoHostTransportTokenRecord(coreDb, {
+      const issued = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-08-08T01:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
@@ -260,7 +262,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
       expectRuntimeTargetUnready(coreDb);
       expect(
-        admitNanoHostTransportConnection(coreDb, authority, {
+        await admitNanoHostTransportConnection(coreDb, authority, {
           transportRevision: String(transportRevision),
           physicalConnection: null,
           secret: issued.secret,
@@ -268,31 +270,32 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         })
       ).toEqual({ ok: false, reason: 'unauthorized' });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('decommission revokes every token without fabricating a connection', () => {
+  it('decommission revokes every token without fabricating a connection', async () => {
     const coreDb = openMigratedCoreDb();
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
       seedReadyRuntimeTarget(coreDb);
-      const first = createNanoHostTransportTokenRecord(coreDb, {
+      const first = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:00:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
-      const second = createNanoHostTransportTokenRecord(coreDb, {
+      const second = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',
         now: new Date('2026-08-08T00:30:00.000Z'),
         ownerNanoHostIdentityId: IDENTITY,
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
-      const revoked = decommissionNanoHostTransportAndFence(coreDb, authority, {
+      const revoked = await decommissionNanoHostTransportAndFence(coreDb, authority, {
         deploymentId: DEPLOYMENT,
         identityId: IDENTITY,
         now: new Date('2026-08-08T02:00:00.000Z'),
@@ -304,16 +307,17 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
       expectRuntimeTargetUnready(coreDb);
       expect(
-        verifyNanoHostTransportTokenRecord(coreDb, first.secret, {
+        await verifyNanoHostTransportTokenRecord(coreDb, first.secret, {
           now: new Date('2026-08-08T02:00:00.000Z'),
         })
       ).toBeNull();
       expect(
-        verifyNanoHostTransportTokenRecord(coreDb, second.secret, {
+        await verifyNanoHostTransportTokenRecord(coreDb, second.secret, {
           now: new Date('2026-08-08T02:00:00.000Z'),
         })
       ).toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
