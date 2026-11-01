@@ -11,6 +11,7 @@ import {
 import {
   allocateEntityId,
   formatReferenceUri,
+  isRecord,
   type PageReference,
   parseReferenceScope,
   type RetrievalTraceReference,
@@ -480,7 +481,7 @@ function derivedIndexSetNeedsRebuild(workspaceRoot: string, workspaceId: string)
       return true;
     }
 
-    if (!isJsonObject(parsed)) {
+    if (!isRecord(parsed)) {
       return true;
     }
     if (
@@ -496,16 +497,6 @@ function derivedIndexSetNeedsRebuild(workspaceRoot: string, workspaceId: string)
   }
 
   return false;
-}
-
-/**
- * Reports whether a parsed JSON value is a non-array object.
- *
- * @param value Parsed JSON value.
- * @returns True when the value is a JSON object.
- */
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
