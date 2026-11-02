@@ -49,6 +49,7 @@ import {
   copyFileForCut,
   copyVerifiedFile as copyStorageFile,
   ensureCanonicalDirectory,
+  materializeWorkspaceBackupInventory,
   publishCanonicalPath,
   publishDurableFile,
   retireWorkspaceSnapshotBytes,
@@ -2679,22 +2680,12 @@ export async function stageWorkspaceBackup(
         mkdirSync(input.candidateRoot, { mode: 0o700 });
         owned = true;
         staging = privateRoot(dirname(input.candidateRoot), manifest.workspaceId);
-        for (const entry of manifest.inventory) {
-          const path = join(staging.workspaceRoot, entry.path);
-          mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-          const fd = openSync(path, 'wx', 0o600);
-          try {
-            // Keep memory bounded independently of bundle file sizes.
-            for await (const chunk of bundle.readFile(entry.path)) {
-              let offset = 0;
-              while (offset < chunk.length) offset += writeSync(fd, chunk, offset);
-              reserved.recordWritten(chunk.length);
-            }
-          } finally {
-            closeSync(fd);
-          }
-          chmodSync(path, entry.mode);
-        }
+        await materializeWorkspaceBackupInventory(
+          staging.workspaceRoot,
+          manifest.inventory,
+          bundle,
+          reserved
+        );
         const facts = graph(
           staging.container,
           manifest.workspaceId,

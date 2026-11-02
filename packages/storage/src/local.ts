@@ -2325,3 +2325,28 @@ export function retireWorkspaceSnapshotBytes(
   for (const name of names) if (!keep.has(`sha256:${name}`)) rmSync(join(objects, name));
   syncCanonicalDirectory(objects);
 }
+
+/** @internal Materializes the caller-verified backup inventory without changing its source or reservation lifetime. */
+export async function materializeWorkspaceBackupInventory(
+  workspaceRoot: string,
+  inventory: readonly { readonly path: string; readonly mode: number }[],
+  bundle: { readonly readFile: (path: string) => AsyncIterable<Uint8Array> },
+  reserved: { recordWritten(bytes: number): void }
+): Promise<void> {
+  for (const entry of inventory) {
+    const path = join(workspaceRoot, entry.path);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const fd = openSync(path, 'wx', 0o600);
+    try {
+      // Keep memory bounded independently of bundle file sizes.
+      for await (const chunk of bundle.readFile(entry.path)) {
+        let offset = 0;
+        while (offset < chunk.length) offset += writeSync(fd, chunk, offset);
+        reserved.recordWritten(chunk.length);
+      }
+    } finally {
+      closeSync(fd);
+    }
+    chmodSync(path, entry.mode);
+  }
+}

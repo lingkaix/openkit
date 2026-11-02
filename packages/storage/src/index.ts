@@ -26,6 +26,7 @@ export {
   makePrivateTreeDirectory,
   materializePrivateTreeSync,
   materializeSnapshot,
+  materializeWorkspaceBackupInventory,
   measureCanonicalFile,
   measureCanonicalFileDescriptor,
   measureDerivedTreeBytes,
