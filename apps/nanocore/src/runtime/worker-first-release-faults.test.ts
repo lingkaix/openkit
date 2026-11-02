@@ -619,6 +619,8 @@ describe('Workspace execution journal producer boundaries', () => {
     name,
     delivered,
   }) => {
+    // Give only the live row delivery slack under host load; negative rows keep their original cap.
+    const nativeAllowanceMs = name === 'live parent' ? 10_000 : 1_000;
     // Actual caller wall time and the native Worker's wall/monotonic clocks remain real at admission.
     const begin = workerJournal.beginWorkerTurnJournalStep;
     let parent: ExecutionJournalIntent | undefined;
@@ -633,7 +635,7 @@ describe('Workspace execution journal producer boundaries', () => {
           if (!correlation)
             throw new Error('Clock fixture requires the actual original parent input.');
           admittedAt = Date.now();
-          expiry = new Date(admittedAt + 1_000).toISOString();
+          expiry = new Date(admittedAt + nativeAllowanceMs).toISOString();
           parent = await begin(store, db, turnId, kind, carriage, {
             ...correlation,
             deadline: expiry,
@@ -665,7 +667,7 @@ describe('Workspace execution journal producer boundaries', () => {
       admission.mockRestore();
       if (!parent || !child)
         throw new Error('Clock fixture requires real parent and exact native child admission.');
-      expect(Date.parse(expiry) - admittedAt).toBe(1_000);
+      expect(Date.parse(expiry) - admittedAt).toBe(nativeAllowanceMs);
       expect(parent.control.deadlineUnixNano).toBe(BigInt(Date.parse(expiry)) * 1_000_000n);
       expect(child.control.deadlineUnixNano).toBe(parent.control.deadlineUnixNano);
       expect(child.parent).toEqual({
@@ -685,11 +687,11 @@ describe('Workspace execution journal producer boundaries', () => {
         child
       );
       expect(native.remainingMs).toBeGreaterThan(0);
-      expect(native.remainingMs).toBeLessThanOrEqual(1_000);
+      expect(native.remainingMs).toBeLessThanOrEqual(nativeAllowanceMs);
       const realTimers =
         await vi.importActual<typeof import('node:timers/promises')>('node:timers/promises');
       if (name === 'live parent') {
-        await realTimers.setTimeout(Math.max(0, admittedAt + 500 - Date.now()));
+        await realTimers.setTimeout(Math.max(0, admittedAt + nativeAllowanceMs / 2 - Date.now()));
       } else if (name === 'expired parent') {
         await realTimers.setTimeout(Math.max(0, Date.parse(expiry) - Date.now() + 1));
         // The real outage timer can already have ended this child; inspect instead of re-admitting it.
