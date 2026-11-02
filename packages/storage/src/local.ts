@@ -1692,3 +1692,71 @@ function withCancellation<T>(promise: Promise<T>, signal: AbortSignal): Promise<
     if (signal.aborted) abort();
   });
 }
+
+/** @internal Writes and verifies the admitted current representation; original source-authority methods retain their receivers and order. */
+export async function writeVerifiedRepresentation(
+  input: {
+    readonly source: { readonly projection: { readonly representationDigest: string } };
+    readonly signal?: AbortSignal;
+    readonly assertCurrent: () => void;
+  },
+  current: {
+    readonly openRepresentation?: ((signal: AbortSignal) => AsyncIterable<Uint8Array>) | undefined;
+    readonly assertUnchanged: (signal?: AbortSignal) => void | Promise<void>;
+  },
+  path: string,
+  size: number,
+  reservation: { recordWritten(bytes: number): void }
+): Promise<void> {
+  const file = await open(path, 'wx', 0o600);
+  let length = 0;
+  const hash = createHash('sha256');
+  const signal = input.signal ?? new AbortController().signal;
+  try {
+    for await (const chunk of current.openRepresentation!(signal)) {
+      signal.throwIfAborted();
+      input.assertCurrent();
+      length += chunk.byteLength;
+      if (chunk.byteLength > 65_536 || length > size)
+        throw new Error('Current representation exceeded its captured size.');
+      hash.update(chunk);
+      await file.writeFile(chunk);
+      reservation.recordWritten(chunk.byteLength);
+    }
+  } finally {
+    await file.close();
+  }
+  await current.assertUnchanged(signal);
+  input.assertCurrent();
+  if (
+    length !== size ||
+    `sha256:${hash.digest('hex')}` !== input.source.projection.representationDigest
+  )
+    throw new Error('Current representation does not match captured bytes.');
+}
+
+/** @internal Measures derived files without following links, preserving the caller's fixed per-recursion stopping ceiling and concrete failure class. */
+export async function measureDerivedTreeBytes(
+  root: string,
+  stopAfterBytes: number,
+  RetrievalServiceError: new (code: 'unavailable') => Error
+): Promise<number> {
+  let total = 0;
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const path = join(root, entry.name);
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()))
+      throw new RetrievalServiceError('unavailable');
+    total += stat.isDirectory()
+      ? await measureDerivedTreeBytes(path, stopAfterBytes, RetrievalServiceError)
+      : stat.size;
+    if (total > stopAfterBytes) break;
+  }
+  return total;
+}
+
+/** @internal Removes a caller-owned disposable tree and propagates absent-path cleanup failure. */
+export async function removePrivateTreeStrict(path: string): Promise<void> {
+  await rm(path, { recursive: true });
+}

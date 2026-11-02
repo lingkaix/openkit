@@ -18,6 +18,7 @@ export {
   materializeSnapshot,
   measureCanonicalFile,
   measureCanonicalFileDescriptor,
+  measureDerivedTreeBytes,
   movePrivateTree,
   publishCanonicalPath,
   publishCanonicalPathAsync,
@@ -27,6 +28,7 @@ export {
   readCanonicalTextFile,
   removeDurableFile,
   removePrivateTree,
+  removePrivateTreeStrict,
   removePrivateTreeSync,
   stagePrivateFile,
   syncCanonicalDirectory,
@@ -39,4 +41,5 @@ export {
   withStagedMediaSource,
   writePrivateTreeFile,
   writePrivateTreeMetadata,
+  writeVerifiedRepresentation,
 } from './local.js';

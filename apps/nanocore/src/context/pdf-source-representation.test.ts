@@ -1,12 +1,12 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { FileAdmissionError, FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   pdfSourceRetrievalDocument,
   searchPdfSourceSnapshot,
@@ -207,3 +207,39 @@ it('searches current exact text with real kernel page provenance and withholds r
   expect(missing).toEqual({ status: 'unavailable', reason: 'unavailable' });
   expect(JSON.stringify(missing)).not.toContain('needle');
 }, 30_000);
+
+it('propagates missing staging cleanup and retains capacity after current-source proof fails', async () => {
+  const f = fixture();
+  const capacity = {
+    stagingBytes: 262_144n,
+    publicationBytes: 0n,
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+  };
+  const admission = new FileStorageAdmission(
+    f.dataRoot,
+    () => 0n,
+    () => 262_144n
+  );
+  admission.reserve(capacity).release();
+  await expect(
+    searchPdfSourceSnapshot({
+      ...f,
+      admission,
+      query: { mode: 'exact', query: 'needle', limit: 20 },
+      assertCurrent() {},
+      currentSource: {
+        ...f.currentSource,
+        assertUnchanged() {
+          const parent = join(dirname(f.workspaceRoot), '.staging');
+          const entries = readdirSync(parent);
+          expect(entries).toHaveLength(1);
+          rmSync(join(parent, entries[0]!), { recursive: true });
+          throw new Error('Current source proof is unavailable.');
+        },
+      },
+    })
+  ).rejects.toMatchObject({ code: 'ENOENT' });
+  // Work Resource capacity admission releases only after successful, proved cleanup.
+  expect(() => admission.reserve(capacity)).toThrow(FileAdmissionError);
+});

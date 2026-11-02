@@ -1,8 +1,8 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { lstat, mkdir, readdir } from 'node:fs/promises';
 import { isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makePrivateTreeDirectory, measureDerivedTreeBytes } from '@openkit/storage';
 import { z } from 'zod';
 import type {
   FileDigestWindowScanInput,
@@ -284,8 +284,12 @@ export class RetrievalService {
         signal?.throwIfAborted();
         if (this.closed) throw new RetrievalServiceError('unavailable');
         if (operation.op === 'publish') {
-          await mkdir(this.options.storeRoot, { recursive: true, mode: 0o700 });
-          const used = await storeBytes(this.options.storeRoot);
+          await makePrivateTreeDirectory(this.options.storeRoot);
+          const used = await measureDerivedTreeBytes(
+            this.options.storeRoot,
+            DEFAULT_STORE_BYTES,
+            RetrievalServiceError
+          );
           if (used + GENERATION_BYTES > (this.options.storeLimitBytes ?? DEFAULT_STORE_BYTES))
             throw new RetrievalServiceError('resource-limited');
         }
@@ -439,21 +443,6 @@ export class RetrievalService {
       });
     });
   }
-}
-
-/** Measures derived files only, rejecting symlinks instead of following an escape. */
-async function storeBytes(root: string): Promise<number> {
-  let total = 0;
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries) {
-    const path = join(root, entry.name);
-    const stat = await lstat(path);
-    if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()))
-      throw new RetrievalServiceError('unavailable');
-    total += stat.isDirectory() ? await storeBytes(path) : stat.size;
-    if (total > DEFAULT_STORE_BYTES) break;
-  }
-  return total;
 }
 
 const services = new Map<string, RetrievalService>();

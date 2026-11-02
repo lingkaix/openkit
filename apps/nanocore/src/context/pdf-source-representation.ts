@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, open, rm } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
-import { ensureCanonicalDirectoryAsync } from '@openkit/storage';
+import {
+  createPrivateTree,
+  ensureCanonicalDirectoryAsync,
+  removePrivateTreeStrict,
+  writeVerifiedRepresentation,
+} from '@openkit/storage';
 import {
   getRetrievalService,
   type RetrievalDocument,
@@ -87,33 +91,9 @@ export async function searchPdfSourceSnapshot(input: {
     });
     const parent = join(dirname(input.workspaceRoot), '.staging');
     await ensureCanonicalDirectoryAsync(parent);
-    temporary = await mkdtemp(join(parent, 'source-search-'));
+    temporary = await createPrivateTree(parent, 'source-search-');
     const path = join(temporary, 'representation.txt');
-    const file = await open(path, 'wx', 0o600);
-    let length = 0;
-    const hash = createHash('sha256');
-    const signal = input.signal ?? new AbortController().signal;
-    try {
-      for await (const chunk of current.openRepresentation(signal)) {
-        signal.throwIfAborted();
-        input.assertCurrent();
-        length += chunk.byteLength;
-        if (chunk.byteLength > 65_536 || length > size)
-          throw new Error('Current representation exceeded its captured size.');
-        hash.update(chunk);
-        await file.writeFile(chunk);
-        reservation.recordWritten(chunk.byteLength);
-      }
-    } finally {
-      await file.close();
-    }
-    await current.assertUnchanged(signal);
-    input.assertCurrent();
-    if (
-      length !== size ||
-      `sha256:${hash.digest('hex')}` !== input.source.projection.representationDigest
-    )
-      throw new Error('Current representation does not match captured bytes.');
+    await writeVerifiedRepresentation(input, current, path, size, reservation);
     const document = pdfSourceRetrievalDocument(input.source, relative(input.dataRoot, path));
     if (!document) return { status: 'unavailable', reason: 'unsupported' };
     // Derived indexes stay in the existing receiving Thread home, outside immutable package bytes.
@@ -156,7 +136,7 @@ export async function searchPdfSourceSnapshot(input: {
   } catch {
     return { status: 'unavailable', reason: input.signal?.aborted ? 'cancelled' : 'unavailable' };
   } finally {
-    if (temporary) await rm(temporary, { recursive: true });
+    if (temporary) await removePrivateTreeStrict(temporary);
     reservation?.release();
   }
 }
