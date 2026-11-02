@@ -16,6 +16,7 @@ This directory owns NanoCore's encrypted-file Vault backend contract, unlock sta
 - `vault-unlock-state.ts` owns the process-local locked or available backend state.
 - `vault-references.ts`, `vault-grants.ts`, and `vault-use-records.ts` own non-secret durable Vault records.
 - `vault-references.ts` also owns idempotent insert evidence, active equal-or-next material-version advancement, and atomic dependent-state revocation.
+- `login-selection.ts` owns the pure default harness Login selector over authorized reference-only lifecycle projections. It preserves working Thread affinity, orders the user's own Logins before Workspace-shared Logins, and skips quarantine, conflicting refresh ownership, account exhaustion and the fixed 60-second re-entry cooldown. Missing quota stays unknown; a reset hint does not prove recovery.
 - `vault-use-audited-backend.ts` owns audited material resolution across server and workspace scopes.
 - `vault-admin-audit-events.ts` and `vault-operation-implementations.ts` own administrative audit projection and App API behavior.
 
@@ -41,6 +42,8 @@ pnpm run build
 - [Vault Secret Injection](../../../../docs/specs/20260703-vault_secret_injection.md)
 - [Vault Backend Implementation](../../../../docs/specs/20260704-vault_backend_implementation.md)
 - [Worker Credential Access Declarations](../../../../docs/specs/20260709-worker_credential_access_declarations.md)
+
+Harness Login selection performs no authorization, material resolution, refresh, persistence or activation. Its caller must supply current authorized candidates and current-generation observations, then use the governed Vault operations to refresh a target, commit its successor and recheck authority before activation. The selector is the first slice 2a capability; Login persistence, sharing and operation composition remain pending. It does not change Gateway subscription accounts or qualify runtime delivery. Run `pnpm exec vitest run src/vault/login-selection.test.ts --maxWorkers=1` from NanoCore for its default policy and negative cases.
 
 `vault-operation-implementations.ts` projects deployment-admin Workspace secret create/rotate/revoke and supported gateway-only or GitHub Worker runtime-env grant create/narrow/revoke. Optional exact Agent and AgentSession restrictions use current execution facts. Gateway capability restrictions name only `mcp.list-tools` or `mcp.call-tool`; runtime-env rejects capability targets. Worker grants remain separate from Gateway grants, and every use checks current Vault authority. The existing backend and Core lifecycle reject scope/version disagreement and return fixed redacted failures for partial effects.
 
