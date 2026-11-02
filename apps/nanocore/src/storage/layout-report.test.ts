@@ -130,6 +130,7 @@ describe('storage layout report', () => {
                 'user_0003_policy_audit_v1',
                 'user_0004_retained_record_formats',
                 'user_0005_audit_authentication',
+                'user_0006_permission_decisions',
               ],
             }),
           },

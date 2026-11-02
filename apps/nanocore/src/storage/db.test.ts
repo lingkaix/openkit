@@ -406,6 +406,7 @@ describe('scoped storage databases', () => {
         '__drizzle_migrations',
         'audit_events',
         'idempotency_requests',
+        'permission_decisions',
         'thread_read_receipts',
       ]);
       expect(listMigrationIds(userDb.sqlite, 'user')).toEqual([
@@ -415,6 +416,7 @@ describe('scoped storage databases', () => {
         'user_0003_policy_audit_v1',
         'user_0004_retained_record_formats',
         'user_0005_audit_authentication',
+        'user_0006_permission_decisions',
       ]);
     } finally {
       userDb.sqlite.close();
@@ -769,6 +771,7 @@ describe('scoped storage databases', () => {
         'user_0003_policy_audit_v1',
         'user_0004_retained_record_formats',
         'user_0005_audit_authentication',
+        'user_0006_permission_decisions',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -1102,6 +1105,7 @@ process.kill(process.pid, 'SIGKILL');`,
         'user_0003_policy_audit_v1',
         'user_0004_retained_record_formats',
         'user_0005_audit_authentication',
+        'user_0006_permission_decisions',
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_setup',
