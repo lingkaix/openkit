@@ -17,6 +17,7 @@ import {
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import fs, {
   chmod,
@@ -1935,4 +1936,95 @@ export async function closeTelemetrySegment(
 /** @internal Removes only the caller-selected disposable segment, preserving unlink errors. */
 export async function removeTelemetrySegment(path: string): Promise<void> {
   await fs.unlink(path);
+}
+
+/** @internal Publishes one admitted package member with its original exclusive creation, durable proof and capacity lifetime; the caller retains manifest ordering and authority. */
+export function publishContextPackageMember(
+  path: string,
+  file: { readonly path: string; readonly bytes: Uint8Array },
+  reservation: {
+    assertAvailable(): void;
+    recordWritten(byteLength: number): void;
+    release(): void;
+  }
+): void {
+  let descriptor: number | undefined;
+  let created = false;
+  let safeToRelease = true;
+  // The last file is the commit marker. Its own partial write must never look committed.
+  const writePath = file.path === 'package.json' ? join(dirname(path), '.package.json.tmp') : path;
+  try {
+    reservation.assertAvailable();
+    descriptor = openSync(
+      writePath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600
+    );
+    created = true;
+    safeToRelease = false;
+    let written = 0;
+    while (written < file.bytes.byteLength) {
+      const count = writeSync(
+        descriptor,
+        file.bytes,
+        written,
+        Math.min(65_536, file.bytes.byteLength - written)
+      );
+      if (!count) throw new Error('Worker Context Package file write made no progress.');
+      written += count;
+      reservation.recordWritten(count);
+    }
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    assertContextPackageFileProof(writePath, {
+      byteLength: file.bytes.byteLength,
+      contentDigest: `sha256:${createHash('sha256').update(file.bytes).digest('hex')}`,
+    });
+    if (writePath !== path) renameSync(writePath, path);
+    syncCanonicalDirectory(dirname(path));
+    safeToRelease = true;
+  } catch (error) {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+      descriptor = undefined;
+    }
+    if (created) {
+      rmSync(writePath, { force: true });
+      syncCanonicalDirectory(dirname(path));
+      safeToRelease = true;
+    }
+    throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (safeToRelease) reservation.release();
+  }
+}
+
+/** Verifies exact binary bytes through one held no-follow regular descriptor in bounded memory. */
+export function assertContextPackageFileProof(
+  path: string,
+  expected: { byteLength: number; contentDigest: string }
+): void {
+  const descriptor = openSync(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
+  );
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || before.nlink !== 1n)
+      throw new Error('Worker Context Package file is not a unique regular file.');
+    const proof = measureCanonicalFileDescriptor(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      after.nlink !== 1n ||
+      proof.byteLength !== expected.byteLength ||
+      proof.contentDigest !== expected.contentDigest
+    )
+      throw new Error('Worker Context Package file digest mismatch.');
+  } finally {
+    closeSync(descriptor);
+  }
 }
