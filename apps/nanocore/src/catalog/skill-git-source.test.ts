@@ -1,9 +1,10 @@
 // openkit-test-platform: posix
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import fs, { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { acquireGitEcosystemSkill } from './skill-git-source.js';
 import { SkillSourceInputError } from './skill-source.js';
 
@@ -54,7 +55,23 @@ function fixture() {
   };
 }
 
+/** Records real scratch allocation because the acquisition result cannot reveal cleanup. */
+function observeScratchDirectories(): string[] {
+  const directories: string[] = [];
+  const createDirectory = fs.mkdtempSync;
+  vi.spyOn(fs, 'mkdtempSync').mockImplementation((prefix, options) => {
+    const directory = createDirectory(prefix, options);
+    directories.push(directory.toString());
+    roots.push(directory.toString());
+    return directory;
+  });
+  syncBuiltinESMExports();
+  return directories;
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -65,6 +82,7 @@ describe('committed ecosystem Skill acquisition', () => {
     f.git(['commit', '-m', 'Initial Skill']);
     const commit = f.git(['rev-parse', 'HEAD']);
     writeFileSync(join(f.root, 'skills', 'release', 'SKILL.md'), 'uncommitted bytes');
+    const scratch = observeScratchDirectories();
     const acquired = await acquireGitEcosystemSkill(f.source);
     expect(acquired).toMatchObject({
       source: 'git:test-fixture',
@@ -80,6 +98,20 @@ describe('committed ecosystem Skill acquisition', () => {
     );
     expect(acquired.tree.find((entry) => entry.path === 'run.sh')?.executable).toBe(true);
     expect(acquired.tree.some((entry) => entry.path.includes('.git'))).toBe(false);
+    expect(scratch).toHaveLength(1);
+    expect(() => fs.lstatSync(scratch[0]!)).toThrowError(
+      expect.objectContaining({ code: 'ENOENT' })
+    );
+    expect(f.git(['rev-parse', 'HEAD'])).toBe(commit);
+    expect(fs.readFileSync(join(f.root, 'skills', 'release', 'SKILL.md'), 'utf8')).toBe(
+      'uncommitted bytes'
+    );
+    expect(fs.readFileSync(join(f.root, 'skills', 'release', 'references', 'data.bin'))).toEqual(
+      Buffer.from([0, 255, 16])
+    );
+    expect(fs.readFileSync(join(f.root, 'skills', 'release', 'run.sh'), 'utf8')).toBe(
+      '#!/bin/sh\nprintf exact\n'
+    );
   });
 
   it('refuses a selected committed link instead of resolving content outside the package', async () => {
@@ -88,6 +120,24 @@ describe('committed ecosystem Skill acquisition', () => {
     writeFileSync(join(f.root, 'outside.txt'), 'not Skill supply');
     f.git(['add', '.']);
     f.git(['commit', '-m', 'Linked content']);
+    const commit = f.git(['rev-parse', 'HEAD']);
+    const scratch = observeScratchDirectories();
     await expect(acquireGitEcosystemSkill(f.source)).rejects.toBeInstanceOf(SkillSourceInputError);
+    expect(scratch).toHaveLength(1);
+    expect(() => fs.lstatSync(scratch[0]!)).toThrowError(
+      expect.objectContaining({ code: 'ENOENT' })
+    );
+    expect(f.git(['rev-parse', 'HEAD'])).toBe(commit);
+    expect(fs.readFileSync(join(f.root, 'skills', 'release', 'SKILL.md'), 'utf8')).toBe(header);
+    expect(fs.readFileSync(join(f.root, 'skills', 'release', 'references', 'data.bin'))).toEqual(
+      Buffer.from([0, 255, 16])
+    );
+    expect(fs.readFileSync(join(f.root, 'skills', 'release', 'run.sh'), 'utf8')).toBe(
+      '#!/bin/sh\nprintf exact\n'
+    );
+    expect(fs.readlinkSync(join(f.root, 'skills', 'release', 'linked.txt'))).toBe(
+      '../../outside.txt'
+    );
+    expect(fs.readFileSync(join(f.root, 'outside.txt'), 'utf8')).toBe('not Skill supply');
   });
 });

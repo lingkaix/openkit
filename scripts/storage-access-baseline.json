@@ -48,8 +48,6 @@
     "apps/nanocore/src/catalog/resource-catalog.ts\tfs:rmSync\tb70146dfef9f01e9514add9e7469ac777d4552868789aeeb649d9749eef97f9b": 1,
     "apps/nanocore/src/catalog/resource-catalog.ts\tfs:rmSync\te8ede03d0b3aeaf834ec8d36774bd866aaf087b20a269d2dd738406384a42df1": 1,
     "apps/nanocore/src/catalog/resource-catalog.ts\tfs:writeFileSync\tbbdde74defc25dac6fe7421eab31f13ab704190bef82f1f623e2b1e41a584fde": 1,
-    "apps/nanocore/src/catalog/skill-git-source.ts\tfs:mkdtempSync\tecd8e732f51d633de005612fb572762472ad60cc5b121830fcd80bd93e9afbec": 1,
-    "apps/nanocore/src/catalog/skill-git-source.ts\tfs:rmSync\t47c4ba23b1c31f0729dd167a00e556c5c19f5ae2392506723c5d7e4d2d21c283": 1,
     "apps/nanocore/src/config/runtime-config-files.ts\tfs:cpSync\t11b2b26e3c57a2fe2b71451e2592cba91f122a1e10390cb96365ff478d2e2fa9": 1,
     "apps/nanocore/src/config/runtime-config-files.ts\tfs:cpSync\t59b7bc8ae80896eee454ad25d613cee68c188f616677cc807718316df0f7aac0": 1,
     "apps/nanocore/src/config/runtime-config-files.ts\tfs:cpSync\t81d13e8b9bcb734fb62a4b3035ebe81739b8a6f37bbfff8585f27810ba361b8b": 1,

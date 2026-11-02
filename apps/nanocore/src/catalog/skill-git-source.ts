@@ -1,8 +1,7 @@
 import { execFile } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { createPrivateTreeSync, removePrivateTreeSync } from '@openkit/storage';
 import { type CatalogTreeFile, validateCatalogTree } from './resource-catalog.js';
 import { discoverEcosystemSkills } from './skill-discovery.js';
 import {
@@ -28,7 +27,7 @@ export async function acquireGitEcosystemSkill(
   readonly digest: string;
   readonly tree: readonly CatalogTreeFile[];
 }> {
-  const directory = mkdtempSync(join(tmpdir(), 'openkit-catalog-git-'));
+  const directory = createPrivateTreeSync(tmpdir(), 'openkit-catalog-git-');
   try {
     const git = async (args: readonly string[], maxBuffer = 2 * 1024 * 1024): Promise<Buffer> =>
       (
@@ -128,6 +127,6 @@ export async function acquireGitEcosystemSkill(
   } catch {
     throw new SkillSourceInputError();
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    removePrivateTreeSync(directory);
   }
 }
