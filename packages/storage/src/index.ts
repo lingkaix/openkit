@@ -20,6 +20,7 @@ export {
   LocalStorage,
   listTelemetrySegments,
   makePrivateTreeDirectory,
+  materializePrivateTreeSync,
   materializeSnapshot,
   measureCanonicalFile,
   measureCanonicalFileDescriptor,

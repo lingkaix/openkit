@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import {
@@ -34,6 +34,7 @@ import {
   assertCanonicalDirectory,
   directoryContainsFiles,
   ensureCanonicalDirectory,
+  materializePrivateTreeSync,
   materializeSnapshot,
   syncCanonicalDirectory,
 } from '@openkit/storage';
@@ -1465,20 +1466,7 @@ export function materializeCatalogTree(
 ): OpenKitTreeEntry[] {
   const entries = treeFilesToEntries(tree);
   hashOpenKitTreeEntries(entries, bounds);
-  rmSync(root, { force: true, recursive: true });
-  mkdirSync(root, { recursive: true });
-  for (const entry of entries) {
-    const path = join(root, entry.path);
-    if (entry.kind === 0) {
-      mkdirSync(path, { recursive: true });
-      continue;
-    }
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, entry.content ?? Buffer.alloc(0), { flag: 'wx' });
-    if (entry.kind === 2) {
-      chmodSync(path, 0o755);
-    }
-  }
+  materializePrivateTreeSync(root, entries);
   return entries;
 }
 

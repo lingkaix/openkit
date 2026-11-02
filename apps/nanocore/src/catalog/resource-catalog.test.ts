@@ -2264,6 +2264,11 @@ describe('workspace resource catalog', () => {
   it('rejects plugin upload paths that escape the staging root', () => {
     const staging = mkdtempSync(join(tmpdir(), 'openkit-plugin-stage-'));
     try {
+      const sentinel = join(staging, 'sentinel');
+      const bytes = Buffer.from([0, 255, 1]);
+      writeFileSync(sentinel, bytes);
+      const rootBefore = statSync(staging, { bigint: true });
+      const sentinelBefore = statSync(sentinel, { bigint: true });
       expect(() =>
         materializeCatalogTree(staging, [
           {
@@ -2273,6 +2278,25 @@ describe('workspace resource catalog', () => {
           },
         ])
       ).toThrow(/parent path/);
+      // A valid entry exceeding admitted bytes must also precede every physical effect.
+      expect(() =>
+        materializeCatalogTree(
+          staging,
+          [
+            {
+              kind: 'file',
+              path: 'too-large',
+              contentBase64: Buffer.from('xx').toString('base64'),
+            },
+          ],
+          { maxBytes: 1, maxEntries: 1 }
+        )
+      ).toThrow(/file bytes/);
+      // Invalid supply must fail before root reset or any private-tree write.
+      expect(statSync(staging, { bigint: true }).ino).toBe(rootBefore.ino);
+      expect(statSync(sentinel, { bigint: true }).ino).toBe(sentinelBefore.ino);
+      expect(readFileSync(sentinel)).toEqual(bytes);
+      expect(readdirSync(staging)).toEqual(['sentinel']);
     } finally {
       rmSync(staging, { force: true, recursive: true });
     }

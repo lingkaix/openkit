@@ -1509,6 +1509,27 @@ export function removePrivateTreeSync(path: string): void {
   rmSync(path, { recursive: true, force: true });
 }
 
+/** @internal Materializes caller-validated private entries; validation and cleanup lifetime stay with the caller. */
+export function materializePrivateTreeSync(
+  root: string,
+  entries: readonly { readonly content?: Buffer; readonly kind: 0 | 1 | 2; readonly path: string }[]
+): void {
+  rmSync(root, { force: true, recursive: true });
+  mkdirSync(root, { recursive: true });
+  for (const entry of entries) {
+    const path = join(root, entry.path);
+    if (entry.kind === 0) {
+      mkdirSync(path, { recursive: true });
+      continue;
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, entry.content ?? Buffer.alloc(0), { flag: 'wx' });
+    if (entry.kind === 2) {
+      chmodSync(path, 0o755);
+    }
+  }
+}
+
 /** @internal Stages exact admitted bytes with the original domain counters and refusals; the caller retains product and capacity authority. */
 export async function stagePrivateFile(
   stagingParent: string,

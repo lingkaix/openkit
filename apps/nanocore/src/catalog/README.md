@@ -63,3 +63,5 @@ Workspace MCP stage-version and remove reuse the scoped native owners and existi
 Snapshot materialization and non-staging file observation use the shared physical helpers in `@openkit/storage`. This catalog keeps tree validation, immutable identity, revision checks, retained metadata and publication decisions; the helper move preserves physical staging, acknowledgement and cleanup behavior.
 
 Plugin upload scratch allocation and removal use the existing Storage private-tree helpers. Catalog publication, Audit storage lifetime, and close-before-cleanup ordering stay in this catalog owner.
+
+Upload tree conversion, hashing and limits precede the Storage private-tree materializer. Storage performs the complete physical root reset and member writes; the catalog retains the prepared entries, publication decision and cleanup lifetime, while immutable snapshot publication keeps its separate durable acknowledgement.
