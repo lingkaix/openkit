@@ -1,14 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import {
@@ -39,15 +30,14 @@ import {
   WorkspaceMcpServerSchema,
 } from '@openkit/config-schema';
 import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
+import { directoryContainsFiles, materializeSnapshot } from '@openkit/storage';
 import { ZodError, z } from 'zod';
 
 import { ensureWorkspaceLayout, resolveDataRootPath } from '../storage/fs-layout.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
-  publishCanonicalPath,
   syncCanonicalDirectory,
-  syncCanonicalTree,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
 import {
@@ -1491,32 +1481,6 @@ export function materializeCatalogTree(
   return entries;
 }
 
-/** Returns true when any regular file exists under root, ignoring incomplete `.staging` directories. */
-function directoryContainsFiles(root: string): boolean {
-  if (!existsSync(root)) {
-    return false;
-  }
-  const pending = [root];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current) continue;
-    for (const name of readdirSync(current)) {
-      const path = join(current, name);
-      const metadata = statSync(path);
-      if (metadata.isDirectory()) {
-        if (!name.endsWith('.staging')) {
-          pending.push(path);
-        }
-        continue;
-      }
-      if (metadata.isFile()) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 /**
  * Replaces the Workspace MCP module with one effective Gateway catalog.
  *
@@ -1883,39 +1847,6 @@ function inventoryFromEntries(
             .digest('hex')}`,
     size: entry.kind === 0 ? 0 : (entry.content?.length ?? 0),
   }));
-}
-
-/** Writes one immutable snapshot directory. */
-function materializeSnapshot(target: string, entries: readonly OpenKitTreeEntry[]): void {
-  if (existsSync(target)) {
-    // A visible snapshot can be the result of a failed post-rename acknowledgement.
-    syncCanonicalTree(target);
-    syncCanonicalDirectory(dirname(target));
-    return;
-  }
-  const staged = `${target}.staging`;
-  // Validate the parent before cleanup can touch any path beneath it.
-  ensureCanonicalDirectory(dirname(target), 0o777);
-  rmSync(staged, { force: true, recursive: true });
-  mkdirSync(staged, { recursive: true });
-  try {
-    for (const entry of entries) {
-      const path = join(staged, entry.path);
-      if (entry.kind === 0) {
-        mkdirSync(path, { recursive: true });
-        continue;
-      }
-      mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, entry.content ?? Buffer.alloc(0), { flag: 'wx' });
-      if (entry.kind === 2) {
-        chmodSync(path, 0o755);
-      }
-    }
-    publishCanonicalPath(staged, target);
-  } catch (error) {
-    rmSync(staged, { force: true, recursive: true });
-    throw error;
-  }
 }
 
 /** Stable catalog id from a display name. */

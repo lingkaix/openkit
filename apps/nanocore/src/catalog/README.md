@@ -59,3 +59,5 @@ Plugin import preserves exact original names and the retained package-key to sco
 New Workspace MCP bindings share their installation data key through immutable version-history member references; standalone entries receive Workspace-scoped keys. Existing bindings retain their exact keys across version changes, rollback and adoption. Key assignment refuses ambiguous installation ownership or inconsistent retained sibling keys instead of moving or merging process data. Inert import allocates no unreferenced process-data directory.
 
 Workspace MCP stage-version and remove reuse the scoped native owners and existing configuration authority. Selection requires the observed `currentVersionDigest` as `expectedCurrentDigest`; removed entries refuse selection and binding updates while retaining immutable history and process data.
+
+Snapshot materialization and non-staging file observation use the shared physical helpers in `@openkit/storage`. This catalog keeps tree validation, immutable identity, revision checks, retained metadata and publication decisions; the helper move preserves physical staging, acknowledgement and cleanup behavior.

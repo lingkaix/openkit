@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   constants,
+  existsSync,
   fstatSync,
   fsyncSync,
   lstatSync,
@@ -11,6 +13,9 @@ import {
   readFileSync,
   readSync,
   renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
 } from 'node:fs';
 import {
   type FileHandle,
@@ -1378,4 +1383,70 @@ export function throwCanonicalLinkError(path: string, error: unknown): never {
     throw new Error(`Canonical path must not be a symbolic link: ${path}.`, { cause: error });
   }
   throw error;
+}
+
+/** Writes one immutable snapshot directory. */
+export function materializeSnapshot(
+  target: string,
+  entries: readonly {
+    readonly content?: Buffer;
+    readonly kind: 0 | 1 | 2;
+    readonly path: string;
+  }[]
+): void {
+  if (existsSync(target)) {
+    // A visible snapshot can be the result of a failed post-rename acknowledgement.
+    syncCanonicalTree(target);
+    syncCanonicalDirectory(dirname(target));
+    return;
+  }
+  const staged = `${target}.staging`;
+  // Validate the parent before cleanup can touch any path beneath it.
+  ensureCanonicalDirectory(dirname(target), 0o777);
+  rmSync(staged, { force: true, recursive: true });
+  mkdirSync(staged, { recursive: true });
+  try {
+    for (const entry of entries) {
+      const path = join(staged, entry.path);
+      if (entry.kind === 0) {
+        mkdirSync(path, { recursive: true });
+        continue;
+      }
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, entry.content ?? Buffer.alloc(0), { flag: 'wx' });
+      if (entry.kind === 2) {
+        chmodSync(path, 0o755);
+      }
+    }
+    publishCanonicalPath(staged, target);
+  } catch (error) {
+    rmSync(staged, { force: true, recursive: true });
+    throw error;
+  }
+}
+
+/** Returns true when any regular file exists under root, ignoring incomplete `.staging` directories. */
+export function directoryContainsFiles(root: string): boolean {
+  if (!existsSync(root)) {
+    return false;
+  }
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) continue;
+    for (const name of readdirSync(current)) {
+      const path = join(current, name);
+      const metadata = statSync(path);
+      if (metadata.isDirectory()) {
+        if (!name.endsWith('.staging')) {
+          pending.push(path);
+        }
+        continue;
+      }
+      if (metadata.isFile()) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
