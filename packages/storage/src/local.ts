@@ -2242,3 +2242,25 @@ export function copyPortableOriginalFile(
     if (release) reservation?.release();
   }
 }
+
+/** @internal Copies only missing retained definition files for the caller-selected captured app paths; source selection and coverage verification stay caller-owned. */
+export function copyMissingBackupDefinitions(
+  dataRoot: string,
+  backupRoot: string,
+  appPaths: readonly string[]
+): void {
+  for (const appPath of appPaths) {
+    const sourceDefinitions = join(dataRoot, appPath, 'definitions');
+    const capturedDefinitions = join(backupRoot, appPath, 'definitions');
+    if (!existsSync(sourceDefinitions)) {
+      continue;
+    }
+    mkdirSync(capturedDefinitions, { recursive: true });
+    for (const name of readdirSync(sourceDefinitions)) {
+      const captured = join(capturedDefinitions, name);
+      if (!existsSync(captured)) {
+        cpSync(join(sourceDefinitions, name), captured);
+      }
+    }
+  }
+}

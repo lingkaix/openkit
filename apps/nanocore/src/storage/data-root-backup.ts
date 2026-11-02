@@ -1,7 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -22,7 +21,7 @@ import {
 } from '@openkit/config-schema';
 import { compareCodeUnits, DataRootBackupIdSchema, DeploymentIdSchema } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import { copyBackupTree } from '@openkit/storage';
+import { copyBackupTree, copyMissingBackupDefinitions } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { closeWorkspaceProductReadHandles } from './control-store-products.js';
 import { writeFileAtomic } from './workspace-file-records.js';
@@ -579,20 +578,7 @@ function listLightAppDirectoryPaths(root: string): string[] {
  * @param backupRoot Captured backup root.
  */
 function copyMissingLightAppDefinitions(dataRoot: string, backupRoot: string): void {
-  for (const appPath of listLightAppDirectoryPaths(backupRoot)) {
-    const sourceDefinitions = join(dataRoot, appPath, 'definitions');
-    const capturedDefinitions = join(backupRoot, appPath, 'definitions');
-    if (!existsSync(sourceDefinitions)) {
-      continue;
-    }
-    mkdirSync(capturedDefinitions, { recursive: true });
-    for (const name of readdirSync(sourceDefinitions)) {
-      const captured = join(capturedDefinitions, name);
-      if (!existsSync(captured)) {
-        cpSync(join(sourceDefinitions, name), captured);
-      }
-    }
-  }
+  copyMissingBackupDefinitions(dataRoot, backupRoot, listLightAppDirectoryPaths(backupRoot));
 }
 
 /**

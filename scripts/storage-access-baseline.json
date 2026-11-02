@@ -103,8 +103,6 @@
     "apps/nanocore/src/storage/control-store-products.ts\tsqlite\t109d542f333a5b86b370e7054f484c8ccba77f2709061cb4cb7570233253a62b": 1,
     "apps/nanocore/src/storage/control-store-worker.ts\tfs:fsyncSync\t4f43441a9b7c0543c891e35ac20ad59bb199a261294ad2722338c6bcdc8297ff": 2,
     "apps/nanocore/src/storage/control-store-worker.ts\tfs:mkdirSync\t09269c8a25fe91583aa3bc534f3a8ea4ffedb61b01deeb121f94b5ff33974285": 1,
-    "apps/nanocore/src/storage/data-root-backup.ts\tfs:cpSync\t70965ec3c8579429ebc2ccfe0e10cf26c5542d8b048bcd016ea6cc28c7b320b6": 1,
-    "apps/nanocore/src/storage/data-root-backup.ts\tfs:mkdirSync\t31aafa66f68c862d579a70ec48dc950a83e3a127987c75a23705110af7c3ba1d": 1,
     "apps/nanocore/src/storage/data-root-backup.ts\tfs:mkdirSync\tbb608d0edbfb50239d83eb6b38e962390e56fb33db5fdd25ea4b433a196e7287": 1,
     "apps/nanocore/src/storage/data-root-backup.ts\tfs:mkdirSync\tf54bb42a08a00c7868f336c4f37d48ea17e4942bd8625aaed93f3bcc3faa8fed": 2,
     "apps/nanocore/src/storage/data-root-backup.ts\tfs:renameSync\t6383dc9741fb285593f530db4b3a5ed9358e3b602be7c89af19cf7a64de19e13": 1,
