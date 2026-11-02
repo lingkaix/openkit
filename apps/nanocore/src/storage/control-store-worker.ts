@@ -24,7 +24,7 @@ import {
   prepareControlReviewCommand,
   readControlReviewMaterialId,
 } from '../artifact-reviews.js';
-import { recordServerAuditEvent } from '../audit-events.js';
+import { prepareAuditEventStatement, recordServerAuditEvent } from '../audit-events.js';
 import { recordVerifiedOpenKitAccessTokenUse } from '../auth/access-token-store.js';
 import { ADMIN_RECOVERY_REQUIRED, AdminRecoveryError } from '../auth/admin-recovery-codecs.js';
 import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
@@ -277,6 +277,7 @@ type WriteCommand = Extract<
       | 'worker-control-heartbeat'
       | 'worker-control-record'
       | 'thread-read-membership'
+      | 'boot-audit'
       | 'admin-recovery'
       | 'better-auth'
       | 'vault'
@@ -2168,6 +2169,33 @@ function flush(owner: OwnedDatabase): void {
               operation: 'app-kernel',
               result,
             };
+          } else if (request.operation === 'boot-audit') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const row = request.input;
+            sqlite
+              .prepare(`INSERT INTO boot_audit_events (
+              schema_version, boot_event_id, boot_id, event_type, outcome,
+              accepting_product_work, phase_outcomes_json, readiness_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(
+                writeRetainedV1({}).schemaVersion,
+                row.bootEventId,
+                row.bootId,
+                row.eventType,
+                row.outcome,
+                row.acceptingProductWork ? 1 : 0,
+                row.phaseOutcomesJson,
+                row.readinessJson,
+                row.createdAt
+              );
+            const audit = prepareAuditEventStatement(row.audit);
+            sqlite.prepare(audit.sql).run(...audit.parameters);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'boot-audit',
+            };
           } else if (request.operation === 'admin-recovery') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const auditEventId = applyControlAdminRecovery(owner.scopeDb, request.input);
@@ -2952,6 +2980,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'project-cleanup' ||
       value.operation === 'app-kernel' ||
       value.operation === 'thread-read-membership' ||
+      value.operation === 'boot-audit' ||
       value.operation === 'admin-recovery' ||
       value.operation === 'better-auth' ||
       value.operation === 'vault' ||

@@ -1,5 +1,6 @@
-import { deriveEntityId, writeRetainedV1 } from '@openkit/protocol';
-import { recordServerAuditEvent } from '../audit-events.js';
+import { deriveEntityId } from '@openkit/protocol';
+import { prepareAuditEvent } from '../audit-events.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import type { BootPhaseRunResult } from './phases.js';
 
@@ -54,51 +55,38 @@ export interface RecordShutdownAuditEventInput {
  *
  * @param input Boot start audit event input.
  */
-export function recordBootStartAuditEvent(input: RecordBootStartAuditEventInput): void {
+export async function recordBootStartAuditEvent(
+  input: RecordBootStartAuditEventInput
+): Promise<void> {
   const createdAt = (input.now ?? new Date()).toISOString();
 
-  input.coreDb.sqlite
-    .prepare(
-      `INSERT INTO boot_audit_events (
-        schema_version,
-        boot_event_id,
-        boot_id,
-        event_type,
-        outcome,
-        accepting_product_work,
-        phase_outcomes_json,
-        readiness_json,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      writeRetainedV1({}).schemaVersion,
-      `${input.bootId}_start`,
-      input.bootId,
-      'boot.start',
-      'started',
-      0,
-      JSON.stringify([]),
-      JSON.stringify({
-        bootId: input.bootId,
-        ...(input.layoutVersion ? { layoutVersion: input.layoutVersion } : {}),
-        ...(input.lockAcquisition ? { lockAcquisition: input.lockAcquisition } : {}),
-        migrationIds: input.migrationIds,
-        storageRecoveryEvents: input.storageRecoveryEvents ?? [],
-        indexRebuildEvents: input.indexRebuildEvents ?? [],
-      }),
-      createdAt
-    );
-  recordServerAuditEvent({
-    action: 'boot.start',
-    auditEventId: deriveEntityId('aud', [input.bootId, 'start']),
-    category: 'system',
-    coreDb: input.coreDb,
-    outcome: 'succeeded',
-    resource: `server:boot:${input.bootId}`,
-    severity: 'info',
-    summary: 'NanoCore boot started.',
-    ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
+  await getControlStoreWorkerClient().coreBootAudit(input.coreDb, {
+    bootEventId: `${input.bootId}_start`,
+    bootId: input.bootId,
+    eventType: 'boot.start',
+    outcome: 'started',
+    acceptingProductWork: false,
+    phaseOutcomesJson: JSON.stringify([]),
+    readinessJson: JSON.stringify({
+      bootId: input.bootId,
+      ...(input.layoutVersion ? { layoutVersion: input.layoutVersion } : {}),
+      ...(input.lockAcquisition ? { lockAcquisition: input.lockAcquisition } : {}),
+      migrationIds: input.migrationIds,
+      storageRecoveryEvents: input.storageRecoveryEvents ?? [],
+      indexRebuildEvents: input.indexRebuildEvents ?? [],
+    }),
+    createdAt,
+    audit: prepareAuditEvent({
+      action: 'boot.start',
+      auditEventId: deriveEntityId('aud', [input.bootId, 'start']),
+      category: 'system',
+      workspaceId: null,
+      outcome: 'succeeded',
+      resource: `server:boot:${input.bootId}`,
+      severity: 'info',
+      summary: 'NanoCore boot started.',
+      ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
+    }),
   });
 }
 
@@ -107,52 +95,37 @@ export function recordBootStartAuditEvent(input: RecordBootStartAuditEventInput)
  *
  * @param input Boot audit event input.
  */
-export function recordBootAuditEvent(input: RecordBootAuditEventInput): void {
+export async function recordBootAuditEvent(input: RecordBootAuditEventInput): Promise<void> {
   const createdAt = (input.now ?? new Date()).toISOString();
   const readiness = input.result.readiness;
   const failed = readiness.overall === 'failed';
   const degraded = readiness.overall === 'degraded';
 
-  input.coreDb.sqlite
-    .prepare(
-      `INSERT INTO boot_audit_events (
-        schema_version,
-        boot_event_id,
-        boot_id,
-        event_type,
-        outcome,
-        accepting_product_work,
-        phase_outcomes_json,
-        readiness_json,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      writeRetainedV1({}).schemaVersion,
-      `${input.result.readiness.bootId}_outcome`,
-      input.result.readiness.bootId,
-      'boot.outcome',
-      input.result.readiness.overall,
-      input.result.readiness.acceptingProductWork ? 1 : 0,
-      JSON.stringify(input.result.outcomes),
-      JSON.stringify(readiness),
-      createdAt
-    );
-  recordServerAuditEvent({
-    action: 'boot.outcome',
-    auditEventId: deriveEntityId('aud', [readiness.bootId, 'outcome']),
-    category: 'system',
-    coreDb: input.coreDb,
-    errorCode: failed ? 'boot_failed' : degraded ? 'boot_degraded' : null,
-    outcome: failed ? 'failed' : 'succeeded',
-    resource: `server:boot:${readiness.bootId}`,
-    severity: failed ? 'error' : degraded ? 'warning' : 'info',
-    summary: failed
-      ? 'NanoCore boot failed.'
-      : degraded
-        ? 'NanoCore boot completed with degraded readiness.'
-        : 'NanoCore boot completed.',
-    ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
+  await getControlStoreWorkerClient().coreBootAudit(input.coreDb, {
+    bootEventId: `${readiness.bootId}_outcome`,
+    bootId: readiness.bootId,
+    eventType: 'boot.outcome',
+    outcome: readiness.overall,
+    acceptingProductWork: readiness.acceptingProductWork,
+    phaseOutcomesJson: JSON.stringify(input.result.outcomes),
+    readinessJson: JSON.stringify(readiness),
+    createdAt,
+    audit: prepareAuditEvent({
+      action: 'boot.outcome',
+      auditEventId: deriveEntityId('aud', [readiness.bootId, 'outcome']),
+      category: 'system',
+      workspaceId: null,
+      errorCode: failed ? 'boot_failed' : degraded ? 'boot_degraded' : null,
+      outcome: failed ? 'failed' : 'succeeded',
+      resource: `server:boot:${readiness.bootId}`,
+      severity: failed ? 'error' : degraded ? 'warning' : 'info',
+      summary: failed
+        ? 'NanoCore boot failed.'
+        : degraded
+          ? 'NanoCore boot completed with degraded readiness.'
+          : 'NanoCore boot completed.',
+      ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
+    }),
   });
 }
 
@@ -161,50 +134,37 @@ export function recordBootAuditEvent(input: RecordBootAuditEventInput): void {
  *
  * @param input Shutdown audit event input.
  */
-export function recordShutdownAuditEvent(input: RecordShutdownAuditEventInput): void {
+export async function recordShutdownAuditEvent(
+  input: RecordShutdownAuditEventInput
+): Promise<void> {
   const createdAt = (input.now ?? new Date()).toISOString();
 
-  input.coreDb.sqlite
-    .prepare(
-      `INSERT INTO boot_audit_events (
-        schema_version,
-        boot_event_id,
-        boot_id,
-        event_type,
-        outcome,
-        accepting_product_work,
-        phase_outcomes_json,
-        readiness_json,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      writeRetainedV1({}).schemaVersion,
-      `${input.bootId}_shutdown`,
-      input.bootId,
-      'boot.shutdown',
-      input.deadlineForcedExit ? 'forced_exit' : 'ok',
-      0,
-      JSON.stringify(input.stepsCompleted),
-      JSON.stringify({
-        bootId: input.bootId,
-        deadlineForcedExit: input.deadlineForcedExit,
-        shutdownReason: input.reason,
-      }),
-      createdAt
-    );
-  recordServerAuditEvent({
-    action: 'boot.shutdown',
-    auditEventId: deriveEntityId('aud', [input.bootId, 'shutdown']),
-    category: 'system',
-    coreDb: input.coreDb,
-    errorCode: input.deadlineForcedExit ? 'shutdown_deadline_forced_exit' : null,
-    outcome: input.deadlineForcedExit ? 'failed' : 'succeeded',
-    resource: `server:boot:${input.bootId}`,
-    severity: input.deadlineForcedExit ? 'error' : 'info',
-    summary: input.deadlineForcedExit
-      ? 'NanoCore shutdown deadline forced exit.'
-      : 'NanoCore shutdown completed.',
-    ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
+  await getControlStoreWorkerClient().coreBootAudit(input.coreDb, {
+    bootEventId: `${input.bootId}_shutdown`,
+    bootId: input.bootId,
+    eventType: 'boot.shutdown',
+    outcome: input.deadlineForcedExit ? 'forced_exit' : 'ok',
+    acceptingProductWork: false,
+    phaseOutcomesJson: JSON.stringify(input.stepsCompleted),
+    readinessJson: JSON.stringify({
+      bootId: input.bootId,
+      deadlineForcedExit: input.deadlineForcedExit,
+      shutdownReason: input.reason,
+    }),
+    createdAt,
+    audit: prepareAuditEvent({
+      action: 'boot.shutdown',
+      auditEventId: deriveEntityId('aud', [input.bootId, 'shutdown']),
+      category: 'system',
+      workspaceId: null,
+      errorCode: input.deadlineForcedExit ? 'shutdown_deadline_forced_exit' : null,
+      outcome: input.deadlineForcedExit ? 'failed' : 'succeeded',
+      resource: `server:boot:${input.bootId}`,
+      severity: input.deadlineForcedExit ? 'error' : 'info',
+      summary: input.deadlineForcedExit
+        ? 'NanoCore shutdown deadline forced exit.'
+        : 'NanoCore shutdown completed.',
+      ...(input.now ? { now: input.now, occurredAt: input.now } : {}),
+    }),
   });
 }

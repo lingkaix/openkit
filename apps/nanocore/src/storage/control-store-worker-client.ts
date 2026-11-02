@@ -122,6 +122,7 @@ import type {
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
+  type ControlBootAuditInput,
   ControlPhysicalForecastDecisionSchema,
   ControlPhysicalForecastSchema,
   type ControlProductCohort,
@@ -1885,6 +1886,35 @@ class ControlStoreWorkerClient {
     const result = await this.capability(database, input);
     if (result !== null) throw new ControlStoreWorkerError('invalid-request', 'unknown');
     return null;
+  }
+
+  /** Joins the exact lifecycle tuple to the existing Core writer after migrations, before close. */
+  async coreBootAudit(db: CoreDb, input: ControlBootAuditInput): Promise<void> {
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    if (!admitted) {
+      await Promise.all([
+        this.open({
+          database,
+          path: scope.path,
+          dataRoot: db.dataRoot,
+          create: false,
+          initialize: 'core',
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        }),
+        this.request({ operation: 'boot-audit', database, input }),
+      ]);
+      return;
+    }
+    if (
+      admitted.command.path !== scope.path ||
+      admitted.command.dataRoot !== db.dataRoot ||
+      !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    await this.request({ operation: 'boot-audit', database, input });
   }
 
   /** Uses the existing Core physical owner for the closed Server ledger cases. */

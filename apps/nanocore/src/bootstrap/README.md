@@ -39,3 +39,9 @@ An abandoned capture with no visible seal is admitted only after the existing st
 Scope quarantine readiness retains the first unsupported canonical required-feature identifier from envelope admission. It carries no parser text, retained payload or host path; healthy sibling admission stays independent.
 
 Signal handlers register before boot phases. Partial shutdown closes only initialized resources under the same process deadline; cancellation prevents later phases and startup work. Readiness reads current Vault health, current Gateway route eligibility and Provider readiness, and current scoped index admission facts. It does not probe a provider or infer network health. Live non-critical recovery does not clear critical failures or shutdown admission closure.
+
+Boot start, outcome and orderly shutdown prepare their original two-row Audit tuple for the existing Core native writer and await its FULL acknowledgement. Migrations precede the first native open; listener closure and Vault lock precede shutdown Audit, and native closure follows that acknowledgement. The existing process deadline remains a crash boundary: it reports unknown pending Audit durability and never opens a replacement writer.
+
+Audit admission depends on successful Core migrations, not on boot-start Audit success. A migration failure retains its original process diagnostic and cannot trigger a migration-capable native open through boot-outcome or partial-shutdown Audit.
+
+Real source-process retirement fixtures use the invocation-private, freshly compiled native Worker from global setup. The source entry, real native owner, exclusion assertions and original startup/shutdown bounds remain unchanged.

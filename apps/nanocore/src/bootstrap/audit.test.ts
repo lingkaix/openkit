@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { listServerAuditEvents } from '../audit-events.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -15,14 +16,14 @@ import {
 import { runBootPhases } from './phases.js';
 
 describe('boot audit recorder', () => {
-  it('records the boot start and known migration ids in the server database', () => {
+  it('records the boot start and known migration ids in the server database', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-start-audit-'));
     const coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
 
-      recordBootStartAuditEvent({
+      await recordBootStartAuditEvent({
         bootId: 'boot_start_test',
         coreDb,
         layoutVersion: 1,
@@ -111,6 +112,7 @@ describe('boot audit recorder', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -147,7 +149,7 @@ describe('boot audit recorder', () => {
         ],
       });
 
-      recordBootAuditEvent({
+      await recordBootAuditEvent({
         coreDb,
         result,
         now: new Date('2026-07-05T00:00:00.000Z'),
@@ -194,18 +196,19 @@ describe('boot audit recorder', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('records an orderly shutdown audit event in the server database', () => {
+  it('records an orderly shutdown audit event in the server database', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-shutdown-audit-'));
     const coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
 
-      recordShutdownAuditEvent({
+      await recordShutdownAuditEvent({
         bootId: 'boot_shutdown_test',
         coreDb,
         deadlineForcedExit: false,
@@ -255,6 +258,7 @@ describe('boot audit recorder', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

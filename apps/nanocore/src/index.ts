@@ -173,6 +173,8 @@ let appTlsListen: NativeTlsListenOptions | null | undefined;
 let nanoHostListener: NanoHostTransportListener | null | undefined;
 let nanoHostTlsListen: NativeTlsListenOptions | null | undefined;
 let coreDb: CoreDb | undefined;
+// Audit may use the existing native lifetime only after Core migrations succeed.
+let coreMigrationsComplete = false;
 let freshCoreInitialization = false;
 let vaultUnlockState: VaultUnlockState | undefined;
 let bootWorkerControlGateway: ReturnType<typeof createDefaultWorkerControlGateway> | undefined;
@@ -282,6 +284,7 @@ const bootResult = await runBootPhases({
           freshInitialization: freshCoreInitialization,
         });
         applyMigrations(coreDb);
+        coreMigrationsComplete = true;
         restoreWorkspaceRetirementAdmission({ coreDb, workspaceMutationAdmission });
         restoreWorkspaceRecoveryAdmission(coreDb, workspaceMutationAdmission);
         await recoverRunningCapabilityCalls({ workspaceDb: coreDb });
@@ -302,7 +305,7 @@ const bootResult = await runBootPhases({
         sharedStore ??= new FsStore({ dataRoot });
         sharedStore.setWorkspaceMutationAdmission(workspaceMutationAdmission);
         const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
-        recordBootStartAudit({
+        await recordBootStartAudit({
           coreDb,
           layoutVersion: readDataRootLayoutMarker(dataRoot).layoutVersion,
           lockAcquisition: requireBootValue(dataRootLock, 'Data-root lock was not acquired.')
@@ -525,9 +528,9 @@ const bootResult = await runBootPhases({
 if (shutdownCompletion) await shutdownCompletion;
 bootReadiness = bootResult.readiness;
 
-if (coreDb) {
+if (coreDb && coreMigrationsComplete) {
   try {
-    recordBootAuditEvent({
+    await recordBootAuditEvent({
       coreDb,
       result: {
         ...bootResult,
@@ -939,6 +942,7 @@ function shutdown(signal: NodeJS.Signals): void {
     'scheduler.dispatch-retry.stop',
     'scheduler.attempt-maintenance.stop',
   ];
+  let listenerCloseFailed = false;
   shutdownCompletion = closeWithDeadline({
     close: (onClosed) => {
       void Promise.allSettled([maintenanceStopped, executionsStopped])
@@ -948,8 +952,28 @@ function shutdown(signal: NodeJS.Signals): void {
               console.error('Execution maintenance shutdown failed.', result.reason);
           return closeNanoCoreListeners();
         })
-        .then(() => shutdownControlStoreWorkerClient())
-        .then(onClosed)
+        .catch((error) => {
+          listenerCloseFailed = true;
+          console.error('Owned listener shutdown failed.', error);
+        })
+        .then(async () => {
+          vaultUnlockState?.lock();
+          await recordShutdownAudit(
+            signal,
+            [
+              ...stepsCompleted,
+              listenerCloseFailed ? 'shutdown.failed' : 'http-server.close',
+              'vault.lock',
+            ],
+            false
+          );
+          await shutdownControlStoreWorkerClient();
+        })
+        .then(() => {
+          if (listenerCloseFailed)
+            finishShutdown(signal, [...stepsCompleted, 'shutdown.failed'], false, 1);
+          else onClosed();
+        })
         .catch((error) => {
           console.error('Owned storage/listener shutdown failed.', error);
           finishShutdown(signal, [...stepsCompleted, 'shutdown.failed'], false, 1);
@@ -1130,8 +1154,11 @@ function finishShutdown(
   exitCode: number
 ): void {
   vaultUnlockState?.lock();
-  recordShutdownAudit(signal, [...stepsCompleted, 'vault.lock'], deadlineForcedExit);
-  // The audit covers completed steps; terminal database close cannot audit itself.
+  if (deadlineForcedExit)
+    console.warn(
+      `Shutdown ${signal} deadline reached after ${stepsCompleted.length} steps; pending Audit durability is unknown.`
+    );
+  // The acknowledged Audit covers completed steps; terminal database close cannot audit itself.
   const finalExitCode = closeProcessCoreDatabase() ? exitCode : 1;
   releaseDataRootLock();
   process.exit(finalExitCode);
@@ -1170,13 +1197,14 @@ function closeProcessCoreDatabase(): boolean {
  * @param stepsCompleted Ordered shutdown steps completed before lock release.
  * @param deadlineForcedExit Whether the shutdown deadline forced exit.
  */
-function recordShutdownAudit(
+async function recordShutdownAudit(
   signal: NodeJS.Signals,
   stepsCompleted: string[],
   deadlineForcedExit: boolean
-): void {
+): Promise<void> {
+  if (!coreMigrationsComplete) return;
   try {
-    recordShutdownAuditEvent({
+    await recordShutdownAuditEvent({
       coreDb: requireBootValue(coreDb, 'Core database was not initialized.'),
       bootId,
       reason: signal,
@@ -1197,15 +1225,15 @@ function recordShutdownAudit(
  *
  * @param input Boot start audit details.
  */
-function recordBootStartAudit(input: {
+async function recordBootStartAudit(input: {
   coreDb: CoreDb;
   layoutVersion: number;
   lockAcquisition: DataRootLock['acquisition'];
   migrationIds: string[];
   indexRebuildEvents: unknown[];
-}): void {
+}): Promise<void> {
   try {
-    recordBootStartAuditEvent({
+    await recordBootStartAuditEvent({
       coreDb: input.coreDb,
       bootId,
       layoutVersion: input.layoutVersion,
