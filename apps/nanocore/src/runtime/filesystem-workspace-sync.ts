@@ -21,6 +21,7 @@ import {
   WorkspaceChangeSetSchema,
 } from '@openkit/app-api-schemas';
 import { compareCodeUnits } from '@openkit/protocol';
+import { removePrivateTree } from '@openkit/storage';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
 import {
@@ -1007,7 +1008,7 @@ async function cleanupFilesystemRollbackPreparation(
     }
     const preparationRealPath = await realpath(preparationRoot);
     assertPathWithinRoot(stagingRoot, preparationRealPath);
-    await rm(preparationRealPath, { force: true, recursive: true });
+    await removePrivateTree(preparationRealPath);
   }
   await rm(ownerPath, { force: true });
 }
@@ -1140,7 +1141,7 @@ async function prepareFilesystemRollback(
     const cleanupErrors: unknown[] = [];
     if (preparationCreated) {
       try {
-        await rm(preparationRoot, { force: true, recursive: true });
+        await removePrivateTree(preparationRoot);
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
@@ -1955,7 +1956,7 @@ async function removeFilesystemReplacementRoot(
   }
   const rootRealPath = await realpath(input.rootPath);
   assertPathWithinRoot(input.boundaryRoot, rootRealPath);
-  await rm(rootRealPath, { force: true, recursive: true });
+  await removePrivateTree(rootRealPath);
 }
 
 /**
