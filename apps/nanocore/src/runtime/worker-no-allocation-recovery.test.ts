@@ -126,7 +126,8 @@ async function stoppedOriginalWorker() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   let store: FsStore = createTestStore({ dataRoot });
-  await seedDemoWorkspace(store);
+  // Recovery needs the original package and journal, not unrelated authored Demo Knowledge.
+  await seedDemoWorkspace(store, FIXTURE_LOCAL_USER_ID, []);
   let workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
   cleanup.push(async () => {
     await shutdownControlStoreWorkerClient();
