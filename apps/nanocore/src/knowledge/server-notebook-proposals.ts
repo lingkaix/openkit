@@ -149,9 +149,10 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
     proposal: rawProposal,
   } = readNotebookProposalCandidateMaterial(git, id, meta);
   const proposal = ProposalReader.parse(rawProposal);
+  if (proposal.baseRevision !== candidate.parentRevision)
+    throw new NotebookError('recovery_required');
   if (
     proposal.contentDigest !== digest(JSON.stringify(changes)) ||
-    proposal.baseRevision !== candidate.parentRevision ||
     JSON.stringify(proposal.producer) !== JSON.stringify(candidate.metadata.producer) ||
     candidate.metadata.authority.kind !== 'proposal' ||
     candidate.metadata.authority.proposalId !== id ||
