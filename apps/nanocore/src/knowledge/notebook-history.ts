@@ -149,10 +149,17 @@ export class AuthorizedHistory {
   diff(input: Selection, forRestore = false): Change[] {
     this.notebook.history({ revision: input.baseRevision, limit: 1 });
     this.notebook.history({ revision: input.fromRevision, limit: 1 });
-    const base = this.notebook.readContent(input.baseRevision);
-    const target = this.notebook.readContent(input.fromRevision);
+    const selectedPaths = input.pageIds?.map((id) => `${id}.md`);
+    // Ordinary selections need only entry presence here; this.read admits their exact bytes.
+    const ordinaryPages = selectedPaths?.every((path) => !path.startsWith('@sources/'));
+    const base = ordinaryPages
+      ? this.notebook.inspectRevision(input.baseRevision).entries
+      : this.notebook.readContent(input.baseRevision);
+    const target = ordinaryPages
+      ? this.notebook.inspectRevision(input.fromRevision).entries
+      : this.notebook.readContent(input.fromRevision);
     const paths =
-      input.pageIds?.map((id) => `${id}.md`) ??
+      selectedPaths ??
       [...new Set([...Object.keys(base), ...Object.keys(target)])]
         .filter((path) => base[path] !== target[path])
         .sort();
