@@ -156,8 +156,9 @@ it('applies only the exact reviewed complete schema report under its exclusive f
   expect(
     (reviewedReport.records as Array<{ status: string }>).every((row) => row.status === 'valid')
   ).toBe(true);
+  // This fixture has no post-review inventory change; both required snapshots are exact.
   const retainedReport = canonicalJsonText(
-    writeRetainedV1({ requiredFeatures: [], reviewedReport })
+    writeRetainedV1({ requiredFeatures: [], reviewedReport, actualReport: reviewedReport })
   );
   const reportDigest = `sha256:${sha256Hex(retainedReport)}`;
   const requestId = randomUUID();

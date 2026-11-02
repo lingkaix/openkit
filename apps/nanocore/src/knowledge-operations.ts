@@ -709,7 +709,8 @@ export function createKnowledgeOperationImplementations(
                   workspaceRoot,
                   previousSchemaText: selected.scopeSchemaText,
                   candidateSchemaText: input.schemaText,
-                  report,
+                  report: reviewed,
+                  actualReport: report,
                 });
                 owner.revalidate();
                 const nextHead = await prepareWorkspaceKnowledgeSelection({

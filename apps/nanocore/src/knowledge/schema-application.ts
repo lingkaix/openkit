@@ -16,32 +16,44 @@ import {
 import { verifyImmutableWinner } from '../storage/immutable-content-publish.js';
 import { NotebookError } from './notebook-error.js';
 
-/** Canonical dry-run evidence is retained independently of the original command receipt's expiry. */
-export function schemaReportBytes(report: PreviewKnowledgeSchemaResponse): string {
-  return canonicalJsonText(writeRetainedV1({ requiredFeatures: [], reviewedReport: report }));
+/** Retains exact reviewed and applied snapshots independently of the original receipt's expiry. */
+export function schemaReportBytes(
+  reviewedReport: PreviewKnowledgeSchemaResponse,
+  actualReport: PreviewKnowledgeSchemaResponse
+): string {
+  if (
+    reviewedReport.workspaceId !== actualReport.workspaceId ||
+    reviewedReport.baseSchemaDigest !== actualReport.baseSchemaDigest ||
+    reviewedReport.candidateSchemaDigest !== actualReport.candidateSchemaDigest
+  )
+    throw new NotebookError('conflict');
+  return canonicalJsonText(writeRetainedV1({ requiredFeatures: [], reviewedReport, actualReport }));
 }
 
-/** Public result facts are reconstructed from the exact reviewed report, never current schema projections. */
+/** Reconstructs the original applied result from its exact report pair, never current projections. */
 export function schemaApplicationResult(
-  report: PreviewKnowledgeSchemaResponse
+  reviewedReport: PreviewKnowledgeSchemaResponse,
+  actualReport: PreviewKnowledgeSchemaResponse
 ): ApplyKnowledgeSchemaResponse {
+  const reportDigest = `sha256:${sha256Hex(schemaReportBytes(reviewedReport, actualReport))}`;
   return {
-    workspaceId: report.workspaceId,
-    notebookRevision: report.notebookRevision,
-    baseSchemaDigest: report.baseSchemaDigest,
-    candidateSchemaDigest: report.candidateSchemaDigest,
-    reportDigest: `sha256:${sha256Hex(schemaReportBytes(report))}`,
+    workspaceId: actualReport.workspaceId,
+    notebookRevision: actualReport.notebookRevision,
+    baseSchemaDigest: actualReport.baseSchemaDigest,
+    candidateSchemaDigest: actualReport.candidateSchemaDigest,
+    reportDigest,
   };
 }
 
-/** Preserves both schema versions and the reviewed canonical report before the native SQL reference. */
+/** Preserves both schema versions and both exact report snapshots before the native SQL reference. */
 export async function prepareSchemaApplicationHistory(input: {
   readonly workspaceRoot: string;
   readonly previousSchemaText: string;
   readonly candidateSchemaText: string;
   readonly report: PreviewKnowledgeSchemaResponse;
+  readonly actualReport: PreviewKnowledgeSchemaResponse;
 }): Promise<ApplyKnowledgeSchemaResponse> {
-  const result = schemaApplicationResult(input.report);
+  const result = schemaApplicationResult(input.report, input.actualReport);
   if (
     `sha256:${sha256Hex(input.previousSchemaText)}` !== result.baseSchemaDigest ||
     `sha256:${sha256Hex(input.candidateSchemaText)}` !== result.candidateSchemaDigest
@@ -52,7 +64,7 @@ export async function prepareSchemaApplicationHistory(input: {
   for (const [digest, extension, text] of [
     [result.baseSchemaDigest, 'yaml', input.previousSchemaText],
     [result.candidateSchemaDigest, 'yaml', input.candidateSchemaText],
-    [result.reportDigest, 'json', schemaReportBytes(input.report)],
+    [result.reportDigest, 'json', schemaReportBytes(input.report, input.actualReport)],
   ]) {
     const bytes = Buffer.from(text!, 'utf8');
     if (bytes.toString('utf8') !== text) throw new NotebookError('invalid_request');
@@ -89,15 +101,21 @@ export function readSchemaApplicationHistory(
           !('requiredFeatures' in record) ||
           !Array.isArray(record.requiredFeatures) ||
           record.requiredFeatures.length ||
-          !('reviewedReport' in record)
+          !('reviewedReport' in record) ||
+          !('actualReport' in record)
         )
           throw new Error('Unsupported required schema report semantics.');
-        return PreviewKnowledgeSchemaResponseSchema.parse(record.reviewedReport);
+        return {
+          reviewedReport: PreviewKnowledgeSchemaResponseSchema.parse(record.reviewedReport),
+          actualReport: PreviewKnowledgeSchemaResponseSchema.parse(record.actualReport),
+        };
       }
     );
-    return { ...schemaApplicationResult(report), reportDigest };
-  } catch (error) {
-    if (error instanceof NotebookError) throw error;
+    return {
+      ...schemaApplicationResult(report.reviewedReport, report.actualReport),
+      reportDigest,
+    };
+  } catch {
     throw new NotebookError('recovery_required');
   }
 }
