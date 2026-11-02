@@ -2306,3 +2306,22 @@ export async function prepareFilesystemParent(
     await syncTreeDirectory(parentPath);
   }
 }
+
+/** @internal Removes the caller-selected retained snapshot generations and objects in their original acknowledgement order. */
+export function retireWorkspaceSnapshotBytes(
+  pool: string,
+  expired: readonly { readonly manifest: { readonly backupId: string } }[],
+  objects: string,
+  names: readonly string[],
+  keep: ReadonlySet<string>
+): void {
+  for (const entry of expired) {
+    const generation = join(pool, entry.manifest.backupId);
+    rmSync(join(generation, 'seal.json'));
+    syncCanonicalDirectory(generation);
+    rmSync(generation, { recursive: true });
+  }
+  if (expired.length) syncCanonicalDirectory(pool);
+  for (const name of names) if (!keep.has(`sha256:${name}`)) rmSync(join(objects, name));
+  syncCanonicalDirectory(objects);
+}

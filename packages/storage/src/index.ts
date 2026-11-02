@@ -45,6 +45,7 @@ export {
   removePrivateTreeSync,
   removeTelemetrySegment,
   resolvePortableDirectory,
+  retireWorkspaceSnapshotBytes,
   stagePrivateFile,
   syncCanonicalDirectory,
   syncCanonicalTree,

@@ -51,6 +51,7 @@ import {
   ensureCanonicalDirectory,
   publishCanonicalPath,
   publishDurableFile,
+  retireWorkspaceSnapshotBytes,
   syncCanonicalDirectory,
   syncCanonicalTree,
 } from '@openkit/storage';
@@ -1601,15 +1602,7 @@ async function retainWorkspaceSnapshots(input: WorkspaceCaptureWorkerInput): Pro
       ...protectedInventories,
     ].flatMap((inventory) => inventory.map((entry) => entry.sha256))
   );
-  for (const entry of expired) {
-    const generation = join(pool, entry.manifest.backupId);
-    rmSync(join(generation, 'seal.json'));
-    syncCanonicalDirectory(generation);
-    rmSync(generation, { recursive: true });
-  }
-  if (expired.length) syncCanonicalDirectory(pool);
-  for (const name of names) if (!keep.has(`sha256:${name}`)) rmSync(join(objects, name));
-  syncCanonicalDirectory(objects);
+  retireWorkspaceSnapshotBytes(pool, expired, objects, names, keep);
 }
 
 /** Runs the same capture owner on the private thread, delegating only current authority/admission to Main. */
