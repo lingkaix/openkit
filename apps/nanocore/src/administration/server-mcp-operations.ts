@@ -2,7 +2,11 @@ import type { SERVER_MCP_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas'
 import { digestMcpConfig, McpValidatedDeclarationSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { z } from 'zod';
-import { listServerAuditEvents, recordServerAuditEvent } from '../audit-events.js';
+import {
+  listServerAuditEvents,
+  prepareAuditEvent,
+  recordServerAuditEvent,
+} from '../audit-events.js';
 import {
   authorizeWorkspace,
   evaluateProductAuthorization,
@@ -35,22 +39,19 @@ import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
-import { isCurrentServerMcpMaterial, isServerMcpReference } from '../vault/server-mcp-authority.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { VAULT_SERVER_MCP_COMMANDS } from '../storage/vault-native-codecs.js';
 import {
-  createVaultGrant,
-  getVaultGrant,
-  listVaultGrants,
-  narrowVaultGrant,
-  revokeVaultGrant,
-  VaultGrantNarrowingError,
-} from '../vault/vault-grants.js';
+  isCurrentServerMcpMaterial,
+  isServerMcpGrant,
+  isServerMcpReference,
+} from '../vault/server-mcp-authority.js';
+import { recordVaultAuditEvent } from '../vault/vault-admin-audit-events.js';
+import { getVaultGrant, listVaultGrants, VaultGrantNarrowingError } from '../vault/vault-grants.js';
 import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
 import {
-  advanceActiveVaultReferenceVersion,
-  createVaultReferenceWithInsertEvidence,
   getVaultReference,
   listVaultReferences,
-  revokeVaultReference,
   type VaultReferenceRecord,
 } from '../vault/vault-references.js';
 import { previewMcpDiscovery } from './mcp-discovery-preview.js';
@@ -75,15 +76,7 @@ export function createServerMcpOperationImplementations(
   };
   const grant = (id: string) => {
     const value = getVaultGrant(coreDb!, id);
-    if (
-      !value ||
-      value.ownerScope !== 'server' ||
-      value.workspaceId !== null ||
-      value.userId !== null ||
-      value.lifetime !== 'server' ||
-      value.allowedInjectionPaths.length !== 1 ||
-      value.allowedInjectionPaths[0] !== 'gateway-only'
-    )
+    if (!isServerMcpGrant(value))
       throw new OperationError('vault_grant_not_found', 'Server MCP grant not found.', 404);
     reference(value.vaultReferenceId);
     return {
@@ -140,6 +133,7 @@ export function createServerMcpOperationImplementations(
       actorId: actor.userId,
       ...(workspaceId ? { workspaceId } : { coreId: 'server' }),
     };
+    const nativeVault = VAULT_SERVER_MCP_COMMANDS.some((value) => value === name);
     const marker = `mcp-command:${commandInputHash({ name, scope, requestId: input.requestId })}`;
     try {
       const result = await runIdempotentCommand({
@@ -152,7 +146,7 @@ export function createServerMcpOperationImplementations(
         responseKind: kind,
         responseId,
         replay: (record) => replay(record.response.id),
-        execute: async () => {
+        execute: async (receipt) => {
           if (!workspaceId)
             requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
           else if (
@@ -168,29 +162,46 @@ export function createServerMcpOperationImplementations(
               'A prior Server MCP effect requires inspection. Do not repeat it.',
               409
             );
-          recordServerAuditEvent({
+          const started = {
             coreDb: coreDb!,
-            actor: { kind: 'user', id: actor.userId },
+            actor: { kind: 'user' as const, id: actor.userId },
             workspaceId: workspaceId ?? null,
             requestId: input.requestId,
             action: name,
             resource: marker,
-            outcome: 'unknown',
+            outcome: 'unknown' as const,
             summary:
               'Server MCP command started; inspect the current resource if no receipt is available.',
-          });
+          };
+          if (nativeVault) {
+            await recordVaultAuditEvent(started);
+            requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
+          } else recordServerAuditEvent(started);
           const result = await execute();
-          recordServerAuditEvent({
+          const succeeded = {
             coreDb: coreDb!,
-            actor: { kind: 'user', id: actor.userId },
+            actor: { kind: 'user' as const, id: actor.userId },
             workspaceId: workspaceId ?? null,
             requestId: input.requestId,
             action: name,
             resource: `${kind}:${responseId(result)}`,
             ...(kind === 'vault_grant' ? { vaultGrantId: responseId(result) } : {}),
-            outcome: 'succeeded',
+            outcome: 'succeeded' as const,
             summary: 'Server MCP command completed.',
-          });
+          };
+          if (nativeVault) {
+            await recordVaultAuditEvent(succeeded);
+            const { responseKind, ...facts } = receipt;
+            await getControlStoreWorkerClient().vault(coreDb!, 'server-mcp-command-receipt', {
+              ...facts,
+              command: name as (typeof VAULT_SERVER_MCP_COMMANDS)[number],
+              scope: { actorId: actor.userId, coreId: 'server' },
+              response: {
+                kind: responseKind as 'vault_reference' | 'vault_grant',
+                id: responseId(result),
+              },
+            });
+          } else recordServerAuditEvent(succeeded);
           return result;
         },
       });
@@ -411,10 +422,10 @@ export function createServerMcpOperationImplementations(
         context,
         'vault.server-mcp-secret-create',
         'vault_reference',
-        () => {
+        async () => {
           const vault = backend();
           const referenceId = allocateEntityId('vault');
-          recordServerAuditEvent({
+          await recordVaultAuditEvent({
             coreDb: coreDb!,
             actor: { kind: 'user', id: publicOperationActor(context).userId },
             requestId: input.requestId,
@@ -424,6 +435,13 @@ export function createServerMcpOperationImplementations(
             summary:
               'Shared MCP material storage started; inspect this exact reference and backend inventory if no receipt is available.',
           });
+          requireAdministratorOperation(
+            coreDb!,
+            publicOperationActor(context),
+            'api.call',
+            undefined,
+            'mcp'
+          );
           const inventory = vault.store({
             referenceId,
             material: input.material,
@@ -435,7 +453,8 @@ export function createServerMcpOperationImplementations(
               'Server MCP credential requires inspection.',
               409
             );
-          const result = createVaultReferenceWithInsertEvidence(coreDb!, {
+          const result = await getControlStoreWorkerClient().vault(coreDb!, 'reference-create', {
+            serverMcp: { actor: publicOperationActor(context) },
             referenceId,
             ownerScope: 'server',
             secretKind: 'mcp-credential',
@@ -464,7 +483,8 @@ export function createServerMcpOperationImplementations(
           const { vault } = currentBackendReference(input.referenceId);
           const result = vault.rotate({ referenceId: input.referenceId, material: input.material });
           const updated = projectReference(
-            advanceActiveVaultReferenceVersion(coreDb!, {
+            await getControlStoreWorkerClient().vault(coreDb!, 'reference-advance', {
+              serverMcp: { actor: publicOperationActor(context) },
               referenceId: input.referenceId,
               currentVersion: result.currentVersion,
             })
@@ -484,7 +504,10 @@ export function createServerMcpOperationImplementations(
         async () => {
           reference(input.referenceId);
           // Metadata first fences future use even when backend revocation or session cleanup fails.
-          const result = revokeVaultReference(coreDb!, { referenceId: input.referenceId });
+          const result = await getControlStoreWorkerClient().vault(coreDb!, 'reference-revoke', {
+            referenceId: input.referenceId,
+            serverMcp: { actor: publicOperationActor(context) },
+          });
           const failures: unknown[] = [];
           try {
             backend().revoke({ referenceId: input.referenceId });
@@ -510,11 +533,12 @@ export function createServerMcpOperationImplementations(
         context,
         'vault.server-mcp-grant-create',
         'vault_grant',
-        () => {
-          currentBackendReference(input.referenceId);
+        async () => {
+          const { value: expectedReference } = currentBackendReference(input.referenceId);
           if (input.expiresAt && Date.parse(input.expiresAt) <= Date.now())
             throw new OperationError('invalid_request', 'Grant expiry must be in the future.', 400);
-          const created = createVaultGrant(coreDb!, {
+          const created = await getControlStoreWorkerClient().vault(coreDb!, 'grant-create', {
+            serverMcp: { actor: publicOperationActor(context), reference: expectedReference },
             grantId: allocateEntityId('grant'),
             vaultReferenceId: input.referenceId,
             ownerScope: 'server',
@@ -551,9 +575,10 @@ export function createServerMcpOperationImplementations(
         'vault_grant',
         async () => {
           grant(input.grantId);
-          const result = coreDb!.sqlite.transaction(() =>
-            revokeVaultGrant(coreDb!, { grantId: input.grantId })
-          )();
+          const result = await getControlStoreWorkerClient().vault(coreDb!, 'grant-revoke', {
+            grantId: input.grantId,
+            serverMcp: { actor: publicOperationActor(context) },
+          });
           await dependencies.closeServerMcpSessions?.();
           return grant(result.grantId);
         },
@@ -568,25 +593,30 @@ export function createServerMcpOperationImplementations(
         'vault_grant',
         async () => {
           grant(input.grantId);
-          const result = coreDb!.sqlite.transaction(() => {
-            const narrowed = narrowVaultGrant(coreDb!, {
-              grantId: input.grantId,
-              replacementGrantId: allocateEntityId('grant'),
-              constraints: input.constraints,
-            });
-            recordServerAuditEvent({
-              coreDb: coreDb!,
-              actor: { kind: 'user', id: publicOperationActor(context).userId },
-              requestId: input.requestId,
-              action: 'vault.server-mcp-grant-narrow',
-              outcome: 'succeeded',
-              resource: `vault-grant:${input.grantId}`,
-              vaultGrantId: narrowed.grant.grantId,
-              summary:
-                'Server MCP grant narrowed through replacement. Explicit binding update is required.',
-            });
-            return narrowed;
-          })();
+          const replacementGrantId = allocateEntityId('grant');
+          const result = await getControlStoreWorkerClient().vault(
+            coreDb!,
+            'server-mcp-grant-narrow',
+            {
+              serverMcp: { actor: publicOperationActor(context) },
+              grant: {
+                grantId: input.grantId,
+                replacementGrantId,
+                constraints: input.constraints,
+              },
+              audit: prepareAuditEvent({
+                workspaceId: null,
+                actor: { kind: 'user', id: publicOperationActor(context).userId },
+                requestId: input.requestId,
+                action: 'vault.server-mcp-grant-narrow',
+                outcome: 'succeeded',
+                resource: `vault-grant:${input.grantId}`,
+                vaultGrantId: replacementGrantId,
+                summary:
+                  'Server MCP grant narrowed through replacement. Explicit binding update is required.',
+              }),
+            }
+          );
           await dependencies.closeServerMcpSessions?.();
           return {
             revokedGrant: grant(result.revokedGrant.grantId),
@@ -670,6 +700,7 @@ function fail(error: unknown): never {
   throw new OperationError(
     'recovery_required',
     'Server MCP operation could not complete. Inspect current resources before another request.',
-    409
+    409,
+    { cause: error }
   );
 }

@@ -945,7 +945,7 @@ async function createImportFixture(prefix: string): Promise<ImportFixture> {
     }
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup({
         requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
       }),

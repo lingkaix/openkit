@@ -69,7 +69,7 @@ it('accepts the original Core final under a Workspace write lock without claimin
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const userId = ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
-    const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+    const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
       coreDb,
       suffix: 'final_handoff',
       triggerActor: { kind: 'user', id: userId },

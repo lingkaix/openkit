@@ -91,7 +91,7 @@ async function createWorkerControlFixture(
     opencode: '2.2.5',
     pi: '1.4.0',
   }[adapter];
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
     agentSetup,
     agentSessionId: testEntityId('as', `as_control_${suffix}`),
@@ -121,7 +121,7 @@ async function createWorkerControlFixture(
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
     try {
       // Production retains this exact launch package before any native observation is admitted.
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: turn.startedAt!,
         environmentPackage,
       });

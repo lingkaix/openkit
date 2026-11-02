@@ -349,7 +349,7 @@ describe('native Light App meaning discovery', () => {
       updatedAt: NOW,
     });
     await f.store.updateTurn(turn.id, { agentId, agentSessionId });
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId,
       agentSetup: createTestAgentSetup({ agentId }),

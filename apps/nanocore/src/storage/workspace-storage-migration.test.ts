@@ -521,7 +521,7 @@ describe('workspace storage migration', () => {
     let snapshotPath: string;
     try {
       applyScopedMigrations(workspaceDb);
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'unsupported-layout-aep',
         triggerActor: { kind: 'user', id: fixture.ownerUserId },
         workspaceInputIds: [],

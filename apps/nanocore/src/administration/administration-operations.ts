@@ -134,7 +134,10 @@ interface AdministrationDependencies {
   readonly store: FsStore;
   readonly runtimeConfigFiles: (actor: Actor) => RuntimeConfigFileService;
   readonly reloadRuntimeConfig: () => ReturnType<RuntimeConfigManager['reload']>;
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }
 

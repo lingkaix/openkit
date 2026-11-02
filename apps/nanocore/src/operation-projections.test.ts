@@ -464,7 +464,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     agentId: 'agent_codex_host',
     agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
   });
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
     agentSetup: createTestAgentSetup(),

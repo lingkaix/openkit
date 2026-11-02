@@ -102,7 +102,10 @@ export interface GoalCoordinatorOptions {
   readonly openWorkspace: (workspaceId: string) => WorkspaceDb;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly llmGatewayDispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   readonly workspaceMutationAdmission: WorkspaceMutationAdmission;

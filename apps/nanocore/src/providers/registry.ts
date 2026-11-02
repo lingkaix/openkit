@@ -62,7 +62,7 @@ export interface ProviderCredentialUseContext {
 export type ProviderCredentialResolver = (
   secretRef: string,
   context?: ProviderCredentialUseContext
-) => string | null;
+) => string | null | Promise<string | null>;
 
 /** Tests configured credential presence without resolving Vault material. */
 export type ProviderCredentialConfigured = (secretRef: string | undefined) => boolean;
@@ -120,10 +120,10 @@ export class ProviderRegistry {
    * @param credentialResolver Resolver used to check credential references.
    * @returns True when usable, false when credentials are missing, or null for unknown ids.
    */
-  public hasResolvableCredentials(
+  public async hasResolvableCredentials(
     id: string,
     credentialResolver: ProviderCredentialResolver = unresolvedProviderCredential
-  ): boolean | null {
+  ): Promise<boolean | null> {
     const provider = this.get(id);
 
     if (!provider) {
@@ -132,7 +132,7 @@ export class ProviderRegistry {
 
     return (
       !providerRequiresCredentials(provider) ||
-      Boolean(resolveProviderSecretRef(provider, credentialResolver))
+      Boolean(await resolveProviderSecretRef(provider, credentialResolver))
     );
   }
 
@@ -189,10 +189,10 @@ export function providerRequiresCredentials(profile: ProviderProfile): boolean {
  * @param credentialResolver Resolver used to check credential references.
  * @returns Resolved credential value when available, otherwise null.
  */
-export function resolveProviderSecretRef(
+export async function resolveProviderSecretRef(
   profile: ProviderProfile,
   credentialResolver: ProviderCredentialResolver = unresolvedProviderCredential
-): string | null {
+): Promise<string | null> {
   return profile.secretRef ? credentialResolver(profile.secretRef) : null;
 }
 

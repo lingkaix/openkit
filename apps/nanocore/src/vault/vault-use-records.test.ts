@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -26,7 +27,7 @@ function createDbs(): { coreDb: CoreDb; workspaceDb: WorkspaceDb } {
 }
 
 describe('vault use records', () => {
-  it('refuses a noncanonical or wrong-kind use identity before persistence', () => {
+  it('refuses a noncanonical or wrong-kind use identity before persistence', async () => {
     const { coreDb, workspaceDb } = createDbs();
     try {
       const input = {
@@ -43,7 +44,7 @@ describe('vault use records', () => {
         'vu_01890f3e-0000-4000-8000-000000000001',
         'vu_legacy',
       ]) {
-        expect(() => createVaultUseRecord(coreDb, { ...input, useId })).toThrow(
+        await expect(createVaultUseRecord(coreDb, { ...input, useId })).rejects.toThrow(
           'VaultUse identifiers are not canonical.'
         );
       }
@@ -51,18 +52,19 @@ describe('vault use records', () => {
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM vault_use_records').get()
       ).toEqual({ count: 0 });
       const useId = 'vu_01890f3e-0000-7000-8000-000000000001';
-      expect(createVaultUseRecord(coreDb, { ...input, useId }).useId).toBe(useId);
+      expect((await createVaultUseRecord(coreDb, { ...input, useId })).useId).toBe(useId);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('creates, reads, and lists non-secret server vault use records', () => {
+  it('creates, reads, and lists non-secret server vault use records', async () => {
     const { coreDb, workspaceDb } = createDbs();
 
     try {
-      const created = createVaultUseRecord(coreDb, {
+      const created = await createVaultUseRecord(coreDb, {
         agentSessionId: 'as_00000000-0000-7fee-81f4-cfcfc003f25f',
         auditEventId: 'aud_00000000-0000-70e2-abff-6e1084ebf069',
         backendKind: 'encrypted-file',
@@ -75,7 +77,7 @@ describe('vault use records', () => {
         useId: 'vu_00000000-0000-7de7-8524-24839a742ee9',
         vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       });
-      const duplicate = createVaultUseRecord(coreDb, {
+      const duplicate = await createVaultUseRecord(coreDb, {
         backendKind: 'encrypted-file',
         failureCode: 'vault-locked',
         outcome: 'failed',
@@ -104,16 +106,17 @@ describe('vault use records', () => {
       });
       expect(JSON.stringify(created)).not.toContain('ghp_');
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('records failed workspace vault use without requiring a vault reference row', () => {
+  it('records failed workspace vault use without requiring a vault reference row', async () => {
     const { coreDb, workspaceDb } = createDbs();
 
     try {
-      const created = createVaultUseRecord(workspaceDb, {
+      const created = await createVaultUseRecord(workspaceDb, {
         backendKind: 'encrypted-file',
         capabilityCallId: 'cap_00000000-0000-7289-8845-faf171b19b16',
         failureCode: 'reference-revoked',
@@ -143,16 +146,17 @@ describe('vault use records', () => {
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });
 
-  it('validates scope and resolution metadata', () => {
+  it('validates scope and resolution metadata', async () => {
     const { coreDb, workspaceDb } = createDbs();
 
     try {
-      expect(() =>
+      await expect(
         createVaultUseRecord(coreDb, {
           backendKind: 'encrypted-file',
           outcome: 'succeeded',
@@ -162,8 +166,8 @@ describe('vault use records', () => {
           useId: 'vu_00000000-0000-7167-952b-c6288927491d',
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         })
-      ).toThrow('Successful vault use records require materialVersion.');
-      expect(() =>
+      ).rejects.toThrow('Successful vault use records require materialVersion.');
+      await expect(
         createVaultUseRecord(coreDb, {
           backendKind: 'encrypted-file',
           failureCode: 'reference-revoked',
@@ -174,8 +178,8 @@ describe('vault use records', () => {
           useId: 'vu_00000000-0000-7e69-8e3b-cf542fb9d2ab',
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         })
-      ).toThrow('Plan-based vault use records require planId.');
-      expect(() =>
+      ).rejects.toThrow('Plan-based vault use records require planId.');
+      await expect(
         createVaultUseRecord(coreDb, {
           backendKind: 'encrypted-file',
           outcome: 'failed',
@@ -185,8 +189,8 @@ describe('vault use records', () => {
           useId: 'vu_00000000-0000-7ba1-af2a-7bea55b79952',
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         })
-      ).toThrow('Failed or denied vault use records require failureCode.');
-      expect(() =>
+      ).rejects.toThrow('Failed or denied vault use records require failureCode.');
+      await expect(
         createVaultUseRecord(workspaceDb, {
           backendKind: 'encrypted-file',
           outcome: 'failed',
@@ -196,8 +200,8 @@ describe('vault use records', () => {
           useId: 'vu_00000000-0000-7ad3-a9f6-beb198cf9090',
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         })
-      ).toThrow('Workspace-scoped vault use records require workspaceId.');
-      expect(() =>
+      ).rejects.toThrow('Workspace-scoped vault use records require workspaceId.');
+      await expect(
         createVaultUseRecord(coreDb, {
           backendKind: 'encrypted-file',
           outcome: 'failed',
@@ -208,8 +212,9 @@ describe('vault use records', () => {
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
-      ).toThrow('Server-scoped vault use records cannot include workspaceId.');
+      ).rejects.toThrow('Server-scoped vault use records cannot include workspaceId.');
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }

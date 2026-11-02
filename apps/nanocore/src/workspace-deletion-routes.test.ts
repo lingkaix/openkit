@@ -889,10 +889,10 @@ it.each([
       const suffix = 'deletion_idle_native';
       const thread = await store.createThread(workspace.id, 'Idle native resident');
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-      let environmentPackage: ReturnType<typeof recordTestAgentEnvironmentPackage>;
+      let environmentPackage: Awaited<ReturnType<typeof recordTestAgentEnvironmentPackage>>;
       try {
         applyScopedMigrations(workspaceDb);
-        environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+        environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
           coreDb,
           suffix,
           threadId: thread.id,

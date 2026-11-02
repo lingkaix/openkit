@@ -1,5 +1,4 @@
 import { createRequire } from 'node:module';
-
 import Database from 'better-sqlite3';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import {
@@ -8,6 +7,7 @@ import {
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import { CONTROL_WORKER_LIMITS } from './storage/control-store-worker-protocol.js';
+import { importWorkspaceVaultGrants } from './storage/test-support/vault-retained-fixtures.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
 
@@ -17,7 +17,6 @@ import fs, {
   chmodSync,
   existsSync,
   lstatSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -32,10 +31,8 @@ import { fileURLToPath } from 'node:url';
 import { format } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
-  ListHumanAttentionResponseSchema,
   operationToolName,
   StartTaskModeResponseSchema,
-  SubmitConversationResponseSchema,
   WorkspaceExportResponseSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -52,12 +49,9 @@ import {
   PolicyDocumentV1Schema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
-import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCoreClient } from '../../../packages/core-client/src/index.js';
-import { createDefaultWorkerControlGateway } from './app.js';
 import { listWorkspaceAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -121,20 +115,11 @@ import {
 } from './runtime/mcp-tool-schema-snapshots.js';
 import {
   createNanoHostHarnessRuntime,
-  dispatchNanoHostHarnessOperation,
   openNanoHostAgentSessionBinding,
   readNanoHostThreadAgentSessionBinding,
-  settleNanoHostHarnessOperation,
 } from './runtime/nanohost-harness.js';
-import {
-  allocateNanoHostRuntimeTargetConnectionGeneration,
-  upsertNanoHostRuntimeTarget,
-} from './runtime/nanohost-runtime-target.js';
-import {
-  createNanoHostSessionDispatch,
-  type NanoHostSessionDispatch,
-  type NanoHostSessionEffectRequest,
-} from './runtime/nanohost-session-dispatch.js';
+import { allocateNanoHostRuntimeTargetConnectionGeneration } from './runtime/nanohost-runtime-target.js';
+import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import {
   installPendingRequestAdmission,
@@ -144,11 +129,9 @@ import {
 import {
   executionCallIdForRequest,
   listThreadPendingRequests,
-  pendingRequestItemId,
   readPendingRequest,
 } from './runtime/pending-requests.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
-import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import {
@@ -159,19 +142,14 @@ import {
 import {
   createSchedulerAdmissionEntry,
   findSchedulerAdmissionForTurn,
-  listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { lightAppDbPath } from './storage/app-db.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
-import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
-import {
-  createAppWithLocalIdentity as createApp,
-  createLoopbackAppFetch,
-} from './test-support/app.js';
+import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { createDemoStore, createRetainedDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
@@ -181,19 +159,11 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from './test-support/native-environment.js';
-import {
-  createNativeTaskAdmissionFixture,
-  observeNativeTaskStartup,
-} from './test-support/native-task-admission.js';
+import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { openTestNativeWorkspace } from './test-support/store.js';
-import {
-  createVaultGrant,
-  importWorkspaceVaultGrants,
-  narrowVaultGrant,
-  revokeVaultGrant,
-} from './vault/vault-grants.js';
+import { createVaultGrant, narrowVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import {
@@ -281,7 +251,7 @@ describe('worker MCP routes', () => {
         },
       ],
     };
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: testEntityId('as', 'mcp-schema-usage'),
       agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
@@ -297,7 +267,7 @@ describe('worker MCP routes', () => {
     recordMcpWorkerLineage(coreDb, environmentPackage);
     const db = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(db, undefined, 'pre-knowledge');
-    recordAgentEnvironmentPackageSnapshot(db, {
+    await recordAgentEnvironmentPackageSnapshot(db, {
       environmentPackage,
       createdAt: '2026-11-01T00:00:00.000Z',
     });
@@ -502,7 +472,7 @@ describe('worker MCP routes', () => {
       metadata: { ownerScope: 'workspace', workspaceId },
       referenceId,
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: `encrypted-file://workspace/${referenceId}`,
       displayName: 'I16 fixture',
@@ -511,7 +481,7 @@ describe('worker MCP routes', () => {
       secretKind: 'http-bearer',
       workspaceId,
     });
-    const grant = createVaultGrant(coreDb, {
+    const grant = await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['gateway-only'],
       grantId: testEntityId('grant', 'i16_route'),
       lifetime: 'workspace',
@@ -546,7 +516,7 @@ describe('worker MCP routes', () => {
       ...catalog.servers[0]!,
       id: 'echo-approval',
     });
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId,
       agentSetup: createTestAgentSetup({ mcpIds: ['echo', 'echo-approval'] }),
@@ -1152,7 +1122,7 @@ describe('worker MCP routes', () => {
       agentId: 'agent_codex_host',
       status: 'running',
     });
-    const pkg = resolveAgentEnvironmentPackage({
+    const pkg = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: testEntityId('as', 'as_capture_wait'),
       agentSetup: createTestAgentSetup(),
@@ -1426,7 +1396,7 @@ describe('worker MCP routes', () => {
       agentId: 'agent_codex_host',
       agentSessionId: testEntityId('as', 'as_mcp_era'),
     });
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: testEntityId('as', 'as_mcp_era'),
       agentSetup: createTestAgentSetup(),
@@ -3623,7 +3593,7 @@ describe('worker MCP routes', () => {
       metadata: { ownerScope: 'workspace', workspaceId },
       referenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator:
         'encrypted-file://workspace/ws_00000000-0000-7000-8000-000000000001/vault/vault_00000000-0000-7ca0-a71c-0b929d838497',
@@ -3633,7 +3603,7 @@ describe('worker MCP routes', () => {
       secretKind: 'api-key',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const publicGrant = createVaultGrant(coreDb, {
+    const publicGrant = await createVaultGrant(coreDb, {
       grantId: testEntityId('grant', 'pending_echo'),
       vaultReferenceId: 'vault_00000000-0000-7ca0-a71c-0b929d838497',
       ownerScope: 'workspace',
@@ -3894,7 +3864,7 @@ describe('worker MCP routes', () => {
       store = new FsStore({ dataRoot });
       const dependencies = { coreDb, openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id) };
       installPendingRequestAdmission(store, dependencies);
-      if (change === 'revoke') revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
+      if (change === 'revoke') await revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
       const resolved = vi.spyOn(vaultUnlockState.backend(), 'resolve');
       if (change === 'credential-after-claim') {
         const callTool = originalCallTool;
@@ -4015,7 +3985,7 @@ describe('worker MCP routes', () => {
                     .catalogDigest
                 ).not.toBe(captured.catalogRevision);
               } else {
-                revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
+                await revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
               }
               expect(prepared?.mediation?.current()).toBe(true);
             }
@@ -4241,7 +4211,7 @@ describe('worker MCP routes', () => {
         server('near-limit'),
       ],
     };
-    let environmentPackage = resolveAgentEnvironmentPackage({
+    let environmentPackage = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: testEntityId('as', 'as_mcp_failures'),
       agentSetup: createTestAgentSetup({
@@ -4282,7 +4252,7 @@ describe('worker MCP routes', () => {
     const snapshotDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(snapshotDb, undefined, 'pre-knowledge');
     try {
-      recordAgentEnvironmentPackageSnapshot(snapshotDb, {
+      await recordAgentEnvironmentPackageSnapshot(snapshotDb, {
         createdAt: '2026-09-03T00:00:00.000Z',
         environmentPackage,
       });
@@ -4793,7 +4763,7 @@ describe('worker MCP routes', () => {
           kind: 'user',
         }
       );
-      environmentPackage = resolveAgentEnvironmentPackage({
+      environmentPackage = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: testEntityId('as', 'as_mcp_denied'),
         agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
@@ -4988,7 +4958,7 @@ describe('worker MCP routes', () => {
           agentSessionId: session.id,
         });
         expect(session).toMatchObject({ workspaceId, threadId: turn.threadId, status: 'idle' });
-        const environmentPackage = resolveAgentEnvironmentPackage({
+        const environmentPackage = await resolveAgentEnvironmentPackage({
           coreDb,
           agentSetup: createTestAgentSetup(),
           agentSessionId: session.id,
@@ -5001,7 +4971,7 @@ describe('worker MCP routes', () => {
           workspaceCwd: null,
           workspaceRoots: [],
         });
-        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           environmentPackage,
           createdAt: turn.startedAt!,
         });
@@ -5248,7 +5218,7 @@ describe('worker MCP routes', () => {
         agentId: session.agentId,
         agentSessionId: session.id,
       });
-      const environmentPackage = resolveAgentEnvironmentPackage({
+      const environmentPackage = await resolveAgentEnvironmentPackage({
         coreDb,
         agentSetup: createTestAgentSetup(),
         agentSessionId: session.id,
@@ -5261,7 +5231,7 @@ describe('worker MCP routes', () => {
         workspaceCwd: null,
         workspaceRoots: [],
       });
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         environmentPackage,
         createdAt: turn.startedAt!,
       });
@@ -5379,7 +5349,7 @@ describe('worker MCP routes', () => {
       metadata: { ownerScope: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       referenceId: 'vault_00000000-0000-7e35-8665-00e561f3dbc4',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://workspace/vault_00000000-0000-7e35-8665-00e561f3dbc4',
       displayName: 'HTTP MCP token',
@@ -5388,7 +5358,7 @@ describe('worker MCP routes', () => {
       secretKind: 'http-bearer',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const grant = createVaultGrant(coreDb, {
+    const grant = await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['gateway-only'],
       grantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
       lifetime: 'workspace',
@@ -5421,7 +5391,7 @@ describe('worker MCP routes', () => {
       ],
     };
     let activeCatalog = catalog;
-    let environmentPackage = resolveAgentEnvironmentPackage({
+    let environmentPackage = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: testEntityId('as', 'as_mcp_vault'),
       agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
@@ -5515,7 +5485,8 @@ describe('worker MCP routes', () => {
                 .flatMap((sink) => sink.mock.calls)
                 .map((args) => format(...args))
                 .join('\n');
-              expect(privateBytes).toContain('SQLITE_CONSTRAINT_TRIGGER');
+              expect(privateBytes).toContain('"errorClass":"ControlStoreWorkerError"');
+              expect(privateBytes).toContain('"code":"constraint"');
               for (const forbidden of [
                 privateCanary,
                 'credential-primary-message-canary',
@@ -5795,7 +5766,7 @@ describe('worker MCP routes', () => {
       const toolCallsBeforeRevoke = upstream.observed.filter((request) =>
         request.endsWith('|tools/call')
       ).length;
-      const replacement = narrowVaultGrant(coreDb, {
+      const replacement = await narrowVaultGrant(coreDb, {
         grantId: 'grant_00000000-0000-7018-b534-d496e34b4c6a',
         replacementGrantId: testEntityId('grant', 'grant_mcp_http_narrowed'),
         constraints: {
@@ -5807,7 +5778,7 @@ describe('worker MCP routes', () => {
         ...catalog,
         servers: [{ ...catalog.servers[0], timeoutMs: catalog.servers[0]!.timeoutMs + 1 }],
       };
-      environmentPackage = resolveAgentEnvironmentPackage({
+      environmentPackage = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: testEntityId('as', 'as_mcp_vault'),
         agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
@@ -5880,7 +5851,7 @@ describe('worker MCP routes', () => {
         'Use the explicitly rebound grant',
         turn.triggerActor
       );
-      environmentPackage = resolveAgentEnvironmentPackage({
+      environmentPackage = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: testEntityId('as', 'as_mcp_rebound'),
         agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
@@ -5901,30 +5872,34 @@ describe('worker MCP routes', () => {
         toolCallsBeforeRevoke + 1
       );
       if (presentation === 'raw' && issuance === 'target') {
-        // Vault Secret Injection:147 and DX:103 require current authority after hold ACK.
-        // Observe the real hold, then remove authority before its caller resumes.
+        // Vault Secret Injection:147 and DX:103 require current authority after native plan ACK.
+        // Observe the real acknowledgement, then remove authority before its caller resumes.
         const nativeWriter = getControlStoreWorkerClient();
-        const acquire = nativeWriter.pauseForDataRootBackup.bind(nativeWriter);
-        const databaseKey = `workspace:${workspaceDbPath(dataRoot, environmentPackage.scope.workspaceId)}`;
+        const write = nativeWriter.vault.bind(nativeWriter);
         let disabled: ReturnType<typeof disableCanonicalUser> | undefined;
-        const pause = vi
-          .spyOn(nativeWriter, 'pauseForDataRootBackup')
-          .mockImplementation(async (database) => {
-            const resume = await acquire(database);
-            try {
-              if (database === databaseKey && disabled === undefined) {
-                disabled = coreDb.sqlite
-                  .transaction(() =>
-                    disableCanonicalUser(coreDb, environmentPackage.scope.triggerActor.id)
-                  )
-                  .immediate();
-              }
-              return resume;
-            } catch (error) {
-              resume();
-              throw error;
-            }
-          });
+        const publication = vi.spyOn(nativeWriter, 'vault').mockImplementation((async (
+          db,
+          kind,
+          record,
+          beforeSubmit
+        ) => {
+          const result = await write(db, kind, record, beforeSubmit);
+          const plan = record as { grantId?: string; packageSnapshotId?: string };
+          if (
+            db === coreDb &&
+            kind === 'plan-create' &&
+            plan.grantId === replacement.grant.grantId &&
+            plan.packageSnapshotId === environmentPackage.snapshotId &&
+            disabled === undefined
+          ) {
+            disabled = coreDb.sqlite
+              .transaction(() =>
+                disableCanonicalUser(coreDb, environmentPackage.scope.triggerActor.id)
+              )
+              .immediate();
+          }
+          return result;
+        }) as typeof nativeWriter.vault);
         const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
         const upstreamBeforeHold = [...upstream.observed];
         try {
@@ -5936,7 +5911,7 @@ describe('worker MCP routes', () => {
           expect(upstream.observed).toEqual(upstreamBeforeHold);
         } finally {
           resolve.mockRestore();
-          pause.mockRestore();
+          publication.mockRestore();
         }
       }
     } finally {
@@ -6421,7 +6396,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
       },
     ],
   };
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: testEntityId('as', 'mcp-commit'),
     agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
@@ -6437,7 +6412,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
   recordMcpWorkerLineage(coreDb, environmentPackage);
   const db = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(db, undefined, 'pre-knowledge');
-  recordAgentEnvironmentPackageSnapshot(db, {
+  await recordAgentEnvironmentPackageSnapshot(db, {
     environmentPackage,
     createdAt: '2026-10-24T00:00:00.000Z',
   });

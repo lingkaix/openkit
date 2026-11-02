@@ -142,7 +142,7 @@ async function createRestorableWorkerControlFixture(
     }
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_00000000-0000-71b5-9df2-90c10d27f16c',
@@ -166,7 +166,7 @@ async function createRestorableWorkerControlFixture(
   const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
   try {
     if (options.recordSnapshot !== false) {
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-13T00:00:01.000Z',
         environmentPackage,
       });

@@ -51,9 +51,10 @@ import {
   preflightPendingRequest,
   readPendingRequest,
 } from '../runtime/pending-requests.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { isCurrentServerMcpMaterial } from './server-mcp-authority.js';
-import { recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
+import { prepareVaultAdminAudit, recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
 import { createVaultGrant, getVaultGrant } from './vault-grants.js';
 import { getVaultReference } from './vault-references.js';
 
@@ -932,36 +933,54 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             auditActor: { kind: 'user', id: actor.userId },
           });
           assertCurrentGrantAuthority();
-          coreAttempted = true;
-          coreDb!.sqlite.transaction(() => {
-            createVaultGrant(coreDb!, {
-              grantId,
-              vaultReferenceId: terms.referenceId,
-              ownerScope: terms.ownerScope,
-              workspaceId: terms.ownerScope === 'workspace' ? input.workspaceId : null,
-              lifetime: terms.lifetime,
-              allowedInjectionPaths: [terms.injectionPath],
-              targetAgentId: terms.targetAgentId ?? null,
-              targetAgentSessionId: terms.targetAgentSessionId ?? null,
-              targetCapabilityId: terms.targetCapabilityId ?? null,
-              expiresAt: terms.expiresAt ?? null,
-              subjectSummary: 'Reviewed credential-use request',
-              policyDecisionId,
-              approvalId: record.requestId,
-            });
-            recordVaultAdminAuditEvent({
-              coreDb: coreDb!,
-              actor,
-              action: 'vault.grant-issue',
-              outcome: 'succeeded',
-              backendKind: dependencies.vaultUnlockState!.backend().kind,
-              workspaceId: input.workspaceId,
-              resource: `approval:${record.requestId}`,
-              vaultGrantId: grantId,
-              requestId: record.requestId,
-              summary: 'Reviewed credential-use grant issued. Explicit binding is required.',
-            });
-          })();
+          const grant = {
+            grantId,
+            vaultReferenceId: terms.referenceId,
+            ownerScope: terms.ownerScope,
+            workspaceId: terms.ownerScope === 'workspace' ? input.workspaceId : null,
+            lifetime: terms.lifetime,
+            allowedInjectionPaths: [terms.injectionPath],
+            targetAgentId: terms.targetAgentId ?? null,
+            targetAgentSessionId: terms.targetAgentSessionId ?? null,
+            targetCapabilityId: terms.targetCapabilityId ?? null,
+            expiresAt: terms.expiresAt ?? null,
+            subjectSummary: 'Reviewed credential-use request',
+            policyDecisionId,
+            approvalId: record.requestId,
+          };
+          const evidence = prepareVaultAdminAudit({
+            actor,
+            action: 'vault.grant-issue',
+            outcome: 'succeeded',
+            backendKind: dependencies.vaultUnlockState!.backend().kind,
+            workspaceId: input.workspaceId,
+            resource: `approval:${record.requestId}`,
+            vaultGrantId: grantId,
+            requestId: record.requestId,
+            summary: 'Reviewed credential-use grant issued. Explicit binding is required.',
+          });
+          const intent = IntentSchema.parse(record.governedIntent);
+          const reference = getVaultReference(coreDb!, terms.referenceId);
+          if (!reference) throw new Error('Current Vault reference is unavailable.');
+          await getControlStoreWorkerClient().vault(
+            coreDb!,
+            'reviewed-grant-issue',
+            {
+              grant,
+              ...evidence,
+              authority: {
+                workspaceId: input.workspaceId,
+                issuer: actor,
+                decider: record.decidingActorContext!,
+                requester: intent.origin,
+                reference,
+              },
+            },
+            () => {
+              assertCurrentGrantAuthority();
+              coreAttempted = true;
+            }
+          );
         } catch {
           const current = requireUsableRecord(
             store!,

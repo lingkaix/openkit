@@ -2740,7 +2740,7 @@ describe('OpenAI-compatible agent gateway', () => {
         metadata: { ownerScope: 'server' },
         referenceId: 'vault_00000000-0000-74a5-95fb-e62d2749a997',
       });
-      createVaultReference(coreDb, {
+      await createVaultReference(coreDb, {
         referenceId: 'vault_00000000-0000-74a5-95fb-e62d2749a997',
         ownerScope: 'server',
         displayName: 'Test key',
@@ -2845,7 +2845,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
     try {
       applyMigrations(coreDb);
-      createVaultReference(coreDb, {
+      await createVaultReference(coreDb, {
         referenceId: 'vault_00000000-0000-79a9-ad82-3f4a5baeac82',
         ownerScope: 'server',
         displayName: 'Test key',
@@ -4281,14 +4281,14 @@ describe('API key member availability', () => {
     });
     const referenceId = testEntityId('vault', 'availability_key');
     if (kind === 'active-vault' || kind === 'revoked-vault') {
-      createVaultReference(coreDb, {
+      await createVaultReference(coreDb, {
         referenceId,
         ownerScope: 'server',
         displayName: 'Test key',
         secretKind: 'provider-api-key',
         backendKind: 'encrypted-file',
       });
-      if (kind === 'revoked-vault') revokeVaultReference(coreDb, { referenceId });
+      if (kind === 'revoked-vault') await revokeVaultReference(coreDb, { referenceId });
     }
     // The Vault stays locked: configuration presence must not read its material.
     const backend = vi.spyOn(vaultUnlockState, 'backend');

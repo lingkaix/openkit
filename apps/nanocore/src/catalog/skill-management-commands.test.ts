@@ -239,7 +239,7 @@ describe('native Skill management command evidence', () => {
       kind: 'user',
       id: f.userId,
     });
-    const snapshot = resolveAgentEnvironmentPackage({
+    const snapshot = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup({ skillIds: ['management-example'] }),
       agentSessionId: allocateEntityId('as'),
@@ -251,7 +251,7 @@ describe('native Skill management command evidence', () => {
       triggerActor: turn.triggerActor,
       workspaceRoots: [],
     });
-    recordAgentEnvironmentPackageSnapshot(f.workspaceDb, {
+    await recordAgentEnvironmentPackageSnapshot(f.workspaceDb, {
       environmentPackage: snapshot,
       createdAt: '2026-10-16T00:00:00.000Z',
     });

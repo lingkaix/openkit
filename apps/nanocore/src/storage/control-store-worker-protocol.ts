@@ -181,6 +181,13 @@ import {
   ThreadReadMembershipResultSchema,
 } from './thread-read-membership-codecs.js';
 import {
+  type ControlVaultInput,
+  ControlVaultInputSchema,
+  type ControlVaultResult,
+  ControlVaultResultSchema,
+  isControlVaultRefusal,
+} from './vault-native-codecs.js';
+import {
   ControlWorkObservationChunkInputSchema,
   type ControlWorkObservationCommandInput,
   ControlWorkObservationInputSchema,
@@ -236,7 +243,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 36;
+export const CONTROL_WORKER_VERSION = 37;
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z
@@ -442,6 +449,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'admin-recovery'; readonly input: ControlAdminRecoveryInput }
       | { readonly operation: 'better-auth'; readonly input: ControlBetterAuthInput }
+      | { readonly operation: 'vault'; readonly input: ControlVaultInput }
       | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
@@ -614,6 +622,7 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'better-auth'
     | 'nanohost-transport'
     | 'worker-storage-binding'
+    | 'vault'
     | 'thread-read-membership'
     | 'generative-presentation'
     | 'evaluation-candidate'
@@ -688,6 +697,7 @@ export type ControlWorkerReply = {
       readonly operation: 'nanohost-transport';
       readonly result: ControlNanoHostTransportResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'vault'; readonly result: ControlVaultResult }
   | { readonly status: 'ok'; readonly operation: 'admin-recovery'; readonly auditEventId: string }
   | {
       readonly status: 'ok';
@@ -958,6 +968,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       ((value.operation === 'item' || value.operation === 'event') &&
         value.code === 'conflict' &&
         value.status === 409) ||
+      (value.operation === 'vault' &&
+        isControlVaultRefusal(value.code, value.message, value.status)) ||
       (value.operation === 'nanohost-transport' &&
         isNanoHostTransportAdminRefusal(value.code, value.message, value.status)) ||
       (value.operation === 'better-auth' &&
@@ -1048,6 +1060,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return (
       reply.result === 'preserved' || reply.result === 'unavailable' || reply.result === 'moved-out'
     );
+  if (reply.operation === 'vault') return ControlVaultResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'nanohost-transport')
     return ControlNanoHostTransportResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'better-auth')
@@ -1498,6 +1511,19 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     } catch {
       return false;
     }
+  }
+  if (value.operation === 'vault') {
+    if (!exactFields(value, [...scoped, 'input'])) return false;
+    const parsed = ControlVaultInputSchema.safeParse(value.input);
+    if (!parsed.success) return false;
+    let boundedInput = value.input;
+    if (parsed.data.kind === 'receipt-create' && parsed.data.record.workerAuthority) {
+      // Session authority has no original aggregate cap (#613); the full request still counts
+      // against offered/pending bytes. Keep the original receipt's per-record bound unchanged.
+      const { workerAuthority: _workerAuthority, ...record } = parsed.data.record;
+      boundedInput = { kind: parsed.data.kind, record };
+    }
+    return Buffer.byteLength(JSON.stringify(boundedInput)) <= CONTROL_PRODUCT_LIMITS.payloadBytes;
   }
   if (value.operation === 'nanohost-transport')
     return (

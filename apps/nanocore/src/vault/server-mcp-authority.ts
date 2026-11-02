@@ -1,4 +1,5 @@
 import type { VaultBackend } from './vault-backend.js';
+import type { VaultGrantRecord } from './vault-grants.js';
 import type { VaultReferenceRecord } from './vault-references.js';
 
 /** Classifies the bounded shared-MCP family without admitting other Server credential lifecycles. */
@@ -39,5 +40,23 @@ export function isCurrentServerMcpMaterial(
     inventory.backendKind === reference.backendKind &&
     reference.backendKind === backend.kind &&
     reference.backendLocator === `${backend.kind}://server/vault/${reference.referenceId}`
+  );
+}
+
+/** Classifies the existing Server Gateway grant partition without strengthening revocation to active-only. */
+export function isServerMcpGrant(value: VaultGrantRecord | null): value is VaultGrantRecord & {
+  ownerScope: 'server';
+  workspaceId: null;
+  userId: null;
+  lifetime: 'server';
+} {
+  return (
+    value !== null &&
+    value.ownerScope === 'server' &&
+    value.workspaceId === null &&
+    value.userId === null &&
+    value.lifetime === 'server' &&
+    value.allowedInjectionPaths.length === 1 &&
+    value.allowedInjectionPaths[0] === 'gateway-only'
   );
 }

@@ -397,7 +397,7 @@ describe('live Provider readiness composition', () => {
       const version = f.manager.current().version;
       for (const [index, phase] of ['missing', 'restored', 'revoked'].entries()) {
         if (phase === 'restored')
-          createVaultReference(f.coreDb, {
+          await createVaultReference(f.coreDb, {
             referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
             ownerScope: 'server',
             displayName: 'Presence fixture',
@@ -405,7 +405,7 @@ describe('live Provider readiness composition', () => {
             backendKind: 'encrypted-file',
           });
         if (phase === 'revoked')
-          revokeVaultReference(f.coreDb, {
+          await revokeVaultReference(f.coreDb, {
             referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
           });
         const thread = await f.store.createThread(
@@ -467,7 +467,7 @@ describe('live Provider readiness composition', () => {
     try {
       for (const phase of ['missing', 'configured', 'revoked'] as const) {
         if (phase === 'configured')
-          createVaultReference(f.coreDb, {
+          await createVaultReference(f.coreDb, {
             referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
             ownerScope: 'server',
             displayName: 'Presence fixture',
@@ -475,7 +475,7 @@ describe('live Provider readiness composition', () => {
             backendKind: 'encrypted-file',
           });
         if (phase === 'revoked')
-          revokeVaultReference(f.coreDb, {
+          await revokeVaultReference(f.coreDb, {
             referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
           });
         f.resolver.mockClear();

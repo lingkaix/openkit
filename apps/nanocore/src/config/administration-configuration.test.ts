@@ -227,7 +227,7 @@ async function mcpPolicyFixture(observed = true) {
   const catalog = f.manager
     .current()
     .workspaceMcpServerCatalogs.find((entry) => entry.workspaceId === f.workspaceId)!.catalog;
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: allocateEntityId('as'),
     agentSetup: createTestAgentSetup({ mcpIds: ['issues'] }),

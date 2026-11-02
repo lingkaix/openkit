@@ -50,6 +50,7 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { importWorkspaceVaultGrants } from '../storage/test-support/vault-retained-fixtures.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -60,11 +61,7 @@ import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
-import {
-  createVaultGrant,
-  importWorkspaceVaultGrants,
-  revokeVaultGrant,
-} from '../vault/vault-grants.js';
+import { createVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
@@ -289,7 +286,7 @@ describe('agent environment package resolver', () => {
       ownerUserId: USER_TRIGGER_ACTOR.id,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       referenceId,
       ownerScope: 'server',
       displayName: 'Credential error fixture',
@@ -297,7 +294,7 @@ describe('agent environment package resolver', () => {
       backendKind: 'encrypted-file',
       backendLocator: 'synthetic-credential-reference',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       grantId,
       vaultReferenceId: referenceId,
       ownerScope: 'server',
@@ -309,7 +306,7 @@ describe('agent environment package resolver', () => {
         failure === 'disallowed-visibility' ? ['gateway-only'] : ['runtime-env'],
       now: () => '2026-07-16T00:00:00.000Z',
     });
-    if (failure === 'inactive-grant') revokeVaultGrant(coreDb, { grantId });
+    if (failure === 'inactive-grant') await revokeVaultGrant(coreDb, { grantId });
     if (failure === 'inactive-reference') {
       // Fault only reference state after owner creation to exercise the separate reference refusal.
       coreDb.sqlite
@@ -320,9 +317,9 @@ describe('agent environment package resolver', () => {
       const turn = await createTurnFixture('Reject unavailable credential declaration', coreDb);
       prepareCredentialAttemptFixture(coreDb, turn, agentSessionId);
       const declarationIds = [randomUUID(), randomUUID()];
-      const failures = declarationIds.map((id) => {
+      const captureFailure = async (id: string) => {
         try {
-          resolveAgentEnvironmentPackage({
+          await resolveAgentEnvironmentPackage({
             captureCoverage: { scope: 'server', value: 'off' },
             agentSetup: createTestSetup({
               credentialDeclarations: [
@@ -351,7 +348,9 @@ describe('agent environment package resolver', () => {
           return error;
         }
         return undefined;
-      });
+      };
+      const failures: unknown[] = [];
+      for (const id of declarationIds) failures.push(await captureFailure(id));
 
       // Worker Credential Access Declarations / Failure Semantics replaces free-text identifiers.
       for (const error of failures) {
@@ -368,13 +367,14 @@ describe('agent environment package resolver', () => {
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
   it('binds explicit encoded-slash authority into immutable package and session material identity', async () => {
     const turn = await createTurnFixture('Read packages');
-    const resolve = (allowEncodedSlash?: boolean) => {
+    const resolve = async (allowEncodedSlash?: boolean) => {
       const network = WorkerSandboxAccessSchema.parse({
         network: [
           {
@@ -389,7 +389,7 @@ describe('agent environment package resolver', () => {
           },
         ],
       }).network;
-      return resolveAgentEnvironmentPackage({
+      return await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ network }),
         agentSessionId: 'as_00000000-0000-7895-8bf8-bb6a8790a424',
@@ -400,10 +400,10 @@ describe('agent environment package resolver', () => {
         workspaceRoots: [],
       });
     };
-    const omitted = resolve();
+    const omitted = await resolve();
     const historicalBytes = JSON.stringify(omitted);
-    const strict = resolve(false);
-    const allowed = resolve(true);
+    const strict = await resolve(false);
+    const allowed = await resolve(true);
     const identity = (pkg: typeof omitted) =>
       (
         pkg.extensions.openkit as {
@@ -419,7 +419,7 @@ describe('agent environment package resolver', () => {
     expect(identity(allowed)).not.toBe(identity(strict));
     expect(identity(allowed)).not.toBe(identity(omitted));
     expect(JSON.stringify(omitted)).toBe(historicalBytes);
-    expect(JSON.stringify(resolve())).toBe(historicalBytes);
+    expect(JSON.stringify(await resolve())).toBe(historicalBytes);
     expect(JSON.stringify(AgentEnvironmentPackageSchema.parse(JSON.parse(historicalBytes)))).toBe(
       historicalBytes
     );
@@ -428,7 +428,7 @@ describe('agent environment package resolver', () => {
 
   it.each(['repo', 'turn'])('preserves authored root %s with unique output ids', async (id) => {
     const commit = 'a'.repeat(40);
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
       agentSessionId: 'as_00000000-0000-71a6-8411-162df1495423',
@@ -480,7 +480,7 @@ describe('agent environment package resolver', () => {
       'as_00000000-0000-7c9c-b4e7-e63935d82972',
       'as_00000000-0000-73ec-a8b5-63b6ea02f99c',
     ]) {
-      const resolved = resolveAgentEnvironmentPackage({
+      const resolved = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup(),
         agentSessionId,
@@ -530,12 +530,13 @@ describe('agent environment package resolver', () => {
         'Agent resources is not supported; leave resources empty or absent.'
       );
     }
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        ...input,
-        captureCoverage: { scope: 'server', value: 'off' },
-      })
-    ).toThrow(DeterministicAgentPreparationError);
+    await expect(
+      async () =>
+        await resolveAgentEnvironmentPackage({
+          ...input,
+          captureCoverage: { scope: 'server', value: 'off' },
+        })
+    ).rejects.toThrow(DeterministicAgentPreparationError);
   });
 
   it.each([
@@ -556,10 +557,12 @@ describe('agent environment package resolver', () => {
     };
     expect(resolveAgentEnvironmentPackageMetadata(input).resources).toEqual({});
     expect(
-      resolveAgentEnvironmentPackage({
-        ...input,
-        captureCoverage: { scope: 'server', value: 'off' },
-      }).resources
+      (
+        await resolveAgentEnvironmentPackage({
+          ...input,
+          captureCoverage: { scope: 'server', value: 'off' },
+        })
+      ).resources
     ).toEqual({});
     expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
@@ -599,10 +602,12 @@ describe('agent environment package resolver', () => {
     expect(preview.runtime.binaries).toContainEqual({ id: 'dsh', path: '/usr/local/bin/dsh' });
     expect(resolveAgentSessionCompatibilityKey(input)).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(
-      resolveAgentEnvironmentPackage({
-        ...input,
-        captureCoverage: { scope: 'server', value: 'off' },
-      }).runtime.binaries
+      (
+        await resolveAgentEnvironmentPackage({
+          ...input,
+          captureCoverage: { scope: 'server', value: 'off' },
+        })
+      ).runtime.binaries
     ).toEqual(manifest.runtime.binaries);
   });
 
@@ -635,7 +640,7 @@ describe('agent environment package resolver', () => {
       workspaceRoots: [],
     };
     const preview = resolveAgentEnvironmentPackageMetadata(input);
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       ...input,
       captureCoverage: { scope: 'server', value: 'off' },
     });
@@ -734,7 +739,10 @@ describe('agent environment package resolver', () => {
     for (const scope of ['server', 'workspace', 'task'] as const) {
       for (const value of ['off', 'on'] as const) {
         const captureCoverage = { scope, value };
-        const environmentPackage = resolveAgentEnvironmentPackage({ ...input, captureCoverage });
+        const environmentPackage = await resolveAgentEnvironmentPackage({
+          ...input,
+          captureCoverage,
+        });
         expect(environmentPackage.observability.captureCoverage).toEqual(captureCoverage);
         expect(
           (
@@ -786,14 +794,17 @@ describe('agent environment package resolver', () => {
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
-    expect(() =>
-      resolveAgentEnvironmentPackage(input as Parameters<typeof resolveAgentEnvironmentPackage>[0])
-    ).toThrow('expected object');
+    await expect(
+      async () =>
+        await resolveAgentEnvironmentPackage(
+          input as Parameters<typeof resolveAgentEnvironmentPackage>[0]
+        )
+    ).rejects.toThrow('expected object');
   });
 
   it('refuses retired repository MCP supply without a catalog binding', async () => {
     const resolve = async (mcpIds: string[]) =>
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ mcpIds }),
         agentSessionId: 'as_00000000-0000-753a-b10c-0ebcb84232ce',
@@ -825,16 +836,17 @@ describe('agent environment package resolver', () => {
       workspaceRoots: [],
     };
 
-    expect(() => resolveAgentEnvironmentPackage(common)).toThrow(
+    await expect(async () => await resolveAgentEnvironmentPackage(common)).rejects.toThrow(
       'Agent Environment Package resolution requires a container backend.'
     );
-    expect(() =>
-      resolveAgentEnvironmentPackage({ ...common, backend: { kind: 'host' } as never })
-    ).toThrow('Host Agent Environment Package backends are not supported.');
+    await expect(
+      async () =>
+        await resolveAgentEnvironmentPackage({ ...common, backend: { kind: 'host' } as never })
+    ).rejects.toThrow('Host Agent Environment Package backends are not supported.');
   });
 
   it('projects the exact trigger actor into V2 scope without legacy identity fields', async () => {
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
       agentSessionId: 'as_00000000-0000-7d98-86f8-9943227e2e8a',
@@ -901,7 +913,7 @@ describe('agent environment package resolver', () => {
     });
     expect(setupResult.diagnostics).toEqual([]);
     if (!setupResult.setup) throw new Error('Expected admitted model setup.');
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: setupResult.setup,
       agentSessionId: 'as_00000000-0000-754c-801a-b7e43f70d513',
@@ -984,7 +996,7 @@ describe('agent environment package resolver', () => {
     });
     expect(setupResult.diagnostics).toEqual([]);
     if (!setupResult.setup) throw new Error('Expected admitted model setup.');
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: setupResult.setup,
       agentSessionId: 'as_00000000-0000-754c-801a-b7e43f70d513',
@@ -1049,7 +1061,7 @@ describe('agent environment package resolver', () => {
     }
 
     const resolved = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: setupResult.setup,
         agentSessionId: 'as_00000000-0000-79e4-bdc8-22e0bffb506f',
@@ -1097,25 +1109,26 @@ describe('agent environment package resolver', () => {
 
   it('rejects retired remote Gateway topology inputs', async () => {
     const turn = await createTurnFixture('Run remotely');
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSetup: createTestSetup(),
-        agentSessionId: 'as_00000000-0000-7581-a639-c25303fc0e23',
-        backend: {
-          gatewayUrl: 'https://gateway.example.test',
-          kind: 'openshell',
-          placement: 'remote',
-          workerControlBaseUrl: 'https://nanocore.example.test/api/worker-control',
-        } as never,
-        createdAt: '2026-07-18T00:00:00.000Z',
-        requestId: 'req_remote_1',
-        turn,
-        triggerActor: USER_TRIGGER_ACTOR,
-        workspaceCwd: '/workspace/repo',
-        workspaceRoots: [],
-      })
-    ).toThrow();
+    await expect(
+      async () =>
+        await resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSetup: createTestSetup(),
+          agentSessionId: 'as_00000000-0000-7581-a639-c25303fc0e23',
+          backend: {
+            gatewayUrl: 'https://gateway.example.test',
+            kind: 'openshell',
+            placement: 'remote',
+            workerControlBaseUrl: 'https://nanocore.example.test/api/worker-control',
+          } as never,
+          createdAt: '2026-07-18T00:00:00.000Z',
+          requestId: 'req_remote_1',
+          turn,
+          triggerActor: USER_TRIGGER_ACTOR,
+          workspaceCwd: '/workspace/repo',
+          workspaceRoots: [],
+        })
+    ).rejects.toThrow();
   });
 
   it('preserves authored development grants with trusted inference and rejects incomplete provenance', async () => {
@@ -1134,7 +1147,7 @@ describe('agent environment package resolver', () => {
       workspaceRoots: [],
     };
 
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       ...common,
       agentSetup: createTestSetup({
         network: [
@@ -1224,7 +1237,7 @@ describe('agent environment package resolver', () => {
       },
     };
     expect(
-      resolveAgentEnvironmentPackage({ ...common, agentSetup: buildSetup }).runtime.image
+      (await resolveAgentEnvironmentPackage({ ...common, agentSetup: buildSetup })).runtime.image
     ).toMatchObject({
       contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
       contextRef: 'build-context://empty/v1',
@@ -1234,31 +1247,34 @@ describe('agent environment package resolver', () => {
       outputLimitBytes: 21_474_836_480,
       timeLimitSeconds: 1800,
     });
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        ...common,
-        agentSetup: {
-          ...buildSetup,
-          manifest: {
-            ...buildSetup.manifest,
-            runtime: {
-              ...buildSetup.manifest.runtime,
-              image: {
-                ...buildSetup.manifest.runtime.image,
-                contextRef: 'workspace://build-context',
+    await expect(
+      async () =>
+        await resolveAgentEnvironmentPackage({
+          ...common,
+          agentSetup: {
+            ...buildSetup,
+            manifest: {
+              ...buildSetup.manifest,
+              runtime: {
+                ...buildSetup.manifest.runtime,
+                image: {
+                  ...buildSetup.manifest.runtime.image,
+                  contextRef: 'workspace://build-context',
+                },
               },
             },
           },
-        },
-      })
-    ).toThrow();
+        })
+    ).rejects.toThrow();
     expect(
-      resolveAgentEnvironmentPackage({
-        ...common,
-        agentSetup: createTestSetup({
-          requiredCapabilities: ['worker.runtime-provenance.v1'],
-        }),
-      }).backend.requiredCapabilities
+      (
+        await resolveAgentEnvironmentPackage({
+          ...common,
+          agentSetup: createTestSetup({
+            requiredCapabilities: ['worker.runtime-provenance.v1'],
+          }),
+        })
+      ).backend.requiredCapabilities
     ).toEqual(
       expect.arrayContaining(['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'])
     );
@@ -1289,7 +1305,7 @@ describe('agent environment package resolver', () => {
         ],
         workspaceId: workspaceIdForOwner(turn.owner),
       });
-      const resolved = resolveAgentEnvironmentPackage({
+      const resolved = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ skillIds: ['repo-guidelines'] }),
         agentSessionId: 'as_00000000-0000-7d9f-81e8-a2e097eb7865',
@@ -1372,7 +1388,7 @@ describe('agent environment package resolver', () => {
         ],
         workspaceId: workspaceIdForOwner(turn.owner),
       });
-      const resolved = resolveAgentEnvironmentPackage({
+      const resolved = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup({ skillIds: ['repo-guidelines'] }),
         agentSessionId: 'as_00000000-0000-7a07-b3be-8e7403e54e25',
@@ -1399,7 +1415,7 @@ describe('agent environment package resolver', () => {
     'deepseek',
   ])('resolves selected MCP supply for %s without exposing its server topology', async (adapter) => {
     const turn = await createTurnFixture('Use static supply');
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup({
         adapter,
@@ -1483,7 +1499,7 @@ describe('agent environment package resolver', () => {
   it('projects one prepared worker Context Package through the existing generated context slot', async () => {
     const turn = await createTurnFixture('Use the prepared Context Package');
     const contentDigest = `sha256:${'a'.repeat(64)}`;
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
       agentSessionId: 'as_00000000-0000-7407-8ae0-870e6bf1d899',
@@ -1528,27 +1544,28 @@ describe('agent environment package resolver', () => {
   });
 
   it('refuses an unsupported filesystem source without inspecting host Git', async () => {
-    await expect(async () =>
-      resolveAgentEnvironmentPackage({
-        captureCoverage: { scope: 'server', value: 'off' },
-        agentSetup: createTestSetup(),
-        agentSessionId: 'as_00000000-0000-7a14-9b20-132fd02f8c2a',
-        backend: { kind: 'openshell' },
-        createdAt: '2026-07-18T00:00:00.000Z',
-        requestId: 'req_filesystem',
-        turn: await createTurnFixture('Use an ordinary filesystem root'),
-        triggerActor: USER_TRIGGER_ACTOR,
-        workspaceCwd: null,
-        workspaceRoots: [
-          {
-            access: 'read-write',
-            id: 'files',
-            sourceKind: 'host-dir',
-            sourcePath: '/unreachable/host',
-            workerPath: '/workspace/openkit',
-          },
-        ],
-      })
+    await expect(
+      async () =>
+        await resolveAgentEnvironmentPackage({
+          captureCoverage: { scope: 'server', value: 'off' },
+          agentSetup: createTestSetup(),
+          agentSessionId: 'as_00000000-0000-7a14-9b20-132fd02f8c2a',
+          backend: { kind: 'openshell' },
+          createdAt: '2026-07-18T00:00:00.000Z',
+          requestId: 'req_filesystem',
+          turn: await createTurnFixture('Use an ordinary filesystem root'),
+          triggerActor: USER_TRIGGER_ACTOR,
+          workspaceCwd: null,
+          workspaceRoots: [
+            {
+              access: 'read-write',
+              id: 'files',
+              sourceKind: 'host-dir',
+              sourcePath: '/unreachable/host',
+              workerPath: '/workspace/openkit',
+            },
+          ],
+        })
     ).rejects.toThrow(
       'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.'
     );
@@ -1557,7 +1574,7 @@ describe('agent environment package resolver', () => {
   it('records catalog-resolved workspace lineage without inventing provider attachments', async () => {
     const baseCommit = 'a'.repeat(40);
     const turn = await createTurnFixture('Use a catalog source');
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
       agentSessionId: 'as_00000000-0000-7f9a-a2be-60960ced8d95',
@@ -1659,7 +1676,7 @@ describe('agent environment package resolver', () => {
       metadata: { ownerScope: 'server' },
       referenceId: testEntityId('vault', 'vault_anthropic_api_key'),
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7833-a8dd-41b91bb76bb1',
       displayName: 'Anthropic API key',
@@ -1668,7 +1685,7 @@ describe('agent environment package resolver', () => {
       referenceId: testEntityId('vault', 'vault_anthropic_api_key'),
       secretKind: 'provider-api-key',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: 'grant_00000000-0000-7000-ba44-0798272a184c',
       lifetime: 'agent-session',
@@ -1681,8 +1698,8 @@ describe('agent environment package resolver', () => {
     try {
       const turn = await createTurnFixture('Run Pi directly', coreDb, AUTOMATION_TRIGGER_ACTOR);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7cc7-8867-edb4d3f5bad9');
-      const resolve = () =>
-        resolveAgentEnvironmentPackage({
+      const resolve = async () =>
+        await resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             adapter: 'pi',
@@ -1714,7 +1731,7 @@ describe('agent environment package resolver', () => {
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
         });
-      const resolved = resolve();
+      const resolved = await resolve();
 
       expect(resolved.llm).toEqual({
         mode: 'gateway',
@@ -1755,7 +1772,7 @@ describe('agent environment package resolver', () => {
       coreDb.sqlite
         .prepare('UPDATE scheduler_execution_attempts SET input_ref = ? WHERE turn_id = ?')
         .run('aepsnap_wrong_package', turn.id);
-      expect(resolve).toThrow(TurnStartValidationError);
+      await expect(resolve).rejects.toThrow(TurnStartValidationError);
       expect(runtimeEnvCredentials).toHaveLength(1);
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
@@ -1803,11 +1820,12 @@ describe('agent environment package resolver', () => {
         attemptId: testEntityId('attempt', `lease_${turn.id}`),
         cause: 'authority-revoked',
       });
-      expect(resolve).toThrow(TurnStartValidationError);
+      await expect(resolve).rejects.toThrow(TurnStartValidationError);
       expect(runtimeEnvCredentials).toHaveLength(1);
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1839,7 +1857,7 @@ describe('agent environment package resolver', () => {
       metadata: { ownerScope: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       referenceId: testEntityId('vault', 'vault_workspace_github'),
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-781d-86a3-4dc252e03399',
       displayName: 'Workspace GitHub token',
@@ -1849,7 +1867,7 @@ describe('agent environment package resolver', () => {
       secretKind: 'provider-api-key',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const grant = createVaultGrant(coreDb, {
+    const grant = await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: 'grant_00000000-0000-7e7f-9490-8daf56dd548e',
       lifetime: 'agent-session',
@@ -1870,8 +1888,8 @@ describe('agent environment package resolver', () => {
     try {
       const turn = await createTurnFixture('Use the Workspace GitHub account', coreDb);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_01890f3e-0000-7000-8000-000000000061');
-      const resolve = () =>
-        resolveAgentEnvironmentPackage({
+      const resolve = async () =>
+        await resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             credentialDeclarations: [
@@ -1900,7 +1918,7 @@ describe('agent environment package resolver', () => {
         });
 
       if (issuance === 'imported-history') {
-        expect(resolve).toThrow();
+        await expect(resolve).rejects.toThrow();
         expect(backendResolver).not.toHaveBeenCalled();
         expect(runtimeEnvCredentials).toEqual([]);
         expect(listVaultInjectionPlans(coreDb)).toEqual([]);
@@ -1908,7 +1926,7 @@ describe('agent environment package resolver', () => {
         expect(listVaultUseRecords(coreDb)).toEqual([]);
         return;
       }
-      const resolved = resolve();
+      const resolved = await resolve();
       expect(backendResolver).toHaveBeenCalled();
       expect(resolved.credentials.declarations).toEqual([
         expect.objectContaining({
@@ -1919,6 +1937,7 @@ describe('agent environment package resolver', () => {
       expect(runtimeEnvCredentials).toEqual(['workspace_github_secret']);
       expect(JSON.stringify(resolved)).not.toContain('workspace_github_secret');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1993,9 +2012,9 @@ describe('agent environment package resolver', () => {
       }[failure];
       const turn = await createTurnFixture(`Reject ${failure} Worker grant`, coreDb);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7791-97f9-e9eb064522fc');
-      expect(
-        () =>
-          resolveAgentEnvironmentPackage({
+      await expect(
+        async () =>
+          await resolveAgentEnvironmentPackage({
             captureCoverage: { scope: 'server', value: 'off' },
             agentSetup: createTestSetup({
               credentialDeclarations: [
@@ -2023,13 +2042,14 @@ describe('agent environment package resolver', () => {
             workspaceRoots: [],
           })
         // Failure Semantics: retain backend disagreement refusal using its stable public code.
-      ).toThrow(expect.objectContaining({ code: expectedCode }));
+      ).rejects.toThrow(expect.objectContaining({ code: expectedCode }));
       expect(runtimeEnvCredentials).toEqual([]);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
       vi.restoreAllMocks();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2089,7 +2109,7 @@ describe('agent environment package resolver', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-73c9-a5a9-f1550bf98d52',
       displayName: 'Preview API key',
@@ -2098,7 +2118,7 @@ describe('agent environment package resolver', () => {
       referenceId: testEntityId('vault', 'vault_preview_api_key'),
       secretKind: 'provider-api-key',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: 'grant_00000000-0000-790b-98eb-af128df0b61f',
       lifetime: 'agent-session',
@@ -2171,8 +2191,8 @@ describe('agent environment package resolver', () => {
       ).toThrow(TurnStartValidationError);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
-      const keyForContextDigest = (character: string) => {
-        const environmentPackage = resolveAgentEnvironmentPackage({
+      const keyForContextDigest = async (character: string) => {
+        const environmentPackage = await resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSessionId: 'as_00000000-0000-767d-819d-fd4cbe8a0a2d',
           agentSetup: createTestSetup(),
@@ -2200,8 +2220,9 @@ describe('agent environment package resolver', () => {
           }
         ).sessionWorkspace.compatibilityKey.digest;
       };
-      expect(keyForContextDigest('a')).toBe(keyForContextDigest('b'));
+      expect(await keyForContextDigest('a')).toBe(await keyForContextDigest('b'));
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2221,7 +2242,7 @@ describe('agent environment package resolver', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-77f5-b221-5a369e1e1273',
       displayName: 'Stale authority credential',
@@ -2230,7 +2251,7 @@ describe('agent environment package resolver', () => {
       referenceId: testEntityId('vault', 'vault_stale_authority'),
       secretKind: 'provider-api-key',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: 'grant_00000000-0000-7e74-bd0a-0c158798ac75',
       lifetime: 'agent-session',
@@ -2246,7 +2267,7 @@ describe('agent environment package resolver', () => {
     try {
       let error: unknown;
       try {
-        resolveAgentEnvironmentPackage({
+        await resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
             credentialDeclarations: [
@@ -2299,6 +2320,7 @@ describe('agent environment package resolver', () => {
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2368,7 +2390,7 @@ describe('agent environment package resolver', () => {
       metadata: referenceScope,
       referenceId,
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: `encrypted-file://server/vault/${referenceId}`,
       displayName: `${name} scope credential`,
@@ -2377,7 +2399,7 @@ describe('agent environment package resolver', () => {
       referenceId,
       secretKind: 'provider-api-key',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId,
       lifetime: 'agent-session',
@@ -2393,7 +2415,7 @@ describe('agent environment package resolver', () => {
       metadata: { ownerScope: 'server' },
       referenceId: firstReferenceId,
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: `encrypted-file://server/vault/${firstReferenceId}`,
       displayName: 'Valid first credential',
@@ -2402,7 +2424,7 @@ describe('agent environment package resolver', () => {
       referenceId: firstReferenceId,
       secretKind: 'provider-api-key',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: firstGrantId,
       lifetime: 'agent-session',
@@ -2418,7 +2440,7 @@ describe('agent environment package resolver', () => {
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e83-a452-cc477903d837');
       await expect(
         async () =>
-          resolveAgentEnvironmentPackage({
+          await resolveAgentEnvironmentPackage({
             captureCoverage: { scope: 'server', value: 'off' },
             agentSetup: createTestSetup({
               credentialDeclarations: [
@@ -2477,6 +2499,7 @@ describe('agent environment package resolver', () => {
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
       resolve.mockRestore();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2504,7 +2527,7 @@ describe('agent environment package resolver', () => {
       metadata: { ownerScope: 'server' },
       referenceId: testEntityId('vault', 'vault_missing_sink'),
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-79a8-9c3f-b3f3bb9abdb5',
       displayName: 'Missing sink credential',
@@ -2513,7 +2536,7 @@ describe('agent environment package resolver', () => {
       referenceId: testEntityId('vault', 'vault_missing_sink'),
       secretKind: 'provider-api-key',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: 'grant_00000000-0000-7e74-bdd2-996eccd67587',
       lifetime: 'agent-session',
@@ -2526,9 +2549,9 @@ describe('agent environment package resolver', () => {
     try {
       const turn = await createTurnFixture('Reject missing sink', coreDb, AUTOMATION_TRIGGER_ACTOR);
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-7e7e-8a6b-7f6a3c1b3672');
-      expect(
-        () =>
-          resolveAgentEnvironmentPackage({
+      await expect(
+        async () =>
+          await resolveAgentEnvironmentPackage({
             captureCoverage: { scope: 'server', value: 'off' },
             agentSetup: createTestSetup({
               adapter: 'pi',
@@ -2570,11 +2593,12 @@ describe('agent environment package resolver', () => {
             workspaceRoots: [],
           })
         // Failure Semantics replaces private sink exception text with the stable failure category.
-      ).toThrow(expect.objectContaining({ code: 'credential_materialization_failed' }));
+      ).rejects.toThrow(expect.objectContaining({ code: 'credential_materialization_failed' }));
       expect(listVaultInjectionPlans(coreDb)).toHaveLength(1);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       expect(listVaultUseRecords(coreDb)).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2592,17 +2616,18 @@ describe('agent environment package resolver', () => {
       workspaceRoots: [],
     };
 
-    expect(() =>
-      resolveAgentEnvironmentPackage({
-        ...common,
-        agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
-        backend: {
-          inferenceBaseUrl: 'https://inference.local/v1',
-          kind: 'openshell',
-          workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
-        } as never,
-      })
-    ).toThrow();
+    await expect(
+      async () =>
+        await resolveAgentEnvironmentPackage({
+          ...common,
+          agentSetup: createTestSetup({ requiredCapabilities: ['backend-local-inference'] }),
+          backend: {
+            inferenceBaseUrl: 'https://inference.local/v1',
+            kind: 'openshell',
+            workerControlBaseUrl: 'https://nanocore.local/api/worker-control',
+          } as never,
+        })
+    ).rejects.toThrow();
   });
 
   it('preserves the manifest network grant exact binary scope', async () => {
@@ -2619,7 +2644,7 @@ describe('agent environment package resolver', () => {
       ],
       requiredCapabilities: ['backend-local-inference'],
     });
-    const resolved = resolveAgentEnvironmentPackage({
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: 'as_00000000-0000-7f6f-826c-6958e5c73c81',
       agentSetup: setup,
@@ -2985,17 +3010,17 @@ describe('public network AEP admission', () => {
       const preview = resolveAgentEnvironmentPackageMetadata(input);
       expect(preview.policy.network?.rules).toContainEqual({ ...network[0], action: 'allow' });
       prepareCredentialAttemptFixture(coreDb, turn, 'as_00000000-0000-77db-8827-1428c320f258');
-      const resolved = resolveAgentEnvironmentPackage(input);
+      const resolved = await resolveAgentEnvironmentPackage(input);
       const canonicalBytes = JSON.stringify(resolved);
       const uppercaseSetup = createTestSetup({
         network: [{ ...network[0]!, host: 'SEARCH.EXAMPLE.COM.' }],
       });
-      expect(() =>
+      await expect(
         resolveAgentEnvironmentPackage({ ...input, agentSetup: uppercaseSetup })
-      ).not.toThrow();
+      ).resolves.toBeDefined();
       expect(
-        resolveAgentEnvironmentPackage({ ...input, agentSetup: uppercaseSetup }).policy.network
-          ?.rules
+        (await resolveAgentEnvironmentPackage({ ...input, agentSetup: uppercaseSetup })).policy
+          .network?.rules
       ).toContainEqual({ ...network[0], action: 'allow' });
 
       const staleSetup = createTestSetup({
@@ -3013,12 +3038,14 @@ describe('public network AEP admission', () => {
           },
         ],
       });
-      expect(() => resolveAgentEnvironmentPackage({ ...input, agentSetup: staleSetup })).toThrow(
-        /overlap/i
-      );
+      await expect(
+        async () => await resolveAgentEnvironmentPackage({ ...input, agentSetup: staleSetup })
+      ).rejects.toThrow(/overlap/i);
 
       current.agentManifests = [staleSetup.manifest];
-      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/overlap/i);
+      await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+        /overlap/i
+      );
       current.agentManifests = [agentSetup.manifest];
 
       expect(resolved.policy.network?.rules).toContainEqual({ ...network[0], action: 'allow' });
@@ -3032,23 +3059,29 @@ describe('public network AEP admission', () => {
         })
       ).not.toBe(compatibilityKey);
 
-      expect(() =>
-        resolveAgentEnvironmentPackage({ ...input, readRuntimeConfig: undefined })
-      ).toThrow(/metadata is required/i);
+      await expect(
+        async () => await resolveAgentEnvironmentPackage({ ...input, readRuntimeConfig: undefined })
+      ).rejects.toThrow(/metadata is required/i);
 
       current.agentManifests = [];
-      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/current Agent authority/i);
+      await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+        /current Agent authority/i
+      );
       current.agentManifests = [agentSetup.manifest];
       const currentGateway = current.gatewayConfig;
       current.gatewayConfig = { ...currentGateway, logicalModels: [] };
-      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/current setup metadata/i);
+      await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+        /current setup metadata/i
+      );
       current.gatewayConfig = currentGateway;
       current.agentManifests = [
         createTestSetup({
           network: [{ ...network[0]!, rules: [{ method: 'POST', path: '/other' }] }],
         }).manifest,
       ];
-      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/removed or changed/i);
+      await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+        /removed or changed/i
+      );
       current.agentManifests = [agentSetup.manifest];
       for (const config of [
         { mode: 'local' as const, server: { publicBaseUrl: 'https://search.example.com' } },
@@ -3066,13 +3099,17 @@ describe('public network AEP admission', () => {
         },
       ]) {
         current.openKitConfig = config as PublicNetworkConfiguration['openKitConfig'];
-        expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/excluded/i);
+        await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+          /excluded/i
+        );
       }
       current.openKitConfig = { mode: 'local' };
 
       current.agentManifests = [createTestSetup().manifest];
 
-      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/Public network/i);
+      await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+        /Public network/i
+      );
       expect(() => resolveAgentEnvironmentPackageMetadata(input)).toThrow(/Public network/i);
       current.agentManifests = [agentSetup.manifest];
       current.providerRegistry = new ProviderRegistry([
@@ -3085,7 +3122,9 @@ describe('public network AEP admission', () => {
           models: ['openai/gpt-5.1'],
         },
       ]);
-      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/excluded/i);
+      await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+        /excluded/i
+      );
       current.providerRegistry = new ProviderRegistry([
         {
           id: 'agent-openrouter',
@@ -3099,7 +3138,9 @@ describe('public network AEP admission', () => {
       expect(resolveAgentSessionCompatibilityKey(input)).toBe(compatibilityKey);
       revokeOpenKitAccessTokenRecord(coreDb, 'token_public', new Date());
 
-      expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/authority/i);
+      await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+        /authority/i
+      );
       expect(JSON.stringify(resolved)).toBe(canonicalBytes);
     } finally {
       coreDb.sqlite.close();
@@ -3117,7 +3158,9 @@ describe('public network AEP admission', () => {
       triggerActor: USER_TRIGGER_ACTOR,
       workspaceRoots: [],
     };
-    expect(() => resolveAgentEnvironmentPackage(input)).toThrow(/Public network/i);
+    await expect(async () => await resolveAgentEnvironmentPackage(input)).rejects.toThrow(
+      /Public network/i
+    );
   });
 });
 
@@ -3154,7 +3197,7 @@ it.each([
     workspaceRoots: [],
     captureCoverage: { scope: 'server' as const, value: 'off' as const },
   };
-  const resolved = resolveAgentEnvironmentPackage(input);
+  const resolved = await resolveAgentEnvironmentPackage(input);
   const bytes = JSON.stringify(resolved);
   expect(JSON.parse(bytes).llm).toEqual(resolved.llm);
   if (effort === undefined) expect(resolved.llm).not.toHaveProperty('reasoningEffort');
@@ -3177,8 +3220,8 @@ it('RET-2 binds the default and later policy selection into separate AEPs, keepi
     openKitConfig: OpenKitConfigSchema.parse({ schemaVersion: 1 }),
   });
   const turn = await createTurnFixture('Select native log bound');
-  const resolve = (suffix: string) =>
-    resolveAgentEnvironmentPackage({
+  const resolve = async (suffix: string) =>
+    await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestSetup(),
       agentSessionId: testEntityId('as', `ret2-${suffix}`),
@@ -3188,7 +3231,7 @@ it('RET-2 binds the default and later policy selection into separate AEPs, keepi
       workspaceRoots: [],
       readRuntimeConfig: () => config,
     });
-  const first = resolve('first');
+  const first = await resolve('first');
   expect(first.observability.evidence?.nativeLogMaxBytes).toBe(16_777_216);
   const firstBytes = JSON.stringify(first);
   config = createInMemoryRuntimeConfigSnapshot({
@@ -3198,7 +3241,7 @@ it('RET-2 binds the default and later policy selection into separate AEPs, keepi
       policy: { workDataCapture: { nativeLogMaxBytes: 97 } },
     }),
   });
-  const later = resolve('later');
+  const later = await resolve('later');
   expect(later.observability.evidence?.nativeLogMaxBytes).toBe(97);
   expect(later.observability.captureCoverage).toEqual({ scope: 'server', value: 'off' });
   expect(first.observability.captureCoverage).toEqual({ scope: 'server', value: 'off' });

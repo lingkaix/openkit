@@ -114,7 +114,7 @@ describe('turn workspace context', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const pkg = resolveAgentEnvironmentPackage({
+    const pkg = await resolveAgentEnvironmentPackage({
       agentSetup,
       agentSessionId: 'as_00000000-0000-7c67-b2b1-57b016d05568',
       triggerActor: turn.triggerActor,
@@ -170,7 +170,7 @@ describe('turn workspace context', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       agentSetup: { ...agentSetup, manifest },
       agentSessionId: 'as_00000000-0000-7dc7-b48e-63a78132fa1d',
       triggerActor: turn.triggerActor,

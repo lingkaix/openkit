@@ -111,7 +111,10 @@ async function fixture(
   credentialRequired = false,
   mediated?: boolean,
   sourceResult: 'require_approval' | 'require_escalation' = 'require_escalation',
-  createVault?: (coreDb: ReturnType<typeof openCoreDb>, dataRoot: string) => VaultBackend
+  createVault?: (
+    coreDb: ReturnType<typeof openCoreDb>,
+    dataRoot: string
+  ) => VaultBackend | Promise<VaultBackend>
 ) {
   const reviewByDefault = mediated === undefined;
   mediated ??= true;
@@ -120,7 +123,7 @@ async function fixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const vaultBackend = createVault?.(coreDb, dataRoot);
+  const vaultBackend = await createVault?.(coreDb, dataRoot);
   const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -169,7 +172,7 @@ async function fixture(
     null,
     { agentId: 'agent_demo' }
   );
-  const environmentPackage: AgentEnvironmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage: AgentEnvironmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: 'as_00000000-0000-7be5-8407-bc63f27c8ec0',
@@ -185,7 +188,7 @@ async function fixture(
   });
   if (createVault) {
     // Real credential preparation publishes VaultUse with the captured AgentSession lineage.
-    recordAgentEnvironmentPackageSnapshot(db, {
+    await recordAgentEnvironmentPackageSnapshot(db, {
       environmentPackage,
       createdAt: turn.startedAt,
     });
@@ -632,7 +635,7 @@ describe('captured pending MCP schema identity at grant', () => {
         outcomeRef: null,
       })
     ).not.toBeNull();
-    recordAgentEnvironmentPackageSnapshot(f.db, {
+    await recordAgentEnvironmentPackageSnapshot(f.db, {
       environmentPackage: f.environmentPackage,
       createdAt: new Date().toISOString(),
     });
@@ -974,13 +977,13 @@ describe('captured pending MCP schema identity at grant', () => {
   });
 
   it('forwards admitted credential grant provenance when executing an approved captured call', async () => {
-    let issuedGrant: ReturnType<typeof createVaultGrant> | undefined;
+    let issuedGrant: Awaited<ReturnType<typeof createVaultGrant>> | undefined;
     const f = await fixture(
       'tracking',
       true,
       undefined,
       'require_escalation',
-      (coreDb, dataRoot) => {
+      async (coreDb, dataRoot) => {
         const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
         const referenceId = allocateEntityId('vault');
         const backend = createEncryptedFileVaultBackend({
@@ -992,7 +995,7 @@ describe('captured pending MCP schema identity at grant', () => {
           material: 'ordinary synthetic approval fixture',
           metadata: { ownerScope: 'workspace', workspaceId },
         });
-        createVaultReference(coreDb, {
+        await createVaultReference(coreDb, {
           referenceId,
           ownerScope: 'workspace',
           workspaceId,
@@ -1000,7 +1003,7 @@ describe('captured pending MCP schema identity at grant', () => {
           secretKind: 'mcp-credential',
           backendKind: backend.kind,
         });
-        issuedGrant = createVaultGrant(coreDb, {
+        issuedGrant = await createVaultGrant(coreDb, {
           grantId: 'grant_00000000-0000-7278-b714-46e2d53cb316',
           vaultReferenceId: referenceId,
           ownerScope: 'workspace',

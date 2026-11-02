@@ -246,7 +246,7 @@ async function createWorkerControlRouteFixture(
     }
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       coreDb,
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup: createTestAgentSetup(),
@@ -320,12 +320,12 @@ async function createWorkerControlRouteFixture(
  * @param suffix Stable test id suffix.
  * @returns Sandbox binding ref registered on the lease.
  */
-function createDurableWorkerControlLease(
+async function createDurableWorkerControlLease(
   coreDb: CoreDb,
   environmentPackage: AgentEnvironmentPackage,
   lineage: WorkerControlLineage,
   suffix: string
-): string {
+): Promise<string> {
   const binding = `lease-binding:lease_${suffix}`;
 
   createSchedulerAdmissionEntry(coreDb, {
@@ -368,7 +368,7 @@ function createDurableWorkerControlLease(
 
   try {
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+    await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: environmentPackage.createdAt,
       environmentPackage,
     });
@@ -567,7 +567,7 @@ describe('worker control routes', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: LOCAL_USER_ID,
     });
-    const binding = createDurableWorkerControlLease(
+    const binding = await createDurableWorkerControlLease(
       coreDb,
       fixture.environmentPackage,
       fixture.lineage,
@@ -886,7 +886,7 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         fixture.environmentPackage,
         fixture.lineage,
@@ -1041,7 +1041,7 @@ describe('worker control routes', () => {
       }
     );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: testEntityId('as', 'session_durable_sequence'),
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -1073,7 +1073,7 @@ describe('worker control routes', () => {
         ownerUserId: LOCAL_USER_ID,
       });
 
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
         lineage,
@@ -1177,7 +1177,7 @@ describe('worker control routes', () => {
       }
     );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: testEntityId('as', 'session_durable_records'),
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -1209,7 +1209,7 @@ describe('worker control routes', () => {
         ownerUserId: LOCAL_USER_ID,
       });
 
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
         lineage,
@@ -1314,7 +1314,7 @@ describe('worker control routes', () => {
       workspaceId: lineage.workspaceId,
       ownerUserId: LOCAL_USER_ID,
     });
-    const binding = createDurableWorkerControlLease(
+    const binding = await createDurableWorkerControlLease(
       coreDb,
       environmentPackage,
       lineage,
@@ -1467,7 +1467,12 @@ describe('worker control routes', () => {
       workspaceId: lineage.workspaceId,
       ownerUserId: LOCAL_USER_ID,
     });
-    const binding = createDurableWorkerControlLease(coreDb, environmentPackage, lineage, operation);
+    const binding = await createDurableWorkerControlLease(
+      coreDb,
+      environmentPackage,
+      lineage,
+      operation
+    );
     let gateway = createDefaultWorkerControlGateway(coreDb);
     const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
     let app = createApp({
@@ -1845,7 +1850,7 @@ describe('worker control routes', () => {
       }
     );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: testEntityId('as', 'session_rejected_records'),
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -1877,7 +1882,7 @@ describe('worker control routes', () => {
         ownerUserId: LOCAL_USER_ID,
       });
 
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
         lineage,
@@ -2115,7 +2120,7 @@ describe('worker control routes', () => {
       }
     );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: testEntityId('as', 'session_default_binding'),
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -2569,7 +2574,7 @@ describe('worker control routes', () => {
       }
     );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: testEntityId('as', 'session_final_status'),
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -2600,7 +2605,7 @@ describe('worker control routes', () => {
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+    await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: environmentPackage.createdAt,
       environmentPackage,
     });
@@ -2917,7 +2922,7 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
         lineage,
@@ -3007,7 +3012,7 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
         lineage,
@@ -3166,7 +3171,7 @@ describe('worker control routes', () => {
         operationId: `fixture-submit:${String(testEntityId('attempt', `lease_${fixtureSuffix}`))}`,
       });
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: environmentPackage.createdAt,
         environmentPackage,
       });
@@ -3435,7 +3440,7 @@ describe('worker control routes', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ownerUserId: LOCAL_USER_ID,
       });
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
         lineage,
@@ -3622,7 +3627,7 @@ describe('worker control routes', () => {
       }
     );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: testEntityId('as', 'session_supply_refresh'),
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -3913,7 +3918,7 @@ describe('worker control routes', () => {
         workspaceId: fixture.lineage.workspaceId,
         ownerUserId: LOCAL_USER_ID,
       });
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         fixture.environmentPackage,
         fixture.lineage,
@@ -4021,7 +4026,7 @@ describe('worker control routes', () => {
         workspaceId: lineage.workspaceId,
         ownerUserId: LOCAL_USER_ID,
       });
-      const binding = createDurableWorkerControlLease(
+      const binding = await createDurableWorkerControlLease(
         coreDb,
         environmentPackage,
         lineage,
@@ -4456,7 +4461,7 @@ describe('worker control routes', () => {
       }
     );
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: testEntityId('as', 'session_rebuild'),
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -4597,7 +4602,7 @@ describe('worker control routes', () => {
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
       try {
         applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           createdAt: '2026-06-16T00:00:01.000Z',
           environmentPackage,
         });

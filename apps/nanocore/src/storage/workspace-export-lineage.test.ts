@@ -124,7 +124,7 @@ function retainInitialArtifact(workspaceRoot: string, value: unknown, actor: unk
 }
 
 /** Builds one export containing every auxiliary record family that refers to canonical history. */
-function createLineageExportInput(
+async function createLineageExportInput(
   missing?:
     | 'aep-item'
     | 'aep-session'
@@ -146,7 +146,7 @@ function createLineageExportInput(
     format: 'markdown',
     body: '# Portable',
   }
-): WriteWorkspaceExportTreeInput {
+): Promise<WriteWorkspaceExportTreeInput> {
   const agentSetup = createTestAgentSetup();
   const item = {
     id: source.itemId,
@@ -249,7 +249,7 @@ function createLineageExportInput(
     completedAt: timestamp,
     durationMs: 1,
   };
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: captureValue },
     agent: {
       id: 'agent_codex_host',
@@ -765,7 +765,7 @@ function createLineageExportInput(
  * @returns Complete export fixture covering the accepted work-resource lineage.
  * @throws Error when the structured worker request or package fixture cannot be built.
  */
-function createWorkResourceLineageExportInput(
+async function createWorkResourceLineageExportInput(
   followUp?: {
     artifactMediaType?: 'text/markdown' | 'text/plain' | 'application/json';
     decisionRequestId?: string;
@@ -776,9 +776,9 @@ function createWorkResourceLineageExportInput(
   includeKnowledgeOverview = false,
   artifactFormat: 'markdown' | 'text' = 'markdown',
   knowledgeExclusion?: 'current' | 'legacy'
-): WriteWorkspaceExportTreeInput {
+): Promise<WriteWorkspaceExportTreeInput> {
   const appliedContent = '# Portable\n';
-  const input = createLineageExportInput(undefined, 'off', {
+  const input = await createLineageExportInput(undefined, 'off', {
     format: artifactFormat,
     body: appliedContent,
   });
@@ -1653,8 +1653,8 @@ function createWorkResourceLineageExportInput(
 }
 
 describe('workspace auxiliary lineage export', () => {
-  it('exports annotated synchronization source rows in their record families', () => {
-    const input = createLineageExportInput();
+  it('exports annotated synchronization source rows in their record families', async () => {
+    const input = await createLineageExportInput();
     const base = { commit: 'abc000', contentDigest: null };
     input.workspaceInputSnapshots = [
       {
@@ -1781,8 +1781,8 @@ describe('workspace auxiliary lineage export', () => {
     }
   });
 
-  it('exports Turn observations and Item anchors without rewriting content identities', () => {
-    const input = createLineageExportInput();
+  it('exports Turn observations and Item anchors without rewriting content identities', async () => {
+    const input = await createLineageExportInput();
     const rows = [
       {
         v: 1,
@@ -1850,8 +1850,8 @@ describe('workspace auxiliary lineage export', () => {
     expect(verified.fileContents.get(path)).toBe(text);
   });
 
-  it('exports one exact child-origin with Gateway calls and no provenance index', () => {
-    const input = createLineageExportInput();
+  it('exports one exact child-origin with Gateway calls and no provenance index', async () => {
+    const input = await createLineageExportInput();
     const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
     const rootRef = `rto_${'a'.repeat(24)}`;
     const childRef = `rto_${'b'.repeat(24)}`;
@@ -1904,8 +1904,8 @@ describe('workspace auxiliary lineage export', () => {
     ).toBe(false);
   });
 
-  it('exports restricted observation bytes and their exact publication references', () => {
-    const input = createLineageExportInput(undefined, 'on');
+  it('exports restricted observation bytes and their exact publication references', async () => {
+    const input = await createLineageExportInput(undefined, 'on');
     const bytes = Buffer.from('  original é\n');
     const digest = createHash('sha256').update(bytes).digest('hex');
     input.evidenceBundles = [
@@ -2022,8 +2022,8 @@ describe('workspace auxiliary lineage export', () => {
     ).toBe(`${JSON.stringify(initial)}\n${JSON.stringify(row)}\n`);
   });
 
-  it('exports accepted Knowledge Page Context Package references with the source digest', () => {
-    const input = createWorkResourceLineageExportInput();
+  it('exports accepted Knowledge Page Context Package references with the source digest', async () => {
+    const input = await createWorkResourceLineageExportInput();
     const sourceTraceText = [...input.portableFileState!.workerContextPackageFiles.entries()].find(
       ([path]) => path.endsWith('/context-package.json')
     )?.[1];
@@ -2081,8 +2081,8 @@ describe('workspace auxiliary lineage export', () => {
     ).toContain(sourceTrace.contextPackageDigest);
   });
 
-  it('exports populated portable runtime and MCP descriptions and verifies the annotated inventory', () => {
-    const input = createWorkResourceLineageExportInput();
+  it('exports populated portable runtime and MCP descriptions and verifies the annotated inventory', async () => {
+    const input = await createWorkResourceLineageExportInput();
     const tools = [{ name: 'inspect', inputSchema: { type: 'object', properties: {} } }];
     const sourceExport = writeWorkspaceExportTree({
       ...input,
@@ -2258,13 +2258,13 @@ describe('workspace auxiliary lineage export', () => {
   it.each([
     false,
     true,
-  ])('round trips source references and exact delivered previews with representation metadata=%s', (retainRepresentation) => {
+  ])('round trips source references and exact delivered previews with representation metadata=%s', async (retainRepresentation) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-source-snapshot-portability-'));
     let fixtureParent: string | undefined;
     try {
       const sourceRoot = join(root, 'source');
       mkdirSync(sourceRoot);
-      const input = createWorkResourceLineageExportInput(
+      const input = await createWorkResourceLineageExportInput(
         undefined,
         sourceRoot,
         retainRepresentation
@@ -2289,10 +2289,10 @@ describe('workspace auxiliary lineage export', () => {
     }
   });
 
-  it('exports Knowledge exclusion revisions against the source Notebook and preserves historical absence', () => {
+  it('exports Knowledge exclusion revisions against the source Notebook and preserves historical absence', async () => {
     // Current exclusions carry the source Notebook revision. Legacy exclusions omit it.
     for (const version of ['legacy', 'current'] as const) {
-      const input = createWorkResourceLineageExportInput(
+      const input = await createWorkResourceLineageExportInput(
         undefined,
         undefined,
         false,
@@ -2325,9 +2325,15 @@ describe('workspace auxiliary lineage export', () => {
     }
   });
 
-  it('exports an S39 selection pinned to the current Notebook commit and its Workspace overview', () => {
+  it('exports an S39 selection pinned to the current Notebook commit and its Workspace overview', async () => {
     // Current Knowledge selections carry the source Notebook revision in the export.
-    const input = createWorkResourceLineageExportInput(undefined, undefined, false, true, true);
+    const input = await createWorkResourceLineageExportInput(
+      undefined,
+      undefined,
+      false,
+      true,
+      true
+    );
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
     });
@@ -2375,8 +2381,8 @@ describe('workspace auxiliary lineage export', () => {
     );
   });
 
-  it('exports one complete Material, Review, and S39 history graph', () => {
-    const input = createWorkResourceLineageExportInput(undefined, undefined, false, true);
+  it('exports one complete Material, Review, and S39 history graph', async () => {
+    const input = await createWorkResourceLineageExportInput(undefined, undefined, false, true);
     const sourceKnowledgeContent = input.portableFileState!.nativeKnowledgePages.get(
       'knowledge/pages/knowledge_portable_source.md'
     )!;
@@ -2403,8 +2409,8 @@ describe('workspace auxiliary lineage export', () => {
     }
   });
 
-  it('exports exact binary runtime provenance alongside its product-safe index', () => {
-    const input = createLineageExportInput();
+  it('exports exact binary runtime provenance alongside its product-safe index', async () => {
+    const input = await createLineageExportInput();
     const packageSnapshotId = input.agentEnvironmentPackageSnapshots![0]!.snapshotId;
     const rawBundleId = 'evb_runtime_raw_source';
     const indexBundleId = 'evb_runtime_index_source';
@@ -2588,7 +2594,7 @@ describe('workspace auxiliary lineage export', () => {
         },
       ],
       runtimeProvenanceIndexes: new Map(),
-      capabilityCalls: createLineageExportInput().capabilityCalls,
+      capabilityCalls: (await createLineageExportInput()).capabilityCalls,
     });
     expect(failedRaw.binaryFileContents.get(rawPath)).toEqual(rawBytes);
   });
@@ -2604,8 +2610,8 @@ vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
 });
 
 describe('slice 1d portable call fields', () => {
-  it('preserves route extensions and present or absent system-prompt digests through archive export', () => {
-    const input = createLineageExportInput();
+  it('preserves route extensions and present or absent system-prompt digests through archive export', async () => {
+    const input = await createLineageExportInput();
     const digest = `sha256:${'b'.repeat(64)}`;
     const lineage = {
       logicalModelId: 'tier',

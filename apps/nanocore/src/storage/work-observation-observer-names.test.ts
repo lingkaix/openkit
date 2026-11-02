@@ -176,7 +176,7 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     updatedAt: f.turn.startedAt!,
   });
   // Admit the original pre-effect Worker graph; terminalization must retain its real journal obligations.
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb: f.coreDb,
     captureCoverage: { scope: 'server', value: 'on' },
     agentSessionId: session.id,
@@ -189,7 +189,7 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     triggerActor: f.turn.triggerActor,
     workspaceRoots: [],
   });
-  recordAgentEnvironmentPackageSnapshot(f.db, {
+  await recordAgentEnvironmentPackageSnapshot(f.db, {
     environmentPackage,
     createdAt: f.turn.startedAt!,
   });

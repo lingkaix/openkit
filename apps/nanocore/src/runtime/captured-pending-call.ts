@@ -489,7 +489,11 @@ export async function executeCapturedPendingCall(input: {
       workspaceId: record.workspaceId,
     });
     if (input.coreDb && input.prepared?.injections)
-      completeMcpVaultInjections(input.coreDb, input.executionCall, input.prepared.injections);
+      await completeMcpVaultInjections(
+        input.coreDb,
+        input.executionCall,
+        input.prepared.injections
+      );
     await finishMcpToolCall(
       input.executionCall,
       input.workspaceDb,

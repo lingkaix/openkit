@@ -66,7 +66,10 @@ export interface KnowledgeManagerAgentDependencies {
   readonly store: FsStore;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
 }

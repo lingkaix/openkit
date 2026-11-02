@@ -138,7 +138,7 @@ async function createCurrentWorkerSession(
  * @param input Session, Turn, and product-safe package fields.
  * @returns Recorded package snapshot id.
  */
-function recordWorkerPackage(
+async function recordWorkerPackage(
   workspaceDb: WorkspaceDb,
   input: {
     readonly agentId: string;
@@ -149,14 +149,14 @@ function recordWorkerPackage(
     readonly threadId: string;
     readonly turnId: string;
   }
-): string {
+): Promise<string> {
   const setup = createTestAgentSetup({
     agentId: input.agentId,
     displayName: input.displayName,
     logicalModelId: input.preferredLogicalModelId,
   });
   const environmentPackage = AgentEnvironmentPackageSchema.parse({
-    ...resolveAgentEnvironmentPackage({
+    ...(await resolveAgentEnvironmentPackage({
       agent: {
         capabilities: [],
         config: {
@@ -208,7 +208,7 @@ function recordWorkerPackage(
       turnInput: 'Run the Worker',
       workspaceCwd: '/secret/host/path',
       workspaceRoots: [],
-    }),
+    })),
     supply: {
       mcpServers: [
         {
@@ -226,7 +226,7 @@ function recordWorkerPackage(
   if (input.omitProcess) {
     delete environmentPackage.policy.process;
   }
-  recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+  await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     createdAt: timestamp,
     environmentPackage,
   });
@@ -399,7 +399,7 @@ describe('worker.list operation', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb);
     try {
-      const snapshotId = recordWorkerPackage(workspaceDb, {
+      const snapshotId = await recordWorkerPackage(workspaceDb, {
         agentId: 'agent_removed_codex',
         displayName: 'Retired Codex',
         omitProcess: true,
@@ -608,7 +608,7 @@ describe('worker.list operation', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb);
     try {
-      const snapshotId = recordWorkerPackage(workspaceDb, {
+      const snapshotId = await recordWorkerPackage(workspaceDb, {
         agentId: 'agent_codex_host',
         displayName: 'Codex',
         preferredLogicalModelId: 'openai/gpt-preferred',

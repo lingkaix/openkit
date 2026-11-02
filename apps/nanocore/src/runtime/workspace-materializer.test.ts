@@ -33,7 +33,7 @@ describe('workspace materializer records', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
       agentSessionId: testEntityId('as', 'session_1'),
       triggerActor: turn.triggerActor,
@@ -114,7 +114,7 @@ describe('workspace materializer records', () => {
       }
     );
     const packageRootDigest = `sha256:${'a'.repeat(64)}`;
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
       agentSessionId: testEntityId('as', 'session_context_1'),
       triggerActor: turn.triggerActor,
@@ -257,7 +257,7 @@ describe('workspace materializer records', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
       agentSessionId: testEntityId('as', 'session_source_1'),
       triggerActor: turn.triggerActor,

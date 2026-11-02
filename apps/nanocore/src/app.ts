@@ -156,7 +156,6 @@ import {
   resolveProviderProfileToLLMConfig,
 } from './providers/llm-config.js';
 import {
-  type ProviderCredentialResolver,
   type ProviderCredentialUseContext,
   type ProviderRegistry,
   resolveEnvSecretRef,
@@ -187,7 +186,6 @@ import type {
   InflightIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { resolveNanoHostAttemptTokenBinding } from './runtime/nanohost-attempt-records.js';
-import { recordNanoHostRuntimeTargetConnectionClose } from './runtime/nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
   type NanoHostSessionDispatch,
@@ -491,7 +489,10 @@ export interface CreateAppOptions {
   internalRoleProfiles?: InternalRoleProfilesConfig;
   providerRegistry?: ProviderRegistry;
   /** Resolver used to check provider profile credential references. */
-  providerCredentialResolver?: ProviderCredentialResolver;
+  providerCredentialResolver?: (
+    secretRef: string,
+    context?: ProviderCredentialUseContext
+  ) => string | null;
   providerDiagnostics?: ProviderDiagnosticsSnapshot;
   runtimeConfigManager?: RuntimeConfigManager;
   /** Provider-neutral subscription account manager override for tests and embedded deployments. */
@@ -686,7 +687,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           mode,
         })
       : null);
-  const providerCredentialResolverFallback: ProviderCredentialResolver = (secretRef, context) =>
+  const providerCredentialResolverFallback: NonNullable<
+    CreateAppOptions['providerCredentialResolver']
+  > = (secretRef, context) =>
     options.providerCredentialResolver?.(secretRef, context) ?? resolveEnvSecretRef(secretRef);
   const providerCredentialConfigured = createProviderCredentialConfigured({
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),

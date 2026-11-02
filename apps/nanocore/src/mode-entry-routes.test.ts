@@ -130,7 +130,7 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
         agentSessionId: context.agentSessionId,
         attemptId: context.attemptId,
       });
-      const environmentPackage = resolveAgentEnvironmentPackage({
+      const environmentPackage = await resolveAgentEnvironmentPackage({
         coreDb,
         agentSessionId: context.agentSessionId,
         agentSetup: context.agentSetup!,
@@ -151,7 +151,7 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
           : {}),
       });
-      recordAgentEnvironmentPackageSnapshot(db, {
+      await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage,
         createdAt: new Date().toISOString(),
       });

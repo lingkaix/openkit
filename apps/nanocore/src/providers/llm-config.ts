@@ -47,10 +47,10 @@ export interface ResolvedLLMProviderConfig {
  * @param credentialResolver Optional secret-ref resolver.
  * @returns Resolved provider config for Gateway dispatch.
  */
-export function resolveProviderProfileToLLMConfig(
+export async function resolveProviderProfileToLLMConfig(
   profile: ProviderProfile,
   credentialResolver?: ProviderCredentialResolver
-): ResolvedLLMProviderConfig {
+): Promise<ResolvedLLMProviderConfig> {
   if (!isProviderProfileDispatchable(profile)) {
     throw new Error(`LLM provider is not dispatchable: ${profile.id}`);
   }
@@ -63,7 +63,7 @@ export function resolveProviderProfileToLLMConfig(
     accountSlotId !== undefined &&
     profile.secretRef === undefined &&
     profile.baseUrl === undefined;
-  const apiKey = resolveProviderSecretRef(profile, credentialResolver);
+  const apiKey = await resolveProviderSecretRef(profile, credentialResolver);
 
   return {
     adapterId: isSubscriptionProfile ? subscriptionProviderId : readProviderAdapterId(profile),

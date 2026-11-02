@@ -2507,7 +2507,10 @@ export function createConversationService({
   /** Current API-key presence without resolving Vault material. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly startModeWorkerTurn: (input: {

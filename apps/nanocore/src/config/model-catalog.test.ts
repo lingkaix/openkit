@@ -326,7 +326,7 @@ describe('deployment model extension catalog', () => {
     const observed: unknown[] = [];
     const client = new PiAiGatewayClient();
     await client.createChatCompletion(
-      resolveProviderProfileToLLMConfig(catalogOnly),
+      await resolveProviderProfileToLLMConfig(catalogOnly),
       { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
       (usage) => observed.push(usage),
       {},
@@ -363,7 +363,7 @@ describe('deployment model extension catalog', () => {
       },
     ]);
     await client.createChatCompletion(
-      resolveProviderProfileToLLMConfig(overlay),
+      await resolveProviderProfileToLLMConfig(overlay),
       { model: nativeId, messages: [{ role: 'user', content: 'Hello' }] },
       () => undefined,
       {},

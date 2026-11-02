@@ -584,7 +584,7 @@ it('prepares an exact native Review decision after its queued Artifact submissio
       scope: { kind: 'server' },
       knowledgeBaseId: allocateEntityId('kb'),
     });
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       coreDb,
       agentSetup: createTestAgentSetup(),
       agentSessionId: allocateEntityId('as'),

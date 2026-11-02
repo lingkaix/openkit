@@ -120,7 +120,7 @@ async function submissionFixture(turnInputs: Buffer[] = []) {
         }
       : undefined
   );
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup(),
     agentSessionId: 'as_00000000-0000-75c5-83d7-1a74418e3a38',
     triggerActor: turn.triggerActor,

@@ -193,7 +193,7 @@ function transport(providerFactory: () => Provider, model: string) {
 }
 
 /** Admits the shipped custom-profile shape through its real schema/resolver and captures the stock body. */
-function customTransport(baseUrl = 'https://example.invalid/v1') {
+async function customTransport(baseUrl = 'https://example.invalid/v1') {
   const models = createModels();
   const profile = ProviderProfileSchema.parse({
     id: 'openai-compatible-custom',
@@ -210,7 +210,7 @@ function customTransport(baseUrl = 'https://example.invalid/v1') {
       },
     },
   });
-  const config = resolveProviderProfileToLLMConfig(profile, () => 'synthetic-secret');
+  const config = await resolveProviderProfileToLLMConfig(profile, () => 'synthetic-secret');
   const client = new PiAiGatewayClient({ models });
   const bytes: string[] = [];
   vi.stubGlobal('fetch', async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -274,7 +274,7 @@ async function send(
 describe('stock serialized canonical effort delivery', () => {
   for (const effort of ['none', 'high', undefined]) {
     it.each(paths)(`custom stock ${effort} control in $endpoint stream=$stream`, async (path) => {
-      const f = customTransport();
+      const f = await customTransport();
       // Final Chat consumes stock events to validate completed Tool calls before projection.
       const entry = vi.spyOn(
         f.models,
@@ -299,7 +299,7 @@ describe('stock serialized canonical effort delivery', () => {
   it.each(
     paths
   )('custom stock subscription none uses its attempt model in $endpoint stream=$stream', async (path) => {
-    const f = customTransport();
+    const f = await customTransport();
     const handoff = vi.fn();
     const stockAuth = vi.spyOn(f.models, 'getAuth');
     const calls: unknown[][] = [];

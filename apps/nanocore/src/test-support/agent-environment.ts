@@ -166,15 +166,15 @@ export interface RecordTestAgentEnvironmentPackageInput {
  * @param input Stable lineage suffix, expected workspace input ids, and optional Item lineage.
  * @returns Parsed package snapshot with supported remote Git inputs and exact requested ids.
  */
-export function recordTestAgentEnvironmentPackage(
+export async function recordTestAgentEnvironmentPackage(
   workspaceDb: WorkspaceDb,
   input: RecordTestAgentEnvironmentPackageInput
-): AgentEnvironmentPackage {
+): Promise<AgentEnvironmentPackage> {
   const sourceCommit = 'a'.repeat(40);
   const coreDb = input.coreDb ?? createTestNativeEnvironmentDb();
   admitTestNativeEnvironment(coreDb, createTestAgentSetup().manifest);
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       coreDb,
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup(),
@@ -235,7 +235,7 @@ export function recordTestAgentEnvironmentPackage(
       })
     : environmentPackage;
 
-  recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+  await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     createdAt: '2026-07-05T00:00:01.000Z',
     environmentPackage: scoped,
   });

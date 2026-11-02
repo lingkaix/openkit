@@ -98,7 +98,7 @@ describe('resource catalog operations', () => {
   ] as const)('stores, retains and replaces credential bindings through %s', async (surface) => {
     const f = await catalogFixture();
     try {
-      createVaultReference(f.coreDb, {
+      await createVaultReference(f.coreDb, {
         referenceId: 'vault_00000000-0000-796e-9f65-da34836d04d3',
         displayName: 'Synthetic MCP token',
         ownerScope: 'workspace',
@@ -107,7 +107,7 @@ describe('resource catalog operations', () => {
         backendKind: 'encrypted-file',
         backendLocator: 'synthetic',
       });
-      const grant = createVaultGrant(f.coreDb, {
+      const grant = await createVaultGrant(f.coreDb, {
         grantId: 'grant_00000000-0000-7fb6-8f22-bece61eb0941',
         vaultReferenceId: 'vault_00000000-0000-796e-9f65-da34836d04d3',
         ownerScope: 'workspace',

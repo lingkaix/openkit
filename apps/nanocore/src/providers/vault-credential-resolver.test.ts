@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { listServerAuditEvents } from '../audit-events.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -38,7 +39,7 @@ function createVaultProviderFixture() {
 }
 
 describe('vault provider credential resolver', () => {
-  it('does not fall back to env references by default', () => {
+  it('does not fall back to env references by default', async () => {
     const previousKey = process.env.OPENKIT_VAULT_RESOLVER_ENV_CANARY;
     process.env.OPENKIT_VAULT_RESOLVER_ENV_CANARY = 'sk-env-canary';
     const { coreDb, vaultUnlockState } = createVaultProviderFixture();
@@ -49,7 +50,7 @@ describe('vault provider credential resolver', () => {
         vaultBackend: () => vaultUnlockState.backend(),
       });
 
-      expect(resolver('env:OPENKIT_VAULT_RESOLVER_ENV_CANARY')).toBeNull();
+      expect(await resolver('env:OPENKIT_VAULT_RESOLVER_ENV_CANARY')).toBeNull();
       expect(listVaultUseRecords(coreDb)).toEqual([]);
     } finally {
       if (previousKey === undefined) {
@@ -57,11 +58,12 @@ describe('vault provider credential resolver', () => {
       } else {
         process.env.OPENKIT_VAULT_RESOLVER_ENV_CANARY = previousKey;
       }
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('resolves vault secret refs through the audited backend without storing material', () => {
+  it('resolves vault secret refs through the audited backend without storing material', async () => {
     const { coreDb, vaultUnlockState } = createVaultProviderFixture();
 
     try {
@@ -76,7 +78,7 @@ describe('vault provider credential resolver', () => {
         capabilityCallId: 'cap_00000000-0000-7000-8000-000000000001',
         consumerWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       } as const;
-      expect(resolver('vault://vault_00000000-0000-74ac-b50a-3150f74675d0', consumer)).toBe(
+      expect(await resolver('vault://vault_00000000-0000-74ac-b50a-3150f74675d0', consumer)).toBe(
         'sk-vault-provider'
       );
       expect(listServerAuditEvents(coreDb)).toEqual([
@@ -101,11 +103,12 @@ describe('vault provider credential resolver', () => {
       expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-provider');
       expect(JSON.stringify(listServerAuditEvents(coreDb))).not.toContain('sk-vault-provider');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('preserves locked vault failures for vault-backed provider refs', () => {
+  it('preserves locked vault failures for vault-backed provider refs', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-provider-locked-'));
     const coreDb = openCoreDb(dataRoot);
     const vaultUnlockState = createVaultUnlockState({
@@ -120,7 +123,7 @@ describe('vault provider credential resolver', () => {
         vaultBackend: () => vaultUnlockState.backend(),
       });
 
-      expect(() => resolver('vault://vault_00000000-0000-73c9-84d7-7a0377419111')).toThrow(
+      await expect(resolver('vault://vault_00000000-0000-73c9-84d7-7a0377419111')).rejects.toThrow(
         'vault-locked'
       );
       expect(listVaultUseRecords(coreDb)).toEqual([
@@ -132,6 +135,7 @@ describe('vault provider credential resolver', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

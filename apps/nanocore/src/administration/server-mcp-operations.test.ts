@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type OperationOutput, SERVER_MCP_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as auditEvents from '../audit-events.js';
 import { listServerAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -289,7 +288,7 @@ describe('Server MCP administration owner and recovery', () => {
       material: 'synthetic-provider-material',
       metadata: { ownerScope: 'server' },
     });
-    createVaultReference(f.coreDb, {
+    await createVaultReference(f.coreDb, {
       referenceId,
       ownerScope: 'server',
       secretKind: 'provider-api-key',
@@ -348,12 +347,12 @@ describe('Server MCP administration owner and recovery', () => {
     const grant = await f.call('vault.server-mcp-grant-create', {
       referenceId: reference.referenceId,
     });
-    const record = auditEvents.recordServerAuditEvent;
-    vi.spyOn(auditEvents, 'recordServerAuditEvent').mockImplementation((input) => {
-      if (input.action === 'vault.server-mcp-grant-narrow' && input.vaultGrantId)
-        throw new Error('Synthetic linked Audit failure.');
-      return record(input);
-    });
+    f.coreDb.sqlite.exec(`CREATE TRIGGER fail_server_mcp_linked_narrow_audit
+      BEFORE INSERT ON audit_events
+      FOR EACH ROW
+      WHEN NEW.action = 'vault.server-mcp-grant-narrow'
+        AND COALESCE(NEW.vault_grant_id, '') <> ''
+      BEGIN SELECT RAISE(ABORT, 'Synthetic linked Audit failure.'); END`);
     await expect(
       f.call('vault.server-mcp-grant-narrow', {
         grantId: grant.grantId,
@@ -430,7 +429,7 @@ describe('Server MCP administration owner and recovery', () => {
     });
     if (fault) {
       // Fault only after valid setup, between grant/plan updates and receipt completion.
-      f.coreDb.sqlite.exec(`CREATE TEMP TRIGGER fail_server_mcp_receipt_revocation
+      f.coreDb.sqlite.exec(`CREATE TRIGGER fail_server_mcp_receipt_revocation
           BEFORE UPDATE OF revocation_status ON vault_injection_receipts
           BEGIN SELECT RAISE(ABORT, 'Synthetic receipt revocation failure'); END`);
       await expect(
@@ -471,13 +470,18 @@ describe('Server MCP administration owner and recovery', () => {
     const f = fixture();
     const requestId = randomUUID();
     const material = 'synthetic-unknown-shared-mcp';
-    const write = vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(() => {
-      throw new Error('Synthetic receipt interruption.');
-    });
-    await expect(
-      f.call('vault.server-mcp-secret-create', { requestId, material })
-    ).rejects.toMatchObject({ status: 409, code: 'recovery_required' });
-    write.mockRestore();
+    // Fail the actual separate native receipt INSERT after the backend and Core stages commit.
+    f.coreDb.sqlite.exec(`CREATE TRIGGER fail_server_mcp_command_receipt
+      BEFORE INSERT ON idempotency_requests
+      WHEN NEW.command_name = 'vault.server-mcp-secret-create'
+      BEGIN SELECT RAISE(ABORT, 'Synthetic receipt interruption.'); END`);
+    try {
+      await expect(
+        f.call('vault.server-mcp-secret-create', { requestId, material })
+      ).rejects.toMatchObject({ status: 409, code: 'recovery_required' });
+    } finally {
+      f.coreDb.sqlite.exec('DROP TRIGGER fail_server_mcp_command_receipt');
+    }
     expect(f.backend.listReferences()).toHaveLength(1);
     expect((await f.call('vault.server-mcp-reference-list')).items).toHaveLength(1);
     await expect(

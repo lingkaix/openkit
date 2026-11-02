@@ -26,7 +26,10 @@ import { PolicyInterception } from '../policy/interception.js';
 import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { copyColdDataRoot } from '../storage/data-root-backup.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
@@ -111,7 +114,7 @@ async function fixture(
       ...(ownerScope === 'workspace' ? { workspaceId: DEMO_WORKSPACE_ID } : {}),
     },
   });
-  createVaultReference(coreDb, {
+  await createVaultReference(coreDb, {
     referenceId,
     ownerScope,
     ...(ownerScope === 'workspace' ? { workspaceId: DEMO_WORKSPACE_ID } : {}),
@@ -120,7 +123,7 @@ async function fixture(
     backendKind: 'encrypted-file',
     backendLocator: `encrypted-file://${ownerScope}/vault/${referenceId}`,
   });
-  createVaultGrant(coreDb, {
+  await createVaultGrant(coreDb, {
     grantId,
     vaultReferenceId: referenceId,
     ownerScope,
@@ -177,12 +180,12 @@ async function fixture(
     rmSync(root, { recursive: true, force: true });
   });
   const pending: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
-  const resolve = (
+  const resolve = async (
     sink = (credential: ResolvedAgentEnvironmentRuntimeFileCredential) => {
       pending.push(credential);
     }
   ) =>
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       coreDb,
       agentSetup,
@@ -242,9 +245,9 @@ function assertTreeHasNoMaterial(root: string, material: string): void {
 }
 
 /** Compares an owned refusal code without letting a private exception reach assertion output. */
-function throwsWithCode(action: () => unknown, code: string): boolean {
+async function throwsWithCode(action: () => unknown, code: string): Promise<boolean> {
   try {
-    action();
+    await action();
     return false;
   } catch (error) {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
@@ -527,7 +530,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
 
   it('admits both metadata lists for a current Workspace read-only token and refuses mutation', async () => {
     const f = await fixture(['runtime-file'], 'workspace');
-    f.resolve();
+    await f.resolve();
     const prepared = f.pending[0]!;
     expect(prepared !== undefined).toBe(true);
     const resolve = vi.spyOn(f.vault.backend(), 'resolve');
@@ -653,7 +656,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
       material: f.material,
       metadata: { ownerScope: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
     });
-    createVaultReference(f.coreDb, {
+    await createVaultReference(f.coreDb, {
       referenceId,
       ownerScope: 'workspace',
       workspaceId: DEMO_WORKSPACE_ID,
@@ -778,7 +781,9 @@ describe('credential carrier slice 1: Core acceptance', () => {
   ])('refuses a file without exact runtime-file authority (%s)', async (path) => {
     const f = await fixture([path]);
     const resolve = vi.spyOn(f.vault.backend(), 'resolve');
-    expect(throwsWithCode(() => f.resolve(), 'credential_visibility_not_allowed')).toBe(true);
+    expect(
+      await throwsWithCode(async () => await f.resolve(), 'credential_visibility_not_allowed')
+    ).toBe(true);
     expect(resolve).not.toHaveBeenCalled();
     expect(f.pending.length).toBe(0);
     expect(listVaultInjectionPlans(f.coreDb).length).toBe(0);
@@ -788,7 +793,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
   it('prepares only reference lineage before deciding Policy without resolving material', async () => {
     const f = await fixture();
     const resolveMaterial = vi.spyOn(f.vault.backend(), 'resolve');
-    const pkg = f.resolve();
+    const pkg = await f.resolve();
     expect(f.pending.length).toBe(1);
     expect(
       f.pending[0] !== undefined && !Object.hasOwn(f.pending[0], 'credentialValue'),
@@ -824,7 +829,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
     const logs = ['debug', 'info', 'log', 'warn', 'error'].map((level) =>
       vi.spyOn(console, level as 'log').mockImplementation(() => {})
     );
-    f.resolve();
+    await f.resolve();
     const userId = ensureLocalUser(f.coreDb);
     const exported = await createVerifiedWorkspaceExport({
       authorityUserId: userId,
@@ -862,7 +867,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
     const resolveMaterial = vi.spyOn(f.vault.backend(), 'resolve');
     let failure: unknown;
     try {
-      f.resolve(() => {
+      await f.resolve(() => {
         throw new Error(f.material);
       });
     } catch (error) {
@@ -889,10 +894,10 @@ describe('credential carrier slice 1: Core acceptance', () => {
 
   it('refuses a revoked grant before material resolution or a second sink call', async () => {
     const f = await fixture();
-    f.resolve();
-    revokeVaultGrant(f.coreDb, { grantId: f.grantId });
+    await f.resolve();
+    await revokeVaultGrant(f.coreDb, { grantId: f.grantId });
     const resolve = vi.spyOn(f.vault.backend(), 'resolve');
-    expect(throwsWithCode(() => f.resolve(), 'vault_grant_inactive')).toBe(true);
+    expect(await throwsWithCode(async () => await f.resolve(), 'vault_grant_inactive')).toBe(true);
     expect(resolve).not.toHaveBeenCalled();
     expect(f.pending.length).toBe(1);
     expect(receipts.listVaultInjectionReceipts(f.coreDb).length).toBe(0);
@@ -901,19 +906,22 @@ describe('credential carrier slice 1: Core acceptance', () => {
   it('launches a persistent Worker with a transient binding and receipts after the create/import acknowledgements', async () => {
     const f = await fixture();
     const observed: boolean[] = [];
-    const createReceipt = receipts.createVaultInjectionReceipt;
+    const client = getControlStoreWorkerClient();
+    const write = client.vault.bind(client);
     const observation = vi
-      .spyOn(receipts, 'createVaultInjectionReceipt')
-      .mockImplementation((db, input) => {
-        const effects = launched.native.effects;
-        observed.push(
-          effects.some((effect) => effect.kind === 'sandbox.create') &&
-            effects.some(
-              (effect) =>
-                effect.kind === 'reference.import' && effect.input.slot === 'runtime-credential'
-            )
-        );
-        return createReceipt(db, input);
+      .spyOn(client, 'vault')
+      .mockImplementation((db, kind, input, beforeSubmit) => {
+        if (db === f.coreDb && kind === 'receipt-create') {
+          const effects = launched.native.effects;
+          observed.push(
+            effects.some((effect) => effect.kind === 'sandbox.create') &&
+              effects.some(
+                (effect) =>
+                  effect.kind === 'reference.import' && effect.input.slot === 'runtime-credential'
+              )
+          );
+        }
+        return write(db, kind, input, beforeSubmit);
       });
     // The callback runs after asynchronous launch; the fixture owns all outside acknowledgements.
     const launched = await start(f);
@@ -1010,7 +1018,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
       'precondition: original binding must authorize its own route'
     ).toBe(true);
     native.peerFaults.failSandboxDelete = fails;
-    revokeVaultGrant(f.coreDb, { grantId: f.grantId });
+    await revokeVaultGrant(f.coreDb, { grantId: f.grantId });
     const close = closeRevokedCredentialBindings(
       {
         coreDb: f.coreDb,
@@ -1097,7 +1105,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
     } else expect(sandboxes).toHaveLength(0);
     const nextAgentSessionId = testEntityId('as', randomUUID());
     const nextGrantId = testEntityId('grant', randomUUID());
-    createVaultGrant(f.coreDb, {
+    await createVaultGrant(f.coreDb, {
       grantId: nextGrantId,
       vaultReferenceId: f.referenceId,
       ownerScope: 'server',
