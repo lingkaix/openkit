@@ -1,7 +1,8 @@
 import type { PreviewKnowledgeSchemaResponse } from '@openkit/app-api-schemas';
-import { compareCodeUnits, parseReferenceScope } from '@openkit/protocol';
+import { canonicalJsonText, compareCodeUnits, parseReferenceScope } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import { NotebookError } from './notebook-error.js';
+import { projectWorkspaceKnowledgeIndexes } from './notebook-index-projection.js';
 import {
   parseOkfDocument,
   parseScopeKnowledgeSchema,
@@ -92,4 +93,69 @@ export function previewNotebookSchemaContent(input: {
     schemaDiagnostics: diagnostics(schema.errors),
     records,
   };
+}
+
+/** Checks complete candidate-tree bytes without selecting a Proposal, current head or authority. */
+export function schemaCandidateTreeNeedsReview(input: {
+  readonly workspaceId: string;
+  readonly files: Readonly<Record<string, string>>;
+  readonly candidateSchemaText: string;
+}): boolean {
+  const candidate = parseScopeKnowledgeSchema(input.candidateSchemaText);
+  return Object.entries(input.files).some(([path, content]) => {
+    const parsed = parseOkfDocument({ path, content });
+    return (
+      !parsed.ok ||
+      (!parsed.document.reserved &&
+        (!candidate.ok ||
+          validateScopeKnowledgeSchema(parsed.document, candidate.schema, {
+            kind: 'workspace',
+            workspaceId: input.workspaceId,
+          }).errors.length > 0))
+    );
+  });
+}
+
+/** Compares exact content-derived indexes without reading or publishing their sidecar files. */
+export function previewSchemaIndexImpact(input: {
+  readonly files: Readonly<Record<string, string>>;
+  readonly scopeSchemaText: string;
+  readonly candidateSchemaText: string;
+  readonly pageScopeId: string;
+  readonly registeredSources: ReadonlyMap<string, string | null>;
+}): Array<{
+  readonly id: 'validation' | 'source-references' | 'links';
+  readonly needsReview: boolean;
+  readonly before: readonly unknown[];
+  readonly after: readonly unknown[];
+}> {
+  const candidate = parseScopeKnowledgeSchema(input.candidateSchemaText);
+  const pages = new Map(
+    Object.entries(input.files)
+      .filter(([path]) => !path.startsWith('@sources/'))
+      .map(([path, text]) => [path.slice(0, -3), text])
+  );
+  const projection = (scopeSchemaText: string) =>
+    projectWorkspaceKnowledgeIndexes({
+      pages,
+      pageScopeId: input.pageScopeId,
+      scopeSchemaText,
+      registeredSources: input.registeredSources,
+    });
+  const currentIndexes = projection(input.scopeSchemaText);
+  const proposedIndexes = projection(input.candidateSchemaText);
+  const digest = (value: unknown) => `sha256:${sha256Hex(canonicalJsonText(value))}`;
+  const indexChanged = digest(currentIndexes.records) !== digest(proposedIndexes.records);
+  return (
+    [
+      ['validation', currentIndexes.records, proposedIndexes.records],
+      ['source-references', currentIndexes.references, proposedIndexes.references],
+      ['links', currentIndexes.edges, proposedIndexes.edges],
+    ] as const
+  ).map(([id, before, after]) => ({
+    id,
+    needsReview: !candidate.ok || indexChanged || digest(before) !== digest(after),
+    before,
+    after,
+  }));
 }

@@ -21,13 +21,12 @@ import {
   serializeKnowledgeProposalRecord,
 } from '../storage/workspace-file-records.js';
 import { NotebookError } from './notebook-error.js';
-import { projectWorkspaceKnowledgeIndexes } from './notebook-index-projection.js';
+import { parseScopeKnowledgeSchema } from './okf.js';
 import {
-  parseOkfDocument,
-  parseScopeKnowledgeSchema,
-  validateScopeKnowledgeSchema,
-} from './okf.js';
-import { previewNotebookSchemaContent } from './scope-schema-impact.js';
+  previewNotebookSchemaContent,
+  previewSchemaIndexImpact,
+  schemaCandidateTreeNeedsReview,
+} from './scope-schema-impact.js';
 import type { previewNotebookSchema } from './scope-schema-migration.js';
 
 type Inventory = PreviewKnowledgeSchemaResponse['dependencyInventory'][number];
@@ -67,20 +66,13 @@ export function previewWorkspaceSchema(
   });
   const workspaceRoot = join(input.dataRoot, 'workspaces', input.workspaceId);
   const candidate = parseScopeKnowledgeSchema(input.candidateSchemaText);
-  const pages = new Map(
-    Object.entries(currentFiles)
-      .filter(([path]) => !path.startsWith('@sources/'))
-      .map(([path, text]) => [path.slice(0, -3), text])
-  );
-  const projection = (scopeSchemaText: string) =>
-    projectWorkspaceKnowledgeIndexes({
-      pages,
-      pageScopeId: input.pageScopeId,
-      scopeSchemaText,
-      registeredSources: input.registeredSources,
-    });
-  const currentIndexes = projection(input.scopeSchemaText);
-  const proposedIndexes = projection(input.candidateSchemaText);
+  const indexImpact = previewSchemaIndexImpact({
+    files: currentFiles,
+    scopeSchemaText: input.scopeSchemaText,
+    candidateSchemaText: input.candidateSchemaText,
+    pageScopeId: input.pageScopeId,
+    registeredSources: input.registeredSources,
+  });
   const changedPages = new Set(
     notebook.records.filter((row) => row.status !== 'valid').map((row) => row.path.slice(0, -3))
   );
@@ -136,30 +128,8 @@ export function previewWorkspaceSchema(
       });
       facts.get(row.family)!.push(fact);
     };
-    const treeNeedsReview = (files: Readonly<Record<string, string>>) =>
-      Object.entries(files).some(([path, content]) => {
-        const parsed = parseOkfDocument({ path, content });
-        return (
-          !parsed.ok ||
-          (!parsed.document.reserved &&
-            (!candidate.ok ||
-              validateScopeKnowledgeSchema(parsed.document, candidate.schema, {
-                kind: 'workspace',
-                workspaceId: input.workspaceId,
-              }).errors.length > 0))
-        );
-      });
-    const indexChanged = digest(currentIndexes.records) !== digest(proposedIndexes.records);
-    for (const [id, before, after] of [
-      ['validation', currentIndexes.records, proposedIndexes.records],
-      ['source-references', currentIndexes.references, proposedIndexes.references],
-      ['links', currentIndexes.edges, proposedIndexes.edges],
-    ] as const)
-      record(indexes, id, !candidate.ok || indexChanged || digest(before) !== digest(after), {
-        id,
-        before,
-        after,
-      });
+    for (const { id, needsReview, before, after } of indexImpact)
+      record(indexes, id, needsReview, { id, before, after });
 
     try {
       const inventory = readWorkspaceKnowledgeProposalInventory(workspaceRoot, input.workspaceId);
@@ -167,7 +137,11 @@ export function previewWorkspaceSchema(
         try {
           input.admitProposal(proposal);
           const files = input.notebook.readContent(proposal.candidateRevision);
-          const affected = treeNeedsReview(files);
+          const affected = schemaCandidateTreeNeedsReview({
+            workspaceId: input.workspaceId,
+            files,
+            candidateSchemaText: input.candidateSchemaText,
+          });
           record(proposals, proposal.id, affected, serializeKnowledgeProposalRecord(proposal));
           for (const review of inventory.knowledgeProposalReviews.filter(
             (row) => row.proposalId === proposal.id
