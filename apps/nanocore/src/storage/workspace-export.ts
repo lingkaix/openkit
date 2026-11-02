@@ -13,6 +13,7 @@ import {
 } from '@openkit/config-schema';
 import {
   type ArtifactVersionRecord,
+  compareCodeUnits,
   type ItemSchema,
   KnowledgeNotebookPageSchema,
   readRetainedV1,
@@ -824,7 +825,7 @@ export function writeWorkspaceExportTree(
           bytes: measured.byteLength,
         };
       })
-      .sort((left, right) => left.path.localeCompare(right.path));
+      .sort((left, right) => compareCodeUnits(left.path, right.path));
     const requiredFeatures: RequiredFeatureId[] = [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
@@ -1337,7 +1338,9 @@ function writeJson(path: string, value: unknown): void {
 function writeJsonl(path: string, records: readonly unknown[], preserveOrder = false): void {
   const ordered = preserveOrder
     ? records
-    : [...records].sort((left, right) => recordSortKey(left).localeCompare(recordSortKey(right)));
+    : [...records].sort((left, right) =>
+        compareCodeUnits(recordSortKey(left), recordSortKey(right))
+      );
   const lines = ordered.map((record) => JSON.stringify(record));
   writeFileAtomic(path, lines.length > 0 ? `${lines.join('\n')}\n` : '');
 }

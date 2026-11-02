@@ -27,6 +27,7 @@ import {
   type ActorRef,
   AgentSessionIdSchema,
   ArtifactReferenceSchema,
+  compareCodeUnits,
   ItemIdSchema,
   KnowledgeBaseIdSchema,
   MaterialIdSchema,
@@ -811,7 +812,7 @@ export function createWorkerContextPackageFiles(
     throw new Error('Worker Context Package source inventory exceeds its entry bound.');
   const sourceFileInputs: WorkerContextPackageSourceFileInput[] = [];
   const sourceFiles = [...(input.sourceFiles ?? [])]
-    .sort((a, b) => a.packagePath.localeCompare(b.packagePath))
+    .sort((a, b) => compareCodeUnits(a.packagePath, b.packagePath))
     .map((entry) => {
       const metadata = SourceFileSchema.parse(entry);
       assertSourceFile(metadata, input.workspaceId, materialSelections);
@@ -852,7 +853,7 @@ export function createWorkerContextPackageFiles(
     ordinaryFiles.map((file) => file.path),
     'package path'
   );
-  ordinaryFiles.sort((left, right) => left.path.localeCompare(right.path));
+  ordinaryFiles.sort((left, right) => compareCodeUnits(left.path, right.path));
   const ordinaryInventory = ordinaryFiles.map(inventoryEntry);
   const contextPackageId = `ctxpkg_${input.turnId}`;
   const manifest = {
@@ -878,10 +879,10 @@ export function createWorkerContextPackageFiles(
   if (packageFile.bytes.byteLength > maxMetadataBytes)
     throw new Error('Worker Context Package metadata exceeds its byte bound.');
   const files = [...ordinaryFiles, packageFile].sort((left, right) =>
-    left.path.localeCompare(right.path)
+    compareCodeUnits(left.path, right.path)
   );
   const fileInventory = [...ordinaryInventory, inventoryEntry(packageFile)].sort((a, b) =>
-    a.path.localeCompare(b.path)
+    compareCodeUnits(a.path, b.path)
   );
   return {
     contextPackageId,
@@ -1197,7 +1198,7 @@ export function workerContextPackageDeliveryInventory(
       path,
     });
   }
-  return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
+  return [...files.values()].sort((left, right) => compareCodeUnits(left.path, right.path));
 }
 
 /** Builds the exact generated AEP input for one prepared complete live Context input. */
@@ -1266,7 +1267,7 @@ export function createWorkerContextPackageTrace(
     agentSessionId: input.agentSessionId,
     contextPackageId: packageFiles.contextPackageId,
     excludedItems: [...input.excludedItems].sort((left, right) =>
-      left.itemId.localeCompare(right.itemId)
+      compareCodeUnits(left.itemId, right.itemId)
     ),
     fileInventory: [...packageFiles.fileInventory],
     goalId: input.goalId,
@@ -1446,7 +1447,7 @@ export function parseWorkerContextPackageTrace(
           byteLength: manifestBytes.byteLength,
           contentDigest: sha256(manifestBytes),
         },
-      ].sort((left, right) => left.path.localeCompare(right.path)),
+      ].sort((left, right) => compareCodeUnits(left.path, right.path)),
     };
   }
   const original = value as WorkerContextPackageTrace & { readonly retainedTrace?: unknown };
@@ -2124,7 +2125,7 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
   assertUnique(trace.includedItemIds, 'included Item');
   assertStrictlySorted(
     trace.excludedItems,
-    (left, right) => left.itemId.localeCompare(right.itemId),
+    (left, right) => compareCodeUnits(left.itemId, right.itemId),
     'excluded Items'
   );
   if (trace.excludedItems.some((entry) => trace.includedItemIds.includes(entry.itemId))) {
@@ -2245,7 +2246,7 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
   }
   assertStrictlySorted(
     trace.sourceFiles ?? [],
-    (a, b) => a.packagePath.localeCompare(b.packagePath),
+    (a, b) => compareCodeUnits(a.packagePath, b.packagePath),
     'original source inventory'
   );
   assertUnique(
@@ -2277,7 +2278,7 @@ function assertTraceShape(value: unknown): asserts value is WorkerContextPackage
   }
   assertStrictlySorted(
     trace.fileInventory,
-    (left, right) => left.path.localeCompare(right.path),
+    (left, right) => compareCodeUnits(left.path, right.path),
     'package file inventory'
   );
   const knowledgePaths = new Set(trace.knowledgeSelections.map((entry) => entry.packagePath));
@@ -2392,7 +2393,7 @@ function listPackageFilePaths(packageRoot: string, expectedPaths: readonly strin
     }
   };
   visit(packageRoot, '');
-  return files.sort((left, right) => left.localeCompare(right));
+  return files.sort((left, right) => compareCodeUnits(left, right));
 }
 
 /** Verifies exact binary bytes through one held no-follow regular descriptor in bounded memory. */
@@ -2658,8 +2659,8 @@ function compareMaterialIdentity(
   right: { readonly materialId: string; readonly revisionId: string }
 ): number {
   return (
-    left.materialId.localeCompare(right.materialId) ||
-    left.revisionId.localeCompare(right.revisionId)
+    compareCodeUnits(left.materialId, right.materialId) ||
+    compareCodeUnits(left.revisionId, right.revisionId)
   );
 }
 
@@ -2686,7 +2687,7 @@ function sortCanonicalValue(value: unknown): unknown {
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .map(([key, entry]) => [key, sortCanonicalValue(entry)])
     );
   }

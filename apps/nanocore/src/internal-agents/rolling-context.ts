@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Item } from '@openkit/protocol';
-import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
+import { compareCodeUnits, deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { PiAiFailure } from '../llm/pi-ai-failure.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
@@ -64,7 +64,7 @@ export function internalContextItems(store: Pick<FsStore, 'listThreadTurns'>, tu
     .filter((candidate) => candidate.id !== turn.id)
     .sort(
       (left, right) =>
-        (left.startedAt ?? '').localeCompare(right.startedAt ?? '') || compare(left.id, right.id)
+        compareCodeUnits(left.startedAt ?? '', right.startedAt ?? '') || compare(left.id, right.id)
     )
     .flatMap((candidate) =>
       candidate.items.filter(
@@ -381,7 +381,7 @@ export async function prepareInternalAgentContext(
     summary = allSummaries.sort(
       (left, right) =>
         right.sourceRange.itemCount - left.sourceRange.itemCount ||
-        right.createdAt.localeCompare(left.createdAt) ||
+        compareCodeUnits(right.createdAt, left.createdAt) ||
         compare(right.id, left.id)
     )[0];
     if (summary) {

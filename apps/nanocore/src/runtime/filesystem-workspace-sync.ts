@@ -20,6 +20,7 @@ import {
   type WorkspaceChangeSet,
   WorkspaceChangeSetSchema,
 } from '@openkit/app-api-schemas';
+import { compareCodeUnits } from '@openkit/protocol';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
 import {
@@ -177,7 +178,7 @@ export async function createFilesystemSnapshotManifest(
   const entries: FilesystemSnapshotEntry[] = [];
 
   await collectEntries(input.rootPath, '', ignoredPathPrefixes, entries);
-  entries.sort((left, right) => left.path.localeCompare(right.path));
+  entries.sort((left, right) => compareCodeUnits(left.path, right.path));
 
   return {
     contentDigest: digestJson(entries),

@@ -8,6 +8,7 @@ import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import {
   canonicalIdentifierName,
+  compareCodeUnits,
   type PolicyAgentPrincipalV1,
   type PolicyBindingV1,
   type PolicyDocumentV1,
@@ -534,7 +535,7 @@ export function selectPolicyBindings(input: {
         return false;
       return policyScopeIncludesProposal(statement.scope, proposal);
     })
-    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+    .sort((a, b) => a.order - b.order || compareCodeUnits(a.id, b.id));
 }
 
 /** Exact finite selectors make disclosure containment decidable without a wildcard language. */

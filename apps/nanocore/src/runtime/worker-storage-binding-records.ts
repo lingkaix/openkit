@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  compareCodeUnits,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 
 import type { CoreDb } from '../storage/db.js';
 
@@ -837,16 +842,18 @@ function contributorFromRow(row: WorkerStorageContributorRow): WorkerStorageCont
 function normalizeWorkerStorageLayout(layout: WorkerStorageLayout): WorkerStorageLayout {
   const targets = layout.targets
     .map(({ target }) => ({ target: requireAbsolutePath(target, 'storage target') }))
-    .sort((left, right) => left.target.localeCompare(right.target));
-  if (
-    targets.length === 0 ||
-    new Set(targets.map(({ target }) => target)).size !== targets.length
-  ) {
+    .sort((left, right) => compareCodeUnits(left.target, right.target));
+  // Compare absolute directory identities without changing admitted target bytes.
+  const targetPaths = new Set(targets.map(({ target }) => posix.resolve(target)));
+  if (targets.length === 0 || targetPaths.size !== targets.length) {
     throw new WorkerStorageBindingError('layout_conflict', 'Worker storage targets are invalid.');
   }
-  for (let index = 1; index < targets.length; index += 1) {
-    if (targets[index]!.target.startsWith(`${targets[index - 1]!.target}/`)) {
-      throw new WorkerStorageBindingError('layout_conflict', 'Worker storage targets overlap.');
+  for (const { target } of targets) {
+    // Punctuation can sort between a parent and child, so check every canonical ancestor.
+    for (let parent = posix.dirname(target); parent !== '/'; parent = posix.dirname(parent)) {
+      if (targetPaths.has(parent)) {
+        throw new WorkerStorageBindingError('layout_conflict', 'Worker storage targets overlap.');
+      }
     }
   }
   if (
@@ -896,7 +903,7 @@ function normalizeStoredTargets(value: unknown): WorkerStorageTarget[] {
       volumeRef: requireIdentity(record.volumeRef, 'volume'),
     };
   });
-  targets.sort((left, right) => left.target.localeCompare(right.target));
+  targets.sort((left, right) => compareCodeUnits(left.target, right.target));
   return targets;
 }
 
@@ -940,7 +947,7 @@ function mergeWorkerStorageTargets(
       });
     }
   }
-  return merged.sort((left, right) => left.target.localeCompare(right.target));
+  return merged.sort((left, right) => compareCodeUnits(left.target, right.target));
 }
 
 /** Checks the complete exact attachment identity and expected CAS revision. */

@@ -15,6 +15,7 @@ import {
 import { dirname, join, relative, sep } from 'node:path';
 import { EvidenceBundleRecordSchema, WorkspaceBackupIdSchema } from '@openkit/app-api-schemas';
 import {
+  compareCodeUnits,
   DeploymentIdSchema,
   RequestIdSchema,
   readRetainedV1,
@@ -243,7 +244,7 @@ export function createWorkspaceDeletionClosure(input: {
     writePrivateText(join(closureRoot, RECURRING_HISTORY_PATH), `${recurringHistory.trimEnd()}\n`);
     const contentInventory = listRegularFiles(closureRoot)
       .map((path) => inventoryEntry(closureRoot, path))
-      .sort((left, right) => left.path.localeCompare(right.path));
+      .sort((left, right) => compareCodeUnits(left.path, right.path));
     const manifest = WorkspaceDeletionClosureSchema.parse({
       schemaVersion: 1,
       recordType: 'workspace-deletion-closure',
@@ -326,7 +327,7 @@ export function verifyWorkspaceDeletionClosure(input: {
   const actual = listRegularFiles(input.closureRoot)
     .filter((path) => path !== manifestPath)
     .map((path) => inventoryEntry(input.closureRoot, path))
-    .sort((left, right) => left.path.localeCompare(right.path));
+    .sort((left, right) => compareCodeUnits(left.path, right.path));
   if (JSON.stringify(actual) !== JSON.stringify(manifest.contentInventory)) {
     throw new Error('Workspace deletion closure inventory verification failed.');
   }
@@ -429,7 +430,7 @@ function aggregateUsage(records: ReturnType<typeof listWorkspaceUsageRecords>): 
     aggregates.set(key, aggregate);
   }
   return [...aggregates.values()].sort((left, right) =>
-    `${left.category}:${left.unit}`.localeCompare(`${right.category}:${right.unit}`)
+    compareCodeUnits(`${left.category}:${left.unit}`, `${right.category}:${right.unit}`)
   );
 }
 

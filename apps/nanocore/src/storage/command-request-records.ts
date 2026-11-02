@@ -679,7 +679,7 @@ const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
  */
 function commandRequestScopeKey(scope: CommandRequestScope): string {
   return Object.entries(scope)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => compareCodeUnits(left, right))
     .map(([key, value]) => `${key}=${value}`)
     .join('&');
 }

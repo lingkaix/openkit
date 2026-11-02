@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   getConfigPolicyCatalog,
@@ -221,6 +222,81 @@ describe('workspace data source catalog schema', () => {
         sourceRef: 'main-repo',
       }).catalogEntryDigest
     ).toBe(resolved.catalogEntryDigest);
+  });
+
+  it.each([
+    'en',
+    'de',
+    'sv',
+  ])('keeps catalog-entry identity in code-unit order under %s collation', (locale) => {
+    const labels = { z: 'lower-z', ä: 'umlaut', Z: 'upper', Å: 'ring', a: 'lower-a' };
+    const catalog = parseWorkspaceDataSourceCatalog({
+      schemaVersion: 1,
+      sources: [
+        {
+          id: 'corpus',
+          kind: 'r2',
+          displayName: 'Corpus',
+          locator: { bucket: 'research', labels, prefix: 'papers/' },
+          access: 'read-only',
+          sensitivity: 'internal',
+          allowedSlotKinds: ['data'],
+          status: 'active',
+        },
+      ],
+    });
+    // Source Catalog: a stable catalog-entry digest pins the granted input after catalog edits.
+    // The admitted Protocol codec orders UTF-16 units; these expected bytes use no subject helper.
+    const expectedBytes =
+      '{"access":"read-only","allowedSlotKinds":["data"],"displayName":"Corpus",' +
+      '"extensions":{},"id":"corpus","kind":"r2","locator":{"bucket":"research",' +
+      '"labels":{"Z":"upper","a":"lower-a","z":"lower-z","Å":"ring","ä":"umlaut"},' +
+      '"prefix":"papers/"},"requiredFeatures":[],"sensitivity":"internal",' +
+      '"status":"active","syncHints":{}}';
+    const expectedDigest = `sha256:${createHash('sha256').update(expectedBytes, 'utf8').digest('hex')}`;
+    expect(Intl.Collator.supportedLocalesOf([locale])).toEqual([locale]);
+    const collator = new Intl.Collator(locale);
+    expect(Math.sign(collator.compare('ä', 'z'))).toBe(locale === 'sv' ? 1 : -1);
+    const comparison = vi.spyOn(String.prototype, 'localeCompare').mockImplementation(function (
+      this: string,
+      other: string
+    ) {
+      return collator.compare(String(this), other);
+    });
+    try {
+      const request = { access: 'read-only', slotKind: 'data', sourceRef: 'corpus' } as const;
+      const resolved = resolveWorkspaceDataSourceReference({ ...request, catalog });
+      expect(resolved.catalogEntryDigest).toBe(expectedDigest);
+      expect(resolved.locator).toEqual({ bucket: 'research', labels, prefix: 'papers/' });
+      const source = catalog.sources[0]!;
+      const reordered = parseWorkspaceDataSourceCatalog({
+        schemaVersion: 1,
+        sources: [
+          {
+            ...source,
+            locator: {
+              prefix: 'papers/',
+              labels: Object.fromEntries(Object.entries(labels).reverse()),
+              bucket: 'research',
+            },
+          },
+        ],
+      });
+      expect(
+        resolveWorkspaceDataSourceReference({ ...request, catalog: reordered }).catalogEntryDigest
+      ).toBe(expectedDigest);
+      const edited = parseWorkspaceDataSourceCatalog({
+        schemaVersion: 1,
+        sources: [{ ...source, locator: { ...source.locator, prefix: 'other/' } }],
+      });
+      expect(
+        resolveWorkspaceDataSourceReference({ ...request, catalog: edited }).catalogEntryDigest
+      ).not.toBe(expectedDigest);
+      expect(resolved.catalogEntryDigest).toBe(expectedDigest);
+      expect(resolved.locator.prefix).toBe('papers/');
+    } finally {
+      comparison.mockRestore();
+    }
   });
 
   it('rejects unusable source refs', () => {

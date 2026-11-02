@@ -297,8 +297,10 @@ export function internalContextEvidenceEntries(
   if (strategy === 'compaction' && entries.length !== required.size) throw unavailable();
   return [...entries].sort(
     (left, right) =>
-      (left.trace.queryContext.turnId ?? '').localeCompare(right.trace.queryContext.turnId ?? '') ||
-      left.reference.objectId.localeCompare(right.reference.objectId)
+      compareCodeUnits(
+        left.trace.queryContext.turnId ?? '',
+        right.trace.queryContext.turnId ?? ''
+      ) || compareCodeUnits(left.reference.objectId, right.reference.objectId)
   );
 }
 

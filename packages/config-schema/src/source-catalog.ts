@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { VaultGrantIdSchema } from '@openkit/protocol';
+import { compareCodeUnits, VaultGrantIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { isRegisteredRequiredFeature } from './schema-evolution.js';
@@ -313,7 +313,7 @@ function stableJson(value: unknown): string {
 
   if (value && typeof value === 'object') {
     return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
       .join(',')}}`;
   }

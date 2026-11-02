@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { randomBytes } from 'node:crypto';
-import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import { compareCodeUnits, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
 import {
   canonicalNativeEnvironment,
@@ -2338,7 +2338,7 @@ function canonicalJson(value: Readonly<Record<string, unknown>>): string {
   return JSON.stringify(
     Object.fromEntries(
       Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .map(([name, item]) => [
           name,
           item && typeof item === 'object' && !Array.isArray(item)

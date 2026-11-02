@@ -890,7 +890,7 @@ describe('worker Context Package owner', () => {
         if (entry && typeof entry === 'object')
           return Object.fromEntries(
             Object.entries(entry)
-              .sort(([a], [b]) => a.localeCompare(b))
+              .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
               .map(([key, item]) => [key, sort(item)])
           );
         return entry;
