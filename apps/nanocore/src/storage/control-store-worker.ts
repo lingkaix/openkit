@@ -108,8 +108,10 @@ import { applyControlAdmission } from './control-store-admission.js';
 import {
   applyControlCapabilityCommand,
   applyControlCoreCapabilityCommand,
+  applyControlUserPolicyCommand,
   type ControlCapabilityCommandInput,
   CoreCapabilityRefusal,
+  isUserPolicyCommand,
   prepareControlCapabilityCommand,
   tryControlCapabilityReuse,
 } from './control-store-capability.js';
@@ -134,6 +136,7 @@ import {
   type ControlTerminalTransition,
   closeWorkspaceProductReadHandles,
   decode as decodeControlProduct,
+  nativeUserDatabasePath,
   type PreparedControlEntry,
   type PreparedControlPublication,
   type PreparedControlTerminal,
@@ -187,7 +190,7 @@ import {
   applyControlExecutionAttempt,
   controlExecutionAttemptLanes,
 } from './execution-attempt-native.js';
-import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
+import { coreDbPath, workspaceDbPath } from './fs-layout.js';
 import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
 import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
@@ -1010,6 +1013,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       break;
     case 'capability': {
       const input = request.input;
+      if (isUserPolicyCommand(input)) break;
       const addCall = (callId: string) => {
         const call = owner.sqlite
           .prepare('SELECT turn_id, agent_session_id FROM capability_calls WHERE call_id=?')
@@ -1993,11 +1997,15 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'capability') {
             const db = owner.scopeDb;
-            if (!db || !request.preparedCapability) throw new WorkerRawOutputAuthorityError();
-            const result =
-              db.scope === 'core'
+            if (!request.preparedCapability) throw new WorkerRawOutputAuthorityError();
+            const result = isUserPolicyCommand(request.preparedCapability)
+              ? applyControlUserPolicyCommand(
+                  nativeUserDb(owner, request.preparedCapability.userId),
+                  request.preparedCapability
+                )
+              : db?.scope === 'core'
                 ? applyControlCoreCapabilityCommand(db, request.preparedCapability)
-                : db.scope === 'workspace'
+                : db?.scope === 'workspace'
                   ? applyControlCapabilityCommand(db, request.preparedCapability, (goalId) =>
                       advanceGoalRevision(db, goalId)
                     )
@@ -2079,17 +2087,10 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'thread-read-membership') {
             const { userId, workspaceId, threadId } = request.input;
-            const dataRoot = dirname(dirname(dirname(dirname(owner.path))));
-            if (owner.path !== userDbPath(dataRoot, userId) || owner.productOwner)
-              throw new ControlProductPreconditionError();
+            const userDb = nativeUserDb(owner, userId);
             const itemIds = request.preparedThreadReadItemIds;
             if (!itemIds) throw new ControlProductPreconditionError();
-            const stored = applyControlThreadReadReceipt(
-              { scope: 'user', sqlite, dataRoot, userId },
-              workspaceId,
-              threadId,
-              itemIds
-            );
+            const stored = applyControlThreadReadReceipt(userDb, workspaceId, threadId, itemIds);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -2639,6 +2640,15 @@ function assertSavepointSafeSchema(sqlite: Database.Database): void {
     if (hasControlSqlRollback(row.sql))
       throw new Error('Database schema cannot isolate control transitions.');
   }
+}
+
+/** The existing canonical User physical owner, shared by its typed native families. */
+function nativeUserDb(owner: OwnedDatabase, userId: string) {
+  const dataRoot = dirname(dirname(dirname(dirname(owner.path))));
+  if (owner.productOwner) throw new ControlProductPreconditionError();
+  const db = { scope: 'user' as const, sqlite: owner.sqlite, dataRoot, userId };
+  nativeUserDatabasePath(db);
+  return db;
 }
 
 /** Opens only a trusted admitted path; neither directory discovery nor opening grants ownership. */
@@ -3231,9 +3241,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedEntries = preparedPending.entries;
             }
             if (value.operation === 'capability') {
-              if (!owner.scopeDb || !['core', 'workspace'].includes(owner.scopeDb.scope))
-                throw new WorkerRawOutputAuthorityError();
               preparedCapability = prepareControlCapabilityCommand(value.input, value.content);
+              if (isUserPolicyCommand(preparedCapability))
+                nativeUserDb(owner, preparedCapability.userId);
+              else if (!owner.scopeDb || !['core', 'workspace'].includes(owner.scopeDb.scope))
+                throw new WorkerRawOutputAuthorityError();
             }
             if (value.operation === 'material') {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();

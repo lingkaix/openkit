@@ -23,11 +23,12 @@ import {
   TurnIdSchema,
   UsageRecordIdSchema,
   UsageRecordSchema,
+  UserIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { recordUserAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import {
   clearCapabilityCallItemInDb,
   finishCapabilityCallInDb,
@@ -70,7 +71,7 @@ import {
   readControlScalarText,
   WorkerCapabilityMcpToolSchema,
 } from './control-store-input.js';
-import type { CoreDb, WorkspaceDb } from './db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 
 const scope = {
   workspaceId: WorkspaceIdSchema,
@@ -360,6 +361,21 @@ const participantAuditCommand = z
   })
   .strict();
 
+const userPermissionCommand = z
+  .object({
+    kind: z.literal('user-permission'),
+    userId: UserIdSchema,
+    decision: permissionDecision,
+  })
+  .strict();
+const userParticipantAuditCommand = z
+  .object({
+    kind: z.literal('user-participant-audit'),
+    userId: UserIdSchema,
+    event: participantAuditCommand.shape.event.extend({ workspaceId: z.null() }),
+  })
+  .strict();
+
 // Checkpoint owners share a value cycle; resolve their strict schemas only when parsing.
 const checkpointCommand = z
   .object({
@@ -450,6 +466,40 @@ export function isServerCapabilityCommand(
     input.kind === 'server-attribution'
   );
 }
+/** User Policy shares the existing capability Unit, without Workspace or Server ledger authority. */
+export function isUserPolicyCommand(
+  input: ControlCapabilityCommandInput | ControlCapabilityWireInput
+): input is Extract<
+  ControlCapabilityCommandInput,
+  { kind: 'user-permission' | 'user-participant-audit' }
+> {
+  return input.kind === 'user-permission' || input.kind === 'user-participant-audit';
+}
+
+/** Applies only the existing decision/Audit family under the native User savepoint. */
+export function applyControlUserPolicyCommand(
+  db: UserDb,
+  input: ControlCapabilityCommandInput
+): null {
+  if (!db.sqlite.inTransaction || !isUserPolicyCommand(input) || input.userId !== db.userId)
+    throw new WorkerRawOutputAuthorityError();
+  if (input.kind === 'user-permission') {
+    recordControlPermissionDecision(db, input.decision);
+  } else {
+    const { event } = input;
+    recordUserAuditEvent(
+      presentControlFacts({
+        ...event,
+        userDb: db,
+        auditEventId: event.id,
+        now: new Date(event.createdAt),
+        occurredAt: new Date(event.occurredAt),
+      })
+    );
+  }
+  return null;
+}
+
 /** Known original ledger refusals, never native SQL diagnostics. */
 export class CoreCapabilityRefusal extends Error {}
 /** Restricts the private projection to original controlled domain messages. */
@@ -560,6 +610,8 @@ export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', 
   finishCommand,
   attributionCommand,
   participantAuditCommand,
+  userPermissionCommand,
+  userParticipantAuditCommand,
   serverAdmitCommand,
   serverUsageCommand,
   serverFinishCommand,
@@ -593,6 +645,8 @@ export const ControlCapabilityWireInputSchema = z.discriminatedUnion('kind', [
   }),
   attributionCommand,
   participantAuditCommand,
+  userPermissionCommand,
+  userParticipantAuditCommand,
   serverAdmitCommand,
   serverUsageCommand,
   serverFinishCommand.extend({
@@ -704,15 +758,15 @@ export type ControlCapabilityCommandResult = z.infer<typeof ControlCapabilityCom
 
 /** Records only prepared Workspace facts; the existing owner checks finite uses and linked Audit. */
 function recordControlPermissionDecision(
-  db: WorkspaceDb,
+  db: WorkspaceDb | UserDb,
   decision: z.infer<typeof permissionDecision>
 ): void {
   recordProductPermissionDecisionInDb(
     presentControlFacts({
       ...decision,
-      workspaceDb: db,
-      workspaceId: db.workspaceId,
-      ownerScope: 'workspace',
+      ...(db.scope === 'user'
+        ? { userDb: db, workspaceId: null, ownerScope: 'user' as const }
+        : { workspaceDb: db, workspaceId: db.workspaceId, ownerScope: 'workspace' as const }),
       now: new Date(decision.now),
     })
   );
@@ -794,7 +848,8 @@ export function applyControlCapabilityCommand(
   input: ControlCapabilityCommandInput,
   advanceGoalRevision: (goalId: string) => void
 ): ControlCapabilityCommandResult {
-  if (isServerCapabilityCommand(input)) throw new WorkerRawOutputAuthorityError();
+  if (isServerCapabilityCommand(input) || isUserPolicyCommand(input))
+    throw new WorkerRawOutputAuthorityError();
   if (input.kind === 'checkpoint') return applyControlCheckpointCommand(db, input.input);
   if (db.scope !== 'workspace' || db.workspaceId !== input.workspaceId || !db.sqlite.inTransaction)
     throw new WorkerRawOutputAuthorityError();

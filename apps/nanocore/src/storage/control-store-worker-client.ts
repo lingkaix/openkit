@@ -109,6 +109,7 @@ import {
   type ControlTerminalResult,
   type ControlTerminalTransition,
   closeWorkspaceProductReadHandles,
+  nativeUserDatabasePath,
 } from './control-store-products.js';
 import type {
   ControlRecoveryCaptureInput,
@@ -139,7 +140,7 @@ import {
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
 import type { ControlCoreJournalInput } from './core-journal-codecs.js';
-import type { CoreDb, WorkspaceDb } from './db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import type { ControlEvaluationCandidate } from './evaluation-candidate-codecs.js';
 import type {
   ControlExecutionAttemptCommand,
@@ -244,6 +245,9 @@ interface ControlWorkspaceSchemaApplicationCall {
 }
 
 type ControlFrozenNativeCall = ControlRecoveryNativeCall | ControlWorkspaceSchemaApplicationCall;
+
+export { nativeUserDatabasePath };
+
 /** Native requests own release; the filesystem owner retains all physical admission semantics. */
 type NativeCapacityReservation = Pick<FileStorageReservation, 'release'>;
 /** Queued backing belongs to one database; host attribution preserves it after channel loss. */
@@ -393,9 +397,14 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
         ].includes(command.input.input.action)
       );
     case 'capability':
-      return ['permission', 'usage-finish', 'finish', 'raw-settle', 'raw-invalidate'].includes(
-        command.input.kind
-      );
+      return [
+        'permission',
+        'user-permission',
+        'usage-finish',
+        'finish',
+        'raw-settle',
+        'raw-invalidate',
+      ].includes(command.input.kind);
     case 'review':
       return ['judgement', 'select', 'decide', 'decision-receipt'].includes(command.input.mode);
     case 'goal':
@@ -1854,6 +1863,24 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Reuses the canonical User physical owner and covering FULL acknowledgement. */
+  async userCapability(
+    db: UserDb,
+    input: Extract<
+      ControlCapabilityCommandInput,
+      { kind: 'user-permission' | 'user-participant-audit' }
+    >
+  ): Promise<null> {
+    const path = nativeUserDatabasePath(db);
+    if (input.userId !== db.userId)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `user:${path}`;
+    await this.open({ database, path, create: false, initialize: 'user' });
+    const result = await this.capability(database, input);
+    if (result !== null) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return null;
   }
 
   /** Uses the existing Core physical owner for the closed Server ledger cases. */

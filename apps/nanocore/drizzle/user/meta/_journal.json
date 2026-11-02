@@ -43,6 +43,13 @@
       "when": 1792367634020,
       "tag": "0005_audit_authentication",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1793653572512,
+      "tag": "0006_permission_decisions",
+      "breakpoints": true
     }
   ]
 }

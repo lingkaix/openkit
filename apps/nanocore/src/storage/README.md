@@ -37,7 +37,7 @@ This directory owns NanoCore's physical data-root layout, ownership-scoped SQLit
 | Scope or record family | Durable owner |
 | --- | --- |
 | Server control state, authentication, scheduler records | `server/db/core.sqlite` |
-| User-scoped command idempotency and AuditEvent records | `users/<userId>/db/user.sqlite` |
+| User-scoped command idempotency, PermissionDecision and AuditEvent records | `users/<userId>/db/user.sqlite` |
 | Workspace-scoped ledgers and transactional recovery | `workspaces/<workspaceId>/db/workspace.sqlite` |
 | Workspace, Thread, Turn and AgentSession metadata and ordered product history | Owning Workspace SQLite or Server Core SQLite |
 | Immutable Item and event payloads | Exact inline bytes in the owning control SQLite or referenced immutable Storage bytes |
@@ -105,6 +105,8 @@ Timeline coverage remains partial when a collection gap follows observed runtime
 ## Prepared Native Admission And Products
 
 Workspace CapabilityCall, linked usage, PermissionDecision/finite-use and their required Audit use the database worker. Native admission and finish compose the original complete tuples; MCP schema capture/binding and same-row attribution have the same writer. Worker checkpoint reservation includes its launch decision and dependent Goal link; terminal evidence/runtime usage and the original retry receipt stay with that tuple. Public producers await FULL acknowledgement before dependent publication, contact or close. Main rechecks current authority after awaited admission and before effect submission; Core/Server/User, unrelated Audit and stopped import/recovery keep their existing owners. The outward Gateway holds each immutable event until its captured raw frontier is acknowledged; pending source positions coalesce without per-event SQL waiting. Settle/invalidate and first budget crossing flush through the existing native scheduler without its additional writer window.
+
+User-owned Policy decisions, finite-use consumption and their linked Audit, plus completed participant Audit, use closed User arms of the same native capability Unit. The actual User database remains their sole home. A shared physical binding check validates the canonical User identity and actual SQLite handle before reads, submission and native application; the existing thread-read owner uses the same check. User opens use the existing initialize=user physical path without a retained productOwner. Main callers await the covering FULL acknowledgement. The single User migration adds only the retained decision family and its indexes.
 
 `control-store-admission.ts` owns the prepared native tuple: conditional product metadata, ordered immutable Item/event references, the original `idempotency_requests` receipt and required local Audit commit in one worker savepoint. `ControlStoreWorkerClient.transition` submits that tuple; the existing fixed32/5 outer transaction still controls acknowledgement. Same identity and input return the original response; changed input or stale revision refuses without a partial tuple. Native partial indexes enforce active Thread/AgentSession exclusion and one nonterminal current AgentSession per Thread. Closed and failed AgentSessions cannot return to reusable states.
 

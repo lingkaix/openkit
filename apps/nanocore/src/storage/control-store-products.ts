@@ -14,6 +14,7 @@ import {
   readRetainedV1,
   responsibleUserIdForActor,
   SseEventEnvelopeSchema,
+  UserIdSchema,
   WorkOwnerSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
@@ -33,8 +34,8 @@ import {
 } from '../runtime/pending-requests.js';
 import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
 import { prepareControlPendingCommands } from './control-store-pending.js';
-import type { CoreDb, WorkspaceDb } from './db.js';
-import { assertWorkspaceWorkOwner } from './fs-layout.js';
+import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
+import { assertWorkspaceWorkOwner, userDbPath } from './fs-layout.js';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
 import {
   StoredEventV1Schema,
@@ -2199,6 +2200,15 @@ function terminalStopReasonMatches(reason: unknown, status: unknown): boolean {
     return ['completed', 'length', 'budget_exhausted'].includes(String(reason));
   if (status === 'failed') return reason === 'error';
   return (status === 'cancelled' || status === 'interrupted') && reason === 'aborted';
+}
+
+/** Checks the existing User physical binding without introducing a retained product owner. */
+export function nativeUserDatabasePath(db: UserDb): string {
+  if (db.scope !== 'user' || !UserIdSchema.safeParse(db.userId).success)
+    throw new ControlProductPreconditionError();
+  const path = userDbPath(db.dataRoot, db.userId);
+  if (resolve(db.sqlite.name) !== path) throw new ControlProductPreconditionError();
+  return path;
 }
 
 /** Resolves the physical SQL owner from the supplied same-connection domain handle. */

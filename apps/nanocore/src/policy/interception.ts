@@ -11,8 +11,11 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import type { WorkspaceDb } from '../storage/db.js';
+import {
+  getControlStoreWorkerClient,
+  nativeUserDatabasePath,
+} from '../storage/control-store-worker-client.js';
+import type { UserDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
 import type { GoalTaskAccessResult } from './goal-task-access.js';
 import {
@@ -25,6 +28,7 @@ import {
   policyDigest,
   policyOperationDefinition,
   policyProposalDigest,
+  policyResourceUser,
   policyResourceWorkspace,
   policyScopeIncludesProposal,
   readPolicyAgentPrincipal,
@@ -55,8 +59,7 @@ export interface AgentPolicyParticipant {
 }
 
 /** Current owner facts and existing durable owner used by the I16 pilot. */
-export interface InterceptionInput {
-  readonly workspaceDb: WorkspaceDb;
+interface InterceptionFacts {
   readonly document: PolicyDocumentV1;
   readonly proposal: PolicyProposal;
   readonly authorizationRevision: string;
@@ -87,6 +90,13 @@ export interface InterceptionInput {
   }) => PolicyDecision | GoalTaskAccessResult;
 }
 
+/** Same interception owners, with an explicit actual database home. */
+export type InterceptionInput = InterceptionFacts &
+  (
+    | { readonly workspaceDb: WorkspaceDb; readonly userDb?: never }
+    | { readonly userDb: UserDb; readonly workspaceDb?: never }
+  );
+
 /** A final allow is permission to attempt the effect, not an effect result. */
 export interface InterceptionDecision {
   readonly result: PermissionDecisionResult;
@@ -113,10 +123,8 @@ export class PolicyInterception {
   /** Shares exact invocation validation between synchronous and awaited decision entry points. */
   private prepareDecision(input: InterceptionInput) {
     const { points } = policyOperationDefinition(input.proposal.operation);
-    if (
-      !points.stages.includes('decide') ||
-      policyResourceWorkspace(input.proposal.resource) !== input.proposal.workspaceId
-    )
+    assertInterceptionOwner(input);
+    if (!points.stages.includes('decide'))
       throw new Error('Policy deciding point or resource is unavailable.');
     if (
       input.document.statements.some(
@@ -172,7 +180,7 @@ export class PolicyInterception {
     for (const binding of bindings.filter((value) => value.mode === 'gate')) {
       if (
         binding.lifetime.uses !== undefined &&
-        readPolicyStatementUseCount(input.workspaceDb, {
+        readPolicyStatementUseCount(input.userDb ?? input.workspaceDb, {
           id: binding.id,
           digest: policyDigest(binding),
         }) >= binding.lifetime.uses
@@ -239,6 +247,7 @@ export class PolicyInterception {
         results.push('error');
       } else if (goal?.escalation && !kernel.reasons.some(({ code }) => code === 'restriction')) {
         if (
+          input.proposal.workspaceId === null ||
           !goal.inGoalEnvelope ||
           kernel.effect !== 'deny' ||
           kernel.reasons.length === 0 ||
@@ -337,6 +346,7 @@ export class PolicyInterception {
 
   /** Completed observations cannot change an already settled effect or authorize a retry. */
   async observe(input: InterceptionInput): Promise<void> {
+    assertInterceptionOwner(input);
     if (!policyOperationDefinition(input.proposal.operation).points.stages.includes('completed'))
       throw new Error('Policy completed point is unavailable.');
     const bindings = selectPolicyBindings({ ...input, stage: 'completed', now: Date.now() });
@@ -564,37 +574,60 @@ export class PolicyInterception {
       return { reference: { kind: 'decision', id: decisionId }, result };
     }
     const auditEventId = allocateEntityId('aud');
-    await getControlStoreWorkerClient().workspaceCapability(input.workspaceDb, {
-      kind: 'participant-audit',
-      workspaceId: input.proposal.workspaceId,
-      event: {
-        ...prepareAuditEvent({
-          workspaceId: input.proposal.workspaceId,
-          auditEventId,
-          actor: input.proposal.subject.actor,
-          category: 'system',
-          action: 'policy.participant',
-          ...(input.proposal.capabilityCallId
-            ? { capabilityCallId: input.proposal.capabilityCallId }
-            : {}),
-          ...(input.proposal.subject.process
-            ? {
-                threadId: input.proposal.subject.process.threadId,
-                turnId: input.proposal.subject.process.turnId,
-              }
-            : {}),
-          policyInvocation: invocation,
-          outcome: outcome === 'completed' ? 'succeeded' : 'failed',
-          summary: `Policy participant ${binding.id}: ${outcome}.`,
-        }),
+    const event = {
+      ...prepareAuditEvent({
+        workspaceId: input.proposal.workspaceId,
+        auditEventId,
+        actor: input.proposal.subject.actor,
+        category: 'system',
         action: 'policy.participant',
-      },
-    });
+        ...(input.proposal.capabilityCallId
+          ? { capabilityCallId: input.proposal.capabilityCallId }
+          : {}),
+        ...(input.proposal.subject.process
+          ? {
+              threadId: input.proposal.subject.process.threadId,
+              turnId: input.proposal.subject.process.turnId,
+            }
+          : {}),
+        policyInvocation: invocation,
+        outcome: outcome === 'completed' ? 'succeeded' : 'failed',
+        summary: `Policy participant ${binding.id}: ${outcome}.`,
+      }),
+      action: 'policy.participant' as const,
+    };
+    if (input.userDb) {
+      await getControlStoreWorkerClient().userCapability(input.userDb, {
+        kind: 'user-participant-audit',
+        userId: input.userDb.userId,
+        event: { ...event, workspaceId: null },
+      });
+    } else {
+      await getControlStoreWorkerClient().workspaceCapability(input.workspaceDb, {
+        kind: 'participant-audit',
+        workspaceId: input.workspaceDb.workspaceId,
+        event,
+      });
+    }
     return {
       reference: { kind: 'audit', id: auditEventId },
       result,
     };
   }
+}
+
+/** Both deciding and completed points must match the actual database before disclosure. */
+function assertInterceptionOwner(input: InterceptionInput): void {
+  if ((input.userDb !== undefined) === (input.workspaceDb !== undefined))
+    throw new Error('Policy resource database owner is unavailable.');
+  if (input.userDb) nativeUserDatabasePath(input.userDb);
+  const matches = input.userDb
+    ? input.proposal.workspaceId === null &&
+      policyResourceUser(input.proposal.resource) === input.userDb.userId
+    : input.workspaceDb.scope === 'workspace' &&
+      input.workspaceDb.workspaceId === input.proposal.workspaceId &&
+      policyResourceWorkspace(input.proposal.resource) === input.proposal.workspaceId;
+  if (!matches) throw new Error('Policy resource database owner is unavailable.');
 }
 
 class ParticipantTimeout extends Error {}
@@ -621,9 +654,13 @@ function combineResults(results: readonly PermissionDecisionResult[]): Permissio
 
 function decisionInput(input: InterceptionInput, policyRevision: string) {
   return {
-    workspaceDb: input.workspaceDb,
-    workspaceId: input.proposal.workspaceId,
-    ownerScope: 'workspace' as const,
+    ...(input.userDb
+      ? { userDb: input.userDb, workspaceId: null, ownerScope: 'user' as const }
+      : {
+          workspaceDb: input.workspaceDb,
+          workspaceId: input.workspaceDb.workspaceId,
+          ownerScope: 'workspace' as const,
+        }),
     action: policyOperationDefinition(input.proposal.operation).policyOperation,
     enforcementPoint: `${input.proposal.operation}@decide`,
     policyEngineVersion: 'nanocore-policy:v1',

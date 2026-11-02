@@ -793,6 +793,11 @@ describe('database setup', () => {
 
     try {
       applyScopedMigrations(userDb, undefined, 'pre-knowledge');
+      const userAuditSchema = userDb.sqlite
+        .prepare(
+          "SELECT type, name, sql FROM sqlite_master WHERE tbl_name = 'audit_events' ORDER BY type, name"
+        )
+        .all();
       applyScopedMigrations(userDb, undefined, 'pre-knowledge');
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
@@ -804,13 +809,103 @@ describe('database setup', () => {
         'user_0003_policy_audit_v1',
         'user_0004_retained_record_formats',
         'user_0005_audit_authentication',
+        'user_0006_permission_decisions',
       ]);
       expect(listTableNames(userDb)).toEqual([
         '__drizzle_migrations',
         'audit_events',
         'idempotency_requests',
+        'permission_decisions',
         'thread_read_receipts',
       ]);
+      // The additive User family retains the existing Audit home and idempotent schema.
+      expect(
+        userDb.sqlite
+          .prepare(
+            "SELECT type, name, sql FROM sqlite_master WHERE tbl_name = 'audit_events' ORDER BY type, name"
+          )
+          .all()
+      ).toEqual(userAuditSchema);
+      expect(listColumnNames(userDb, 'permission_decisions')).toEqual([
+        'decision_id',
+        'schema_version',
+        'owner_scope',
+        'workspace_id',
+        'policy_engine_version',
+        'policy_snapshot_id',
+        'subject_summary_json',
+        'action',
+        'resource_summary_json',
+        'context_summary_json',
+        'result',
+        'reason_code',
+        'enforcement_point',
+        'mediation_json',
+        'required_approval_kind',
+        'approval_id',
+        'audit_event_id',
+        'created_at',
+      ]);
+      const userDecisionColumns = userDb.sqlite.pragma(
+        'table_info(permission_decisions)'
+      ) as Array<{
+        name: string;
+        notnull: number;
+        dflt_value: unknown;
+      }>;
+      expect(userDecisionColumns.find(({ name }) => name === 'schema_version')).toMatchObject({
+        notnull: 1,
+        dflt_value: null,
+      });
+      const userDecisionIndexes = userDb.sqlite.pragma(
+        'index_list(permission_decisions)'
+      ) as Array<{
+        name: string;
+        unique: number;
+        partial: number;
+        origin: string;
+      }>;
+      expect(
+        userDecisionIndexes
+          .filter(({ origin }) => origin === 'c')
+          .map(({ name, unique, partial }) => ({ name, unique, partial }))
+          .sort((left, right) => (left.name < right.name ? -1 : 1))
+      ).toEqual([
+        { name: 'permission_decisions_enforcement_idx', unique: 0, partial: 0 },
+        { name: 'permission_decisions_owner_idx', unique: 0, partial: 0 },
+        { name: 'permission_decisions_terminal_approval_idx', unique: 1, partial: 1 },
+      ]);
+      expect(userDb.sqlite.pragma('index_info(permission_decisions_owner_idx)')).toMatchObject([
+        { name: 'owner_scope' },
+        { name: 'workspace_id' },
+        { name: 'created_at' },
+      ]);
+      expect(
+        userDb.sqlite.pragma('index_info(permission_decisions_enforcement_idx)')
+      ).toMatchObject([{ name: 'enforcement_point' }, { name: 'created_at' }]);
+      // Schema-owner insertion proves the partial User terminal index, without an effect or approval grant.
+      const insertUserDecision = userDb.sqlite.prepare(`INSERT INTO permission_decisions (
+        decision_id, schema_version, owner_scope, policy_engine_version, policy_snapshot_id,
+        subject_summary_json, action, resource_summary_json, context_summary_json, result,
+        reason_code, enforcement_point, required_approval_kind, approval_id, created_at
+      ) VALUES (?, 1, 'user', 'fixture:v1', 'fixture', '{}', 'vault.use', '{}', '{}', ?,
+        'fixture', 'vault.binding-replace@decide', 'permission', ?, '2026-10-18T00:00:00Z')`);
+      insertUserDecision.run(
+        testEntityId('pd', 'user-schema-pending'),
+        'require_approval',
+        'schema-approval'
+      );
+      insertUserDecision.run(testEntityId('pd', 'user-schema-allow'), 'allow', 'schema-approval');
+      expect(() =>
+        insertUserDecision.run(testEntityId('pd', 'user-schema-deny'), 'deny', 'schema-approval')
+      ).toThrow(/UNIQUE/);
+      expect(() =>
+        insertUserDecision.run(
+          testEntityId('pd', 'user-schema-other'),
+          'allow',
+          'other-schema-approval'
+        )
+      ).not.toThrow();
       expect(listMigrationIds(workspaceDb, 'workspace')).toEqual([
         'workspace_0000_setup',
         'workspace_0001_assistant_handoff',

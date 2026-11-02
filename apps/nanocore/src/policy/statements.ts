@@ -22,7 +22,7 @@ import type { z } from 'zod';
 /** Safe current references supplied by each native operation owner, never caller material. */
 export interface PolicyProposal {
   readonly operation: string;
-  readonly workspaceId: string;
+  readonly workspaceId: string | null;
   readonly resource: z.infer<typeof PolicyResourceV1Schema>;
   readonly inputReferences: Readonly<Record<string, string | null>>;
   readonly inputAttributes: Readonly<Record<string, string | number | boolean | null>>;
@@ -58,6 +58,19 @@ export function policyResourceWorkspace(
     container.owner.kind === 'workspace' &&
     container.id === container.owner.workspaceId
     ? container.owner.workspaceId
+    : null;
+}
+
+/** Exact User containers select the existing User home; other non-Workspace shapes do not. */
+export function policyResourceUser(
+  resource: z.infer<typeof PolicyResourceV1Schema>
+): string | null {
+  if (resource.kind !== 'container') return null;
+  const container = resource.container;
+  return container.kind === 'user' &&
+    container.owner.kind === 'user' &&
+    container.id === container.owner.userId
+    ? container.owner.userId
     : null;
 }
 
@@ -275,13 +288,23 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     const resources = statement.scope.resources;
     const workspaceIds = new Set(resources.map(policyResourceWorkspace));
     const anchor = statement.lifetime.anchor;
+    const userIds = new Set(resources.map(policyResourceUser));
+    const userOwner =
+      userIds.size === 1 &&
+      !userIds.has(null) &&
+      anchor.owner.kind === 'user' &&
+      userIds.has(anchor.owner.userId) &&
+      anchor.kind === 'user' &&
+      anchor.id === anchor.owner.userId &&
+      statement.participant.kind !== 'agent';
     if (
-      workspaceIds.size !== 1 ||
-      workspaceIds.has(null) ||
-      anchor.owner.kind !== 'workspace' ||
-      !workspaceIds.has(anchor.owner.workspaceId) ||
-      !['workspace', 'turn'].includes(anchor.kind) ||
-      (anchor.kind === 'workspace' && anchor.id !== anchor.owner.workspaceId)
+      !userOwner &&
+      (workspaceIds.size !== 1 ||
+        workspaceIds.has(null) ||
+        anchor.owner.kind !== 'workspace' ||
+        !workspaceIds.has(anchor.owner.workspaceId) ||
+        !['workspace', 'turn'].includes(anchor.kind) ||
+        (anchor.kind === 'workspace' && anchor.id !== anchor.owner.workspaceId))
     )
       throw new Error(
         'Active binding requires one Workspace transaction owner and a current Workspace or Turn anchor.'
@@ -494,7 +517,9 @@ export function policyScopeIncludesProposal(
       (principal) => policyDigest(principal) === policyDigest(proposal.subject.principal)
     ) &&
     scope.actions.includes(policyOperationDefinition(proposal.operation).policyOperation) &&
-    policyResourceWorkspace(proposal.resource) === proposal.workspaceId &&
+    (proposal.workspaceId === null
+      ? policyResourceUser(proposal.resource) !== null
+      : policyResourceWorkspace(proposal.resource) === proposal.workspaceId) &&
     scope.resources.some((resource) => policyDigest(resource) === policyDigest(proposal.resource))
   );
 }
@@ -520,11 +545,19 @@ export function selectPolicyBindings(input: {
         return false;
       const lifetime = statement.lifetime;
       const anchor = lifetime.anchor;
+      const userId = policyResourceUser(proposal.resource);
       if (
-        anchor.owner.kind !== 'workspace' ||
-        anchor.owner.workspaceId !== proposal.workspaceId ||
-        (anchor.kind === 'turn' && anchor.id !== proposal.subject.process?.turnId) ||
-        (anchor.kind === 'workspace' && anchor.id !== proposal.workspaceId)
+        proposal.workspaceId === null
+          ? userId === null ||
+            anchor.owner.kind !== 'user' ||
+            anchor.owner.userId !== userId ||
+            anchor.kind !== 'user' ||
+            anchor.id !== userId ||
+            statement.participant.kind === 'agent'
+          : anchor.owner.kind !== 'workspace' ||
+            anchor.owner.workspaceId !== proposal.workspaceId ||
+            (anchor.kind === 'turn' && anchor.id !== proposal.subject.process?.turnId) ||
+            (anchor.kind === 'workspace' && anchor.id !== proposal.workspaceId)
       )
         return false;
       if (!input.anchorCurrent(anchor)) return false;

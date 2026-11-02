@@ -17,7 +17,11 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 
-import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
+import {
+  recordServerAuditEvent,
+  recordUserAuditEvent,
+  recordWorkspaceAuditEvent,
+} from '../audit-events.js';
 import type { BootPolicyKernel } from '../bootstrap/policy.js';
 import {
   executionCallIdForRequest,
@@ -27,8 +31,11 @@ import {
 } from '../runtime/pending-requests.js';
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import type { ControlCapabilityCommandInput } from '../storage/control-store-capability.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import {
+  getControlStoreWorkerClient,
+  nativeUserDatabasePath,
+} from '../storage/control-store-worker-client.js';
+import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import type { PermissionDecisionResult } from '../storage/schema/index.js';
 import {
   PermissionDecisionRetainedV1Schema,
@@ -49,6 +56,8 @@ export interface RecordPermissionDecisionInput {
   coreDb?: CoreDb;
   /** Workspace-scope database handle when recording a workspace-owned decision. */
   workspaceDb?: WorkspaceDb;
+  /** User database for an actual User-owned decision. */
+  userDb?: UserDb;
   /** Stable decision id. */
   decisionId: string;
   /** Owner scope for this decision. */
@@ -89,6 +98,8 @@ export interface RecordProductPermissionDecisionInput {
   coreDb?: CoreDb;
   /** Workspace-scope database handle when recording a workspace-owned decision. */
   workspaceDb?: WorkspaceDb;
+  /** User database for an actual User-owned decision. */
+  userDb?: UserDb;
   /** Stable decision id. */
   decisionId: string;
   /** Owner scope for this decision. */
@@ -426,6 +437,7 @@ export function recordPermissionDecision(
   return recordProductPermissionDecision({
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
     ...(input.workspaceDb ? { workspaceDb: input.workspaceDb } : {}),
+    ...(input.userDb ? { userDb: input.userDb } : {}),
     decisionId: input.decisionId,
     ownerScope: input.ownerScope,
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
@@ -454,10 +466,10 @@ export function recordPermissionDecision(
 
 /** Publishes Workspace decisions through the native owner; other owners keep their existing body. */
 export function recordProductPermissionDecision(
-  input: RecordProductPermissionDecisionInput & { ownerScope: 'workspace' }
+  input: RecordProductPermissionDecisionInput & { ownerScope: 'workspace' | 'user' }
 ): Promise<void>;
 export function recordProductPermissionDecision(
-  input: RecordProductPermissionDecisionInput & { ownerScope: 'server' | 'user' }
+  input: RecordProductPermissionDecisionInput & { ownerScope: 'server' }
 ): void;
 export function recordProductPermissionDecision(
   input: RecordProductPermissionDecisionInput
@@ -465,7 +477,19 @@ export function recordProductPermissionDecision(
 export function recordProductPermissionDecision(
   input: RecordProductPermissionDecisionInput
 ): void | Promise<void> {
-  if (input.ownerScope !== 'workspace') return recordProductPermissionDecisionInDb(input);
+  if (input.ownerScope === 'server') return recordProductPermissionDecisionInDb(input);
+  if (input.ownerScope === 'user') {
+    permissionDecisionDb(input);
+    return getControlStoreWorkerClient()
+      .userCapability(input.userDb!, {
+        kind: 'user-permission',
+        userId: input.userDb!.userId,
+        decision: prepareControlPermissionDecision(input),
+      })
+      .then((result) => {
+        if (result !== null) throw new TypeError('Invalid native permission decision result.');
+      });
+  }
   if (!input.workspaceDb)
     throw new Error('Workspace-scoped permission decisions require workspaceDb.');
   if (input.workspaceId !== input.workspaceDb.workspaceId)
@@ -488,6 +512,7 @@ export function prepareControlPermissionDecision(
   const {
     workspaceDb: _db,
     coreDb: _core,
+    userDb: _user,
     workspaceId: _workspace,
     ownerScope: _scope,
     now,
@@ -573,18 +598,22 @@ export function recordProductPermissionDecisionInDb(
           .parse(input.uses);
   if (uses.length || (mediation?.consumedStatements.length ?? 0)) {
     if (
-      input.ownerScope !== 'workspace' ||
-      !input.workspaceDb ||
-      input.workspaceId !== input.workspaceDb.workspaceId ||
+      !(
+        (input.ownerScope === 'workspace' &&
+          input.workspaceDb &&
+          input.workspaceId === input.workspaceDb.workspaceId) ||
+        (input.ownerScope === 'user' && input.userDb && input.workspaceId == null)
+      ) ||
       mediation?.role !== 'final' ||
       input.result !== 'allow' ||
       mediation.kernel?.effect !== 'allow' ||
       input.auditEventId ||
-      (mediation.subject.process !== null &&
+      (input.ownerScope === 'workspace' &&
+        mediation.subject.process !== null &&
         mediation.subject.process.workspaceId !== input.workspaceId)
     )
       throw new Error(
-        'Finite Policy uses require a final Workspace allow and atomic linked Audit.'
+        'Finite Policy uses require a final owner-scoped allow and atomic linked Audit.'
       );
     const requested = uses
       .map(({ statement }) => JSON.stringify([statement.id, statement.digest]))
@@ -601,7 +630,12 @@ export function recordProductPermissionDecisionInDb(
 
   const publish = sqlite.transaction(() => {
     for (const { statement, limit } of uses) {
-      if (readPolicyStatementUseCount(input.workspaceDb!, statement) >= limit)
+      if (
+        readPolicyStatementUseCount(
+          input.ownerScope === 'user' ? input.userDb! : input.workspaceDb!,
+          statement
+        ) >= limit
+      )
         throw new Error('Policy statement use limit is exhausted.');
     }
     sqlite
@@ -648,18 +682,12 @@ export function recordProductPermissionDecisionInDb(
         createdAt
       );
 
-    if (
-      input.ownerScope === 'workspace' &&
-      input.workspaceDb &&
-      input.workspaceId &&
-      auditEventId &&
-      !input.auditEventId
-    ) {
-      recordWorkspaceAuditEvent({
+    if (auditEventId && !input.auditEventId) {
+      const audit = {
         action: 'permission.decision',
         actor: input.auditActor ?? null,
         auditEventId,
-        category: 'approval',
+        category: 'approval' as const,
         capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
         errorCode: permissionAuditErrorCode(input),
         itemId: optionalStringField(input.contextSummary, 'itemId'),
@@ -673,31 +701,17 @@ export function recordProductPermissionDecisionInDb(
         summary: `Permission decision ${input.result}: ${input.action}`,
         threadId: optionalStringField(input.contextSummary, 'threadId'),
         turnId: optionalStringField(input.contextSummary, 'turnId'),
-        workspaceDb: input.workspaceDb,
-        workspaceId: input.workspaceId,
-      });
-    }
-    if (input.ownerScope === 'server' && input.coreDb && auditEventId && !input.auditEventId) {
-      recordServerAuditEvent({
-        action: 'permission.decision',
-        actor: input.auditActor ?? null,
-        auditEventId,
-        category: 'approval',
-        capabilityCallId: optionalStringField(input.contextSummary, 'capabilityCallId'),
-        errorCode: permissionAuditErrorCode(input),
-        itemId: optionalStringField(input.contextSummary, 'itemId'),
-        coreDb: input.coreDb,
-        now,
-        outcome: permissionAuditOutcome(input.result),
-        permissionDecisionId: input.decisionId,
-        ...(policyInvocation === undefined ? {} : { policyInvocation }),
-        requestId: optionalStringField(input.contextSummary, 'requestId'),
-        resource: `permission:${input.action}`,
-        severity: permissionAuditSeverity(input.result),
-        summary: `Permission decision ${input.result}: ${input.action}`,
-        threadId: optionalStringField(input.contextSummary, 'threadId'),
-        turnId: optionalStringField(input.contextSummary, 'turnId'),
-      });
+      };
+      if (input.ownerScope === 'workspace' && input.workspaceDb && input.workspaceId)
+        recordWorkspaceAuditEvent({
+          ...audit,
+          workspaceDb: input.workspaceDb,
+          workspaceId: input.workspaceId,
+        });
+      if (input.ownerScope === 'server' && input.coreDb)
+        recordServerAuditEvent({ ...audit, coreDb: input.coreDb });
+      if (input.ownerScope === 'user' && input.userDb)
+        recordUserAuditEvent({ ...audit, userDb: input.userDb });
     }
   });
   if (uses.length) publish.immediate();
@@ -706,14 +720,20 @@ export function recordProductPermissionDecisionInDb(
 
 /** Counts exact statement consumption from immutable final allows in this Workspace owner. */
 export function readPolicyStatementUseCount(
-  workspaceDb: Pick<WorkspaceDb, 'sqlite' | 'workspaceId'>,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite' | 'workspaceId'> | Pick<UserDb, 'sqlite' | 'userId'>,
   reference: PolicyDecisionV1['consumedStatements'][number]
 ): number {
   const statement = PolicyStatementReferenceV1Schema.parse(reference);
-  const rows = workspaceDb.sqlite
-    .prepare(`SELECT * FROM permission_decisions
-    WHERE owner_scope = 'workspace' AND workspace_id = ? AND result = 'allow'`)
-    .all(workspaceDb.workspaceId);
+  const rows =
+    'userId' in workspaceDb
+      ? workspaceDb.sqlite
+          .prepare(`SELECT * FROM permission_decisions
+      WHERE owner_scope = 'user' AND workspace_id IS NULL AND result = 'allow'`)
+          .all()
+      : workspaceDb.sqlite
+          .prepare(`SELECT * FROM permission_decisions
+      WHERE owner_scope = 'workspace' AND workspace_id = ? AND result = 'allow'`)
+          .all(workspaceDb.workspaceId);
   return rows
     .map(readPermissionDecisionRowV1)
     .filter(
@@ -858,6 +878,20 @@ export function listServerPermissionDecisions(coreDb: CoreDb): ServerPermissionD
   ).map(mapServerPermissionDecisionRow);
 }
 
+/** Reads the same retained decision family from its actual User home. */
+export function listUserPermissionDecisions(userDb: UserDb) {
+  nativeUserDatabasePath(userDb);
+  return userDb.sqlite
+    .prepare(`SELECT * FROM permission_decisions ORDER BY created_at ASC, decision_id ASC`)
+    .all()
+    .map((row) => {
+      const decision = readPermissionDecisionRowV1(row);
+      if (decision.ownerScope !== 'user' || decision.workspaceId !== null)
+        throw new Error('User permission decision row must be User-scoped.');
+      return { ...decision, ownerScope: 'user' as const, workspaceId: null };
+    });
+}
+
 /**
  * Returns the audit event id linked to a permission decision row.
  *
@@ -871,9 +905,7 @@ function permissionDecisionAuditEventId(
     return input.auditEventId;
   }
 
-  return input.ownerScope === 'workspace' || input.ownerScope === 'server'
-    ? allocateEntityId('aud')
-    : null;
+  return allocateEntityId('aud');
 }
 
 /**
@@ -1036,7 +1068,15 @@ function permissionDecisionDb(input: RecordProductPermissionDecisionInput): Core
   }
 
   if (input.ownerScope === 'user') {
-    throw new Error('User-scoped permission decisions are not wired yet.');
+    if (
+      !input.userDb ||
+      input.userDb.scope !== 'user' ||
+      input.workspaceDb ||
+      input.coreDb ||
+      input.workspaceId != null
+    )
+      throw new Error('User-scoped permission decisions require their exact User database.');
+    return input.userDb.sqlite;
   }
 
   if (!input.coreDb) {

@@ -1,4 +1,4 @@
-import type { PolicyDocumentV1 } from '@openkit/protocol';
+import type { PolicyBindingV1, PolicyDocumentV1 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import {
   policyDigest,
@@ -246,5 +246,227 @@ describe('native Policy statement owner', () => {
           })
         ).toThrow(/safe participant output reference/);
     }
+  });
+});
+
+// User consent uses the existing statement owner with one exact User home and deterministic participants only.
+describe('exact User Policy statement scope', () => {
+  const foreignUserId = 'usr_00000000-0000-7000-8000-000000000002';
+  const resource = {
+    kind: 'container' as const,
+    container: { kind: 'user', id: userId, owner: { kind: 'user' as const, userId } },
+  };
+  const userScope = { subjects: [principal], actions: ['vault.use'], resources: [resource] };
+  const userBinding: PolicyBindingV1 = {
+    ...binding,
+    id: 'user-consent',
+    operation: 'vault.binding-replace',
+    scope: userScope,
+    inputDisclosure: userScope,
+    failure: 'error',
+    lifetime: { anchor: resource.container, uses: 1 },
+  };
+  const userProposal = {
+    ...proposal,
+    operation: 'vault.binding-replace',
+    workspaceId: null,
+    resource,
+    capabilityCallId: null,
+    subject: {
+      ...proposal.subject,
+      actor: { kind: 'user' as const, id: userId },
+      process: null,
+      credentialKind: 'local' as const,
+    },
+  };
+
+  it.each([
+    'gate',
+    'observe',
+  ] as const)('admits and selects an exact deterministic User %s', (mode) => {
+    const statement: PolicyBindingV1 =
+      mode === 'gate'
+        ? userBinding
+        : {
+            ...userBinding,
+            mode,
+            stage: 'completed',
+            failure: 'continue',
+            lifetime: { anchor: resource.container },
+          };
+    const document = validatePolicyDocument({ schemaVersion: 1, statements: [statement] });
+    expect(document.statements).toEqual([statement]);
+    expect(
+      selectPolicyBindings({
+        document,
+        proposal: userProposal,
+        stage: mode === 'gate' ? 'decide' : 'completed',
+        now: Date.parse('2026-10-18T01:00:00Z'),
+        authorCurrent: (id) => id === userId,
+        anchorCurrent: (anchor) => policyDigest(anchor) === policyDigest(resource.container),
+      })
+    ).toEqual([statement]);
+  });
+
+  it('selects the User owner independently of descriptive Workspace process lineage and rechecks current predicates', () => {
+    const document = validatePolicyDocument({ schemaVersion: 1, statements: [userBinding] });
+    const input = {
+      document,
+      proposal: { ...userProposal, subject: proposal.subject },
+      stage: 'decide' as const,
+      now: Date.parse('2026-10-18T01:00:00Z'),
+      authorCurrent: () => true,
+      anchorCurrent: () => true,
+    };
+    expect(selectPolicyBindings(input)).toEqual([userBinding]);
+    expect(selectPolicyBindings({ ...input, authorCurrent: () => false })).toEqual([]);
+    expect(selectPolicyBindings({ ...input, anchorCurrent: () => false })).toEqual([]);
+    expect(
+      selectPolicyBindings({
+        ...input,
+        document: {
+          schemaVersion: 1,
+          statements: [
+            {
+              ...userBinding,
+              lifetime: { ...userBinding.lifetime, notAfter: '2026-10-18T00:30:00Z' },
+            },
+          ],
+        },
+      })
+    ).toEqual([]);
+    expect(
+      selectPolicyBindings({
+        ...input,
+        proposal: {
+          ...userProposal,
+          resource: {
+            kind: 'container',
+            container: {
+              kind: 'user',
+              id: foreignUserId,
+              owner: { kind: 'user', userId: foreignUserId },
+            },
+          },
+        },
+      })
+    ).toEqual([]);
+  });
+
+  it.each([
+    'mixed-home',
+    'foreign-anchor',
+    'contradictory-resource',
+    'foreign-disclosure',
+  ] as const)('refuses %s before User statement activation', (mismatch) => {
+    const foreignResource = {
+      kind: 'container' as const,
+      container: {
+        kind: 'user',
+        id: foreignUserId,
+        owner: { kind: 'user' as const, userId: foreignUserId },
+      },
+    };
+    let candidate = userBinding;
+    if (mismatch === 'mixed-home')
+      candidate = {
+        ...userBinding,
+        scope: {
+          ...userScope,
+          resources: [
+            resource,
+            {
+              kind: 'container',
+              container: {
+                kind: 'workspace',
+                id: workspaceId,
+                owner: { kind: 'workspace', workspaceId },
+              },
+            },
+          ],
+        },
+      };
+    if (mismatch === 'foreign-anchor')
+      candidate = { ...userBinding, lifetime: { anchor: foreignResource.container } };
+    if (mismatch === 'contradictory-resource')
+      candidate = {
+        ...userBinding,
+        scope: {
+          ...userScope,
+          resources: [{ ...resource, container: { ...resource.container, id: foreignUserId } }],
+        },
+      };
+    if (mismatch === 'foreign-disclosure')
+      candidate = {
+        ...userBinding,
+        inputDisclosure: { ...userScope, resources: [foreignResource] },
+      };
+    expect(() => validatePolicyDocument({ schemaVersion: 1, statements: [candidate] })).toThrow();
+  });
+
+  it('keeps an admitted Workspace agent gate available while refusing User agent activation', () => {
+    const declaration = {
+      id: 'principal:reviewer',
+      kind: 'agent-principal' as const,
+      agentId: 'reviewer',
+      author: principal,
+      authority: binding.authority,
+      authoredAt: binding.authoredAt,
+      state: 'active' as const,
+      creator: principal,
+      responsibleHumanId: userId,
+      responsibility: principal,
+      scope: { ...scope, subjects: [{ kind: 'agent' as const, id: 'reviewer' }] },
+      lifetime: {
+        anchor: {
+          owner: { kind: 'workspace' as const, workspaceId },
+          kind: 'workspace',
+          id: workspaceId,
+        },
+      },
+    };
+    const agentBinding: PolicyBindingV1 = {
+      ...binding,
+      participant: { kind: 'agent', id: 'reviewer', version: policyDigest(declaration) },
+    };
+    expect(
+      validatePolicyDocument({ schemaVersion: 1, statements: [declaration, agentBinding] })
+        .statements
+    ).toEqual([declaration, agentBinding]);
+    const userAgentScope = { ...userScope, actions: ['tool.use'] };
+    expect(() =>
+      validatePolicyDocument({
+        schemaVersion: 1,
+        statements: [
+          declaration,
+          {
+            ...agentBinding,
+            scope: userAgentScope,
+            inputDisclosure: userAgentScope,
+            lifetime: { anchor: resource.container },
+          },
+        ],
+      })
+    ).toThrow();
+    const userDeclaration = {
+      ...declaration,
+      scope: { ...userAgentScope, subjects: declaration.scope.subjects },
+      lifetime: { anchor: resource.container },
+    };
+    expect(() =>
+      validatePolicyDocument({
+        schemaVersion: 1,
+        statements: [
+          userDeclaration,
+          {
+            ...agentBinding,
+            participant: { ...agentBinding.participant, version: policyDigest(userDeclaration) },
+            scope: userAgentScope,
+            inputDisclosure: userAgentScope,
+            lifetime: { anchor: resource.container },
+          },
+        ],
+      })
+    ).toThrow();
   });
 });

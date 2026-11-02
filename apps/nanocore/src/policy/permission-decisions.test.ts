@@ -15,13 +15,18 @@ import {
   type PolicyInvocationV1,
 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from '../audit-events.js';
+import {
+  listSqliteAuditEvents,
+  listWorkspaceAuditEvents,
+  recordWorkspaceAuditEvent,
+} from '../audit-events.js';
 
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openUserDb, openWorkspaceDb, type UserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
+import * as permissionDecisions from './permission-decisions.js';
 import {
   listExportableWorkspacePermissionDecisions,
   listPolicyApprovalSourceDecisions,
@@ -31,7 +36,7 @@ import {
   recordPermissionDecision,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
-import { retainPermissionDecision } from './retained-records-v1.js';
+import { readPermissionDecisionRowV1, retainPermissionDecision } from './retained-records-v1.js';
 
 describe('permission decision recorder', () => {
   it('roundtrips mediation and atomically consumes only final Workspace allows', async () => {
@@ -1063,6 +1068,332 @@ describe('permission decision recorder', () => {
     } finally {
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
+    }
+  });
+});
+
+// Storage Scope Homing keeps User identity decisions and their Audit in the actual User database.
+describe('User permission decision ownership', () => {
+  const userId = 'usr_00000000-0000-7000-8000-000000000001';
+  const otherUserId = 'usr_00000000-0000-7000-8000-000000000002';
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const resource = {
+    kind: 'container' as const,
+    container: { kind: 'user' as const, id: userId, owner: { kind: 'user' as const, userId } },
+  };
+
+  /** Reads through the retained family codec without importing a not-yet-implemented User reader. */
+  function retained(userDb: UserDb) {
+    return userDb.sqlite
+      .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+      .all()
+      .map(readPermissionDecisionRowV1);
+  }
+
+  /** Uses the existing public recorder input; no Login operation or credential material is created. */
+  function decision(userDb: UserDb) {
+    return {
+      userDb,
+      ownerScope: 'user' as const,
+      workspaceId: null,
+      decisionId: allocateEntityId('pd'),
+      policyEngineVersion: 'nanocore-policy:v1',
+      policySnapshotId: digest,
+      subjectSummary: { kind: 'human', id: userId },
+      action: 'vault.use',
+      resourceSummary: resource,
+      contextSummary: {},
+      enforcementPoint: 'vault.binding-replace@decide',
+      reasonCode: 'granted',
+      result: 'allow' as const,
+      auditActor: { kind: 'user' as const, id: userId },
+    };
+  }
+
+  it('awaits native User decision and linked Audit with Main query-only and survives cold reopen', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-user-policy-retained-'));
+    let userDb = openUserDb(root, userId);
+    const otherDb = openUserDb(root, otherUserId);
+    try {
+      applyScopedMigrations(userDb);
+      applyScopedMigrations(otherDb);
+      userDb.sqlite.pragma('query_only = ON');
+      const input = decision(userDb);
+      await recordProductPermissionDecision(input);
+      const rows = retained(userDb);
+      expect(rows).toHaveLength(1);
+      expect(permissionDecisions.listUserPermissionDecisions(userDb)).toEqual(rows);
+      expect(rows[0]).toMatchObject({
+        decisionId: input.decisionId,
+        ownerScope: 'user',
+        workspaceId: null,
+        resourceSummary: resource,
+        result: 'allow',
+      });
+      const events = listSqliteAuditEvents(userDb.sqlite);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        id: rows[0]!.auditEventId,
+        permissionDecisionId: input.decisionId,
+        workspaceId: null,
+        actor: input.auditActor,
+        action: 'permission.decision',
+        outcome: 'succeeded',
+      });
+      expect(retained(otherDb)).toEqual([]);
+      expect(listSqliteAuditEvents(otherDb.sqlite)).toEqual([]);
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      userDb = openUserDb(root, userId);
+      expect(retained(userDb)).toEqual(rows);
+      expect(permissionDecisions.listUserPermissionDecisions(userDb)).toEqual(rows);
+      expect(listSqliteAuditEvents(userDb.sqlite)).toEqual(events);
+      // Fault only the retained marker after valid owner production; unknown core formats refuse.
+      userDb.sqlite
+        .prepare('UPDATE permission_decisions SET schema_version = 999 WHERE decision_id = ?')
+        .run(input.decisionId);
+      expect(() => retained(userDb)).toThrow();
+      expect(() => permissionDecisions.listUserPermissionDecisions(userDb)).toThrow();
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      otherDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('projects a real Kernel denial into the same native User decision and Audit', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-user-policy-kernel-'));
+    const userDb = openUserDb(root, userId);
+    try {
+      applyScopedMigrations(userDb);
+      const kernel = loadBootPolicyKernel();
+      const policyDecision = kernel.evaluate({
+        process: 'process:nanocore',
+        operation: 'vault.use',
+        target: 'object:baseline-vault-secret',
+      });
+      expect(policyDecision.effect).toBe('deny');
+      userDb.sqlite.pragma('query_only = ON');
+      const input = { ...decision(userDb), policyDecision };
+      await recordPermissionDecision(input);
+      expect(retained(userDb)).toMatchObject([
+        {
+          decisionId: input.decisionId,
+          ownerScope: 'user',
+          workspaceId: null,
+          result: 'deny',
+          contextSummary: {
+            kernelTrace: {
+              matchedAssociations: policyDecision.trace.matchedAssociations,
+              matchedProhibitions: policyDecision.trace.matchedProhibitions,
+            },
+          },
+        },
+      ]);
+      expect(listSqliteAuditEvents(userDb.sqlite)).toMatchObject([
+        {
+          permissionDecisionId: input.decisionId,
+          outcome: 'denied',
+          workspaceId: null,
+        },
+      ]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back the User decision when its required linked Audit insert fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-user-policy-atomic-'));
+    const userDb = openUserDb(root, userId);
+    try {
+      applyScopedMigrations(userDb);
+      userDb.sqlite.exec(`CREATE TRIGGER reject_user_permission_audit BEFORE INSERT ON audit_events
+        WHEN NEW.action = 'permission.decision' BEGIN
+        SELECT RAISE(ABORT, 'injected User permission Audit failure'); END`);
+      userDb.sqlite.pragma('query_only = ON');
+      await expect(
+        async () => await recordProductPermissionDecision(decision(userDb))
+      ).rejects.toMatchObject({ commit: 'not-committed' });
+      expect(retained(userDb)).toEqual([]);
+      expect(listSqliteAuditEvents(userDb.sqlite)).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a User handle whose physical database belongs to another User', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-user-policy-physical-'));
+    const userDb = openUserDb(root, userId);
+    const otherDb = openUserDb(root, otherUserId);
+    try {
+      applyScopedMigrations(userDb);
+      applyScopedMigrations(otherDb);
+      await expect(
+        async () =>
+          await recordProductPermissionDecision({
+            ...decision(userDb),
+            userDb: { ...userDb, sqlite: otherDb.sqlite },
+          })
+      ).rejects.toThrow();
+      expect(retained(userDb)).toEqual([]);
+      expect(retained(otherDb)).toEqual([]);
+      expect(listSqliteAuditEvents(userDb.sqlite)).toEqual([]);
+      expect(listSqliteAuditEvents(otherDb.sqlite)).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      otherDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('consumes one finite User binding use atomically across concurrent last-use attempts', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-user-policy-last-use-'));
+    const userDb = openUserDb(root, userId);
+    const statement = { id: 'owner-once', digest };
+    const mediation: PolicyDecisionV1 = {
+      operation: 'vault.binding-replace',
+      stage: 'decide',
+      authorizationRevision: digest,
+      proposalDigest: digest,
+      role: 'final',
+      kernel: { effect: 'allow', reason: 'association-grant' },
+      subject: {
+        principal: { kind: 'human', id: userId },
+        onBehalfOf: null,
+        actor: { kind: 'user', id: userId },
+        process: null,
+        credentialKind: 'local',
+        responsibleHumanId: userId,
+      },
+      invocations: [],
+      consumedStatements: [],
+    };
+    try {
+      applyScopedMigrations(userDb);
+      userDb.sqlite.pragma('query_only = ON');
+      await recordProductPermissionDecision({
+        ...decision(userDb),
+        mediation: { ...mediation, role: 'gate', binding: statement, kernel: undefined },
+      });
+      await recordProductPermissionDecision({
+        ...decision(userDb),
+        result: 'deny',
+        reasonCode: 'prohibited',
+        mediation: { ...mediation, kernel: { effect: 'deny', reason: 'restriction' } },
+      });
+      expect(
+        permissionDecisions
+          .listUserPermissionDecisions(userDb)
+          .every((row) => row.mediation?.consumedStatements.length === 0)
+      ).toBe(true);
+      const attempts = [allocateEntityId('pd'), allocateEntityId('pd')];
+      const results = await Promise.allSettled(
+        attempts.map((decisionId) =>
+          recordProductPermissionDecision({
+            ...decision(userDb),
+            decisionId,
+            mediation: { ...mediation, consumedStatements: [statement] },
+            uses: [{ statement, limit: 1 }],
+          })
+        )
+      );
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+      const failure = results.find((result) => result.status === 'rejected');
+      expect(failure).toMatchObject({ status: 'rejected', reason: { commit: 'not-committed' } });
+      const rows = permissionDecisions.listUserPermissionDecisions(userDb);
+      expect(rows).toHaveLength(3);
+      const winners = rows.filter((row) => attempts.includes(row.decisionId));
+      expect(winners).toHaveLength(1);
+      expect(winners[0]).toMatchObject({
+        result: 'allow',
+        ownerScope: 'user',
+        workspaceId: null,
+        mediation: { role: 'final', kernel: { effect: 'allow' }, consumedStatements: [statement] },
+      });
+      const events = listSqliteAuditEvents(userDb.sqlite);
+      expect(events).toHaveLength(3);
+      expect(events.find((event) => event.id === winners[0]!.auditEventId)).toMatchObject({
+        permissionDecisionId: winners[0]!.decisionId,
+        outcome: 'succeeded',
+        workspaceId: null,
+      });
+      const loserId = attempts.find((id) => id !== winners[0]!.decisionId);
+      expect(events.some((event) => event.permissionDecisionId === loserId)).toBe(false);
+      await expect(
+        recordProductPermissionDecision({
+          ...decision(userDb),
+          mediation: { ...mediation, consumedStatements: [statement] },
+          uses: [{ statement, limit: 1 }],
+        })
+      ).rejects.toMatchObject({ commit: 'not-committed' });
+      expect(permissionDecisions.listUserPermissionDecisions(userDb)).toEqual(rows);
+      expect(listSqliteAuditEvents(userDb.sqlite)).toEqual(events);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a contradictory physical User reader without exposing or changing another User decision', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-user-policy-reader-physical-'));
+    const userDb = openUserDb(root, userId);
+    const otherDb = openUserDb(root, otherUserId);
+    try {
+      applyScopedMigrations(userDb);
+      applyScopedMigrations(otherDb);
+      userDb.sqlite.pragma('query_only = ON');
+      otherDb.sqlite.pragma('query_only = ON');
+      const input = {
+        ...decision(otherDb),
+        subjectSummary: { kind: 'human', id: otherUserId },
+        resourceSummary: {
+          kind: 'container',
+          container: {
+            kind: 'user',
+            id: otherUserId,
+            owner: { kind: 'user', userId: otherUserId },
+          },
+        },
+        auditActor: { kind: 'user' as const, id: otherUserId },
+      };
+      await recordProductPermissionDecision(input);
+      const rows = permissionDecisions.listUserPermissionDecisions(otherDb);
+      const events = listSqliteAuditEvents(otherDb.sqlite);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        decisionId: input.decisionId,
+        ownerScope: 'user',
+        workspaceId: null,
+        subjectSummary: input.subjectSummary,
+        resourceSummary: input.resourceSummary,
+      });
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        id: rows[0]!.auditEventId,
+        permissionDecisionId: input.decisionId,
+        actor: input.auditActor,
+      });
+      expect(() =>
+        permissionDecisions.listUserPermissionDecisions({ ...userDb, sqlite: otherDb.sqlite })
+      ).toThrow();
+      expect(permissionDecisions.listUserPermissionDecisions(otherDb)).toEqual(rows);
+      expect(retained(otherDb)).toEqual(rows);
+      expect(listSqliteAuditEvents(otherDb.sqlite)).toEqual(events);
+      expect(permissionDecisions.listUserPermissionDecisions(userDb)).toEqual([]);
+      expect(listSqliteAuditEvents(userDb.sqlite)).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      userDb.sqlite.close();
+      otherDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

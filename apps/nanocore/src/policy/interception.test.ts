@@ -10,7 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as audit from '../audit-events.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openWorkspaceDb } from '../storage/db.js';
+import { openUserDb, openWorkspaceDb, type UserDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
@@ -21,6 +21,7 @@ import {
   policyStatementUsedByDecision,
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
+import { readPermissionDecisionRowV1 } from './retained-records-v1.js';
 import { type PolicyProposal, policyDigest } from './statements.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -554,5 +555,362 @@ describe('bounded native Policy pipeline', () => {
     expect(finalKernel).not.toHaveBeenCalled();
     expect(listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId)).toEqual([]);
     expect(audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId)).toEqual([]);
+  });
+});
+
+// The User consent phase reuses the registered operation and SAME interception owner before its Workspace effect.
+describe('User-owned Policy interception', () => {
+  const resource = {
+    kind: 'container' as const,
+    container: { kind: 'user' as const, id: userId, owner: { kind: 'user' as const, userId } },
+  };
+  const userScope = { subjects: [principal], actions: ['vault.use'], resources: [resource] };
+
+  /** The caller maps the existing Vault action into the real pure Kernel. */
+  function userKernel(allow = true) {
+    return evaluateAccess(
+      {
+        elements: [
+          { id: 'u', kind: 'user' },
+          { id: 'ua', kind: 'userAttribute' },
+          { id: 'o', kind: 'object' },
+          { id: 'oa', kind: 'objectAttribute' },
+          { id: 'pc', kind: 'policyClass' },
+        ],
+        assignments: [
+          { child: 'u', parent: 'ua' },
+          { child: 'ua', parent: 'pc' },
+          { child: 'o', parent: 'oa' },
+          { child: 'oa', parent: 'pc' },
+        ],
+        operations: [{ id: 'vault.use', accessRights: ['vault-use'] }],
+        associations: allow
+          ? [
+              {
+                id: 'owner-consent',
+                userAttribute: 'ua',
+                targetAttribute: 'oa',
+                accessRights: ['vault-use'],
+              },
+            ]
+          : [],
+      },
+      { user: 'u', operation: 'vault.use', target: 'o' }
+    );
+  }
+
+  /** Uses a real User journal and current owner predicates, with no surrogate Workspace. */
+  function userFixture(statements: PolicyDocumentV1['statements'], agent = false) {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-user-interception-'));
+    const userDb = openUserDb(root, userId);
+    cleanup.push(() => {
+      userDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+    applyScopedMigrations(userDb);
+    userDb.sqlite.pragma('query_only = ON');
+    const userProposal: PolicyProposal = {
+      operation: 'vault.binding-replace',
+      workspaceId: null,
+      capabilityCallId: agent ? proposal.capabilityCallId : null,
+      resource,
+      inputReferences: {},
+      inputAttributes: {},
+      subject: agent
+        ? proposal.subject
+        : {
+            principal,
+            onBehalfOf: null,
+            actor: { kind: 'user', id: userId },
+            process: null,
+            credentialKind: 'local',
+            responsibleHumanId: userId,
+          },
+    };
+    return {
+      userDb,
+      document: { schemaVersion: 1 as const, statements },
+      proposal: userProposal,
+      resourceSummary: resource,
+      authorizationRevision: policyDigest({ userId, active: true }),
+      authorCurrent: (authorId: string) => authorId === userId,
+      anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) =>
+        anchor.owner.kind === 'user' &&
+        anchor.owner.userId === userId &&
+        anchor.kind === 'user' &&
+        anchor.id === userId,
+      participantAuthorized: () => true,
+      stillCurrent: () => true,
+      finalKernel: () => userKernel(),
+    };
+  }
+
+  /** Authorizes only this exact User container at the existing operation/stage point. */
+  function userBinding(id: string, mode: 'gate' | 'observe' = 'gate'): PolicyBindingV1 {
+    return {
+      ...binding(id, mode),
+      operation: 'vault.binding-replace',
+      scope: userScope,
+      inputDisclosure: userScope,
+      lifetime: { anchor: { owner: { kind: 'user', userId }, kind: 'user', id: userId } },
+      failure: mode === 'gate' ? 'error' : 'continue',
+    };
+  }
+
+  /** Observes retained identity and linkage; the pre-extension baseline needs no missing export. */
+  function userDecisions(userDb: UserDb) {
+    return userDb.sqlite
+      .prepare('SELECT * FROM permission_decisions ORDER BY decision_id')
+      .all()
+      .map(readPermissionDecisionRowV1);
+  }
+
+  it.each([
+    'deny',
+    'allow',
+  ] as const)('retains the User gate %s and final Kernel with atomic linked User Audit', async (gateResult) => {
+    const input = userFixture([userBinding('owner-consent')]);
+    const finalKernel = vi.fn(() => userKernel());
+    const invoke = vi.fn(async (_invocation: { proposal: PolicyProposal }) => ({
+      decision: gateResult,
+    }));
+    const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+    const result = await pipeline.decide({ ...input, finalKernel });
+    expect(result.result).toBe(gateResult);
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(invoke.mock.calls[0]![0].proposal).toEqual(input.proposal);
+    expect(finalKernel).toHaveBeenCalledOnce();
+    const rows = userDecisions(input.userDb);
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.ownerScope === 'user' && row.workspaceId === null)).toBe(true);
+    expect(rows.find((row) => row.mediation?.role === 'gate')).toMatchObject({
+      result: gateResult,
+      resourceSummary: resource,
+      mediation: {
+        operation: 'vault.binding-replace',
+        role: 'gate',
+        subject: input.proposal.subject,
+      },
+    });
+    expect(rows.find((row) => row.decisionId === result.decisionId)).toMatchObject({
+      result: gateResult,
+      policySnapshotId: policyDigest(input.document),
+      mediation: {
+        kernel: { effect: 'allow' },
+        role: 'final',
+        consumedStatements: [],
+        subject: input.proposal.subject,
+        invocations: [{ kind: 'decision' }],
+      },
+    });
+    const events = audit.listSqliteAuditEvents(input.userDb.sqlite);
+    expect(events).toHaveLength(2);
+    for (const row of rows) {
+      expect(events.find((event) => event.id === row.auditEventId)).toMatchObject({
+        permissionDecisionId: row.decisionId,
+        workspaceId: null,
+        action: 'permission.decision',
+      });
+    }
+    expect(events.find((event) => event.policyInvocation)).toMatchObject({
+      policyInvocation: {
+        operation: 'vault.binding-replace',
+        mode: 'gate',
+        outcome: 'completed',
+        subject: input.proposal.subject,
+      },
+    });
+  });
+
+  it('keeps Workspace agent process lineage descriptive on a User decision and completed observation', async () => {
+    const input = userFixture([userBinding('completed', 'observe')], true);
+    const invoke = vi.fn(async () => ({ observed: true }));
+    const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+    const settled = await pipeline.decide(input);
+    expect(settled.result).toBe('allow');
+    const before = userDecisions(input.userDb);
+    await pipeline.observe(input);
+    expect(userDecisions(input.userDb)).toEqual(before);
+    expect(before).toHaveLength(1);
+    expect(before[0]).toMatchObject({
+      ownerScope: 'user',
+      workspaceId: null,
+      mediation: { subject: proposal.subject },
+    });
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(audit.listSqliteAuditEvents(input.userDb.sqlite)).toHaveLength(2);
+    expect(
+      audit.listSqliteAuditEvents(input.userDb.sqlite).find((event) => event.policyInvocation)
+    ).toMatchObject({
+      workspaceId: null,
+      threadId: proposal.subject.process!.threadId,
+      turnId: proposal.subject.process!.turnId,
+      policyInvocation: {
+        mode: 'observe',
+        operation: 'vault.binding-replace',
+        outcome: 'completed',
+        subject: proposal.subject,
+      },
+    });
+  });
+
+  it.each([
+    'author',
+    'anchor',
+  ] as const)('does not disclose User input after current %s authority is lost', async (lost) => {
+    const input = userFixture([userBinding('current-owner')]);
+    const invoke = vi.fn(async () => ({ decision: 'allow' }));
+    const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+    const result = await pipeline.decide({
+      ...input,
+      authorCurrent: () => lost !== 'author',
+      anchorCurrent: () => lost !== 'anchor',
+      stillCurrent: () => false,
+      finalKernel: () => userKernel(false),
+    });
+    expect(result.result).toBe('error');
+    expect(invoke).not.toHaveBeenCalled();
+    expect(userDecisions(input.userDb)).toMatchObject([
+      {
+        decisionId: result.decisionId,
+        ownerScope: 'user',
+        workspaceId: null,
+        result: 'error',
+        mediation: { role: 'final', consumedStatements: [], invocations: [] },
+      },
+    ]);
+  });
+
+  it.each([
+    'foreign-user',
+    'contradictory-owner',
+    'workspace-resource',
+  ] as const)('refuses %s before User participant disclosure or allowing publication', async (mismatch) => {
+    const input = userFixture([userBinding('exact-owner')]);
+    const foreignId = 'usr_00000000-0000-7000-8000-000000000002';
+    const actualResource: PolicyProposal['resource'] =
+      mismatch === 'workspace-resource'
+        ? {
+            kind: 'container',
+            container: {
+              kind: 'workspace',
+              id: workspaceId,
+              owner: { kind: 'workspace', workspaceId },
+            },
+          }
+        : {
+            kind: 'container',
+            container: {
+              kind: 'user',
+              id: foreignId,
+              owner: { kind: 'user', userId: mismatch === 'foreign-user' ? foreignId : userId },
+            },
+          };
+    const invoke = vi.fn(async () => ({ decision: 'allow' }));
+    const finalKernel = vi.fn(() => userKernel());
+    const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+    await expect(
+      pipeline.decide({
+        ...input,
+        finalKernel,
+        proposal: { ...input.proposal, resource: actualResource },
+      })
+    ).rejects.toThrow();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(finalKernel).not.toHaveBeenCalled();
+    expect(userDecisions(input.userDb)).toEqual([]);
+    expect(audit.listSqliteAuditEvents(input.userDb.sqlite)).toEqual([]);
+  });
+
+  it('does not release a User gate result when its required native Audit fails', async () => {
+    const input = userFixture([userBinding('required-evidence')]);
+    input.userDb.sqlite.pragma('query_only = OFF');
+    input.userDb.sqlite.exec(`CREATE TRIGGER reject_user_interception_audit BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'permission.decision' BEGIN
+      SELECT RAISE(ABORT, 'injected User participant Audit failure'); END`);
+    input.userDb.sqlite.pragma('query_only = ON');
+    const invoke = vi.fn(async () => ({ decision: 'allow' }));
+    const finalKernel = vi.fn(() => userKernel());
+    const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+    await expect(pipeline.decide({ ...input, finalKernel })).rejects.toMatchObject({
+      commit: 'not-committed',
+    });
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(finalKernel).not.toHaveBeenCalled();
+    expect(userDecisions(input.userDb)).toEqual([]);
+    expect(audit.listSqliteAuditEvents(input.userDb.sqlite)).toEqual([]);
+  });
+
+  it.each([
+    'foreign-user',
+    'workspace-proposal',
+    'contradictory-owner',
+  ] as const)('refuses a completed %s under the actual User database before disclosure or evidence', async (mismatch) => {
+    const input = userFixture([userBinding('completed-owner', 'observe')]);
+    const otherUserId = 'usr_00000000-0000-7000-8000-000000000002';
+    const otherDb = openUserDb(input.userDb.dataRoot, otherUserId);
+    try {
+      applyScopedMigrations(otherDb);
+      otherDb.sqlite.pragma('query_only = ON');
+      const invoke = vi.fn(async () => ({ observed: true }));
+      const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+      let observation: Parameters<PolicyInterception['observe']>[0] = { ...input, userDb: otherDb };
+      if (mismatch === 'workspace-proposal') {
+        const { workspaceDb: _workspaceDb, ...workspaceObservation } = fixture([
+          binding('workspace-completed', 'observe'),
+        ]);
+        observation = { ...workspaceObservation, userDb: otherDb };
+      }
+      if (mismatch === 'contradictory-owner')
+        observation = {
+          ...observation,
+          proposal: {
+            ...input.proposal,
+            resource: {
+              kind: 'container',
+              container: {
+                kind: 'user',
+                id: userId,
+                owner: { kind: 'user', userId: otherUserId },
+              },
+            },
+          },
+        };
+      await expect(pipeline.observe(observation)).rejects.toThrow();
+      expect(invoke).not.toHaveBeenCalled();
+      expect(userDecisions(input.userDb)).toEqual([]);
+      expect(userDecisions(otherDb)).toEqual([]);
+      expect(audit.listSqliteAuditEvents(input.userDb.sqlite)).toEqual([]);
+      expect(audit.listSqliteAuditEvents(otherDb.sqlite)).toEqual([]);
+    } finally {
+      otherDb.sqlite.close();
+    }
+  });
+
+  it('preserves an original User settlement when a completed observation presents another actual User owner', async () => {
+    const input = userFixture([userBinding('settled-owner', 'observe')]);
+    const otherDb = openUserDb(input.userDb.dataRoot, 'usr_00000000-0000-7000-8000-000000000002');
+    try {
+      applyScopedMigrations(otherDb);
+      otherDb.sqlite.pragma('query_only = ON');
+      const invoke = vi.fn(async () => ({ observed: true }));
+      const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+      const settled = await pipeline.decide(input);
+      expect(settled.result).toBe('allow');
+      const original = { ...settled };
+      const decisions = userDecisions(input.userDb);
+      const events = audit.listSqliteAuditEvents(input.userDb.sqlite);
+      expect(decisions).toHaveLength(1);
+      expect(events).toHaveLength(1);
+      await expect(pipeline.observe({ ...input, userDb: otherDb })).rejects.toThrow();
+      expect(invoke).not.toHaveBeenCalled();
+      expect(settled).toEqual(original);
+      expect(userDecisions(input.userDb)).toEqual(decisions);
+      expect(audit.listSqliteAuditEvents(input.userDb.sqlite)).toEqual(events);
+      expect(userDecisions(otherDb)).toEqual([]);
+      expect(audit.listSqliteAuditEvents(otherDb.sqlite)).toEqual([]);
+    } finally {
+      otherDb.sqlite.close();
+    }
   });
 });
