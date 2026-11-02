@@ -9,6 +9,7 @@ import {
   readCanonicalTextFile,
   syncCanonicalDirectory,
   throwCanonicalLinkError,
+  writeCanonicalFileAtomic,
 } from '@openkit/storage';
 
 export {
@@ -55,22 +56,18 @@ import {
   closeSync,
   constants,
   existsSync,
-  fchmodSync,
   fstatSync,
   fsyncSync,
-  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
   readSync,
-  renameSync,
   rmSync,
-  writeFileSync,
   writeSync,
 } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type AgentEnvironmentPackageSnapshotRecord as AppApiAgentEnvironmentPackageSnapshotRecord,
@@ -2722,57 +2719,7 @@ export function writeFileAtomic(
 ): void {
   const byteLength = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
   const reservation = reserveCanonicalFileWrite(byteLength);
-  const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
-  let safeToRelease = false;
-  let attemptedOpen = false;
-  let temporaryOwned = false;
-  try {
-    ensureCanonicalDirectory(dirname(path), 0o777);
-    if (lstatSync(path, { throwIfNoEntry: false })) assertCanonicalRegularFile(path);
-    attemptedOpen = true;
-    const descriptor = openSync(
-      temporaryPath,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      mode ?? 0o600
-    );
-    temporaryOwned = true;
-    try {
-      writeFileSync(descriptor, content);
-      reservation?.recordWritten(byteLength);
-      if (mode !== undefined) fchmodSync(descriptor, mode);
-      fsyncSync(descriptor);
-    } finally {
-      closeSync(descriptor);
-    }
-    if (publication === 'create') {
-      linkSync(temporaryPath, path);
-      rmSync(temporaryPath);
-    } else {
-      renameSync(temporaryPath, path);
-    }
-    try {
-      syncCanonicalDirectory(dirname(path));
-    } catch (error) {
-      throw new CanonicalPublicationError(
-        `Directory sync after ${publication === 'create' ? 'link' : 'rename'} failed during publication acknowledgement: ${error instanceof Error ? error.message : 'I/O failure'}`,
-        error
-      );
-    }
-    reservation?.assertAvailable();
-    safeToRelease = true;
-  } catch (error) {
-    if (temporaryOwned) {
-      rmSync(temporaryPath, { force: true });
-      safeToRelease = true;
-    } else {
-      // A refused path caused no effect.
-      // A failed exclusive open has no ownership proof; retain capacity and preserve the unowned file.
-      safeToRelease = !attemptedOpen;
-    }
-    throw error;
-  } finally {
-    if (safeToRelease) reservation?.release();
-  }
+  writeCanonicalFileAtomic(path, content, byteLength, reservation, mode, publication);
 }
 
 /** Preserves owned annotations while replacing known fields; append-order arrays retain their member annotations. */

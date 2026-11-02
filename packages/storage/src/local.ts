@@ -6,8 +6,10 @@ import {
   copyFileSync,
   cpSync,
   existsSync,
+  fchmodSync,
   fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -2348,5 +2350,73 @@ export async function materializeWorkspaceBackupInventory(
       closeSync(fd);
     }
     chmodSync(path, entry.mode);
+  }
+}
+
+/** @internal Publishes complete caller-admitted bytes with the original atomic writer lifetime. */
+export function writeCanonicalFileAtomic(
+  path: string,
+  content: string | Uint8Array,
+  byteLength: number,
+  reservation:
+    | {
+        recordWritten(bytes: number): void;
+        assertAvailable(): void;
+        release(): void;
+      }
+    | undefined,
+  mode: number | undefined,
+  publication: 'replace' | 'create'
+): void {
+  const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  let safeToRelease = false;
+  let attemptedOpen = false;
+  let temporaryOwned = false;
+  try {
+    ensureCanonicalDirectory(dirname(path), 0o777);
+    if (lstatSync(path, { throwIfNoEntry: false })) assertCanonicalRegularFile(path);
+    attemptedOpen = true;
+    const descriptor = openSync(
+      temporaryPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      mode ?? 0o600
+    );
+    temporaryOwned = true;
+    try {
+      writeFileSync(descriptor, content);
+      reservation?.recordWritten(byteLength);
+      if (mode !== undefined) fchmodSync(descriptor, mode);
+      fsyncSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+    if (publication === 'create') {
+      linkSync(temporaryPath, path);
+      rmSync(temporaryPath);
+    } else {
+      renameSync(temporaryPath, path);
+    }
+    try {
+      syncCanonicalDirectory(dirname(path));
+    } catch (error) {
+      throw new CanonicalPublicationError(
+        `Directory sync after ${publication === 'create' ? 'link' : 'rename'} failed during publication acknowledgement: ${error instanceof Error ? error.message : 'I/O failure'}`,
+        error
+      );
+    }
+    reservation?.assertAvailable();
+    safeToRelease = true;
+  } catch (error) {
+    if (temporaryOwned) {
+      rmSync(temporaryPath, { force: true });
+      safeToRelease = true;
+    } else {
+      // A refused path caused no effect.
+      // A failed exclusive open has no ownership proof; retain capacity and preserve the unowned file.
+      safeToRelease = !attemptedOpen;
+    }
+    throw error;
+  } finally {
+    if (safeToRelease) reservation?.release();
   }
 }
