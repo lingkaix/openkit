@@ -123,7 +123,7 @@ describe('durable fixed-interval recurrence', () => {
     expect(store.getAutomation(created.id).nextScheduledAt).toBe('9948-12-22T12:26:40.000Z');
   });
 
-  it('contains a retained overflowing successor while committing healthy scan work once', () => {
+  it('contains a retained overflowing successor while committing healthy scan work once', async () => {
     const { db, store } = fixture();
     const userId = testEntityId('usr', 'user_creator');
     const active = [0, 1].map(() => {
@@ -143,7 +143,10 @@ describe('durable fixed-interval recurrence', () => {
       active.map((entry) => entry.id).sort()
     );
     for (const candidate of candidates)
-      store.commitAttempt(candidate.id, candidate.definitionRevision, { kind: 'ready', payload });
+      await store.commitAttempt(candidate.id, candidate.definitionRevision, {
+        kind: 'ready',
+        payload,
+      });
     expect(store.getAutomation(unsafe!.id)).toMatchObject({
       nextScheduledAt: null,
       greatestAccountedScheduledAt: '2026-10-16T00:00:00.000Z',
@@ -267,7 +270,7 @@ describe('durable fixed-interval recurrence', () => {
         .get(schedule.id)
     ).toEqual(retained);
   });
-  it('writes v1 occurrences and atomically accepts one deterministic queue row without retry', () => {
+  it('writes v1 occurrences and atomically accepts one deterministic queue row without retry', async () => {
     const { db, store } = fixture();
     const created = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
     const active = store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
@@ -276,7 +279,7 @@ describe('durable fixed-interval recurrence', () => {
       scheduledAt: '2026-10-16T00:00:00.000Z',
     });
     const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-    const accepted = store.commitAttempt(occurrence!.id, active.revision, {
+    const accepted = await store.commitAttempt(occurrence!.id, active.revision, {
       kind: 'ready',
       payload,
     });
@@ -299,7 +302,7 @@ describe('durable fixed-interval recurrence', () => {
       db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
     ).toEqual({ n: 1 });
     expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
-    store.commitAttempt(occurrence!.id, active.revision, { kind: 'ready', payload });
+    await store.commitAttempt(occurrence!.id, active.revision, { kind: 'ready', payload });
     expect(
       db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
     ).toEqual({ n: 1 });
@@ -315,7 +318,7 @@ it.each([
   'recurring_schedules',
   'recurring_occurrences',
   'recurring_expired_ranges',
-] as const)('refuses unknown %s versions before payload decode, scan or mutation', (table) => {
+] as const)('refuses unknown %s versions before payload decode, scan or mutation', async (table) => {
   const { db, store, setTime } = fixture();
   const userId = testEntityId('usr', 'user_creator');
   const schedule = store.createAutomation(userId, definition);
@@ -349,9 +352,9 @@ it.each([
     );
   } else if (table === 'recurring_occurrences') {
     expect(() => store.getOccurrence(row.id)).toThrow('Unsupported retained record format.');
-    expect(() => store.commitAttempt(row.id, active.revision, { kind: 'ready', payload })).toThrow(
-      'Unsupported retained record format.'
-    );
+    await expect(
+      store.commitAttempt(row.id, active.revision, { kind: 'ready', payload })
+    ).rejects.toThrow('Unsupported retained record format.');
     expect(() => store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toThrow(
       'Unsupported retained record format.'
     );
@@ -373,7 +376,7 @@ it.each([
   });
 });
 
-it('limits committed outcomes to three and keeps admission-failed terminal at expiry', () => {
+it('limits committed outcomes to three and keeps admission-failed terminal at expiry', async () => {
   const { store, setTime } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -383,7 +386,10 @@ it('limits committed outcomes to three and keeps admission-failed terminal at ex
   });
   const [first] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const result = store.commitAttempt(first!.id, 2, { kind: 'failure', code: 'authority_denied' });
+    const result = await store.commitAttempt(first!.id, 2, {
+      kind: 'failure',
+      code: 'authority_denied',
+    });
     expect(result?.attempts).toHaveLength(attempt);
     expect(result?.state).toBe(attempt === 3 ? 'admission-failed' : 'pending');
   }
@@ -392,7 +398,7 @@ it('limits committed outcomes to three and keeps admission-failed terminal at ex
   expect(store.getOccurrence(first!.id).state).toBe('admission-failed');
 });
 
-it('expires at the exact deadline and leaves a backward-clock candidate pending without an outcome', () => {
+it('expires at the exact deadline and leaves a backward-clock candidate pending without an outcome', async () => {
   const { db, store, setTime } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -402,9 +408,11 @@ it('expires at the exact deadline and leaves a backward-clock candidate pending 
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   setTime('2026-10-15T23:59:59.000Z');
-  expect(store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })?.attempts).toEqual([]);
+  expect(
+    (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))?.attempts
+  ).toEqual([]);
   setTime('2026-10-16T00:10:00.000Z');
-  expect(store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })).toMatchObject({
+  expect(await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })).toMatchObject({
     state: 'expired',
     attempts: [],
     resolvedPayload: null,
@@ -414,7 +422,7 @@ it('expires at the exact deadline and leaves a backward-clock candidate pending 
   });
 });
 
-it('rolls back the queue, attempt, frozen payload and acceptance together', () => {
+it('rolls back the queue, attempt, frozen payload and acceptance together', async () => {
   const { db, store } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -425,9 +433,13 @@ it('rolls back the queue, attempt, frozen payload and acceptance together', () =
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   db.sqlite.exec(`CREATE TRIGGER reject_occurrence_acceptance BEFORE UPDATE ON recurring_occurrences
     WHEN NEW.state = 'admission-accepted' BEGIN SELECT RAISE(ABORT, 'injected rollback'); END;`);
-  expect(() => store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })).toThrow(
-    'injected rollback'
-  );
+  await expect(
+    store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })
+  ).rejects.toMatchObject({
+    name: 'ControlStoreWorkerError',
+    code: 'constraint',
+    commit: 'not-committed',
+  });
   expect(store.getOccurrence(occurrence!.id)).toMatchObject({
     state: 'pending',
     attempts: [],
@@ -437,12 +449,12 @@ it('rolls back the queue, attempt, frozen payload and acceptance together', () =
     n: 0,
   });
   db.sqlite.exec('DROP TRIGGER reject_occurrence_acceptance');
-  expect(store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })?.attempts).toHaveLength(
-    1
-  );
+  expect(
+    (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))?.attempts
+  ).toHaveLength(1);
 });
 
-it('bounds each schedule to one queued occurrence while allowing a running predecessor', () => {
+it('bounds each schedule to one queued occurrence while allowing a running predecessor', async () => {
   const { db, store, setTime } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -451,10 +463,10 @@ it('bounds each schedule to one queued occurrence while allowing a running prede
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [first] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  const accepted = store.commitAttempt(first!.id, 2, { kind: 'ready', payload })!;
+  const accepted = (await store.commitAttempt(first!.id, 2, { kind: 'ready', payload }))!;
   setTime('2026-10-16T00:00:05.000Z');
   const [second] = store.collectScanCandidates('2026-10-16T00:00:05.000Z');
-  expect(store.commitAttempt(second!.id, 2, { kind: 'ready', payload })).toMatchObject({
+  expect(await store.commitAttempt(second!.id, 2, { kind: 'ready', payload })).toMatchObject({
     state: 'pending',
     attempts: [{ code: 'queue_backlog_full' }],
     resolvedPayload: payload,
@@ -462,13 +474,13 @@ it('bounds each schedule to one queued occurrence while allowing a running prede
   db.sqlite
     .prepare("UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?")
     .run(accepted.queueEntryId);
-  expect(store.commitAttempt(second!.id, 2, { kind: 'ready', payload })?.state).toBe(
+  expect((await store.commitAttempt(second!.id, 2, { kind: 'ready', payload }))?.state).toBe(
     'admission-accepted'
   );
   expect(store.getOccurrence(first!.id).attempts).toHaveLength(1);
 });
 
-it('freezes the complete first resolved payload on failure and fences substitution', () => {
+it('freezes the complete first resolved payload on failure and fences substitution', async () => {
   const { db, store } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -478,17 +490,22 @@ it('freezes the complete first resolved payload on failure and fences substituti
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   expect(
-    store.commitAttempt(occurrence!.id, 2, { kind: 'failure', code: 'preparation_failed', payload })
-      ?.resolvedPayload
+    (
+      await store.commitAttempt(occurrence!.id, 2, {
+        kind: 'failure',
+        code: 'preparation_failed',
+        payload,
+      })
+    )?.resolvedPayload
   ).toEqual(payload);
   const changed = { ...payload, modelId: 'replacement' };
-  expect(store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload: changed })).toMatchObject(
-    {
-      state: 'recovery_required',
-      resolvedPayload: payload,
-      attempts: [{ code: 'preparation_failed' }],
-    }
-  );
+  expect(
+    await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload: changed })
+  ).toMatchObject({
+    state: 'recovery_required',
+    resolvedPayload: payload,
+    attempts: [{ code: 'preparation_failed' }],
+  });
   expect(db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()).toEqual({
     n: 0,
   });
@@ -500,7 +517,7 @@ it.each([
   'denied',
   'cancelled',
   'expired',
-])('reconciles exact deterministic queue replay in %s without resubmission', (status) => {
+])('reconciles exact deterministic queue replay in %s without resubmission', async (status) => {
   const { db, store } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -509,7 +526,7 @@ it.each([
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  const accepted = store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })!;
+  const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
   db.sqlite
     .prepare('UPDATE scheduler_admission_entries SET status = ? WHERE queue_entry_id = ?')
     .run(status, accepted.queueEntryId);
@@ -518,7 +535,7 @@ it.each([
     .prepare('UPDATE recurring_occurrences SET state = ?, record_json = ? WHERE id = ?')
     .run('pending', JSON.stringify(replay), replay.id);
   expect(
-    store.commitAttempt(occurrence!.id, 2, { kind: 'failure', code: 'authority_denied' })
+    await store.commitAttempt(occurrence!.id, 2, { kind: 'failure', code: 'authority_denied' })
   ).toMatchObject({
     state: 'admission-accepted',
     queueEntryId: accepted.queueEntryId,
@@ -530,7 +547,7 @@ it.each([
   });
 });
 
-it('fences a conflicting deterministic queue row without overwriting it', () => {
+it('fences a conflicting deterministic queue row without overwriting it', async () => {
   const { db, store } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -539,7 +556,7 @@ it('fences a conflicting deterministic queue row without overwriting it', () => 
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  const accepted = store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })!;
+  const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
   db.sqlite
     .prepare(
       "UPDATE scheduler_admission_entries SET input_hash = 'contradiction' WHERE queue_entry_id = ?"
@@ -548,7 +565,7 @@ it('fences a conflicting deterministic queue row without overwriting it', () => 
   db.sqlite
     .prepare("UPDATE recurring_occurrences SET state = 'pending', record_json = ? WHERE id = ?")
     .run(JSON.stringify({ ...accepted, state: 'pending', terminalAt: null }), accepted.id);
-  expect(store.commitAttempt(accepted.id, 2, { kind: 'ready', payload })?.state).toBe(
+  expect((await store.commitAttempt(accepted.id, 2, { kind: 'ready', payload }))?.state).toBe(
     'recovery_required'
   );
   expect(db.sqlite.prepare('SELECT input_hash FROM scheduler_admission_entries').get()).toEqual({
@@ -556,7 +573,7 @@ it('fences a conflicting deterministic queue row without overwriting it', () => 
   });
 });
 
-it('seals pause history with the old snapshot, cancels pending work, and rejects a stale scan', () => {
+it('seals pause history with the old snapshot, cancels pending work, and rejects a stale scan', async () => {
   const { store, setTime } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -588,7 +605,9 @@ it('seals pause history with the old snapshot, cancels pending work, and rejects
   expect(
     history.filter((entry) => entry.kind === 'occurrence' && entry.record.state === 'cancelled')
   ).toHaveLength(121);
-  expect(store.commitAttempt(pending!.id, 2, { kind: 'ready', payload })?.state).toBe('cancelled');
+  expect((await store.commitAttempt(pending!.id, 2, { kind: 'ready', payload }))?.state).toBe(
+    'cancelled'
+  );
   const edited = store.updateAutomation(testEntityId('usr', 'user_other'), schedule.id, {
     expectedRevision: paused.revision,
     prompt: 'New input',
@@ -648,7 +667,7 @@ it('writes v1 lossless ranges and serves huge-outage live work without unbounded
   expect(store.getAutomation(schedule.id).nextScheduledAt).toBe('2036-10-16T00:00:05.000Z');
 });
 
-it('retains accepted admissions on delete and cannot resume the identity tombstone', () => {
+it('retains accepted admissions on delete and cannot resume the identity tombstone', async () => {
   const { store } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -657,7 +676,7 @@ it('retains accepted admissions on delete and cannot resume the identity tombsto
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  const accepted = store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload });
+  const accepted = await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload });
   store.deleteAutomation(testEntityId('usr', 'user_other'), schedule.id);
   expect(store.getAutomation(schedule.id)).toMatchObject({
     status: 'deleted',
@@ -677,7 +696,7 @@ it('retains accepted admissions on delete and cannot resume the identity tombsto
   ).toThrow('lifecycle conflicts');
 });
 
-it('commits every definition and terminal transition with its Workspace AuditEvent and rolls back audit failure', () => {
+it('commits every definition and terminal transition with its Workspace AuditEvent and rolls back audit failure', async () => {
   const { db, store } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   expect(
@@ -695,15 +714,19 @@ it('commits every definition and terminal transition with its Workspace AuditEve
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   db.sqlite.exec(`CREATE TRIGGER reject_recurrence_audit BEFORE INSERT ON audit_events
     WHEN NEW.action LIKE 'recurring.occurrence.%' BEGIN SELECT RAISE(ABORT, 'audit rejected'); END;`);
-  expect(() => store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })).toThrow(
-    'audit rejected'
-  );
+  await expect(
+    store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })
+  ).rejects.toMatchObject({
+    name: 'ControlStoreWorkerError',
+    code: 'constraint',
+    commit: 'not-committed',
+  });
   expect(store.getOccurrence(occurrence!.id)).toMatchObject({ state: 'pending', attempts: [] });
   expect(db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()).toEqual({
     n: 0,
   });
   db.sqlite.exec('DROP TRIGGER reject_recurrence_audit');
-  store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload });
+  await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload });
   expect(
     db.sqlite
       .prepare(
@@ -743,7 +766,7 @@ it('uses the shared Workspace fence for definition changes and admission', async
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   await gate.close(definition.workspaceId);
-  expect(() => store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })).toThrow(
+  await expect(store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })).rejects.toThrow(
     'fenced'
   );
   expect(() =>
@@ -758,7 +781,7 @@ it('uses the shared Workspace fence for definition changes and admission', async
   expect(store.getOccurrence(occurrence!.id)).toMatchObject({ state: 'pending', attempts: [] });
 });
 
-it('reopens pending work with its attempt count, immutable payload, and original deadline', () => {
+it('reopens pending work with its attempt count, immutable payload, and original deadline', async () => {
   const { db, root, store, clock } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -767,7 +790,11 @@ it('reopens pending work with its attempt count, immutable payload, and original
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  store.commitAttempt(occurrence!.id, 2, { kind: 'failure', code: 'preparation_failed', payload });
+  await store.commitAttempt(occurrence!.id, 2, {
+    kind: 'failure',
+    code: 'preparation_failed',
+    payload,
+  });
   db.sqlite.close();
   const reopened = openCoreDb(root);
   fixtures.push({ root, db: reopened });
@@ -780,7 +807,7 @@ it('reopens pending work with its attempt count, immutable payload, and original
     deadline: '2026-10-16T00:10:00.000Z',
   });
   expect(
-    restarted.commitAttempt(pending!.id, 2, { kind: 'ready', payload })?.attempts
+    (await restarted.commitAttempt(pending!.id, 2, { kind: 'ready', payload }))?.attempts
   ).toHaveLength(2);
 });
 
@@ -810,7 +837,7 @@ it('caps live selection at 128 globally in nominal deadline order', () => {
   expect(store.getAutomation(schedules[128]!.id).nextScheduledAt).toBe('2026-10-16T00:02:08.000Z');
 });
 
-it('verifies the retained queue bytes as well as its stored hash before publishing acceptance', () => {
+it('verifies the retained queue bytes as well as its stored hash before publishing acceptance', async () => {
   const { db, store } = fixture();
   const schedule = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
@@ -819,7 +846,7 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  const accepted = store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })!;
+  const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
   expect(findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toEqual(accepted);
   db.sqlite
     .prepare(
@@ -832,7 +859,7 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
   db.sqlite
     .prepare("UPDATE recurring_occurrences SET state = 'pending', record_json = ? WHERE id = ?")
     .run(JSON.stringify({ ...accepted, state: 'pending', terminalAt: null }), accepted.id);
-  expect(store.commitAttempt(accepted.id, 2, { kind: 'ready', payload })?.state).toBe(
+  expect((await store.commitAttempt(accepted.id, 2, { kind: 'ready', payload }))?.state).toBe(
     'recovery_required'
   );
 });
@@ -1249,7 +1276,7 @@ it('selects a live monthly instant ahead of more than 128 expired-only fixed pre
   });
 });
 
-it('preserves one series waiting slot during explicit retry, including after restart', () => {
+it('preserves one series waiting slot during explicit retry, including after restart', async () => {
   const { root, db, clock, store, setTime } = fixture();
   const created = store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   const active = store.updateAutomation(testEntityId('usr', 'user_creator'), created.id, {
@@ -1257,19 +1284,27 @@ it('preserves one series waiting slot during explicit retry, including after res
     status: 'active',
     scheduledAt: clock(),
   });
-  const first = store.commitAttempt(store.collectScanCandidates(clock())[0]!.id, active.revision, {
-    kind: 'ready',
-    payload,
-  })!;
+  const first = (await store.commitAttempt(
+    store.collectScanCandidates(clock())[0]!.id,
+    active.revision,
+    {
+      kind: 'ready',
+      payload,
+    }
+  ))!;
   denySchedulerAdmissionEntry(db, {
     queueEntryId: first.queueEntryId!,
     denialReason: 'authority-denied',
   });
   setTime('2026-10-16T00:00:05.000Z');
-  const later = store.commitAttempt(store.collectScanCandidates(clock())[0]!.id, active.revision, {
-    kind: 'ready',
-    payload,
-  })!;
+  const later = (await store.commitAttempt(
+    store.collectScanCandidates(clock())[0]!.id,
+    active.revision,
+    {
+      kind: 'ready',
+      payload,
+    }
+  ))!;
   const other = store.createAutomation(testEntityId('usr', 'user_creator'), {
     ...definition,
     name: 'Independent series',
@@ -1282,10 +1317,10 @@ it('preserves one series waiting slot during explicit retry, including after res
   const otherDue = store
     .collectScanCandidates(clock())
     .find((occurrence) => occurrence.scheduleId === other.id)!;
-  const otherAccepted = store.commitAttempt(otherDue.id, otherActive.revision, {
+  const otherAccepted = (await store.commitAttempt(otherDue.id, otherActive.revision, {
     kind: 'ready',
     payload,
-  })!;
+  }))!;
   expect(() =>
     retryDeniedSchedulerAdmissionEntry(db, {
       workspaceId: created.workspaceId,

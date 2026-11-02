@@ -1268,9 +1268,14 @@ describe('generic turn routes', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-07-06T00:00:00.000Z'));
     const executor = new RecordingTurnExecutor();
-    const fixture = await createSchedulerFixture(executor, 'remote-placement', 'remote');
+    const admissions = vi.spyOn(productTurnOwners, 'observeTurnAdmission');
+    let fixture: Awaited<ReturnType<typeof createSchedulerFixture>> | undefined;
+    let primaryError: unknown;
+    let hasPrimaryError = false;
+    const cleanupFailures: unknown[] = [];
 
     try {
+      fixture = await createSchedulerFixture(executor, 'remote-placement', 'remote');
       const response = await fixture.app.request(
         ...operationRequest(
           'turn.start',
@@ -1311,21 +1316,53 @@ describe('generic turn routes', () => {
       // The Native heartbeat budget begins at an accepted heartbeat; startup owns the pre-heartbeat gate.
       expect(nativeLiveness!.heartbeat_deadline).toBeNull();
       expect(nativeLiveness!.heartbeat_timeout_ms).toBe(30_000);
+    } catch (error) {
+      hasPrimaryError = true;
+      primaryError = error;
     } finally {
-      await vi.waitFor(() =>
-        expect(
-          readTurnAttempt(
-            fixture.coreDb,
-            fixture.store.listThreadTurns(
-              'ws_00000000-0000-7000-8000-000000000001',
-              'th_00000000-0000-7000-8000-000000000001'
-            )[0]!.id
-          )?.phase
-        ).toBe('closed')
-      );
-      fixture.coreDb.sqlite.close();
-      vi.useRealTimers();
+      try {
+        if (fixture) {
+          try {
+            await Promise.all(
+              admissions.mock.results
+                .filter((result) => result.type === 'return')
+                .map((result) => result.value.closeout)
+            );
+            expect(
+              readTurnAttempt(
+                fixture.coreDb,
+                fixture.store.listThreadTurns(
+                  'ws_00000000-0000-7000-8000-000000000001',
+                  'th_00000000-0000-7000-8000-000000000001'
+                )[0]!.id
+              )?.phase
+            ).toBe('closed');
+          } catch (error) {
+            cleanupFailures.push(error);
+          } finally {
+            try {
+              fixture.coreDb.sqlite.close();
+            } catch (error) {
+              cleanupFailures.push(error);
+            }
+          }
+        }
+      } finally {
+        try {
+          admissions.mockRestore();
+        } finally {
+          vi.useRealTimers();
+        }
+      }
     }
+    if (hasPrimaryError) {
+      expect.soft(cleanupFailures, 'Remote Turn fixture cleanup failures').toEqual([]);
+      throw primaryError;
+    }
+    if (cleanupFailures.length > 0)
+      throw cleanupFailures.length === 1
+        ? cleanupFailures[0]
+        : new AggregateError(cleanupFailures, 'Remote Turn fixture cleanup failed.');
   });
 
   it('releases the exact native Turn after a supported interrupt', async () => {
@@ -1460,46 +1497,48 @@ describe('generic turn routes', () => {
 
   it('starts and replays a direct turn under one presented cross-Workspace admin token', async () => {
     const executor = new RecordingTurnExecutor();
-    const fixture = await createSharedSchedulerFixture(executor, 'admin-direct-turn');
-    const now = Date.now();
-    fixture.coreDb.sqlite
-      .prepare(
-        `INSERT INTO users (
-          id, display_name, email, email_verified, created_at, updated_at, kind, status
-        ) VALUES ('usr_00000000-0000-79cf-b70a-b5595737412e', 'Admin', 'admin-nomember@example.com', false, ?, ?, 'human', 'active')`
-      )
-      .run(now, now);
-    const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      ownerUserId: 'usr_00000000-0000-79cf-b70a-b5595737412e',
-      scope: 'server-admin',
-      tokenId: 'token_admin_direct_turn',
-      workspaceIds: [],
-    });
-    const body = {
-      agentId: 'agent_codex_host',
-      input: 'Run the directly requested task.',
-      requestId: '00000000-0000-4000-8000-000000000304',
-      threadId: 'th_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    };
-    const request = () =>
-      fixture.app.request(
-        ...operationRequest(
-          'turn.start',
-          {},
-          {
-            method: 'POST',
-            body: JSON.stringify(body),
-            headers: {
-              authorization: `Bearer ${issued.secret}`,
-              'content-type': 'application/json',
-            },
-          }
-        )
-      );
+    const admissions = vi.spyOn(productTurnOwners, 'observeTurnAdmission');
+    let fixture: Awaited<ReturnType<typeof createSharedSchedulerFixture>> | undefined;
 
     try {
+      fixture = await createSharedSchedulerFixture(executor, 'admin-direct-turn');
+      const now = Date.now();
+      fixture.coreDb.sqlite
+        .prepare(
+          `INSERT INTO users (
+            id, display_name, email, email_verified, created_at, updated_at, kind, status
+          ) VALUES ('usr_00000000-0000-79cf-b70a-b5595737412e', 'Admin', 'admin-nomember@example.com', false, ?, ?, 'human', 'active')`
+        )
+        .run(now, now);
+      const issued = createOpenKitAccessTokenRecord(fixture.coreDb, {
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        ownerUserId: 'usr_00000000-0000-79cf-b70a-b5595737412e',
+        scope: 'server-admin',
+        tokenId: 'token_admin_direct_turn',
+        workspaceIds: [],
+      });
+      const body = {
+        agentId: 'agent_codex_host',
+        input: 'Run the directly requested task.',
+        requestId: '00000000-0000-4000-8000-000000000304',
+        threadId: 'th_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      };
+      const request = () =>
+        fixture!.app.request(
+          ...operationRequest(
+            'turn.start',
+            {},
+            {
+              method: 'POST',
+              body: JSON.stringify(body),
+              headers: {
+                authorization: `Bearer ${issued.secret}`,
+                'content-type': 'application/json',
+              },
+            }
+          )
+        );
       const first = await request();
       expect(first.status, await first.clone().text()).toBe(202);
       const turn = TurnSchema.parse(await first.json());
@@ -1521,6 +1560,7 @@ describe('generic turn routes', () => {
       await vi.waitFor(() =>
         expect(readTurnAttempt(fixture.coreDb, turn.id)?.phase).toBe('closed')
       );
+      expect(readTurnAttempt(fixture.coreDb, turn.id)?.phase).toBe('closed');
       const replay = await request();
       expect(replay.status, await replay.clone().text()).toBe(202);
       expect(TurnSchema.parse(await replay.json()).id).toBe(turn.id);
@@ -1531,7 +1571,11 @@ describe('generic turn routes', () => {
           .get(turn.id)
       ).toEqual({ count: 1 });
     } finally {
-      fixture.coreDb.sqlite.close();
+      try {
+        fixture?.coreDb.sqlite.close();
+      } finally {
+        admissions.mockRestore();
+      }
     }
   });
 

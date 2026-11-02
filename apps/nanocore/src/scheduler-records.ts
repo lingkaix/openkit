@@ -58,16 +58,10 @@ const StoredSchedulerWorkspaceRootV1Schema = z.discriminatedUnion('sourceKind', 
     })
     .strip(),
 ]);
-/** Known scheduler admission transition refusal; the admission family owns its projection. */
-export class SchedulerAdmissionTransitionError extends Error {
-  /** Definite refusal classified by the existing admission owner. */
-  constructor(
-    message: string,
-    readonly reason: SchedulerAdmissionDenialReason = 'invalid-request'
-  ) {
-    super(message);
-  }
-}
+
+export { SchedulerAdmissionTransitionError } from './storage/scheduler-admission-codecs.js';
+
+import { SchedulerAdmissionTransitionError } from './storage/scheduler-admission-codecs.js';
 
 /** Explicit retained-storage choice captured with one scheduler admission request. */
 export type SchedulerWorkerStorageChoice =

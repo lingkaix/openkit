@@ -62,7 +62,7 @@ describe('recurring portable history', () => {
       scheduledAt: instant,
     });
     const occurrence = store.collectScanCandidates(instant)[0]!;
-    store.commitAttempt(occurrence.id, 2, {
+    await store.commitAttempt(occurrence.id, 2, {
       kind: 'ready',
       payload: {
         backendId: 'private-backend',

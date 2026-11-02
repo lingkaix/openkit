@@ -1,4 +1,8 @@
+HTTP operation routes share the existing API error owner's classified Response projection; unclassified failures retain their original HTTP error boundary.
+
 # NanoCore Source
+
+Scheduler queue publication uses one typed native Core family. Ordinary acceptance, denial, explicit retry and cancellation retain their existing queue predicates; recurring attempt/acceptance and external event/queue joins each remain one savepoint under the covering FULL acknowledgement. Main keeps source preparation and readonly Workspace checks under the existing mutation admission, and the native owner repeats current Core predicates. Later Workspace Turn/Audit effects remain separate, ordered publications. Recurring definition and scanner cursor transactions retain their current owner until their complete lifecycle cut.
 
 Authenticated Worker-control rejection evidence uses one closed Core native tuple and its existing FIFO, per-database/per-Turn bounds, physical byte/WAL admission and covering FULL acknowledgement. Routes await that acknowledgement before returning the original product-safe refusal; missing authentication and reconnect-required refusals retain no rejection row. The heartbeat/final-status and fingerprint lifecycle tuple remains with its current owner.
 

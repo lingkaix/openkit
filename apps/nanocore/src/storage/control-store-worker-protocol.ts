@@ -167,6 +167,14 @@ import {
   ControlRuntimeTargetResultSchema,
 } from './runtime-target-codecs.js';
 import {
+  type ControlSchedulerAdmissionRefusal,
+  ControlSchedulerAdmissionRefusalSchema,
+  type ControlSchedulerAdmissionResult,
+  ControlSchedulerAdmissionResultSchema,
+  type ControlSchedulerAdmissionWire,
+  ControlSchedulerAdmissionWireSchema,
+} from './scheduler-admission-codecs.js';
+import {
   type ControlThreadReadMembershipWire,
   ControlThreadReadMembershipWireSchema,
   THREAD_READ_RECEIPT_INVALID,
@@ -228,7 +236,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 34;
+export const CONTROL_WORKER_VERSION = 35;
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z
@@ -474,6 +482,11 @@ export type ControlWorkerCommand =
           readonly content?: ArrayBuffer;
         }
       | { readonly operation: 'harness-lifecycle'; readonly input: ControlHarnessLifecycleInput }
+      | {
+          readonly operation: 'scheduler-admission';
+          readonly input: ControlSchedulerAdmissionWire;
+          readonly content?: ArrayBuffer;
+        }
       | { readonly operation: 'core-sharing'; readonly input: ControlCoreSharing }
       | { readonly operation: 'evaluation-candidate'; readonly input: ControlEvaluationCandidate }
       | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
@@ -514,6 +527,7 @@ export function controlWorkerInputBytes(
           !(
             (command.operation === 'capability' ||
               command.operation === 'observation' ||
+              command.operation === 'scheduler-admission' ||
               command.operation === 'generative-presentation' ||
               command.operation === 'app-kernel' ||
               command.operation === 'thread-read-membership' ||
@@ -639,7 +653,8 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlRuntimeTargetRefusalSchema>
   | z.infer<typeof ControlBackendSessionRefusalSchema>
   | z.infer<typeof ControlHarnessLifecycleRefusalSchema>
-  | ControlCoreSharingRefusal;
+  | ControlCoreSharingRefusal
+  | ControlSchedulerAdmissionRefusal;
 
 /**
  * Worker reply. Success for writes follows the outer FULL-durability COMMIT.
@@ -701,6 +716,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'evaluation-candidate';
       readonly result: import('@openkit/app-api-schemas').CandidateSetRecord;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'scheduler-admission';
+      readonly result: ControlSchedulerAdmissionResult;
     }
   | {
       readonly status: 'ok';
@@ -904,6 +924,11 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlHarnessLifecycleRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'worker-storage-binding')
     return ControlWorkerStorageRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'scheduler-admission')
+    return (
+      Buffer.byteLength(JSON.stringify(value)) <= CONTROL_PRODUCT_LIMITS.metadataBytes &&
+      ControlSchedulerAdmissionRefusalSchema.safeParse(value).success
+    );
   if (isRecord(value) && value.operation === 'core-sharing')
     return ControlCoreSharingRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'app-kernel')
@@ -1134,6 +1159,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlHarnessLifecycleResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'worker-storage-binding')
     return ControlWorkerStorageResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'scheduler-admission')
+    return ControlSchedulerAdmissionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'core-sharing')
     return ControlCoreSharingResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'evaluation-candidate')
@@ -1590,6 +1617,14 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     );
   if (value.operation === 'thread-read-membership') {
     const parsed = ControlThreadReadMembershipWireSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
+  if (value.operation === 'scheduler-admission') {
+    const parsed = ControlSchedulerAdmissionWireSchema.safeParse(value.input);
     return (
       parsed.success &&
       exactFields(value, [...scoped, 'input', 'content']) &&

@@ -3,6 +3,7 @@ import type { TurnSchema } from '@openkit/protocol';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
+import { TurnStartValidationError } from '../operation-error.js';
 import {
   requireSchedulerAdmissionEntry,
   schedulerAdmissionInputHash,
@@ -11,7 +12,6 @@ import type { CoreDb } from '../storage/db.js';
 import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
-import { TurnStartValidationError } from './orchestrator.js';
 
 /** Reads the original source occurrence without creating or repairing accepted work. */
 export function readExternalTriggerPollSource(coreDb: CoreDb, sourceTurnId: string) {

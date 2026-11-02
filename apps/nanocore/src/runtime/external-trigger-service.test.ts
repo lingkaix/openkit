@@ -18,11 +18,16 @@ import {
   cancelSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { isControlWorkerRequest } from '../storage/control-store-worker-protocol.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { findExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -128,7 +133,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
   });
   async function poll() {
     const occurrence = schedules.collectScanCandidates(instant)[0]!;
-    const accepted = schedules.commitAttempt(occurrence.id, occurrence.definitionRevision, {
+    const accepted = (await schedules.commitAttempt(occurrence.id, occurrence.definitionRevision, {
       kind: 'ready',
       payload: {
         backendId: 'test-backend',
@@ -138,7 +143,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
         workspaceCwd: null,
         workspaceRoots: [],
       },
-    })!;
+    }))!;
     const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId!);
     const agentSessionId = allocateEntityId('as');
     await store.createAgentSession({
@@ -165,7 +170,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
         executorKind: 'worker',
       }
     );
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       coreDb: db,
       agentSetup,
       agentSessionId,
@@ -190,7 +195,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     });
     const ws = openWorkspaceDb(root, workspace.id);
     try {
-      recordAgentEnvironmentPackageSnapshot(ws, { environmentPackage, createdAt: instant });
+      await recordAgentEnvironmentPackageSnapshot(ws, { environmentPackage, createdAt: instant });
       await store.updateAgentSession(agentSessionId, {
         environmentPackageSnapshotId: packageSnapshotId,
       });
@@ -533,6 +538,71 @@ describe('bounded scheduled poll event admission', () => {
     }
   });
 
+  it('rolls back the losing native queue after two callers pass the absent event preflight', async () => {
+    const f = await fixture();
+    const before = queueCount(f.db);
+    const firstCreated = Promise.withResolvers<void>();
+    const secondCreated = Promise.withResolvers<void>();
+    const releaseFirst = Promise.withResolvers<void>();
+    const releaseSecond = Promise.withResolvers<void>();
+    const createThread = f.store.createThread.bind(f.store);
+    const children: string[] = [];
+    vi.spyOn(f.store, 'createThread').mockImplementation(async (...args) => {
+      const index = children.length;
+      // Reserve order before the real awaited owner creates either child.
+      children.push('');
+      const child = await createThread(...args);
+      children[index] = child.id;
+      if (index === 0) {
+        firstCreated.resolve();
+        await releaseFirst.promise;
+      } else {
+        secondCreated.resolve();
+        await releaseSecond.promise;
+      }
+      return child;
+    });
+    const native = vi.spyOn(getControlStoreWorkerClient(), 'schedulerAdmission');
+    const first = f.admit();
+    let second: ReturnType<typeof f.admit> | undefined;
+    try {
+      await firstCreated.promise;
+      second = f.admit({ input: 'This losing input must not replace the original event.' });
+      await secondCreated.promise;
+      // Both public callers passed the absent-join check; neither scheduler request was submitted yet.
+      expect(findExternalTriggerAdmission(f.db, f.schedule.id, f.dependencies.eventKey)).toBeNull();
+      expect(native).not.toHaveBeenCalled();
+      releaseFirst.resolve();
+      const winner = await first;
+      expect(winner.duplicate).toBe(false);
+      expect(winner.entry.turnInput).toBe(f.dependencies.input);
+      releaseSecond.resolve();
+      const duplicate = await second;
+      expect(duplicate).toEqual({ ...winner, duplicate: true });
+      expect(native).toHaveBeenCalledTimes(2);
+      const losing = native.mock.calls[1]![1];
+      expect(losing.mode).toBe('create');
+      if (losing.mode !== 'create') throw new Error('The losing event did not submit admission.');
+      expect(losing.entry.threadId).toBe(children[1]);
+      // Observe the real native losing transition, not only the service's duplicate recovery result.
+      await expect(native.mock.results[1]!.value).rejects.toMatchObject({
+        code: 'recovery_required',
+        status: 409,
+      });
+      expect(() => requireSchedulerAdmissionEntry(f.db, losing.entry.queueEntryId)).toThrow();
+      expect(f.store.listThreadTurns(f.schedule.workspaceId, children[1]!)).toEqual([]);
+      expect(findExternalTriggerAdmission(f.db, f.schedule.id, f.dependencies.eventKey)).toEqual(
+        winner.admission
+      );
+      expect(requireSchedulerAdmissionEntry(f.db, winner.entry.queueEntryId)).toEqual(winner.entry);
+      expect(queueCount(f.db)).toBe(before + 1);
+    } finally {
+      releaseFirst.resolve();
+      releaseSecond.resolve();
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+    }
+  });
+
   it('isolates two events in fresh shared child Threads while the first case is pending', async () => {
     const f = await fixture();
     const [first, replay] = await Promise.all([
@@ -687,18 +757,66 @@ describe('bounded scheduled poll event admission', () => {
     expect(queueCount(f.db)).toBe(2);
   });
 
-  it('rolls back both queue and join on insertion failure and permits a later ordinary admission', async () => {
+  it('rolls back both queue and join under a read-only Main and retries the same request', async () => {
     const f = await fixture();
     f.db.sqlite.exec(
       "CREATE TRIGGER reject_external BEFORE INSERT ON external_trigger_admissions BEGIN SELECT RAISE(ABORT, 'injected join refusal'); END"
     );
-    await expect(f.admit()).rejects.toThrow('injected join refusal');
+    f.db.sqlite.pragma('query_only = ON');
+    const refused = f.admit();
+    await expect(refused).rejects.toBeInstanceOf(ControlStoreWorkerError);
+    await expect(refused).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
     expect(findExternalTriggerAdmission(f.db, f.schedule.id, f.dependencies.eventKey)).toBeNull();
     expect(queueCount(f.db)).toBe(1);
+    f.db.sqlite.pragma('query_only = OFF');
     f.db.sqlite.exec('DROP TRIGGER reject_external');
+    f.db.sqlite.pragma('query_only = ON');
     const accepted = await f.admit();
     expect(accepted.duplicate).toBe(false);
+    expect(accepted.admission.eventKey).toBe(f.dependencies.eventKey);
     expect(queueCount(f.db)).toBe(2);
+  });
+
+  it('retains an admitted input above one MiB byte-exact while Main stays read-only', async () => {
+    const f = await fixture();
+    const target = await f.store.createThread(f.schedule.workspaceId, 'Large exact input');
+    const turnInput = `${'a'.repeat(1_048_600)}🚀`;
+    expect(new TextEncoder().encode(turnInput)).toHaveLength(1_048_604);
+    const queueEntryId = 'queue_large_exact_input';
+    const turnId = allocateEntityId('tu');
+    const scope = nativeProductScope(f.root, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    const client = getControlStoreWorkerClient();
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: f.root,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    f.db.sqlite.pragma('query_only = ON');
+    const result = await client.schedulerAdmission(database, {
+      mode: 'create',
+      entry: {
+        backendId: 'test-backend',
+        queueEntryId,
+        requestId: 'request_large_exact_input',
+        requestedAgentId: 'worker',
+        triggerActor: f.source.triggerActor,
+        workspaceId: f.schedule.workspaceId,
+        threadId: target.id,
+        turnId,
+        turnInput,
+      },
+    });
+    expect(result.kind).toBe('queue');
+    if (result.kind !== 'queue') throw new Error('Native scheduler admission omitted its queue.');
+    const retained = requireSchedulerAdmissionEntry(f.db, queueEntryId);
+    expect(retained).toEqual(result.entry);
+    expect(retained.turnInput).toBe(turnInput);
+    expect(retained.inputHash).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
   it('does not retry canonical publication after queue acceptance', async () => {

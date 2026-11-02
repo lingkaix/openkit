@@ -2302,7 +2302,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         turnExecutor,
         workerPlacement,
         ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-      }).catch((error: unknown) => {
+      }).catch(async (error: unknown) => {
         // Only this refused outcome attempt retires its still-queued scheduler ownership.
         if (options.coreDb && error instanceof TurnStartValidationError) {
           const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
@@ -2310,7 +2310,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             statuses: ['queued'],
           }).find((candidate) => candidate.turnId === turn.id && candidate.requestId === requestId);
           if (entry)
-            cancelOwnedQueuedAdmission(options.coreDb, {
+            await cancelOwnedQueuedAdmission(options.coreDb, {
               queueEntryId: entry.queueEntryId,
               workspaceId: workspaceIdForOwner(turn.owner),
             });

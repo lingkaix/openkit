@@ -124,6 +124,7 @@ import {
   applyControlProducts,
   applyControlPublication,
   applyControlTerminal,
+  CONTROL_PRODUCT_LIMITS,
   ControlItemAppendError,
   type ControlProductContentMount,
   type ControlProductOwner,
@@ -194,6 +195,13 @@ import { applyAppMigrations, applyNativeScopeMigrations } from './migrate.js';
 import { RuntimeTargetRefusal } from './runtime-target-codecs.js';
 import { applyControlRuntimeTarget } from './runtime-target-native.js';
 import {
+  type ControlSchedulerAdmission,
+  ControlSchedulerAdmissionRefusalSchema,
+  ControlSchedulerAdmissionSchema,
+  SchedulerAdmissionTransitionError,
+} from './scheduler-admission-codecs.js';
+import { applyControlSchedulerAdmission } from './scheduler-admission-native.js';
+import {
   THREAD_READ_RECEIPT_INVALID,
   ThreadReadItemIdsSchema,
 } from './thread-read-membership-codecs.js';
@@ -261,6 +269,7 @@ type WriteCommand = Extract<
       | 'worker-control-evidence'
       | 'generative-presentation'
       | 'evaluation-candidate'
+      | 'scheduler-admission'
       | 'core-sharing'
       | 'provenance'
       | 'observation'
@@ -292,6 +301,7 @@ type WriteRequest = WriteCommand & {
   refusal?: ControlWorkerReply;
   readonly preparedApp?: PreparedControlApp;
   readonly appInput?: ControlAppInput;
+  readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
   readonly preparedThreadReadItemIds?: readonly string[];
   readonly preparedGenerativePresentation?: PreparedControlGenerativePresentation;
   readonly preparedPublication?: PreparedControlPublication | undefined;
@@ -533,6 +543,41 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     };
   if (operation === 'worker-storage-binding' && error instanceof WorkerStorageBindingError)
     return { operation, code: error.code, message: error.message, status: 409 };
+  if (
+    operation === 'scheduler-admission' &&
+    (error instanceof SyntaxError || error instanceof ZodError)
+  )
+    return {
+      operation,
+      kind: 'decoder',
+      code: 'invalid_request',
+      message: 'The record could not be processed.',
+      status: 400,
+    };
+  if (operation === 'scheduler-admission' && error instanceof SchedulerAdmissionTransitionError) {
+    const domain = {
+      operation,
+      kind: 'transition' as const,
+      code: error.reason,
+      message: error.message,
+      status: 400 as const,
+    };
+    return Buffer.byteLength(JSON.stringify(domain)) <= CONTROL_PRODUCT_LIMITS.metadataBytes
+      ? (domain as ControlWorkerDomainRefusal)
+      : undefined;
+  }
+  if (operation === 'scheduler-admission' && error instanceof OperationError) {
+    for (const kind of ['authority', 'turn'] as const) {
+      const parsed = ControlSchedulerAdmissionRefusalSchema.safeParse({
+        operation,
+        kind,
+        code: error.code,
+        message: error.message,
+        status: error.status,
+      });
+      if (parsed.success) return parsed.data;
+    }
+  }
   if (operation === 'core-sharing' && error instanceof ZodError)
     return {
       operation,
@@ -1867,6 +1912,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-storage-binding',
               result,
             };
+          } else if (request.operation === 'scheduler-admission') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            if (!request.preparedSchedulerAdmission) throw new ControlProductPreconditionError();
+            const result = applyControlSchedulerAdmission(
+              owner.scopeDb,
+              request.preparedSchedulerAdmission
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'scheduler-admission',
+              result,
+            };
           } else if (request.operation === 'core-sharing') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlCoreSharing(owner.scopeDb, request.input);
@@ -2837,6 +2896,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'worker-control-final-status' ||
       value.operation === 'worker-control-heartbeat' ||
       value.operation === 'worker-control-record' ||
+      value.operation === 'scheduler-admission' ||
       value.operation === 'core-sharing' ||
       value.operation === 'evaluation-candidate' ||
       value.operation === 'material' ||
@@ -2893,6 +2953,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
         const prepare = async () => {
           let preparedApp: PreparedControlApp | undefined;
           let appInput: ControlAppInput | undefined;
+          let preparedSchedulerAdmission: ControlSchedulerAdmission | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
           let preparedGenerativePresentation: PreparedControlGenerativePresentation | undefined;
           let preparedPublication: PreparedControlPublication | undefined;
@@ -2927,6 +2988,18 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedApp = await prepareControlApp(appDatabase(owner), appInput, (files) =>
                 admitPhysicalPublication(owner, queued, files)
               );
+            }
+            if (value.operation === 'scheduler-admission') {
+              preparedSchedulerAdmission = ControlSchedulerAdmissionSchema.parse(
+                JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value.content))
+              );
+              if (
+                value.input.turnId !==
+                (preparedSchedulerAdmission.mode === 'create'
+                  ? preparedSchedulerAdmission.entry.turnId
+                  : null)
+              )
+                throw new ControlProductPreconditionError();
             }
             if (value.operation === 'thread-read-membership') {
               preparedThreadReadItemIds = ThreadReadItemIdsSchema.parse(
@@ -3165,6 +3238,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               ready: true,
               preparedApp,
               appInput,
+              preparedSchedulerAdmission,
               preparedThreadReadItemIds,
               preparedEntries,
               preparedGenerativePresentation,

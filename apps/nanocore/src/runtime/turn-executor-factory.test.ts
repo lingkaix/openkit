@@ -79,6 +79,8 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { StoredAgentSessionV1Schema } from '../storage/retained-work-metadata-v1.js';
+import type { ControlSchedulerAdmission } from '../storage/scheduler-admission-codecs.js';
+import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
@@ -14682,6 +14684,14 @@ describe('createConfiguredTurnExecutor', () => {
     const entries: ReturnType<typeof createSchedulerAdmissionEntry>[] = [];
     const receipts: ReturnType<FsStore['getCommandRequest']>[] = [];
     const scope = { workspaceId, threadId, actorId: ownerUserId };
+    /** Creates queue state through its native owner before the existing Turn/receipt publication. */
+    const createAdmission = async (
+      input: Extract<ControlSchedulerAdmission, { mode: 'create' }>['entry']
+    ) => {
+      const result = await publishSchedulerAdmission(coreDb, { mode: 'create', entry: input });
+      if (result.kind !== 'queue') throw new Error('Expected a native scheduler queue entry.');
+      return result.entry;
+    };
     let priorPackage: AgentEnvironmentPackage | undefined;
     let predecessor: ReturnType<FsStore['getAgentSession']> | undefined;
     let selected: ReturnType<typeof getWorkerStorageBinding> | undefined;
@@ -14690,7 +14700,7 @@ describe('createConfiguredTurnExecutor', () => {
       for (const [index, label] of ['a', 'b'].entries()) {
         let agentSessionId = testEntityId('as', `as_idle_eviction_${label}`);
         let attemptId = testEntityId('attempt', `lease-snapshot_idle_eviction_${label}`);
-        let entry = createSchedulerAdmissionEntry(coreDb, {
+        const admissionInput = {
           backendId: 'nanohost',
           queueEntryId: `queue:idle-eviction-${label}`,
           requestId: testEntityId('tu', `request_idle_eviction_${label}`).slice(3),
@@ -14703,8 +14713,9 @@ describe('createConfiguredTurnExecutor', () => {
           turnId: testEntityId('tu', `turn_idle_eviction_${label}`),
           turnInput: `Continue retained work ${label}`,
           workerStorageChoice: choice,
-          triggerActor: { kind: 'user', id: ownerUserId },
-        });
+          triggerActor: { kind: 'user' as const, id: ownerUserId },
+        };
+        let entry = await createAdmission(admissionInput);
         await publishFactoryAdmission(store, entry);
         entries.push(entry);
         const receipt = store.getCommandRequest('turn.start', entry.requestId, {
@@ -14859,10 +14870,10 @@ describe('createConfiguredTurnExecutor', () => {
                 '1',
                 scenario === 'predecessor-fresh-different-runtime' ? 'opencode' : 'codex'
               );
-              admitTestNativeEnvironment(coreDb, setup.manifest);
+              // createFactoryCoreDb already admitted this exact immutable image before native startup.
               agentSessionId = testEntityId('as', 'as_fresh_retirement');
-              entry = createSchedulerAdmissionEntry(coreDb, {
-                ...entry,
+              entry = await createAdmission({
+                ...admissionInput,
                 queueEntryId: 'queue:fresh-retirement',
                 requestId: testEntityId('tu', 'request_fresh_retirement').slice(3),
                 turnId: testEntityId('tu', 'turn_fresh_retirement'),
@@ -15053,11 +15064,11 @@ describe('createConfiguredTurnExecutor', () => {
           await completing;
           expect(getWorkerStorageBinding(coreDb, choice)).toEqual(selected);
           setup = setupFor('2');
-          admitTestNativeEnvironment(coreDb, setup.manifest);
+          // createFactoryCoreDb already admitted this exact immutable image before native startup.
           const resident = store.getAgentSession(current.id);
           const before = [effects.length, commands.mock.calls.length];
-          const stale = createSchedulerAdmissionEntry(coreDb, {
-            ...entry,
+          const stale = await createAdmission({
+            ...admissionInput,
             queueEntryId: 'queue:idle-eviction-stale',
             requestId: testEntityId('tu', 'request_idle_eviction_stale').slice(3),
             turnId: testEntityId('tu', 'turn_idle_eviction_stale'),

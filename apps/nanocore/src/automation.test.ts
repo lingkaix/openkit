@@ -182,7 +182,7 @@ it('paginates lossless ranges directly and joins accepted-but-queued truth witho
   ).toBe(200);
   setTime('2026-10-16T01:00:00.000Z');
   const [occurrence] = automationStore.collectScanCandidates('2026-10-16T01:00:00.000Z');
-  automationStore.commitAttempt(occurrence!.id, 2, {
+  await automationStore.commitAttempt(occurrence!.id, 2, {
     kind: 'ready',
     payload: {
       backendId: 'private-backend',

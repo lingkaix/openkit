@@ -21,13 +21,13 @@ import {
 } from '../agents/setup-resolver.js';
 import { deriveArtifactReviewWorkerRequestId } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { canDiscloseThreadToAudience, isThreadIdVisible } from '../auth/thread-visibility.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
-  denySchedulerAdmissionEntry,
   findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerAdmissionEntry,
@@ -43,6 +43,7 @@ import {
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
@@ -54,7 +55,10 @@ import {
   type SchedulerExecutionAttemptRecord,
 } from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
-import { externalTriggerTurnPublicationComplete } from './external-trigger-source.js';
+import {
+  externalTriggerTurnPublicationComplete,
+  readExternalTriggerPollSource,
+} from './external-trigger-source.js';
 import {
   type StartTurnDependencies,
   startTurn,
@@ -201,17 +205,18 @@ export async function runSchedulerDispatchLoop(
       continue;
     }
     try {
-      if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true))
-        return {
-          startedTurns,
-          terminalResult: {
-            status: 'denied',
-            entry: denySchedulerAdmissionEntry(input.coreDb, {
-              queueEntryId: entry.queueEntryId,
-              denialReason: 'authority-denied',
-            }),
-          },
-        };
+      if (
+        !currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true)
+      ) {
+        const denied = await publishSchedulerAdmission(input.coreDb, {
+          mode: 'deny',
+          queueEntryId: entry.queueEntryId,
+          denialReason: 'authority-denied',
+        });
+        if (denied.kind !== 'queue')
+          throw new Error('Scheduler publication returned another family.');
+        return { startedTurns, terminalResult: { status: 'denied', entry: denied.entry } };
+      }
       if (entry.backendId !== input.executionBackend.id)
         throw new Error('Queued admission does not name the configured execution backend.');
       // An incomplete cross-store publication fences only its own request/Thread. Continue
@@ -225,6 +230,17 @@ export async function runSchedulerDispatchLoop(
         unpublishedQueueEntryIds.add(entry.queueEntryId);
         count--;
         continue;
+      }
+      // Admission is only early refusal; the live activated policy decides before effects.
+      if (!currentSchedulerDispatchAuthority(input, entry)) {
+        const denied = await publishSchedulerAdmission(input.coreDb, {
+          mode: 'deny',
+          queueEntryId: entry.queueEntryId,
+          denialReason: 'authority-denied',
+        });
+        if (denied.kind !== 'queue')
+          throw new Error('Scheduler publication returned another family.');
+        return { startedTurns, terminalResult: { status: 'denied', entry: denied.entry } };
       }
       let acknowledgeSubmission!: (result: SchedulerDispatchLoopResult) => void;
       let submissionResult: SchedulerDispatchLoopResult | undefined;
@@ -379,6 +395,42 @@ function activationPublicationComplete(
   return false;
 }
 
+/** Re-evaluates live Core eligibility and activated Thread policy at the execution boundary. */
+function currentSchedulerDispatchAuthority(
+  input: RunSchedulerDispatchLoopInput,
+  entry: SchedulerAdmissionEntryRecord
+): boolean {
+  const authority = currentSchedulerAdmissionWorkspaceAuthority(
+    input.coreDb,
+    entry,
+    'runtime.launch',
+    true
+  );
+  const userId = responsibleUserIdForActor(entry.triggerActor);
+  if (!authority || !userId) return false;
+  if (
+    !isThreadIdVisible(
+      input.store,
+      entry.workspaceId,
+      entry.threadId,
+      userId,
+      authority === 'administrator',
+      'turn.run'
+    )
+  )
+    return false;
+  const external = findExternalTriggerAdmissionForQueue(input.coreDb, entry.queueEntryId);
+  if (!external) return true;
+  // The accepted source remains the visibility origin; admission never freezes its policy.
+  const { entry: source } = readExternalTriggerPollSource(input.coreDb, external.sourceTurnId);
+  if (source.workspaceId !== entry.workspaceId) return false;
+  const sourceThread = input.store.getThread(source.workspaceId, source.threadId);
+  return (
+    isThreadIdVisible(input.store, source.workspaceId, source.threadId, userId) &&
+    canDiscloseThreadToAudience(input.store, sourceThread, null)
+  );
+}
+
 /** Keeps preparation, submission, and Turn closeout with their current executor owner. */
 async function dispatchSchedulerAdmission(
   input: RunSchedulerDispatchLoopInput,
@@ -446,6 +498,14 @@ async function dispatchSchedulerAdmission(
     };
     if (!input.turnExecutor.prepareAgentSessionForTurn)
       throw new Error('Configured executor has no AgentSession preparation owner.');
+    // Both boundaries use the same existing classified denial for this one attempt.
+    const authorityDenial = new TurnStartValidationError(
+      'workspace_access_denied',
+      'Workspace access denied.',
+      403
+    );
+    // Attempt creation awaited the native owner; policy may have changed before Host work.
+    if (!currentSchedulerDispatchAuthority(input, entry)) throw authorityDenial;
     const prepared = await input.turnExecutor.prepareAgentSessionForTurn(input.store, preparation);
     await bindSchedulerExecutionAttemptSession(input.coreDb, {
       attemptId: attempt.attemptId,
@@ -459,12 +519,7 @@ async function dispatchSchedulerAdmission(
     if (prepared.replacementRequired && !input.turnExecutor.commitPreparedAgentSessionForTurn)
       throw new Error('Configured executor has no AgentSession replacement owner.');
     const current = requireSchedulerAdmissionEntry(input.coreDb, entry.queueEntryId);
-    if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, current, 'runtime.launch', true))
-      throw new TurnStartValidationError(
-        'workspace_access_denied',
-        'Workspace access denied.',
-        403
-      );
+    if (!currentSchedulerDispatchAuthority(input, current)) throw authorityDenial;
     const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, entry.workspaceId);
     try {
       applyScopedMigrations(workspaceDb);

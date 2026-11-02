@@ -53,7 +53,7 @@ it('seals the complete recurring graph before deletion removes its Core rows and
     });
     const occurrence = automationStore.collectScanCandidates(instant)[0]!;
     for (let attempt = 0; attempt < 3; attempt++)
-      automationStore.commitAttempt(occurrence.id, 2, {
+      await automationStore.commitAttempt(occurrence.id, 2, {
         kind: 'failure',
         code: 'selection_unavailable',
       });

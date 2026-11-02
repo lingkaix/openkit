@@ -108,6 +108,51 @@ afterEach(async () => {
 });
 
 describe('serialized recurring scanner', () => {
+  it('commits one terminal attempt through the native owner while Main stays read-only', async () => {
+    const { root, db, store, schedules, schedule, gate, clock, start } = await fixture();
+    const createTurn = vi.spyOn(store, 'createTurn');
+    const prepare = vi.fn(async () => {
+      db.sqlite.pragma('query_only = ON');
+      return structuredClone(ready);
+    });
+    const { service } = start(prepare);
+    await service.runOnce();
+    const accepted = schedules.listHistory(schedule.id).items[0]!.record;
+    expect(accepted).toMatchObject({
+      state: 'admission-accepted',
+      attempts: [{ number: 1, code: 'accepted' }],
+    });
+    expect(
+      db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
+    ).toEqual({ n: 1 });
+    expect(createTurn).toHaveBeenCalledTimes(1);
+
+    service.stop();
+    const reopenedDb = openCoreDb(root);
+    const reopenedSchedules = new AutomationStore(reopenedDb, gate, clock);
+    const replayPreparation = vi.fn(async () => structuredClone(ready));
+    const reopened = startRecurringScheduleService({
+      schedules: reopenedSchedules,
+      store,
+      prepare: replayPreparation,
+      now: clock,
+      setInterval: () => 'reopened',
+      clearInterval: () => {},
+    });
+    try {
+      await reopened.runOnce();
+      expect(reopenedSchedules.listHistory(schedule.id).items[0]!.record).toEqual(accepted);
+      expect(
+        reopenedDb.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
+      ).toEqual({ n: 1 });
+      expect(replayPreparation).not.toHaveBeenCalled();
+      expect(createTurn).toHaveBeenCalledTimes(1);
+    } finally {
+      reopened.stop();
+      reopenedDb.sqlite.close();
+    }
+  });
+
   it('uses one five-second timer and publishes the fixed pending Turn once after queue admission', async () => {
     const { db, store, schedules, schedule, start } = await fixture();
     const createTurn = vi.spyOn(store, 'createTurn');
@@ -152,7 +197,7 @@ describe('serialized recurring scanner', () => {
     });
     const [initial] = schedules.collectScanCandidates('2026-10-16T00:00:00.000Z');
     expect(initial?.scheduleId).toBe(active.id);
-    schedules.commitAttempt(initial!.id, initial!.definitionRevision, structuredClone(ready));
+    await schedules.commitAttempt(initial!.id, initial!.definitionRevision, structuredClone(ready));
     // This state is produced by admission and scan owners, without fabricating retained rows.
     const finalInstant = '9948-12-22T12:26:40.000Z';
     schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
@@ -388,8 +433,8 @@ it('inspects durable acceptance after an unknown commit result and never submits
   const { db, schedules, schedule, start } = await fixture();
   const original = schedules.commitAttempt.bind(schedules);
   let loseResult = true;
-  vi.spyOn(schedules, 'commitAttempt').mockImplementation((...input) => {
-    const accepted = original(...input);
+  vi.spyOn(schedules, 'commitAttempt').mockImplementation(async (...input) => {
+    const accepted = await original(...input);
     if (loseResult) {
       loseResult = false;
       throw new Error('commit acknowledgement lost');
@@ -484,7 +529,7 @@ it('owns one scanner across distinct Core handles for the same data root', async
 it('reconciles an already accepted queue without attempting initial file publication again', async () => {
   const { db, schedules, schedule, store, clock, start } = await fixture();
   const occurrence = schedules.collectScanCandidates(clock())[0]!;
-  const accepted = schedules.commitAttempt(occurrence.id, 2, structuredClone(ready))!;
+  const accepted = (await schedules.commitAttempt(occurrence.id, 2, structuredClone(ready)))!;
   // Reuse the owner's exact-replay fixture: accepted attempt evidence stays intact.
   db.sqlite
     .prepare('UPDATE recurring_occurrences SET state = ?, record_json = ? WHERE id = ?')

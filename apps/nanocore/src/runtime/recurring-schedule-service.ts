@@ -68,11 +68,11 @@ export function startRecurringScheduleService(
         }
         if (stopped) return;
         // Existing queue acceptance can be reconciled, but cannot authorize another initial publication attempt.
-        // The data-root scanner owner and synchronous Core commit keep this read and insertion in one local invocation.
+        // The unique data-root scanner and held source admission exclude a second publisher for this occurrence.
         const queueAlreadyAccepted = db.sqlite
           .prepare('SELECT 1 FROM scheduler_admission_entries WHERE request_id = ? LIMIT 1')
           .get(occurrence.requestId);
-        const accepted = input.schedules.commitAttempt(
+        const accepted = await input.schedules.commitAttempt(
           occurrence.id,
           occurrence.definitionRevision,
           preparation,

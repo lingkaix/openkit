@@ -46,6 +46,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
@@ -61,6 +62,7 @@ import { startProductTurn as executeProductTurn } from './product-turn-start.js'
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import { getSchedulerPreparationClaims, runSchedulerDispatchLoop } from './scheduler-dispatch-loop';
+import * as schedulerDispatchLoop from './scheduler-dispatch-loop.js';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service.js';
 import { runSchedulerRestartRecovery } from './scheduler-restart-recovery.js';
 import type {
@@ -396,41 +398,69 @@ async function admitTestProductTurn(
   joinPreparation = true
 ) {
   const accepted = Promise.withResolvers<ReturnType<FsStore['getTurnById']>>();
+  const dispatchStarted = Promise.withResolvers<void>();
+  let dispatchInvocation: ReturnType<typeof runSchedulerDispatchLoop> | undefined;
+  let queueEntryId: string | undefined;
+  const originalRunSchedulerDispatchLoop = schedulerDispatchLoop.runSchedulerDispatchLoop;
+  const dispatchSpy = joinPreparation
+    ? vi
+        .spyOn(schedulerDispatchLoop, 'runSchedulerDispatchLoop')
+        .mockImplementation((dispatchInput) => {
+          const invocation = originalRunSchedulerDispatchLoop(dispatchInput);
+          if (
+            dispatchInput.coreDb === input.coreDb &&
+            dispatchInput.callerQueueEntryId === queueEntryId
+          ) {
+            dispatchInvocation = invocation;
+            dispatchStarted.resolve();
+          }
+          return invocation;
+        })
+    : undefined;
   let commandReceipt: IdempotentCommandReceipt | undefined;
-  const completion = executeProductTurn({
-    ...input,
-    get commandReceipt() {
-      return commandReceipt ?? input.commandReceipt;
-    },
-    onAdmissionCommitted: (entry) => {
-      commandReceipt = prepareTestReceipt(entry);
-      input.onAdmissionCommitted?.(entry);
-    },
-    onTurnCreated: async (turn, sessionId) => {
-      schedulerRecords.requireSchedulerAdmissionEntry(
-        input.coreDb,
-        (
-          input.coreDb.sqlite
-            .prepare(
-              `SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?`
-            )
-            .get(turn.id) as { id: string }
-        ).id
-      );
-      await input.onTurnCreated?.(turn, sessionId);
-      accepted.resolve(turn);
-    },
-  });
-  void completion.catch((error: unknown) => accepted.reject(error));
-  const turn = await accepted.promise;
-  // Let the actual admission-dispatch continuation enter its controlled boundary.
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  if (joinPreparation) {
-    // An accepted command keeps its response while the dispatch owner retains its own failure.
-    await Promise.allSettled([...getSchedulerPreparationClaims(input.coreDb!).values()]);
+  try {
+    const completion = executeProductTurn({
+      ...input,
+      get commandReceipt() {
+        return commandReceipt ?? input.commandReceipt;
+      },
+      onAdmissionCommitted: (entry) => {
+        queueEntryId = entry.queueEntryId;
+        commandReceipt = prepareTestReceipt(entry);
+        input.onAdmissionCommitted?.(entry);
+      },
+      onTurnCreated: async (turn, sessionId) => {
+        schedulerRecords.requireSchedulerAdmissionEntry(
+          input.coreDb,
+          (
+            input.coreDb.sqlite
+              .prepare(
+                `SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?`
+              )
+              .get(turn.id) as { id: string }
+          ).id
+        );
+        await input.onTurnCreated?.(turn, sessionId);
+        accepted.resolve(turn);
+      },
+    });
+    void completion.catch((error: unknown) => accepted.reject(error));
+    const turn = await accepted.promise;
+    if (joinPreparation) {
+      // Join the exact fire-and-forget dispatch invocation; a denial can finish before it owns a preparation claim.
+      await dispatchStarted.promise;
+      await Promise.allSettled([dispatchInvocation!]);
+      // An admitted dispatch returns after submission while its preparation claim owns full closeout.
+      await Promise.allSettled([...getSchedulerPreparationClaims(input.coreDb!).values()]);
+    } else {
+      // Preserve the controlled-boundary observation for cases that deliberately leave preparation in flight.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    return { turn: input.store.getTurnById(turn.id), completion };
+  } finally {
+    dispatchSpy?.mockRestore();
   }
-  return { turn: input.store.getTurnById(turn.id), completion };
 }
 
 describe('route B durable intent before effects', () => {
@@ -814,7 +844,7 @@ describe('scheduler dispatch loop', () => {
       scheduledAt: '2026-10-16T00:00:00.000Z',
     });
     const occurrence = schedules.collectScanCandidates('2026-10-16T00:00:00.000Z')[0]!;
-    schedules.commitAttempt(occurrence.id, 2, {
+    await schedules.commitAttempt(occurrence.id, 2, {
       kind: 'ready',
       payload: {
         backendId: executor.executionBackend.id,
@@ -1083,7 +1113,7 @@ describe('scheduler dispatch loop', () => {
         expect(executor.prepareCalls).toEqual([]);
         instant = '2026-10-16T00:00:05.000Z';
         const held = restored.collectScanCandidates(instant)[0]!;
-        expect(restored.commitAttempt(held.id, 2, await prepare())).toMatchObject({
+        expect(await restored.commitAttempt(held.id, 2, await prepare())).toMatchObject({
           state: 'pending',
           attempts: [{ code: 'queue_backlog_full' }],
         });
@@ -2813,6 +2843,107 @@ describe('scheduler dispatch loop', () => {
         workspaceSourceRefs: { repo_remote: 'main-repo' },
       });
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'queued',
+    'attempt-acquisition',
+    'preparation',
+  ] as const)('refuses a queued Turn after activated policy changes during %s', async (stage) => {
+    const coreDb = createMigratedCoreDb(false);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+    });
+    const executor = await RecordingTurnExecutor.create(coreDb);
+    await seedLocalSchedulerTarget(coreDb);
+    let activated: ReturnType<typeof managedThreadPolicy> = { schemaVersion: 1, statements: [] };
+    store.setWorkspaceResourcePolicyProjection(() => activated);
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: executor.executionBackend.id,
+      queueEntryId: `queue_activated_policy_${stage}`,
+      requestId: fixtureRequestId(`req_activated_policy_${stage}`),
+      requestedAgentId: agentManifest().id,
+      triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+      workspaceId,
+      threadId,
+      turnId: testEntityId('tu', `turn_activated_policy_${stage}`),
+      turnInput: 'Do not launch after current activated policy denies this Thread.',
+    });
+    await publishTestAdmission(store, entry);
+    const deny = () => {
+      activated = managedThreadPolicy({ workspaceId, threadId, userId: FIXTURE_LOCAL_USER_ID });
+    };
+    const acquire = attemptCommands.createSchedulerExecutionAttempt;
+    const acquired = vi.spyOn(attemptCommands, 'createSchedulerExecutionAttempt');
+    const prepare = executor.prepareAgentSessionForTurn.bind(executor);
+    const prepared = vi.spyOn(executor, 'prepareAgentSessionForTurn');
+    const submit = vi.spyOn(executor, 'submit');
+    if (stage === 'queued') deny();
+    if (stage === 'attempt-acquisition')
+      acquired.mockImplementation(async (...args) => {
+        const attempt = await acquire(...args);
+        deny();
+        return attempt;
+      });
+    if (stage === 'preparation')
+      prepared.mockImplementation(async (...args) => {
+        const result = await prepare(...args);
+        deny();
+        return result;
+      });
+    try {
+      // Current activated policy must permit dispatch independently of retained Core eligibility.
+      const dispatch = runSchedulerDispatchLoop({
+        gatewayConfig: createTestGatewayConfig(),
+        agentManifests: [agentManifest()],
+        coreDb,
+        createAgentSessionId: () => testEntityId('as', `session_activated_policy_${stage}`),
+        createAttemptId: () => testEntityId('attempt', `attempt_activated_policy_${stage}`),
+        maxDispatches: 1,
+        providerRegistry: localProviderRegistry(),
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+      });
+      if (stage === 'queued') {
+        const result = await dispatch;
+        expect(result.startedTurns).toEqual([]);
+        expect(result.terminalResult).toMatchObject({
+          status: 'denied',
+          entry: { queueEntryId: entry.queueEntryId },
+        });
+        expect(['denied', 'cancelled']).toContain(
+          schedulerRecords.requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId).status
+        );
+        expect(acquired).not.toHaveBeenCalled();
+        expect(executionAttempts(coreDb)).toEqual([]);
+      } else {
+        await expect(dispatch).rejects.toMatchObject({
+          code: 'workspace_access_denied',
+          status: 403,
+        });
+        expect(executionAttempts(coreDb)).toMatchObject([
+          { phase: 'closed', disposition: 'not_accepted', operation_id: null },
+        ]);
+        expect(['failed', 'cancelled']).toContain(store.getTurnById(entry.turnId).status);
+      }
+      if (stage !== 'preparation') expect(prepared).not.toHaveBeenCalled();
+      else expect(prepared).toHaveBeenCalledOnce();
+      expect(executor.calls).toEqual([]);
+      expect(submit).not.toHaveBeenCalled();
+      expect(store.getTurnById(entry.turnId).agentSessionId).toBeUndefined();
+    } finally {
+      acquired.mockRestore();
+      prepared.mockRestore();
+      submit.mockRestore();
+      await drainNativeCompletions(coreDb);
       coreDb.sqlite.close();
     }
   });
