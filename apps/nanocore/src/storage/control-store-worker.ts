@@ -231,6 +231,11 @@ import { applyControlWorkerStorageBinding } from './worker-storage-binding-nativ
 import { WorkspaceApplyPlanConflictError } from './workspace-apply-plan-codecs.js';
 import { recordWorkspaceApplyPlanInDb } from './workspace-apply-plan-records.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
+import {
+  WORKSPACE_REVIEW_REFUSALS,
+  WorkspaceReviewDecisionRefusal,
+} from './workspace-review-codecs.js';
+import { applyWorkspaceReviewDecisionInDb } from './workspace-review-records.js';
 import { ControlCoreSharingRefusalSchema } from './workspace-sharing-codecs.js';
 import { applyControlCoreSharing } from './workspace-sharing-native.js';
 
@@ -259,6 +264,7 @@ type WriteCommand = Extract<
       | 'app-kernel'
       | 'worker-storage-binding'
       | 'workspace-apply-plan'
+      | 'workspace-review-decision'
       | 'harness-lifecycle'
       | 'execution-attempt'
       | 'core-journal'
@@ -550,6 +556,8 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       status: 409,
       ...(error.exhaustedBound ? { exhaustedBound: error.exhaustedBound } : {}),
     };
+  if (operation === 'workspace-review-decision' && error instanceof WorkspaceReviewDecisionRefusal)
+    return { operation, code: error.code, ...WORKSPACE_REVIEW_REFUSALS[error.code] };
   if (operation === 'workspace-apply-plan' && error instanceof WorkspaceApplyPlanConflictError)
     return {
       operation,
@@ -1892,6 +1900,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'runtime-target',
               result,
             };
+          } else if (request.operation === 'workspace-review-decision') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            const result = applyWorkspaceReviewDecisionInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-review-decision',
+              result,
+            };
           } else if (request.operation === 'workspace-apply-plan') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -2945,6 +2967,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'maintenance' ||
       value.operation === 'worker-storage-binding' ||
       value.operation === 'workspace-apply-plan' ||
+      value.operation === 'workspace-review-decision' ||
       value.operation === 'harness-lifecycle' ||
       value.operation === 'execution-attempt' ||
       value.operation === 'core-journal' ||

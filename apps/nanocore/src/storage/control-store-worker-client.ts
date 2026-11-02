@@ -42,6 +42,7 @@ import type {
 } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
 import type { CommandRequestRecord } from '../lib/store.js';
+import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import { OperationError, restoreControlCapabilityFailure } from '../operation-error.js';
 import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
 import {
@@ -187,6 +188,7 @@ import type { ControlWorkerImageInput } from './worker-image-codecs.js';
 import type { ControlWorkerStorageInput } from './worker-storage-binding-codecs.js';
 import type { ControlWorkspaceApplyPlan } from './workspace-apply-plan-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
+import type { ControlWorkspaceReviewDecision } from './workspace-review-codecs.js';
 import type { ControlCoreSharing, ControlCoreSharingResult } from './workspace-sharing-codecs.js';
 
 /** A refusal or uncertain result, never a substitute for the original SQL command receipt. */
@@ -405,6 +407,8 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
         'raw-settle',
         'raw-invalidate',
       ].includes(command.input.kind);
+    case 'workspace-review-decision':
+      return true;
     case 'review':
       return ['judgement', 'select', 'decide', 'decision-receipt'].includes(command.input.mode);
     case 'goal':
@@ -2156,6 +2160,43 @@ class ControlStoreWorkerClient {
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'runtime-target')
         throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Commits the exact existing nonaccepted Review and original Audit before acknowledgement. */
+  async workspaceReviewDecision(
+    database: string,
+    input: ControlWorkspaceReviewDecision,
+    changeSetId: string
+  ): Promise<import('@openkit/app-api-schemas').WorkspaceSyncReviewItem> {
+    try {
+      const reply = await this.request({ operation: 'workspace-review-decision', database, input });
+      return (reply as Extract<Success, { operation: 'workspace-review-decision' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'workspace-review-decision'
+      ) {
+        switch (error.domain.code) {
+          case 'review_absent':
+            throw new StoreRecordNotFoundError(
+              `Workspace synchronization review not found: ${input.workspaceId}/${input.reviewId}`
+            );
+          case 'change_set_absent':
+            throw new StoreRecordNotFoundError(
+              `Workspace change set not found: ${input.workspaceId}/${changeSetId}`
+            );
+          case 'resolved':
+            throw new OperationError(
+              'workspace_sync_review_failed',
+              `Workspace synchronization review is already resolved: ${input.reviewId}`,
+              404
+            );
+          case 'unsupported_retained_format':
+            throw new TypeError('Unsupported retained record format.');
+        }
+      }
       throw error;
     }
   }

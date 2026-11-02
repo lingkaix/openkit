@@ -20,8 +20,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { FsStore } from '../lib/store.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   ensureLocalUser,
@@ -76,20 +77,29 @@ function openAuthorizedCoreDb(dataRoot: string, workspaceId: string) {
 }
 
 describe('workspace review application', () => {
-  for (const { title, point: revocationPoint } of [
+  for (const { title, point: revocationPoint, decision } of [
     {
       title: 'denies a fresh accepted decision after its authenticated user is disabled',
       point: 'before decision',
+      decision: 'accepted',
     },
     {
       title:
         'denies a fresh accepted decision after its authenticated user is disabled after native open',
       point: 'after native open',
+      decision: 'accepted',
     },
     {
       title:
         'denies a fresh accepted decision after its authenticated user is disabled after Plan ACK',
       point: 'after Plan ACK',
+      decision: 'accepted',
+    },
+    {
+      title:
+        'denies a fresh rejected decision when its authenticated user is disabled after native open',
+      point: 'after native open',
+      decision: 'rejected',
     },
   ] as const) {
     it(title, async () => {
@@ -170,6 +180,23 @@ describe('workspace review application', () => {
           targetRootPath: targetRoot,
           workspaceId,
         });
+        // Preserve every logical row: a refused fresh decision must publish no terminal or Audit.
+        const rows = () => {
+          const tables = workspaceDb.sqlite
+            .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
+            .all() as { name: string }[];
+          return Object.fromEntries(
+            tables.map(({ name }) => [
+              name,
+              workspaceDb.sqlite
+                .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                .all()
+                .map((row) => JSON.stringify(row))
+                .sort(),
+            ])
+          );
+        };
+        const pendingRows = decision === 'rejected' ? rows() : undefined;
         let revoked = false;
         const disableUser = () => {
           coreDb.sqlite.transaction(() => {
@@ -202,7 +229,7 @@ describe('workspace review application', () => {
             authorityActor: LOCAL_AUTHORITY_ACTOR,
             coreDb,
             decidedAt: timestamp,
-            decision: 'accepted',
+            decision,
             requestId: 'request-workspace-review-disabled-user',
             reviewId,
             store,
@@ -230,6 +257,10 @@ describe('workspace review application', () => {
         expect(getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId)?.review.status).toBe(
           'pending'
         );
+        if (pendingRows) {
+          expect(getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId)).toEqual(item);
+          expect(rows()).toEqual(pendingRows);
+        }
       } finally {
         workspaceDb.sqlite.close();
         coreDb.sqlite.close();
@@ -564,6 +595,165 @@ describe('workspace review application', () => {
       coreDb.sqlite.close();
     }
   });
+
+  for (const failAudit of [false, true]) {
+    it(
+      failAudit
+        ? 'rolls back the native rejected decision when its original Audit fails'
+        : 'publishes the native rejected decision and original Audit with query-only Main',
+      async () => {
+        const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-review-decision-native-tuple-'));
+        temporaryRoots.push(dataRoot);
+        const item = gitRenameWorkspaceReviewItem();
+        const workspaceId = item.review.workspaceId;
+        const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
+        const store = new FsStore({ dataRoot });
+        let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        const decidedAt = '2026-07-11T00:12:00.000Z';
+        const requestId = '00000000-0000-7000-8000-000000000171';
+        const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+        const nativeOpen = {
+          database: `workspace:${scope.path}`,
+          path: scope.path,
+          dataRoot,
+          create: false,
+          initialize: 'workspace' as const,
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        };
+        // Inspect all tables: a failed tuple must not hide a partial or unrelated mutation.
+        const rows = () => {
+          const tables = workspaceDb.sqlite
+            .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name")
+            .all() as { name: string }[];
+          return Object.fromEntries(
+            tables.map(({ name }) => [
+              name,
+              workspaceDb.sqlite
+                .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                .all()
+                .map((row) => JSON.stringify(row))
+                .sort(),
+            ])
+          );
+        };
+        const command = {
+          authorityActor: LOCAL_AUTHORITY_ACTOR,
+          coreDb,
+          decidedAt,
+          decision: 'rejected' as const,
+          requestId,
+          reviewId: item.review.id,
+          store,
+          workspaceId,
+        };
+        try {
+          recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+          recordWorkspaceSyncReview(workspaceDb, { item });
+          if (failAudit) {
+            // Deliberate fault after real owner setup; no successful durable row is fabricated.
+            workspaceDb.sqlite.exec(`CREATE TRIGGER reject_review_decision_audit
+              BEFORE INSERT ON audit_events
+              WHEN NEW.action = 'workspace.review.decide'
+              BEGIN SELECT RAISE(ABORT, 'review decision Audit fault'); END`);
+          }
+          await getControlStoreWorkerClient().open(nativeOpen);
+          workspaceDb.sqlite.pragma('query_only = ON');
+          expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+          const before = rows();
+
+          if (failAudit) {
+            // Review And Apply: terminal Review and its original Audit are one SQL tuple.
+            await expect(decideWorkspaceSyncReview({ ...command, workspaceDb })).rejects.toThrow();
+            expect(rows()).toEqual(before);
+            expect(getWorkspaceSyncReview(workspaceDb, workspaceId, item.review.id)).toEqual(item);
+            await shutdownControlStoreWorkerClient();
+            workspaceDb.sqlite.close();
+            workspaceDb = openWorkspaceReadDb(dataRoot, workspaceId);
+            expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+            expect(rows()).toEqual(before);
+            // Remove only the injected fault while no native writer exists, then retry unchanged.
+            workspaceDb.sqlite.close();
+            workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+            workspaceDb.sqlite.exec('DROP TRIGGER reject_review_decision_audit');
+            await getControlStoreWorkerClient().open(nativeOpen);
+            workspaceDb.sqlite.pragma('query_only = ON');
+          }
+
+          // Expected RED before the tuple move: the real command writes through query-only Main.
+          const expectedReview = { ...item.review, status: 'rejected', updatedAt: decidedAt };
+          await expect(decideWorkspaceSyncReview({ ...command, workspaceDb })).resolves.toEqual({
+            review: expectedReview,
+            workspaceApplyResult: null,
+          });
+          expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+          expect(getWorkspaceSyncReview(workspaceDb, workspaceId, item.review.id)).toEqual({
+            ...item,
+            review: expectedReview,
+          });
+          expect(
+            workspaceDb.sqlite
+              .prepare(`SELECT action, actor_json, request_id, resource,
+              outcome, occurred_at FROM audit_events WHERE request_id = ?`)
+              .all(requestId)
+          ).toEqual([
+            {
+              action: 'workspace.review.decide',
+              actor_json: JSON.stringify(LOCAL_AUTHORITY_ACTOR),
+              request_id: requestId,
+              resource: `workspace-review:${item.review.id}`,
+              outcome: 'succeeded',
+              occurred_at: decidedAt,
+            },
+          ]);
+          const committed = rows();
+          expect(committed.audit_events).toHaveLength(before.audit_events.length + 1);
+          expect(committed.audit_events).toEqual(expect.arrayContaining(before.audit_events));
+          expect({
+            ...committed,
+            staged_workspace_reviews: before.staged_workspace_reviews,
+            audit_events: before.audit_events,
+          }).toEqual(before);
+          expect(listWorkspaceApplyPlans(workspaceDb, workspaceId)).toEqual([]);
+          expect(listWorkspaceApplyResults(workspaceDb, workspaceId)).toEqual([]);
+          // A committed terminal replay retains its existing read-only semantics after user disable.
+          if (!failAudit) {
+            coreDb.sqlite.transaction(() => {
+              disableCanonicalUser(coreDb, LOCAL_USER_ID, new Date(decidedAt));
+            })();
+          }
+          // A matching terminal replay is read-only, including original Audit identity and bytes.
+          await expect(
+            decideWorkspaceSyncReview({
+              ...command,
+              workspaceDb,
+              requestId: 'request-native-review-replay',
+            })
+          ).resolves.toEqual({ review: expectedReview, workspaceApplyResult: null });
+          expect(rows()).toEqual(committed);
+          await expect(
+            decideWorkspaceSyncReview({
+              ...command,
+              workspaceDb,
+              decision: 'blocked',
+            })
+          ).rejects.toMatchObject({ code: 'workspace_sync_review_failed', status: 404 });
+          expect(rows()).toEqual(committed);
+          // The result must survive writer shutdown and a new read-only SQLite connection.
+          await shutdownControlStoreWorkerClient();
+          workspaceDb.sqlite.close();
+          workspaceDb = openWorkspaceReadDb(dataRoot, workspaceId);
+          expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+          expect(rows()).toEqual(committed);
+        } finally {
+          await shutdownControlStoreWorkerClient();
+          if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+          coreDb.sqlite.close();
+        }
+      }
+    );
+  }
 
   it('does not create a durable review from an artifact fallback', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-fallback-data-'));

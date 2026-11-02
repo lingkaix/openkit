@@ -1,3 +1,7 @@
+import { StoreRecordNotFoundError } from './store-errors.js';
+
+export { StoreRecordNotFoundError } from './store-errors.js';
+
 import { ArtifactAuthorityError, projectArtifactVersion } from '../artifact-authority.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { prepareWorkspaceKnowledgeProposal } from '../storage/control-store-knowledge.js';
@@ -917,9 +921,6 @@ export interface CommitArtifactVersionInput {
   readonly contentDigest?: string;
   readonly command?: 'artifact.version-commit' | 'artifact.version-file-commit';
 }
-
-/** Native absence of an addressed record, distinct from unexpected storage or implementation failure. */
-export class StoreRecordNotFoundError extends Error {}
 
 /**
  * Optional store configuration.

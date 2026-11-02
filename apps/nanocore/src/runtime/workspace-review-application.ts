@@ -18,6 +18,7 @@ import { StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { publishWorkspaceReviewDecision } from '../storage/workspace-review-publication.js';
 import {
   applyStagedFilesystemChanges,
   cleanupCommittedFilesystemRollback,
@@ -230,54 +231,44 @@ async function executeWorkspaceSyncReviewDecision(
   }
 
   if (input.decision !== 'accepted') {
-    const persistDecision = (): void => {
-      workspaceDb.sqlite.transaction(() => {
-        updateWorkspaceSyncReviewDecision(workspaceDb, {
-          actor: input.authorityActor,
-          ...(input.requestActor
-            ? { authentication: auditAuthenticationFromActor(input.requestActor) }
-            : {}),
-          requestId: input.requestId,
-          reviewId,
-          status: input.decision,
-          updatedAt: input.decidedAt,
-          workspaceId,
-        });
-      })();
-    };
-    const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-      `workspace:${workspaceDb.sqlite.name}`
-    );
-    try {
-      const currentAuthority = input.requestActor
-        ? input.authorityActor.kind === 'user' &&
-          input.authorityActor.id === input.requestActor.userId &&
-          authorizeWorkspace(input.coreDb, input.requestActor, workspaceId, {
-            mutating: true,
-            policyOperation: 'review.apply',
-          })
-        : currentWorkspaceAuthority(
-            input.coreDb,
-            workspaceId,
-            input.authorityActor,
-            'review.apply',
-            true
+    const decided = await publishWorkspaceReviewDecision(
+      workspaceDb,
+      {
+        actor: input.authorityActor,
+        ...(input.requestActor
+          ? { authentication: auditAuthenticationFromActor(input.requestActor) }
+          : {}),
+        requestId: input.requestId,
+        reviewId,
+        status: input.decision,
+        updatedAt: input.decidedAt,
+        workspaceId,
+      },
+      review.changeSet.id,
+      () => {
+        const currentAuthority = input.requestActor
+          ? input.authorityActor.kind === 'user' &&
+            input.authorityActor.id === input.requestActor.userId &&
+            authorizeWorkspace(input.coreDb, input.requestActor, workspaceId, {
+              mutating: true,
+              policyOperation: 'review.apply',
+            })
+          : currentWorkspaceAuthority(
+              input.coreDb,
+              workspaceId,
+              input.authorityActor,
+              'review.apply',
+              true
+            );
+        if (!currentAuthority)
+          throw new TurnStartValidationError(
+            WORKSPACE_ACCESS_DENIED.code,
+            WORKSPACE_ACCESS_DENIED.message,
+            WORKSPACE_ACCESS_DENIED.status
           );
-      if (!currentAuthority)
-        throw new TurnStartValidationError(
-          'workspace_access_denied',
-          'Workspace access denied.',
-          403
-        );
-      persistDecision();
-    } finally {
-      resume();
-    }
-
-    return {
-      review: requireWorkspaceReview(workspaceDb, workspaceId, reviewId).review,
-      workspaceApplyResult: null,
-    };
+      }
+    );
+    return { review: decided.review, workspaceApplyResult: null };
   }
 
   if (review.changeSet.strategy !== 'filesystem')

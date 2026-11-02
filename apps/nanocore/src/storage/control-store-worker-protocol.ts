@@ -238,6 +238,12 @@ import {
   ControlWorkspaceApplyPlanSchema,
 } from './workspace-apply-plan-codecs.js';
 import {
+  type ControlWorkspaceReviewDecision,
+  ControlWorkspaceReviewDecisionResultSchema,
+  ControlWorkspaceReviewDecisionSchema,
+  WORKSPACE_REVIEW_REFUSALS,
+} from './workspace-review-codecs.js';
+import {
   type ControlCoreSharing,
   type ControlCoreSharingRefusal,
   ControlCoreSharingRefusalSchema,
@@ -247,7 +253,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 39;
+export const CONTROL_WORKER_VERSION = 40;
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z
@@ -470,6 +476,10 @@ export type ControlWorkerCommand =
       | { readonly operation: 'backend-session'; readonly input: ControlBackendSessionInput }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | {
+          readonly operation: 'workspace-review-decision';
+          readonly input: ControlWorkspaceReviewDecision;
+        }
+      | {
           readonly operation: 'access-token-verification';
           readonly input: ControlAccessTokenVerification;
         }
@@ -628,6 +638,7 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'nanohost-transport'
     | 'worker-storage-binding'
     | 'workspace-apply-plan'
+    | 'workspace-review-decision'
     | 'vault'
     | 'thread-read-membership'
     | 'generative-presentation'
@@ -742,6 +753,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'core-sharing';
       readonly result: ControlCoreSharingResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'workspace-review-decision';
+      readonly result: import('@openkit/app-api-schemas').WorkspaceSyncReviewItem;
     }
   | {
       readonly status: 'ok';
@@ -925,6 +941,18 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'workspace-review-decision') {
+    const facts =
+      typeof value.code === 'string' && Object.hasOwn(WORKSPACE_REVIEW_REFUSALS, value.code)
+        ? WORKSPACE_REVIEW_REFUSALS[value.code as keyof typeof WORKSPACE_REVIEW_REFUSALS]
+        : undefined;
+    return (
+      !!facts &&
+      exactFields(value, ['operation', 'code', 'message', 'status']) &&
+      value.message === facts.message &&
+      value.status === facts.status
+    );
+  }
   if (isRecord(value) && value.operation === 'workspace-apply-plan')
     return (
       exactFields(value, ['operation', 'code', 'message', 'status']) &&
@@ -1188,6 +1216,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlAccessTokenVerificationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'runtime-target')
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'workspace-review-decision')
+    return ControlWorkspaceReviewDecisionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-apply-plan')
     return ControlWorkspaceApplyPlanSchema.safeParse(reply.result).success;
   if (reply.operation === 'backend-session')
@@ -1648,6 +1678,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(value, [...scoped, 'input']) &&
       ControlRuntimeTargetInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'workspace-review-decision')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceReviewDecisionSchema.safeParse(value.input).success
     );
   if (value.operation === 'workspace-apply-plan')
     return (
