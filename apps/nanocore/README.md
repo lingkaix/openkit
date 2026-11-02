@@ -1,5 +1,9 @@
 # nanocore
 
+Machine digest, identity, retained-inventory and wire orderings corrected under #532 use Protocol `compareCodeUnits`, which compares UTF-16 code units without host locale or ICU state. Producers and their corresponding verifiers use the same order. The recurring admission tie-breaker remains with its owning cut until the #532 handoff lands.
+
+This accepted pre-v0.1.0 reset correction can change identities for mixed-case or non-ASCII object keys and ordered paths. On dev/a1 after upgrade, new Session compatibility keys and re-resolved package snapshots can result. In-flight effect or idempotent retries across the upgrade can refuse through the existing recovery path. There is no migration, dual lookup or fallback order. Cross-release continuity starts at v0.1.0 under [Pre-Stable Data Continuity](../../docs/decisions/20261014-pre_stable_data_continuity.md).
+
 Candidate-set creation, selection and candidate-target human judgements use one typed Workspace native request for the complete record and original receipt. Main keeps current Kernel and exact Artifact audience checks, repeats them after opening the writer, and leaves candidate projection reads on Main. The native savepoint checks membership and request lineage, preserves retained descriptive history, and returns the complete original response after its covering FULL commit. Artifact and Material assessments retain their existing native owners.
 
 The Memory Knowledge-query fixture batches its Page and Source requests in one external model response. The real loop reads the selected Page before admitting and reading its Source; all search, content, citation, trace, isolation and usage assertions remain. This avoids an unrelated extra model round trip without changing the 30-second test bound.

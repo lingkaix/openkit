@@ -16,6 +16,7 @@ import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
   allocateEntityId,
+  compareCodeUnits,
   type Item,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
@@ -470,7 +471,7 @@ export async function prepareKnowledgeMaintenance(
                 'knowledge-manager' &&
               threadReadable(target, prior.threadId)
           )
-          .sort((left, right) => (left.completedAt ?? '').localeCompare(right.completedAt ?? ''));
+          .sort((left, right) => compareCodeUnits(left.completedAt ?? '', right.completedAt ?? ''));
         for (const prior of eligible.slice(-8)) {
           // Human expressions are evidence; unreviewed generated replies are never recast as factual Sources.
           const items = prior.items.filter(

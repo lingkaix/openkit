@@ -22,7 +22,7 @@ import {
   type DataRootBackupManifest,
   parseDataRootBackupManifest,
 } from '@openkit/config-schema';
-import { DataRootBackupIdSchema, DeploymentIdSchema } from '@openkit/protocol';
+import { compareCodeUnits, DataRootBackupIdSchema, DeploymentIdSchema } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { closeWorkspaceProductReadHandles } from './control-store-products.js';
@@ -128,7 +128,7 @@ export function inventoryRegularFiles(root: string): RegularFileInventoryEntry[]
       const filePath = join(root, path);
       return { bytes: statSync(filePath).size, digest: digestFile(filePath), path };
     })
-    .sort((left, right) => left.path.localeCompare(right.path));
+    .sort((left, right) => compareCodeUnits(left.path, right.path));
 }
 
 /**

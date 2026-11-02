@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
+import { compareCodeUnits } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 
@@ -772,7 +773,7 @@ function stableJson(value: unknown): string {
 
   return `{${Object.entries(value as Record<string, unknown>)
     .filter(([, nested]) => nested !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => compareCodeUnits(left, right))
     .map(([key, nested]) => `${JSON.stringify(key)}:${stableJson(nested)}`)
     .join(',')}}`;
 }

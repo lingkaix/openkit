@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
+import { compareCodeUnits } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Closed MCP Tool input shared without importing its runtime persistence owner. */
@@ -68,7 +69,7 @@ function stableJson(value: unknown): string {
 
   const entries = Object.entries(value as Record<string, unknown>)
     .filter(([, entryValue]) => entryValue !== undefined)
-    .sort(([left], [right]) => left.localeCompare(right));
+    .sort(([left], [right]) => compareCodeUnits(left, right));
 
   return `{${entries
     .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJson(entryValue)}`)

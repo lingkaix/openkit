@@ -917,7 +917,7 @@ function createMigrationSources(dataRoot: string): WorkspaceMigrationSource[] {
       ),
       workspaceId: root.workspaceId,
     }))
-    .sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+    .sort((left, right) => compareCodeUnits(left.workspaceId, right.workspaceId));
 }
 
 /**

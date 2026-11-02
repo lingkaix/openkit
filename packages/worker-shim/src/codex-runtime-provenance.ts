@@ -11,7 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-import { isRecord } from '@openkit/protocol';
+import { compareCodeUnits, isRecord } from '@openkit/protocol';
 import {
   type WorkerLineage,
   type WorkerRuntimeNativeOriginIndexEntry,
@@ -432,7 +432,7 @@ export class CodexRuntimeProvenanceCapture {
       const children = [
         ...(this.spawnEdges.get(threadId) ?? []),
         ...(candidates.children.get(threadId) ?? []).sort((left, right) =>
-          left.localeCompare(right)
+          compareCodeUnits(left, right)
         ),
       ];
       for (const child of children) {
@@ -1378,7 +1378,7 @@ export async function listRolloutFiles(root: string): Promise<RolloutFileDiscove
   };
   await visitRolloutDirectory(root, state);
   return {
-    paths: state.paths.sort((left, right) => left.localeCompare(right)),
+    paths: state.paths.sort((left, right) => compareCodeUnits(left, right)),
     truncated: state.truncated,
   };
 }
@@ -1428,11 +1428,11 @@ function retainBoundedRolloutCandidate(path: string, state: RolloutFileDiscovery
   state.truncated = true;
   let largestIndex = 0;
   for (let index = 1; index < state.paths.length; index += 1) {
-    if ((state.paths[index] ?? '').localeCompare(state.paths[largestIndex] ?? '') > 0) {
+    if (compareCodeUnits(state.paths[index] ?? '', state.paths[largestIndex] ?? '') > 0) {
       largestIndex = index;
     }
   }
-  if (path.localeCompare(state.paths[largestIndex] ?? '') < 0) {
+  if (compareCodeUnits(path, state.paths[largestIndex] ?? '') < 0) {
     state.paths[largestIndex] = path;
   }
 }

@@ -20,7 +20,12 @@ import {
   AuthoredAgentConfigSchema,
   AuthoredAgentRuntimeSchema,
 } from '@openkit/config-schema';
-import { deriveEntityId, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  compareCodeUnits,
+  deriveEntityId,
+  isSealedTurnTerminal,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import { type ParseError, parse } from 'jsonc-parser';
 import type { z } from 'zod';
 
@@ -752,7 +757,7 @@ export function materializeRuntimeImage(
   if (image.kind === 'reference') return image;
   const argumentsJson = JSON.stringify(
     Object.fromEntries(
-      Object.entries(image.arguments).sort(([left], [right]) => left.localeCompare(right))
+      Object.entries(image.arguments).sort(([left], [right]) => compareCodeUnits(left, right))
     )
   );
   return {
@@ -982,7 +987,7 @@ function canonicalAffectedStorage(
 ) {
   const sorted = values
     .map((value) => ({ ...value }))
-    .sort((left, right) => left.storageRef.localeCompare(right.storageRef));
+    .sort((left, right) => compareCodeUnits(left.storageRef, right.storageRef));
   if (new Set(sorted.map((value) => value.storageRef)).size !== sorted.length) {
     throw candidateConflict('Affected Worker environment identities must be unique.');
   }

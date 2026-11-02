@@ -194,6 +194,41 @@
       "backendSessionId": "nh-1111111111111111-2222222222222222",
       "leaseId": "attempt_00000000-0000-7000-8000-000000000001",
       "packageSnapshotId": "snapshot_producer_pin",
+      "entryKind": "file",
+      "relativePath": "as_00000000-0000-7000-8000-000000000001/supply/inputs/repo-guidelines/SKILL.md",
+      "sandboxId": "nh-1111111111111111",
+      "slot": "worker-supply",
+      "body": {
+        "type": "Buffer",
+        "hex": "2d2d2d0a6e616d653a207265706f2d67756964656c696e65730a6465736372697074696f6e3a205265706f7369746f72792067756964616e63652e0a2d2d2d0a52756e2072756e2e73682e0a"
+      },
+      "byteLength": 76,
+      "executable": false,
+      "sha256": "sha256:1f493bd51184521999f65194b3dfedf4b933470eaf3c573a2b62ea9733b6b5ec"
+    },
+    "command": {
+      "body": {
+        "type": "Buffer",
+        "hex": "2d2d2d0a6e616d653a207265706f2d67756964656c696e65730a6465736372697074696f6e3a205265706f7369746f72792067756964616e63652e0a2d2d2d0a52756e2072756e2e73682e0a"
+      },
+      "byteLength": 76,
+      "entryKind": "file",
+      "executable": false,
+      "relativePath": "as_00000000-0000-7000-8000-000000000001/supply/inputs/repo-guidelines/SKILL.md",
+      "requestId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sandboxId": "nh-1111111111111111",
+      "sha256": "sha256:1f493bd51184521999f65194b3dfedf4b933470eaf3c573a2b62ea9733b6b5ec",
+      "slot": "worker-supply"
+    }
+  },
+  {
+    "producer": "runtime-reference",
+    "kind": "reference.import",
+    "requestId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "input": {
+      "backendSessionId": "nh-1111111111111111-2222222222222222",
+      "leaseId": "attempt_00000000-0000-7000-8000-000000000001",
+      "packageSnapshotId": "snapshot_producer_pin",
       "entryKind": "directory",
       "relativePath": "as_00000000-0000-7000-8000-000000000001/supply/inputs/repo-guidelines/empty-dir",
       "sandboxId": "nh-1111111111111111",
@@ -239,41 +274,6 @@
       "requestId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "sandboxId": "nh-1111111111111111",
       "sha256": "sha256:77baf7373f2931aa08d1d77c9bc13b058d4da1844119f37c85f1475267944bae",
-      "slot": "worker-supply"
-    }
-  },
-  {
-    "producer": "runtime-reference",
-    "kind": "reference.import",
-    "requestId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "input": {
-      "backendSessionId": "nh-1111111111111111-2222222222222222",
-      "leaseId": "attempt_00000000-0000-7000-8000-000000000001",
-      "packageSnapshotId": "snapshot_producer_pin",
-      "entryKind": "file",
-      "relativePath": "as_00000000-0000-7000-8000-000000000001/supply/inputs/repo-guidelines/SKILL.md",
-      "sandboxId": "nh-1111111111111111",
-      "slot": "worker-supply",
-      "body": {
-        "type": "Buffer",
-        "hex": "2d2d2d0a6e616d653a207265706f2d67756964656c696e65730a6465736372697074696f6e3a205265706f7369746f72792067756964616e63652e0a2d2d2d0a52756e2072756e2e73682e0a"
-      },
-      "byteLength": 76,
-      "executable": false,
-      "sha256": "sha256:1f493bd51184521999f65194b3dfedf4b933470eaf3c573a2b62ea9733b6b5ec"
-    },
-    "command": {
-      "body": {
-        "type": "Buffer",
-        "hex": "2d2d2d0a6e616d653a207265706f2d67756964656c696e65730a6465736372697074696f6e3a205265706f7369746f72792067756964616e63652e0a2d2d2d0a52756e2072756e2e73682e0a"
-      },
-      "byteLength": 76,
-      "entryKind": "file",
-      "executable": false,
-      "relativePath": "as_00000000-0000-7000-8000-000000000001/supply/inputs/repo-guidelines/SKILL.md",
-      "requestId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "sandboxId": "nh-1111111111111111",
-      "sha256": "sha256:1f493bd51184521999f65194b3dfedf4b933470eaf3c573a2b62ea9733b6b5ec",
       "slot": "worker-supply"
     }
   },

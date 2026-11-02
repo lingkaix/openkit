@@ -15,6 +15,7 @@ import { parseWorkspaceDataSourceCatalog, WorkspaceConfigSchema } from '@openkit
 import {
   type ActorRef,
   allocateEntityId,
+  compareCodeUnits,
   deriveEntityId,
   type Item,
   isEntityId,
@@ -576,7 +577,7 @@ function createVerifiedWorkspaceExportFiles({
         turnCaptureCoverage.set(published.turn.id, published.captureCoverage);
       return published.turn;
     })
-    .sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
+    .sort((left, right) => compareCodeUnits(left.startedAt ?? '', right.startedAt ?? ''));
 
   const canonicalTurns = new Map(turns.map((turn) => [turn.id, turn]));
   const dataSourceCatalogPath = join(workspaceRoot, 'config', 'data-sources.jsonc');

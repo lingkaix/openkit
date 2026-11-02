@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { compareCodeUnits } from '@openkit/protocol';
 import type {
   NanoHostEffectOperation,
   NanoHostSessionEffectRequest,
@@ -63,7 +64,7 @@ export function stableNanoHostEffectJson(value: unknown): string {
   }
   if (value && typeof value === 'object') {
     return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([key, item]) => `${JSON.stringify(key)}:${stableNanoHostEffectJson(item)}`)
       .join(',')}}`;
   }

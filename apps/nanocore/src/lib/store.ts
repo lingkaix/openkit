@@ -4883,7 +4883,7 @@ export class FsStore {
       : [...this.turns.values()].filter(
           (turn) => workspaceIdForOwner(turn.owner) === workspaceId && turn.threadId === threadId
         );
-    return turns.sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''));
+    return turns.sort((a, b) => compareCodeUnits(a.startedAt ?? '', b.startedAt ?? ''));
   }
 
   /**

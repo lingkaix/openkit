@@ -4479,6 +4479,7 @@ describe('createConfiguredTurnExecutor', () => {
       if (process.env.OPENKIT_UPDATE_EFFECT_FIXTURE === '1')
         writeFileSync(fixturePath, `${JSON.stringify(normalized, null, 2)}\n`);
       const originalFixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as typeof normalized;
+      // Code-unit path order places SKILL.md before lowercase Skill supply paths.
       expect(normalized).toEqual(originalFixture);
       expect(normalized.filter((effect) => effect.kind === 'file.export')).toHaveLength(2);
       expect(normalized).toContainEqual(

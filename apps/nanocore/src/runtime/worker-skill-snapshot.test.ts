@@ -197,10 +197,19 @@ describe('exact retained Worker Skill delivery', () => {
     const expectedFiles = [
       ['empty-file', Buffer.alloc(0), false],
       ['run.sh', SCRIPT_BODY, true],
-      ['SKILL.md', SKILL_BODY, false],
       ['supporting.bin', SUPPORTING_BODY, false],
     ] as const;
+    // The accepted #532 correction orders the complete delivery by UTF-16 path code units.
     expect(imports.slice(1)).toStrictEqual([
+      {
+        body: SKILL_BODY,
+        byteLength: SKILL_BODY.byteLength,
+        contentDigest: `sha256:${createHash('sha256').update(SKILL_BODY).digest('hex')}`,
+        entryKind: 'file',
+        executable: false,
+        relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/SKILL.md`,
+        slot: 'worker-supply',
+      },
       {
         entryKind: 'directory',
         relativePath: `${agentSessionId}/supply/inputs/repo-guidelines/empty-dir`,

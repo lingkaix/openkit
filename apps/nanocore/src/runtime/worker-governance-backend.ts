@@ -18,7 +18,7 @@ import {
   type WorkerCredentialFileBinding,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { isRecord } from '@openkit/protocol';
+import { compareCodeUnits, isRecord } from '@openkit/protocol';
 import { workerSessionInputPaths, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import {
@@ -527,7 +527,7 @@ export async function prepareNanoHostContextPackageImports(
       })
     ),
     ...[...originals.values()].sort((left, right) =>
-      left.relativePath.localeCompare(right.relativePath)
+      compareCodeUnits(left.relativePath, right.relativePath)
     ),
   ];
 }
@@ -545,7 +545,7 @@ async function prepareWorkerSupplyImports(
   dataRoot: string | undefined
 ): Promise<NanoHostContextPackageImport[]> {
   const skills = [...(environmentPackage.supply?.skills ?? [])].sort((left, right) =>
-    left.id.localeCompare(right.id)
+    compareCodeUnits(left.id, right.id)
   );
   if (skills.length === 0) {
     return [];
@@ -609,7 +609,9 @@ async function prepareWorkerSupplyImports(
         `Skill version changed during Worker supply admission: ${skill.id}/${digest}`
       );
     }
-    for (const entry of [...entries].sort((left, right) => left.path.localeCompare(right.path))) {
+    for (const entry of [...entries].sort((left, right) =>
+      compareCodeUnits(left.path, right.path)
+    )) {
       const destination = {
         relativePath: `${inputPaths.supplyRelativePath}/${skill.id}/${entry.path}`,
         slot: 'worker-supply',
@@ -1403,7 +1405,7 @@ async function readWorkspaceBundleRegularFiles(
     };
     files.push({ path: relativePath, byteLength: Number(pinned.size), contentDigest, source });
   }
-  return files.sort((left, right) => left.path.localeCompare(right.path));
+  return files.sort((left, right) => compareCodeUnits(left.path, right.path));
 }
 
 /** Rejects replacement, metadata drift, links and special files before or after streaming. */

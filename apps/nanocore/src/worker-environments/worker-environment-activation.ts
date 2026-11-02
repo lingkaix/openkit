@@ -12,7 +12,12 @@ import {
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
-import { deriveEntityId, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  compareCodeUnits,
+  deriveEntityId,
+  isSealedTurnTerminal,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import { applyEdits, modify, type ParseError, parse } from 'jsonc-parser';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
@@ -946,7 +951,7 @@ function canonicalAffectedStorage(
 ): WorkerEnvironmentAffectedStorage[] {
   return values
     .map(({ expectedRevision, storageRef }) => ({ expectedRevision, storageRef }))
-    .sort((left, right) => left.storageRef.localeCompare(right.storageRef));
+    .sort((left, right) => compareCodeUnits(left.storageRef, right.storageRef));
 }
 
 /** Sorts closed runtime outcomes by their public association identity. */
@@ -957,7 +962,7 @@ function canonicalAffectedResult(values: readonly AffectedResult[]): AffectedRes
       expectedRevision,
       storageRef,
     }))
-    .sort((left, right) => left.storageRef.localeCompare(right.storageRef));
+    .sort((left, right) => compareCodeUnits(left.storageRef, right.storageRef));
 }
 
 /** Returns a comparison key that excludes the runtime-owned disposition. */

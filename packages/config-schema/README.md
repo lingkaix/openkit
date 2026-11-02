@@ -1,6 +1,6 @@
 # Config Schema
 
-`listRequiredFeatureDefinitions` orders its current registry view with Protocol's `compareCodeUnits`. Source and Session retained digest encoders keep their existing order until their owning transition.
+`listRequiredFeatureDefinitions` orders its current registry view with Protocol's `compareCodeUnits`. Source and Session retained digest encoders also use code-unit order under the accepted pre-v0.1.0 reset correction for #532.
 
 `server.jsonc.policy.workDataCapture.nativeLogMaxBytes` admits a positive safe integer, defaulting to a combined 16 MiB per Turn for actual native log sources. Capture remains default-off. The AEP constructor selects the value into `observability.evidence.nativeLogMaxBytes` once; schema validation checks a present selected bound but never fills a historical AEP's absence. Descriptive evidence extensions remain readable, but unsupported required evidence semantics fail closed. Existing Turn and AEP capture-coverage pairs stay unchanged, and native use requires the named immutable authority rather than live configuration. The receiver/contract prerequisite enables no native collector or capture default.
 
@@ -147,7 +147,7 @@ MCP binding, effective-server and AEP supply shapes retain only allowedTools. Cu
 
 `validateAgentEnvironmentPackageForBackend` reads only the package identity and backend requirement metadata, so runtime admission can validate a secret-free preview before resolving credentials. It does not create capture admission, credential material or a dispatchable AEP; the existing exact AEP schema still validates final construction.
 
-MCP declaration and configuration digests reuse Protocol canonical JSON while retaining their domain prefix and NUL separator. This replaces the private code-unit serializer without changing valid retained JSON declaration bytes. Catalog consumers import the encoder directly from Protocol; locale-dependent Source and Session compatibility digest correction stays with #532.
+MCP declaration and configuration digests reuse Protocol canonical JSON while retaining their domain prefix and NUL separator. This replaces the private code-unit serializer without changing valid retained JSON declaration bytes. Catalog consumers import the encoder directly from Protocol. Source catalog-entry and Session compatibility digest serializers retain their existing projections and use Protocol `compareCodeUnits` for recursive object-member order, independent of host locale. The accepted #532 pre-v0.1.0 reset correction can re-digest mixed-case or non-ASCII keys; old Session keys use the existing replacement decision, without a legacy lookup or migration.
 
 The Session workspace planner keeps every Turn-cleared slot beneath the disposable `/openkit/sessions/<agentSessionId>/` tree. Layout admission rejects automatic cleanup inside the retained workspace root. Each planned input must match the selected slot's source kind, access and materialization mode before launch; the planner never widens a slot to fit an input.
 

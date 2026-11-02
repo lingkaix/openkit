@@ -24,6 +24,7 @@ import {
 import {
   type ActorRef,
   ActorRefSchema,
+  compareCodeUnits,
   responsibleUserIdForActor,
   type TurnSchema,
   workspaceIdForOwner,
@@ -964,7 +965,7 @@ function resolveRuntimeImage(
 
   const argumentsJson = JSON.stringify(
     Object.fromEntries(
-      Object.entries(image.arguments).sort(([left], [right]) => left.localeCompare(right))
+      Object.entries(image.arguments).sort(([left], [right]) => compareCodeUnits(left, right))
     )
   );
   return {

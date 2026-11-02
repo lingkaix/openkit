@@ -1,5 +1,6 @@
 import {
   ArtifactIdSchema,
+  compareCodeUnits,
   RequestIdSchema,
   ThreadIdSchema,
   TimestampSchema,
@@ -475,7 +476,7 @@ export function workerEnvironmentActivationConfirmation(input: {
   readonly target: z.infer<typeof WorkerEnvironmentTargetSchema>;
 }): string {
   const affectedStorage = [...input.affectedStorage]
-    .sort((left, right) => left.storageRef.localeCompare(right.storageRef))
+    .sort((left, right) => compareCodeUnits(left.storageRef, right.storageRef))
     .map(({ expectedRevision, storageRef }) => ({ expectedRevision, storageRef }));
   return `activate-worker-environment:${JSON.stringify({
     affectedStorage,
