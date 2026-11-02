@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
-import { constants } from 'node:fs';
-import fs, { type FileHandle } from 'node:fs/promises';
-import { join, parse, resolve, sep } from 'node:path';
-import { compareCodeUnits } from '@openkit/protocol';
+import type { FileHandle } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import {
+  appendTelemetrySegment,
+  closeTelemetrySegment,
+  createTelemetrySegment,
+  hasTelemetryHeadroom,
+  listTelemetrySegments,
+  removeTelemetrySegment,
+  telemetrySegmentNeedsClose,
+} from '@openkit/storage';
 import { JsonMetricsSerializer, JsonTraceSerializer } from '@opentelemetry/otlp-transformer';
 import {
   AggregationTemporality,
@@ -15,7 +22,6 @@ const REQUEST_BYTES = 1_048_576;
 const SEGMENT_BYTES = 16 * 1_048_576;
 const SEGMENT_AGE_MS = 3_600_000;
 const MAX_QUEUED_REQUESTS = 512;
-const SEGMENT_NAME = /^(traces|metrics)-\d+-[a-f0-9-]+\.jsonl$/;
 
 /** Both signals share one queue, inventory, reserve check and byte cap. */
 export interface LocalTelemetryExporter extends SpanExporter {
@@ -28,13 +34,6 @@ export interface LocalTelemetryOptions {
   readonly logDirectory: string;
   readonly readReserveBytes: () => number;
   readonly env: NodeJS.ProcessEnv;
-}
-
-/** One disposable file found inside the service-owned sink subtree. */
-interface Segment {
-  readonly path: string;
-  readonly bytes: number;
-  readonly modified: number;
 }
 
 /** Creates the optional local exporter; invalid limits disable only this destination. */
@@ -185,47 +184,9 @@ class LocalTraceExporter implements LocalTelemetryExporter {
     await this.closeActive();
   }
 
-  /** Creates only confined directories and never follows an existing directory link. */
-  private async prepare(): Promise<void> {
-    let path = parse(this.directory).root;
-    for (const part of this.directory.slice(path.length).split(sep).filter(Boolean)) {
-      path = join(path, part);
-      try {
-        await fs.mkdir(path, { mode: 0o700 });
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      }
-      const state = await fs.lstat(path);
-      if (!state.isDirectory() || state.isSymbolicLink())
-        throw new Error('Invalid telemetry directory.');
-    }
-  }
-
-  /** Revalidates confinement before every inventory, including idle cleanup after startup refusal. */
-  private async segments(): Promise<Segment[]> {
-    await this.prepare();
-    const entries = await fs.readdir(this.directory, { withFileTypes: true });
-    const files: Segment[] = [];
-    for (const entry of entries) {
-      if (!entry.isFile() || !SEGMENT_NAME.test(entry.name))
-        throw new Error('Invalid telemetry segment.');
-      const path = join(this.directory, entry.name);
-      const state = await fs.lstat(path);
-      if (
-        !state.isFile() ||
-        !Number.isSafeInteger(state.size) ||
-        state.size < 0 ||
-        !Number.isFinite(state.mtimeMs)
-      )
-        throw new Error('Invalid telemetry file.');
-      files.push({ path, bytes: state.size, modified: state.mtimeMs });
-    }
-    return files.sort((a, b) => a.modified - b.modified || compareCodeUnits(a.path, b.path));
-  }
-
   /** Removes expired/oldest disposable segments before growth, never canonical records. */
   private async prune(incoming: number): Promise<void> {
-    const files = await this.segments();
+    const files = await listTelemetrySegments(this.directory);
     let total = 0;
     for (const file of files) {
       if (file.bytes > Number.MAX_SAFE_INTEGER - total) throw new Error('Invalid telemetry size.');
@@ -240,47 +201,24 @@ class LocalTraceExporter implements LocalTelemetryExporter {
       )
         continue;
       if (this.active?.path === file.path) await this.closeActive();
-      await fs.unlink(file.path);
+      await removeTelemetrySegment(file.path);
       total -= file.bytes;
     }
     if (incoming > this.maximumBytes || total > this.maximumBytes - incoming)
       throw new Error('Telemetry limit reached.');
   }
 
-  /** Checks current reserve and filesystem facts for each append; uncertainty means no write. */
-  private async hasHeadroom(bytes: number): Promise<boolean> {
-    try {
-      const reserve = this.options.readReserveBytes();
-      if (!Number.isSafeInteger(reserve) || reserve < 0) return false;
-      const state = await fs.statfs(this.directory, { bigint: true });
-      // A zero inode total means no inode limit is reported (Btrfs); only bytes then apply.
-      return (
-        state.bsize > 0n &&
-        state.bavail >= 0n &&
-        (state.files === 0n || state.ffree > 0n) &&
-        state.bavail * state.bsize - BigInt(bytes) >= BigInt(reserve)
-      );
-    } catch {
-      return false;
-    }
-  }
-
   /** Serializes rotation, admission and one append; a partial write abandons this segment. */
   private async append(bytes: Uint8Array, signal: 'traces' | 'metrics'): Promise<void> {
     if (bytes.byteLength > this.maximumBytes) return;
     await this.prune(bytes.byteLength);
-    if (this.active) {
-      const current = await fs.lstat(this.active.path).catch(() => undefined);
-      const opened = await this.active.handle.stat();
-      if (!current?.isFile() || current.ino !== opened.ino || current.dev !== opened.dev)
-        await this.closeActive();
-    }
-    if (!(await this.hasHeadroom(bytes.byteLength))) {
+    if (this.active && (await telemetrySegmentNeedsClose(this.active))) await this.closeActive();
+    if (!(await hasTelemetryHeadroom(this.options, this.directory, bytes.byteLength))) {
       // Reclaiming our files may recover headroom, but never authorizes a doubtful write.
-      const files = await this.segments();
+      const files = await listTelemetrySegments(this.directory);
       for (const file of files) {
         if (this.active?.path === file.path) await this.closeActive();
-        await fs.unlink(file.path);
+        await removeTelemetrySegment(file.path);
       }
       this.warn();
       return;
@@ -295,23 +233,17 @@ class LocalTraceExporter implements LocalTelemetryExporter {
     if (!this.active) {
       const now = Date.now();
       const path = join(this.directory, `${signal}-${now}-${randomUUID()}.jsonl`);
-      const handle = await fs.open(
-        path,
-        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-        0o600
-      );
+      const handle = await createTelemetrySegment(path);
       this.active = { handle, path, bytes: 0, created: now, signal };
     }
-    const result = await this.active.handle.write(bytes);
-    if (result.bytesWritten !== bytes.byteLength) throw new Error('Incomplete telemetry append.');
-    this.active.bytes += result.bytesWritten;
+    await appendTelemetrySegment(this.active, bytes);
   }
 
   /** Releases a segment without repairing or reusing an uncertain tail. */
   private async closeActive(): Promise<void> {
     const active = this.active;
     this.active = undefined;
-    await active?.handle.close().catch(() => {});
+    await closeTelemetrySegment(active);
   }
 
   /** A single fixed diagnostic avoids content leakage, recursion and failure-log floods. */

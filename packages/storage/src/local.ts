@@ -18,7 +18,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import {
+import fs, {
   chmod,
   type FileHandle,
   link,
@@ -39,6 +39,7 @@ import { type Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import {
   ContentReferenceSchema,
+  compareCodeUnits,
   KnowledgeBaseIdSchema,
   KnowledgeOwnerScopeSchema,
   NativeContentReferenceSchema,
@@ -1803,4 +1804,114 @@ export async function measureDerivedTreeBytes(
 /** @internal Removes a caller-owned disposable tree and propagates absent-path cleanup failure. */
 export async function removePrivateTreeStrict(path: string): Promise<void> {
   await rm(path, { recursive: true });
+}
+
+/** One disposable diagnostic segment observed by the caller-owned retention policy. */
+interface TelemetrySegment {
+  readonly path: string;
+  readonly bytes: number;
+  readonly modified: number;
+}
+
+const TELEMETRY_SEGMENT_NAME = /^(traces|metrics)-\d+-[a-f0-9-]+\.jsonl$/;
+
+/** Creates each diagnostic ancestor without following links; it adds no durable acknowledgement. */
+async function prepareTelemetryDirectory(directory: string): Promise<void> {
+  let path = parse(directory).root;
+  for (const part of directory.slice(path.length).split(sep).filter(Boolean)) {
+    path = join(path, part);
+    try {
+      await fs.mkdir(path, { mode: 0o700 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+    const state = await fs.lstat(path);
+    if (!state.isDirectory() || state.isSymbolicLink())
+      throw new Error('Invalid telemetry directory.');
+  }
+}
+
+/** @internal Observes checked diagnostic segments in the original modification-time/path order. */
+export async function listTelemetrySegments(directory: string): Promise<TelemetrySegment[]> {
+  await prepareTelemetryDirectory(directory);
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const files: TelemetrySegment[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !TELEMETRY_SEGMENT_NAME.test(entry.name))
+      throw new Error('Invalid telemetry segment.');
+    const path = join(directory, entry.name);
+    const state = await fs.lstat(path);
+    if (
+      !state.isFile() ||
+      !Number.isSafeInteger(state.size) ||
+      state.size < 0 ||
+      !Number.isFinite(state.mtimeMs)
+    )
+      throw new Error('Invalid telemetry file.');
+    files.push({ path, bytes: state.size, modified: state.mtimeMs });
+  }
+  return files.sort((a, b) => a.modified - b.modified || compareCodeUnits(a.path, b.path));
+}
+
+/** @internal Reads the caller's current reserve and current filesystem facts for one diagnostic append. */
+export async function hasTelemetryHeadroom(
+  options: { readonly readReserveBytes: () => number },
+  directory: string,
+  bytes: number
+): Promise<boolean> {
+  try {
+    const reserve = options.readReserveBytes();
+    if (!Number.isSafeInteger(reserve) || reserve < 0) return false;
+    const state = await fs.statfs(directory, { bigint: true });
+    // A zero inode total means no inode limit is reported (Btrfs); only bytes then apply.
+    return (
+      state.bsize > 0n &&
+      state.bavail >= 0n &&
+      (state.files === 0n || state.ffree > 0n) &&
+      state.bavail * state.bsize - BigInt(bytes) >= BigInt(reserve)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** @internal Revalidates the current pathname against its actual open descriptor before reuse. */
+export async function telemetrySegmentNeedsClose(active: {
+  readonly path: string;
+  readonly handle: FileHandle;
+}): Promise<boolean> {
+  const current = await fs.lstat(active.path).catch(() => undefined);
+  const opened = await active.handle.stat();
+  return !current?.isFile() || current.ino !== opened.ino || current.dev !== opened.dev;
+}
+
+/** @internal Creates only a new owner-only diagnostic file without following a final link. */
+export async function createTelemetrySegment(path: string): Promise<FileHandle> {
+  return fs.open(
+    path,
+    constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+    0o600
+  );
+}
+
+/** @internal Performs one diagnostic write and accounts only a complete append on the original active object. */
+export async function appendTelemetrySegment(
+  active: { readonly handle: FileHandle; bytes: number },
+  bytes: Uint8Array
+): Promise<void> {
+  const result = await active.handle.write(bytes);
+  if (result.bytesWritten !== bytes.byteLength) throw new Error('Incomplete telemetry append.');
+  active.bytes += result.bytesWritten;
+}
+
+/** @internal Closes the caller's detached segment without repairing an uncertain tail. */
+export async function closeTelemetrySegment(
+  active: { readonly handle: FileHandle } | undefined
+): Promise<void> {
+  await active?.handle.close().catch(() => {});
+}
+
+/** @internal Removes only the caller-selected disposable segment, preserving unlink errors. */
+export async function removeTelemetrySegment(path: string): Promise<void> {
+  await fs.unlink(path);
 }
