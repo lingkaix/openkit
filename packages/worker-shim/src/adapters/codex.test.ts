@@ -2251,6 +2251,7 @@ let buffer = ''; process.stdin.on('data', chunk => { buffer += chunk; let i; whi
     const calls: unknown[] = [];
     const child = controlledPeer();
     const session = await openCodexResidentSession(openInput(roots), {
+      stopGraceMs: 20,
       spawnProcess: (binary, args, options) => {
         calls.push({ binary, args, options });
         return child;
@@ -3625,9 +3626,11 @@ describe('round 4 failure boundaries', () => {
     // The adapter spec bounds the initialization RPC separately from native stop proof.
     // Allow 250 ms for event-loop scheduling and RPC setup, not the two signal grace windows.
     const schedulingMarginMs = 250;
+    const requestTimeoutMs = 100;
     await expect(
       openCodexResidentSession(openInput(roots), {
         binaryPath: vendorBinary,
+        controlTimeoutMs: requestTimeoutMs,
         spawnProcess: (binary, args, options) => {
           child = spawn(binary, [...args], {
             ...options,
@@ -3647,7 +3650,7 @@ describe('round 4 failure boundaries', () => {
     ).rejects.toThrow('Codex app-server timed out: initialize');
     expect(initializationTimedOutAt).toBeDefined();
     expect(initializationTimedOutAt! - spawnedAt).toBeLessThanOrEqual(
-      LIFECYCLE_DEFAULTS.nativeRequestMs + schedulingMarginMs
+      requestTimeoutMs + schedulingMarginMs
     );
     expect(processIsGone(child!.pid!)).toBe(true);
   }, 12_000);
