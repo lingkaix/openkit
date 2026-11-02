@@ -3,8 +3,6 @@
   "sites": {
     "apps/nanocore/scripts/generate-openapi.ts\tfs:mkdirSync\tdf43f1da85aac1e22f447e3761ac1b2d6f0ecf489189b0060b427b01fd10d637": 1,
     "apps/nanocore/scripts/generate-openapi.ts\tfs:writeFileSync\t4b617fb17ffd6074d26f712d39a82704046147f0a6ad5b080d649623301b4f48": 1,
-    "apps/nanocore/src/administration/mcp-discovery-preview.ts\tfs:mkdtempSync\t643da137defc4331b05db99341d6450eca613f55be848c86fdd8bf188f62777f": 1,
-    "apps/nanocore/src/administration/mcp-discovery-preview.ts\tfs:rmSync\t561590b476ae63f19a32efd247c2845e541ee48b36b4c7464736fd9a0f68a5ff": 2,
     "apps/nanocore/src/auth/admin-recovery.ts\tfs:fchmodSync\t45247e1c6078e1c1b7ba1df5cbf3df60e18ae352173543c2736e959586499e84": 1,
     "apps/nanocore/src/auth/admin-recovery.ts\tfs:fsyncSync\t29dd363ab164154cfa12245dc0dbb776737f794802b71295805cf71dcdef6187": 1,
     "apps/nanocore/src/auth/admin-recovery.ts\tfs:fsyncSync\ta1202639fd6d01edc504a4491569aa2c1d521e645b2d0a498ee34aa3e5a283ed": 1,

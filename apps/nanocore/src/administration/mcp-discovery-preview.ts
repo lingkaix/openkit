@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { OperationInput, OperationOutput } from '@openkit/app-api-schemas';
 import { digestOpenKitTree } from '@openkit/config-schema';
+import { createPrivateTreeSync, removePrivateTreeSync } from '@openkit/storage';
 import { authorizeWorkspace, requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import { loadResourceCatalog, mcpTransportFromDeclaration } from '../catalog/resource-catalog.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -358,7 +358,7 @@ export async function previewMcpDiscovery(
         query,
       };
       if (transport.kind === 'stdio')
-        temporaryDirectory = mkdtempSync(join(tmpdir(), 'openkit-mcp-preview-'));
+        temporaryDirectory = createPrivateTreeSync(tmpdir(), 'openkit-mcp-preview-');
       const connection: WorkerMcpGatewayServerInput = {
         workspaceId: workspaceId ?? previewId,
         server: {
@@ -394,7 +394,7 @@ export async function previewMcpDiscovery(
       await gateway.close();
       cleanupProved = true;
       if (temporaryDirectory) {
-        rmSync(temporaryDirectory, { recursive: true, force: true });
+        removePrivateTreeSync(temporaryDirectory);
         temporaryDirectory = undefined;
       }
       current();
@@ -439,7 +439,7 @@ export async function previewMcpDiscovery(
         await gateway.close();
         cleanupProved = true;
       }
-      if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true });
+      if (temporaryDirectory) removePrivateTreeSync(temporaryDirectory);
     } catch (error) {
       failure = new OperationError(
         'recovery_required',

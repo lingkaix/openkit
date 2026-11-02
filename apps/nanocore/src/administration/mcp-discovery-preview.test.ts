@@ -447,6 +447,69 @@ describe('explicit administrator MCP discovery preview', () => {
     expect(existsSync(join(f.dataRoot, 'server/catalog/mcp-data'))).toBe(false);
     expect(existsSync(join(f.dataRoot, 'workspaces/server'))).toBe(false);
   });
+  it('removes allocated temporary data after a real stdio initialization exit', async () => {
+    // MCP Catalog Management / Explicit Bounded Discovery Preview requires cleanup after proved closure.
+    const f = fixture();
+    const contextPath = join(f.dataRoot, 'failed-stdio-context.json');
+    const callsPath = join(f.dataRoot, 'failed-calls.log');
+    const created = await f.call('administration.server-mcp-create', {
+      requestId: randomUUID(),
+      id: 'preview-stdio-init-exit',
+      displayName: 'Failing stdio preview',
+      allowedTools: [],
+      expectedRevision: 0,
+      declaration: {
+        kind: 'stdio',
+        command: process.execPath,
+        args: [
+          fileURLToPath(new URL('../test-support/mcp-stdio-stub.mjs', import.meta.url)),
+          callsPath,
+        ],
+        environment: {
+          OPENKIT_MCP_PREVIEW_CONTEXT_FILE: contextPath,
+          OPENKIT_MCP_INIT_EXIT: '1',
+        },
+      },
+    });
+    const catalogPath = join(f.dataRoot, 'server/catalog/catalog.json');
+    const before = readFileSync(catalogPath);
+    const started = Date.now();
+
+    await expect(
+      f.call('administration.mcp-discovery-preview', {
+        catalogScope: { kind: 'server' },
+        mcpId: 'preview-stdio-init-exit',
+        versionDigest: created.versionDigest,
+        expectedRevision: 1,
+        expectedBindingRevision: null,
+        timeoutMs: 5000,
+        credentialBindings: [],
+      })
+    ).rejects.toMatchObject({ status: 503 });
+
+    expect(Date.now() - started).toBeLessThan(5000);
+    // The real child writes this witness before it exits, after using its allocated data root.
+    const context = JSON.parse(readFileSync(contextPath, 'utf8')) as {
+      pid: number;
+      cwd: string;
+      dataDirectory: string;
+    };
+    // Reclaim residue after a failed cleanup assertion, including the intentional omission mutant.
+    cleanup.push(() => rmSync(context.dataDirectory, { recursive: true, force: true }));
+    expect(context.cwd).toBe(context.dataDirectory);
+    expect(context.dataDirectory.startsWith(join(tmpdir(), 'openkit-mcp-preview-'))).toBe(true);
+    expect(existsSync(context.dataDirectory)).toBe(false);
+    try {
+      process.kill(context.pid, 0);
+      throw new Error('Failed stdio fixture process remained live.');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'ESRCH' });
+    }
+    expect(existsSync(callsPath)).toBe(false);
+    expect(readFileSync(catalogPath)).toEqual(before);
+    expect(existsSync(join(f.dataRoot, 'server/catalog/mcp-data'))).toBe(false);
+    expect(existsSync(join(f.dataRoot, 'workspaces/server'))).toBe(false);
+  });
   it('returns recovery_required when temporary HTTP teardown is unproved', async () => {
     const f = fixture();
     const upstream = await createMcpHttpStub({ hangDelete: true });
