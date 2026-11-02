@@ -8,6 +8,8 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  readFileSync,
+  readSync,
   renameSync,
 } from 'node:fs';
 import {
@@ -1278,4 +1280,102 @@ export async function publishCanonicalPathAsync(
   await rename(staged, destination);
   await syncTreeDirectory(dirname(destination));
   if (dirname(staged) !== dirname(destination)) await syncTreeDirectory(dirname(staged));
+}
+
+/**
+ * Reads one canonical UTF-8 file without following a symbolic link.
+ *
+ * @param path Canonical file path.
+ * @returns Complete UTF-8 file content.
+ * @throws Error when the path is a symbolic link or not a regular file.
+ */
+export function readCanonicalTextFile(path: string): string {
+  return readCanonicalFile(path).toString('utf8');
+}
+
+/**
+ * Reads one canonical file buffer through a no-follow regular-file descriptor.
+ *
+ * @param path Canonical file path.
+ * @returns Complete file bytes.
+ * @throws Error when the path is a symbolic link or not a regular file.
+ */
+export function readCanonicalFile(path: string): Buffer {
+  assertCanonicalRegularFile(path);
+  let descriptor: number;
+
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    throwCanonicalLinkError(path, error);
+  }
+
+  try {
+    if (!fstatSync(descriptor).isFile()) {
+      throw new Error(`Canonical path must be a regular file: ${path}.`);
+    }
+    return readFileSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/** Measures one regular file's exact size and digest without materializing its body. */
+export function measureCanonicalFile(path: string): { byteLength: number; contentDigest: string } {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    return measureCanonicalFileDescriptor(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+/** Measures an open no-follow regular file while preserving its offset for a later stream. */
+export function measureCanonicalFileDescriptor(descriptor: number): {
+  byteLength: number;
+  contentDigest: string;
+} {
+  const before = fstatSync(descriptor, { bigint: true });
+  if (!before.isFile() || before.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('The canonical file cannot be measured.');
+  }
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(65_536);
+  let byteLength = 0;
+  while (byteLength < Number(before.size)) {
+    const count = readSync(
+      descriptor,
+      buffer,
+      0,
+      Math.min(buffer.byteLength, Number(before.size) - byteLength),
+      byteLength
+    );
+    if (count === 0) break;
+    byteLength += count;
+    hash.update(buffer.subarray(0, count));
+  }
+  const after = fstatSync(descriptor, { bigint: true });
+  if (
+    BigInt(byteLength) !== before.size ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs
+  ) {
+    throw new Error('The canonical file changed during integrity verification.');
+  }
+  return { byteLength, contentDigest: `sha256:${hash.digest('hex')}` };
+}
+
+/**
+ * Preserves a useful canonical-path error when a no-follow open rejects a link race.
+ *
+ * @param path Canonical file path.
+ * @param error Native open error.
+ * @throws The native error, or a canonical symbolic-link error for ELOOP.
+ */
+export function throwCanonicalLinkError(path: string, error: unknown): never {
+  if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'ELOOP') {
+    throw new Error(`Canonical path must not be a symbolic link: ${path}.`, { cause: error });
+  }
+  throw error;
 }
