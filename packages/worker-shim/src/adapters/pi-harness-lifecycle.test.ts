@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { request as requestHttp } from 'node:http';
 import { createServer as createH2Server, type ServerHttp2Session } from 'node:http2';
@@ -24,6 +24,7 @@ import {
   requestTexts,
   startSyntheticInference,
 } from '../test-support/pi-inference.js';
+import { WorkerTranscriptWriter } from '../transcript.js';
 import {
   createPiResidentAdapter,
   type PiResidentAdapterOptions,
@@ -47,6 +48,19 @@ vi.mock('node:child_process', async (importOriginal) => {
       child.realKill = child.kill.bind(child);
       children.push(child);
       return child;
+    },
+  };
+});
+// Native exit does not join the parent Harness Turn's terminal transcript writer.
+const residentTurns = vi.hoisted(() => [] as Array<Promise<unknown>>);
+vi.mock('../turn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turn.js')>();
+  return {
+    ...actual,
+    runResidentTurn: (...args: Parameters<typeof actual.runResidentTurn>) => {
+      const turn = actual.runResidentTurn(...args);
+      residentTurns.push(turn);
+      return turn;
     },
   };
 });
@@ -346,6 +360,7 @@ async function fixture(
       if (child.exitCode === null && child.signalCode === null)
         await new Promise<void>((resolve) => child.once('exit', () => resolve()));
     }
+    await Promise.allSettled(residentTurns.splice(0));
     await integration.close();
     socket.destroy();
     for (const session of h2Sessions) session.destroy();
@@ -499,6 +514,88 @@ describe('Pi real Integration lifecycle', () => {
       ).toBe('succeeded');
       expect(observations.getResponses).toEqual([405]);
       expect(f.capability.log.some((r) => r.httpMethod === 'GET')).toBe(false);
+    },
+    TIMEOUT
+  );
+
+  it(
+    'joins the real Harness terminal writer before closing Integration and removing its tree',
+    async () => {
+      let channel: Duplex | undefined;
+      const f = await fixture(() => ({ hang: true }), {
+        observeChannel: (value) => {
+          channel = value;
+        },
+        requestTimeoutMs: 1000,
+      });
+      let releaseWrite!: () => void;
+      const heldWrite = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      let markWriteEntered!: () => void;
+      const writeEntered = new Promise<void>((resolve) => {
+        markWriteEntered = resolve;
+      });
+      let terminalWritten = false;
+      const realTerminal = WorkerTranscriptWriter.prototype.writeTerminalOutcome;
+      const terminal = vi
+        .spyOn(WorkerTranscriptWriter.prototype, 'writeTerminalOutcome')
+        .mockImplementation(async function (this: WorkerTranscriptWriter, input) {
+          markWriteEntered();
+          await heldWrite;
+          const record = await realTerminal.call(this, input);
+          terminalWritten = true;
+          return record;
+        });
+      const realIntegrationClose = f.integration.close.bind(f.integration);
+      const integrationClose = vi.spyOn(f.integration, 'close').mockImplementation(async () => {
+        expect
+          .soft(terminalWritten, 'Integration must outlive the real terminal append')
+          .toBe(true);
+        // Keep a broken fixture's diagnostic cleanup safe, without hiding the deciding assertion.
+        await Promise.allSettled(residentTurns);
+        await realIntegrationClose();
+      });
+      let closing: Promise<void> | undefined;
+      const close = () => (closing ??= f.close());
+      cleanup.push(async () => {
+        releaseWrite();
+        try {
+          await close();
+        } finally {
+          terminal.mockRestore();
+          integrationClose.mockRestore();
+        }
+      });
+      expect((await f.open('as_00000000-0000-7f03-8682-76a52604a84a')).disposition).toBe(
+        'succeeded'
+      );
+      expect((await f.run('tu_00000000-0000-7e49-8268-e35715b55d0c', 0)).disposition).toBe(
+        'succeeded'
+      );
+      await vi.waitFor(() => expect(f.inference.requests).toHaveLength(1), { timeout: 20000 });
+      channel!.emit(
+        'data',
+        Buffer.from(
+          `${JSON.stringify({
+            event: 'turn_settled',
+            turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+            outcome: { status: 'future-status' },
+            nativeHandle: { state: 'pending' },
+            compactionEntryIds: [],
+          })}\n`
+        )
+      );
+      await writeEntered;
+      await waitIdle(f);
+      expect(f.bindings[0]!.childState()).toBe('absent');
+      expect(terminalWritten).toBe(false);
+      // Releasing a real async append is not its completion; no sleep establishes this ordering.
+      releaseWrite();
+      await close();
+      expect(terminalWritten).toBe(true);
+      expect(integrationClose).toHaveBeenCalledTimes(1);
+      expect(existsSync(f.root)).toBe(false);
     },
     TIMEOUT
   );
