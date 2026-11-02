@@ -482,4 +482,4 @@ Recovery hydration fixtures preserve the explicitly authored AEP request ID and 
 
 The Pending domain validates original record, complete Workspace Turn provenance and command receipts through `requireUsablePendingRequest`. Its synchronous census is evaluated only after the owned row is readable and matched. Main Flow gathers Store facts at that boundary; Assistant handoff uses the same domain check without importing Flow.
 
-The NanoHost session dispatcher keeps the same pending, completed and physical-readiness collections while its private correlated-result stage validates results, reconciles retained receipts and awaits consumer settlement. Readiness, poll admission and bounded file and collection carriage remain with the same dispatcher.
+The NanoHost session dispatcher keeps the same pending, completed and physical-readiness collections. Private stages handle correlated result settlement and bounded image, collection and file carriage through those original collections. Registration, poll admission, readiness publication and semantic routing remain with the same dispatcher.

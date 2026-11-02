@@ -1116,38 +1116,13 @@ export function createNanoHostSessionDispatch(
     },
 
     async imageBuildInput(physicalConnection, request) {
-      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      if (!readyPhysicalConnections.has(physicalConnection)) {
-        throw effectTransportError(
-          409,
-          'NanoHost physical connection has not completed durable readiness.'
-        );
-      }
-      const requestId = await readImageBuildInputRequest(request);
-      const pending = pendingEffects.get('image.build');
-      if (
-        !pending ||
-        !pending.command ||
-        !pending.accepted ||
-        pending.acceptedConnection !== physicalConnection ||
-        pending.requestId !== requestId ||
-        pending.imageBuildInputServed
-      ) {
-        throw effectTransportError(409, 'NanoHost image build input has no matching request.');
-      }
-      const body = pending.command.dockerfile;
-      const byteLength = pending.command.dockerfileByteLength;
-      const sha256 = pending.command.dockerfileDigest;
-      if (
-        !Buffer.isBuffer(body) ||
-        !Number.isSafeInteger(byteLength) ||
-        body.byteLength !== byteLength ||
-        typeof sha256 !== 'string'
-      ) {
-        throw effectTransportError(500, 'NanoHost image build input source is unavailable.');
-      }
-      pending.imageBuildInputServed = true;
-      return { body, byteLength: byteLength as number, requestId, sha256 };
+      return readNanoHostImageBuildInput(
+        input.sessionAuthority,
+        readyPhysicalConnections,
+        pendingEffects,
+        physicalConnection,
+        request
+      );
     },
 
     async readiness(physicalConnection, body, runtimeTarget) {
@@ -1202,168 +1177,34 @@ export function createNanoHostSessionDispatch(
     },
 
     beginWorkspaceCollectionDelivery(physicalConnection) {
-      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      const pending = pendingEffects.get('workspace.collect');
-      if (pending?.accepted && !pending.collectionDeliveryStarted) {
-        pending.collectionDeliveryStarted = true;
-        armWorkspaceCollectionDeadline(pendingEffects, pending, 120_000);
-      }
-      return {
-        signal: pending?.collectionAbort?.signal,
-        abandon: () => {
-          if (
-            !pending ||
-            pendingEffects.get('workspace.collect') !== pending ||
-            (pending.acceptedConnection && pending.acceptedConnection !== physicalConnection)
-          )
-            return;
-          pending.command = null;
-          removePendingEffectGroup(pendingEffects, 'workspace.collect', pending);
-          pending.reject(
-            new Error('Workspace collection delivery is unknown; authorize a new request.')
-          );
-        },
-      };
+      return beginNanoHostWorkspaceCollectionDelivery(
+        input.sessionAuthority,
+        pendingEffects,
+        physicalConnection
+      );
     },
 
     async workspaceCollectResult(physicalConnection, request) {
-      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      const pending = pendingEffects.get('workspace.collect');
-      if (!pending?.accepted || !pending.command)
-        throw effectTransportError(409, 'Workspace collection has no accepted pending command.');
-      const command = WorkspaceCollectCommandSchema.parse(pending.command);
-      if (command.mode !== 'capture')
-        throw effectTransportError(409, 'Baseline collection cannot return a candidate.');
-      const requestId = request.headers.get('x-openkit-request-id');
-      const readPair = (name: string) => {
-        const wire = request.headers.get(name);
-        if (!wire || !/^[0-9a-f]{40} [0-9a-f]{40}$/.test(wire))
-          throw effectTransportError(400, 'Workspace collection snapshot header is invalid.');
-        const [tree, manifest] = wire.split(' ');
-        return WorkspaceSnapshotPairSchema.parse({ tree, manifest });
-      };
-      const head = readPair('x-openkit-head');
-      const previousHead = readPair('x-openkit-previous-head');
-      const acceptedBase = readPair('x-openkit-accepted-base');
-      const unstable = request.headers.get('x-openkit-unstable');
-      const byteLength = readCanonicalByteLengthText(
-        request.headers.get('x-openkit-byte-length') ?? ''
+      return settleNanoHostWorkspaceCollection(
+        input.coreDb,
+        input.fileAdmission,
+        input.sessionAuthority,
+        pendingEffects,
+        physicalConnection,
+        request
       );
-      const sha256 = readSha256(request.headers.get('x-openkit-sha256'));
-      if (
-        request.headers.get('content-type') !== FILE_DATA_CONTENT_TYPE ||
-        requestId !== pending.requestId ||
-        request.headers.get('content-length') !== String(byteLength) ||
-        byteLength === 0 ||
-        byteLength > TERMINAL_FILE_MAX_BYTES ||
-        (unstable !== 'true' && unstable !== 'false') ||
-        !sameWorkspaceSnapshot(previousHead, command.previousHead) ||
-        !sameWorkspaceSnapshot(acceptedBase, command.acceptedBase) ||
-        sameWorkspaceSnapshot(head, previousHead) ||
-        sameWorkspaceSnapshot(head, acceptedBase) ||
-        pending.acceptedConnection !== physicalConnection
-      ) {
-        throw effectTransportError(
-          409,
-          'Workspace collection candidate disagrees with its command.'
-        );
-      }
-      const staged = await stageFileExport(
-        request,
-        { byteLength, sha256 },
-        {
-          dataRoot: input.coreDb?.dataRoot,
-          admission: input.fileAdmission,
-          signal: pending.collectionAbort?.signal,
-        }
-      );
-      try {
-        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-        if (pendingEffects.get('workspace.collect') !== pending)
-          throw effectTransportError(409, 'Workspace collection delivery became unknown.');
-      } catch (error) {
-        await rm(staged.directory, { force: true, recursive: true });
-        throw error;
-      }
-      const result = {
-        outcome: 'candidate',
-        head,
-        previousHead,
-        acceptedBase,
-        unstable: unstable === 'true',
-        byteLength,
-        sha256,
-        stagingPath: staged.path,
-      };
-      await pending.consumeResult?.(result);
-      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      if (pendingEffects.get('workspace.collect') !== pending)
-        throw effectTransportError(
-          409,
-          'Workspace collection consumer changed during acknowledgement.'
-        );
-      clearTimeout(pending.collectionTimeout);
-      pending.command = null;
-      pendingEffects.delete('workspace.collect');
-      recordNanoHostEffectAcceptance(request.headers);
-      pending.resolve(result);
     },
 
     async fileExportResult(physicalConnection, request) {
-      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      const metadata = readFileDataHeaders(request.headers);
-      const pending = pendingEffects.get('file.export');
-      const completed = completedEffects.get('file.export');
-      if (pending) {
-        requirePendingFileExport(pending, metadata);
-      } else if (!completed?.fileResult || completed.requestId !== metadata.requestId) {
-        throw effectTransportError(409, 'NanoHost file export has no matching pending request.');
-      }
-      if (!pending && completed?.redeliveredConnection === physicalConnection) {
-        throw effectTransportError(409, 'NanoHost file export cannot retry on one generation.');
-      }
-
-      const staged = await stageFileExport(request, metadata, {
-        dataRoot: input.coreDb?.dataRoot,
-        admission: input.fileAdmission,
-      });
-      if (!pending) {
-        const matchesCompleted = sameFileResult(completed?.fileResult, metadata);
-        await rm(staged.directory, { force: true, recursive: true });
-        if (!matchesCompleted) {
-          throw effectTransportError(409, 'NanoHost file export duplicate conflicts.');
-        }
-        if (completed) {
-          completed.redeliveredConnection = physicalConnection;
-        }
-        return;
-      }
-
-      if (pending.fileExportAbandoned) {
-        // A complete late copy is verified above and disposed before uncertain admission is freed.
-        await rm(staged.directory, { force: true, recursive: true });
-      }
-      const result = {
-        byteLength: metadata.byteLength,
-        relativePath: metadata.relativePath,
-        sha256: metadata.sha256,
-        slot: metadata.slot,
-        stagingPath: staged.path,
-      };
-      await pending.consumeResult?.(result);
-      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      if (pendingEffects.get('file.export') !== pending)
-        throw effectTransportError(409, 'NanoHost file consumer changed during acknowledgement.');
-      removePendingEffectGroup(pendingEffects, 'file.export', pending);
-      completedEffects.set('file.export', {
-        fileResult: metadata,
-        redeliveredConnection: physicalConnection,
-        requestId: metadata.requestId,
-        resultJson: JSON.stringify(metadata),
-      });
-      recordNanoHostEffectAcceptance(request.headers);
-      if (pending.fileExportAbandoned) return;
-      pending.resolve(result);
+      return settleNanoHostFileExport(
+        input.coreDb,
+        input.fileAdmission,
+        input.sessionAuthority,
+        pendingEffects,
+        completedEffects,
+        physicalConnection,
+        request
+      );
     },
 
     async route(physicalConnection, request) {
@@ -1404,6 +1245,237 @@ export function createNanoHostSessionDispatch(
       return input.routeHandler(request);
     },
   };
+}
+
+/** Returns the original one-shot image bytes from the same accepted effect slot. */
+async function readNanoHostImageBuildInput(
+  sessionAuthority: NanoHostTransportSessionAuthority,
+  readyPhysicalConnections: WeakMap<object, NanoHostPhysicalReadiness>,
+  pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
+  physicalConnection: object,
+  request: Request
+): Promise<{
+  readonly body: Buffer;
+  readonly byteLength: number;
+  readonly requestId: string;
+  readonly sha256: string;
+}> {
+  requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  if (!readyPhysicalConnections.has(physicalConnection)) {
+    throw effectTransportError(
+      409,
+      'NanoHost physical connection has not completed durable readiness.'
+    );
+  }
+  const requestId = await readImageBuildInputRequest(request);
+  const pending = pendingEffects.get('image.build');
+  if (
+    !pending ||
+    !pending.command ||
+    !pending.accepted ||
+    pending.acceptedConnection !== physicalConnection ||
+    pending.requestId !== requestId ||
+    pending.imageBuildInputServed
+  ) {
+    throw effectTransportError(409, 'NanoHost image build input has no matching request.');
+  }
+  const body = pending.command.dockerfile;
+  const byteLength = pending.command.dockerfileByteLength;
+  const sha256 = pending.command.dockerfileDigest;
+  if (
+    !Buffer.isBuffer(body) ||
+    !Number.isSafeInteger(byteLength) ||
+    body.byteLength !== byteLength ||
+    typeof sha256 !== 'string'
+  ) {
+    throw effectTransportError(500, 'NanoHost image build input source is unavailable.');
+  }
+  pending.imageBuildInputServed = true;
+  return { body, byteLength: byteLength as number, requestId, sha256 };
+}
+
+/** Starts bounded collection delivery and keeps abandonment bound to its original pending object. */
+function beginNanoHostWorkspaceCollectionDelivery(
+  sessionAuthority: NanoHostTransportSessionAuthority,
+  pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
+  physicalConnection: object
+): { abandon: () => void; signal: AbortSignal | undefined } {
+  requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  const pending = pendingEffects.get('workspace.collect');
+  if (pending?.accepted && !pending.collectionDeliveryStarted) {
+    pending.collectionDeliveryStarted = true;
+    armWorkspaceCollectionDeadline(pendingEffects, pending, 120_000);
+  }
+  return {
+    signal: pending?.collectionAbort?.signal,
+    abandon: () => {
+      if (
+        !pending ||
+        pendingEffects.get('workspace.collect') !== pending ||
+        (pending.acceptedConnection && pending.acceptedConnection !== physicalConnection)
+      )
+        return;
+      pending.command = null;
+      removePendingEffectGroup(pendingEffects, 'workspace.collect', pending);
+      pending.reject(
+        new Error('Workspace collection delivery is unknown; authorize a new request.')
+      );
+    },
+  };
+}
+
+/** Stages and settles one collection candidate through the original physical and consumer checks. */
+async function settleNanoHostWorkspaceCollection(
+  coreDb: CoreDb | undefined,
+  fileAdmission: FileStorageAdmission | undefined,
+  sessionAuthority: NanoHostTransportSessionAuthority,
+  pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
+  physicalConnection: object,
+  request: Request
+): Promise<void> {
+  requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  const pending = pendingEffects.get('workspace.collect');
+  if (!pending?.accepted || !pending.command)
+    throw effectTransportError(409, 'Workspace collection has no accepted pending command.');
+  const command = WorkspaceCollectCommandSchema.parse(pending.command);
+  if (command.mode !== 'capture')
+    throw effectTransportError(409, 'Baseline collection cannot return a candidate.');
+  const requestId = request.headers.get('x-openkit-request-id');
+  const readPair = (name: string) => {
+    const wire = request.headers.get(name);
+    if (!wire || !/^[0-9a-f]{40} [0-9a-f]{40}$/.test(wire))
+      throw effectTransportError(400, 'Workspace collection snapshot header is invalid.');
+    const [tree, manifest] = wire.split(' ');
+    return WorkspaceSnapshotPairSchema.parse({ tree, manifest });
+  };
+  const head = readPair('x-openkit-head');
+  const previousHead = readPair('x-openkit-previous-head');
+  const acceptedBase = readPair('x-openkit-accepted-base');
+  const unstable = request.headers.get('x-openkit-unstable');
+  const byteLength = readCanonicalByteLengthText(
+    request.headers.get('x-openkit-byte-length') ?? ''
+  );
+  const sha256 = readSha256(request.headers.get('x-openkit-sha256'));
+  if (
+    request.headers.get('content-type') !== FILE_DATA_CONTENT_TYPE ||
+    requestId !== pending.requestId ||
+    request.headers.get('content-length') !== String(byteLength) ||
+    byteLength === 0 ||
+    byteLength > TERMINAL_FILE_MAX_BYTES ||
+    (unstable !== 'true' && unstable !== 'false') ||
+    !sameWorkspaceSnapshot(previousHead, command.previousHead) ||
+    !sameWorkspaceSnapshot(acceptedBase, command.acceptedBase) ||
+    sameWorkspaceSnapshot(head, previousHead) ||
+    sameWorkspaceSnapshot(head, acceptedBase) ||
+    pending.acceptedConnection !== physicalConnection
+  ) {
+    throw effectTransportError(409, 'Workspace collection candidate disagrees with its command.');
+  }
+  const staged = await stageFileExport(
+    request,
+    { byteLength, sha256 },
+    {
+      dataRoot: coreDb?.dataRoot,
+      admission: fileAdmission,
+      signal: pending.collectionAbort?.signal,
+    }
+  );
+  try {
+    requireAuthoritativeSession(sessionAuthority, physicalConnection);
+    if (pendingEffects.get('workspace.collect') !== pending)
+      throw effectTransportError(409, 'Workspace collection delivery became unknown.');
+  } catch (error) {
+    await rm(staged.directory, { force: true, recursive: true });
+    throw error;
+  }
+  const result = {
+    outcome: 'candidate',
+    head,
+    previousHead,
+    acceptedBase,
+    unstable: unstable === 'true',
+    byteLength,
+    sha256,
+    stagingPath: staged.path,
+  };
+  await pending.consumeResult?.(result);
+  requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  if (pendingEffects.get('workspace.collect') !== pending)
+    throw effectTransportError(
+      409,
+      'Workspace collection consumer changed during acknowledgement.'
+    );
+  clearTimeout(pending.collectionTimeout);
+  pending.command = null;
+  pendingEffects.delete('workspace.collect');
+  recordNanoHostEffectAcceptance(request.headers);
+  pending.resolve(result);
+}
+
+/** Verifies raw file carriage before the original duplicate, disposal and consumer settlement. */
+async function settleNanoHostFileExport(
+  coreDb: CoreDb | undefined,
+  fileAdmission: FileStorageAdmission | undefined,
+  sessionAuthority: NanoHostTransportSessionAuthority,
+  pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
+  completedEffects: Map<NanoHostEffectOperation, CompletedNanoHostEffect>,
+  physicalConnection: object,
+  request: Request
+): Promise<void> {
+  requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  const metadata = readFileDataHeaders(request.headers);
+  const pending = pendingEffects.get('file.export');
+  const completed = completedEffects.get('file.export');
+  if (pending) {
+    requirePendingFileExport(pending, metadata);
+  } else if (!completed?.fileResult || completed.requestId !== metadata.requestId) {
+    throw effectTransportError(409, 'NanoHost file export has no matching pending request.');
+  }
+  if (!pending && completed?.redeliveredConnection === physicalConnection) {
+    throw effectTransportError(409, 'NanoHost file export cannot retry on one generation.');
+  }
+
+  const staged = await stageFileExport(request, metadata, {
+    dataRoot: coreDb?.dataRoot,
+    admission: fileAdmission,
+  });
+  if (!pending) {
+    const matchesCompleted = sameFileResult(completed?.fileResult, metadata);
+    await rm(staged.directory, { force: true, recursive: true });
+    if (!matchesCompleted) {
+      throw effectTransportError(409, 'NanoHost file export duplicate conflicts.');
+    }
+    if (completed) {
+      completed.redeliveredConnection = physicalConnection;
+    }
+    return;
+  }
+
+  if (pending.fileExportAbandoned) {
+    // A complete late copy is verified above and disposed before uncertain admission is freed.
+    await rm(staged.directory, { force: true, recursive: true });
+  }
+  const result = {
+    byteLength: metadata.byteLength,
+    relativePath: metadata.relativePath,
+    sha256: metadata.sha256,
+    slot: metadata.slot,
+    stagingPath: staged.path,
+  };
+  await pending.consumeResult?.(result);
+  requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  if (pendingEffects.get('file.export') !== pending)
+    throw effectTransportError(409, 'NanoHost file consumer changed during acknowledgement.');
+  removePendingEffectGroup(pendingEffects, 'file.export', pending);
+  completedEffects.set('file.export', {
+    fileResult: metadata,
+    redeliveredConnection: physicalConnection,
+    requestId: metadata.requestId,
+    resultJson: JSON.stringify(metadata),
+  });
+  recordNanoHostEffectAcceptance(request.headers);
+  if (pending.fileExportAbandoned) return;
+  pending.resolve(result);
 }
 
 /** Rechecks one process-local readiness observation against its durable current owner. */
