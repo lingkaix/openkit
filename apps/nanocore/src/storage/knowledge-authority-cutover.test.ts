@@ -10,7 +10,7 @@ import {
   authorityRequestId,
   call,
   createFixture,
-  decide,
+  decisionInput,
 } from '../test-support/knowledge-proposal-authority.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
@@ -45,7 +45,9 @@ it('selects the SQL Knowledge authority across stale projections and cold replay
 
   const reviewLabel = 'live-authority-accepted';
   const requestId = authorityRequestId(reviewLabel);
-  const accepted = await decide(f, 'accepted', reviewLabel);
+  // Exact command replay reuses immutable client input, never server admission or a receipt.
+  const input = decisionInput(f, f.proposal, 'accepted', reviewLabel);
+  const accepted = await call(f, 'knowledge.proposal.decide', input);
   const selectedRevision = f.proposal.candidateRevision;
   const head = readControlKnowledgeHead(db, knowledgeBaseId);
   const proposal = readControlKnowledgeProposal(db, f.proposal.id);
@@ -66,7 +68,7 @@ it('selects the SQL Knowledge authority across stale projections and cold replay
 
   const listed = await call(f, 'knowledge.notebook.list', {});
   const history = await call(f, 'knowledge.notebook.history', { limit: 10 });
-  const replay = await decide(f, 'accepted', reviewLabel);
+  const replay = await call(f, 'knowledge.proposal.decide', input);
   expect(listed).toMatchObject({ notebookRevision: selectedRevision });
   expect(listed.pages).toContainEqual(
     expect.objectContaining({ id: f.knowledgePageId, content: f.canonicalPageBytes })
@@ -79,7 +81,7 @@ it('selects the SQL Knowledge authority across stale projections and cold replay
   rmSync(schemaPath, { force: true });
   expect(await call(f, 'knowledge.notebook.list', {})).toEqual(listed);
   expect(await call(f, 'knowledge.notebook.history', { limit: 10 })).toEqual(history);
-  expect(await decide(f, 'accepted', reviewLabel)).toEqual(accepted);
+  expect(await call(f, 'knowledge.proposal.decide', input)).toEqual(accepted);
   expect(git(f.repositoryPath, 'rev-parse', 'refs/heads/published')).toBe(f.proposal.baseRevision);
   expect(existsSync(schemaPath)).toBe(false);
   expect(f.store.getCommandRequest('knowledge.proposal.decide', requestId, scope, db)).toEqual(
@@ -114,7 +116,7 @@ it('selects the SQL Knowledge authority across stale projections and cold replay
   ).toEqual(audits);
   expect(await call(cold, 'knowledge.notebook.list', {})).toEqual(listed);
   expect(await call(cold, 'knowledge.notebook.history', { limit: 10 })).toEqual(history);
-  expect(await decide(cold, 'accepted', reviewLabel)).toEqual(accepted);
+  expect(await call(cold, 'knowledge.proposal.decide', input)).toEqual(accepted);
   expect(git(f.repositoryPath, 'rev-parse', 'refs/heads/published')).toBe(f.proposal.baseRevision);
   expect(existsSync(schemaPath)).toBe(false);
 
