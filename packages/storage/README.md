@@ -33,3 +33,5 @@ Trusted Node owners can use `createDirectoryExclusive` for a synchronous single-
 - `pnpm --filter @openkit/storage lint`
 
 Tests use disposable local directories and the real Protocol reference schema. Shared workspace discovery includes this package in build, static, test and coverage gates. Knowledge Source pointers select the shared Knowledge case; no native Core capture producer is activated by this package landing. Remote storage, the S3 facade and Derivation are excluded.
+
+Trusted Node callers also share the synchronous canonical directory and tree primitives (`assertCanonicalRegularFile`, `assertCanonicalDirectory`, `ensureCanonicalDirectory`, `syncCanonicalDirectory`, and `syncCanonicalTree`). These preserve link refusal, recursive parent publication, child-before-parent synchronization and descriptor cleanup; NanoCore retains domain admission, capacity and rename publication.

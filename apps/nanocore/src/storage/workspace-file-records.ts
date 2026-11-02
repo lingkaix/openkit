@@ -1,4 +1,20 @@
 import {
+  assertCanonicalDirectory,
+  assertCanonicalRegularFile,
+  ensureCanonicalDirectory,
+  syncCanonicalDirectory,
+  syncCanonicalTree,
+} from '@openkit/storage';
+
+export {
+  assertCanonicalDirectory,
+  assertCanonicalRegularFile,
+  ensureCanonicalDirectory,
+  syncCanonicalDirectory,
+  syncCanonicalTree,
+} from '@openkit/storage';
+
+import {
   readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
 } from '../knowledge/notebook-workspace-selection.js';
@@ -2956,97 +2972,6 @@ function listFileNames(path: string): string[] {
     }
   }
   return names.sort();
-}
-
-/**
- * Verifies that one canonical path is a regular file rather than a link.
- *
- * @param path Canonical file path.
- * @throws Error when the path is a symbolic link or not a regular file.
- */
-export function assertCanonicalRegularFile(path: string): void {
-  const metadata = lstatSync(path);
-
-  if (metadata.isSymbolicLink()) {
-    throw new Error(`Canonical path must not be a symbolic link: ${path}.`);
-  }
-  if (!metadata.isFile()) {
-    throw new Error(`Canonical path must be a regular file: ${path}.`);
-  }
-}
-
-/**
- * Verifies that one canonical path is a real directory rather than a link.
- *
- * @param path Canonical directory path.
- * @throws Error when the path is a symbolic link or not a directory.
- */
-export function assertCanonicalDirectory(path: string): void {
-  const metadata = lstatSync(path);
-
-  if (metadata.isSymbolicLink()) {
-    throw new Error(`Canonical path must not be a symbolic link: ${path}.`);
-  }
-  if (!metadata.isDirectory()) {
-    throw new Error(`Canonical path must be a directory: ${path}.`);
-  }
-}
-
-/**
- * Creates a canonical directory and any missing parents without an existing redirect.
- *
- * @param path Canonical directory path beneath the caller's validated boundary.
- * @param mode Creation permissions, subject to the process umask.
- * @throws Error when the existing or created path is not a real directory.
- */
-export function ensureCanonicalDirectory(path: string, mode = 0o700): void {
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-
-  if (metadata) {
-    assertCanonicalDirectory(path);
-    syncCanonicalDirectory(dirname(path));
-    return;
-  }
-
-  // A visible parent can remain after its creation was not durably acknowledged.
-  ensureCanonicalDirectory(dirname(path), mode);
-  assertCanonicalDirectory(dirname(path));
-  mkdirSync(path, { mode });
-  assertCanonicalDirectory(path);
-  syncCanonicalDirectory(dirname(path));
-}
-
-/** Synchronizes a verified directory entry before acknowledging publication. */
-export function syncCanonicalDirectory(path: string): void {
-  assertCanonicalDirectory(path);
-  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
-/** Synchronizes complete staged bytes and child entries before their containing tree is published. */
-export function syncCanonicalTree(path: string): void {
-  const metadata = lstatSync(path);
-  if (metadata.isDirectory()) {
-    for (const entry of readdirSync(path)) syncCanonicalTree(join(path, entry));
-    syncCanonicalDirectory(path);
-    return;
-  }
-  assertCanonicalRegularFile(path);
-  const descriptor = openSync(
-    path,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-  );
-  try {
-    if (!fstatSync(descriptor).isFile())
-      throw new Error(`Canonical path must be a regular file: ${path}.`);
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
 }
 
 /** Publishes a complete staged file or tree and commits both sides of a cross-parent rename. */

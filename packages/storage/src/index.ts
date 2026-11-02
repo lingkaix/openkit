@@ -1,10 +1,13 @@
 export * from './contract.js';
 export {
+  assertCanonicalDirectory,
+  assertCanonicalRegularFile,
   changeVerifiedFileMode,
   copyFileForCut,
   copyVerifiedFile,
   createDirectoryExclusive,
   createPrivateTree,
+  ensureCanonicalDirectory,
   ensureTreeDirectory,
   ensureTreeDirectory as ensureCanonicalDirectoryAsync,
   LocalStorage,
@@ -14,6 +17,8 @@ export {
   publishVerifiedFileReplacement,
   removeDurableFile,
   removePrivateTree,
+  syncCanonicalDirectory,
+  syncCanonicalTree,
   syncTreeDirectory,
   syncTreeDirectory as syncCanonicalDirectoryAsync,
   syncVerifiedFile,
