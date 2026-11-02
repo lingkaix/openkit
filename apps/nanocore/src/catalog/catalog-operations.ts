@@ -1,7 +1,6 @@
-import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { CATALOG_OPERATION_DEFINITIONS, type OperationInput } from '@openkit/app-api-schemas';
+import { createPrivateTreeSync, removePrivateTreeSync } from '@openkit/storage';
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -947,7 +946,7 @@ export function createCatalogOperationImplementations(
       }
     },
     'catalog.plugin-import': async (input, context) => {
-      const staging = mkdtempSync(join(tmpdir(), 'openkit-plugin-upload-'));
+      const staging = createPrivateTreeSync(tmpdir(), 'openkit-plugin-upload-');
       let workspaceDb: WorkspaceDb | undefined;
       try {
         workspaceDb = mutationAuditDb(input.workspaceId);
@@ -986,7 +985,7 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'plugin_import_failed');
       } finally {
         workspaceDb?.sqlite.close();
-        rmSync(staging, { force: true, recursive: true });
+        removePrivateTreeSync(staging);
       }
     },
   } satisfies FamilyImplementations<typeof CATALOG_OPERATION_DEFINITIONS>;

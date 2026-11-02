@@ -61,3 +61,5 @@ New Workspace MCP bindings share their installation data key through immutable v
 Workspace MCP stage-version and remove reuse the scoped native owners and existing configuration authority. Selection requires the observed `currentVersionDigest` as `expectedCurrentDigest`; removed entries refuse selection and binding updates while retaining immutable history and process data.
 
 Snapshot materialization and non-staging file observation use the shared physical helpers in `@openkit/storage`. This catalog keeps tree validation, immutable identity, revision checks, retained metadata and publication decisions; the helper move preserves physical staging, acknowledgement and cleanup behavior.
+
+Plugin upload scratch allocation and removal use the existing Storage private-tree helpers. Catalog publication, Audit storage lifetime, and close-before-cleanup ordering stay in this catalog owner.

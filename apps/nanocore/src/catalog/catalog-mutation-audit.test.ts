@@ -1,18 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import fs, { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OperationId } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { loadWorkspaceResourceCatalog } from './resource-catalog.js';
 
 describe('Catalog mutation Audit', () => {
   it('retains the caller, exact resource, revision and request without declarations or bindings', async () => {
@@ -39,6 +42,17 @@ describe('Catalog mutation Audit', () => {
           }
         )
       );
+    // The public result cannot expose private-root lifetime; observe real allocation only.
+    const scratch: string[] = [];
+    const createDirectory = fs.mkdtempSync;
+    const allocation = vi.spyOn(fs, 'mkdtempSync').mockImplementation((prefix, options) => {
+      const directory = createDirectory(prefix, options);
+      if (prefix.toString() === join(tmpdir(), 'openkit-plugin-upload-')) {
+        scratch.push(directory.toString());
+      }
+      return directory;
+    });
+    syncBuiltinESMExports();
     try {
       const created = await call('catalog.mcp-create', {
         workspaceId: workspace.id,
@@ -71,7 +85,7 @@ describe('Catalog mutation Audit', () => {
         schemaPolicy: 'tracking',
       });
       expect(binding.status, await binding.clone().text()).toBe(200);
-      const imported = await call('catalog.plugin-import', {
+      const pluginInput = {
         workspaceId: workspace.id,
         requestId: requests[3],
         expectedRevision: 3,
@@ -88,9 +102,27 @@ describe('Catalog mutation Audit', () => {
             ).toString('base64'),
           },
         ],
-      });
+      };
+      const imported = await call('catalog.plugin-import', pluginInput);
       expect(imported.status, await imported.clone().text()).toBe(201);
       const plugin = await imported.json();
+      // Plugin admission owns a fresh root and discards staging after publication.
+      expect(scratch).toHaveLength(1);
+      expect(() => fs.lstatSync(scratch[0]!)).toThrowError(
+        expect.objectContaining({ code: 'ENOENT' })
+      );
+      expect(plugin.revision).toBe(4);
+      const catalog = loadWorkspaceResourceCatalog(dataRoot, workspace.id);
+      expect(catalog.revision).toBe(4);
+      const originalPackage = join(
+        ensureWorkspaceLayout(dataRoot, workspace.id).catalogPluginSnapshots,
+        plugin.entry.id,
+        plugin.versionDigest.slice('sha256:'.length),
+        'plugin.json'
+      );
+      // The retained original is distinct from the disposable upload root.
+      const originalBytes = Buffer.from(pluginInput.tree[0]!.contentBase64, 'base64');
+      expect(readFileSync(originalPackage)).toEqual(originalBytes);
       const events = listWorkspaceAuditEvents(workspaceDb, workspace.id);
       const actions = [
         'catalog.mcp-create',
@@ -126,7 +158,26 @@ describe('Catalog mutation Audit', () => {
       });
       expect(refused.status).toBe(409);
       expect(listWorkspaceAuditEvents(workspaceDb, workspace.id)).toEqual(events);
+      const refusedPlugin = await call('catalog.plugin-import', {
+        ...pluginInput,
+        requestId: randomUUID(),
+        expectedRevision: 0,
+      });
+      expect(refusedPlugin.status, await refusedPlugin.clone().text()).toBe(409);
+      expect(await refusedPlugin.json()).toMatchObject({ code: 'conflict' });
+      // Prove this refusal reached its own actual scratch root before checking absence.
+      expect(scratch).toHaveLength(2);
+      expect(scratch[1]).not.toBe(scratch[0]);
+      expect(() => fs.lstatSync(scratch[1]!)).toThrowError(
+        expect.objectContaining({ code: 'ENOENT' })
+      );
+      expect(loadWorkspaceResourceCatalog(dataRoot, workspace.id)).toEqual(catalog);
+      expect(listWorkspaceAuditEvents(workspaceDb, workspace.id)).toEqual(events);
+      expect(readFileSync(originalPackage)).toEqual(originalBytes);
     } finally {
+      allocation.mockRestore();
+      syncBuiltinESMExports();
+      for (const directory of scratch) rmSync(directory, { recursive: true, force: true });
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();

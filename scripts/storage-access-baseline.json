@@ -27,8 +27,6 @@
     "apps/nanocore/src/bootstrap/lock.ts\tfs:writeFileSync\t447c6b4d250e31db1fce59f57c2daad679264f678350fdedbd7097a037f71f70": 1,
     "apps/nanocore/src/bootstrap/workspace-recovery.ts\tsqlite\t45e758a28ee073cb13955d0fc739892a81ac1b0a2f06580528f7fb2cebd9a252": 1,
     "apps/nanocore/src/bootstrap/workspace-recovery.ts\tsqlite\t586462bf03f76adbcb152885147b745f702a18063ff66ff9c1a036e2732c1e9a": 1,
-    "apps/nanocore/src/catalog/catalog-operations.ts\tfs:mkdtempSync\t45eaca7aa48bd9c76f6f2f08595433195cd6c0e9aec09ed6adffff882edaefa5": 1,
-    "apps/nanocore/src/catalog/catalog-operations.ts\tfs:rmSync\td56c7819a5ea3e3aea12fea46c2f8fc18e3c163c555d44fa0c4849432abea788": 1,
     "apps/nanocore/src/catalog/catalog-portability.ts\tfs:chmodSync\t4c6a0bf5947f2b646431cdae53a9df9a97dc09c51971b2653f22ecae85342bcd": 1,
     "apps/nanocore/src/catalog/catalog-portability.ts\tfs:mkdirSync\t0118b6e42cbceb5e57e0f0f45ad7db36ced65aebbd6e53daf76c44fc339f1dda": 1,
     "apps/nanocore/src/catalog/catalog-portability.ts\tfs:mkdirSync\t112c2cd62e8a5f2eaef1fe7d58602a0b24f3af3e0befbb87fce365c637734b66": 1,
