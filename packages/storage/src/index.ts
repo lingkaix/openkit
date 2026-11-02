@@ -36,6 +36,7 @@ export {
   syncTreeDirectory as syncCanonicalDirectoryAsync,
   syncVerifiedFile,
   throwCanonicalLinkError,
+  withStagedMediaSource,
   writePrivateTreeFile,
   writePrivateTreeMetadata,
 } from './local.js';

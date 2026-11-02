@@ -2,13 +2,13 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { withStagedMediaSource } from '@openkit/storage';
 import { z } from 'zod';
 import {
   type MediaByteSource,
   MediaProcessFailure,
   type MediaStageReservation,
   validMediaSource,
-  withStagedMediaSource,
 } from './media-process.js';
 import { VISION_PDF_OPTIONS } from './vision-view-child.js';
 
@@ -232,7 +232,8 @@ export async function processVisionView(input: ProcessVisionViewInput): Promise<
           },
           bytes,
         };
-      }
+      },
+      MediaProcessFailure
     );
     signal.throwIfAborted();
     return view;

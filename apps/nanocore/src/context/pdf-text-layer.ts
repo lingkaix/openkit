@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { withStagedMediaSource } from '@openkit/storage';
 import { z } from 'zod';
 import {
   type MediaByteSource,
@@ -9,7 +10,6 @@ import {
   type MediaResourceProfile,
   type MediaStageReservation,
   validMediaSource as validSource,
-  withStagedMediaSource,
 } from './media-process.js';
 import { PDF_TEXT_LAYER_OPTIONS } from './pdf-text-layer-child.js';
 
@@ -268,7 +268,8 @@ export async function processPdfTextLayer(
         };
         checkSignal(signal, input.signal);
         return result;
-      }
+      },
+      MediaProcessFailure
     );
   } catch (error) {
     return unavailable(
