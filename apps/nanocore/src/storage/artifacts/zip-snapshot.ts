@@ -1,13 +1,16 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
-import { mkdir, mkdtemp, open, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { crc32 } from 'node:zlib';
-import { fromFdPromise, type ZipFile } from 'yauzl';
 import {
-  ensureCanonicalDirectoryAsync,
-  measureCanonicalFileDescriptor,
-} from '../workspace-file-records.js';
+  createPrivateTree,
+  ensureTreeDirectory,
+  makePrivateTreeDirectory,
+  removePrivateTree,
+  writePrivateTreeFile,
+} from '@openkit/storage';
+import { fromFdPromise, type ZipFile } from 'yauzl';
+import { measureCanonicalFileDescriptor } from '../workspace-file-records.js';
 import type { FileStorageReservation } from './file-admission.js';
 import { ArtifactPayloadCleanupError } from './file-payload.js';
 
@@ -89,8 +92,8 @@ export async function stageZipSnapshot(input: {
   input.budget.signal.throwIfAborted();
   input.reservation.assertAvailable();
   const stagingParent = join(dirname(input.workspaceRoot), '.staging');
-  await ensureCanonicalDirectoryAsync(stagingParent);
-  const root = await mkdtemp(join(stagingParent, 'zip-'));
+  await ensureTreeDirectory(stagingParent);
+  const root = await createPrivateTree(stagingParent, 'zip-');
   const files: ZipSnapshotFile[] = [];
   const paths = new Map<string, { kind: 'file' | 'directory'; explicit: boolean }>();
   let archive: ZipFile | undefined;
@@ -155,10 +158,10 @@ export async function stageZipSnapshot(input: {
         claimZipPath(paths, name, directory, input.budget);
         const destination = join(root, ...name.split('/'));
         if (directory) {
-          await mkdir(destination, { recursive: true, mode: 0o700 });
+          await makePrivateTreeDirectory(destination);
           continue;
         }
-        await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+        await makePrivateTreeDirectory(dirname(destination));
         // Own errors immediately, including cancellation while the destination open is pending.
         const sourcePromise = archive.openReadStreamPromise(entry).then((stream) => {
           stream.on('error', () => {});
@@ -166,46 +169,26 @@ export async function stageZipSnapshot(input: {
           return stream;
         });
         const source = await untilAborted(sourcePromise, input.budget.signal);
-        const abort = () => source.destroy(new Error('The ZIP extraction was cancelled.'));
-        input.budget.signal.addEventListener('abort', abort, { once: true });
-        let sink: Awaited<ReturnType<typeof open>> | undefined;
         let byteLength = 0;
         let checksum = 0;
         const hash = createHash('sha256');
-        try {
-          input.budget.signal.throwIfAborted();
-          sink = await open(
-            destination,
-            constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-            0o600
-          );
-          input.budget.signal.throwIfAborted();
-          for await (const chunk of source) {
-            const bytes = chunk as Buffer;
+        await writePrivateTreeFile({
+          path: destination,
+          source,
+          signal: input.budget.signal,
+          cancellationMessage: 'The ZIP extraction was cancelled.',
+          onChunk: (bytes) => {
             input.budget.consume(bytes.byteLength);
             byteLength += bytes.byteLength;
             checksum = crc32(bytes, checksum);
             hash.update(bytes);
-            let offset = 0;
-            while (offset < bytes.byteLength) {
-              const written = await sink.write(bytes, offset);
-              if (written.bytesWritten === 0) throw new Error('The ZIP write made no progress.');
-              input.reservation.recordWritten(written.bytesWritten);
-              offset += written.bytesWritten;
-            }
-          }
-          if (byteLength !== entry.uncompressedSize || checksum !== entry.crc32) {
-            throw new Error('The ZIP entry size or checksum is inconsistent.');
-          }
-          // This tree is disposable cache data. Closing completes its process-visible writes;
-          // the exact inventory verifier rejects and rebuilds bytes lost after a crash.
-          // Per-member fsync serializes even empty entries on storage commit latency.
-          // Canonical originals and retained Turn copies keep their own durable writers.
-        } finally {
-          input.budget.signal.removeEventListener('abort', abort);
-          source.destroy();
-          await sink?.close();
-        }
+          },
+          onWritten: (count) => input.reservation.recordWritten(count),
+          validate: () => {
+            if (byteLength !== entry.uncompressedSize || checksum !== entry.crc32)
+              throw new Error('The ZIP entry size or checksum is inconsistent.');
+          },
+        });
         files.push({
           relativePath: name,
           byteLength,
@@ -317,7 +300,7 @@ async function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T
 /** Keeps the caller's capacity reservation held when private extraction cleanup is unproved. */
 async function removeZipStage(root: string): Promise<void> {
   try {
-    await rm(root, { recursive: true, force: true });
+    await removePrivateTree(root);
   } catch (error) {
     throw new ArtifactPayloadCleanupError([error]);
   }

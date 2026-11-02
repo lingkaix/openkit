@@ -1,12 +1,16 @@
 import { createHash } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
-import { lstat, mkdtemp, open, readdir, rename, rm } from 'node:fs/promises';
+import { lstat, open, readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { z } from 'zod';
 import {
-  ensureCanonicalDirectoryAsync,
-  syncCanonicalDirectoryAsync,
-} from '../workspace-file-records.js';
+  createPrivateTree,
+  ensureTreeDirectory,
+  movePrivateTree,
+  removePrivateTree,
+  syncTreeDirectory,
+  writePrivateTreeMetadata,
+} from '@openkit/storage';
+import { z } from 'zod';
 import type { FileStorageAdmission } from './file-admission.js';
 import { ArtifactPayloadCleanupError } from './file-payload.js';
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './file-records.js';
@@ -251,41 +255,32 @@ async function buildSnapshot(
     if (manifest.length > MAX_MANIFEST_BYTES)
       throw new Error('The ZIP inventory resource limit was exceeded.');
     // Move the completed private tree under a private envelope before one directory publication.
-    envelope = await mkdtemp(join(dirname(staged.root), 'zip-complete-'));
-    await rename(staged.root, join(envelope, 'tree'));
+    envelope = await createPrivateTree(dirname(staged.root), 'zip-complete-');
+    await movePrivateTree(staged.root, join(envelope, 'tree'));
     stageRoot = envelope;
-    const inventory = await open(
-      join(envelope, 'inventory.json'),
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600
+    await writePrivateTreeMetadata(join(envelope, 'inventory.json'), manifest, (count) =>
+      reservation.recordWritten(count)
     );
-    try {
-      await inventory.writeFile(manifest);
-      reservation.recordWritten(manifest.length);
-      await inventory.sync();
-    } finally {
-      await inventory.close();
-    }
     for (const directory of [...directories].sort((left, right) => right.length - left.length)) {
       budget.signal.throwIfAborted();
-      await syncCanonicalDirectoryAsync(join(envelope, 'tree', directory));
+      await syncTreeDirectory(join(envelope, 'tree', directory));
     }
-    await syncCanonicalDirectoryAsync(join(envelope, 'tree'));
-    await syncCanonicalDirectoryAsync(envelope);
+    await syncTreeDirectory(join(envelope, 'tree'));
+    await syncTreeDirectory(envelope);
     budget.signal.throwIfAborted();
     input.assertAuthorized();
     verifyArtifactFilePayload({ ...input.source, version: input.source.artifactVersion });
     budget.signal.throwIfAborted();
     reservation.assertAvailable();
     const destination = folderCacheRoot(input.source);
-    await ensureCanonicalDirectoryAsync(dirname(destination));
-    await rm(destination, { recursive: true, force: true });
+    await ensureTreeDirectory(dirname(destination));
+    await removePrivateTree(destination);
     budget.signal.throwIfAborted();
     input.assertAuthorized();
-    await rename(envelope, destination);
+    await movePrivateTree(envelope, destination);
     stageRoot = undefined;
     envelope = undefined;
-    await syncCanonicalDirectoryAsync(dirname(destination));
+    await syncTreeDirectory(dirname(destination));
     result = {
       root: join(destination, 'tree'),
       files,
@@ -298,8 +293,8 @@ async function buildSnapshot(
     failures.push(error);
   }
   try {
-    if (stageRoot) await rm(stageRoot, { recursive: true, force: true });
-    if (envelope && envelope !== stageRoot) await rm(envelope, { recursive: true, force: true });
+    if (stageRoot) await removePrivateTree(stageRoot);
+    if (envelope && envelope !== stageRoot) await removePrivateTree(envelope);
   } catch (error) {
     cleanupUnproved = true;
     failures.push(error);

@@ -15,6 +15,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { allocateEntityId, ContentReferenceSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -25,6 +26,7 @@ import {
   type StorageLocator,
   type StorageResult,
 } from './contract.js';
+import * as treeStorage from './local.js';
 import { LocalStorage, removeDurableFile } from './local.js';
 
 const mutation = vi.hoisted(() => ({
@@ -187,6 +189,253 @@ describe('trusted durable file removal', () => {
     expect(replaced).toBe(true);
     expect(await readFile(outsideFile, 'utf8')).toBe('Unselected outside bytes.');
     expect(await readFile(join(f.root, 'parked-docs', 'original.bin'))).toEqual(f.bytes);
+  });
+});
+
+/** COORD 11:01 ZIP move: private writes retain accounting, cleanup and truthful publication failures. */
+describe('trusted private tree failure paths', () => {
+  it('records actual short writes before validation refusal and leaves cleanup with the tree owner', async () => {
+    const f = await fixture();
+    expect(typeof treeStorage.writePrivateTreeFile).toBe('function');
+    const root = await treeStorage.createPrivateTree(f.stagingRoot, 'zip-');
+    const path = join(root, 'member.bin');
+    const bytes = Buffer.from('123456789');
+    const source = Readable.from([bytes]);
+    const events: string[] = [];
+    const recorded: number[] = [];
+    const invalid = new Error('Independent member validation refusal.');
+    let sink!: FileHandle;
+    mutation.opened = (handle) => {
+      sink = handle;
+      const write = handle.write.bind(handle);
+      handle.write = (async (buffer: Buffer, offset = 0) => {
+        events.push('write');
+        return write(buffer, offset, Math.min(2, buffer.length - offset));
+      }) as FileHandle['write'];
+    };
+    await expect(
+      treeStorage.writePrivateTreeFile({
+        path,
+        source,
+        signal: new AbortController().signal,
+        onChunk: (chunk) => {
+          expect(chunk).toEqual(bytes);
+          events.push('chunk');
+        },
+        onWritten: (count) => {
+          recorded.push(count);
+          events.push('written');
+        },
+        validate: () => {
+          events.push('validate');
+          throw invalid;
+        },
+        cancellationMessage: 'Independent extraction cancellation.',
+      })
+    ).rejects.toBe(invalid);
+    expect(recorded).toEqual([2, 2, 2, 2, 1]);
+    expect(events).toEqual(['chunk', ...recorded.flatMap(() => ['write', 'written']), 'validate']);
+    expect(source.destroyed).toBe(true);
+    await expect(sink.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    expect(await readFile(path)).toEqual(bytes);
+    await treeStorage.removePrivateTree(root);
+    await expect(lstat(root)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+  });
+
+  it('closes a destination acquired after cancellation without consuming or accounting for a chunk', async () => {
+    const f = await fixture();
+    expect(typeof treeStorage.writePrivateTreeFile).toBe('function');
+    const root = await treeStorage.createPrivateTree(f.stagingRoot, 'zip-');
+    const path = join(root, 'member.bin');
+    const source = Readable.from([Buffer.from('unconsumed')]);
+    // The ZIP source acquisition owner already owns stream errors before the sink is opened.
+    source.on('error', () => {});
+    const controller = new AbortController();
+    let reachedOpen!: () => void;
+    let releaseOpen!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      reachedOpen = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseOpen = resolve;
+    });
+    let sink!: FileHandle;
+    mutation.opened = (handle) => {
+      sink = handle;
+    };
+    mutation.afterPath = async (openedPath) => {
+      if (openedPath !== path) return;
+      reachedOpen();
+      await gate;
+    };
+    const onChunk = vi.fn(),
+      onWritten = vi.fn(),
+      validate = vi.fn();
+    const work = treeStorage.writePrivateTreeFile({
+      path,
+      source,
+      signal: controller.signal,
+      onChunk,
+      onWritten,
+      validate,
+      cancellationMessage: 'Independent extraction cancellation.',
+    });
+    const rejected = expect(work).rejects.toThrow('cancelled during destination open');
+    await entered;
+    controller.abort(new Error('cancelled during destination open'));
+    releaseOpen();
+    await rejected;
+    expect(source.destroyed).toBe(true);
+    expect(onChunk).not.toHaveBeenCalled();
+    expect(onWritten).not.toHaveBeenCalled();
+    expect(validate).not.toHaveBeenCalled();
+    await expect(sink.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    expect(await readFile(path)).toEqual(Buffer.alloc(0));
+    await treeStorage.removePrivateTree(root);
+    expect(await readdir(f.stagingRoot)).toEqual([]);
+    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+  });
+
+  it('refuses zero write progress without charging unwritten bytes or validating a partial member', async () => {
+    const f = await fixture();
+    expect(typeof treeStorage.writePrivateTreeFile).toBe('function');
+    const root = await treeStorage.createPrivateTree(f.stagingRoot, 'zip-');
+    const path = join(root, 'member.bin');
+    const source = Readable.from([Buffer.from('not written')]);
+    let sink!: FileHandle;
+    mutation.opened = (handle) => {
+      sink = handle;
+      handle.write = (async (buffer: Buffer) => ({
+        bytesWritten: 0,
+        buffer,
+      })) as FileHandle['write'];
+    };
+    const onWritten = vi.fn(),
+      validate = vi.fn();
+    await expect(
+      treeStorage.writePrivateTreeFile({
+        path,
+        source,
+        signal: new AbortController().signal,
+        onChunk: () => {},
+        onWritten,
+        validate,
+        cancellationMessage: 'Independent extraction cancellation.',
+      })
+    ).rejects.toThrow('no progress');
+    expect(onWritten).not.toHaveBeenCalled();
+    expect(validate).not.toHaveBeenCalled();
+    expect(source.destroyed).toBe(true);
+    await expect(sink.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    await treeStorage.removePrivateTree(root);
+    expect(await readdir(f.stagingRoot)).toEqual([]);
+    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+  });
+
+  it('retains accepted partial-write accounting when a later sink write fails', async () => {
+    const f = await fixture();
+    expect(typeof treeStorage.writePrivateTreeFile).toBe('function');
+    const root = await treeStorage.createPrivateTree(f.stagingRoot, 'zip-');
+    const path = join(root, 'member.bin');
+    const bytes = Buffer.from('partially written');
+    const source = Readable.from([bytes]);
+    const refusal = new Error('Independent sink write refusal.');
+    let sink!: FileHandle;
+    let writes = 0;
+    mutation.opened = (handle) => {
+      sink = handle;
+      const write = handle.write.bind(handle);
+      handle.write = (async (buffer: Buffer, offset = 0) => {
+        if (writes++ > 0) throw refusal;
+        return write(buffer, offset, 2);
+      }) as FileHandle['write'];
+    };
+    const recorded: number[] = [];
+    const validate = vi.fn();
+    await expect(
+      treeStorage.writePrivateTreeFile({
+        path,
+        source,
+        signal: new AbortController().signal,
+        onChunk: () => {},
+        onWritten: (count) => {
+          recorded.push(count);
+        },
+        validate,
+        cancellationMessage: 'Independent extraction cancellation.',
+      })
+    ).rejects.toBe(refusal);
+    expect(recorded).toEqual([2]);
+    expect(validate).not.toHaveBeenCalled();
+    expect(source.destroyed).toBe(true);
+    await expect(sink.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    expect(await readFile(path)).toEqual(bytes.subarray(0, 2));
+    await treeStorage.removePrivateTree(root);
+    expect(await readdir(f.stagingRoot)).toEqual([]);
+    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+  });
+
+  it('reports metadata synchronization failure after accounting accepted bytes and closing the file', async () => {
+    const f = await fixture();
+    expect(typeof treeStorage.writePrivateTreeMetadata).toBe('function');
+    const root = await treeStorage.createPrivateTree(f.stagingRoot, 'zip-complete-');
+    const path = join(root, 'inventory.json');
+    const bytes = Buffer.from('{"files":[],"directories":[]}');
+    const refusal = new Error('Independent inventory sync refusal.');
+    const recorded: number[] = [];
+    let sink!: FileHandle;
+    mutation.opened = (handle) => {
+      sink = handle;
+      handle.sync = async () => {
+        expect(recorded).toEqual([bytes.length]);
+        throw refusal;
+      };
+    };
+    await expect(
+      treeStorage.writePrivateTreeMetadata(path, bytes, (count) => {
+        recorded.push(count);
+      })
+    ).rejects.toBe(refusal);
+    await expect(sink.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    expect(await readFile(path)).toEqual(bytes);
+    await treeStorage.removePrivateTree(root);
+    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+  });
+
+  it('preserves a moved complete tree when its publication parent synchronization fails', async () => {
+    const f = await fixture();
+    expect(typeof treeStorage.movePrivateTree).toBe('function');
+    const stage = await treeStorage.createPrivateTree(f.stagingRoot, 'zip-complete-');
+    await treeStorage.makePrivateTreeDirectory(join(stage, 'tree', 'empty'));
+    await writeFile(join(stage, 'tree', 'member.bin'), 'complete member');
+    await treeStorage.writePrivateTreeMetadata(
+      join(stage, 'inventory.json'),
+      Buffer.from('complete inventory'),
+      () => {}
+    );
+    const parent = join(f.root, 'derived');
+    await treeStorage.ensureTreeDirectory(parent);
+    const destination = join(parent, 'zip-v1');
+    await treeStorage.movePrivateTree(stage, destination);
+    const parentIdentity = await stat(parent);
+    const refusal = new Error('Independent publication parent sync refusal.');
+    mutation.opened = (handle) => {
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        const current = await handle.stat();
+        if (current.dev === parentIdentity.dev && current.ino === parentIdentity.ino) throw refusal;
+        await sync();
+      };
+    };
+    await expect(treeStorage.syncTreeDirectory(parent)).rejects.toBe(refusal);
+    await expect(lstat(stage)).rejects.toMatchObject({ code: 'ENOENT' });
+    // The former private name is absent; cleanup must not infer ownership of the moved destination.
+    await treeStorage.removePrivateTree(stage);
+    expect(await readFile(join(destination, 'tree', 'member.bin'), 'utf8')).toBe('complete member');
+    expect(await readFile(join(destination, 'inventory.json'), 'utf8')).toBe('complete inventory');
+    expect(await readdir(join(destination, 'tree', 'empty'))).toEqual([]);
+    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
   });
 });
 

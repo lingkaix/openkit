@@ -14,6 +14,7 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
+import type { Readable } from 'node:stream';
 import {
   ContentReferenceSchema,
   KnowledgeBaseIdSchema,
@@ -999,4 +1000,118 @@ export async function publishVerifiedFileReplacement(
 /** Creates one exact directory exclusively; existing entries and missing parents remain errors. */
 export function createDirectoryExclusive(path: string, mode: number): void {
   mkdirSync(path, { mode });
+}
+
+/** @internal Synchronizes a caller-owned directory without following its final link. */
+export async function syncTreeDirectory(path: string): Promise<void> {
+  const descriptor = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    if (!(await descriptor.stat()).isDirectory())
+      throw new Error(`Canonical path must be a directory: ${path}.`);
+    await descriptor.sync();
+  } finally {
+    await descriptor.close();
+  }
+}
+
+/** @internal Creates missing publication parents and commits their entries before use. */
+export async function ensureTreeDirectory(path: string): Promise<void> {
+  const metadata = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!metadata) {
+    await ensureTreeDirectory(dirname(path));
+    try {
+      await mkdir(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
+  }
+  const current = metadata ?? (await lstat(path));
+  if (!current.isDirectory() || current.isSymbolicLink())
+    throw new Error(`Canonical path must be a directory: ${path}.`);
+  await syncTreeDirectory(dirname(path));
+}
+
+/** @internal Creates a unique private tree under an already-admitted parent. */
+export async function createPrivateTree(parent: string, prefix: string): Promise<string> {
+  return mkdtemp(join(parent, prefix));
+}
+
+/** @internal Creates private member directories; path admission remains with the caller. */
+export async function makePrivateTreeDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+}
+
+/** @internal Moves a complete caller-owned tree; its publication owner orders directory syncs. */
+export async function movePrivateTree(source: string, destination: string): Promise<void> {
+  await rename(source, destination);
+}
+
+/** @internal Removes only a caller-selected disposable tree, propagating cleanup failure. */
+export async function removePrivateTree(path: string): Promise<void> {
+  await rm(path, { recursive: true, force: true });
+}
+
+/** @internal Streams private member bytes; the caller retains caps, integrity and capacity accounting. */
+export async function writePrivateTreeFile(input: {
+  readonly path: string;
+  readonly source: Readable;
+  readonly signal: AbortSignal;
+  readonly onChunk: (bytes: Buffer) => void;
+  readonly onWritten: (count: number) => void;
+  readonly validate: () => void;
+  readonly cancellationMessage: string;
+}): Promise<void> {
+  const abort = () => input.source.destroy(new Error(input.cancellationMessage));
+  input.signal.addEventListener('abort', abort, { once: true });
+  let sink: FileHandle | undefined;
+  try {
+    input.signal.throwIfAborted();
+    sink = await open(
+      input.path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600
+    );
+    input.signal.throwIfAborted();
+    for await (const chunk of input.source) {
+      const bytes = chunk as Buffer;
+      input.onChunk(bytes);
+      let offset = 0;
+      while (offset < bytes.byteLength) {
+        const written = await sink.write(bytes, offset);
+        if (written.bytesWritten === 0) throw new Error('The ZIP write made no progress.');
+        input.onWritten(written.bytesWritten);
+        offset += written.bytesWritten;
+      }
+    }
+    input.validate();
+    // Disposable member bytes retain their existing close-only completion. The
+    // owner's complete inventory verifier rejects crash-damaged cache members.
+  } finally {
+    input.signal.removeEventListener('abort', abort);
+    input.source.destroy();
+    await sink?.close();
+  }
+}
+
+/** @internal Writes exact private metadata with accounting before fsync, preserving failure order. */
+export async function writePrivateTreeMetadata(
+  path: string,
+  bytes: Uint8Array,
+  onWritten: (count: number) => void
+): Promise<void> {
+  const inventory = await open(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600
+  );
+  try {
+    await inventory.writeFile(bytes);
+    onWritten(bytes.byteLength);
+    await inventory.sync();
+  } finally {
+    await inventory.close();
+  }
 }
