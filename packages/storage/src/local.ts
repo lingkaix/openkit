@@ -3,6 +3,7 @@ import {
   chmodSync,
   closeSync,
   constants,
+  copyFileSync,
   cpSync,
   existsSync,
   fstatSync,
@@ -2218,5 +2219,26 @@ export function writePortableTextFile(
     } finally {
       if (release) reservation?.release();
     }
+  }
+}
+
+/** @internal Copies one admitted retained original into its unpublished export target with the existing exclusive-copy and concrete capacity lifetime. */
+export function copyPortableOriginalFile(
+  source: string,
+  target: string,
+  byteLength: number,
+  reservation?: { recordWritten(byteLength: number): void; release(): void }
+): void {
+  let release = false;
+  try {
+    copyFileSync(source, target, constants.COPYFILE_EXCL);
+    reservation?.recordWritten(byteLength);
+    release = true;
+  } catch (error) {
+    rmSync(target, { force: true });
+    release = true;
+    throw error;
+  } finally {
+    if (release) reservation?.release();
   }
 }

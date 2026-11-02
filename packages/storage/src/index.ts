@@ -9,6 +9,7 @@ export {
   closeTelemetrySegment,
   copyBackupTree,
   copyFileForCut,
+  copyPortableOriginalFile,
   copyVerifiedFile,
   createDirectoryExclusive,
   createPrivateTree,

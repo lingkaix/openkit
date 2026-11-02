@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -22,6 +22,7 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { copyPortableOriginalFile } from '@openkit/storage';
 import { z } from 'zod';
 import type { ResolvedAgentSetupRecord } from '../agents/setup-ledger.js';
 import {
@@ -1177,18 +1178,7 @@ export function verifyWorkspaceExportTree(
 /** Copies an original only into this export's unpublished tree, retaining admission if cleanup fails. */
 function copyPortableOriginal(source: string, target: string, byteLength: number): void {
   const reservation = reserveCanonicalFileWrite(byteLength);
-  let release = false;
-  try {
-    copyFileSync(source, target, constants.COPYFILE_EXCL);
-    reservation?.recordWritten(byteLength);
-    release = true;
-  } catch (error) {
-    rmSync(target, { force: true });
-    release = true;
-    throw error;
-  } finally {
-    if (release) reservation?.release();
-  }
+  copyPortableOriginalFile(source, target, byteLength, reservation);
 }
 
 /** Validates every query-owned trace path against the exported canonical Thread and Turn graph. */
