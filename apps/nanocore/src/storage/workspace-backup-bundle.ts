@@ -1,18 +1,15 @@
 import { createHash } from 'node:crypto';
 import { type BigIntStats, constants } from 'node:fs';
-import {
-  type FileHandle,
-  lstat,
-  mkdir,
-  mkdtemp,
-  open,
-  opendir,
-  realpath,
-  rm,
-} from 'node:fs/promises';
+import { type FileHandle, lstat, open, opendir, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { type EntityKind, isEntityId } from '@openkit/protocol';
-import { copyVerifiedFile as copyStorageFile, publishDurableFile } from '@openkit/storage';
+import {
+  copyVerifiedFile as copyStorageFile,
+  createPrivateTree,
+  makePrivateTreeDirectory,
+  publishDurableFile,
+  removePrivateTree,
+} from '@openkit/storage';
 import { type Node as JsonNode, type ParseError, parseTree, visit } from 'jsonc-parser';
 import { z } from 'zod';
 import type { FileStorageAdmission, FileStorageReservation } from './artifacts/file-admission.js';
@@ -587,7 +584,7 @@ async function copyVerifiedFile(
 ): Promise<void> {
   reservation.assertAvailable();
   const destination = join(staging, entry.path);
-  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+  await makePrivateTreeDirectory(dirname(destination));
   const target = await open(destination, 'wx', 0o600);
   const hash = createHash('sha256');
   try {
@@ -706,7 +703,7 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
           derivativeBytes: 0n,
           publicationBytes: 0n,
         });
-        staging = await mkdtemp(join(stagingParent, 'workspace-backup-verify-'));
+        staging = await createPrivateTree(stagingParent, 'workspace-backup-verify-');
         for (const entry of manifest.inventory) {
           await copyVerifiedFile(source, staging, entry, tree.files.get(entry.path)!, reservation);
         }
@@ -779,7 +776,7 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
     let removed = true;
     if (staging) {
       try {
-        await rm(staging, { recursive: true, force: true });
+        await removePrivateTree(staging);
       } catch {
         // Keep unused forecast reserved if cleanup cannot prove removal. Preserve
         // an earlier callback failure as well as the cleanup failure.
@@ -895,13 +892,14 @@ export async function withVerifiedWorkspaceSnapshotSource<T>(
       derivativeBytes: 0n,
       publicationBytes: 0n,
     });
-    materialized = await mkdtemp(
-      join(await existingRoot(input.stagingParent), 'workspace-snapshot-resolve-')
+    materialized = await createPrivateTree(
+      await existingRoot(input.stagingParent),
+      'workspace-snapshot-resolve-'
     );
     for (const entry of manifest.inventory) {
       reservation.assertAvailable();
       const destinationPath = join(materialized, entry.path);
-      await mkdir(dirname(destinationPath), { recursive: true, mode: 0o700 });
+      await makePrivateTreeDirectory(dirname(destinationPath));
       await copyStorageFile({
         sourcePath: join(pool, 'objects', entry.sha256.slice(7)),
         destinationPath,
@@ -942,7 +940,7 @@ export async function withVerifiedWorkspaceSnapshotSource<T>(
     let removed = true;
     if (materialized) {
       try {
-        await rm(materialized, { recursive: true, force: true });
+        await removePrivateTree(materialized);
       } catch {
         removed = false;
         const cleanupError = new Error('Workspace snapshot resolution staging cleanup failed.');

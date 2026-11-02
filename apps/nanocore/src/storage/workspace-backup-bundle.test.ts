@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import {
+import fsPromises, {
   chmod,
   link,
   mkdir,
@@ -12,10 +12,11 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { FileAdmissionError, FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   parseWorkspaceBackupManifest,
   parseWorkspaceBackupSeal,
@@ -626,6 +627,101 @@ describe('Workspace backup bundle: specification-derived structural verification
     expect(await readFile(path.join(fixture.bundleRoot, PAYLOADS[0]!.path))).toEqual(
       PAYLOADS[0]!.bytes
     );
+  });
+
+  it.each([
+    'success',
+    'failure',
+  ] as const)('Bundle: "existing capacity limits" — retains capacity and callback failure when staging cleanup fails after consumer %s', async (outcome) => {
+    const fixture = await bundleFixture();
+    const capacity = BigInt(
+      PAYLOADS.reduce((sum, file) => sum + file.bytes.length, 0) +
+        fixture.manifestBytes.length +
+        (await readFile(path.join(fixture.bundleRoot, WORKSPACE_BACKUP_SEAL_FILE))).length
+    );
+    const admission = new FileStorageAdmission(
+      fixture.root,
+      () => 0n,
+      () => capacity
+    );
+    const competingWrites = {
+      stagingBytes: capacity,
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: 0n,
+    };
+    admission.reserve(competingWrites).release();
+    const reserve = admission.reserve.bind(admission);
+    let heldReservation: ReturnType<typeof admission.reserve> | undefined;
+    const reservationProbe = vi.spyOn(admission, 'reserve').mockImplementation((request) => {
+      const reservation = reserve(request);
+      heldReservation = reservation;
+      return reservation;
+    });
+    const consumerError = new Error('fixture consumer failed before cleanup');
+    const removalError = new Error('fixture owned staging removal failed');
+    let cleanupPath: string | undefined;
+    let cleanupFaultHits = 0;
+    let retained: VerifiedWorkspaceBackupBundle | undefined;
+    const remove = fsPromises.rm;
+    // Synchronize the native binding so both Main and external Storage imports see this fault.
+    const cleanupFault = vi.spyOn(fsPromises, 'rm').mockImplementation(async (...args) => {
+      if (typeof args[0] === 'string' && args[0] === cleanupPath) {
+        cleanupFaultHits += 1;
+        throw removalError;
+      }
+      return remove(...args);
+    });
+    try {
+      syncBuiltinESMExports();
+      const failure = await withVerifiedWorkspaceBackupBundle(
+        { ...fixture.input, admission },
+        async (bundle) => {
+          retained = bundle;
+          const staging = await readdir(fixture.stagingParent);
+          expect(staging).toHaveLength(1);
+          cleanupPath = path.join(fixture.stagingParent, staging[0]!);
+          expect(await consumeBytes(bundle, PAYLOADS[0]!.path)).toEqual(PAYLOADS[0]!.bytes);
+          if (outcome === 'failure') throw consumerError;
+          return 'consumed';
+        }
+      ).catch((error: unknown) => error);
+      expect(cleanupFaultHits).toBe(1);
+      let cleanupError = failure;
+      if (outcome === 'failure') {
+        expect(failure).toBeInstanceOf(AggregateError);
+        const errors = (failure as AggregateError).errors;
+        expect(errors).toHaveLength(2);
+        expect(errors[0]).toBe(consumerError);
+        cleanupError = errors[1];
+      } else {
+        expect(failure).not.toBeInstanceOf(AggregateError);
+      }
+      expect(cleanupError).toBeInstanceOf(Error);
+      expect(cleanupError).toHaveProperty('message', expect.not.stringContaining(fixture.root));
+      expect(cleanupError).toHaveProperty(
+        'message',
+        expect.not.stringContaining(removalError.message)
+      );
+      expect(cleanupError).not.toBe(removalError);
+      expect(retained).toBeDefined();
+      await expect(consumeBytes(retained!, PAYLOADS[0]!.path)).rejects.toThrow();
+      expect(await readFile(path.join(cleanupPath!, PAYLOADS[0]!.path))).toEqual(
+        PAYLOADS[0]!.bytes
+      );
+      // Real admission must retain the unused forecast until staging removal is proved.
+      expect(() => admission.reserve(competingWrites).release()).toThrow(FileAdmissionError);
+      for (const file of PAYLOADS) {
+        expect(await readFile(path.join(fixture.bundleRoot, file.path))).toEqual(file.bytes);
+      }
+    } finally {
+      cleanupFault.mockRestore();
+      syncBuiltinESMExports();
+      // Release the fixture forecast only after its retained private bytes are removed.
+      await rm(fixture.stagingParent, { recursive: true, force: true });
+      heldReservation?.release();
+      reservationProbe.mockRestore();
+    }
   });
 
   it('Bundle: "existing capacity limits" — refuses unavailable staging capacity before consumption', async () => {
