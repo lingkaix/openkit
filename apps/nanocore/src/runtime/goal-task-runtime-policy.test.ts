@@ -391,7 +391,7 @@ async function fixture(
       material: fileMaterial,
       metadata: { ownerScope: 'workspace', workspaceId: workspace.id },
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       referenceId: fileReferenceId,
       ownerScope: 'workspace',
       workspaceId: workspace.id,
@@ -400,7 +400,7 @@ async function fixture(
       backendKind: 'encrypted-file',
       backendLocator: `encrypted-file://workspace/${workspace.id}/vault/${fileReferenceId}`,
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       grantId: fileGrantId,
       vaultReferenceId: fileReferenceId,
       ownerScope: 'workspace',
@@ -669,7 +669,7 @@ async function fixture(
       now: () => new Date().toISOString(),
       operationId: `operation_${requestId}`,
     });
-    let environmentPackage = resolveAgentEnvironmentPackage(environmentInput);
+    let environmentPackage = await resolveAgentEnvironmentPackage(environmentInput);
     expect(
       acceptSchedulerExecutionObservation(coreDb, {
         ...schedulerExecutionCorrelation(attempt),
@@ -690,7 +690,7 @@ async function fixture(
       workerSessionId: agentSessionId,
       contextDigest: commandInputHash(request),
     });
-    recordAgentEnvironmentPackageSnapshot(db, {
+    await recordAgentEnvironmentPackageSnapshot(db, {
       environmentPackage,
       createdAt: new Date().toISOString(),
     });
@@ -789,7 +789,7 @@ async function fixture(
       });
 
       const followupRequestId = randomUUID();
-      environmentPackage = resolveAgentEnvironmentPackage({
+      environmentPackage = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: followupSessionId,
         agentSetup: createTestAgentSetup({ agentId, mcpIds: ['issues'] }),
@@ -833,7 +833,7 @@ async function fixture(
           outcomeRef: null,
         })?.disposition
       ).toBe('accepted');
-      recordAgentEnvironmentPackageSnapshot(db, { environmentPackage, createdAt: now });
+      await recordAgentEnvironmentPackageSnapshot(db, { environmentPackage, createdAt: now });
     }
     expect(
       readGoalTaskPolicyContext({

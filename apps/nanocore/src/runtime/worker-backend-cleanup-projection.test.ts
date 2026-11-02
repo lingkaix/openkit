@@ -36,7 +36,7 @@ async function createFixture(options: { omitBackendStatus?: boolean } = {}) {
   // The cases open their own exact native-client database identity after stopped setup.
   await shutdownControlStoreWorkerClient();
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+  const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
     suffix: 'cleanup_projection',
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
     workspaceInputIds: ['repo'],
@@ -91,7 +91,9 @@ async function expectCleanupRefusal(
 }
 
 /** Returns the canonical successful cleanup projection input. */
-function cleanupInput(environmentPackage: ReturnType<typeof recordTestAgentEnvironmentPackage>) {
+function cleanupInput(
+  environmentPackage: Awaited<ReturnType<typeof recordTestAgentEnvironmentPackage>>
+) {
   return {
     agentSessionId: environmentPackage.scope.agentSessionId,
     backendType: 'openshell',

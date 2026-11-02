@@ -2,14 +2,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import {
-  createVaultGrant,
-  getVaultGrant,
-  importWorkspaceVaultGrants,
-  revokeVaultGrant,
-} from './vault/vault-grants.js';
+import { importWorkspaceVaultGrants } from './storage/test-support/vault-retained-fixtures.js';
+import { createVaultGrant, getVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import {
   createVaultInjectionPlan,
@@ -37,13 +34,13 @@ function createCoreDb(): CoreDb {
 }
 
 describe('injection plans', () => {
-  it('creates, reads, and lists non-secret runtime-file injection plans', () => {
+  it('creates, reads, and lists non-secret runtime-file injection plans', async () => {
     const coreDb = createCoreDb();
 
     try {
-      createGrant(coreDb);
+      await createGrant(coreDb);
 
-      const created = createVaultInjectionPlan(coreDb, {
+      const created = await createVaultInjectionPlan(coreDb, {
         backendCapabilityRequirement: 'encrypted-file:resolve',
         capabilityId: 'mcp.github.call_tool',
         expirationBehavior: 'delete-on-turn-end',
@@ -56,7 +53,7 @@ describe('injection plans', () => {
         revocationBehavior: 'mark-session-stale',
         targetPath: '/openkit/secrets/github-token',
       });
-      const duplicate = createVaultInjectionPlan(coreDb, {
+      const duplicate = await createVaultInjectionPlan(coreDb, {
         ...created,
         now: () => '2026-07-05T00:20:00.000Z',
       });
@@ -72,7 +69,7 @@ describe('injection plans', () => {
         { injectionVisibility: 'runtime-env', targetPath: null, targetEnvVarName: 'SERVICE_TOKEN' },
         { injectionVisibility: 'gateway-only', targetPath: null },
       ] as const) {
-        expect(() => createVaultInjectionPlan(coreDb, { ...created, ...patch })).toThrow(
+        await expect(createVaultInjectionPlan(coreDb, { ...created, ...patch })).rejects.toThrow(
           'Vault injection plan identity conflict.'
         );
         expect(listVaultInjectionPlans(coreDb)).toEqual([created]);
@@ -94,20 +91,21 @@ describe('injection plans', () => {
         targetPath: '/openkit/secrets/github-token',
       });
       expect(JSON.stringify(created)).not.toContain('ghp_');
-      revokeVaultGrant(coreDb, { grantId: created.grantId });
+      await revokeVaultGrant(coreDb, { grantId: created.grantId });
       const revoked = getVaultInjectionPlan(coreDb, created.planId);
       expect(revoked?.status).toBe('revoked');
-      expect(createVaultInjectionPlan(coreDb, { ...created })).toEqual(revoked);
+      expect(await createVaultInjectionPlan(coreDb, { ...created })).toEqual(revoked);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('requires an existing grant and visibility-specific targets', () => {
+  it('requires an existing grant and visibility-specific targets', async () => {
     const coreDb = createCoreDb();
 
     try {
-      expect(() =>
+      await expect(
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'delete-on-turn-end',
@@ -117,11 +115,11 @@ describe('injection plans', () => {
           redactionRule: 'status-only',
           revocationBehavior: 'deny-new-use',
         })
-      ).toThrow('Vault grant not found: grant_00000000-0000-7278-b714-46e2d53cb316');
+      ).rejects.toThrow('Vault grant not found: grant_00000000-0000-7278-b714-46e2d53cb316');
 
-      createGrant(coreDb);
+      await createGrant(coreDb);
 
-      expect(() =>
+      await expect(
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'delete-on-turn-end',
@@ -131,8 +129,8 @@ describe('injection plans', () => {
           redactionRule: 'path-only',
           revocationBehavior: 'mark-session-stale',
         })
-      ).toThrow('Runtime-file injection plans require targetPath.');
-      expect(() =>
+      ).rejects.toThrow('Runtime-file injection plans require targetPath.');
+      await expect(
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'unset-env-on-turn-end',
@@ -142,8 +140,8 @@ describe('injection plans', () => {
           redactionRule: 'name-only',
           revocationBehavior: 'mark-session-stale',
         })
-      ).toThrow('Runtime-env injection plans require targetEnvVarName.');
-      expect(() =>
+      ).rejects.toThrow('Runtime-env injection plans require targetEnvVarName.');
+      await expect(
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'delete-on-turn-end',
@@ -154,24 +152,25 @@ describe('injection plans', () => {
           revocationBehavior: 'deny-new-use',
           targetPath: '/openkit/secrets/github-token',
         })
-      ).toThrow('Gateway-only injection plans cannot include runtime targets.');
+      ).rejects.toThrow('Gateway-only injection plans cannot include runtime targets.');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('keeps imported VaultGrant history from authorizing an injection plan', () => {
+  it('keeps imported VaultGrant history from authorizing an injection plan', async () => {
     const coreDb = createCoreDb();
 
     try {
-      createGrant(coreDb);
+      await createGrant(coreDb);
       const source = getVaultGrant(coreDb, 'grant_00000000-0000-7502-bb07-4104daba6c66');
       expect(source).not.toBeNull();
       importWorkspaceVaultGrants(coreDb, [
         { ...source!, grantId: 'grant_00000000-0000-721b-84e8-23aac7d1425e' },
       ]);
 
-      expect(() =>
+      await expect(
         createVaultInjectionPlan(coreDb, {
           backendCapabilityRequirement: 'encrypted-file:resolve',
           expirationBehavior: 'delete-on-turn-end',
@@ -181,9 +180,10 @@ describe('injection plans', () => {
           redactionRule: 'status-only',
           revocationBehavior: 'deny-new-use',
         })
-      ).toThrow('Vault grant is portable-import history and cannot authorize effects.');
+      ).rejects.toThrow('Vault grant is portable-import history and cannot authorize effects.');
       expect(getVaultInjectionPlan(coreDb, 'plan_imported_grant')).toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -194,15 +194,15 @@ describe('injection plans', () => {
  *
  * @param coreDb Open Core database handle.
  */
-function createGrant(coreDb: CoreDb): void {
-  createVaultReference(coreDb, {
+async function createGrant(coreDb: CoreDb): Promise<void> {
+  await createVaultReference(coreDb, {
     backendKind: 'encrypted-file',
     displayName: 'GitHub token',
     ownerScope: 'server',
     referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     secretKind: 'repository-token',
   });
-  createVaultGrant(coreDb, {
+  await createVaultGrant(coreDb, {
     allowedInjectionPaths: ['runtime-file', 'gateway-only'],
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     lifetime: 'turn',

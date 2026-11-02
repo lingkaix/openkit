@@ -24,6 +24,7 @@ import {
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { importUnboundWorkspaceVaultReference } from '../storage/test-support/vault-retained-fixtures.js';
 import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -31,11 +32,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { closeTestCoreDb, initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getVaultGrant } from './vault-grants.js';
-import {
-  getVaultReference,
-  importUnboundWorkspaceVaultReference,
-  revokeVaultReference,
-} from './vault-references.js';
+import { getVaultReference, revokeVaultReference } from './vault-references.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
 /**
@@ -267,6 +264,7 @@ describe('vault admin app API', () => {
     } finally {
       vaultUnlockState.lock();
       masterKey.fill(0);
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -428,6 +426,7 @@ describe('vault admin app API', () => {
       expect(audit).not.toContain(secret);
       expect(audit).not.toContain('replacement-canary');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -540,6 +539,7 @@ describe('vault admin app API', () => {
       expect(await failed.text()).not.toContain('ghp_fake_error_canary');
       spy.mockRestore();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -648,6 +648,7 @@ describe('vault admin app API', () => {
       }
       expect(vaultUnlockState.backend().listReferences()).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -698,6 +699,7 @@ describe('vault admin app API', () => {
         status: 'active',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -735,6 +737,7 @@ describe('vault admin app API', () => {
       ).toThrow();
       expect(coreDb.sqlite.prepare('SELECT * FROM vault_references').all()).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -841,6 +844,7 @@ describe('vault admin app API', () => {
       });
       expect(JSON.stringify({ row, audit })).not.toContain(replacementApiKey);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -883,6 +887,7 @@ describe('vault admin app API', () => {
       expect(getVaultReference(coreDb, 'provider_okt_demo')).toBeNull();
       expect(vaultUnlockState.backend().listReferences({ ownerScope: 'server' })).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -932,6 +937,7 @@ describe('vault admin app API', () => {
         outcome: 'failed',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1005,6 +1011,7 @@ describe('vault admin app API', () => {
         'vault_00000000-0000-71a0-b7d2-f1557ce8b9cf'
       );
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1053,6 +1060,7 @@ describe('vault admin app API', () => {
         state: 'locked',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       serverCoreDb.sqlite.close();
     }
   });
@@ -1187,6 +1195,7 @@ describe('vault admin app API', () => {
         state: 'locked',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1247,6 +1256,7 @@ describe('vault admin app API', () => {
       expect(JSON.stringify(row)).not.toContain(badKey);
       expect(JSON.stringify(audit)).not.toContain(badKey);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1300,6 +1310,7 @@ describe('vault admin app API', () => {
         outcome: 'denied',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1380,7 +1391,7 @@ describe('vault admin app API', () => {
       expect(JSON.stringify(row)).not.toContain('codex_bootstrap_secret');
       expect(JSON.stringify(row)).not.toContain(authJsonBase64);
       expect(storeSecret).toHaveBeenCalledTimes(1);
-      revokeVaultReference(coreDb, { referenceId: body.referenceId });
+      await revokeVaultReference(coreDb, { referenceId: body.referenceId });
       const retainedReference = getVaultReference(coreDb, body.referenceId);
       const retainedGrant = getVaultGrant(coreDb, body.grantId);
       const duplicate = await app.request(
@@ -1401,6 +1412,7 @@ describe('vault admin app API', () => {
       expect(getVaultGrant(coreDb, body.grantId)).toEqual(retainedGrant);
     } finally {
       vi.restoreAllMocks();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1472,6 +1484,7 @@ describe('vault admin app API', () => {
       expect(JSON.stringify(body)).not.toContain(material);
       expect(JSON.stringify(body)).not.toContain(materialBase64);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1541,6 +1554,7 @@ describe('vault admin app API', () => {
       );
       expect(getVaultReference(coreDb, 'vault_00000000-0000-722b-b433-75d118b2149c')).toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1584,6 +1598,7 @@ describe('vault admin app API', () => {
       expect(JSON.stringify(body)).not.toContain('backendLocator');
       expect(JSON.stringify(body)).not.toContain('Imported API token');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1647,6 +1662,7 @@ describe('vault admin app API', () => {
         await expect(response.json()).resolves.toMatchObject({ code: 'deployment_admin_required' });
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1778,6 +1794,7 @@ describe('vault admin app API', () => {
         });
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1805,6 +1822,7 @@ describe('vault admin app API', () => {
         code: 'core.auth.unauthenticated',
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

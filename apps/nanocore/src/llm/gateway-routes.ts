@@ -67,8 +67,10 @@ import {
   type GatewayAttemptContext,
   GatewayAttemptFailure,
   type GatewayClock,
+  type GatewaySelection,
   LogicalModelRoutesExhaustedError,
   planLogicalModel,
+  planLogicalModelAsync,
 } from './gateway-execution.js';
 import { GatewayUnsupportedFeatureError } from './pi-ai-client.js';
 import type { PiAiFailure, PiAiFailureKind } from './pi-ai-failure.js';
@@ -175,7 +177,7 @@ interface DurableLlmGatewayCall extends GatewayCallLedgerBinding {
   /** Seals exact native observation before terminal status becomes visible. */
   beforeFinished?: (status: 'succeeded' | 'failed' | 'aborted' | 'timed-out') => Promise<void>;
   /** Rechecks live authority after every storage wait and before Provider contact or disclosure. */
-  assertAuthority?: () => void;
+  assertAuthority?: () => void | Promise<void>;
 }
 
 /**
@@ -1511,7 +1513,7 @@ function normalizeGatewayTerminalStream(
               }),
             ])
           : await pendingRead;
-        if (result && !result.done) options.durableCall?.assertAuthority?.();
+        if (result && !result.done) await options.durableCall?.assertAuthority?.();
       } catch (error) {
         if (terminal) {
           return;
@@ -1848,7 +1850,7 @@ export function registerWorkerInferenceRoutes({
     providerId: string,
     model: string,
     context?: ProviderCredentialUseContext
-  ) => ResolvedLLMProviderConfig;
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   /** Returns the current hot-reloadable Gateway configuration snapshot. */
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Worker token and durable lease authority. */
@@ -2010,7 +2012,7 @@ export function registerWorkerInferenceRoutes({
         const covering = rawAcknowledgements.get(chunk);
         if (!covering) throw new WorkerRawOutputAuthorityError();
         await covering;
-        durableCall.assertAuthority?.();
+        await durableCall.assertAuthority?.();
       };
       let rawPersistenceFailure: unknown;
       const failRaw = async (
@@ -2334,8 +2336,8 @@ export function registerWorkerInferenceRoutes({
               const requestTurnState = c.req.header('x-codex-turn-state');
               const rawObserver = { pending: 0, started: 0, events: 0, locallyRefused: false };
               rawObservers.push(rawObserver);
-              durableCall.assertAuthority = () => {
-                execution.assertAuthority?.();
+              durableCall.assertAuthority = async () => {
+                await execution.assertAuthority?.();
                 assertAuthority();
               };
               const dispatchContext: LLMGatewayDispatchContext = {
@@ -2353,7 +2355,7 @@ export function registerWorkerInferenceRoutes({
                   ),
                 ...(subscriptionModels ? { models: subscriptionModels } : {}),
                 transport: {
-                  finalRequestAdmission: (final) => {
+                  finalRequestAdmission: async (final) => {
                     try {
                       admitModelRequest({
                         payload: final.payload,
@@ -2365,7 +2367,7 @@ export function registerWorkerInferenceRoutes({
                         ),
                         outputReserveTokens: final.outputReserveTokens,
                       });
-                      execution.assertAuthority?.();
+                      await execution.assertAuthority?.();
                       assertAuthority();
                     } catch (error) {
                       if (error instanceof ModelRequestAdmissionError) {
@@ -2559,7 +2561,7 @@ export function registerWorkerInferenceRoutes({
         });
         if (!input.stream) {
           await finishDurableLlmGatewayCall(durableCall, 'succeeded');
-          durableCall?.assertAuthority?.();
+          await durableCall?.assertAuthority?.();
         }
         return result;
       } catch (error) {
@@ -2759,7 +2761,7 @@ export async function dispatchLogicalModel<T>(input: {
     providerId: string,
     model: string,
     context?: ProviderCredentialUseContext
-  ) => ResolvedLLMProviderConfig;
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Private diagnostic observer before member resolution, including failures that never reach the producer. */
   onAttemptStart?: (context: { corr: string; attempt: number }) => void;
@@ -2786,65 +2788,6 @@ export async function dispatchLogicalModel<T>(input: {
     : undefined;
   const providers = new Map<string, ResolvedLLMProviderConfig>();
   const resolutionFailures = new Map<string, unknown>();
-  const selections = planLogicalModel(
-    input.logicalModel,
-    input.requiredCapabilities ?? [],
-    (route, required) => {
-      if (
-        required.length === 0 &&
-        input.pinnedLimits?.context == null &&
-        input.pinnedLimits?.output == null
-      )
-        return true;
-      let provider: ResolvedLLMProviderConfig;
-      try {
-        provider = input.resolveGatewayProvider(
-          route.providerProfileId,
-          route.providerModel,
-          credentialUseContext
-        );
-      } catch (error) {
-        resolutionFailures.set(route.id, error);
-        return true;
-      } // The first owned failure is consumed once, without a second credential read during selection.
-      providers.set(route.id, provider);
-      const metadata = resolveEffectiveModelMetadata(
-        {
-          id: provider.id,
-          kind: 'direct',
-          displayName: provider.displayName,
-          models: [...provider.models],
-          ...(provider.vendor ? { vendor: provider.vendor } : {}),
-          ...(provider.modelMetadata ? { modelMetadata: provider.modelMetadata } : {}),
-        },
-        route.providerModel
-      );
-      if (
-        (input.pinnedLimits?.context != null &&
-          metadata.limit?.context != null &&
-          metadata.limit.context < input.pinnedLimits.context) ||
-        (input.pinnedLimits?.output != null &&
-          metadata.limit?.output != null &&
-          metadata.limit.output < input.pinnedLimits.output)
-      )
-        return false;
-      return required.every((capability) => {
-        if (capability === 'responses')
-          return provider.gatewayCapabilities.responses !== 'unsupported';
-        if (capability === 'chat-completions')
-          return provider.gatewayCapabilities.chatCompletions !== 'unsupported';
-        if (capability === 'tool-calling') return metadata.tool_call === true;
-        if (capability === 'reasoning') return metadata.reasoning === true;
-        if (capability === 'attachment') return metadata.attachment === true;
-        if (capability === 'temperature') return metadata.temperature === true;
-        if (capability.startsWith('input:'))
-          return metadata.modalities?.input?.includes(capability.slice(6)) === true;
-        if (capability.startsWith('output:'))
-          return metadata.modalities?.output?.includes(capability.slice(7)) === true;
-        return false;
-      });
-    }
-  );
   const writeEntry = (
     entry: import('@openkit/protocol').GatewayRouteLineageEntry,
     entryIndex?: number
@@ -2857,30 +2800,163 @@ export async function dispatchLogicalModel<T>(input: {
           ...(entryIndex === undefined ? {} : { entryIndex }),
         })
       : undefined;
-  for (const selection of selections) {
-    if (!selection.selected)
-      await writeEntry({
-        kind: 'unavailable',
-        routeMemberId: selection.route.id,
-        ...(providers.get(selection.route.id)
-          ? {
-              providerProfileId: providers.get(selection.route.id)!.id,
-              providerModel: selection.route.providerModel,
-            }
-          : {}),
-        selectionReason: selection.reason,
-        failureKind:
-          selection.reason === 'pinned_capability_unavailable'
-            ? 'unsupported'
-            : selection.reason === 'provider_api_key_missing'
-              ? 'auth_rejected'
-              : 'provider_unavailable',
-        unavailableReason: selection.reason,
-      });
-  }
+  // Both normal and deadline-settled preflight failures keep this original error/lineage owner.
+  const failPreflight = async (selection: GatewaySelection, error: unknown): Promise<never> => {
+    const route = selection.route;
+    const preflightFailure =
+      error instanceof GatewayAttemptFailure && error.beforeDispatch ? error.failure : undefined;
+    const code = error instanceof OpenAICompatibleProviderError ? error.code : 'unknown';
+    const unavailable = [
+      'gateway_provider_unavailable',
+      'provider_not_configured',
+      'provider_not_dispatchable',
+      'vault-locked',
+      'backend-unavailable',
+    ].includes(code);
+    const authentication = [
+      'gateway_provider_authentication_failed',
+      'reference-not-found',
+      'reference-revoked',
+      'version-expired',
+    ].includes(code);
+    await writeEntry({
+      kind: 'unavailable',
+      routeMemberId: route.id,
+      ...(providers.get(route.id)
+        ? { providerProfileId: providers.get(route.id)!.id, providerModel: route.providerModel }
+        : {}),
+      selectionReason: selection.reason,
+      failureKind:
+        preflightFailure?.kind ??
+        (authentication
+          ? 'auth_rejected'
+          : unavailable
+            ? 'provider_unavailable'
+            : code === 'model_not_configured'
+              ? 'invalid_request'
+              : 'unknown'),
+      unavailableReason: preflightFailure
+        ? preflightFailure.kind === 'quota_exhausted'
+          ? 'subscription_credits_disabled'
+          : 'subscription_admission_deadline'
+        : unavailable || authentication || code === 'model_not_configured'
+          ? code
+          : 'provider_unavailable',
+    });
+    // Only this resolver owns these pre-dispatch mappings; no text/status reclassification.
+    if (error instanceof OpenAICompatibleProviderError) {
+      if (unavailable || authentication) {
+        // These local resolver outcomes have no Provider effect. Their HTTP values are
+        // Error Contract projections, never claimed as exposed upstream HTTP status.
+        throw new GatewayAttemptFailure(
+          { kind: unavailable ? 'provider_unavailable' : 'auth_rejected', settled: true },
+          error,
+          true
+        );
+      }
+    }
+    throw error;
+  };
   const subscriptionVersions = new Map<string, string | undefined>();
   return executeGatewayPlan({
-    selections,
+    selections: async (execution) => {
+      const assertSelectionWindow = async (selections: readonly GatewaySelection[]) => {
+        execution.signal.throwIfAborted();
+        if ((input.clock?.now() ?? Date.now()) < execution.deadline) return;
+        const first = selections.find((selection) => selection.selected);
+        if (first && resolutionFailures.has(first.route.id)) {
+          const error = resolutionFailures.get(first.route.id);
+          resolutionFailures.delete(first.route.id);
+          return failPreflight(first, error);
+        }
+        throw new LogicalModelRoutesExhaustedError();
+      };
+      await assertSelectionWindow([]);
+      const selections = await planLogicalModelAsync(
+        input.logicalModel,
+        input.requiredCapabilities ?? [],
+        async (route, required, selections) => {
+          await assertSelectionWindow(selections);
+          if (
+            required.length === 0 &&
+            input.pinnedLimits?.context == null &&
+            input.pinnedLimits?.output == null
+          )
+            return true;
+          let provider: ResolvedLLMProviderConfig;
+          try {
+            provider = await input.resolveGatewayProvider(
+              route.providerProfileId,
+              route.providerModel,
+              credentialUseContext
+            );
+          } catch (error) {
+            resolutionFailures.set(route.id, error);
+            return true;
+          } // The first owned failure is consumed once, without a second credential read during selection.
+          await assertSelectionWindow(selections);
+          providers.set(route.id, provider);
+          const metadata = resolveEffectiveModelMetadata(
+            {
+              id: provider.id,
+              kind: 'direct',
+              displayName: provider.displayName,
+              models: [...provider.models],
+              ...(provider.vendor ? { vendor: provider.vendor } : {}),
+              ...(provider.modelMetadata ? { modelMetadata: provider.modelMetadata } : {}),
+            },
+            route.providerModel
+          );
+          if (
+            (input.pinnedLimits?.context != null &&
+              metadata.limit?.context != null &&
+              metadata.limit.context < input.pinnedLimits.context) ||
+            (input.pinnedLimits?.output != null &&
+              metadata.limit?.output != null &&
+              metadata.limit.output < input.pinnedLimits.output)
+          )
+            return false;
+          return required.every((capability) => {
+            if (capability === 'responses')
+              return provider.gatewayCapabilities.responses !== 'unsupported';
+            if (capability === 'chat-completions')
+              return provider.gatewayCapabilities.chatCompletions !== 'unsupported';
+            if (capability === 'tool-calling') return metadata.tool_call === true;
+            if (capability === 'reasoning') return metadata.reasoning === true;
+            if (capability === 'attachment') return metadata.attachment === true;
+            if (capability === 'temperature') return metadata.temperature === true;
+            if (capability.startsWith('input:'))
+              return metadata.modalities?.input?.includes(capability.slice(6)) === true;
+            if (capability.startsWith('output:'))
+              return metadata.modalities?.output?.includes(capability.slice(7)) === true;
+            return false;
+          });
+        }
+      );
+      for (const selection of selections) {
+        if (!selection.selected)
+          await writeEntry({
+            kind: 'unavailable',
+            routeMemberId: selection.route.id,
+            ...(providers.get(selection.route.id)
+              ? {
+                  providerProfileId: providers.get(selection.route.id)!.id,
+                  providerModel: selection.route.providerModel,
+                }
+              : {}),
+            selectionReason: selection.reason,
+            failureKind:
+              selection.reason === 'pinned_capability_unavailable'
+                ? 'unsupported'
+                : selection.reason === 'provider_api_key_missing'
+                  ? 'auth_rejected'
+                  : 'provider_unavailable',
+            unavailableReason: selection.reason,
+          });
+      }
+      await assertSelectionWindow(selections);
+      return selections;
+    },
     quotaRecoveryEligible: async (selection, execution) => {
       const provider = providers.get(selection.route.id);
       const manager = input.providerSubscriptionAccountManager;
@@ -2948,11 +3024,11 @@ export async function dispatchLogicalModel<T>(input: {
         }
         provider =
           providers.get(route.id) ??
-          input.resolveGatewayProvider(
+          (await input.resolveGatewayProvider(
             route.providerProfileId,
             route.providerModel,
             credentialUseContext
-          );
+          ));
         providers.set(route.id, provider);
         assertGatewayModelAuthorized(provider, route.providerModel);
         subscriptionModels = await resolveGatewaySubscriptionModels(
@@ -2998,61 +3074,7 @@ export async function dispatchLogicalModel<T>(input: {
             );
         }
       } catch (error) {
-        const preflightFailure =
-          error instanceof GatewayAttemptFailure && error.beforeDispatch
-            ? error.failure
-            : undefined;
-        const code = error instanceof OpenAICompatibleProviderError ? error.code : 'unknown';
-        const unavailable = [
-          'gateway_provider_unavailable',
-          'provider_not_configured',
-          'provider_not_dispatchable',
-          'vault-locked',
-          'backend-unavailable',
-        ].includes(code);
-        const authentication = [
-          'gateway_provider_authentication_failed',
-          'reference-not-found',
-          'reference-revoked',
-          'version-expired',
-        ].includes(code);
-        await writeEntry({
-          kind: 'unavailable',
-          routeMemberId: route.id,
-          ...(providers.get(route.id)
-            ? { providerProfileId: providers.get(route.id)!.id, providerModel: route.providerModel }
-            : {}),
-          selectionReason: selection.reason,
-          failureKind:
-            preflightFailure?.kind ??
-            (authentication
-              ? 'auth_rejected'
-              : unavailable
-                ? 'provider_unavailable'
-                : code === 'model_not_configured'
-                  ? 'invalid_request'
-                  : 'unknown'),
-          unavailableReason: preflightFailure
-            ? preflightFailure.kind === 'quota_exhausted'
-              ? 'subscription_credits_disabled'
-              : 'subscription_admission_deadline'
-            : unavailable || authentication || code === 'model_not_configured'
-              ? code
-              : 'provider_unavailable',
-        });
-        // Only this resolver owns these pre-dispatch mappings; no text/status reclassification.
-        if (error instanceof OpenAICompatibleProviderError) {
-          if (unavailable || authentication) {
-            // These local resolver outcomes have no Provider effect. Their HTTP values are
-            // Error Contract projections, never claimed as exposed upstream HTTP status.
-            throw new GatewayAttemptFailure(
-              { kind: unavailable ? 'provider_unavailable' : 'auth_rejected', settled: true },
-              error,
-              true
-            );
-          }
-        }
-        throw error;
+        return await failPreflight(selection, error);
       }
       const effort = input.reasoningEffort
         ? fitGatewayEffort(provider, route.providerModel, input.reasoningEffort)
@@ -3081,12 +3103,24 @@ export async function dispatchLogicalModel<T>(input: {
       };
       const observedExecution: GatewayAttemptContext = {
         ...execution,
-        assertAuthority: () => {
-          const current = input.resolveGatewayProvider(
+        assertAuthority: async () => {
+          execution.signal.throwIfAborted();
+          const current = await input.resolveGatewayProvider(
             route.providerProfileId,
             route.providerModel,
             credentialUseContext
           );
+          execution.signal.throwIfAborted();
+          if (
+            !execution.outputBegan &&
+            !execution.streamPrepared &&
+            (input.clock?.now() ?? Date.now()) >= execution.deadline
+          )
+            throw new GatewayAttemptFailure(
+              { kind: 'provider_unavailable', settled: true },
+              undefined,
+              true
+            );
           assertGatewayModelAuthorized(current, route.providerModel);
           if (
             current.apiKey !== provider.apiKey ||
@@ -3190,7 +3224,7 @@ export function registerLlmGatewayRoutes({
     providerId: string,
     model: string,
     context?: ProviderCredentialUseContext
-  ) => ResolvedLLMProviderConfig;
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
 }): void {
   /**
@@ -3419,8 +3453,8 @@ export function registerLlmGatewayRoutes({
             execution,
             effectiveEffort,
           }) => {
-            const assertAttemptAuthority = () => {
-              execution.assertAuthority?.();
+            const assertAttemptAuthority = async () => {
+              await execution.assertAuthority?.();
               assertAuthority();
             };
             if (durableCall) durableCall.assertAuthority = assertAttemptAuthority;
@@ -3500,7 +3534,7 @@ export function registerLlmGatewayRoutes({
         });
         if (!input.stream) {
           await finishDurableLlmGatewayCall(durableCall, 'succeeded');
-          durableCall?.assertAuthority?.();
+          await durableCall?.assertAuthority?.();
         }
         return result;
       } catch (error) {
@@ -3607,8 +3641,8 @@ export function registerLlmGatewayRoutes({
             execution,
             effectiveEffort,
           }) => {
-            const assertAttemptAuthority = () => {
-              execution.assertAuthority?.();
+            const assertAttemptAuthority = async () => {
+              await execution.assertAuthority?.();
               assertAuthority();
             };
             if (durableCall) durableCall.assertAuthority = assertAttemptAuthority;
@@ -3688,7 +3722,7 @@ export function registerLlmGatewayRoutes({
         });
         if (!input.stream) {
           await finishDurableLlmGatewayCall(durableCall, 'succeeded');
-          durableCall?.assertAuthority?.();
+          await durableCall?.assertAuthority?.();
         }
         return result;
       } catch (error) {

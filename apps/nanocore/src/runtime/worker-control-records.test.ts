@@ -631,7 +631,7 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
     { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
   );
   const agentSessionId = testEntityId('as', 'ret2-native');
-  const pkg = resolveAgentEnvironmentPackage({
+  const pkg = await resolveAgentEnvironmentPackage({
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
     agentSetup: createTestAgentSetup(),
     agentSessionId,
@@ -658,7 +658,10 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
   await store.updateTurn(turn.id, { agentSessionId });
   const db = openWorkspaceDb(root, pkg.scope.workspaceId);
   applyScopedMigrations(db, undefined, 'pre-knowledge');
-  recordAgentEnvironmentPackageSnapshot(db, { environmentPackage: pkg, createdAt: pkg.createdAt });
+  await recordAgentEnvironmentPackageSnapshot(db, {
+    environmentPackage: pkg,
+    createdAt: pkg.createdAt,
+  });
   const owner = { threadId: turn.threadId, turnId: turn.id };
   let activePackage = pkg;
   let activeTokens = {
@@ -741,7 +744,7 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
     },
     secondPackage: async () => {
       const second = { ...pkg, snapshotId: `${pkg.snapshotId}_second` };
-      recordAgentEnvironmentPackageSnapshot(db, {
+      await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage: second,
         createdAt: second.createdAt,
       });

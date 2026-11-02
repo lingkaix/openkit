@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
+import { Worker as NativeWorker } from 'node:worker_threads';
 import {
   CapabilityUsageResponseSchema,
   KnowledgeManagerDraftProposalResponseSchema,
@@ -110,6 +111,7 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
 import {
+  ControlStoreWorkerError,
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
@@ -155,7 +157,7 @@ import { readRetainedBodyBytes } from '../test-support/retained-body-observation
 import { closeTestCoreDb, createTestWorkspaceDb } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
-import { createVaultGrant, getVaultGrant } from '../vault/vault-grants.js';
+import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
 import {
   advanceActiveVaultReferenceVersion,
@@ -182,6 +184,7 @@ import * as snapshotLedger from './aep-snapshot-ledger.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import * as attempts from './execution-attempt-records.js';
+import * as nativeExecutionAttempts from './execution-attempts.js';
 import {
   commandInputHash,
   conversationTaskThreadId,
@@ -464,7 +467,7 @@ async function recordNativeResumeFixturePackage(
 ): Promise<void> {
   const session = store.getAgentSession(agentSessionId);
   const actor = { kind: 'user' as const, id: LOCAL_USER_ID };
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
     captureCoverage: { scope: 'server', value: 'off' },
     agentSetup: createTestAgentSetup({ agentId: session.agentId }),
@@ -1840,7 +1843,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         );
         const packagePath = join(packageRoot, `${attempt.inputRef}.json`);
         if (proof === 'package-present') {
-          const environmentPackage = resolveAgentEnvironmentPackage({
+          const environmentPackage = await resolveAgentEnvironmentPackage({
             coreDb,
             agentSetup: createTestAgentSetup(),
             agentSessionId: plannedId,
@@ -11569,7 +11572,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7d14-9747-33948cb59d1e',
       displayName: 'GitHub read token',
@@ -11578,7 +11581,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       secretKind: 'github-token',
       now: () => timestamp,
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['backend-provider'],
       expiresAt: '2099-07-05T01:00:00.000Z',
       grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
@@ -11684,7 +11687,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7d14-9747-33948cb59d1e',
       displayName: 'GitHub read token',
@@ -11693,7 +11696,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       secretKind: 'github-token',
       now: () => timestamp,
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['backend-provider'],
       expiresAt: '2099-07-05T01:00:00.000Z',
       grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
@@ -11836,7 +11839,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-72d1-b90a-e14fea8ea955',
       displayName: 'Codex auth JSON',
@@ -11845,7 +11848,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       secretKind: 'codex-auth-json',
       now: () => timestamp,
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths:
         mode === 'nanohost-provider'
           ? ['runtime-env', 'backend-provider']
@@ -12036,7 +12039,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-718f-ad48-e0181e23673d',
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-718f-ad48-e0181e23673d',
       displayName: 'Codex auth JSON',
@@ -12045,7 +12048,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       secretKind: 'codex-auth-json',
       now: () => timestamp,
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: 'grant_00000000-0000-72fc-8ecb-f139d907c974',
       lifetime: 'agent-session',
@@ -12848,6 +12851,7 @@ describe('credential carrier neutral placement acceptance', () => {
     'excludedFromExport',
     'policy-deny',
     'rotated-before-deliver',
+    'revoked-before-receipt',
   ] as const)('accepts a static file only with exact actual-protection evidence (%s)', async (fault) => {
     const fixture = await createWorkerContextExecutorFixture(`carrier-neutral-${fault}`);
     const timestamp = '2026-07-15T00:00:03.000Z';
@@ -12866,7 +12870,7 @@ describe('credential carrier neutral placement acceptance', () => {
           const rotated = vault
             .backend()
             .rotate({ referenceId, material: randomUUID() + randomUUID() });
-          advanceActiveVaultReferenceVersion(fixture.coreDb, {
+          await advanceActiveVaultReferenceVersion(fixture.coreDb, {
             referenceId,
             currentVersion: rotated.currentVersion,
             now: () => timestamp,
@@ -12889,7 +12893,7 @@ describe('credential carrier neutral placement acceptance', () => {
       masterKey: Buffer.from((randomUUID() + randomUUID()).replaceAll('-', '').slice(0, 64), 'hex'),
     });
     vault.backend().store({ referenceId, material, metadata: { ownerScope: 'server' } });
-    createVaultReference(fixture.coreDb, {
+    await createVaultReference(fixture.coreDb, {
       referenceId,
       ownerScope: 'server',
       displayName: 'Synthetic static file',
@@ -12898,7 +12902,7 @@ describe('credential carrier neutral placement acceptance', () => {
       backendLocator: `encrypted-file://server/vault/${referenceId}`,
       now: () => timestamp,
     });
-    createVaultGrant(fixture.coreDb, {
+    await createVaultGrant(fixture.coreDb, {
       grantId,
       vaultReferenceId: referenceId,
       ownerScope: 'server',
@@ -13167,6 +13171,27 @@ describe('credential carrier neutral placement acceptance', () => {
       ],
     });
     admitTestNativeEnvironment(fixture.coreDb, agentSetup.manifest);
+    const nativeClient = getControlStoreWorkerClient();
+    const nativeVault = nativeClient.vault.bind(nativeClient);
+    let revokedAtReceipt = false;
+    // Cross after submit and its Main currentness check, then use the real native revocation owner.
+    const receiptStage =
+      fault === 'revoked-before-receipt'
+        ? vi.spyOn(nativeClient, 'vault').mockImplementation((async (
+            db,
+            kind,
+            record,
+            beforeSubmit
+          ) => {
+            if (kind === 'receipt-create' && !revokedAtReceipt) {
+              revokedAtReceipt = true;
+              expect(delivered && crossedSubmission && returnedEvidence).toBe(true);
+              expect(listVaultInjectionReceipts(fixture.coreDb)).toEqual([]);
+              await revokeVaultGrant(fixture.coreDb, { grantId });
+            }
+            return nativeVault(db, kind, record, beforeSubmit);
+          }) as typeof nativeClient.vault)
+        : undefined;
     try {
       let failed = false;
       await executor
@@ -13269,6 +13294,18 @@ describe('credential carrier neutral placement acceptance', () => {
       expect(crossedSubmission, 'test never reached placement protection attestation').toBe(true);
       expect(returnedEvidence, 'fixture failed before the intended protection result').toBe(true);
       const receipts = listVaultInjectionReceipts(fixture.coreDb);
+      if (fault === 'revoked-before-receipt') {
+        expect(
+          revokedAtReceipt,
+          'test did not cross the separate native session receipt stage'
+        ).toBe(true);
+        expect(getVaultGrant(fixture.coreDb, grantId)?.status).toBe('revoked');
+        expect(
+          listVaultInjectionPlans(fixture.coreDb).every((plan) => plan.status === 'revoked')
+        ).toBe(true);
+        expect(resolveMaterial).toHaveBeenCalledTimes(1);
+        expect(backend.calls.filter((call) => call === 'submit')).toHaveLength(1);
+      }
       expect(failed, 'placement protection did not control Core acceptance').toBe(
         fault !== 'exact'
       );
@@ -13297,6 +13334,7 @@ describe('credential carrier neutral placement acceptance', () => {
         'retained credential contract depends on a native realization'
       ).toBe(false);
     } finally {
+      receiptStage?.mockRestore();
       submission.mockRestore();
       resolveMaterial.mockRestore();
       vault.lock();
@@ -13304,12 +13342,209 @@ describe('credential carrier neutral placement acceptance', () => {
     }
   });
 });
+// A receipt for one still-active grant must retain the complete original session admission.
+it.each([
+  'unchanged',
+  'other-grant-revoked',
+] as const)('retains complete session declaration admission after submit (%s)', async (change) => {
+  const fixture = await createWorkerContextExecutorFixture('carrier-session-complete-declarations');
+  const timestamp = '2026-07-15T00:00:03.000Z';
+  const vault = createVaultUnlockState({
+    backendKind: 'encrypted-file',
+    storeDir: join(fixture.coreDb.dataRoot, 'vault'),
+  });
+  vault.unlock({
+    masterKey: Buffer.from((randomUUID() + randomUUID()).replaceAll('-', '').slice(0, 64), 'hex'),
+  });
+  const credentials = [0, 1].map((index) => ({
+    declarationId: `static_${index}`,
+    grantId: testEntityId('grant', randomUUID()),
+    referenceId: testEntityId('vault', randomUUID()),
+    material: randomUUID() + randomUUID(),
+    targetPath: `/sandbox/synthetic-session-${index}`,
+  }));
+  const admission = new WorkspaceMutationAdmission();
+  const interception = new PolicyInterception();
+  fixture.store.setWorkspaceMutationAdmission(admission);
+  let submitted = false;
+  let attemptedReceiptGrant: string | undefined;
+  const nativeClient = getControlStoreWorkerClient();
+  const nativeVault = nativeClient.vault.bind(nativeClient);
+  const resolveMaterial = vi.spyOn(vault.backend(), 'resolve');
+  const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
+    async deliverCredentialBinding(
+      packageSnapshotId: string,
+      planId: string,
+      receiptId: string,
+      credentialValue: string,
+      materialVersion: number,
+      recheckAuthority: () => Promise<void>
+    ) {
+      await recheckAuthority();
+      const prepared = backend.lastContext?.runtimeFileCredentials?.find(
+        (row) => row.receiptId === receiptId
+      );
+      const credential = credentials.find((row) => row.grantId === prepared?.grantId);
+      expect(backend.lastPackage?.snapshotId).toBe(packageSnapshotId);
+      expect(prepared?.planId).toBe(planId);
+      expect(credential).toBeDefined();
+      expect(credentialValue).toBe(credential!.material);
+      expect(materialVersion).toBe(1);
+      expect(listVaultInjectionReceipts(fixture.coreDb)).toEqual([]);
+      backend.fileCredentialCheckValues.push(credentialValue);
+      return {
+        declarationId: credential!.declarationId,
+        planId,
+        receiptId,
+        materialVersion,
+        access: 'read-only' as const,
+        realizedProtection: {
+          ephemeral: true as const,
+          outsideRetainedStorage: true as const,
+          excludedFromCapture: true as const,
+          excludedFromExport: true as const,
+        },
+      };
+    },
+  });
+  const submit = backend.submit.bind(backend);
+  const submission = vi.spyOn(backend, 'submit').mockImplementation(async (input) => {
+    expect(input.credentialBindings).toHaveLength(2);
+    expect(backend.fileCredentialCheckValues).toHaveLength(2);
+    const observation = await submit(input);
+    submitted = true;
+    return {
+      ...observation,
+      credentialReceipts: input.credentialBindings!.map((binding) => ({
+        declarationId: binding.declarationId,
+        planId: binding.planId,
+        receiptId: binding.receiptId,
+        materialVersion: binding.material.version,
+        access: 'read-only' as const,
+        realizedProtection: binding.requiredProtection,
+      })),
+    };
+  });
+  const receiptStage = vi.spyOn(nativeClient, 'vault').mockImplementation((async (
+    db,
+    kind,
+    record,
+    beforeSubmit
+  ) => {
+    if (kind === 'receipt-create' && attemptedReceiptGrant === undefined) {
+      expect(submitted, 'fault occurred before the completed session-open effect').toBe(true);
+      attemptedReceiptGrant = (record as { grantId: string }).grantId;
+      expect(attemptedReceiptGrant).toBe(credentials[0]!.grantId);
+      // The receipt's own grant remains active; only the other original declaration loses authority.
+      if (change === 'other-grant-revoked')
+        await revokeVaultGrant(fixture.coreDb, { grantId: credentials[1]!.grantId });
+    }
+    return nativeVault(db, kind, record, beforeSubmit);
+  }) as typeof nativeClient.vault);
+  try {
+    for (const credential of credentials) {
+      vault.backend().store({
+        referenceId: credential.referenceId,
+        material: credential.material,
+        metadata: { ownerScope: 'server' },
+      });
+      await createVaultReference(fixture.coreDb, {
+        referenceId: credential.referenceId,
+        ownerScope: 'server',
+        displayName: 'Synthetic multi-declaration file',
+        secretKind: 'opaque',
+        backendKind: 'encrypted-file',
+        backendLocator: `encrypted-file://server/vault/${credential.referenceId}`,
+        now: () => timestamp,
+      });
+      await createVaultGrant(fixture.coreDb, {
+        grantId: credential.grantId,
+        vaultReferenceId: credential.referenceId,
+        ownerScope: 'server',
+        lifetime: 'agent-session',
+        targetAgentSessionId: fixture.agentSessionId,
+        allowedInjectionPaths: ['runtime-file'],
+        now: () => timestamp,
+      });
+    }
+    const agentSetup = createTestAgentSetup({
+      credentialDeclarations: credentials.map((credential) => ({
+        id: credential.declarationId,
+        vaultGrantId: credential.grantId,
+        visibility: 'runtime-file',
+        targetPath: credential.targetPath,
+      })),
+    });
+    admitTestNativeEnvironment(fixture.coreDb, agentSetup.manifest);
+    const executor = new WorkerGovernanceTurnExecutor({
+      backend,
+      coreDb: fixture.coreDb,
+      workspaceMutationAdmission: admission,
+      policyInterception: () => interception,
+      readRuntimeConfig: () => loadRuntimeConfig(fixture.coreDb.dataRoot),
+      fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+      createAgentSessionId: () => fixture.agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => timestamp,
+      vaultBackend: () => vault.backend(),
+    });
+    let refused = false;
+    let launchFailure: unknown;
+    await executor
+      .startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
+        attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
+        agentSessionId: fixture.agentSessionId,
+        agentSetup,
+        requestId: fixture.requestId,
+        sandboxBindingRef: fixture.sandboxBindingRef,
+        triggerActor: fixture.turn.triggerActor,
+        workspaceRoots: [],
+      })
+      .catch((error: unknown) => {
+        launchFailure = error;
+        refused = true;
+      });
+    if (attemptedReceiptGrant === undefined)
+      throw new Error('Session declaration fixture refused before the separate receipt stage.', {
+        cause: launchFailure,
+      });
+    expect(attemptedReceiptGrant).toBe(credentials[0]!.grantId);
+    expect(refused).toBe(change === 'other-grant-revoked');
+    expect(getVaultGrant(fixture.coreDb, credentials[0]!.grantId)?.status).toBe('active');
+    expect(getVaultGrant(fixture.coreDb, credentials[1]!.grantId)?.status).toBe(
+      change === 'other-grant-revoked' ? 'revoked' : 'active'
+    );
+    expect(listVaultInjectionReceipts(fixture.coreDb)).toHaveLength(
+      change === 'other-grant-revoked' ? 0 : 2
+    );
+    expect(resolveMaterial).toHaveBeenCalledTimes(2);
+    expect(backend.calls.filter((call) => call === 'submit')).toHaveLength(1);
+    expect(
+      credentials.some((credential) =>
+        JSON.stringify([
+          backend.lastPackage,
+          listVaultInjectionPlans(fixture.coreDb),
+          listVaultUseRecords(fixture.coreDb),
+        ]).includes(credential.material)
+      )
+    ).toBe(false);
+  } finally {
+    receiptStage.mockRestore();
+    submission.mockRestore();
+    resolveMaterial.mockRestore();
+    vault.lock();
+    fixture.coreDb.sqlite.close();
+  }
+});
+
 // Independent acceptance through the existing operation engine, fixture and fake placement.
 describe('credential carrier unified Vault operation acceptance', () => {
   it.each([
     'removed',
     'unknown',
     'weak-replace',
+    'large-unrelated-package',
+    'lost-replacement-ack-closing-failure',
     'external-removed',
     'external-unknown',
     'policy-deny',
@@ -13341,7 +13576,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
     vault
       .backend()
       .store({ referenceId, material, metadata: { ownerScope: 'workspace', workspaceId } });
-    createVaultReference(fixture.coreDb, {
+    await createVaultReference(fixture.coreDb, {
       referenceId,
       ownerScope: 'workspace',
       workspaceId,
@@ -13351,7 +13586,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
       backendLocator: `encrypted-file://workspace/${workspaceId}/vault/${referenceId}`,
       now: () => timestamp,
     });
-    createVaultGrant(fixture.coreDb, {
+    await createVaultGrant(fixture.coreDb, {
       grantId,
       vaultReferenceId: referenceId,
       ownerScope: 'workspace',
@@ -13554,7 +13789,89 @@ describe('credential carrier unified Vault operation acceptance', () => {
         },
       ],
     });
+    const unrelatedDockerfile = `FROM busybox:1.37\n#${'x'.repeat(1024 * 1024)}\n`;
+    if (ending === 'large-unrelated-package') {
+      agentSetup.manifest.runtime.image = {
+        arguments: {},
+        contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        contextRef: 'build-context://empty/v1',
+        egress: [{ host: 'registry.example.invalid', port: 443 }],
+        input: {
+          content: unrelatedDockerfile,
+          digest: `sha256:${createHash('sha256').update(unrelatedDockerfile, 'utf8').digest('hex')}`,
+          kind: 'dockerfile',
+        },
+        kind: 'build',
+        layerLimit: 128,
+        outputLimitBytes: 21_474_836_480,
+        timeLimitSeconds: 1800,
+      };
+    }
     admitTestNativeEnvironment(fixture.coreDb, agentSetup.manifest);
+    const nativeClient = getControlStoreWorkerClient();
+    const nativeVault = nativeClient.vault.bind(nativeClient);
+    const replacementRequests: string[] = [];
+    let originalUnknown: unknown;
+    const replacementStage =
+      ending === 'large-unrelated-package' || ending === 'lost-replacement-ack-closing-failure'
+        ? vi.spyOn(nativeClient, 'vault').mockImplementation((async (
+            db,
+            kind,
+            record,
+            beforeSubmit
+          ) => {
+            if (kind === 'binding-replace-complete')
+              replacementRequests.push(JSON.stringify(record));
+            try {
+              return await nativeVault(db, kind, record, beforeSubmit);
+            } catch (error) {
+              if (kind === 'binding-replace-complete') originalUnknown = error;
+              throw error;
+            }
+          }) as typeof nativeClient.vault)
+        : undefined;
+    let closingFailure: unknown;
+    const markClosing = nativeExecutionAttempts.markSchedulerExecutionAttemptClosing;
+    const closingStage =
+      ending === 'lost-replacement-ack-closing-failure'
+        ? vi
+            .spyOn(nativeExecutionAttempts, 'markSchedulerExecutionAttemptClosing')
+            .mockImplementation(async (...args) => {
+              try {
+                return await markClosing(...args);
+              } catch (error) {
+                closingFailure = error;
+                throw error;
+              }
+            })
+        : undefined;
+    const emit = NativeWorker.prototype.emit;
+    let droppedReplacementAck = false;
+    const acknowledgement =
+      ending === 'lost-replacement-ack-closing-failure'
+        ? vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
+            this: NativeWorker,
+            event: string | symbol,
+            ...args: unknown[]
+          ): boolean {
+            const reply = args[0] as
+              | { operation?: string; status?: string; result?: { kind?: string } }
+              | undefined;
+            if (
+              !droppedReplacementAck &&
+              event === 'message' &&
+              reply?.operation === 'vault' &&
+              reply.status === 'ok' &&
+              reply.result?.kind === 'binding-replace-complete'
+            ) {
+              // Drop only the actual committed replacement reply, then lose its real Worker.
+              droppedReplacementAck = true;
+              void this.terminate();
+              return true;
+            }
+            return emit.call(this, event, ...args);
+          })
+        : undefined;
     let execution: Promise<void> | undefined;
     try {
       execution = executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
@@ -13836,7 +14153,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
             policyInterception: interception,
           });
           const rotated = vault.backend().rotate({ referenceId, material: replacement });
-          advanceActiveVaultReferenceVersion(fixture.coreDb, {
+          await advanceActiveVaultReferenceVersion(fixture.coreDb, {
             referenceId,
             currentVersion: rotated.currentVersion,
             now: () => timestamp,
@@ -13949,7 +14266,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
         'agent cannot inspect its admitted binding plan'
       ).toBe(true);
       const rotated = vault.backend().rotate({ referenceId, material: replacement });
-      advanceActiveVaultReferenceVersion(fixture.coreDb, {
+      await advanceActiveVaultReferenceVersion(fixture.coreDb, {
         referenceId,
         currentVersion: rotated.currentVersion,
         now: () => timestamp,
@@ -14026,6 +14343,10 @@ describe('credential carrier unified Vault operation acceptance', () => {
       }
       weakReplacement = ending === 'weak-replace';
       const replacementId = randomUUID();
+      const cleanupsBeforeReplacement = backend.calls.filter(
+        (call) => call === 'cleanupSession'
+      ).length;
+      let replacementFailure: unknown;
       let result: unknown;
       rejected = false;
       await invoke(
@@ -14036,12 +14357,69 @@ describe('credential carrier unified Vault operation acceptance', () => {
         (value) => {
           result = value;
         },
-        () => {
+        (error: unknown) => {
+          replacementFailure = error;
           rejected = true;
         }
       );
       expect(replacementCalls, 'replacement did not reach the live placement').toBe(1);
       const after = listVaultInjectionReceipts(fixture.coreDb);
+      if (ending === 'large-unrelated-package') {
+        expect(pkg.runtime.image.kind).toBe('build');
+        expect(Buffer.byteLength(JSON.stringify(pkg))).toBeGreaterThan(1024 * 1024);
+        expect(JSON.stringify(pkg.runtime.image)).toContain(unrelatedDockerfile.slice(25, 100));
+        expect(replacementRequests).toHaveLength(1);
+        expect(replacementRequests[0]).not.toContain(unrelatedDockerfile.slice(25, 100));
+        expect(Buffer.byteLength(replacementRequests[0]!)).toBeLessThan(1024 * 1024);
+      }
+      if (ending === 'lost-replacement-ack-closing-failure') {
+        expect(rejected).toBe(true);
+        expect(droppedReplacementAck).toBe(true);
+        expect(replacementRequests).toHaveLength(1);
+        expect(originalUnknown).toBeInstanceOf(ControlStoreWorkerError);
+        expect(originalUnknown).toMatchObject({ commit: 'unknown' });
+        expect(replacementFailure).toMatchObject({ code: 'recovery_required', status: 409 });
+        // The first cause remains the original unknown. Later write failures cannot replace it.
+        const secondary: unknown[] = [];
+        let primary = replacementFailure;
+        while (primary instanceof Error) {
+          if (primary instanceof AggregateError) {
+            secondary.push(...primary.errors.slice(1));
+            primary = primary.errors[0];
+          } else if (primary.cause !== undefined) {
+            primary = primary.cause;
+          } else break;
+        }
+        expect(primary).toBe(originalUnknown);
+        expect(closingFailure).toBeInstanceOf(ControlStoreWorkerError);
+        expect(closingFailure).toMatchObject({ commit: 'not-committed' });
+        expect(secondary).toContain(closingFailure);
+        expect(
+          secondary.some(
+            (error) => error instanceof ControlStoreWorkerError && error.commit === 'not-committed'
+          )
+        ).toBe(true);
+        expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(
+          cleanupsBeforeReplacement + 1
+        );
+        expect(
+          attempts.requireSchedulerExecutionAttempt(
+            fixture.coreDb,
+            testEntityId('attempt', `lease_${fixture.turn.id}`)
+          ).phase
+        ).toBe('open');
+        expect(after).toHaveLength(2);
+        expect(after.find((row) => row.receiptId === first.receiptId)?.revocationStatus).toBe(
+          'revoked'
+        );
+        expect(after.filter((row) => row.revocationStatus === 'active')).toHaveLength(1);
+        expect(
+          [material, replacement].some((value) =>
+            JSON.stringify([replacementFailure, after, replacementRequests]).includes(value)
+          )
+        ).toBe(false);
+        return;
+      }
       if (ending === 'weak-replace') {
         expect(rejected, 'weaker realized protection admitted').toBe(true);
         expect(after.length, 'unproved replacement created a durable receipt').toBe(1);
@@ -14180,6 +14558,9 @@ describe('credential carrier unified Vault operation acceptance', () => {
         'material crossed operation or retained evidence surface'
       ).toBe(false);
     } finally {
+      acknowledgement?.mockRestore();
+      closingStage?.mockRestore();
+      replacementStage?.mockRestore();
       release.resolve();
       await execution?.catch(() => {});
       submission.mockRestore();

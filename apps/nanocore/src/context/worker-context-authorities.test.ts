@@ -69,7 +69,7 @@ describe('worker Context Package authority reader', () => {
         updatedAt: turn.startedAt!,
       });
       await store.updateTurn(turn.id, { agentSessionId: session.id });
-      const environmentPackage = resolveAgentEnvironmentPackage({
+      const environmentPackage = await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: session.id,
         backend: { kind: 'openshell' },
@@ -81,7 +81,7 @@ describe('worker Context Package authority reader', () => {
         workspaceCwd: '/workspace',
         workspaceRoots: [],
       });
-      const record = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      const record = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: turn.startedAt!,
         environmentPackage,
       });

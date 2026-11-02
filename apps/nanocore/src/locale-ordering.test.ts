@@ -351,12 +351,12 @@ describe.each([
         triggerActor
       );
       /** Resolves one admitted declaration through the public AEP owner. */
-      const resolveImage = (argumentsValue: Record<string, string>) => {
+      const resolveImage = async (argumentsValue: Record<string, string>) => {
         const agentSetup = createTestAgentSetup();
         agentSetup.manifest.runtime.image = buildDeclaration(argumentsValue);
         // Admit defaults through the existing native fixture before the real AEP resolver runs.
         admitTestNativeEnvironment(coreDb, agentSetup.manifest);
-        return resolveAgentEnvironmentPackage({
+        const environmentPackage = await resolveAgentEnvironmentPackage({
           agentSetup,
           agentSessionId: 'as_00000000-0000-7895-8bf8-bb6a8790a424',
           backend: { kind: 'openshell' },
@@ -366,7 +366,8 @@ describe.each([
           triggerActor,
           turn,
           workspaceRoots: [],
-        }).runtime.image;
+        });
+        return environmentPackage.runtime.image;
       };
       // AEP Runtime Image Selection: immutable argument identity must match admin preparation.
       // The literal digest is SHA-256 over UTF-8 {"A":"upper","a":"lower"}.
@@ -374,11 +375,11 @@ describe.each([
         'sha256:24d272fbf642f38130af4f2cbb3ed0e3db97f7f95c35a90e99c1e76b5033159f';
       const adminImage = materializeRuntimeImage(buildDeclaration({ a: 'lower', A: 'upper' }));
       expect(adminImage).toMatchObject({ argumentsDigest: expectedDigest });
-      const aepImage = resolveImage({ a: 'lower', A: 'upper' });
+      const aepImage = await resolveImage({ a: 'lower', A: 'upper' });
       expect(aepImage).toMatchObject({ argumentsDigest: expectedDigest });
       expect(aepImage).toEqual(adminImage);
-      expect(resolveImage({ A: 'upper', a: 'lower' })).toEqual(aepImage);
-      const changedImage = resolveImage({ a: 'lower', A: 'changed' });
+      expect(await resolveImage({ A: 'upper', a: 'lower' })).toEqual(aepImage);
+      const changedImage = await resolveImage({ a: 'lower', A: 'changed' });
       expect(changedImage).not.toMatchObject({ argumentsDigest: expectedDigest });
       expect(changedImage).toEqual(
         materializeRuntimeImage(buildDeclaration({ a: 'lower', A: 'changed' }))

@@ -1,4 +1,12 @@
-import { createHash } from 'node:crypto';
+import {
+  aepVaultGrantScope,
+  assertCredentialGrantMatchesDeclaration,
+  requireDeclarationGrant,
+  requireDeclarationReference,
+} from './worker-credential-authority.js';
+
+export { assertCurrentWorkerCredentialAuthority } from './worker-credential-authority.js';
+
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
@@ -25,10 +33,10 @@ import {
   type ActorRef,
   ActorRefSchema,
   compareCodeUnits,
-  responsibleUserIdForActor,
   type TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import {
   WORKER_ADAPTER_SUPPLY_FORMS,
   workerSessionInputPaths,
@@ -50,14 +58,14 @@ import {
   readWorkspaceSkillSnapshot,
 } from '../catalog/resource-catalog.js';
 import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime-config.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import type { CoreDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { type VaultBackend, vaultSecretMaterialToString } from '../vault/vault-backend.js';
-import { getVaultGrant, type VaultGrantRecord } from '../vault/vault-grants.js';
-import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-references.js';
+import type { VaultGrantRecord } from '../vault/vault-grants.js';
+import type { VaultReferenceRecord } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import type { CreateVaultInjectionReceiptInput } from '../vault-injection-receipts.js';
@@ -230,13 +238,13 @@ export type ResolveAgentSessionCompatibilityKeyInput = Omit<
  * @returns Parsed Agent Environment Package.
  * @throws Error when no supported container backend is selected.
  */
-export function resolveAgentEnvironmentPackage(
+export async function resolveAgentEnvironmentPackage(
   input: ResolveAgentEnvironmentPackageInput
-): AgentEnvironmentPackage {
+): Promise<AgentEnvironmentPackage> {
   if (input.backend?.kind === 'openshell') {
     const captureCoverage = AgentEnvironmentCaptureCoverageSchema.parse(input.captureCoverage);
     return AgentEnvironmentPackageSchema.parse({
-      ...resolveOpenShellAgentEnvironmentPackage(input, input.backend, 'materialize'),
+      ...(await resolveOpenShellAgentEnvironmentPackage(input, input.backend, 'materialize')),
       observability: {
         captureCoverage,
         audit: { required: true, formats: { preferred: 'ocsf-json' } },
@@ -381,9 +389,21 @@ function hasWorkerContextPackageCheckpoint(coreDb: CoreDb | undefined, turn: Tur
 function resolveOpenShellAgentEnvironmentPackage(
   input: Omit<ResolveAgentEnvironmentPackageInput, 'captureCoverage'>,
   backend: ResolveOpenShellAgentEnvironmentBackendInput,
+  credentialResolution: 'metadata-only',
+  includeExpectedContextPackage?: boolean
+): AgentEnvironmentPackagePreview;
+function resolveOpenShellAgentEnvironmentPackage(
+  input: Omit<ResolveAgentEnvironmentPackageInput, 'captureCoverage'>,
+  backend: ResolveOpenShellAgentEnvironmentBackendInput,
+  credentialResolution: 'materialize',
+  includeExpectedContextPackage?: boolean
+): Promise<AgentEnvironmentPackagePreview>;
+function resolveOpenShellAgentEnvironmentPackage(
+  input: Omit<ResolveAgentEnvironmentPackageInput, 'captureCoverage'>,
+  backend: ResolveOpenShellAgentEnvironmentBackendInput,
   credentialResolution: 'materialize' | 'metadata-only',
   includeExpectedContextPackage = false
-): AgentEnvironmentPackagePreview {
+): AgentEnvironmentPackagePreview | Promise<AgentEnvironmentPackagePreview> {
   if (Object.keys(backend).some((key) => key !== 'kind')) {
     throw new Error('Agent Environment Package backends cannot select retired placement or URLs.');
   }
@@ -586,362 +606,374 @@ function resolveOpenShellAgentEnvironmentPackage(
     ...(input.credentialReceiptSink ? { credentialReceiptSink: input.credentialReceiptSink } : {}),
     ...(input.vaultBackend ? { vaultBackend: input.vaultBackend } : {}),
   });
-  const workerProviderId = 'openkit-gateway';
+  const finish = (
+    credentialArtifacts: ResolvedWorkerCredentialDeclarationArtifacts
+  ): AgentEnvironmentPackagePreview => {
+    const workerProviderId = 'openkit-gateway';
 
-  const environmentPackage = parseAgentEnvironmentPlanningFields({
-    schemaVersion: 4,
-    packageId,
-    snapshotId,
-    createdAt,
-    scope: {
-      workspaceId: workspaceIdForOwner(input.turn.owner),
-      threadId: input.turn.threadId,
-      turnId: input.turn.id,
-      agentSessionId: input.agentSessionId,
-      triggerActor,
-      requestId: input.requestId ?? null,
-    },
-    agent: {
-      agentId: agent.agentId,
-      profileId: agent.profileId,
-      displayName: agent.displayName,
-      runtimeKind: manifest.runtime.kind,
-      // Unverified author label; measured harness identity is the binding-time image digest.
-      runtimeVersion: manifest.runtime.version ?? 'unversioned',
-      profileKind: null,
-      instructions: [],
-      capabilityRequests: [],
-    },
-    runtime: {
-      environment: resolvePublicNativeEnvironment(input.coreDb, manifest),
-      image: resolveRuntimeImage(manifest.runtime.image),
-      binaries: manifest.runtime.binaries,
-      command: {
-        argv: ['openkit-worker-shim'],
-        workingDirectory,
-        stdin: 'ignore',
-        stdout: 'pipe',
-        stderr: 'pipe',
+    const environmentPackage = parseAgentEnvironmentPlanningFields({
+      schemaVersion: 4,
+      packageId,
+      snapshotId,
+      createdAt,
+      scope: {
+        workspaceId: workspaceIdForOwner(input.turn.owner),
+        threadId: input.turn.threadId,
+        turnId: input.turn.id,
+        agentSessionId: input.agentSessionId,
+        triggerActor,
+        requestId: input.requestId ?? null,
       },
-      process: {},
-      session: {
-        reuse: 'same-agent-session',
-        resumeHandleRef: null,
+      agent: {
+        agentId: agent.agentId,
+        profileId: agent.profileId,
+        displayName: agent.displayName,
+        runtimeKind: manifest.runtime.kind,
+        // Unverified author label; measured harness identity is the binding-time image digest.
+        runtimeVersion: manifest.runtime.version ?? 'unversioned',
+        profileKind: null,
+        instructions: [],
+        capabilityRequests: [],
       },
-    },
-    workspace: {
-      root: workspaceRoot,
-      inputs: workspaceInputs,
-      generatedFiles: [
-        {
-          access: 'read-only',
-          contentRef: `agent-environment-package://${snapshotId}`,
-          id: 'agent-environment-package',
-          target: workerPackagePath,
+      runtime: {
+        environment: resolvePublicNativeEnvironment(input.coreDb, manifest),
+        image: resolveRuntimeImage(manifest.runtime.image),
+        binaries: manifest.runtime.binaries,
+        command: {
+          argv: ['openkit-worker-shim'],
+          workingDirectory,
+          stdin: 'ignore',
+          stdout: 'pipe',
+          stderr: 'pipe',
         },
-      ],
-      outputs: input.workspaceRoots
-        .filter((root) => root.access === 'read-write')
-        .map((root) => ({
-          id: `${root.id}-output`,
-          path: root.workerPath,
-          registerAsArtifacts: true,
-          retention: 'sync-on-turn-end',
-        })),
-    },
-    supply: {
-      skills: workerSkills,
-      mcpServers: workerMcpServers,
-      services: [],
-    },
-    control: {
-      protocol: 'openkit-worker-control-v1',
-      mode: 'sandbox-integration',
-      bindings: {
-        capabilities: {
-          pathPrefix: '/capabilities/',
-          tokenRef: 'runtime://openkit/capability-token',
+        process: {},
+        session: {
+          reuse: 'same-agent-session',
+          resumeHandleRef: null,
+        },
+      },
+      workspace: {
+        root: workspaceRoot,
+        inputs: workspaceInputs,
+        generatedFiles: [
+          {
+            access: 'read-only',
+            contentRef: `agent-environment-package://${snapshotId}`,
+            id: 'agent-environment-package',
+            target: workerPackagePath,
+          },
+        ],
+        outputs: input.workspaceRoots
+          .filter((root) => root.access === 'read-write')
+          .map((root) => ({
+            id: `${root.id}-output`,
+            path: root.workerPath,
+            registerAsArtifacts: true,
+            retention: 'sync-on-turn-end',
+          })),
+      },
+      supply: {
+        skills: workerSkills,
+        mcpServers: workerMcpServers,
+        services: [],
+      },
+      control: {
+        protocol: 'openkit-worker-control-v1',
+        mode: 'sandbox-integration',
+        bindings: {
+          capabilities: {
+            pathPrefix: '/capabilities/',
+            tokenRef: 'runtime://openkit/capability-token',
+          },
+          inference: {
+            pathPrefix: '/inference/',
+            tokenRef: 'runtime://openkit/inference-token',
+          },
+          workerControl: {
+            pathPrefix: '/worker-control/',
+            tokenRef: 'runtime://openkit/worker-control-token',
+          },
+        },
+        transcript: {
+          root: capturePaths.root,
+          eventsPath: capturePaths.eventsPath,
+          itemsPath: capturePaths.itemsPath,
+          flush: 'line',
+          import: 'turn-end',
+          required: true,
+          ...(runtimeProvenanceRequired
+            ? {
+                runtimeProvenance: {
+                  maxStreamCount: 64,
+                  maxTotalBytes: 256 * 1024 * 1024,
+                  nativeOriginIndexPath: capturePaths.nativeOriginIndexPath,
+                  rawStreamsRoot: capturePaths.rawStreamsRoot,
+                  streamManifestPath: capturePaths.streamManifestPath,
+                },
+              }
+            : {}),
+        },
+        channels: {
+          events: 'batch',
+          artifacts: 'batch',
+          heartbeats: true,
+          logs: 'summary-only',
+        },
+        events: [
+          'worker.ready',
+          'worker.heartbeat',
+          'item.created',
+          'artifact.created',
+          'turn.completed',
+          'turn.failed',
+        ],
+        adapter: {
+          kind: 'openkit-worker-shim',
+          targetRuntime: manifest.runtime.adapter,
+        },
+      },
+      capabilities: {
+        protocol: 'openkit-worker-capability-v1',
+        ...(workerMcpServers.length > 0
+          ? {
+              mode: 'enabled' as const,
+              routes: [
+                'mcp.list-servers' as const,
+                'mcp.list-tools' as const,
+                'mcp.call-tool' as const,
+              ],
+            }
+          : { mode: 'disabled' as const, routes: [] as const }),
+      },
+      credentials: {
+        declarations: [...credentialArtifacts.declarations],
+      },
+      vault: {
+        references: [...credentialArtifacts.vaultReferences],
+        grants: [...credentialArtifacts.vaultGrants],
+      },
+      policy: {
+        snapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
+        filesystem: {
+          default: 'deny',
+          enforcement: 'openshell',
+          rules: [
+            ...input.workspaceRoots.map((root) => ({
+              id: root.id,
+              access: root.access,
+              workerPath: root.workerPath,
+            })),
+            // Every native Turn reads the existing context slot, including ordinary outcome Turns.
+            // Its static access envelope must not change merely because this Turn carries S39 files.
+            {
+              access: 'read-only' as const,
+              id: CONTEXT_PACKAGE_FILESYSTEM_RULE_ID,
+              workerPath: contextRoot,
+            },
+            ...(input.workspaceRoots.length === 0 && workingDirectory.startsWith('/workspace/')
+              ? [
+                  {
+                    access: 'read-write',
+                    id: 'openkit-working-directory',
+                    workerPath: workingDirectory,
+                  },
+                ]
+              : []),
+            ...sandboxAccess.filesystem.map((grant) => ({
+              access: grant.access,
+              id: grant.id,
+              purpose: grant.purpose,
+              scope: grant.scope,
+              workerPath: grant.targetPath,
+            })),
+          ],
+        },
+        network: {
+          default: 'deny',
+          enforcement: 'openshell',
+          rules: sandboxAccess.network.map((grant) => ({
+            action: 'allow' as const,
+            binaries: grant.binaries,
+            host:
+              'publicAccess' in grant && grant.publicAccess
+                ? canonicalPublicNetworkHost(grant.host)
+                : grant.host,
+            ...('publicAccess' in grant && grant.publicAccess
+              ? { publicAccess: { ...grant.publicAccess } }
+              : {}),
+            ...('allowEncodedSlash' in grant && grant.allowEncodedSlash !== undefined
+              ? { allowEncodedSlash: grant.allowEncodedSlash }
+              : {}),
+            id: grant.id,
+            port: grant.port,
+            protocol: grant.protocol,
+            purpose: grant.purpose,
+            ...('rules' in grant && grant.rules
+              ? { rules: grant.rules.map((rule) => ({ ...rule })) }
+              : { access: grant.access }),
+            scope: grant.scope,
+          })),
+        },
+        process: {
+          default: 'allow',
+          enforcement: 'openshell',
+          rules: [],
         },
         inference: {
-          pathPrefix: '/inference/',
-          tokenRef: 'runtime://openkit/inference-token',
+          mode: llmMode,
         },
-        workerControl: {
-          pathPrefix: '/worker-control/',
-          tokenRef: 'runtime://openkit/worker-control-token',
+        secrets: {
+          visibility: 'none',
+        },
+        artifacts: {
+          outputsMustBeDeclared: true,
         },
       },
-      transcript: {
-        root: capturePaths.root,
-        eventsPath: capturePaths.eventsPath,
-        itemsPath: capturePaths.itemsPath,
-        flush: 'line',
-        import: 'turn-end',
-        required: true,
-        ...(runtimeProvenanceRequired
-          ? {
-              runtimeProvenance: {
-                maxStreamCount: 64,
-                maxTotalBytes: 256 * 1024 * 1024,
-                nativeOriginIndexPath: capturePaths.nativeOriginIndexPath,
-                rawStreamsRoot: capturePaths.rawStreamsRoot,
-                streamManifestPath: capturePaths.streamManifestPath,
-              },
-            }
+      llm: {
+        mode: llmMode,
+        ...(input.turn.reasoningEffort !== undefined
+          ? { reasoningEffort: input.turn.reasoningEffort }
           : {}),
-      },
-      channels: {
-        events: 'batch',
-        artifacts: 'batch',
-        heartbeats: true,
-        logs: 'summary-only',
-      },
-      events: [
-        'worker.ready',
-        'worker.heartbeat',
-        'item.created',
-        'artifact.created',
-        'turn.completed',
-        'turn.failed',
-      ],
-      adapter: {
-        kind: 'openkit-worker-shim',
-        targetRuntime: manifest.runtime.adapter,
-      },
-    },
-    capabilities: {
-      protocol: 'openkit-worker-capability-v1',
-      ...(workerMcpServers.length > 0
-        ? {
-            mode: 'enabled' as const,
-            routes: [
-              'mcp.list-servers' as const,
-              'mcp.list-tools' as const,
-              'mcp.call-tool' as const,
-            ],
-          }
-        : { mode: 'disabled' as const, routes: [] as const }),
-    },
-    credentials: {
-      declarations: [...credentialArtifacts.declarations],
-    },
-    vault: {
-      references: [...credentialArtifacts.vaultReferences],
-      grants: [...credentialArtifacts.vaultGrants],
-    },
-    policy: {
-      snapshotId: WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID,
-      filesystem: {
-        default: 'deny',
-        enforcement: 'openshell',
-        rules: [
-          ...input.workspaceRoots.map((root) => ({
-            id: root.id,
-            access: root.access,
-            workerPath: root.workerPath,
-          })),
-          // Every native Turn reads the existing context slot, including ordinary outcome Turns.
-          // Its static access envelope must not change merely because this Turn carries S39 files.
-          {
-            access: 'read-only' as const,
-            id: CONTEXT_PACKAGE_FILESYSTEM_RULE_ID,
-            workerPath: contextRoot,
+        preferredLogicalModelId: logicalModels.preferredLogicalModelId,
+        routes: logicalModels.allowed.map((logicalModel) => ({
+          credentialVisibility: 'placeholder' as const,
+          endpoint: {
+            kind: 'openai-compatible' as const,
+            upstream: {
+              baseUrlRef: workerProviderId,
+              kind: 'nanocore-gateway' as const,
+            },
           },
-          ...(input.workspaceRoots.length === 0 && workingDirectory.startsWith('/workspace/')
-            ? [
-                {
-                  access: 'read-write',
-                  id: 'openkit-working-directory',
-                  workerPath: workingDirectory,
-                },
-              ]
-            : []),
-          ...sandboxAccess.filesystem.map((grant) => ({
-            access: grant.access,
-            id: grant.id,
-            purpose: grant.purpose,
-            scope: grant.scope,
-            workerPath: grant.targetPath,
-          })),
-        ],
-      },
-      network: {
-        default: 'deny',
-        enforcement: 'openshell',
-        rules: sandboxAccess.network.map((grant) => ({
-          action: 'allow' as const,
-          binaries: grant.binaries,
-          host:
-            'publicAccess' in grant && grant.publicAccess
-              ? canonicalPublicNetworkHost(grant.host)
-              : grant.host,
-          ...('publicAccess' in grant && grant.publicAccess
-            ? { publicAccess: { ...grant.publicAccess } }
+          id: logicalModel.id,
+          model: logicalModel.id,
+          // The resolver owns the complete coherent contract; unequal members retain these inputs.
+          ...(logicalModel.modelParameters
+            ? { modelParameters: logicalModel.modelParameters }
             : {}),
-          ...('allowEncodedSlash' in grant && grant.allowEncodedSlash !== undefined
-            ? { allowEncodedSlash: grant.allowEncodedSlash }
+          ...(logicalModel.reasoningEffortLevels !== undefined
+            ? { reasoningEffortLevels: logicalModel.reasoningEffortLevels }
             : {}),
-          id: grant.id,
-          port: grant.port,
-          protocol: grant.protocol,
-          purpose: grant.purpose,
-          ...('rules' in grant && grant.rules
-            ? { rules: grant.rules.map((rule) => ({ ...rule })) }
-            : { access: grant.access }),
-          scope: grant.scope,
+          providerInstanceId: workerProviderId,
         })),
       },
-      process: {
-        default: 'allow',
-        enforcement: 'openshell',
-        rules: [],
-      },
-      inference: {
-        mode: llmMode,
-      },
-      secrets: {
-        visibility: 'none',
-      },
-      artifacts: {
-        outputsMustBeDeclared: true,
-      },
-    },
-    llm: {
-      mode: llmMode,
-      ...(input.turn.reasoningEffort !== undefined
-        ? { reasoningEffort: input.turn.reasoningEffort }
-        : {}),
-      preferredLogicalModelId: logicalModels.preferredLogicalModelId,
-      routes: logicalModels.allowed.map((logicalModel) => ({
-        credentialVisibility: 'placeholder' as const,
-        endpoint: {
-          kind: 'openai-compatible' as const,
-          upstream: {
-            baseUrlRef: workerProviderId,
-            kind: 'nanocore-gateway' as const,
-          },
+      resources: {},
+      backend: {
+        preferred: backendRequirements?.preferred ?? 'openshell',
+        allowedKinds: backendAllowedKinds,
+        requiredCapabilities: uniqueStrings([
+          ...openShellRequiredCapabilities(),
+          'trusted-worker-inference-relay',
+          ...requiredCapabilities,
+        ]),
+        degrade: {
+          hardenedSandbox: true,
         },
-        id: logicalModel.id,
-        model: logicalModel.id,
-        // The resolver owns the complete coherent contract; unequal members retain these inputs.
-        ...(logicalModel.modelParameters ? { modelParameters: logicalModel.modelParameters } : {}),
-        ...(logicalModel.reasoningEffortLevels !== undefined
-          ? { reasoningEffortLevels: logicalModel.reasoningEffortLevels }
-          : {}),
-        providerInstanceId: workerProviderId,
-      })),
-    },
-    resources: {},
-    backend: {
-      preferred: backendRequirements?.preferred ?? 'openshell',
-      allowedKinds: backendAllowedKinds,
-      requiredCapabilities: uniqueStrings([
-        ...openShellRequiredCapabilities(),
-        'trusted-worker-inference-relay',
-        ...requiredCapabilities,
-      ]),
-      degrade: {
-        hardenedSandbox: true,
+        extensions: {
+          openshell: openShellBackendExtension(),
+        },
       },
       extensions: {
-        openshell: openShellBackendExtension(),
+        openkit: {
+          turnInput,
+          workerStorage: { workSlotRef },
+        },
       },
-    },
-    extensions: {
-      openkit: {
-        turnInput,
-        workerStorage: { workSlotRef },
-      },
-    },
-  });
-  let sessionWorkspace: SessionWorkspaceMaterializationPlan;
-  try {
-    sessionWorkspace = planSessionWorkspaceMaterialization({ environmentPackage, workSlotRef });
-  } catch (error) {
-    // This planner is a pure projection of the already resolved static package and slot.
-    if (error instanceof Error) {
-      throw new DeterministicAgentPreparationError(publishedErrorMessage(error));
+    });
+    let sessionWorkspace: SessionWorkspaceMaterializationPlan;
+    try {
+      sessionWorkspace = planSessionWorkspaceMaterialization({ environmentPackage, workSlotRef });
+    } catch (error) {
+      // This planner is a pure projection of the already resolved static package and slot.
+      if (error instanceof Error) {
+        throw new DeterministicAgentPreparationError(publishedErrorMessage(error));
+      }
+      throw error;
     }
-    throw error;
-  }
-  // The workspace planner owns session-static layout; logical-model admission adds an exact
-  // continuity dimension without making the current preferred model a binding identity.
-  const allowedLogicalModelIds = logicalModels.allowed.map((model) => model.id).sort();
-  sessionWorkspace.compatibilityKey.digest = `sha256:${createHash('sha256')
-    .update(
+    // The workspace planner owns session-static layout; logical-model admission adds an exact
+    // continuity dimension without making the current preferred model a binding identity.
+    const allowedLogicalModelIds = logicalModels.allowed.map((model) => model.id).sort();
+    sessionWorkspace.compatibilityKey.digest = sha256Digest(
       JSON.stringify({
         sessionWorkspaceKey: sessionWorkspace.compatibilityKey.digest,
         allowedLogicalModelIds,
       })
-    )
-    .digest('hex')}`;
-  const materializedWorkspaceInputs = environmentPackage.workspace.inputs.map((workspaceInput) => {
-    const materializationInput = sessionWorkspace.materialization.inputs.find(
-      (candidate) => candidate.inputId === workspaceInput.id
     );
-    const slot = sessionWorkspace.layout.slots.find(
-      (candidate) => candidate.id === materializationInput?.slotId
+    const materializedWorkspaceInputs = environmentPackage.workspace.inputs.map(
+      (workspaceInput) => {
+        const materializationInput = sessionWorkspace.materialization.inputs.find(
+          (candidate) => candidate.inputId === workspaceInput.id
+        );
+        const slot = sessionWorkspace.layout.slots.find(
+          (candidate) => candidate.id === materializationInput?.slotId
+        );
+
+        if (!slot) {
+          throw new Error(`Session workspace target missing for input: ${workspaceInput.id}`);
+        }
+
+        return {
+          ...workspaceInput,
+          target: slot.path,
+        };
+      }
     );
+    const materializedTargets = new Map(
+      materializedWorkspaceInputs.map((workspaceInput) => [
+        workspaceInput.id,
+        workspaceInput.target,
+      ])
+    );
+    const openkitExtensions = environmentPackage.extensions.openkit as Record<string, unknown>;
 
-    if (!slot) {
-      throw new Error(`Session workspace target missing for input: ${workspaceInput.id}`);
-    }
-
-    return {
-      ...workspaceInput,
-      target: slot.path,
-    };
-  });
-  const materializedTargets = new Map(
-    materializedWorkspaceInputs.map((workspaceInput) => [workspaceInput.id, workspaceInput.target])
-  );
-  const openkitExtensions = environmentPackage.extensions.openkit as Record<string, unknown>;
-
-  return parseAgentEnvironmentPlanningFields({
-    ...environmentPackage,
-    workspace: {
-      ...environmentPackage.workspace,
-      inputs: materializedWorkspaceInputs,
-      outputs: [
-        ...environmentPackage.workspace.outputs.map((output) => {
-          const rootId = output.id.endsWith('-output')
-            ? output.id.slice(0, -'-output'.length)
-            : null;
-          const target = rootId ? materializedTargets.get(rootId) : undefined;
-          return target ? { ...output, path: target } : output;
-        }),
-        {
-          // Authored roots retain `${id}-output`; this fixed identity cannot share that suffix.
-          id: 'turn-output-root',
-          path: sessionWorkspace.layout.slots.find((slot) => slot.id === 'turn-output')!.path,
-          registerAsArtifacts: true,
-          retention: 'sync-on-turn-end',
-        },
-      ],
-    },
-    policy: {
-      ...environmentPackage.policy,
-      ...(environmentPackage.policy.filesystem
-        ? {
-            filesystem: {
-              ...environmentPackage.policy.filesystem,
-              rules: environmentPackage.policy.filesystem.rules.map((rule) => {
-                if (!rule || typeof rule !== 'object' || !('id' in rule)) return rule;
-                const target = materializedTargets.get(String(rule.id));
-                return target ? { ...rule, workerPath: target } : rule;
-              }),
-            },
-          }
-        : {}),
-    },
-    extensions: {
-      ...environmentPackage.extensions,
-      openkit: {
-        ...openkitExtensions,
-        sessionWorkspace,
+    return parseAgentEnvironmentPlanningFields({
+      ...environmentPackage,
+      workspace: {
+        ...environmentPackage.workspace,
+        inputs: materializedWorkspaceInputs,
+        outputs: [
+          ...environmentPackage.workspace.outputs.map((output) => {
+            const rootId = output.id.endsWith('-output')
+              ? output.id.slice(0, -'-output'.length)
+              : null;
+            const target = rootId ? materializedTargets.get(rootId) : undefined;
+            return target ? { ...output, path: target } : output;
+          }),
+          {
+            // Authored roots retain `${id}-output`; this fixed identity cannot share that suffix.
+            id: 'turn-output-root',
+            path: sessionWorkspace.layout.slots.find((slot) => slot.id === 'turn-output')!.path,
+            registerAsArtifacts: true,
+            retention: 'sync-on-turn-end',
+          },
+        ],
       },
-    },
-  });
+      policy: {
+        ...environmentPackage.policy,
+        ...(environmentPackage.policy.filesystem
+          ? {
+              filesystem: {
+                ...environmentPackage.policy.filesystem,
+                rules: environmentPackage.policy.filesystem.rules.map((rule) => {
+                  if (!rule || typeof rule !== 'object' || !('id' in rule)) return rule;
+                  const target = materializedTargets.get(String(rule.id));
+                  return target ? { ...rule, workerPath: target } : rule;
+                }),
+              },
+            }
+          : {}),
+      },
+      extensions: {
+        ...environmentPackage.extensions,
+        openkit: {
+          ...openkitExtensions,
+          sessionWorkspace,
+        },
+      },
+    });
+  };
+  if (credentialArtifacts instanceof Promise) return credentialArtifacts.then(finish);
+  const complete = finish(credentialArtifacts);
+  return credentialResolution === 'materialize' ? Promise.resolve(complete) : complete;
 }
 
 /**
@@ -987,7 +1019,7 @@ function resolveRuntimeImage(
 
 /** Returns the canonical SHA-256 label for deterministic authored image material. */
 function sha256Digest(value: string): string {
-  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+  return `sha256:${sha256Hex(value)}`;
 }
 
 /**
@@ -1305,7 +1337,9 @@ interface ResolveWorkerCredentialDeclarationsInput {
  */
 function resolveWorkerCredentialDeclarations(
   input: ResolveWorkerCredentialDeclarationsInput
-): ResolvedWorkerCredentialDeclarationArtifacts {
+):
+  | ResolvedWorkerCredentialDeclarationArtifacts
+  | Promise<ResolvedWorkerCredentialDeclarationArtifacts> {
   const artifacts: ResolvedWorkerCredentialDeclarationArtifacts = {
     declarations: [],
     vaultGrants: [],
@@ -1372,9 +1406,9 @@ function resolveWorkerCredentialDeclarations(
           (lease.deadline !== null && lease.deadline <= timestamp)))
     ) {
       throw new TurnStartValidationError(
-        'workspace_access_denied',
-        'Workspace access denied.',
-        403
+        WORKSPACE_ACCESS_DENIED.code,
+        WORKSPACE_ACCESS_DENIED.message,
+        WORKSPACE_ACCESS_DENIED.status
       );
     }
     return { declaration, grant, reference };
@@ -1384,7 +1418,7 @@ function resolveWorkerCredentialDeclarations(
     for (const { reference } of admitted)
       assertCredentialBackendMatchesReference(requireVaultBackend(input), reference);
   }
-  for (const candidate of admitted) {
+  const resolveOne = (candidate: (typeof admitted)[number]): void | Promise<void> => {
     const { declaration, grant, reference } =
       input.credentialResolution === 'materialize' ? admit(candidate.declaration) : candidate;
     const injection = declarationInjectionTarget(declaration);
@@ -1401,247 +1435,93 @@ function resolveWorkerCredentialDeclarations(
         receiptId,
         reference,
       });
-      continue;
+      return;
     }
-    const vaultBackend = requireVaultBackend(input);
-    assertCredentialBackendMatchesReference(vaultBackend, reference);
+    return (async () => {
+      const vaultBackend = requireVaultBackend(input);
+      assertCredentialBackendMatchesReference(vaultBackend, reference);
 
-    createVaultInjectionPlan(coreDb, {
-      backendCapabilityRequirement: injection.backendCapabilityRequirement,
-      expirationBehavior: grant.expiresAt ? `expires-at:${grant.expiresAt}` : 'grant-lifetime',
-      grantId: grant.grantId,
-      injectionVisibility: injection.visibility,
-      packageSnapshotId: input.packageSnapshotId,
-      planId,
-      redactionRule: 'no-secret-material',
-      revocationBehavior: injection.revocationBehavior,
-      ...(injection.targetEnvVarName ? { targetEnvVarName: injection.targetEnvVarName } : {}),
-      ...(injection.targetPath ? { targetPath: injection.targetPath } : {}),
-      now: input.now,
-    });
-    const ownerScope = vaultUseOwnerScope(grant);
-    const material =
-      declaration.visibility === 'runtime-file'
-        ? null
-        : createVaultUseAuditedBackend({
-            agentSessionId: input.agentSessionId,
-            backend: vaultBackend,
-            db: coreDb,
-            grantId: grant.grantId,
-            ownerScope,
-            planId,
-            resolvingPath: 'grant',
-            now: input.now,
-            ...(ownerScope === 'workspace' ? { workspaceId: input.workspaceId } : {}),
-          }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
+      await createVaultInjectionPlan(coreDb, {
+        backendCapabilityRequirement: injection.backendCapabilityRequirement,
+        expirationBehavior: grant.expiresAt ? `expires-at:${grant.expiresAt}` : 'grant-lifetime',
+        grantId: grant.grantId,
+        injectionVisibility: injection.visibility,
+        packageSnapshotId: input.packageSnapshotId,
+        planId,
+        redactionRule: 'no-secret-material',
+        revocationBehavior: injection.revocationBehavior,
+        ...(injection.targetEnvVarName ? { targetEnvVarName: injection.targetEnvVarName } : {}),
+        ...(injection.targetPath ? { targetPath: injection.targetPath } : {}),
+        now: input.now,
+      });
+      const recheck = () => {
+        const fresh = admit(declaration);
+        if (fresh.reference.currentVersion !== reference.currentVersion)
+          throw new TurnStartValidationError(
+            'credential_declaration_invalid',
+            'Credential materialization failed.',
+            400
+          );
+        assertCredentialBackendMatchesReference(requireVaultBackend(input), fresh.reference);
+      };
+      recheck();
+      const ownerScope = vaultUseOwnerScope(grant);
+      const material =
+        declaration.visibility === 'runtime-file'
+          ? null
+          : await createVaultUseAuditedBackend({
+              agentSessionId: input.agentSessionId,
+              backend: vaultBackend,
+              db: coreDb,
+              grantId: grant.grantId,
+              ownerScope,
+              planId,
+              resolvingPath: 'grant',
+              now: input.now,
+              ...(ownerScope === 'workspace' ? { workspaceId: input.workspaceId } : {}),
+            }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
 
-    try {
-      appendCredentialDeclarationArtifacts({
-        artifacts,
-        declaration,
-        grant,
-        input,
-        material: material === null ? null : vaultSecretMaterialToString(material),
+      recheck();
+      try {
+        appendCredentialDeclarationArtifacts({
+          artifacts,
+          declaration,
+          grant,
+          input,
+          material: material === null ? null : vaultSecretMaterialToString(material),
+          planId,
+          receiptId,
+          reference,
+        });
+      } catch (cause) {
+        if (cause instanceof TurnStartValidationError) throw cause;
+        throw new OperationError(
+          'credential_materialization_failed',
+          'Credential materialization failed.',
+          400,
+          { cause }
+        );
+      }
+      input.credentialReceiptSink?.({
+        agentSessionId: input.agentSessionId,
+        backendSummary: injection.backendSummary,
+        expiresAt: grant.expiresAt,
+        grantId: grant.grantId,
+        injectedAt: input.now(),
         planId,
         receiptId,
-        reference,
+        revocationStatus: 'active',
       });
-    } catch (cause) {
-      if (cause instanceof TurnStartValidationError) throw cause;
-      throw new OperationError(
-        'credential_materialization_failed',
-        'Credential materialization failed.',
-        400,
-        { cause }
-      );
-    }
-    input.credentialReceiptSink?.({
-      agentSessionId: input.agentSessionId,
-      backendSummary: injection.backendSummary,
-      expiresAt: grant.expiresAt,
-      grantId: grant.grantId,
-      injectedAt: input.now(),
-      planId,
-      receiptId,
-      revocationStatus: 'active',
-    });
+    })();
+  };
+  if (input.credentialResolution === 'metadata-only') {
+    for (const candidate of admitted) resolveOne(candidate);
+    return artifacts;
   }
-
-  return artifacts;
-}
-
-/**
- * Loads the grant referenced by a credential declaration.
- *
- * @param coreDb Core database that owns durable vault metadata.
- * @param declaration Credential declaration being resolved.
- * @returns Active or inactive grant metadata for later validation.
- * @throws Error when the declaration references a missing grant.
- */
-function requireDeclarationGrant(
-  coreDb: CoreDb,
-  declaration: AgentEnvironmentCredentialDeclaration
-): VaultGrantRecord {
-  const grant = getVaultGrant(coreDb, declaration.vaultGrantId);
-
-  if (!grant) {
-    throw new TurnStartValidationError('vault_grant_not_found', 'Credential grant is unavailable.');
-  }
-
-  return grant;
-}
-
-/**
- * Loads the vault reference linked by a credential grant.
- *
- * @param coreDb Core database that owns durable vault metadata.
- * @param grant Grant being resolved.
- * @returns Vault reference metadata for later validation.
- * @throws Error when the grant points at a missing reference.
- */
-function requireDeclarationReference(
-  coreDb: CoreDb,
-  grant: VaultGrantRecord
-): VaultReferenceRecord {
-  const reference = getVaultReference(coreDb, grant.vaultReferenceId);
-
-  if (!reference) {
-    throw new TurnStartValidationError(
-      'vault_reference_inactive',
-      'Credential reference is unavailable.'
-    );
-  }
-
-  return reference;
-}
-
-/**
- * Validates one credential declaration against its grant, reference, and target session.
- *
- * @param input Package resolution input.
- * @param declaration Credential declaration being resolved.
- * @param grant Grant authorized by the declaration.
- * @param reference Vault reference authorized by the grant.
- * @throws Error when authorization metadata does not match the requested injection.
- */
-function assertCredentialGrantMatchesDeclaration(
-  input: Pick<
-    ResolveWorkerCredentialDeclarationsInput,
-    'agentId' | 'agentSessionId' | 'workspaceId' | 'responsibleUserId' | 'now'
-  >,
-  declaration: AgentEnvironmentCredentialDeclaration,
-  grant: VaultGrantRecord,
-  reference: VaultReferenceRecord
-): void {
-  const requiredInjectionPath = declarationRequiredInjectionPath(declaration);
-
-  if (
-    grant.vaultReferenceId !== reference.referenceId ||
-    (grant.targetAgentSessionId !== null && grant.targetAgentSessionId !== input.agentSessionId) ||
-    grant.ownerScope !== reference.ownerScope ||
-    (declaration.requirementId !== undefined
-      ? grant.ownerScope !== 'workspace' || grant.workspaceId !== input.workspaceId
-      : grant.ownerScope !== 'server') ||
-    grant.workspaceId !== reference.workspaceId ||
-    grant.userId !== reference.userId ||
-    (grant.ownerScope === 'user' &&
-      (grant.userId === null || grant.userId !== input.responsibleUserId)) ||
-    (grant.workspaceId !== null && grant.workspaceId !== input.workspaceId) ||
-    (grant.targetAgentId !== null && grant.targetAgentId !== input.agentId) ||
-    grant.targetCapabilityId !== null
-  ) {
-    throw new TurnStartValidationError(
-      'credential_declaration_invalid',
-      'Credential declaration does not match the current grant.'
-    );
-  }
-  if (reference.status !== 'active') {
-    throw new TurnStartValidationError(
-      'vault_reference_inactive',
-      'Credential reference is inactive.'
-    );
-  }
-  if (grant.status !== 'active') {
-    throw new TurnStartValidationError('vault_grant_inactive', 'Credential grant is inactive.');
-  }
-  if (!grant.allowedInjectionPaths.includes(requiredInjectionPath)) {
-    throw new TurnStartValidationError(
-      'credential_visibility_not_allowed',
-      'Credential visibility is not allowed.'
-    );
-  }
-  if (grant.expiresAt && grant.expiresAt <= input.now()) {
-    throw new TurnStartValidationError('vault_grant_expired', 'Credential grant has expired.');
-  }
-}
-
-/**
- * Rechecks current Vault authority for the actual consuming package.
- *
- * @param coreDb Current grant, reference and execution authority.
- * @param environmentPackage Actual admitted consumer, never reconstructed material.
- * @param now Current clock at this effect boundary.
- * @param originalDeclaration Exact original declaration when checking a retained binding.
- * @returns The canonical grant and reference for a selected original declaration.
- * @throws When revoked, expired or changed authority cannot authorize this use or receipt.
- */
-export function assertCurrentWorkerCredentialAuthority(
-  coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackage,
-  now: () => string,
-  originalDeclaration: AgentEnvironmentCredentialDeclaration
-): { grant: VaultGrantRecord; reference: VaultReferenceRecord };
-export function assertCurrentWorkerCredentialAuthority(
-  coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackage,
-  now?: () => string
-): void;
-export function assertCurrentWorkerCredentialAuthority(
-  coreDb: CoreDb,
-  environmentPackage: AgentEnvironmentPackage,
-  now: () => string = () => new Date().toISOString(),
-  originalDeclaration?: AgentEnvironmentCredentialDeclaration
-): { grant: VaultGrantRecord; reference: VaultReferenceRecord } | undefined {
-  for (const declaration of originalDeclaration
-    ? [originalDeclaration]
-    : environmentPackage.credentials.declarations) {
-    const scope = environmentPackage.scope;
-    const grant = requireDeclarationGrant(coreDb, declaration);
-    const reference = requireDeclarationReference(coreDb, grant);
-    aepVaultGrantScope(grant);
-    assertCredentialGrantMatchesDeclaration(
-      {
-        agentId: environmentPackage.agent.agentId,
-        agentSessionId: scope.agentSessionId,
-        workspaceId: scope.workspaceId,
-        responsibleUserId: responsibleUserIdForActor(scope.triggerActor),
-        now,
-      },
-      declaration,
-      grant,
-      reference
-    );
-    const effectAuthority =
-      grant.issuance === 'target' &&
-      (grant.approvalId === null ||
-        (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
-    if (
-      !effectAuthority ||
-      !currentWorkerLineageWorkspaceAuthority(
-        coreDb,
-        { ...scope, packageSnapshotId: environmentPackage.snapshotId },
-        'vault.use',
-        effectAuthority
-      )
-    ) {
-      throw new TurnStartValidationError(
-        'workspace_access_denied',
-        'Workspace access denied.',
-        403
-      );
-    }
-    if (originalDeclaration) return { grant, reference };
-  }
+  return (async () => {
+    for (const candidate of admitted) await resolveOne(candidate);
+    return artifacts;
+  })();
 }
 
 /**
@@ -1673,22 +1553,6 @@ function assertCredentialSinkAvailable(
       'The backend does not support the credential visibility.'
     );
   }
-}
-
-/**
- * Returns the grant injection path required by a declaration.
- *
- * @param declaration Credential declaration being resolved.
- * @returns Durable injection path class.
- */
-function declarationRequiredInjectionPath(
-  declaration: AgentEnvironmentCredentialDeclaration
-): 'backend-provider' | 'runtime-env' | 'runtime-file' {
-  if (declaration.visibility === 'sandbox-provider') {
-    return 'backend-provider';
-  }
-
-  return declaration.visibility;
 }
 
 /** Non-secret injection target metadata derived from one credential declaration. */
@@ -1850,28 +1714,6 @@ function vaultUseOwnerScope(grant: VaultGrantRecord): 'server' | 'workspace' {
   }
 
   return grant.ownerScope;
-}
-
-/**
- * Maps grant lifetime into the AEP vault grant projection contract.
- *
- * @param grant Grant projected into the AEP snapshot.
- * @returns AEP-supported grant scope.
- * @throws Error when a capability-call or server lifetime is used for worker launch credentials.
- */
-function aepVaultGrantScope(grant: VaultGrantRecord): 'agent-session' | 'turn' | 'workspace' {
-  if (
-    grant.lifetime === 'turn' ||
-    grant.lifetime === 'agent-session' ||
-    grant.lifetime === 'workspace'
-  ) {
-    return grant.lifetime;
-  }
-
-  throw new TurnStartValidationError(
-    'credential_declaration_invalid',
-    'Credential grant lifetime is not supported.'
-  );
 }
 
 /**

@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OperationInput, OperationOutput } from '@openkit/app-api-schemas';
 import { digestOpenKitTree } from '@openkit/config-schema';
-import { recordServerAuditEvent } from '../audit-events.js';
 import { authorizeWorkspace, requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import { loadResourceCatalog, mcpTransportFromDeclaration } from '../catalog/resource-catalog.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -17,15 +16,19 @@ import {
   type WorkerMcpGatewayCredentials,
   type WorkerMcpGatewayServerInput,
 } from '../runtime/worker-mcp-gateway.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { isCurrentServerMcpMaterial } from '../vault/server-mcp-authority.js';
+import { recordVaultAuditEvent as recordServerAuditEvent } from '../vault/vault-admin-audit-events.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import { getVaultGrant } from '../vault/vault-grants.js';
 import { getVaultReference } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
-import { createVaultInjectionReceipt } from '../vault-injection-receipts.js';
 
 type Input = OperationInput<'administration.mcp-discovery-preview'>;
 
@@ -166,6 +169,20 @@ export async function previewMcpDiscovery(
         );
       return { grant, reference };
     };
+    const materialChanged = () =>
+      new OperationError('forbidden', 'MCP preview material changed.', 403);
+    /** Same full-injection authority check before and after the temporary upstream exchange. */
+    const assertCurrentInjections = () => {
+      current();
+      for (const item of injections) {
+        const now = authority(item.grantId);
+        if (
+          now.reference.referenceId !== item.referenceId ||
+          now.reference.currentVersion !== item.version
+        )
+          throw materialChanged();
+      }
+    };
     // Validate every sink and grant before resolving any material or making a connection.
     for (const binding of input.credentialBindings) {
       const sinkKey = `${binding.sink.kind}:${binding.sink.kind === 'header' ? binding.sink.name.toLowerCase() : binding.sink.name}`;
@@ -235,8 +252,8 @@ export async function previewMcpDiscovery(
           503
         );
     }
-    const audit = (outcome: 'succeeded' | 'failed', summary: string) =>
-      recordServerAuditEvent({
+    const audit = async (outcome: 'succeeded' | 'failed', summary: string) =>
+      await recordServerAuditEvent({
         coreDb,
         actor: context.actorRef,
         workspaceId,
@@ -246,7 +263,9 @@ export async function previewMcpDiscovery(
         outcome,
         summary,
       });
-    audit(
+    const deadline = AbortSignal.timeout(input.timeoutMs);
+    const signal = context.signal ? AbortSignal.any([context.signal, deadline]) : deadline;
+    await audit(
       'succeeded',
       'Explicit temporary MCP discovery started; no tool execution is authorized.'
     );
@@ -260,13 +279,23 @@ export async function previewMcpDiscovery(
     let cleanupProved = false;
     let failure: OperationError | undefined;
     let observation: OperationOutput<'administration.mcp-discovery-preview'> | undefined;
-    const deadline = AbortSignal.timeout(input.timeoutMs);
-    const signal = context.signal ? AbortSignal.any([context.signal, deadline]) : deadline;
     try {
       for (const binding of input.credentialBindings) {
         const { grant, reference } = authority(binding.vaultGrantId);
+        const recheck = async () => {
+          await context.recheckAdmission?.();
+          current();
+          const fresh = authority(binding.vaultGrantId);
+          if (
+            fresh.reference.referenceId !== reference.referenceId ||
+            fresh.reference.currentVersion !== reference.currentVersion
+          )
+            throw materialChanged();
+          signal.throwIfAborted();
+        };
+        await recheck();
         const planId = randomUUID();
-        createVaultInjectionPlan(coreDb, {
+        await createVaultInjectionPlan(coreDb, {
           planId,
           grantId: grant.grantId,
           capabilityId: 'mcp.list-tools',
@@ -276,6 +305,7 @@ export async function previewMcpDiscovery(
           redactionRule: 'exact-resolved-material',
           backendCapabilityRequirement: `mcp-gateway:${transport.kind}`,
         });
+        await recheck();
         const db = workspaceId ? dependencies.repositoryWorkspaceDb?.(workspaceId) : coreDb;
         if (!db)
           throw new OperationError(
@@ -285,7 +315,7 @@ export async function previewMcpDiscovery(
           );
         let value: string;
         try {
-          const material = createVaultUseAuditedBackend({
+          const material = await createVaultUseAuditedBackend({
             backend: backend!,
             db,
             ownerScope: scope.kind,
@@ -300,6 +330,7 @@ export async function previewMcpDiscovery(
           // The application factory opens a request-owned Workspace handle; Core remains shared.
           if (workspaceId) db.sqlite.close();
         }
+        await recheck();
         if (!value.length)
           throw new OperationError(
             'forbidden',
@@ -351,17 +382,13 @@ export async function previewMcpDiscovery(
       };
       if (signal.aborted)
         throw new OperationError('mcp_preview_unavailable', 'MCP preview was interrupted.', 503);
+      await context.recheckAdmission?.();
+      assertCurrentInjections();
+      if (signal.aborted)
+        throw new OperationError('mcp_preview_unavailable', 'MCP preview was interrupted.', 503);
       const live = await gateway.listTools(connection);
       delivered = true;
-      current();
-      for (const item of injections) {
-        const now = authority(item.grantId);
-        if (
-          now.reference.referenceId !== item.referenceId ||
-          now.reference.currentVersion !== item.version
-        )
-          throw new OperationError('forbidden', 'MCP preview material changed.', 403);
-      }
+      assertCurrentInjections();
       if (signal.aborted)
         throw new OperationError('mcp_preview_unavailable', 'MCP preview was interrupted.', 503);
       await gateway.close();
@@ -373,8 +400,7 @@ export async function previewMcpDiscovery(
       current();
       for (const item of injections) {
         const now = authority(item.grantId);
-        if (now.reference.currentVersion !== item.version)
-          throw new OperationError('forbidden', 'MCP preview material changed.', 403);
+        if (now.reference.currentVersion !== item.version) throw materialChanged();
       }
       const tools = live.tools.map((tool) => ({
         name: tool.name,
@@ -403,7 +429,8 @@ export async function previewMcpDiscovery(
           : new OperationError(
               'mcp_preview_unavailable',
               'MCP preview failed. Upstream contact may have occurred.',
-              503
+              503,
+              { cause: error }
             );
     }
     // Cleanup has its own outcome and cannot be hidden by either a successful list or an earlier refusal.
@@ -413,19 +440,26 @@ export async function previewMcpDiscovery(
         cleanupProved = true;
       }
       if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true });
-    } catch {
+    } catch (error) {
       failure = new OperationError(
         'recovery_required',
         'MCP preview cleanup is unconfirmed. Inspect before another invocation.',
-        409
+        409,
+        {
+          cause: new AggregateError(
+            failure ? [failure, error] : [error],
+            'MCP preview cleanup failed.',
+            {
+              cause: previewUnknownCommit(failure) ?? error,
+            }
+          ),
+        }
       );
     }
     try {
       if (delivered)
         for (const item of injections) {
-          const grant = getVaultGrant(coreDb, item.grantId);
-          const reference = getVaultReference(coreDb, item.referenceId);
-          const deliveryAudit = recordServerAuditEvent({
+          const deliveryAudit = await recordServerAuditEvent({
             coreDb,
             actor: context.actorRef,
             workspaceId,
@@ -437,27 +471,33 @@ export async function previewMcpDiscovery(
             summary:
               'Gateway-only material reached the temporary MCP transport; this does not prove preview success or tool execution.',
           });
-          createVaultInjectionReceipt(coreDb, {
-            auditEventId: deliveryAudit.id,
-            receiptId: item.receiptId,
-            planId: item.planId,
-            grantId: item.grantId,
-            backendSummary: `mcp-gateway:${transport.kind}:preview`,
-            injectedAt: item.injectedAt,
-            expiresAt: item.expiresAt,
-            revocationStatus:
-              grant?.status !== 'active' || reference?.status !== 'active'
-                ? 'revoked'
-                : item.expiresAt && Date.parse(item.expiresAt) <= Date.now()
-                  ? 'expired'
-                  : 'active',
+          await getControlStoreWorkerClient().vault(coreDb, 'preview-receipt-create', {
+            referenceId: item.referenceId,
+            receipt: {
+              auditEventId: deliveryAudit.id,
+              receiptId: item.receiptId,
+              planId: item.planId,
+              grantId: item.grantId,
+              backendSummary: `mcp-gateway:${transport.kind}:preview`,
+              injectedAt: item.injectedAt,
+              expiresAt: item.expiresAt,
+            },
           });
         }
-    } catch {
+    } catch (error) {
       failure = new OperationError(
         'recovery_required',
         'MCP preview delivery evidence is incomplete. Inspect before another invocation.',
-        409
+        409,
+        {
+          cause: new AggregateError(
+            failure ? [failure, error] : [error],
+            'MCP preview delivery evidence failed.',
+            {
+              cause: previewUnknownCommit(failure) ?? error,
+            }
+          ),
+        }
       );
     }
     if (signal.aborted && !failure)
@@ -466,22 +506,48 @@ export async function previewMcpDiscovery(
         'MCP preview exceeded its deadline or was interrupted.',
         503
       );
-    audit(
-      failure ? 'failed' : 'succeeded',
-      failure
-        ? 'MCP discovery failed or was interrupted; inspect delivery evidence separately.'
-        : 'Temporary MCP discovery completed and its connection closed; no tool executed.'
-    );
+    try {
+      await audit(
+        failure ? 'failed' : 'succeeded',
+        failure
+          ? 'MCP discovery failed or was interrupted; inspect delivery evidence separately.'
+          : 'Temporary MCP discovery completed and its connection closed; no tool executed.'
+      );
+    } catch (error) {
+      if (failure && previewUnknownCommit(failure)) throw failure;
+      throw error;
+    }
     if (failure) throw failure;
     if (!observation)
       throw new OperationError('mcp_preview_unavailable', 'MCP preview is unavailable.', 503);
+    await context.recheckAdmission?.();
+    assertCurrentInjections();
+    if (signal.aborted)
+      throw new OperationError(
+        'mcp_preview_unavailable',
+        'MCP preview exceeded its deadline or was interrupted.',
+        503
+      );
     return observation;
   } catch (error) {
     if (error instanceof OperationError) throw error;
     throw new OperationError(
       'mcp_preview_unavailable',
       'MCP preview is unavailable. Inspect current state before a new invocation.',
-      503
+      503,
+      { cause: error }
     );
   }
+}
+
+/** Reads only actual native unknown errors through the private causal chain; public preview fields remain fixed. */
+function previewUnknownCommit(error: unknown): ControlStoreWorkerError | undefined {
+  const visited = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !visited.has(current)) {
+    if (current instanceof ControlStoreWorkerError && current.commit === 'unknown') return current;
+    visited.add(current);
+    current = current.cause;
+  }
+  return undefined;
 }

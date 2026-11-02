@@ -142,7 +142,7 @@ async function fixture(
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup({
       logicalModelId: 'worker-model',
       privateRoute: { providerProfileId: 'provider', providerModel: 'native-model' },

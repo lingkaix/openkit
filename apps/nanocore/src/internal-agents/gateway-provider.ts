@@ -66,7 +66,10 @@ export interface InternalAgentGatewayProviderOptions {
   /** Entry-validated command context for audit only; never a call-start request key. */
   readonly auditLineage?: CapabilityAuditLineage;
   readonly dispatcher: Pick<LLMGatewayProviderDispatcher, 'createResponses'>;
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly promptCacheScope: {
     readonly sessionId: string;
@@ -247,7 +250,7 @@ export function createInternalAgentGatewayProvider(
                     );
                 },
                 transport: {
-                  finalRequestAdmission: (final) => {
+                  finalRequestAdmission: async (final) => {
                     try {
                       assertPhysicalContextFits(
                         final.payload,
@@ -255,7 +258,7 @@ export function createInternalAgentGatewayProvider(
                         final.outputReserveTokens,
                         final.codexTurnState
                       );
-                      execution.assertAuthority?.();
+                      await execution.assertAuthority?.();
                     } catch (error) {
                       // Stock can flatten hook errors; preserve this trusted refusal for loop closeout.
                       if (

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { recordServerAuditEvent } from './audit-events.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -36,13 +37,13 @@ function createCoreDb(): CoreDb {
 }
 
 describe('injection receipts', () => {
-  it('creates, reads, and lists non-secret injection receipts', () => {
+  it('creates, reads, and lists non-secret injection receipts', async () => {
     const coreDb = createCoreDb();
 
     try {
-      createPlan(coreDb);
+      await createPlan(coreDb);
 
-      const created = createVaultInjectionReceipt(coreDb, {
+      const created = await createVaultInjectionReceipt(coreDb, {
         agentSessionId: 'session_1',
         auditEventId: 'audit_1',
         backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
@@ -53,7 +54,7 @@ describe('injection receipts', () => {
         receiptId: 'receipt_github_file',
         revocationStatus: 'active',
       });
-      const duplicate = createVaultInjectionReceipt(coreDb, {
+      const duplicate = await createVaultInjectionReceipt(coreDb, {
         ...created,
       });
       expect(duplicate).toEqual(created);
@@ -64,7 +65,7 @@ describe('injection receipts', () => {
         { injectedAt: '2026-07-05T00:20:00.000Z' },
         { expiresAt: null },
       ] as const) {
-        expect(() => createVaultInjectionReceipt(coreDb, { ...created, ...patch })).toThrow(
+        await expect(createVaultInjectionReceipt(coreDb, { ...created, ...patch })).rejects.toThrow(
           'Vault injection receipt identity conflict.'
         );
         expect(listVaultInjectionReceipts(coreDb)).toEqual([created]);
@@ -84,33 +85,34 @@ describe('injection receipts', () => {
         revocationStatus: 'active',
       });
       expect(JSON.stringify(created)).not.toContain('ghp_');
-      revokeVaultGrant(coreDb, { grantId: created.grantId });
+      await revokeVaultGrant(coreDb, { grantId: created.grantId });
       const revoked = getVaultInjectionReceipt(coreDb, created.receiptId);
       expect(revoked?.revocationStatus).not.toBe('active');
-      expect(createVaultInjectionReceipt(coreDb, { ...created })).toEqual(revoked);
+      expect(await createVaultInjectionReceipt(coreDb, { ...created })).toEqual(revoked);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('requires exact human delivery Audit for a preview receipt with no Worker lineage', () => {
+  it('requires exact human delivery Audit for a preview receipt with no Worker lineage', async () => {
     const coreDb = createCoreDb();
     try {
-      createVaultReference(coreDb, {
+      await createVaultReference(coreDb, {
         referenceId: testEntityId('vault', 'preview-reference'),
         ownerScope: 'server',
         backendKind: 'encrypted-file',
         secretKind: 'mcp-token',
         displayName: 'Preview',
       });
-      createVaultGrant(coreDb, {
+      await createVaultGrant(coreDb, {
         grantId: testEntityId('grant', 'preview-grant'),
         vaultReferenceId: testEntityId('vault', 'preview-reference'),
         ownerScope: 'server',
         lifetime: 'server',
         allowedInjectionPaths: ['gateway-only'],
       });
-      createVaultInjectionPlan(coreDb, {
+      await createVaultInjectionPlan(coreDb, {
         planId: 'preview_plan',
         grantId: testEntityId('grant', 'preview-grant'),
         capabilityId: 'mcp.list-tools',
@@ -154,34 +156,38 @@ describe('injection receipts', () => {
         },
       ]) {
         const event = recordServerAuditEvent({ ...delivery, ...patch });
-        expect(() =>
+        await expect(
           createVaultInjectionReceipt(coreDb, { ...receipt, auditEventId: event.id })
-        ).toThrow();
+        ).rejects.toThrow();
         expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
       }
-      expect(() =>
+      await expect(
         createVaultInjectionReceipt(coreDb, {
           ...receipt,
           auditEventId: testEntityId('aud', 'missing-preview-audit'),
         })
-      ).toThrow();
+      ).rejects.toThrow();
       const audit = recordServerAuditEvent(delivery);
-      const created = createVaultInjectionReceipt(coreDb, { ...receipt, auditEventId: audit.id });
+      const created = await createVaultInjectionReceipt(coreDb, {
+        ...receipt,
+        auditEventId: audit.id,
+      });
       expect(created).toMatchObject({
         agentSessionId: null,
         capabilityCallId: null,
         auditEventId: audit.id,
       });
-      expect(createVaultInjectionReceipt(coreDb, { ...created })).toEqual(created);
+      expect(await createVaultInjectionReceipt(coreDb, { ...created })).toEqual(created);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
-  it('requires an existing plan, matching grant, and a session or capability call', () => {
+  it('requires an existing plan, matching grant, and a session or capability call', async () => {
     const coreDb = createCoreDb();
 
     try {
-      expect(() =>
+      await expect(
         createVaultInjectionReceipt(coreDb, {
           backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
           capabilityCallId: 'call_1',
@@ -191,11 +197,11 @@ describe('injection receipts', () => {
           receiptId: 'receipt_missing',
           revocationStatus: 'active',
         })
-      ).toThrow('Injection plan not found: plan_missing');
+      ).rejects.toThrow('Injection plan not found: plan_missing');
 
-      createPlan(coreDb);
+      await createPlan(coreDb);
 
-      expect(() =>
+      await expect(
         createVaultInjectionReceipt(coreDb, {
           backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
           capabilityCallId: 'call_1',
@@ -205,8 +211,8 @@ describe('injection receipts', () => {
           receiptId: 'receipt_wrong_grant',
           revocationStatus: 'active',
         })
-      ).toThrow('Injection receipt grant id must match the injection plan grant id.');
-      expect(() =>
+      ).rejects.toThrow('Injection receipt grant id must match the injection plan grant id.');
+      await expect(
         createVaultInjectionReceipt(coreDb, {
           backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
           grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
@@ -215,8 +221,9 @@ describe('injection receipts', () => {
           receiptId: 'receipt_no_actor',
           revocationStatus: 'active',
         })
-      ).toThrow('Injection receipts require agentSessionId or capabilityCallId.');
+      ).rejects.toThrow('Injection receipts require agentSessionId or capabilityCallId.');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -227,15 +234,15 @@ describe('injection receipts', () => {
  *
  * @param coreDb Open Core database handle.
  */
-function createPlan(coreDb: CoreDb): void {
-  createVaultReference(coreDb, {
+async function createPlan(coreDb: CoreDb): Promise<void> {
+  await createVaultReference(coreDb, {
     backendKind: 'encrypted-file',
     displayName: 'GitHub token',
     ownerScope: 'server',
     referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     secretKind: 'repository-token',
   });
-  createVaultGrant(coreDb, {
+  await createVaultGrant(coreDb, {
     allowedInjectionPaths: ['runtime-file'],
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     lifetime: 'turn',
@@ -243,7 +250,7 @@ function createPlan(coreDb: CoreDb): void {
     vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   });
-  createVaultInjectionPlan(coreDb, {
+  await createVaultInjectionPlan(coreDb, {
     backendCapabilityRequirement: 'encrypted-file:resolve',
     expirationBehavior: 'delete-on-turn-end',
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',

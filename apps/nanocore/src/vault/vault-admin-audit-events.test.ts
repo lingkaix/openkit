@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import type { Actor } from '../auth/identity.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
 
 describe('Vault administration Audit attribution', () => {
   for (const kind of ['local', 'session', 'token'] as const) {
-    it(`keeps the same human actor in both ${kind} audit projections`, () => {
+    it(`keeps the same human actor in both ${kind} audit projections`, async () => {
       const root = mkdtempSync(join(tmpdir(), 'openkit-vault-attribution-'));
       const db = openCoreDb(root);
       try {
@@ -24,7 +25,7 @@ describe('Vault administration Audit attribution', () => {
             : {}),
         };
         const auditEventId = allocateEntityId('aud');
-        recordVaultAdminAuditEvent({
+        await recordVaultAdminAuditEvent({
           coreDb: db,
           actor,
           auditEventId,
@@ -47,6 +48,7 @@ describe('Vault administration Audit attribution', () => {
           id: actor.userId,
         });
       } finally {
+        await shutdownControlStoreWorkerClient();
         db.sqlite.close();
         rmSync(root, { recursive: true, force: true });
       }

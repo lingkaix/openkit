@@ -143,7 +143,7 @@ describe('worker Context Package read projection', () => {
         turnId: turn.id,
         packageRootDigest: files.packageRootDigest,
       });
-      const unresolved = resolveAgentEnvironmentPackage({
+      const unresolved = await resolveAgentEnvironmentPackage({
         agentSessionId,
         agentSetup: createTestAgentSetup(),
         backend: { kind: 'openshell' },

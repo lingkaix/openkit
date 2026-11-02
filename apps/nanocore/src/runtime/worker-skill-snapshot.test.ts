@@ -70,9 +70,9 @@ describe('exact retained Worker Skill delivery', () => {
   const agentSetup = createTestAgentSetup({ skillIds: ['repo-guidelines'] });
 
   /** Resolves the current/pinned selection through the real AEP owner. */
-  function resolvePackage(selectedSetup = agentSetup): AgentEnvironmentPackage {
+  async function resolvePackage(selectedSetup = agentSetup): Promise<AgentEnvironmentPackage> {
     return AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: selectedSetup,
         agentSessionId,
@@ -132,7 +132,7 @@ describe('exact retained Worker Skill delivery', () => {
       tree: skillTree(),
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    environmentPackage = resolvePackage();
+    environmentPackage = await resolvePackage();
   }, 60_000);
 
   afterEach(async () => {
@@ -155,7 +155,7 @@ describe('exact retained Worker Skill delivery', () => {
     const prior = loadWorkspaceResourceCatalog(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     const exactSetup = createTestAgentSetup({ skillIds: ['repo-guidelines'] });
     exactSetup.manifest.skills = [{ id: 'repo-guidelines', digest: first.version.digest }];
-    const exact = resolvePackage(exactSetup);
+    const exact = await resolvePackage(exactSetup);
     expect(exact.supply.skills[0]).toMatchObject({
       integrity: { sha256: first.version.digest },
       selectionSource: 'setup',
@@ -164,7 +164,7 @@ describe('exact retained Worker Skill delivery', () => {
     expect(loadWorkspaceResourceCatalog(coreDb.dataRoot, workspaceIdForOwner(turn.owner))).toEqual(
       prior
     );
-    expect(resolvePackage().supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
+    expect((await resolvePackage()).supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
   });
 
   it.each([
@@ -179,11 +179,13 @@ describe('exact retained Worker Skill delivery', () => {
         digest: first.version.digest,
         expectedRevision: first.catalog.revision,
       });
-      environmentPackage = resolvePackage();
+      environmentPackage = await resolvePackage();
     }
     const next = advanceDefault();
     if (selection === 'pin') {
-      expect(resolvePackage().supply.skills[0]?.integrity?.sha256).toBe(first.version.digest);
+      expect((await resolvePackage()).supply.skills[0]?.integrity?.sha256).toBe(
+        first.version.digest
+      );
       setWorkspaceSkillPin({
         dataRoot: coreDb.dataRoot,
         workspaceId: workspaceIdForOwner(turn.owner),
@@ -192,7 +194,7 @@ describe('exact retained Worker Skill delivery', () => {
         expectedRevision: next.catalog.revision,
       });
     }
-    expect(resolvePackage().supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
+    expect((await resolvePackage()).supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
     const imports = await prepare();
     const expectedFiles = [
       ['empty-file', Buffer.alloc(0), false],
@@ -292,7 +294,7 @@ describe('exact retained Worker Skill delivery', () => {
       else rmSync(snapshot, { recursive: true });
       const failure =
         tamper === 'missing snapshot' ? CatalogContentUnavailableError : CatalogIntegrityError;
-      if (boundary === 'aep') expect(() => resolvePackage()).toThrow(failure);
+      if (boundary === 'aep') await expect(resolvePackage()).rejects.toThrow(failure);
       else await expect(prepare()).rejects.toBeInstanceOf(failure);
     });
   });
@@ -332,7 +334,7 @@ describe('exact retained Worker Skill delivery', () => {
       entryId: 'repo-guidelines',
       expectedRevision: first.catalog.revision,
     });
-    expect(() => resolvePackage()).toThrow();
+    await expect(resolvePackage()).rejects.toThrow();
     await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
   });
 
@@ -387,7 +389,7 @@ describe('exact retained Worker Skill delivery', () => {
       return bytes;
     });
     syncBuiltinESMExports();
-    if (boundary === 'aep') expect(() => resolvePackage()).toThrow(failure);
+    if (boundary === 'aep') await expect(resolvePackage()).rejects.toThrow(failure);
     else await expect(prepare()).rejects.toThrow(failure);
     expect(changed).toBe(true);
   });
@@ -434,7 +436,7 @@ describe('exact retained Worker Skill delivery', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
     });
     const selectedSetup = createTestAgentSetup({ skillIds: ['repo-guidelines', 'second-skill'] });
-    environmentPackage = resolvePackage(selectedSetup);
+    environmentPackage = await resolvePackage(selectedSetup);
     const source = join(
       skillSnapshotPath(
         coreDb.dataRoot,
@@ -461,19 +463,19 @@ describe('exact retained Worker Skill delivery', () => {
     });
     syncBuiltinESMExports();
     if (boundary === 'aep')
-      expect(() => resolvePackage(selectedSetup)).toThrow(CatalogNotFoundError);
+      await expect(resolvePackage(selectedSetup)).rejects.toThrow(CatalogNotFoundError);
     else await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
     expect(changed).toBe(true);
   });
 
-  it('refuses current selection when its retained version metadata is missing', () => {
+  it('refuses current selection when its retained version metadata is missing', async () => {
     publishWorkspaceResourceCatalog({
       dataRoot: coreDb.dataRoot,
       workspaceId: workspaceIdForOwner(turn.owner),
       expectedRevision: first.catalog.revision,
       catalog: { ...first.catalog, skills: { ...first.catalog.skills, versions: [] } },
     });
-    expect(() => resolvePackage()).toThrow(CatalogNotFoundError);
+    await expect(resolvePackage()).rejects.toThrow(CatalogNotFoundError);
   });
 
   it('refuses purged content even if its exact residual bytes reappear', async () => {
@@ -515,7 +517,7 @@ describe('exact retained Worker Skill delivery', () => {
         },
       },
     });
-    expect(() => resolvePackage()).toThrow(CatalogContentUnavailableError);
+    await expect(resolvePackage()).rejects.toThrow(CatalogContentUnavailableError);
     await expect(prepare()).rejects.toThrow(CatalogContentUnavailableError);
   });
 

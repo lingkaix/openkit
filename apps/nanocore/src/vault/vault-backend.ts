@@ -139,6 +139,13 @@ export interface VaultBackend {
    */
   resolve(input: VaultResolveInput): VaultSecretMaterial;
   /**
+   * Revalidates one selected version without returning material or making another resolution attempt.
+   *
+   * @param input Reference and optional exact version already selected by the caller.
+   * @throws VaultBackendError when current key, integrity, revocation or expiry prevents its use.
+   */
+  assertResolutionCurrent(input: VaultResolveInput): void;
+  /**
    * Stores version 1 material for a new reference.
    *
    * @param input Reference, material, and non-secret metadata.
@@ -303,6 +310,11 @@ class LockedVaultBackend implements VaultBackend {
    * @throws VaultBackendError because locked backends cannot resolve material.
    */
   public resolve(_input: VaultResolveInput): VaultSecretMaterial {
+    throw this.lockedError();
+  }
+
+  /** Refuses non-material validation while the backend is locked. */
+  public assertResolutionCurrent(_input: VaultResolveInput): void {
     throw this.lockedError();
   }
 

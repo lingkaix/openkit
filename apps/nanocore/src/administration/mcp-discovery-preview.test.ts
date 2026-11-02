@@ -20,6 +20,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
+import { recordVaultAuditEvent } from '../vault/vault-admin-audit-events.js';
 import { getVaultGrant } from '../vault/vault-grants.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
@@ -451,6 +452,14 @@ describe('explicit administrator MCP discovery preview', () => {
     const upstream = await createMcpHttpStub({ hangDelete: true });
     cleanup.push(() => upstream.close());
     const input = await seed(f, upstream.url);
+    // This case owns HTTP teardown; prepare the real native Audit owner before its unchanged 300ms request.
+    await recordVaultAuditEvent({
+      coreDb: f.coreDb,
+      action: 'administration.mcp-discovery-preview',
+      resource: 'mcp:preview-example',
+      outcome: 'succeeded',
+      summary: 'Native Audit owner is ready for the temporary teardown fixture.',
+    });
     const catalogPath = join(f.dataRoot, 'server/catalog/catalog.json');
     const before = readFileSync(catalogPath);
     await expect(
@@ -635,4 +644,174 @@ describe('explicit administrator MCP discovery preview', () => {
     expect(upstream.observed.some((name) => name.endsWith('|tools/call'))).toBe(false);
     expect(loadResourceCatalog(f.dataRoot, { kind: 'server' }).mcp.bindings).toEqual([]);
   });
+});
+
+// mcp_catalog_management.md Explicit Bounded Discovery Preview requires current authority at disclosure.
+it.each([
+  'administrator',
+  'catalog',
+  'grant',
+  'material',
+  'deadline',
+] as const)('refuses %s withdrawal during the real terminal preview Audit ACK and retains delivered evidence', async (withdrawal) => {
+  const { Worker } = await import('node:worker_threads');
+  const f = fixture();
+  const upstream = await createMcpHttpStub();
+  cleanup.push(() => upstream.close());
+  const input = await seed(f, upstream.url);
+  const reference = await f.call('vault.server-mcp-secret-create', {
+    requestId: randomUUID(),
+    material: 'synthetic-terminal-preview',
+  });
+  const grant = await f.call('vault.server-mcp-grant-create', {
+    requestId: randomUUID(),
+    referenceId: reference.referenceId,
+    targetCapabilityId: 'mcp.list-tools',
+  });
+  const emit = Worker.prototype.emit;
+  let deliver: (() => void) | undefined;
+  let held = false;
+  let markReached!: () => void;
+  const reached = new Promise<void>((resolve) => {
+    markReached = resolve;
+  });
+  const spy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+    this: InstanceType<typeof Worker>,
+    event: string | symbol,
+    ...args: unknown[]
+  ) {
+    const reply = args[0] as
+      | {
+          operation?: string;
+          status?: string;
+          result?: { kind?: string; value?: { action?: string; requestId?: string } };
+        }
+      | undefined;
+    // Startup has no receipt. Delivery has a different action. This selects the actual terminal ACK.
+    if (
+      !held &&
+      event === 'message' &&
+      reply?.operation === 'vault' &&
+      reply.status === 'ok' &&
+      reply.result?.kind === 'audit-insert' &&
+      reply.result.value?.action === 'administration.mcp-discovery-preview' &&
+      listVaultInjectionReceipts(f.coreDb).some((receipt) => receipt.grantId === grant.grantId)
+    ) {
+      held = true;
+      deliver = () => {
+        emit.call(this, event, ...args);
+      };
+      markReached();
+      return true;
+    }
+    return emit.call(this, event, ...args);
+  });
+  const release = () => {
+    const pending = deliver;
+    deliver = undefined;
+    pending?.();
+  };
+  cleanup.push(release);
+  let settled = false;
+  const outcome = f
+    .call('administration.mcp-discovery-preview', {
+      ...input,
+      credentialBindings: [
+        {
+          slot: 'authorization',
+          vaultGrantId: grant.grantId,
+          sink: { kind: 'header', name: 'Authorization' },
+        },
+      ],
+    })
+    .then(
+      (value) => {
+        settled = true;
+        return { ok: true as const, value };
+      },
+      (error: unknown) => {
+        settled = true;
+        return { ok: false as const, error };
+      }
+    );
+  try {
+    await Promise.race([
+      reached,
+      outcome.then(() => {
+        throw new Error('Preview settled before its real terminal Audit ACK.');
+      }),
+    ]);
+    expect(settled).toBe(false);
+    expect(upstream.observed.filter((name) => name.endsWith('|tools/list'))).toHaveLength(1);
+    expect(upstream.observed.some((name) => name.endsWith('|DELETE|'))).toBe(true);
+    expect(upstream.observed.some((name) => name.endsWith('|tools/call'))).toBe(false);
+    expect(
+      upstream.observedHeaders.some(
+        (headers) => headers.get('authorization') === 'synthetic-terminal-preview'
+      )
+    ).toBe(true);
+    const usesBefore = listVaultUseRecords(f.coreDb);
+    expect(usesBefore).toMatchObject([
+      { outcome: 'succeeded', vaultReferenceId: reference.referenceId },
+    ]);
+    const receiptsBefore = listVaultInjectionReceipts(f.coreDb);
+    expect(receiptsBefore).toHaveLength(1);
+    expect(receiptsBefore[0]).toMatchObject({ grantId: grant.grantId });
+    const deliveryBefore = auditEvents
+      .listSqliteAuditEvents(f.coreDb.sqlite)
+      .filter((event) => event.action === 'administration.mcp-discovery-preview.delivery');
+    expect(deliveryBefore).toHaveLength(1);
+    expect(deliveryBefore[0]).toMatchObject({ outcome: 'succeeded' });
+    const contacts = upstream.observed.length;
+    if (withdrawal === 'administrator') revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
+    else if (withdrawal === 'catalog')
+      await f.call('administration.server-mcp-remove', {
+        requestId: randomUUID(),
+        mcpId: input.mcpId,
+        expectedRevision: input.expectedRevision,
+      });
+    else if (withdrawal === 'grant')
+      await f.call('vault.server-mcp-grant-revoke', {
+        requestId: randomUUID(),
+        grantId: grant.grantId,
+      });
+    else if (withdrawal === 'material') {
+      // Material withdrawal is owned by this backend; unrelated runtime closure is not this oracle.
+      const revoked = f.vaultUnlockState
+        .backend()
+        .revoke({ referenceId: String(reference.referenceId) });
+      expect(revoked.revoked).toBe(true);
+      expect(() =>
+        f.vaultUnlockState.backend().resolve({ referenceId: String(reference.referenceId) })
+      ).toThrow();
+    } else {
+      // The real whole-operation timeout started before the held terminal ACK; wait past it.
+      await new Promise<void>((resolve) => setTimeout(resolve, input.timeoutMs + 20));
+    }
+    expect(settled).toBe(false);
+    release();
+    const result = await outcome;
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('Preview disclosed an observation after authority ended.');
+    expect(result.error).toHaveProperty('status');
+    if (withdrawal === 'deadline') expect(result.error).toMatchObject({ status: 503 });
+    expect(result).not.toHaveProperty('value');
+    expect(upstream.observed).toHaveLength(contacts);
+    expect(listVaultUseRecords(f.coreDb)).toEqual(usesBefore);
+    expect(
+      auditEvents
+        .listSqliteAuditEvents(f.coreDb.sqlite)
+        .filter((event) => event.action === 'administration.mcp-discovery-preview.delivery')
+    ).toEqual(deliveryBefore);
+    // Revocation may advance its lifecycle projection. Original successful delivery facts must survive.
+    const completionFacts = (receipts: ReturnType<typeof listVaultInjectionReceipts>) =>
+      receipts.map(({ revocationStatus: _status, ...facts }) => facts);
+    expect(completionFacts(listVaultInjectionReceipts(f.coreDb))).toEqual(
+      completionFacts(receiptsBefore)
+    );
+  } finally {
+    release();
+    await outcome;
+    spy.mockRestore();
+  }
 });

@@ -923,10 +923,10 @@ describe('cancelled-admission checkpoint cleanup preservation', () => {
     writeCancelledAdmission(fixture.coreDb, { ...identity, requestId });
     await writeFailedCheckpoint(fixture.workspaceDb, { ...identity, requestId });
     const sessionId = 'as_00000000-0000-78a3-a9bb-2860a6e89e42';
-    recordAgentEnvironmentPackageSnapshot(fixture.workspaceDb, {
+    await recordAgentEnvironmentPackageSnapshot(fixture.workspaceDb, {
       createdAt: '2026-09-22T00:00:00.000Z',
       environmentPackage: AgentEnvironmentPackageSchema.parse(
-        resolveAgentEnvironmentPackage({
+        await resolveAgentEnvironmentPackage({
           agent: {
             capabilities: [],
             config: {

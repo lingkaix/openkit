@@ -86,9 +86,9 @@ function createWorkspaceDb() {
  *
  * @returns Parsed AEP without secret or host-path material.
  */
-function createEnvironmentPackage(): AgentEnvironmentPackage {
+async function createEnvironmentPackage(): Promise<AgentEnvironmentPackage> {
   return AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agent: {
         id: 'agent_codex_host',
@@ -170,11 +170,11 @@ function snapshotPath(
 }
 
 describe('AEP snapshot ledger', () => {
-  it('refuses missing or unknown outer versions before decoding the embedded AEP or replaying', () => {
+  it('refuses missing or unknown outer versions before decoding the embedded AEP or replaying', async () => {
     const db = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     try {
-      recordAgentEnvironmentPackageSnapshot(db, {
+      await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage,
         createdAt: '2026-07-06T00:00:01.000Z',
       });
@@ -205,13 +205,13 @@ describe('AEP snapshot ledger', () => {
       rmSync(db.dataRoot, { recursive: true, force: true });
     }
   });
-  it('reads only the exact snapshot across many sessions and leaves export validation intact', () => {
+  it('reads only the exact snapshot across many sessions and leaves export validation intact', async () => {
     const db = createWorkspaceDb();
-    const named = createEnvironmentPackage();
+    const named = await createEnvironmentPackage();
     // Imported records may have opaque ids; a suffix is not an AgentSession locator.
     named.snapshotId = 'opaque-snapshot';
     try {
-      const expected = recordAgentEnvironmentPackageSnapshot(db, {
+      const expected = await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage: named,
         createdAt: '2026-07-06T00:00:01.000Z',
       });
@@ -219,7 +219,7 @@ describe('AEP snapshot ledger', () => {
         const other = structuredClone(named);
         other.scope.agentSessionId = testEntityId('as', `as_other_${index}`);
         other.snapshotId = `other_snapshot_${index}`;
-        recordAgentEnvironmentPackageSnapshot(db, {
+        await recordAgentEnvironmentPackageSnapshot(db, {
           environmentPackage: other,
           createdAt: '2026-07-06T00:00:01.000Z',
         });
@@ -261,11 +261,11 @@ describe('AEP snapshot ledger', () => {
   it.each([
     'same-named-directory',
     'unsafe-empty-session',
-  ] as const)('ignores an unrelated %s when selecting the exact regular record', (fixture) => {
+  ] as const)('ignores an unrelated %s when selecting the exact regular record', async (fixture) => {
     const db = createWorkspaceDb();
-    const named = createEnvironmentPackage();
+    const named = await createEnvironmentPackage();
     try {
-      const expected = recordAgentEnvironmentPackageSnapshot(db, {
+      const expected = await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage: named,
         createdAt: '2026-07-06T00:00:01.000Z',
       });
@@ -301,21 +301,24 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('keeps distinct case-variant ids under case-insensitive path resolution', () => {
+  it('keeps distinct case-variant ids under case-insensitive path resolution', async () => {
     const db = createWorkspaceDb();
     try {
-      const upper = createEnvironmentPackage();
+      const upper = await createEnvironmentPackage();
       upper.snapshotId = 'Named';
       upper.scope.agentSessionId = 'as_00000000-0000-700c-ad9c-2f2b80087807';
       const lower = structuredClone(upper);
       lower.snapshotId = 'named';
       lower.scope.agentSessionId = 'as_00000000-0000-7b98-8803-ea4242ad797b';
-      const expected = [upper, lower].map((environmentPackage) =>
-        recordAgentEnvironmentPackageSnapshot(db, {
-          environmentPackage,
-          createdAt: '2026-07-06T00:00:01.000Z',
-        })
-      );
+      const expected = [];
+      for (const environmentPackage of [upper, lower]) {
+        expected.push(
+          await recordAgentEnvironmentPackageSnapshot(db, {
+            environmentPackage,
+            createdAt: '2026-07-06T00:00:01.000Z',
+          })
+        );
+      }
       const upperPath = snapshotPath(db, upper);
       const lowerPath = snapshotPath(db, lower);
       const lowerAlias = join(dirname(upperPath), 'named.json');
@@ -351,12 +354,12 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('reports a missing exact case variant under case-insensitive path resolution', () => {
+  it('reports a missing exact case variant under case-insensitive path resolution', async () => {
     const db = createWorkspaceDb();
     try {
-      const named = createEnvironmentPackage();
+      const named = await createEnvironmentPackage();
       named.snapshotId = 'named';
-      const expected = recordAgentEnvironmentPackageSnapshot(db, {
+      const expected = await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage: named,
         createdAt: '2026-07-06T00:00:01.000Z',
       });
@@ -390,16 +393,16 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('refuses the exact id in two sessions before accepting either record', () => {
+  it('refuses the exact id in two sessions before accepting either record', async () => {
     const db = createWorkspaceDb();
-    const named = createEnvironmentPackage();
+    const named = await createEnvironmentPackage();
     try {
       for (const sessionId of [
         'as_00000000-0000-7b98-8803-ea4242ad797b',
         'as_00000000-0000-790a-b857-e646f4bf0020',
       ]) {
         named.scope.agentSessionId = sessionId;
-        recordAgentEnvironmentPackageSnapshot(db, {
+        await recordAgentEnvironmentPackageSnapshot(db, {
           environmentPackage: named,
           createdAt: '2026-07-06T00:00:01.000Z',
         });
@@ -419,9 +422,9 @@ describe('AEP snapshot ledger', () => {
   it.each([
     'outcome',
     'user-message',
-  ] as const)('preserves ordinary %s input through storage and public projections', (kind) => {
+  ] as const)('preserves ordinary %s input through storage and public projections', async (kind) => {
     const db = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     const literal = 'ghp_public-test-fixture';
     const input =
       kind === 'outcome'
@@ -444,7 +447,7 @@ describe('AEP snapshot ledger', () => {
         : `Explain this public test literal: ${literal}`;
     environmentPackage.extensions.openkit = { turnInput: input, publicNote: literal };
     try {
-      const record = recordAgentEnvironmentPackageSnapshot(db, {
+      const record = await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage,
         createdAt: '2026-07-06T00:00:01.000Z',
       });
@@ -494,9 +497,9 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('carries a large frozen captured call, answers and result exactly through AEP preparation', () => {
+  it('carries a large frozen captured call, answers and result exactly through AEP preparation', async () => {
     const db = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     const now = '2026-07-06T00:00:01.000Z';
     const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
     const content = 'public fixture ghp_public-test-fixture "\\🙂'.repeat(3000);
@@ -611,7 +614,7 @@ describe('AEP snapshot ledger', () => {
       });
       expect(decoded.pendingOutcomes[1]).toMatchObject({ request: { questions }, answers });
       environmentPackage.extensions.openkit = { turnInput: input };
-      const record = recordAgentEnvironmentPackageSnapshot(db, {
+      const record = await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage,
         createdAt: now,
       });
@@ -669,9 +672,9 @@ describe('AEP snapshot ledger', () => {
   it.each([
     'credential-field',
     'native-environment',
-  ] as const)('rejects forbidden %s during preparation without writing', (variant) => {
+  ] as const)('rejects forbidden %s during preparation without writing', async (variant) => {
     const db = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     if (variant === 'credential-field')
       environmentPackage.extensions.fixture = { password: 'synthetic-value' };
     else
@@ -693,15 +696,15 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('preserves public snapshot read refusal code and fixed text for corrupt retained JSON', () => {
+  it('preserves public snapshot read refusal code and fixed text for corrupt retained JSON', async () => {
     const db = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     const operations = createEnvironmentOperationImplementations({
       repositoryWorkspaceDb: () =>
         openWorkspaceDb(db.dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
     });
     try {
-      recordAgentEnvironmentPackageSnapshot(db, {
+      await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage,
         createdAt: '2026-07-06T00:00:01.000Z',
       });
@@ -738,13 +741,13 @@ describe('AEP snapshot ledger', () => {
   it.each([
     'construction',
     'record-validation',
-  ] as const)('publishes truthful fixed %s and retained-read messages through nested causes and aggregates', (phase) => {
+  ] as const)('publishes truthful fixed %s and retained-read messages through nested causes and aggregates', async (phase) => {
     const db = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     const marker = 'ROW_SECRET_X9';
-    const caught = (operation: () => unknown): Error => {
+    const caught = async (operation: () => unknown): Promise<Error> => {
       try {
-        operation();
+        await operation();
       } catch (error) {
         return error as Error;
       }
@@ -752,22 +755,23 @@ describe('AEP snapshot ledger', () => {
     };
     try {
       const invalid = { ...environmentPackage, schemaVersion: marker } as never;
-      const preparation = caught(() =>
-        recordAgentEnvironmentPackageSnapshot(db, {
-          environmentPackage: phase === 'construction' ? invalid : environmentPackage,
-          createdAt: phase === 'record-validation' ? '' : '2026-07-06T00:00:01.000Z',
-        })
+      const preparation = await caught(
+        async () =>
+          await recordAgentEnvironmentPackageSnapshot(db, {
+            environmentPackage: phase === 'construction' ? invalid : environmentPackage,
+            createdAt: phase === 'record-validation' ? '' : '2026-07-06T00:00:01.000Z',
+          })
       );
       expect(preparation.constructor.name).toBe('AgentEnvironmentSnapshotPreparationError');
       expect(preparation.cause).toBeInstanceOf(Error);
       expect(existsSync(snapshotPath(db, environmentPackage))).toBe(false);
-      recordAgentEnvironmentPackageSnapshot(db, {
+      await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage,
         createdAt: '2026-07-06T00:00:01.000Z',
       });
       const path = snapshotPath(db, environmentPackage);
       writeFileSync(path, marker);
-      const read = caught(() =>
+      const read = await caught(() =>
         requireAgentEnvironmentPackageSnapshot(
           db,
           'ws_00000000-0000-73c3-900f-8d310e4ba201',
@@ -797,11 +801,11 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('persists and reloads the redacted record from its canonical session path', () => {
+  it('persists and reloads the redacted record from its canonical session path', async () => {
     const workspaceDb = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     const path = snapshotPath(workspaceDb, environmentPackage);
-    const record = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+    const record = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: '2026-07-06T00:00:01.000Z',
       environmentPackage,
     });
@@ -845,11 +849,11 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('keeps current-writer stored and parsed snapshot digests identical', () => {
+  it('keeps current-writer stored and parsed snapshot digests identical', async () => {
     const workspaceDb = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     try {
-      const record = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      const record = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -870,11 +874,11 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('validates retained snapshot identity before stripping an ignored transcript field', () => {
+  it('validates retained snapshot identity before stripping an ignored transcript field', async () => {
     const workspaceDb = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     try {
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -913,12 +917,12 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('rewrites and reopens a valid extended snapshot without invalidating its retained digest', () => {
+  it('rewrites and reopens a valid extended snapshot without invalidating its retained digest', async () => {
     const source = createWorkspaceDb();
     const target = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     try {
-      recordAgentEnvironmentPackageSnapshot(source, {
+      await recordAgentEnvironmentPackageSnapshot(source, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -960,12 +964,12 @@ describe('AEP snapshot ledger', () => {
     ['password', 'synthetic-review-password'],
     ['backendSessionId', 'synthetic-private-handle'],
     ['annotation', '/Users/synthetic/private-location'],
-  ])('refuses digest-valid unsafe original %s before read, publication or export', (key, value) => {
+  ])('refuses digest-valid unsafe original %s before read, publication or export', async (key, value) => {
     const source = createWorkspaceDb();
     const target = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     try {
-      recordAgentEnvironmentPackageSnapshot(source, {
+      await recordAgentEnvironmentPackageSnapshot(source, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1007,12 +1011,12 @@ describe('AEP snapshot ledger', () => {
     ['runtime', 'password', 'synthetic-review-password'],
     ['runtime', 'annotation', '/Users/synthetic/private-location'],
     ['runtime', 'annotation', 'runtime://synthetic/private-ref'],
-  ])('refuses digest-valid dotted %s key with unsafe %s value %s', (location, key, value) => {
+  ])('refuses digest-valid dotted %s key with unsafe %s value %s', async (location, key, value) => {
     const source = createWorkspaceDb();
     const target = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     try {
-      recordAgentEnvironmentPackageSnapshot(source, {
+      await recordAgentEnvironmentPackageSnapshot(source, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1053,10 +1057,10 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('preserves public native-environment literals through original safety checks and publication', () => {
+  it('preserves public native-environment literals through original safety checks and publication', async () => {
     const source = createWorkspaceDb();
     const target = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     environmentPackage.runtime.environment = {
       imageDigest: `sha256:${'a'.repeat(64)}`,
       defaultsDigest: `sha256:${'b'.repeat(64)}`,
@@ -1067,7 +1071,7 @@ describe('AEP snapshot ledger', () => {
       },
     };
     try {
-      const record = recordAgentEnvironmentPackageSnapshot(source, {
+      const record = await recordAgentEnvironmentPackageSnapshot(source, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1089,12 +1093,12 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('refuses a changed supplied core alongside an unchanged retained-original round trip', () => {
+  it('refuses a changed supplied core alongside an unchanged retained-original round trip', async () => {
     const source = createWorkspaceDb();
     const target = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     try {
-      recordAgentEnvironmentPackageSnapshot(source, {
+      await recordAgentEnvironmentPackageSnapshot(source, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1133,10 +1137,10 @@ describe('AEP snapshot ledger', () => {
     ['runtime'],
     ['runtime', 'image'],
     ['control', 'transcript'],
-  ])('reads and republishes descriptive AEP annotations at %j', (...path) => {
+  ])('reads and republishes descriptive AEP annotations at %j', async (...path) => {
     const source = createWorkspaceDb();
     const target = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     environmentPackage.agent.instructions = [
       {
         id: 'instruction_fact',
@@ -1147,7 +1151,7 @@ describe('AEP snapshot ledger', () => {
       },
     ];
     try {
-      recordAgentEnvironmentPackageSnapshot(source, {
+      await recordAgentEnvironmentPackageSnapshot(source, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1184,11 +1188,11 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('rejects altered stored content even when the altered transcript field would be ignored', () => {
+  it('rejects altered stored content even when the altered transcript field would be ignored', async () => {
     const workspaceDb = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
     try {
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1220,12 +1224,12 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('rejects V1 snapshots through every normal ledger path', () => {
+  it('rejects V1 snapshots through every normal ledger path', async () => {
     const workspaceDb = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
 
     try {
-      const record = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      const record = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1250,14 +1254,14 @@ describe('AEP snapshot ledger', () => {
             'ws_00000000-0000-73c3-900f-8d310e4ba201',
             environmentPackage.snapshotId
           ),
-        () =>
-          recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        async () =>
+          await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
             createdAt: '2026-07-06T00:00:02.000Z',
             environmentPackage: legacyRecord.snapshot as never,
           }),
       ]) {
         try {
-          operation();
+          await operation();
           throw new Error('Expected V1 rejection.');
         } catch (error) {
           expect((error as Error).cause).toMatchObject({
@@ -1293,12 +1297,12 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('fails closed when canonical snapshot content, lineage, or digest is tampered', () => {
+  it('fails closed when canonical snapshot content, lineage, or digest is tampered', async () => {
     const workspaceDb = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
 
     try {
-      const record = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      const record = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1339,12 +1343,12 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('rejects symbolic links for canonical snapshot and session entries', () => {
+  it('rejects symbolic links for canonical snapshot and session entries', async () => {
     const workspaceDb = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
 
     try {
-      const record = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      const record = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
@@ -1389,16 +1393,16 @@ describe('AEP snapshot ledger', () => {
     }
   });
 
-  it('is idempotent for the same snapshot and rejects conflicting content for the same id', () => {
+  it('is idempotent for the same snapshot and rejects conflicting content for the same id', async () => {
     const workspaceDb = createWorkspaceDb();
-    const environmentPackage = createEnvironmentPackage();
+    const environmentPackage = await createEnvironmentPackage();
 
     try {
-      const first = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      const first = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-06T00:00:01.000Z',
         environmentPackage,
       });
-      const replay = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      const replay = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-06T00:00:02.000Z',
         environmentPackage,
       });

@@ -221,7 +221,7 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
   admitTestNativeEnvironment(coreDb, setup.manifest);
   const sourceIds = Array.from({ length: repositoryCount }, (_, index) => `repository-${index}`);
   const commit = 'a'.repeat(40);
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
     agentSetup: setup,
     agentSessionId: sessionId,
@@ -258,7 +258,7 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
       })),
     },
   });
-  const retained = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+  const retained = await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     environmentPackage,
     createdAt: '2026-10-16T00:00:00.000Z',
   });

@@ -21,12 +21,13 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb } from '../storage/db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { importUnboundWorkspaceVaultReference } from '../storage/test-support/vault-retained-fixtures.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { importUnboundWorkspaceVaultReference } from '../vault/vault-references.js';
+
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { createBetterAuth } from './better-auth.js';
 

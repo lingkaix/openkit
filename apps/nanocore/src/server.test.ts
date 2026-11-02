@@ -407,15 +407,15 @@ async function recordWorkerRetryLease(
  * @param turnId Turn the package must match.
  * @param agentSessionId AgentSession id stored on the package.
  */
-function recordProvenanceRequiredStaleBootPackage(
+async function recordProvenanceRequiredStaleBootPackage(
   store: FsStore,
   workspaceDb: WorkspaceDb,
   turnId: string,
   agentSessionId: string
-): void {
+): Promise<void> {
   const turn = store.getTurnById(turnId);
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup({
         requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
       }),
@@ -430,7 +430,7 @@ function recordProvenanceRequiredStaleBootPackage(
       workspaceRoots: [],
     })
   );
-  recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+  await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     createdAt: '2026-09-15T13:38:01.000Z',
     environmentPackage,
   });
@@ -1003,14 +1003,14 @@ function readExportJsonl(root: string, path: string): Array<Record<string, unkno
  * @param turnId Turn id to bind to the package.
  * @returns Parsed Agent Environment Package.
  */
-function createOpenShellWorkerControlPackage(
+async function createOpenShellWorkerControlPackage(
   store: FsStore,
   turnId: string
-): AgentEnvironmentPackage {
+): Promise<AgentEnvironmentPackage> {
   const turn = store.getTurnById(turnId);
 
   return AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_00000000-0000-73c1-85c9-e24cc662686d',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -1140,7 +1140,7 @@ class FakeTurnExecutor implements TurnExecutor {
         agentSessionId: context.agentSessionId,
         attemptId: context.attemptId,
       });
-      const environmentPackage = resolveAgentEnvironmentPackage({
+      const environmentPackage = await resolveAgentEnvironmentPackage({
         coreDb,
         agentSessionId: context.agentSessionId,
         agentSetup: context.agentSetup!,
@@ -1161,7 +1161,7 @@ class FakeTurnExecutor implements TurnExecutor {
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
           : {}),
       });
-      recordAgentEnvironmentPackageSnapshot(db, {
+      await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage,
         createdAt: new Date().toISOString(),
       });
@@ -2459,7 +2459,7 @@ describe('nanocore server', () => {
       },
       content: sourceContent,
     });
-    const sourceReference = createVaultReference(coreDb, {
+    const sourceReference = await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file:round-trip-source',
       displayName: 'Round trip provider key',
@@ -2568,7 +2568,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://redacted-source',
       displayName: 'Workspace GitHub token',
@@ -2580,7 +2580,7 @@ describe('nanocore server', () => {
     });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      createVaultUseRecord(sourceDb, {
+      await createVaultUseRecord(sourceDb, {
         useId: 'vu_00000000-0000-71ee-950d-3889f5c6eae6',
         ownerScope: 'workspace',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2623,7 +2623,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const sourceReference = createVaultReference(coreDb, {
+    const sourceReference = await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://redacted-source',
       displayName: 'Workspace GitHub token',
@@ -2633,7 +2633,7 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       grantId: 'grant_00000000-0000-7d2a-8f88-5d41a9feb840',
       vaultReferenceId: sourceReference.referenceId,
       ownerScope: 'workspace',
@@ -2676,7 +2676,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const sourceReference = createVaultReference(coreDb, {
+    const sourceReference = await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://redacted-source',
       displayName: 'Workspace Codex auth',
@@ -2686,7 +2686,7 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       grantId: 'grant_00000000-0000-7d8f-874f-223ba3091d31',
       vaultReferenceId: sourceReference.referenceId,
       ownerScope: 'workspace',
@@ -2697,7 +2697,7 @@ describe('nanocore server', () => {
       policyDecisionId: 'pd_00000000-0000-7544-9828-94bbb3851453',
       now: () => '2026-07-06T00:12:00.000Z',
     });
-    createVaultInjectionPlan(coreDb, {
+    await createVaultInjectionPlan(coreDb, {
       planId: 'plan_ws_demo_codex_auth',
       grantId: 'grant_00000000-0000-7d8f-874f-223ba3091d31',
       capabilityId: 'runtime.codex_auth',
@@ -2739,7 +2739,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const sourceReference = createVaultReference(coreDb, {
+    const sourceReference = await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://redacted-source',
       displayName: 'Workspace GitHub token',
@@ -2749,7 +2749,7 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       grantId: 'grant_00000000-0000-76c8-a30c-dafaa6d843fb',
       vaultReferenceId: sourceReference.referenceId,
       ownerScope: 'workspace',
@@ -2761,7 +2761,7 @@ describe('nanocore server', () => {
       policyDecisionId: 'pd_00000000-0000-7b9e-bcd3-81ca634d1ba7',
       now: () => '2026-07-06T00:13:00.000Z',
     });
-    createVaultInjectionPlan(coreDb, {
+    await createVaultInjectionPlan(coreDb, {
       planId: 'plan_ws_demo_github_receipt',
       grantId: 'grant_00000000-0000-76c8-a30c-dafaa6d843fb',
       capabilityId: 'mcp.github.call_tool',
@@ -2772,7 +2772,7 @@ describe('nanocore server', () => {
       backendCapabilityRequirement: 'native-handle',
       now: () => '2026-07-06T00:13:01.000Z',
     });
-    createVaultInjectionReceipt(coreDb, {
+    await createVaultInjectionReceipt(coreDb, {
       receiptId: 'receipt_ws_demo_github',
       planId: 'plan_ws_demo_github_receipt',
       grantId: 'grant_00000000-0000-76c8-a30c-dafaa6d843fb',
@@ -2785,7 +2785,7 @@ describe('nanocore server', () => {
     });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      createVaultUseRecord(sourceDb, {
+      await createVaultUseRecord(sourceDb, {
         useId: 'vu_00000000-0000-7f50-b749-23194ce8d0c8',
         ownerScope: 'workspace',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2915,7 +2915,7 @@ describe('nanocore server', () => {
       workspaceId: workspaceIdForOwner(sourceTurn.owner),
     });
     const environmentPackage = AgentEnvironmentPackageSchema.parse({
-      ...createOpenShellWorkerControlPackage(store, sourceTurn.id),
+      ...(await createOpenShellWorkerControlPackage(store, sourceTurn.id)),
       snapshotId: `aepsnap_test_${sourceReview.changeSet.materializationRecordId}`,
     });
     await store.createArtifact({
@@ -2941,7 +2941,7 @@ describe('nanocore server', () => {
       updatedAt: sourceReview.review.updatedAt,
     });
     try {
-      recordAgentEnvironmentPackageSnapshot(sourceDb, {
+      await recordAgentEnvironmentPackageSnapshot(sourceDb, {
         createdAt: sourceReview.changeSet.createdAt,
         environmentPackage,
       });
@@ -3013,7 +3013,7 @@ describe('nanocore server', () => {
       workspaceId: workspaceIdForOwner(sourceTurn.owner),
     });
     const environmentPackage = AgentEnvironmentPackageSchema.parse({
-      ...createOpenShellWorkerControlPackage(store, sourceTurn.id),
+      ...(await createOpenShellWorkerControlPackage(store, sourceTurn.id)),
       snapshotId: `aepsnap_test_${sourceReview.changeSet.materializationRecordId}`,
     });
     await store.createArtifact({
@@ -3039,7 +3039,7 @@ describe('nanocore server', () => {
       updatedAt: sourceReview.review.updatedAt,
     });
     try {
-      recordAgentEnvironmentPackageSnapshot(sourceDb, {
+      await recordAgentEnvironmentPackageSnapshot(sourceDb, {
         createdAt: sourceReview.changeSet.createdAt,
         environmentPackage,
       });
@@ -3634,7 +3634,7 @@ describe('nanocore server', () => {
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      createVaultUseRecord(workspaceDb, {
+      await createVaultUseRecord(workspaceDb, {
         useId: 'vu_00000000-0000-7088-8c72-a637720314d6',
         ownerScope: 'workspace',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3684,7 +3684,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
-    createVaultUseRecord(coreDb, {
+    await createVaultUseRecord(coreDb, {
       useId: 'vu_00000000-0000-7c95-9a54-b6ca32998c2c',
       ownerScope: 'server',
       workspaceId: null,
@@ -4587,7 +4587,7 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const executor = new FakeTurnExecutor();
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       referenceId: 'vault_00000000-0000-773b-907f-1cbec0ca03c0',
       ownerScope: 'server',
       displayName: 'Configured Gateway fixture',
@@ -6186,7 +6186,7 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
+      await recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
       const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
@@ -6280,7 +6280,7 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
+      await recordProvenanceRequiredStaleBootPackage(store, workspaceDb, turn.id, agentSessionId);
       const checkpoint = await upsertWorkerCheckpoint(workspaceDb, {
         iteration: 0,
         requestId,
@@ -9259,7 +9259,7 @@ describe('nanocore server', () => {
     const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const createdAt = '2026-07-06T00:00:01.000Z';
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'as_00000000-0000-72e3-9b12-57b26de5e555',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -9289,7 +9289,7 @@ describe('nanocore server', () => {
     try {
       const workspaceDb = openTestWorkspaceDb(coreDb, workspace.id);
       try {
-        recordAgentEnvironmentPackageSnapshot(workspaceDb, { createdAt, environmentPackage });
+        await recordAgentEnvironmentPackageSnapshot(workspaceDb, { createdAt, environmentPackage });
       } finally {
         workspaceDb.sqlite.close();
       }
@@ -9630,7 +9630,7 @@ describe('nanocore server', () => {
     const foreignWorkspace = await store.createWorkspace('Foreign AEP snapshot owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
-      resolveAgentEnvironmentPackage({
+      await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: 'as_00000000-0000-7377-b2d1-d67a0106e3d0',
         triggerActor: { kind: 'user', id: LOCAL_USER_ID },
@@ -9664,7 +9664,7 @@ describe('nanocore server', () => {
     try {
       const foreignDb = openTestWorkspaceDb(coreDb, foreignWorkspace.id);
       try {
-        recordAgentEnvironmentPackageSnapshot(foreignDb, {
+        await recordAgentEnvironmentPackageSnapshot(foreignDb, {
           createdAt: '2026-07-19T00:00:01.000Z',
           environmentPackage,
         });
@@ -10745,7 +10745,7 @@ describe('nanocore server', () => {
       turnInput: 'Interrupt this running turn',
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       coreDb,
       agentSetup: createTestAgentSetup(),
       agentSessionId: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
@@ -10778,7 +10778,7 @@ describe('nanocore server', () => {
     });
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         environmentPackage,
         createdAt: environmentPackage.createdAt,
       });
@@ -10929,7 +10929,7 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const workspace = await store.createWorkspace('Vault injection metadata route');
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7d14-9747-33948cb59d1e',
       displayName: 'GitHub read token',
@@ -10937,7 +10937,7 @@ describe('nanocore server', () => {
       referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
       secretKind: 'github-token',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['backend-provider'],
       grantId: 'grant_00000000-0000-778f-b367-ab336a86b7a5',
       lifetime: 'turn',
@@ -10948,7 +10948,7 @@ describe('nanocore server', () => {
       workspaceId: workspace.id,
       now: () => '2026-07-08T00:00:00.000Z',
     });
-    createVaultInjectionPlan(coreDb, {
+    await createVaultInjectionPlan(coreDb, {
       backendCapabilityRequirement: 'OpenShell provider attachment.',
       expirationBehavior: 'Expires with turn grant.',
       grantId: 'grant_00000000-0000-778f-b367-ab336a86b7a5',
@@ -10959,7 +10959,7 @@ describe('nanocore server', () => {
       revocationBehavior: 'Detach provider.',
       now: () => '2026-07-08T00:01:00.000Z',
     });
-    createVaultInjectionReceipt(coreDb, {
+    await createVaultInjectionReceipt(coreDb, {
       agentSessionId: 'as_00000000-0000-70f4-ad2c-38b33b7fd38c',
       backendSummary: 'OpenShell provider github attached.',
       grantId: 'grant_00000000-0000-778f-b367-ab336a86b7a5',

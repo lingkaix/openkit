@@ -107,7 +107,6 @@ import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend
 import { getVaultInjectionPlan } from '../vault-injection-plans.js';
 import {
   type CreateVaultInjectionReceiptInput,
-  createVaultInjectionReceipt,
   getVaultInjectionReceipt,
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
@@ -2102,7 +2101,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       // File material is resolved only inside this effect, after the operation's final allow.
-      const resolveMaterial = (
+      const resolveMaterial = async (
         grant: ReturnType<typeof current>['grant'],
         reference: ReturnType<typeof current>['reference'],
         receiptId: string
@@ -2116,7 +2115,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         const backend = this.vaultBackend();
         assertCredentialBackendMatchesReference(backend, reference);
         return vaultSecretMaterialToString(
-          createVaultUseAuditedBackend({
+          await createVaultUseAuditedBackend({
             backend,
             db: grant.ownerScope === 'workspace' ? db : coreDb,
             ownerScope: grant.ownerScope,
@@ -2159,7 +2158,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             'Credential material version changed.',
             409
           );
-        const material = resolveMaterial(grant, reference, receiptId);
+        const material = await resolveMaterial(grant, reference, receiptId);
+        await recheckAuthority();
         if (current().reference.currentVersion !== reference.currentVersion)
           throw new Error('Credential generation changed before delivery.');
         effectAttempt = attempt;
@@ -2202,29 +2202,25 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           );
         await recheckAuthority();
         // Withdraw authority before awaiting physical removal; failure retains the existing stale receipt.
-        coreDb.sqlite.transaction(() => {
-          const changed = coreDb.sqlite
-            .prepare(
-              "UPDATE vault_injection_receipts SET revocation_status='stale-session' WHERE receipt_id=? AND revocation_status='active'"
-            )
-            .run(previous.receiptId);
-          if (changed.changes !== 1)
-            throw new Error('Credential binding changed before revocation.');
-          coreDb.sqlite
-            .prepare(
-              "UPDATE vault_injection_plans SET status='revoked' WHERE plan_id=? AND status='active'"
-            )
-            .run(plan.planId);
-        })();
+        await getControlStoreWorkerClient().vault(
+          coreDb,
+          'binding-revoke-withdraw',
+          {
+            receiptId: previous.receiptId,
+            planId: plan.planId,
+            agentSessionId: original.scope.agentSessionId,
+            plan,
+            coreAuthority: input.coreAuthority,
+          },
+          recheckAuthority
+        );
         await this.revokeCredentialBindings(store, [original.scope.agentSessionId]);
-        coreDb.sqlite
-          .prepare(
-            "UPDATE vault_injection_receipts SET revocation_status='revoked' WHERE plan_id=?"
-          )
-          .run(plan.planId);
-        coreDb.sqlite
-          .prepare("UPDATE vault_injection_plans SET status='revoked' WHERE plan_id=?")
-          .run(plan.planId);
+        await getControlStoreWorkerClient().vault(coreDb, 'binding-revoke-receipts-complete', {
+          planId: plan.planId,
+        });
+        await getControlStoreWorkerClient().vault(coreDb, 'binding-revoke-plan-complete', {
+          planId: plan.planId,
+        });
         return {
           planId: plan.planId,
           receiptId: previous.receiptId,
@@ -2259,7 +2255,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           'Inspect the original replacement receipt; replacement will not replay.',
           409
         );
-      const material = resolveMaterial(grant, reference, receiptId);
+      const material = await resolveMaterial(grant, reference, receiptId);
+      await recheckAuthority();
       if (
         current().reference.currentVersion !== reference.currentVersion ||
         getVaultInjectionReceipt(coreDb, previous.receiptId)?.revocationStatus !== 'active' ||
@@ -2294,48 +2291,67 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const [verified] = requireExecutionCredentialReceipts([binding], [proof]);
       if (current().reference.currentVersion !== binding.material.version)
         throw new Error('Credential material generation changed during replacement.');
-      coreDb.sqlite.transaction(() => {
-        createVaultInjectionReceipt(coreDb, {
-          receiptId,
-          planId: plan.planId,
-          grantId: grant.grantId,
-          agentSessionId: consumer.scope.agentSessionId,
-          backendSummary: JSON.stringify({ ...verified, replacesReceiptId: previous.receiptId }),
-          injectedAt: this.currentTime(),
-          expiresAt: grant.expiresAt,
-          revocationStatus: 'active',
-        });
-        const changed = coreDb.sqlite
-          .prepare(
-            "UPDATE vault_injection_receipts SET revocation_status='revoked' WHERE receipt_id=? AND revocation_status='active'"
-          )
-          .run(previous.receiptId);
-        if (changed.changes !== 1)
-          throw new Error('Credential replacement lost its original receipt.');
-      })();
+      await getControlStoreWorkerClient().vault(
+        coreDb,
+        'binding-replace-complete',
+        {
+          previousReceiptId: previous.receiptId,
+          coreAuthority: input.coreAuthority,
+          authority: {
+            consumer: {
+              snapshotId: consumer.snapshotId,
+              scope: consumer.scope,
+              agent: { agentId: consumer.agent.agentId },
+            },
+            declaration,
+            materialVersion: binding.material.version,
+          },
+          receipt: {
+            receiptId,
+            planId: plan.planId,
+            grantId: grant.grantId,
+            agentSessionId: consumer.scope.agentSessionId,
+            backendSummary: JSON.stringify({ ...verified, replacesReceiptId: previous.receiptId }),
+            injectedAt: this.currentTime(),
+            expiresAt: grant.expiresAt,
+            revocationStatus: 'active',
+          },
+        },
+        recheckAuthority
+      );
       return verified!;
     } catch (cause) {
+      const secondary: unknown[] = [];
       if (effectAttempt && effectPackage) {
-        await markSchedulerExecutionAttemptClosing(coreDb, {
-          attemptId: effectAttempt.attemptId,
-          cause: 'credential-effect-unproved',
-          ...(this.now ? { now: this.now } : {}),
-        });
+        try {
+          await markSchedulerExecutionAttemptClosing(coreDb, {
+            attemptId: effectAttempt.attemptId,
+            cause: 'credential-effect-unproved',
+            ...(this.now ? { now: this.now } : {}),
+          });
+        } catch (error) {
+          secondary.push(error);
+        }
         try {
           await this.backend.cleanupSession(this.backend.planSession(effectPackage), {
             failedCloseout: true,
             wholeSandbox: true,
           });
-        } catch {
-          /* The existing closing attempt retains exclusion until its recovery owner proves absence. */
+        } catch (error) {
+          secondary.push(error);
         }
       }
-      if (cause instanceof OperationError) throw cause;
+      const failure = secondary.length
+        ? new AggregateError([cause, ...secondary], 'Credential cleanup requires inspection.', {
+            cause,
+          })
+        : cause;
+      if (cause instanceof OperationError && failure === cause) throw cause;
       throw new OperationError(
         'recovery_required',
         'Credential binding requires inspection.',
         409,
-        { cause }
+        { cause: failure }
       );
     } finally {
       db.sqlite.close();
@@ -2766,7 +2782,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const runtimeEnvCredentials: ResolvedAgentEnvironmentRuntimeEnvCredential[] = [];
       const runtimeFileCredentials: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
       const credentialReceipts: CreateVaultInjectionReceiptInput[] = [];
-      const resolvedEnvironmentPackage = resolveAgentEnvironmentPackage({
+      const resolvedEnvironmentPackage = await resolveAgentEnvironmentPackage({
         captureCoverage,
         ...(this.readRuntimeConfig ? { readRuntimeConfig: this.readRuntimeConfig } : {}),
         agentSetup: context.agentSetup,
@@ -3027,7 +3043,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
 
         if (this.coreDb && launchContext.sandboxBindingRef) {
           launchLifecycle.session = await recordWorkerBackendSessionMaterializing(this.coreDb, {
-            backendLineage: workerBackendLineageFromRuntimeImage(launchPackage.runtime.image),
+            backendLineage: workerBackendLineageFromRuntimeImage(
+              launchPackage.runtime.image,
+              launchPackage.runtime.environment?.imageDigest
+            ),
             backendVersion: launchCapabilities.version ?? null,
             identity: launchLifecycle.identity,
             lineage: {
@@ -3318,9 +3337,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           observation.credentialReceipts
         );
         for (const receipt of credentialReceipts) {
+          assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, () =>
+            this.currentTime()
+          );
           const fileReceipt = realized.find((proof) => proof.receiptId === receipt.receiptId);
-          createVaultInjectionReceipt(this.coreDb!, {
+          await getControlStoreWorkerClient().vault(this.coreDb!, 'receipt-create', {
             ...receipt,
+            workerAuthority: {
+              consumer: {
+                snapshotId: environmentPackage.snapshotId,
+                scope: environmentPackage.scope,
+                agent: { agentId: environmentPackage.agent.agentId },
+              },
+              declarations: environmentPackage.credentials.declarations,
+            },
             ...(fileReceipt ? { backendSummary: JSON.stringify(fileReceipt) } : {}),
             injectedAt: this.currentTime(),
           });

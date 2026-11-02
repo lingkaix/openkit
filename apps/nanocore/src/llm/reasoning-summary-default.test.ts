@@ -238,7 +238,7 @@ async function createWorkerSummaryFixture(): Promise<WorkerSummaryFixture> {
     requiredCapabilities: ['trusted-worker-inference-relay'],
   });
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup,
       agentSessionId: 'as_00000000-0000-72a4-a75d-bbe733e57f67',

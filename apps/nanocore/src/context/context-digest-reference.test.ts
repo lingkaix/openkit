@@ -166,7 +166,7 @@ async function artifactFixture(bytes: Buffer, mediaType: string) {
 }
 
 /** Supplies unrelated execution authorities without replacing the producer, writer or verifier seam. */
-function deliveryAuthorities(
+async function deliveryAuthorities(
   files: WorkerContextPackageFiles,
   artifact: z.infer<typeof ArtifactSchema>
 ) {
@@ -179,7 +179,7 @@ function deliveryAuthorities(
     startedAt,
     triggerActor: actor,
   };
-  const unresolved = resolveAgentEnvironmentPackage({
+  const unresolved = await resolveAgentEnvironmentPackage({
     agentSessionId,
     agentSetup: createTestAgentSetup(),
     backend: { kind: 'openshell' },
@@ -322,7 +322,7 @@ async function assertReferenceHistory(original: Buffer, mediaType: string, deliv
   const sources = await f.prepare();
   const files = f.filesFor(sources);
   await writeWorkerContextPackageFiles(f.workspaceRoot, files, { admission: f.admission });
-  const fixture = deliveryAuthorities(files, f.artifact);
+  const fixture = await deliveryAuthorities(files, f.artifact);
   const trace = writeWorkerContextPackageTrace({ ...fixture, workspaceRoot: f.workspaceRoot });
   const root = join(f.workspaceRoot, 'threads', threadId, 'turns', turnId, 'context-package');
   const tracePath = join(root, '..', 'context-package.json');

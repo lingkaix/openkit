@@ -1,6 +1,8 @@
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import {
   createAssistantMessageEventStream,
   createModels,
@@ -14,6 +16,7 @@ import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { InternalRoleExecutionProfileSchema } from '@openkit/config-schema';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listServerAuditEvents } from '../audit-events.js';
 import {
   type CapabilityAuditLineage,
   listWorkspaceCapabilityCalls,
@@ -21,20 +24,31 @@ import {
 } from '../capability/usage-ledger.js';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
+import { resolveProviderProfileToLLMConfig } from '../providers/llm-config.js';
+import { createVaultProviderCredentialResolver } from '../providers/vault-credential-resolver.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { createTestStore } from '../test-support/store.js';
+import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
+import {
+  advanceActiveVaultReferenceVersion,
+  createVaultReference,
+} from '../vault/vault-references.js';
+import { listVaultUseRecords } from '../vault/vault-use-records.js';
 
 const databases: WorkspaceDb[] = [];
 const roots: string[] = [];
 afterEach(async () => {
-  vi.restoreAllMocks();
-  for (const db of databases.splice(0)) db.sqlite.close();
+  for (const release of internalVaultReplies.splice(0)) release();
+  while (internalVaultOperations.size) await Promise.all([...internalVaultOperations]);
   await shutdownControlStoreWorkerClient();
+  vi.restoreAllMocks();
+  for (const db of internalVaultDbs.splice(0)) db.sqlite.close();
+  for (const db of databases.splice(0)) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -2300,7 +2314,7 @@ describe('internal rolling context Gateway boundary', () => {
     const { provider, createResponses } = await boundaryFixture();
     createResponses.mockImplementationOnce(async (_provider, _input, context) => {
       try {
-        context.transport.finalRequestAdmission({
+        await context.transport.finalRequestAdmission({
           payload: { instructions: 'Final overlay. '.repeat(30_000) },
           contextWindowTokens: 64_000,
           outputReserveTokens: 8_000,
@@ -2766,4 +2780,206 @@ describe('command audit lineage at the internal Gateway seam', () => {
       }),
     ]);
   });
+});
+
+const internalVaultReplies: Array<() => void> = [];
+const internalVaultOperations = new Set<Promise<unknown>>();
+const internalVaultDbs: Array<ReturnType<typeof openCoreDb>> = [];
+
+/** Holds the next actual Vault Use acknowledgement after Native has committed it. */
+function holdInternalVaultUseReply() {
+  const emit = Worker.prototype.emit;
+  let enabled = true;
+  let taken = false;
+  let deliver: (() => void) | undefined;
+  let reached!: () => void;
+  const held = new Promise<void>((resolve) => {
+    reached = resolve;
+  });
+  const spy = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+    this: Worker,
+    event: string | symbol,
+    ...args: unknown[]
+  ) {
+    const reply = args[0] as
+      | { operation?: string; status?: string; result?: { kind?: string } }
+      | undefined;
+    if (
+      enabled &&
+      !taken &&
+      event === 'message' &&
+      reply?.operation === 'vault' &&
+      reply.status === 'ok' &&
+      reply.result?.kind === 'use-create'
+    ) {
+      taken = true;
+      deliver = () => {
+        emit.call(this, event, ...args);
+      };
+      reached();
+      return true;
+    }
+    return emit.call(this, event, ...args);
+  });
+  const release = () => {
+    enabled = false;
+    const pending = deliver;
+    deliver = undefined;
+    pending?.();
+  };
+  internalVaultReplies.push(release);
+  return { held, release, restore: () => spy.mockRestore() };
+}
+
+it('joins real final credential authority before stock HTTP and refuses a replaced selected credential', async () => {
+  const capture = await captureBinding();
+  const coreDb = openCoreDb(capture.dataRoot);
+  internalVaultDbs.push(coreDb);
+  applyMigrations(coreDb);
+  const backend = createEncryptedFileVaultBackend({
+    masterKey: randomBytes(32),
+    storeDir: join(capture.dataRoot, 'gateway-authority-vault'),
+  });
+  const referenceId = allocateEntityId('vault');
+  backend.store({
+    referenceId,
+    material: randomBytes(24).toString('hex'),
+    metadata: { ownerScope: 'server' },
+  });
+  await createVaultReference(coreDb, {
+    referenceId,
+    ownerScope: 'server',
+    displayName: 'Final authority fixture',
+    secretKind: 'provider-api-key',
+    backendKind: backend.kind,
+    backendLocator: `${backend.kind}://server/vault/${referenceId}`,
+  });
+  const stock = openaiProvider();
+  const models = createModels();
+  models.setProvider(stock);
+  const model = models
+    .getModels()
+    .find(
+      (candidate) =>
+        candidate.provider === stock.id &&
+        candidate.api === 'openai-responses' &&
+        candidate.contextWindow - candidate.maxTokens > 8_192
+    )!;
+  expect(model).toBeDefined();
+  const selectedModel = {
+    ...logicalModel,
+    routes: [{ ...logicalModel.routes[0]!, providerModel: model.id }],
+  };
+  const resolveCredential = createVaultProviderCredentialResolver({
+    coreDb,
+    vaultBackend: () => backend,
+  });
+  const profile = {
+    id: selectedModel.routes[0]!.providerProfileId,
+    displayName: 'Final authority fixture',
+    kind: 'direct' as const,
+    vendor: stock.id,
+    models: [model.id],
+    secretRef: `vault://${referenceId}`,
+    modelMetadata: {
+      [model.id]: {
+        tool_call: true,
+        limit: { context: model.contextWindow, output: model.maxTokens },
+      },
+    },
+  };
+  const resolve = vi.fn(() => resolveProviderProfileToLLMConfig(profile, resolveCredential));
+  const dispatcher = new LLMGatewayProviderDispatcher({
+    piAiClient: new PiAiGatewayClient({ models }),
+  });
+  const originalCreate = dispatcher.createResponses.bind(dispatcher);
+  let gate: ReturnType<typeof holdInternalVaultUseReply> | undefined;
+  let entered!: () => void;
+  const admission = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const delegated = vi
+    .spyOn(dispatcher, 'createResponses')
+    .mockImplementationOnce(async (...args) => {
+      // The selection completed. Replace through both actual owners before the stock final lookup.
+      const rotated = backend.rotate({ referenceId, material: randomBytes(24).toString('hex') });
+      await advanceActiveVaultReferenceVersion(coreDb, {
+        referenceId,
+        currentVersion: rotated.currentVersion,
+      });
+      gate = holdInternalVaultUseReply();
+      entered();
+      return originalCreate(...args);
+    });
+  const http = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected transport.'));
+  const provider = createInternalAgentGatewayProvider({
+    capture,
+    logicalModel: selectedModel,
+    resolveLogicalModel: () => selectedModel,
+    dispatcher,
+    resolveGatewayProvider: resolve,
+    promptCacheScope: { sessionId: 'gateway-authority-synthetic-session' },
+    usageEndpoint: 'responses',
+  });
+  let settled = false;
+  const operation = provider({ ...request(), tools: [] }).then(
+    (value) => {
+      settled = true;
+      return { ok: true as const, value };
+    },
+    (error: unknown) => {
+      settled = true;
+      return { ok: false as const, error };
+    }
+  );
+  internalVaultOperations.add(operation);
+  void operation.then(() => internalVaultOperations.delete(operation));
+  try {
+    await Promise.race([
+      admission,
+      operation.then(() => {
+        throw new Error('Stock admission was not reached.');
+      }),
+    ]);
+    await Promise.race([
+      gate!.held,
+      operation.then(() => {
+        throw new Error('Native authority reply was not held.');
+      }),
+    ]);
+    expect(settled).toBe(false);
+    expect(http).not.toHaveBeenCalled();
+    // core/vault.md Lifecycle 4 and 6: one Use for each exact resolved material version.
+    expect(
+      listVaultUseRecords(coreDb)
+        .map((row) => row.materialVersion)
+        .sort()
+    ).toEqual([1, 2]);
+    expect(
+      listServerAuditEvents(coreDb).filter((row) => row.action === 'vault.resolve')
+    ).toHaveLength(1);
+    gate!.release();
+    const result = await operation;
+    // Gateway Failure Kinds And Advancement and Terminal Error And Private Lineage own exhaustion.
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: 'gateway_logical_model_unavailable',
+        cause: 'auth_rejected',
+      },
+    });
+    if (result.ok) throw new Error('Expected credential replacement to refuse the call.');
+    expect(result.error).toBeInstanceOf(LogicalModelRoutesExhaustedError);
+    expect(delegated).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(http).not.toHaveBeenCalled();
+    expect(listVaultUseRecords(coreDb)).toHaveLength(2);
+    expect(
+      listServerAuditEvents(coreDb).filter((row) => row.action === 'vault.resolve')
+    ).toHaveLength(2);
+  } finally {
+    gate?.release();
+    await operation;
+    gate?.restore();
+  }
 });

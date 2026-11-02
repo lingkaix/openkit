@@ -120,7 +120,7 @@ async function fixture() {
   const turn = await store.createTurn(workspace.id, thread.id, 'Produce reports', actor);
   const peerThread = await store.createThread(workspace.id, 'Independent Thread');
   const peer = await store.createTurn(workspace.id, peerThread.id, 'Independent work', actor);
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
     agentSetup: createTestAgentSetup(),
     agentSessionId: allocateEntityId('as'),

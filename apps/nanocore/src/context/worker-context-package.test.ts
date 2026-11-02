@@ -223,11 +223,11 @@ async function createPackage(
 }
 
 /** Creates one resolved AEP carrying the exact dedicated generated context input. */
-function createEnvironmentPackage(
+async function createEnvironmentPackage(
   packageFiles: WorkerContextPackageFiles,
   requestId = 'req_context'
-): AgentEnvironmentPackage {
-  const unresolved = resolveAgentEnvironmentPackage({
+): Promise<AgentEnvironmentPackage> {
+  const unresolved = await resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
     agentSetup: createTestAgentSetup(),
@@ -335,7 +335,7 @@ async function createAcceptedFixture(
       admission: new FileStorageAdmission(workspaceRoot, () => 0n),
     });
   }
-  const environmentPackage = createEnvironmentPackage(packageFiles, requestId);
+  const environmentPackage = await createEnvironmentPackage(packageFiles, requestId);
   const trace = createWorkerContextPackageTrace({
     agentSessionId: 'as_00000000-0000-77fe-a8c9-41ee91fa0b94',
     excludedItems: [

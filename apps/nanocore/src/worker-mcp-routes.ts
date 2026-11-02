@@ -164,7 +164,6 @@ import { getVaultReference } from './vault/vault-references.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { createVaultUseAuditedBackend } from './vault/vault-use-audited-backend.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
-import { createVaultInjectionReceipt } from './vault-injection-receipts.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Borrows the existing native reader; scope lifecycle owns closure and each caller ends its snapshot before awaiting. */
@@ -2836,7 +2835,11 @@ async function observeWorkerMcpTools(input: {
   };
   const completeInjections = async () => {
     try {
-      completeMcpVaultInjections(input.input.coreDb!, input.call, resolvedCredentials.injections);
+      await completeMcpVaultInjections(
+        input.input.coreDb!,
+        input.call,
+        resolvedCredentials.injections
+      );
     } catch {
       await input.input.workerMcpGateway.closeServer(gatewayInput).catch(() => undefined);
       throw new WorkerControlGatewayError(
@@ -3043,91 +3046,91 @@ export async function resolveWorkerMcpCredentials(input: {
   try {
     if (!input.input.vaultUnlockState && !input.input.vaultBackend)
       throw new Error('Vault is unavailable.');
-    // VaultUse and its unrelated Audit keep their Main writer; product reads stay query-only.
-    const resume =
-      input.resolved.scope === 'server'
-        ? undefined
-        : await getControlStoreWorkerClient().pauseForDataRootBackup(
-            `workspace:${input.workspaceDb.sqlite.name}`
-          );
-    let auditDb: WorkspaceDb | undefined;
-    try {
-      if (resume) auditDb = openWorkspaceDb(coreDb.dataRoot, input.workspaceDb.workspaceId);
+    if (input.current?.() === false) throw mcpDeniedError();
+    assertCurrentSharedMcpBinding(input);
+    for (const binding of input.resolved.credentialBindings) {
+      const grant = getVaultGrant(coreDb, binding.vaultGrantId);
+      const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
+      assertCurrentMcpVaultAuthority(input, grant, reference);
+      const planId = mcpVaultRecordId('plan', input, binding.slot, grant!.grantId);
+      const receiptId = mcpVaultRecordId('receipt', input, binding.slot, grant!.grantId);
+      const now = new Date().toISOString();
+      await createVaultInjectionPlan(coreDb, {
+        backendCapabilityRequirement: `mcp-gateway:${input.resolved.transport.kind}`,
+        capabilityId: input.operation,
+        expirationBehavior: grant!.expiresAt ? `expires-at:${grant!.expiresAt}` : 'grant-lifetime',
+        grantId: grant!.grantId,
+        injectionVisibility: 'gateway-only',
+        packageSnapshotId: input.environmentPackage.snapshotId,
+        planId,
+        redactionRule: 'exact-resolved-material',
+        revocationBehavior: 'close-gateway-session',
+        now: () => now,
+      });
       if (input.current?.() === false) throw mcpDeniedError();
       assertCurrentSharedMcpBinding(input);
-      for (const binding of input.resolved.credentialBindings) {
-        const grant = getVaultGrant(coreDb, binding.vaultGrantId);
-        const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
-        assertCurrentMcpVaultAuthority(input, grant, reference);
-        const planId = mcpVaultRecordId('plan', input, binding.slot, grant!.grantId);
-        const receiptId = mcpVaultRecordId('receipt', input, binding.slot, grant!.grantId);
-        const now = new Date().toISOString();
-        createVaultInjectionPlan(coreDb, {
-          backendCapabilityRequirement: `mcp-gateway:${input.resolved.transport.kind}`,
-          capabilityId: input.operation,
-          expirationBehavior: grant!.expiresAt
-            ? `expires-at:${grant!.expiresAt}`
-            : 'grant-lifetime',
-          grantId: grant!.grantId,
-          injectionVisibility: 'gateway-only',
-          packageSnapshotId: input.environmentPackage.snapshotId,
-          planId,
-          redactionRule: 'exact-resolved-material',
-          revocationBehavior: 'close-gateway-session',
-          now: () => now,
-        });
-        const backend = input.input.vaultBackend?.() ?? input.input.vaultUnlockState!.backend();
-        if (
-          reference!.backendKind !== backend.kind ||
-          (input.resolved.scope === 'server' && !isCurrentServerMcpMaterial(backend, reference!))
-        )
-          throw new Error('Vault backend mismatch.');
-        const material = createVaultUseAuditedBackend({
-          agentSessionId: input.environmentPackage.scope.agentSessionId,
-          backend,
-          capabilityCallId: input.call.id,
-          db: auditDb ?? coreDb,
-          grantId: grant!.grantId,
-          ownerScope: input.resolved.scope === 'server' ? 'server' : 'workspace',
-          planId,
-          resolvingPath: 'grant',
-          ...(input.resolved.scope === 'server'
-            ? {
-                consumerWorkspaceId: input.environmentPackage.scope.workspaceId,
-                ...(input.environmentPackage.scope.triggerActor
-                  ? { actor: input.environmentPackage.scope.triggerActor }
-                  : {}),
-              }
-            : { workspaceId: input.environmentPackage.scope.workspaceId }),
-        }).resolve({
-          referenceId: reference!.referenceId,
-          version: reference!.currentVersion,
-        });
-        const value = vaultSecretMaterialToString(material);
-        if (binding.presentation === 'bearer') {
-          if (value.length === 0) throw new Error('Empty MCP bearer credential.');
-          bearer = value;
-        }
-        if (binding.sink.kind === 'env') environment[binding.sink.name] = value;
-        if (binding.sink.kind === 'header' && binding.presentation !== 'bearer') {
-          headers[binding.sink.name] = value;
-        }
-        if (binding.sink.kind === 'query') query[binding.sink.name] = value;
-        injections.push({
-          backendSummary: `mcp-gateway:${input.resolved.transport.kind}:${binding.sink.kind}`,
-          grant,
-          injectedAt: now,
-          planId,
-          receiptId,
-          referenceVersion: reference!.currentVersion,
-        });
+      assertCurrentMcpVaultAuthority(
+        input,
+        getVaultGrant(coreDb, binding.vaultGrantId),
+        getVaultReference(coreDb, reference!.referenceId)
+      );
+      const backend = input.input.vaultBackend?.() ?? input.input.vaultUnlockState!.backend();
+      if (
+        reference!.backendKind !== backend.kind ||
+        (input.resolved.scope === 'server' && !isCurrentServerMcpMaterial(backend, reference!))
+      )
+        throw new Error('Vault backend mismatch.');
+      const material = await createVaultUseAuditedBackend({
+        agentSessionId: input.environmentPackage.scope.agentSessionId,
+        backend,
+        capabilityCallId: input.call.id,
+        db: input.resolved.scope === 'server' ? coreDb : input.workspaceDb,
+        grantId: grant!.grantId,
+        ownerScope: input.resolved.scope === 'server' ? 'server' : 'workspace',
+        planId,
+        resolvingPath: 'grant',
+        ...(input.resolved.scope === 'server'
+          ? {
+              consumerWorkspaceId: input.environmentPackage.scope.workspaceId,
+              ...(input.environmentPackage.scope.triggerActor
+                ? { actor: input.environmentPackage.scope.triggerActor }
+                : {}),
+            }
+          : { workspaceId: input.environmentPackage.scope.workspaceId }),
+      }).resolve({
+        referenceId: reference!.referenceId,
+        version: reference!.currentVersion,
+      });
+      if (input.current?.() === false) throw mcpDeniedError();
+      assertCurrentSharedMcpBinding(input);
+      assertCurrentMcpVaultAuthority(
+        input,
+        getVaultGrant(coreDb, binding.vaultGrantId),
+        getVaultReference(coreDb, reference!.referenceId)
+      );
+      if (
+        getVaultReference(coreDb, reference!.referenceId)?.currentVersion !==
+        reference!.currentVersion
+      )
+        throw new Error('MCP Vault authority is not current.');
+      const value = vaultSecretMaterialToString(material);
+      if (binding.presentation === 'bearer') {
+        if (value.length === 0) throw new Error('Empty MCP bearer credential.');
+        bearer = value;
       }
-    } finally {
-      try {
-        auditDb?.sqlite.close();
-      } finally {
-        resume?.();
+      if (binding.sink.kind === 'env') environment[binding.sink.name] = value;
+      if (binding.sink.kind === 'header' && binding.presentation !== 'bearer') {
+        headers[binding.sink.name] = value;
       }
+      if (binding.sink.kind === 'query') query[binding.sink.name] = value;
+      injections.push({
+        backendSummary: `mcp-gateway:${input.resolved.transport.kind}:${binding.sink.kind}`,
+        grant,
+        injectedAt: now,
+        planId,
+        receiptId,
+        referenceVersion: reference!.currentVersion,
+      });
     }
   } catch (error) {
     reportMcpCredentialFailure(error, 'resolve');
@@ -3285,28 +3288,24 @@ function assertCurrentMcpVaultBindings(
 }
 
 /** Creates receipts only after a successful credential-bearing upstream exchange. */
-export function completeMcpVaultInjections(
+export async function completeMcpVaultInjections(
   coreDb: CoreDb,
   call: StartedCapabilityCall,
   injections: readonly PendingMcpVaultInjection[]
-): void {
-  coreDb.sqlite
-    .transaction(() => {
-      for (const injection of injections) {
-        createVaultInjectionReceipt(coreDb, {
-          agentSessionId: call.context.agentSessionId ?? null,
-          backendSummary: injection.backendSummary,
-          capabilityCallId: call.id,
-          expiresAt: injection.grant.expiresAt,
-          grantId: injection.grant.grantId,
-          injectedAt: injection.injectedAt,
-          planId: injection.planId,
-          receiptId: injection.receiptId,
-          revocationStatus: 'active',
-        });
-      }
-    })
-    .immediate();
+): Promise<void> {
+  await getControlStoreWorkerClient().vault(coreDb, 'mcp-receipts-complete', {
+    receipts: injections.map((injection) => ({
+      agentSessionId: call.context.agentSessionId ?? null,
+      backendSummary: injection.backendSummary,
+      capabilityCallId: call.id,
+      expiresAt: injection.grant.expiresAt,
+      grantId: injection.grant.grantId,
+      injectedAt: injection.injectedAt,
+      planId: injection.planId,
+      receiptId: injection.receiptId,
+      revocationStatus: 'active' as const,
+    })),
+  });
 }
 
 /** Non-secret receipt metadata retained until an upstream sink succeeds. */

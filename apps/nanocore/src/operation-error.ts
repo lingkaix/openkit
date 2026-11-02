@@ -4,6 +4,13 @@ import { ControlStoreNoSpaceError } from './storage/control-store.js';
 import type { ControlCapabilityAdmissionFailure } from './storage/control-store-capability.js';
 import { ControlStoreWorkerError } from './storage/control-store-worker-client.js';
 
+/** Fixed public Workspace denial facts shared by existing error subclasses and transport-neutral callers. */
+export const WORKSPACE_ACCESS_DENIED = {
+  code: 'workspace_access_denied',
+  message: 'Workspace access denied.',
+  status: 403,
+} as const;
+
 /** Safe fields explicitly authored by the failure owner; causal failures remain private. */
 export interface OperationErrorOptions extends ErrorOptions {
   readonly details?: unknown;

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { InjectionVisibility } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVaultInjectionPlan, getVaultInjectionPlan } from '../vault-injection-plans.js';
@@ -26,21 +27,21 @@ const visibilities: readonly InjectionVisibility[] = [
 
 describe('Vault receipt revocation projection', () => {
   for (const source of ['grant', 'reference'] as const) {
-    it(`projects ${source} revocation from receipt visibility without changing completion`, () => {
+    it(`projects ${source} revocation from receipt visibility without changing completion`, async () => {
       const root = mkdtempSync(join(tmpdir(), 'openkit-revocation-projection-'));
       const db = openCoreDb(root);
       try {
         applyMigrations(db);
         const referenceId = allocateEntityId('vault');
         const grantId = allocateEntityId('grant');
-        createVaultReference(db, {
+        await createVaultReference(db, {
           referenceId,
           ownerScope: 'server',
           displayName: 'Synthetic credential',
           secretKind: 'repository-token',
           backendKind: 'encrypted-file',
         });
-        createVaultGrant(db, {
+        await createVaultGrant(db, {
           grantId,
           vaultReferenceId: referenceId,
           ownerScope: 'workspace',
@@ -48,9 +49,10 @@ describe('Vault receipt revocation projection', () => {
           allowedInjectionPaths: visibilities,
           lifetime: 'workspace',
         });
-        const receipts = visibilities.map((injectionVisibility) => {
+        const receipts = [];
+        for (const injectionVisibility of visibilities) {
           const planId = randomUUID();
-          createVaultInjectionPlan(db, {
+          await createVaultInjectionPlan(db, {
             planId,
             grantId,
             injectionVisibility,
@@ -61,9 +63,9 @@ describe('Vault receipt revocation projection', () => {
             redactionRule: 'no-secret-material',
             backendCapabilityRequirement: 'encrypted-file:resolve',
           });
-          return {
+          receipts.push({
             visibility: injectionVisibility,
-            receipt: createVaultInjectionReceipt(db, {
+            receipt: await createVaultInjectionReceipt(db, {
               receiptId: randomUUID(),
               planId,
               grantId,
@@ -72,30 +74,30 @@ describe('Vault receipt revocation projection', () => {
               injectedAt: '2026-10-16T00:00:00.000Z',
               revocationStatus: 'active',
             }),
-          };
-        });
+          });
+        }
         const original = receipts[0]!.receipt;
         const missingPlanId = randomUUID();
-        createVaultInjectionPlan(db, {
+        await createVaultInjectionPlan(db, {
           ...getVaultInjectionPlan(db, original.planId)!,
           planId: missingPlanId,
         });
-        const unknown = createVaultInjectionReceipt(db, {
+        const unknown = await createVaultInjectionReceipt(db, {
           ...original,
           receiptId: randomUUID(),
           planId: missingPlanId,
         });
         db.sqlite.prepare('DELETE FROM vault_injection_plans WHERE plan_id = ?').run(missingPlanId);
-        const settled = createVaultInjectionReceipt(db, {
+        const settled = await createVaultInjectionReceipt(db, {
           ...original,
           receiptId: randomUUID(),
           revocationStatus: 'revoked',
         });
-        const revoke = () =>
+        const revoke = async () =>
           source === 'grant'
-            ? revokeVaultGrant(db, { grantId })
-            : revokeVaultReference(db, { referenceId });
-        revoke();
+            ? await revokeVaultGrant(db, { grantId })
+            : await revokeVaultReference(db, { referenceId });
+        await revoke();
         for (const { visibility, receipt } of receipts) {
           expect(getVaultInjectionReceipt(db, receipt.receiptId)).toEqual({
             ...receipt,
@@ -108,11 +110,12 @@ describe('Vault receipt revocation projection', () => {
           revocationStatus: 'stale-session',
         });
         expect(getVaultInjectionReceipt(db, settled.receiptId)).toEqual(settled);
-        revoke();
+        await revoke();
         expect(getVaultInjectionReceipt(db, receipts[0]!.receipt.receiptId)?.revocationStatus).toBe(
           'revoked'
         );
       } finally {
+        await shutdownControlStoreWorkerClient();
         db.sqlite.close();
         rmSync(root, { recursive: true, force: true });
       }

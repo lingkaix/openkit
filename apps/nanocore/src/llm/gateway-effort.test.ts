@@ -68,7 +68,7 @@ async function fixture(
   ensureLocalUser(coreDb);
   if (options.customStock) {
     // Availability uses non-secret metadata; the injected resolver supplies dispatch material.
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       referenceId: 'vault_00000000-0000-7b1d-88cb-f75d3058afdf',
       ownerScope: 'server',
       displayName: 'Custom stock Gateway fixture',

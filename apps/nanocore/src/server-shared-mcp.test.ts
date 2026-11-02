@@ -4,6 +4,7 @@ import type { Server as HttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { serve } from '@hono/node-server';
 import { resolveWorkspaceMcpServer, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { Hono } from 'hono';
@@ -54,6 +55,7 @@ import { admitTestNativeEnvironment } from './test-support/native-environment.js
 import { getVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { advanceActiveVaultReferenceVersion } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
+import { listVaultUseRecords } from './vault/vault-use-records.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const serverId = 'shared-echo';
@@ -247,7 +249,7 @@ async function fixture() {
     });
     const setup = createTestAgentSetup({ mcpIds: [serverId] });
     admitTestNativeEnvironment(coreDb, setup.manifest);
-    const pkg = resolveAgentEnvironmentPackage({
+    const pkg = await resolveAgentEnvironmentPackage({
       coreDb,
       agentSetup: setup,
       agentSessionId: testEntityId('as', `shared-mcp-${turn.id}`),
@@ -261,7 +263,7 @@ async function fixture() {
       ...(admittedCatalog ? { workspaceMcpServerCatalog: admittedCatalog } : {}),
     });
     const db = workspaceDbs.find((candidate) => candidate.workspaceId === workspaceId)!;
-    recordAgentEnvironmentPackageSnapshot(db, {
+    await recordAgentEnvironmentPackageSnapshot(db, {
       environmentPackage: pkg,
       createdAt: new Date().toISOString(),
     });
@@ -1061,7 +1063,7 @@ describe('Server-shared MCP through governed Worker routes', () => {
           referenceId: reference.referenceId,
           material: 'synthetic-rotated-shared-material',
         });
-        advanceActiveVaultReferenceVersion(f.coreDb, {
+        await advanceActiveVaultReferenceVersion(f.coreDb, {
           referenceId: reference.referenceId,
           currentVersion: rotated.currentVersion,
         });
@@ -1320,18 +1322,117 @@ describe.skipIf(process.platform === 'win32')(
 
     it('rechecks a grant revoked after material resolution before registering a new child', async () => {
       const f = await workspaceStdioFixture();
-      const backend = f.vaultUnlockState.backend();
-      f.materialResolution.mockImplementationOnce((input) => {
-        f.materialResolution.mockRestore();
-        const material = backend.resolve(input);
-        revokeVaultGrant(f.coreDb, { grantId: f.grant.grantId });
-        return material;
-      });
-      const result = await f.worker.call('must-not-start');
-      expect(getVaultGrant(f.coreDb, f.grant.grantId)?.status).toBe('revoked');
       expect(existsSync(f.pidFile)).toBe(false);
       expect(existsSync(f.descendantFile)).toBe(false);
-      expectRefusal(result);
+      const resolutions = f.materialResolution.mock.calls.length;
+      const emit = Worker.prototype.emit;
+      const reached = Promise.withResolvers<void>();
+      let deliver: (() => void) | undefined;
+      let heldUseId: string | undefined;
+      let enabled = true;
+      let settled = false;
+      const hold = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+        this: Worker,
+        event: string | symbol,
+        ...args: unknown[]
+      ) {
+        const reply = args[0] as
+          | {
+              operation?: string;
+              status?: string;
+              result?: {
+                kind?: string;
+                value?: {
+                  useId?: string;
+                  ownerScope?: string;
+                  workspaceId?: string;
+                  vaultReferenceId?: string;
+                  grantId?: string;
+                  outcome?: string;
+                };
+              };
+            }
+          | undefined;
+        const use = reply?.result?.value;
+        if (
+          enabled &&
+          !heldUseId &&
+          event === 'message' &&
+          reply?.operation === 'vault' &&
+          reply.status === 'ok' &&
+          reply.result?.kind === 'use-create' &&
+          use?.useId &&
+          use.ownerScope === 'workspace' &&
+          use.workspaceId === f.workspaceId &&
+          use.vaultReferenceId === f.reference.referenceId &&
+          use.grantId === f.grant.grantId &&
+          use.outcome === 'succeeded'
+        ) {
+          heldUseId = use.useId;
+          // Hold the genuine Workspace acknowledgement after material resolution and commit.
+          deliver = () => emit.call(this, event, ...args);
+          reached.resolve();
+          return true;
+        }
+        return emit.call(this, event, ...args);
+      });
+      const release = () => {
+        enabled = false;
+        const pending = deliver;
+        deliver = undefined;
+        pending?.();
+      };
+      const outcome = f.worker.call('must-not-start').then(
+        (value) => {
+          settled = true;
+          return { ok: true as const, value };
+        },
+        () => {
+          settled = true;
+          return { ok: false as const };
+        }
+      );
+      try {
+        await Promise.race([
+          reached.promise,
+          outcome.then(() => {
+            throw new Error('Worker request settled before the real Workspace Use reply.');
+          }),
+        ]);
+        expect(settled).toBe(false);
+        expect(f.materialResolution).toHaveBeenCalledTimes(resolutions + 1);
+        expect(listVaultUseRecords(f.workspaceDbs[0]!)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              useId: heldUseId,
+              vaultReferenceId: f.reference.referenceId,
+              grantId: f.grant.grantId,
+              outcome: 'succeeded',
+            }),
+          ])
+        );
+        expect(existsSync(f.pidFile)).toBe(false);
+        expect(existsSync(f.descendantFile)).toBe(false);
+        // Core and Workspace writers are independent: await the actual Core fence while held.
+        expect((await revokeVaultGrant(f.coreDb, { grantId: f.grant.grantId })).status).toBe(
+          'revoked'
+        );
+        expect(getVaultGrant(f.coreDb, f.grant.grantId)?.status).toBe('revoked');
+        expect(settled).toBe(false);
+        release();
+        const completed = await outcome;
+        expect(completed.ok).toBe(true);
+        if (!completed.ok) throw new Error('Worker request did not return a normalized refusal.');
+        const result = completed.value;
+        expect(getVaultGrant(f.coreDb, f.grant.grantId)?.status).toBe('revoked');
+        expect(existsSync(f.pidFile)).toBe(false);
+        expect(existsSync(f.descendantFile)).toBe(false);
+        expectRefusal(result);
+      } finally {
+        release();
+        await outcome;
+        hold.mockRestore();
+      }
     });
   }
 );

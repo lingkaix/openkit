@@ -788,7 +788,7 @@ async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
     }
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       agentSetup: createTestAgentSetup({
         requiredCapabilities: ['trusted-worker-inference-relay', 'worker.runtime-provenance.v1'],
       }),
@@ -805,7 +805,7 @@ async function createRetainedRecoveryProvenance(workspaceDb: WorkspaceDb) {
       workspaceRoots: [],
     })
   );
-  recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+  await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     createdAt: '2026-07-13T00:00:01.000Z',
     environmentPackage,
   });
@@ -958,7 +958,7 @@ describe('worker recovery materialization', () => {
           JSON.stringify({ ...JSON.parse(retainedRow.record_json), ...retainedTurn }),
           turn.id
         );
-      const environmentPackage = resolveAgentEnvironmentPackage({
+      const environmentPackage = await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: f.agentSessionId,
         backend: { kind: 'openshell' },
@@ -969,7 +969,7 @@ describe('worker recovery materialization', () => {
         turnInput: 'Later package',
         workspaceRoots: [],
       });
-      recordAgentEnvironmentPackageSnapshot(f.workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(f.workspaceDb, {
         environmentPackage,
         createdAt: environmentPackage.createdAt,
       });
@@ -1768,7 +1768,7 @@ describe('worker recovery materialization', () => {
         }
       );
       const environmentPackage = AgentEnvironmentPackageSchema.parse(
-        resolveAgentEnvironmentPackage({
+        await resolveAgentEnvironmentPackage({
           agentSetup: createTestAgentSetup({
             requiredCapabilities: [
               'trusted-worker-inference-relay',
@@ -1786,7 +1786,7 @@ describe('worker recovery materialization', () => {
           workspaceRoots: [],
         })
       );
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: '2026-07-13T00:00:01.000Z',
         environmentPackage,
       });

@@ -76,8 +76,8 @@ describe('release-declared catalog Skill supply', () => {
     'pi',
     'opencode',
     'deepseek',
-  ])('admits qualified %s catalog Skill materialization', (adapter) => {
-    const resolved = resolveAgentEnvironmentPackage({
+  ])('admits qualified %s catalog Skill materialization', async (adapter) => {
+    const resolved = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: createTestAgentSetup({ adapter, skillIds: ['repo-guidelines'] }),
       agentSessionId: 'as_00000000-0000-7754-ade8-f02f25e307a0',

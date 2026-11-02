@@ -701,7 +701,7 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
   const thread = await f.store.createThread(f.workspace.id, 'Shared Worker output');
   const turn = await f.store.createTurn(f.workspace.id, thread.id, 'Ask knowledge', f.actor);
   // This fixture proves the dispatch binding after admission; it does not simulate an authenticated MCP transport or CapabilityCall delivery.
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb: f.coreDb,
     agentSetup: createTestAgentSetup(),
     agentSessionId: allocateEntityId('as'),

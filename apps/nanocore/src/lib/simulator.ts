@@ -735,7 +735,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           : null;
       const environmentBackend = { kind: 'openshell' } as const;
       const resolvedEnvironmentPackage = captureCoverage
-        ? resolveAgentEnvironmentPackage({
+        ? await resolveAgentEnvironmentPackage({
             captureCoverage,
             agentSessionId,
             agentSetup: context.agentSetup,
@@ -911,7 +911,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         });
         const backendSessionId = `self-check_${environmentPackage.snapshotId}`;
         const backendLineage = workerBackendLineageFromRuntimeImage(
-          environmentPackage.runtime.image
+          environmentPackage.runtime.image,
+          environmentPackage.runtime.environment?.imageDigest
         );
         const runtimeTarget = this.coreDb.sqlite
           .prepare(`SELECT target_id AS targetId FROM nanohost_runtime_targets LIMIT 1`)

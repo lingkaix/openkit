@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVaultInjectionPlan, listVaultInjectionPlans } from '../vault-injection-plans.js';
@@ -30,11 +31,11 @@ function createCoreDb(): CoreDb {
 }
 
 describe('vault grants', () => {
-  it('creates, reads, and lists non-secret workspace vault grants', () => {
+  it('creates, reads, and lists non-secret workspace vault grants', async () => {
     const coreDb = createCoreDb();
 
     try {
-      createVaultReference(coreDb, {
+      await createVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         displayName: 'GitHub token',
         now: () => '2026-07-05T00:00:00.000Z',
@@ -43,7 +44,7 @@ describe('vault grants', () => {
         secretKind: 'repository-token',
       });
 
-      const created = createVaultGrant(coreDb, {
+      const created = await createVaultGrant(coreDb, {
         allowedInjectionPaths: ['gateway-only'],
         expiresAt: '2026-07-05T01:00:00.000Z',
         grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
@@ -57,7 +58,7 @@ describe('vault grants', () => {
         vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
       });
-      const duplicate = createVaultGrant(coreDb, {
+      const duplicate = await createVaultGrant(coreDb, {
         allowedInjectionPaths: ['runtime-env'],
         grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
         lifetime: 'workspace',
@@ -85,15 +86,16 @@ describe('vault grants', () => {
       });
       expect(JSON.stringify(created)).not.toContain('ghp_');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('requires an existing reference and matching owner scope identity', () => {
+  it('requires an existing reference and matching owner scope identity', async () => {
     const coreDb = createCoreDb();
 
     try {
-      expect(() =>
+      await expect(
         createVaultGrant(coreDb, {
           allowedInjectionPaths: ['gateway-only'],
           grantId: 'grant_00000000-0000-7278-b714-46e2d53cb316',
@@ -102,9 +104,9 @@ describe('vault grants', () => {
           vaultReferenceId: 'vault_00000000-0000-722b-b433-75d118b2149c',
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
-      ).toThrow('Vault reference not found: vault_00000000-0000-722b-b433-75d118b2149c');
+      ).rejects.toThrow('Vault reference not found: vault_00000000-0000-722b-b433-75d118b2149c');
 
-      createVaultReference(coreDb, {
+      await createVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         displayName: 'GitHub token',
         ownerScope: 'server',
@@ -112,7 +114,7 @@ describe('vault grants', () => {
         secretKind: 'repository-token',
       });
 
-      expect(() =>
+      await expect(
         createVaultGrant(coreDb, {
           allowedInjectionPaths: ['gateway-only'],
           grantId: 'grant_imported_history',
@@ -121,9 +123,9 @@ describe('vault grants', () => {
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
-      ).toThrow('Vault grant identifier is not canonical.');
+      ).rejects.toThrow('Vault grant identifier is not canonical.');
 
-      expect(() =>
+      await expect(
         createVaultGrant(coreDb, {
           allowedInjectionPaths: ['gateway-only'],
           grantId: 'grant_00000000-0000-7c90-9388-4c15ff9c7432',
@@ -131,8 +133,8 @@ describe('vault grants', () => {
           ownerScope: 'workspace',
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         })
-      ).toThrow('Workspace-scoped vault grants require workspaceId.');
-      expect(() =>
+      ).rejects.toThrow('Workspace-scoped vault grants require workspaceId.');
+      await expect(
         createVaultGrant(coreDb, {
           allowedInjectionPaths: ['gateway-only'],
           grantId: 'grant_00000000-0000-744f-bf07-8dd1c8d4e04b',
@@ -141,8 +143,8 @@ describe('vault grants', () => {
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
-      ).toThrow('Server-scoped vault grants cannot include workspaceId or userId.');
-      expect(() =>
+      ).rejects.toThrow('Server-scoped vault grants cannot include workspaceId or userId.');
+      await expect(
         createVaultGrant(coreDb, {
           allowedInjectionPaths: [],
           grantId: 'grant_00000000-0000-7755-b1ef-fb8065537f80',
@@ -151,19 +153,20 @@ describe('vault grants', () => {
           vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
-      ).toThrow('Vault grants require at least one allowed injection path.');
+      ).rejects.toThrow('Vault grants require at least one allowed injection path.');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('revokes a grant and marks related injection receipts stale', () => {
+  it('revokes a grant and marks related injection receipts stale', async () => {
     const coreDb = createCoreDb();
 
     try {
-      createGrantWithRuntimeFileReceipt(coreDb);
+      await createGrantWithRuntimeFileReceipt(coreDb);
 
-      const revoked = revokeVaultGrant(coreDb, {
+      const revoked = await revokeVaultGrant(coreDb, {
         grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
         now: () => '2026-07-05T00:30:00.000Z',
       });
@@ -184,6 +187,7 @@ describe('vault grants', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -194,15 +198,15 @@ describe('vault grants', () => {
  *
  * @param coreDb Open Core database handle.
  */
-function createGrantWithRuntimeFileReceipt(coreDb: CoreDb): void {
-  createVaultReference(coreDb, {
+async function createGrantWithRuntimeFileReceipt(coreDb: CoreDb): Promise<void> {
+  await createVaultReference(coreDb, {
     backendKind: 'encrypted-file',
     displayName: 'GitHub token',
     ownerScope: 'server',
     referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     secretKind: 'repository-token',
   });
-  createVaultGrant(coreDb, {
+  await createVaultGrant(coreDb, {
     allowedInjectionPaths: ['runtime-file'],
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     lifetime: 'turn',
@@ -210,7 +214,7 @@ function createGrantWithRuntimeFileReceipt(coreDb: CoreDb): void {
     vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   });
-  createVaultInjectionPlan(coreDb, {
+  await createVaultInjectionPlan(coreDb, {
     backendCapabilityRequirement: 'encrypted-file:resolve',
     expirationBehavior: 'delete-on-turn-end',
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
@@ -220,7 +224,7 @@ function createGrantWithRuntimeFileReceipt(coreDb: CoreDb): void {
     revocationBehavior: 'mark-session-stale',
     targetPath: '/openkit/secrets/github-token',
   });
-  createVaultInjectionReceipt(coreDb, {
+  await createVaultInjectionReceipt(coreDb, {
     agentSessionId: 'session_1',
     backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
@@ -232,16 +236,17 @@ function createGrantWithRuntimeFileReceipt(coreDb: CoreDb): void {
 }
 
 /** Creates a disposable metadata-only grant; no backend material is read or written. */
-function retainedGrantFixture() {
+async function retainedGrantFixture() {
   const root = mkdtempSync(join(tmpdir(), 'openkit-retained-grant-'));
   const db = openCoreDb(root);
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
   applyMigrations(db);
   const referenceId = 'vault_00000000-0000-7f73-bffa-d96a61ee4d70';
-  createVaultReference(db, {
+  await createVaultReference(db, {
     backendKind: 'encrypted-file',
     displayName: 'Retained grant fixture',
     ownerScope: 'server',
@@ -256,29 +261,29 @@ function retainedGrantFixture() {
     allowedInjectionPaths: ['gateway-only'],
     now: () => '2026-10-18T00:00:00.000Z',
   };
-  createVaultGrant(db, input);
+  await createVaultGrant(db, input);
   return { db, input };
 }
 
 describe('retained Vault Grant SQL format', () => {
-  it('writes v1 and preserves exact injection-path bytes across reads and replay', () => {
-    const { db, input } = retainedGrantFixture();
+  it('writes v1 and preserves exact injection-path bytes across reads and replay', async () => {
+    const { db, input } = await retainedGrantFixture();
     const before = db.sqlite.prepare('SELECT * FROM vault_grants').get();
     expect(before).toMatchObject({ schema_version: 1 });
     expect(getVaultGrant(db, input.grantId)?.allowedInjectionPaths).toEqual(['gateway-only']);
-    createVaultGrant(db, input);
+    await createVaultGrant(db, input);
     expect(db.sqlite.prepare('SELECT * FROM vault_grants').get()).toEqual(before);
   });
 
-  it('refuses an unknown version before malformed JSON decoding, replacement or revocation', () => {
-    const { db, input } = retainedGrantFixture();
+  it('refuses an unknown version before malformed JSON decoding, replacement or revocation', async () => {
+    const { db, input } = await retainedGrantFixture();
     db.sqlite
       .prepare("UPDATE vault_grants SET schema_version=2, allowed_injection_paths='{invalid'")
       .run();
     const before = db.sqlite.prepare('SELECT * FROM vault_grants').get();
     expect(() => getVaultGrant(db, input.grantId)).toThrow('Unsupported retained record format');
-    expect(() => createVaultGrant(db, input)).toThrow('Unsupported retained record format');
-    expect(() => revokeVaultGrant(db, { grantId: input.grantId })).toThrow(
+    await expect(createVaultGrant(db, input)).rejects.toThrow('Unsupported retained record format');
+    await expect(revokeVaultGrant(db, { grantId: input.grantId })).rejects.toThrow(
       'Unsupported retained record format'
     );
     expect(db.sqlite.prepare('SELECT * FROM vault_grants').get()).toEqual(before);

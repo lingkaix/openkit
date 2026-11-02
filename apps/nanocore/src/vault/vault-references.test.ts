@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVaultInjectionPlan, listVaultInjectionPlans } from '../vault-injection-plans.js';
@@ -32,11 +33,11 @@ function createCoreDb(): CoreDb {
 }
 
 describe('vault references', () => {
-  it('creates, reads, and lists non-secret server vault references', () => {
+  it('creates, reads, and lists non-secret server vault references', async () => {
     const coreDb = createCoreDb();
 
     try {
-      const created = createVaultReference(coreDb, {
+      const created = await createVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         backendLocator: 'encrypted-file:default',
         displayName: 'OpenAI provider key',
@@ -45,7 +46,7 @@ describe('vault references', () => {
         referenceId: 'vault_00000000-0000-7a76-a462-96e7448d3d9c',
         secretKind: 'provider-api-key',
       });
-      const duplicate = createVaultReference(coreDb, {
+      const duplicate = await createVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         displayName: 'Changed label',
         now: () => '2026-07-05T00:10:00.000Z',
@@ -71,11 +72,12 @@ describe('vault references', () => {
       });
       expect(JSON.stringify(created)).not.toContain('sk-');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('reports insert evidence without treating duplicate rows as new', () => {
+  it('reports insert evidence without treating duplicate rows as new', async () => {
     const coreDb = createCoreDb();
 
     try {
@@ -88,7 +90,7 @@ describe('vault references', () => {
         referenceId: 'vault_00000000-0000-74a6-9dc6-af55fa43eb8f',
         secretKind: 'provider-subscription-oauth',
       };
-      const inserted = createVaultReferenceWithInsertEvidence(coreDb, input);
+      const inserted = await createVaultReferenceWithInsertEvidence(coreDb, input);
 
       expect(inserted).toEqual({
         inserted: true,
@@ -108,12 +110,12 @@ describe('vault references', () => {
           workspaceId: null,
         },
       });
-      expect(createVaultReferenceWithInsertEvidence(coreDb, input)).toEqual({
+      expect(await createVaultReferenceWithInsertEvidence(coreDb, input)).toEqual({
         inserted: false,
         reference: inserted.reference,
       });
       expect(
-        createVaultReferenceWithInsertEvidence(coreDb, {
+        await createVaultReferenceWithInsertEvidence(coreDb, {
           ...input,
           displayName: 'Conflicting label',
           now: () => '2026-07-23T00:10:00.000Z',
@@ -122,15 +124,16 @@ describe('vault references', () => {
       ).toEqual({ inserted: false, reference: inserted.reference });
       expect(getVaultReference(coreDb, input.referenceId)).toEqual(inserted.reference);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('requires workspace ids only for workspace-owned references', () => {
+  it('requires workspace ids only for workspace-owned references', async () => {
     const coreDb = createCoreDb();
 
     try {
-      expect(() =>
+      await expect(
         createVaultReference(coreDb, {
           backendKind: 'encrypted-file',
           displayName: 'Workspace key',
@@ -138,8 +141,8 @@ describe('vault references', () => {
           referenceId: 'vault_00000000-0000-780f-b76c-cf393899e2da',
           secretKind: 'provider-api-key',
         })
-      ).toThrow('Workspace-scoped vault references require workspaceId.');
-      expect(() =>
+      ).rejects.toThrow('Workspace-scoped vault references require workspaceId.');
+      await expect(
         createVaultReference(coreDb, {
           backendKind: 'encrypted-file',
           displayName: 'User key',
@@ -147,8 +150,8 @@ describe('vault references', () => {
           referenceId: 'vault_00000000-0000-785d-b475-5c82e3cd50e2',
           secretKind: 'provider-api-key',
         })
-      ).toThrow('User-scoped vault references require userId.');
-      expect(() =>
+      ).rejects.toThrow('User-scoped vault references require userId.');
+      await expect(
         createVaultReference(coreDb, {
           backendKind: 'encrypted-file',
           displayName: 'Server key',
@@ -157,8 +160,8 @@ describe('vault references', () => {
           secretKind: 'provider-api-key',
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
-      ).toThrow('Server-scoped vault references cannot include workspaceId or userId.');
-      expect(() =>
+      ).rejects.toThrow('Server-scoped vault references cannot include workspaceId or userId.');
+      await expect(
         createVaultReference(coreDb, {
           backendKind: 'encrypted-file',
           displayName: 'Workspace key',
@@ -168,17 +171,18 @@ describe('vault references', () => {
           userId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         })
-      ).toThrow('Workspace-scoped vault references cannot include userId.');
+      ).rejects.toThrow('Workspace-scoped vault references cannot include userId.');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('advances only active vault references by zero or one version', () => {
+  it('advances only active vault references by zero or one version', async () => {
     const coreDb = createCoreDb();
 
     try {
-      const created = createVaultReference(coreDb, {
+      const created = await createVaultReference(coreDb, {
         backendKind: 'encrypted-file',
         displayName: 'Provider subscription credential',
         now: () => '2026-07-23T00:00:00.000Z',
@@ -186,7 +190,7 @@ describe('vault references', () => {
         referenceId: 'vault_00000000-0000-7943-bc4d-5537bc98f3c5',
         secretKind: 'provider-subscription-oauth',
       });
-      const equalVersion = advanceActiveVaultReferenceVersion(coreDb, {
+      const equalVersion = await advanceActiveVaultReferenceVersion(coreDb, {
         currentVersion: 1,
         now: () => '2026-07-23T00:10:00.000Z',
         referenceId: created.referenceId,
@@ -194,7 +198,7 @@ describe('vault references', () => {
 
       expect(equalVersion).toEqual(created);
 
-      const advanced = advanceActiveVaultReferenceVersion(coreDb, {
+      const advanced = await advanceActiveVaultReferenceVersion(coreDb, {
         currentVersion: 2,
         now: () => '2026-07-23T00:20:00.000Z',
         referenceId: created.referenceId,
@@ -205,55 +209,56 @@ describe('vault references', () => {
         currentVersion: 2,
         updatedAt: '2026-07-23T00:20:00.000Z',
       });
-      expect(() =>
+      await expect(
         advanceActiveVaultReferenceVersion(coreDb, {
           currentVersion: 1,
           now: () => '2026-07-23T00:30:00.000Z',
           referenceId: created.referenceId,
         })
-      ).toThrow();
+      ).rejects.toThrow();
       expect(getVaultReference(coreDb, created.referenceId)).toEqual(advanced);
-      expect(() =>
+      await expect(
         advanceActiveVaultReferenceVersion(coreDb, {
           currentVersion: 4,
           now: () => '2026-07-23T00:40:00.000Z',
           referenceId: created.referenceId,
         })
-      ).toThrow();
+      ).rejects.toThrow();
       expect(getVaultReference(coreDb, created.referenceId)).toEqual(advanced);
-      expect(() =>
+      await expect(
         advanceActiveVaultReferenceVersion(coreDb, {
           currentVersion: 1,
           referenceId: 'vault_00000000-0000-722b-b433-75d118b2149c',
         })
-      ).toThrow();
+      ).rejects.toThrow();
       expect(getVaultReference(coreDb, 'vault_00000000-0000-722b-b433-75d118b2149c')).toBeNull();
 
-      const revoked = revokeVaultReference(coreDb, {
+      const revoked = await revokeVaultReference(coreDb, {
         now: () => '2026-07-23T00:50:00.000Z',
         referenceId: created.referenceId,
       });
 
-      expect(() =>
+      await expect(
         advanceActiveVaultReferenceVersion(coreDb, {
           currentVersion: 2,
           now: () => '2026-07-23T01:00:00.000Z',
           referenceId: created.referenceId,
         })
-      ).toThrow();
+      ).rejects.toThrow();
       expect(getVaultReference(coreDb, created.referenceId)).toEqual(revoked);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('revokes a reference and marks dependent sessions stale', () => {
+  it('revokes a reference and marks dependent sessions stale', async () => {
     const coreDb = createCoreDb();
 
     try {
-      createReferenceCascadeFixture(coreDb);
+      await createReferenceCascadeFixture(coreDb);
 
-      const revoked = revokeVaultReference(coreDb, {
+      const revoked = await revokeVaultReference(coreDb, {
         now: () => '2026-07-05T00:30:00.000Z',
         referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       });
@@ -284,15 +289,16 @@ describe('vault references', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('rolls back the complete revocation cascade and permits retry', () => {
+  it('rolls back the complete revocation cascade and permits retry', async () => {
     const coreDb = createCoreDb();
 
     try {
-      createReferenceCascadeFixture(coreDb);
+      await createReferenceCascadeFixture(coreDb);
       const originalReference = getVaultReference(
         coreDb,
         'vault_00000000-0000-7f73-bffa-d96a61ee4d70'
@@ -301,7 +307,7 @@ describe('vault references', () => {
       const originalPlans = listVaultInjectionPlans(coreDb);
       const originalReceipts = listVaultInjectionReceipts(coreDb);
 
-      coreDb.sqlite.exec(`CREATE TEMP TRIGGER fail_vault_grant_revocation
+      coreDb.sqlite.exec(`CREATE TRIGGER fail_vault_grant_revocation
         BEFORE UPDATE OF status ON vault_grants
         FOR EACH ROW
         WHEN OLD.vault_reference_id = 'vault_00000000-0000-7f73-bffa-d96a61ee4d70'
@@ -327,12 +333,16 @@ describe('vault references', () => {
           SELECT RAISE(FAIL, 'injected vault grant revoke failure');
         END`);
 
-      expect(() =>
+      await expect(
         revokeVaultReference(coreDb, {
           now: () => '2026-07-23T00:30:00.000Z',
           referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         })
-      ).toThrow('injected vault grant revoke failure');
+      ).rejects.toMatchObject({
+        name: 'ControlStoreWorkerError',
+        code: 'constraint',
+        commit: 'not-committed',
+      });
       expect(getVaultReference(coreDb, 'vault_00000000-0000-7f73-bffa-d96a61ee4d70')).toEqual(
         originalReference
       );
@@ -343,7 +353,7 @@ describe('vault references', () => {
       coreDb.sqlite.exec('DROP TRIGGER fail_vault_grant_revocation');
 
       expect(
-        revokeVaultReference(coreDb, {
+        await revokeVaultReference(coreDb, {
           now: () => '2026-07-23T00:40:00.000Z',
           referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
         })
@@ -368,6 +378,7 @@ describe('vault references', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -378,15 +389,15 @@ describe('vault references', () => {
  *
  * @param coreDb Open Core database handle.
  */
-function createReferenceCascadeFixture(coreDb: CoreDb): void {
-  createVaultReference(coreDb, {
+async function createReferenceCascadeFixture(coreDb: CoreDb): Promise<void> {
+  await createVaultReference(coreDb, {
     backendKind: 'encrypted-file',
     displayName: 'GitHub token',
     ownerScope: 'server',
     referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     secretKind: 'repository-token',
   });
-  createVaultGrant(coreDb, {
+  await createVaultGrant(coreDb, {
     allowedInjectionPaths: ['runtime-file'],
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
     lifetime: 'turn',
@@ -394,7 +405,7 @@ function createReferenceCascadeFixture(coreDb: CoreDb): void {
     vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   });
-  createVaultInjectionPlan(coreDb, {
+  await createVaultInjectionPlan(coreDb, {
     backendCapabilityRequirement: 'encrypted-file:resolve',
     expirationBehavior: 'delete-on-turn-end',
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
@@ -404,7 +415,7 @@ function createReferenceCascadeFixture(coreDb: CoreDb): void {
     revocationBehavior: 'mark-session-stale',
     targetPath: '/openkit/secrets/github-token',
   });
-  createVaultInjectionReceipt(coreDb, {
+  await createVaultInjectionReceipt(coreDb, {
     agentSessionId: 'session_1',
     backendSummary: 'encrypted-file:vault_00000000-0000-7f73-bffa-d96a61ee4d70:v1',
     grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',

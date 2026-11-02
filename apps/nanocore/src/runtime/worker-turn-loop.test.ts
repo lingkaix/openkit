@@ -599,7 +599,7 @@ function admittedWorker(
       const target = await recordTestNativeRuntimeTarget(coreDb);
       const db = openWorkspaceDb(coreDb.dataRoot, workspaceId);
       try {
-        const environmentPackage = resolveAgentEnvironmentPackage({
+        const environmentPackage = await resolveAgentEnvironmentPackage({
           coreDb,
           agentSessionId,
           agentSetup: setup,
@@ -611,7 +611,10 @@ function admittedWorker(
           triggerActor: admitted.triggerActor,
           workspaceRoots: [],
         });
-        recordAgentEnvironmentPackageSnapshot(db, { environmentPackage, createdAt: timestamp });
+        await recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage,
+          createdAt: timestamp,
+        });
         await store.updateAgentSession(agentSessionId, {
           environmentPackageSnapshotId: environmentPackage.snapshotId,
         });

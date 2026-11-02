@@ -12,12 +12,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { testEntityId } from '../test-support/entity-ids.js';
 
 import { VaultBackendError } from './vault-backend.js';
 import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.js';
 import { sealEncryptedFileVaultEntry } from './vault-encrypted-file-store.js';
+import { createVaultUnlockState } from './vault-unlock-state.js';
 
 const STALE_WRITER_PID = process.pid === 1_234_567 ? 1_234_568 : 1_234_567;
 const WRITER_TEMP_SUFFIXES = [
@@ -1222,5 +1223,119 @@ describe('encrypted-file vault backend', () => {
         'utf8'
       )
     ).toContain('"1": "2026-07-05T01:11:00.000Z"');
+  });
+
+  it.each([
+    'lock',
+    'revoke',
+    'entry-corruption',
+    'state-corruption',
+  ] as const)('revalidates a selected version without resolving material after %s', (withdrawal) => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-revalidation-'));
+    const referenceId = testEntityId('vault', `revalidation_${withdrawal}`);
+    const material = 'synthetic_revalidation_material';
+    const state = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      now: () => '2026-07-05T01:00:00.000Z',
+      storeDir,
+    });
+    state.unlock({ masterKey: Buffer.alloc(32, 9) });
+    const backend = state.backend();
+    const resolve = vi.spyOn(backend, 'resolve');
+    try {
+      backend.store({ referenceId, material, metadata: { ownerScope: 'server' } });
+      // Backend Implementation: only material resolution may return material.
+      expect(backend.assertResolutionCurrent({ referenceId })).toBeUndefined();
+      expect(backend.assertResolutionCurrent({ referenceId, version: 1 })).toBeUndefined();
+      if (withdrawal === 'lock') state.lock();
+      else if (withdrawal === 'revoke') backend.revoke({ referenceId });
+      else {
+        // Fault injection starts only after the real store owner produced valid state.
+        const name = withdrawal === 'entry-corruption' ? '1.enc' : 'state.json';
+        const path = join(storeDir, 'entries', referenceId, name);
+        const corrupted = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+        if (withdrawal === 'entry-corruption') {
+          const tag = Buffer.from(corrupted.tag as string, 'base64');
+          tag[0] = tag[0]! ^ 1;
+          corrupted.tag = tag.toString('base64');
+        } else {
+          corrupted.updatedAt = '2026-07-05T01:00:00.001Z';
+        }
+        writeFileSync(path, `${JSON.stringify(corrupted)}\n`, { mode: 0o600 });
+      }
+      let failure: unknown;
+      try {
+        backend.assertResolutionCurrent({ referenceId, version: 1 });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(VaultBackendError);
+      expect(failure).toMatchObject({
+        code:
+          withdrawal === 'lock'
+            ? 'vault-locked'
+            : withdrawal === 'revoke'
+              ? 'reference-revoked'
+              : 'backend-unavailable',
+      });
+      expect(String(failure)).not.toContain(material);
+      expect(String(failure)).not.toContain(storeDir);
+      // Validation is not another material-resolution attempt (Backend Implementation, Vault-Use).
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      resolve.mockRestore();
+      state.lock();
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('revalidates exact prior-version grace and destroys expired material without resolving it', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-revalidation-grace-'));
+    const referenceId = testEntityId('vault', 'revalidation_grace');
+    let now = '2026-07-05T01:00:00.000Z';
+    const backend = createEncryptedFileVaultBackend({
+      masterKey: Buffer.alloc(32, 9),
+      now: () => now,
+      rotationGraceMs: 1_000,
+      storeDir,
+    });
+    const resolve = vi.spyOn(backend, 'resolve');
+    const firstPath = join(storeDir, 'entries', referenceId, '1.enc');
+    const secondPath = join(storeDir, 'entries', referenceId, '2.enc');
+    try {
+      backend.store({
+        referenceId,
+        material: 'synthetic_prior_material',
+        metadata: { ownerScope: 'server' },
+      });
+      now = '2026-07-05T01:00:10.000Z';
+      expect(backend.rotate({ referenceId, material: 'synthetic_current_material' })).toMatchObject(
+        {
+          currentVersion: 2,
+        }
+      );
+      const currentBefore = readFileSync(secondPath);
+      now = '2026-07-05T01:00:10.999Z';
+      expect(backend.assertResolutionCurrent({ referenceId, version: 1 })).toBeUndefined();
+      // The existing owner expires prior material only after its authenticated deadline.
+      now = '2026-07-05T01:00:11.000Z';
+      expect(backend.assertResolutionCurrent({ referenceId, version: 1 })).toBeUndefined();
+      expect(existsSync(firstPath)).toBe(true);
+      now = '2026-07-05T01:00:11.001Z';
+      expect(() => backend.assertResolutionCurrent({ referenceId, version: 1 })).toThrow(
+        'version-expired'
+      );
+      expect(existsSync(firstPath)).toBe(false);
+      expect(() => backend.assertResolutionCurrent({ referenceId, version: 1 })).toThrow(
+        'version-expired'
+      );
+      expect(backend.assertResolutionCurrent({ referenceId, version: 2 })).toBeUndefined();
+      expect(backend.assertResolutionCurrent({ referenceId })).toBeUndefined();
+      expect(readFileSync(secondPath).equals(currentBefore)).toBe(true);
+      expect(resolve).not.toHaveBeenCalled();
+    } finally {
+      resolve.mockRestore();
+      rmSync(storeDir, { recursive: true, force: true });
+    }
   });
 });
