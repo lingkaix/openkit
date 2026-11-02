@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -6,11 +7,17 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from '../auth/access-token-store.js';
+import { createBetterAuth } from '../auth/better-auth.js';
+import type { Actor } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { policyDigest } from '../policy/statements.js';
 import { readVaultRequesterAuthority } from '../runtime/worker-credential-authority.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { createVaultGrant } from '../vault/vault-grants.js';
+import { createVaultGrant, getVaultGrant } from '../vault/vault-grants.js';
 import {
   advanceActiveVaultReferenceVersion,
   createVaultReference,
@@ -802,4 +809,169 @@ it.each([
     await operation?.result;
     unlock.lock();
   }
+});
+
+// Core Vault and Durable Control Store: the existing grant-revoke owner decides after FIFO,
+// and grant/plan/receipt projection changes share its savepoint and covering FULL ACK.
+describe('native User reference owner withdrawal', () => {
+  it.each([
+    'full-ack-and-cold-read',
+    'projection-rollback',
+    'requester-disabled',
+    'token-revoked',
+    'reference-owner-changed',
+    'grant-workspace-changed',
+  ] as const)('preserves current owner authority and the original withdrawal tuple (%s)', async (scenario) => {
+    const f = await fixture();
+    const localUserId = ensureLocalUser(f.db);
+    const auth = createBetterAuth(f.db, { env: {} });
+    const { user } = await auth.api.signUpEmail({
+      body: {
+        name: 'Native reference owner',
+        email: `${randomUUID()}@example.invalid`,
+        password: randomUUID(),
+      },
+    });
+    let actor: Actor = { kind: 'session', userId: user.id };
+    let tokenId: string | undefined;
+    if (scenario === 'token-revoked') {
+      const token = createOpenKitAccessTokenRecord(f.db, {
+        ownerUserId: user.id,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      tokenId = token.tokenId;
+      actor = { kind: 'token', userId: user.id, tokenId, tokenScope: 'server-admin' };
+    }
+    recordWorkspaceOwnerMembership({ coreDb: f.db, workspaceId, ownerUserId: localUserId });
+    const otherWorkspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba202';
+    recordWorkspaceOwnerMembership({
+      coreDb: f.db,
+      workspaceId: otherWorkspaceId,
+      ownerUserId: localUserId,
+    });
+    const reference = await createVaultReference(f.db, {
+      ...createInput(),
+      ownerScope: 'user',
+      userId: user.id,
+    });
+    const grant = await createVaultGrant(f.db, {
+      grantId: 'grant_00000000-0000-7a76-a462-96e7448d3d9c',
+      vaultReferenceId: referenceId,
+      ownerScope: 'workspace',
+      workspaceId,
+      allowedInjectionPaths: ['gateway-only'],
+      lifetime: 'workspace',
+    });
+    const untouched = await createVaultGrant(f.db, {
+      ...grant,
+      grantId: 'grant_00000000-0000-7a76-a462-96e7448d3d9d',
+      workspaceId: otherWorkspaceId,
+    });
+    const plan = await createVaultInjectionPlan(f.db, {
+      planId: 'plan_native_user_withdrawal',
+      grantId: grant.grantId,
+      injectionVisibility: 'gateway-only',
+      expirationBehavior: 'Deny expired use.',
+      revocationBehavior: 'Close affected connection.',
+      redactionRule: 'Exclude material.',
+      backendCapabilityRequirement: 'gateway-only',
+    });
+    const receipt = await createVaultInjectionReceipt(f.db, {
+      receiptId: 'receipt_native_user_withdrawal',
+      planId: plan.planId,
+      grantId: grant.grantId,
+      agentSessionId: 'as_00000000-0000-7a76-a462-96e7448d3d9c',
+      backendSummary: 'Synthetic acknowledged connection.',
+      injectedAt: clock,
+      revocationStatus: 'active',
+    });
+    if (scenario === 'projection-rollback')
+      f.db.sqlite.exec(`CREATE TRIGGER reject_user_withdrawal_projection
+        BEFORE UPDATE ON vault_injection_receipts
+        BEGIN SELECT RAISE(ABORT, 'Synthetic withdrawal projection failure'); END`);
+    const commits = f.commits();
+    const success = scenario === 'full-ack-and-cold-read';
+    arm(f, success ? 2 : 1, success);
+    const pending = f.start(() =>
+      getControlStoreWorkerClient().vault(f.db, 'grant-revoke', {
+        grantId: grant.grantId,
+        // These are current records from the real owners, never an earlier allow Boolean.
+        publicMutation: { actor, workspaceId, reference },
+      })
+    );
+    try {
+      await reached(f, pending);
+      if (scenario === 'requester-disabled')
+        f.db.sqlite.transaction(() => disableCanonicalUser(f.db, user.id))();
+      else if (scenario === 'token-revoked') revokeOpenKitAccessTokenRecord(f.db, tokenId!);
+      else if (scenario === 'reference-owner-changed')
+        f.fixtureSql('UPDATE vault_references SET user_id = ? WHERE reference_id = ?').run(
+          localUserId,
+          referenceId
+        );
+      else if (scenario === 'grant-workspace-changed')
+        f.fixtureSql('UPDATE vault_grants SET workspace_id = ? WHERE grant_id = ?').run(
+          otherWorkspaceId,
+          grant.grantId
+        );
+      // Storage owns the deliberate post-admission changes above. Product Main stays query-only.
+      f.db.sqlite.pragma('query_only = ON');
+      if (success) {
+        expect(Atomics.load(f.gate, 4)).toBe(2); // SQLite FULL, read in the actual writer before COMMIT.
+        expect(getVaultGrant(f.db, grant.grantId)).toEqual(grant);
+        expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
+        expect(listVaultInjectionReceipts(f.db)).toEqual([receipt]);
+      }
+      releaseNative(f.gate);
+      if (success) {
+        await reached(f, pending, 'reply');
+        expect(f.commits() - commits).toBe(1);
+        expect(getVaultGrant(f.db, grant.grantId)).toEqual({ ...grant, status: 'revoked' });
+        expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual({ ...plan, status: 'revoked' });
+        expect(listVaultInjectionReceipts(f.db)).toEqual([
+          { ...receipt, revocationStatus: 'revoked' },
+        ]);
+        expect(pending.settled()).toBe(false);
+        deliverReplies();
+        expect(await pending.result).toEqual({ ok: true, value: { ...grant, status: 'revoked' } });
+        await shutdownControlStoreWorkerClient();
+        const cold = openCoreDb(f.db.dataRoot);
+        try {
+          expect(getVaultGrant(cold, grant.grantId)).toEqual({ ...grant, status: 'revoked' });
+          expect(getVaultInjectionPlan(cold, plan.planId)).toEqual({ ...plan, status: 'revoked' });
+          expect(listVaultInjectionReceipts(cold)).toEqual([
+            { ...receipt, revocationStatus: 'revoked' },
+          ]);
+          expect(getVaultGrant(cold, untouched.grantId)).toEqual(untouched);
+          expect(getVaultReference(cold, referenceId)).toEqual(reference);
+        } finally {
+          cold.sqlite.close();
+        }
+      } else {
+        expect(await pending.result).toMatchObject({
+          ok: false,
+          error: { commit: 'not-committed' },
+        });
+        if (scenario === 'projection-rollback')
+          expect(await pending.result).toMatchObject({
+            ok: false,
+            error: { code: 'constraint', commit: 'not-committed' },
+          });
+        expect(getVaultGrant(f.db, grant.grantId)).toEqual(
+          scenario === 'grant-workspace-changed'
+            ? { ...grant, workspaceId: otherWorkspaceId }
+            : grant
+        );
+        expect(getVaultInjectionPlan(f.db, plan.planId)).toEqual(plan);
+        expect(listVaultInjectionReceipts(f.db)).toEqual([receipt]);
+        expect(getVaultGrant(f.db, untouched.grantId)).toEqual(untouched);
+      }
+    } finally {
+      releaseNative(f.gate);
+      deliverReplies();
+      await pending.result;
+    }
+  });
 });

@@ -1875,7 +1875,7 @@ class ControlStoreWorkerClient {
     db: UserDb,
     input: Extract<
       ControlCapabilityCommandInput,
-      { kind: 'user-permission' | 'user-participant-audit' }
+      { kind: 'user-permission' | 'user-participant-audit' | 'user-audit' }
     >
   ): Promise<null> {
     const path = nativeUserDatabasePath(db);

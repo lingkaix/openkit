@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 347;
+const EXPECTED_CATALOG_SIZE = 348;
 const EXPECTED_SERVER_SIZE = 93;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 251;
+const EXPECTED_INCLUDED_SIZE = 252;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -310,6 +310,7 @@ const WEB_OPERATION_GROUPS = {
     'vault.grant-issue': { disposition: 'live', surface: 'Vault' },
     'vault.grant-create': { disposition: 'live', surface: 'Vault backend' },
     'vault.grant-narrow': { disposition: 'live', surface: 'Vault backend' },
+    'vault.grant-withdraw': { disposition: 'workflow', surface: 'Vault' },
     'vault.secret-create': { disposition: 'live', surface: 'Vault backend' },
     'vault.grant-list': { disposition: 'live', surface: 'Vault' },
     'vault.injection-plan-list': { disposition: 'live', surface: 'Vault' },

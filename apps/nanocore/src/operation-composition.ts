@@ -168,6 +168,8 @@ export interface OperationInvocationDependencies {
   /** Existing app-owned process-local Vault backend unlock state. */
   readonly vaultUnlockState?: VaultUnlockState;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
+  /** Opens the actual public caller's existing User evidence home. */
+  readonly repositoryUserDb?: (userId: string) => import('./storage/db.js').UserDb;
   readonly store?: FsStore;
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;

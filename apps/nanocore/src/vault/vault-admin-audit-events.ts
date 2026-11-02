@@ -7,7 +7,7 @@ import {
 } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import type { CoreDb } from '../storage/db.js';
+import type { CoreDb, UserDb } from '../storage/db.js';
 import type { VAULT_ADMIN_ACTIONS } from '../storage/vault-native-codecs.js';
 import type { VaultBackendKind } from './vault-backend.js';
 
@@ -92,10 +92,22 @@ export function prepareVaultAdminAudit(input: Omit<RecordVaultAdminAuditEventInp
   return { admin, audit };
 }
 
-/** Prepares the original Vault event on Main, then awaits the actual Core or Workspace evidence owner. */
+/** Prepares the original Vault event on Main, then awaits its actual Core, Workspace or User evidence owner. */
 export async function recordVaultAuditEvent(
-  input: RecordServerAuditEventInput | RecordWorkspaceAuditEventInput
+  input:
+    | RecordServerAuditEventInput
+    | RecordWorkspaceAuditEventInput
+    | (Omit<RecordServerAuditEventInput, 'coreDb' | 'workspaceId'> & { userDb: UserDb })
 ): Promise<AuditEvent> {
+  if ('userDb' in input) {
+    const event = prepareAuditEvent({ ...input, workspaceId: null });
+    await getControlStoreWorkerClient().userCapability(input.userDb, {
+      kind: 'user-audit',
+      userId: input.userDb.userId,
+      event: { ...event, workspaceId: null },
+    });
+    return event;
+  }
   const db = 'coreDb' in input ? input.coreDb : input.workspaceDb;
   const event = prepareAuditEvent({ ...input, workspaceId: input.workspaceId ?? null });
   return getControlStoreWorkerClient().vault(db, 'audit-insert', event);

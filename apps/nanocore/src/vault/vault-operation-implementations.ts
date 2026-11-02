@@ -18,7 +18,12 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { isDeploymentAdminActor } from '../auth/identity.js';
-import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import {
+  currentWorkspaceAuthority,
+  evaluateOwnedUserOperation,
+  isCanonicalUserActive,
+  isCurrentServerPolicyAuthor,
+} from '../auth/operation-authorizer.js';
 import { loadProviderProfiles } from '../config/providers-loader.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -39,6 +44,7 @@ import { readVaultRequesterAuthority } from '../runtime/worker-credential-author
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
+  nativeUserDatabasePath,
 } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type {
@@ -46,6 +52,7 @@ import type {
   VaultBindingRequester,
   VaultReferenceRecord,
 } from '../storage/vault-native-codecs.js';
+import { getWithdrawableUserVaultGrant } from '../storage/vault-native-codecs.js';
 import {
   getVaultInjectionPlan,
   listExportableVaultInjectionPlans,
@@ -58,8 +65,8 @@ import {
 import { isServerMcpReference } from './server-mcp-authority.js';
 import {
   prepareVaultAdminAudit,
-  recordVaultAuditEvent as recordServerAuditEvent,
   recordVaultAdminAuditEvent,
+  recordVaultAuditEvent,
 } from './vault-admin-audit-events.js';
 import { createVaultGrantRequestImplementations } from './vault-grant-requests.js';
 import {
@@ -165,6 +172,7 @@ export function createVaultOperationImplementations(
     | 'coreDb'
     | 'dataRoot'
     | 'repositoryWorkspaceDb'
+    | 'repositoryUserDb'
     | 'store'
     | 'turnExecutor'
     | 'vaultUnlockState'
@@ -434,7 +442,7 @@ export function createVaultOperationImplementations(
       };
       await recheckAuthority();
       const result = await run(recheckAuthority);
-      await recordServerAuditEvent({
+      await recordVaultAuditEvent({
         coreDb,
         workspaceId: input.workspaceId,
         ...(input.requestId ? { requestId: input.requestId } : {}),
@@ -459,7 +467,7 @@ export function createVaultOperationImplementations(
     } catch (cause) {
       let failure = cause;
       try {
-        await recordServerAuditEvent({
+        await recordVaultAuditEvent({
           coreDb,
           workspaceId: input.workspaceId,
           ...(input.requestId ? { requestId: input.requestId } : {}),
@@ -881,6 +889,174 @@ export function createVaultOperationImplementations(
           : 'Provider API-key configuration failed.',
     });
     return vaultFailure(message, errorCode, status);
+  }
+
+  /** Withdraws personal reference consent without manufacturing Workspace membership. */
+  async function withdrawOwnedGrant(
+    input: { workspaceId: string; grantId: string },
+    context: AdmittedOperationContext
+  ): Promise<WorkspaceVaultGrant> {
+    if (
+      context.kind !== 'public' ||
+      !coreDb ||
+      !dependencies.repositoryUserDb ||
+      !dependencies.policyInterception ||
+      !context.recheckAdmission ||
+      (!dependencies.readRuntimePolicy && !dependencies.runtimeConfigManager)
+    )
+      throw new OperationError(
+        'vault_withdrawal_unavailable',
+        'Vault withdrawal is unavailable.',
+        503
+      );
+    const actor = publicOperationActor(context);
+    const currentGrant = () => {
+      const target = getWithdrawableUserVaultGrant(coreDb, input.workspaceId, input.grantId);
+      if (!target) vaultWorkspaceAccessDenied();
+      const { grant, reference } = target;
+      const kernel = evaluateOwnedUserOperation(
+        coreDb,
+        actor,
+        reference.userId,
+        'vault.admin',
+        true
+      );
+      if (kernel.effect !== 'allow') vaultWorkspaceAccessDenied();
+      return { grant, reference, kernel };
+    };
+    const selected = currentGrant();
+    const userId = actor.userId;
+    const userDb = dependencies.repositoryUserDb(userId);
+    try {
+      // Finite Policy reads need the existing native User migrations before first use.
+      const userPath = nativeUserDatabasePath(userDb);
+      await getControlStoreWorkerClient().open({
+        database: `user:${userPath}`,
+        path: userPath,
+        create: false,
+        initialize: 'user',
+      });
+      const readPolicy =
+        dependencies.readRuntimePolicy ??
+        (() => dependencies.runtimeConfigManager!.current().openKitConfig.policy?.mediation);
+      const document = readAdmittedPolicyDocument(coreDb, readPolicy());
+      const policyRevision = policyDigest(document);
+      const authorityRevision = policyDigest(selected);
+      const userCurrent = (id: string) => isCanonicalUserActive(coreDb, id);
+      const authorCurrent = (id: string) =>
+        userCurrent(id) && (id === userId || isCurrentServerPolicyAuthor(coreDb, id));
+      const proposal: PolicyProposal = {
+        operation: 'vault.grant-withdraw',
+        workspaceId: null,
+        capabilityCallId: null,
+        resource: {
+          kind: 'container',
+          container: { kind: 'user', id: userId, owner: { kind: 'user', userId } },
+        },
+        subject: PolicySubjectV1Schema.parse({
+          principal: { kind: 'human', id: actor.userId },
+          onBehalfOf: null,
+          actor: context.actorRef,
+          process: null,
+          credentialKind: actor.kind,
+          responsibleHumanId: actor.userId,
+        }),
+        inputReferences: {
+          grantId: input.grantId,
+          referenceId: selected.reference.referenceId,
+          workspaceId: input.workspaceId,
+        },
+        inputAttributes: { contract: POLICY_OPERATION_REFERENCE_INPUT_V1 },
+      };
+      const policyInput: InterceptionInput = {
+        userDb,
+        document,
+        proposal,
+        authorizationRevision: authorityRevision,
+        resourceSummary: { grantId: input.grantId, referenceId: selected.reference.referenceId },
+        authorCurrent,
+        anchorCurrent: (anchor) =>
+          anchor.owner.kind === 'user' &&
+          anchor.owner.userId === userId &&
+          anchor.kind === 'user' &&
+          anchor.id === userId &&
+          userCurrent(userId),
+        participantAuthorized: (binding) =>
+          binding.participant.kind === 'deterministic' &&
+          binding.author.kind === 'human' &&
+          authorCurrent(binding.author.id),
+        stillCurrent: () =>
+          !context.signal?.aborted &&
+          policyDigest(readAdmittedPolicyDocument(coreDb, readPolicy())) === policyRevision &&
+          policyDigest(currentGrant()) === authorityRevision,
+        finalKernel: () => currentGrant().kernel,
+      };
+      const decision = await dependencies.policyInterception.decide(policyInput);
+      if (decision.result !== 'allow') vaultWorkspaceAccessDenied();
+      await context.recheckAdmission();
+      if (!policyInput.stillCurrent()) vaultWorkspaceAccessDenied();
+      const result = await getControlStoreWorkerClient().vault(
+        coreDb,
+        'grant-revoke',
+        {
+          grantId: input.grantId,
+          publicMutation: { actor, workspaceId: input.workspaceId, reference: selected.reference },
+        },
+        async () => {
+          await context.recheckAdmission!();
+          if (!policyInput.stillCurrent()) vaultWorkspaceAccessDenied();
+        }
+      );
+      await closeRevokedCredentialBindings(dependencies, { grantId: input.grantId });
+      await recordVaultAuditEvent({
+        userDb,
+        actor: context.actorRef,
+        action: 'vault.grant-withdraw',
+        outcome: 'succeeded',
+        resource: `vault-grant:${input.grantId}`,
+        vaultGrantId: input.grantId,
+        permissionDecisionId: decision.decisionId,
+        summary: 'Personal credential grant withdrawal completed.',
+      });
+      await dependencies.policyInterception
+        .observe({
+          ...policyInput,
+          stillCurrent: () =>
+            !context.signal?.aborted &&
+            policyDigest(readAdmittedPolicyDocument(coreDb, readPolicy())) === policyRevision &&
+            userCurrent(userId),
+        })
+        .catch(() => undefined);
+      return result as WorkspaceVaultGrant;
+    } catch (cause) {
+      try {
+        await recordVaultAuditEvent({
+          userDb,
+          actor: context.actorRef,
+          action: 'vault.grant-withdraw',
+          outcome: 'failed',
+          resource: `vault-grant:${input.grantId}`,
+          vaultGrantId: input.grantId,
+          summary: 'Personal credential grant withdrawal did not complete.',
+        });
+      } catch (auditFailure) {
+        throw new OperationError(
+          'vault_withdrawal_incomplete',
+          'Credential withdrawal did not complete. Inspect its current state before another request.',
+          409,
+          { cause: new AggregateError([cause, auditFailure]) }
+        );
+      }
+      if (cause instanceof OperationError) throw cause;
+      throw new OperationError(
+        'vault_withdrawal_incomplete',
+        'Credential withdrawal did not complete. Inspect its current state before another request.',
+        409,
+        { cause }
+      );
+    } finally {
+      userDb.sqlite.close();
+    }
   }
 
   /** Executes the existing Vault lifecycle and awaits required runtime revocation outside SQL. */
@@ -1797,6 +1973,7 @@ export function createVaultOperationImplementations(
     'vault.secret-rotate': (input, c) => mutate(input, c, 'rotate'),
     'vault.secret-revoke': (input, c) => mutate(input, c, 'revoke'),
     'vault.grant-create': (input, c) => mutate(input, c, 'grant'),
+    'vault.grant-withdraw': (input, c) => withdrawOwnedGrant(input, c),
     'vault.grant-narrow': async (input, c) => {
       const actor = publicOperationActor(c);
       if (!isDeploymentAdminActor(actor))

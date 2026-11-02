@@ -376,6 +376,18 @@ const userParticipantAuditCommand = z
   })
   .strict();
 
+const userAuditCommand = z
+  .object({
+    kind: z.literal('user-audit'),
+    userId: UserIdSchema,
+    event: AuditEventSchema.strict().extend({
+      workspaceId: z.null(),
+      createdAt: timestamp,
+      occurredAt: timestamp,
+    }),
+  })
+  .strict();
+
 // Checkpoint owners share a value cycle; resolve their strict schemas only when parsing.
 const checkpointCommand = z
   .object({
@@ -471,9 +483,13 @@ export function isUserPolicyCommand(
   input: ControlCapabilityCommandInput | ControlCapabilityWireInput
 ): input is Extract<
   ControlCapabilityCommandInput,
-  { kind: 'user-permission' | 'user-participant-audit' }
+  { kind: 'user-permission' | 'user-participant-audit' | 'user-audit' }
 > {
-  return input.kind === 'user-permission' || input.kind === 'user-participant-audit';
+  return (
+    input.kind === 'user-permission' ||
+    input.kind === 'user-participant-audit' ||
+    input.kind === 'user-audit'
+  );
 }
 
 /** Applies only the existing decision/Audit family under the native User savepoint. */
@@ -612,6 +628,7 @@ export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', 
   participantAuditCommand,
   userPermissionCommand,
   userParticipantAuditCommand,
+  userAuditCommand,
   serverAdmitCommand,
   serverUsageCommand,
   serverFinishCommand,
@@ -647,6 +664,7 @@ export const ControlCapabilityWireInputSchema = z.discriminatedUnion('kind', [
   participantAuditCommand,
   userPermissionCommand,
   userParticipantAuditCommand,
+  userAuditCommand,
   serverAdmitCommand,
   serverUsageCommand,
   serverFinishCommand.extend({

@@ -16,6 +16,7 @@ import { listWorkspaceAuditEvents } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
+  evaluateOwnedUserOperation,
   evaluateProductAuthorization,
   isCurrentServerPolicyAuthor,
   requireAdministratorOperation,
@@ -43,6 +44,7 @@ import {
   EMPTY_POLICY_DOCUMENT,
   policyDigest,
   policyOperationDefinition,
+  policyResourceUser,
   policyResourceWorkspace,
   preparePolicyDocument,
   validatePolicyDocument,
@@ -118,9 +120,23 @@ export function preparePolicyConfiguration(input: {
       !changedIds.has(statement.id)
     )
       continue;
-    // Recheck the input contract's sole Workspace at apply to prevent stale candidate authority.
+    // Recheck the exact User or Workspace input owner at apply against current authority.
 
     const resource = statement.inputDisclosure.resources[0];
+    const userId = resource ? policyResourceUser(resource) : null;
+    if (userId) {
+      if (
+        evaluateOwnedUserOperation(
+          input.coreDb,
+          input.actor,
+          userId,
+          policyOperationDefinition(statement.operation).policyOperation,
+          true
+        ).effect !== 'allow'
+      )
+        throw new Error('Policy binding input authority is unavailable.');
+      continue;
+    }
     const workspaceId = resource ? policyResourceWorkspace(resource) : null;
     if (
       !workspaceId ||

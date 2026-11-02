@@ -2135,3 +2135,27 @@ export function isControlVaultRefusal(code: unknown, message: unknown, status: u
               vaultRecordRefusalPatterns.some((pattern) => pattern.test(message)))))
   );
 }
+
+/** Reads the existing personal-reference/Workspace-grant tuple without granting withdrawal authority. */
+export function getWithdrawableUserVaultGrant(
+  coreDb: CoreDb,
+  workspaceId: string,
+  grantId: string
+): { grant: VaultGrantRecord; reference: VaultReferenceRecord & { userId: string } } | null {
+  const grant = getVaultGrant(coreDb, grantId);
+  const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
+  if (
+    !grant ||
+    grant.ownerScope !== 'workspace' ||
+    grant.workspaceId !== workspaceId ||
+    grant.lifetime !== 'workspace' ||
+    grant.userId !== null ||
+    grant.issuance !== 'target' ||
+    !reference ||
+    reference.ownerScope !== 'user' ||
+    reference.workspaceId !== null ||
+    !reference.userId
+  )
+    return null;
+  return { grant, reference: reference as VaultReferenceRecord & { userId: string } };
+}

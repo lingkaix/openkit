@@ -2480,6 +2480,55 @@
         }
       }
     },
+    "/api/app/operations/vault.grant-withdraw": {
+      "post": {
+        "operationId": "vault.grant-withdraw",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Withdraw a Workspace grant on a personal Vault reference without requiring Workspace membership.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.grant-withdraw.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Withdraw a Workspace grant on a personal Vault reference without requiring Workspace membership.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.grant-withdraw.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/vault.grant-revoke": {
       "post": {
         "operationId": "vault.grant-revoke",
@@ -29735,6 +29784,185 @@
         "required": [
           "revokedGrant",
           "grant"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-withdraw.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "grantId": {
+            "type": "string",
+            "pattern": "^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "grantId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.grant-withdraw.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "issuance": {
+            "type": "string",
+            "enum": [
+              "target",
+              "imported-history"
+            ]
+          },
+          "grantId": {
+            "type": "string",
+            "pattern": "^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "vaultReferenceId": {
+            "type": "string",
+            "pattern": "^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "ownerScope": {
+            "type": "string",
+            "const": "workspace"
+          },
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "userId": {
+            "type": "null"
+          },
+          "subjectSummary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetAgentId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetAgentSessionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^as_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "targetCapabilityId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "allowedInjectionPaths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "lifetime": {
+            "type": "string",
+            "enum": [
+              "session",
+              "turn",
+              "capability-call",
+              "workspace",
+              "until-revoked"
+            ]
+          },
+          "policyDecisionId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approvalId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked",
+              "expired"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "issuance",
+          "grantId",
+          "vaultReferenceId",
+          "ownerScope",
+          "workspaceId",
+          "userId",
+          "subjectSummary",
+          "targetAgentId",
+          "targetAgentSessionId",
+          "targetCapabilityId",
+          "allowedInjectionPaths",
+          "lifetime",
+          "policyDecisionId",
+          "approvalId",
+          "status",
+          "createdAt",
+          "expiresAt"
         ],
         "additionalProperties": false
       },
@@ -154627,5 +154855,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e98af697a18bd897c026b6abb49df406d34a1a12904bf70c3d10887b68572c3e"
+  "x-openkit-source-digest": "sha256:331a9ed0d5ee9a66db285b51cc6e75ebc69edcec60cdf05f34e7c7314c49815a"
 }

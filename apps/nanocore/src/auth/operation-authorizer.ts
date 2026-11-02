@@ -783,6 +783,23 @@ export function requireAdministratorOperation(
     throw new DeploymentAdminRequiredError();
 }
 
+/** Evaluates an exact User-owned effect with the actual caller, retaining administrator eligibility. */
+export function evaluateOwnedUserOperation(
+  coreDb: CoreDb,
+  actor: Actor,
+  ownerUserId: string,
+  operation: string,
+  mutating: boolean
+): ReturnType<typeof evaluateProductAuthorization> {
+  return evaluateProductAuthorization(
+    coreDb,
+    actor,
+    actor.userId === ownerUserId ? { kind: 'user' } : { kind: 'user', userId: ownerUserId },
+    operation,
+    mutating
+  );
+}
+
 /** Current canonical User admission is the primary Kernel result; dependency failures remain caller-owned. */
 export function isCanonicalUserOperationAuthorized(
   coreDb: CoreDb,
@@ -1301,3 +1318,6 @@ export function authorizedWorkspaceSet(
       authorizeWorkspace(coreDb, actor, workspaceId, access) !== null
   );
 }
+
+/** The canonical User lifecycle predicate remains owned by User lifecycle. */
+export { isCanonicalUserActive } from './user-lifecycle.js';

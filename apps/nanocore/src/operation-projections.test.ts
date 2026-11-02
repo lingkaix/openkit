@@ -64,6 +64,39 @@ import {
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 describe('shared family contract', () => {
+  it('projects User owner withdrawal through the public JSON and uniform Skill operation contract', async () => {
+    const id = 'vault.grant-withdraw';
+    expect(Object.hasOwn(OPERATION_DEFINITIONS, id)).toBe(true);
+    const openapi = createAppOpenApiDocument();
+    expect(openapi.paths).toHaveProperty(`/api/app/operations/${id}`);
+    // The Skill is a projection of the same operation table. Its fake transport proves forwarding only.
+    const skill = await import(
+      new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
+    );
+    const operation = skill.operationCatalog.find((entry: { id: string }) => entry.id === id);
+    expect(operation).toBeDefined();
+    expect(operation.appOperationId).toBe(id);
+    expect(operation.mutating).toBe(true);
+    const input = {
+      workspaceId: testEntityId('ws', 'owner-withdrawal-projection'),
+      grantId: testEntityId('grant', 'owner-withdrawal-projection'),
+    };
+    expect(operation.inputSchema.parse(input)).toEqual(input);
+    for (const field of ['material', 'userId', 'actor', 'ownerUserId', 'policyDecisionId'])
+      expect(operation.inputSchema.safeParse({ ...input, [field]: 'synthetic' }).success).toBe(
+        false
+      );
+    const result = { grantId: input.grantId, status: 'revoked' };
+    const forward = vi.fn(async () => result);
+    expect(await operation.handler({ client: { operations: { [id]: forward } } }, input)).toBe(
+      result
+    );
+    expect(forward).toHaveBeenCalledExactlyOnceWith(input);
+    expect(OPENKIT_GENERATIVE_TOOL_OPERATIONS).not.toHaveProperty(
+      operationToolName(id as JsonOperationId)
+    );
+  });
+
   it.each(
     Object.entries(OPERATION_DEFINITIONS)
       .filter(([, definition]) => definition.binding === 'streaming')

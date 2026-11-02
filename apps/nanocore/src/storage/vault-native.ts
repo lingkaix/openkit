@@ -5,6 +5,7 @@ import { requireCurrentDeploymentAdmin } from '../auth/access-token-store.js';
 import {
   authorizeWorkspace,
   currentWorkerLineageWorkspaceAuthority,
+  evaluateOwnedUserOperation,
   requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
 import { OperationError } from '../operation-error.js';
@@ -43,6 +44,7 @@ import {
   getVaultGrant,
   getVaultInjectionPlan,
   getVaultReference,
+  getWithdrawableUserVaultGrant,
   listVaultInjectionReceipts,
   type NarrowVaultGrantConstraints,
   type RebindWorkspaceVaultReferenceInput,
@@ -985,6 +987,25 @@ function assertPublicMutationAuthority(db: CoreDb, input: ControlVaultInput): vo
   if (!('publicMutation' in input.record) || !input.record.publicMutation) return;
   const authority = input.record.publicMutation;
   const actor = definedFields(authority.actor);
+  // Personal consent withdrawal has User authority, independently of destination membership.
+  // All other public Vault administration keeps the existing administrator/Workspace predicates.
+  if (input.kind === 'grant-revoke') {
+    const grant = getVaultGrant(db, input.record.grantId);
+    const reference = grant ? getVaultReference(db, grant.vaultReferenceId) : null;
+    if (reference?.ownerScope === 'user' && authority.reference) {
+      const target = authority.workspaceId
+        ? getWithdrawableUserVaultGrant(db, authority.workspaceId, input.record.grantId)
+        : null;
+      if (
+        !target ||
+        !isDeepStrictEqual(target.reference, authority.reference) ||
+        evaluateOwnedUserOperation(db, actor, target.reference.userId, 'vault.admin', true)
+          .effect !== 'allow'
+      )
+        throw new ControlProductPreconditionError();
+      return;
+    }
+  }
   requireAdministratorOperation(db, actor, 'api.call');
   let workspaceId: string | null | undefined;
   if (

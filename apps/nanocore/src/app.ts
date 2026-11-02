@@ -248,6 +248,7 @@ import { getControlStoreWorkerClient } from './storage/control-store-worker-clie
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
+  openUserDb,
   openWorkspaceDb,
   type WorkspaceDb,
 } from './storage/db.js';
@@ -1187,6 +1188,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
 
     return options.coreDb;
+  }
+
+  /** Opens the actual caller's User evidence home; native commands own writes. */
+  function repositoryUserDb(userId: string) {
+    return openUserDb(repositoryCoreDb().dataRoot, userId);
   }
 
   /**
@@ -2560,6 +2566,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfigOperations,
     providerSubscriptionOperations,
     repositoryWorkspaceDb,
+    repositoryUserDb,
     requestStore,
     goalServices: goalServices(),
     mode,
@@ -2624,6 +2631,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     goalServices: goalServices(),
     startModeWorkerTurn,
     repositoryWorkspaceDb,
+    repositoryUserDb,
     getBootReadiness,
     coreDb: options.coreDb,
     store: sharedStore,
