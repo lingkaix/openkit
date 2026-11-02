@@ -481,3 +481,5 @@ MCP Tool listings use `mcp-result-too-large` with the existing bulk-output hint 
 Recovery hydration fixtures preserve the explicitly authored AEP request ID and closed actor-kind literals in strict test-inclusive type checks. Their type annotations do not change retained inputs, mismatch cases or restart assertions.
 
 The Pending domain validates original record, complete Workspace Turn provenance and command receipts through `requireUsablePendingRequest`. Its synchronous census is evaluated only after the owned row is readable and matched. Main Flow gathers Store facts at that boundary; Assistant handoff uses the same domain check without importing Flow.
+
+The NanoHost session dispatcher keeps the same pending, completed and physical-readiness collections while its private correlated-result stage validates results, reconciles retained receipts and awaits consumer settlement. Readiness, poll admission and bounded file and collection carriage remain with the same dispatcher.

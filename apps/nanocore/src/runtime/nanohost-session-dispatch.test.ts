@@ -1765,6 +1765,254 @@ describe('authoritative NanoHost session dispatch', () => {
     expect(appSource).toContain('createNanoHostSessionDispatch({');
   });
 
+  it.each(
+    (['success', 'effect_failed'] as const).flatMap((outcome) =>
+      (
+        [
+          'acknowledgement',
+          'consumer rejection',
+          'physical replacement',
+          'pending replacement',
+        ] as const
+      ).map((boundary) => ({ outcome, boundary }))
+    )
+  )('guards $outcome consumption across $boundary', async ({ outcome, boundary }) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-result-continuation-'));
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = {
+      coreDb,
+      deploymentId: 'continuation',
+      identityId: 'continuation',
+      targetId: 'continuation',
+    };
+    const epoch = 'a'.repeat(64);
+    let acceptConnection: ((connection: object) => void) | undefined;
+    const server = createHttp2Server((request, response) => {
+      const connection = readNanoHostPhysicalConnectionContext(request);
+      if (connection) acceptConnection?.(connection);
+      response.writeHead(204).end();
+    });
+    const clients: ReturnType<typeof connectHttp2>[] = [];
+    const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const release = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const deliveries: Promise<void>[] = [];
+    const callers: Promise<unknown>[] = [];
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Continuation fixture did not expose an address.');
+      const connect = async (generation: number) => {
+        await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+          ...target,
+          observedAt: new Date().toISOString(),
+        });
+        const connected = Promise.withResolvers<object>();
+        acceptConnection = connected.resolve;
+        const client = connectHttp2(`http://127.0.0.1:${address.port}`);
+        clients.push(client);
+        await once(client, 'connect');
+        client.request({ ':method': 'POST', ':path': '/' }).end();
+        const physical = await connected.promise;
+        authority.admit({
+          connectionGeneration: generation,
+          identityId: target.identityId,
+          physicalConnection: physical,
+        });
+        if (generation > 1) authority.fencePredecessor(target.identityId, generation - 1);
+        await dispatch.readiness!(
+          physical,
+          Buffer.from(JSON.stringify({ physicalEpoch: epoch })),
+          target
+        );
+        return physical;
+      };
+      const physical = await connect(1);
+      const requestId = 'b'.repeat(64);
+      const sandboxId = 'continuation-sandbox';
+      const body =
+        outcome === 'effect_failed'
+          ? { failureCode: 'effect_failed' }
+          : { sandboxId, state: 'deleted' };
+      const result = { ...body, requestId };
+      const consumerError = new Error('Exact consumer acknowledgement refused.');
+      let consumerCalls = 0;
+      let callerSettled = false;
+      let resultSettled = false;
+      // This is an L1 continuation control, not a substitute for a native journal consumer.
+      const original = dispatch.effect({
+        kind: 'sandbox.delete',
+        requestId,
+        input: { sandboxId },
+        consumeResult: async (value) => {
+          const index = consumerCalls++;
+          expect(value).toEqual(body);
+          if (index > 1) throw new Error('Unexpected third original receipt consumption.');
+          entered[index]!.resolve();
+          await release[index]!.promise;
+          if (boundary === 'consumer rejection' && index === 0) throw consumerError;
+        },
+      });
+      callers.push(original);
+      void original.then(
+        () => {
+          callerSettled = true;
+        },
+        () => {
+          callerSettled = true;
+        }
+      );
+      await expect(dispatch.poll(physical, 'sandbox.delete')).resolves.toEqual({
+        sandboxId,
+        requestId,
+      });
+      const delivery = dispatch.result(physical, 'sandbox.delete', result);
+      deliveries.push(delivery);
+      void delivery.then(
+        () => {
+          resultSettled = true;
+        },
+        () => {
+          resultSettled = true;
+        }
+      );
+      await Promise.race([
+        entered[0]!.promise,
+        delivery.then(() => {
+          throw new Error('Result bypassed its consumer.');
+        }),
+      ]);
+      expect(callerSettled).toBe(false);
+      expect(resultSettled).toBe(false);
+      await expect(dispatch.poll(physical, 'sandbox.delete')).resolves.toBeNull();
+      await expect(
+        dispatch.effect({
+          kind: 'sandbox.delete',
+          requestId: 'c'.repeat(64),
+          input: { sandboxId: 'excluded-replacement' },
+        })
+      ).rejects.toThrow(/pending|enqueued|busy/i);
+      expect(callerSettled).toBe(false);
+      expect(resultSettled).toBe(false);
+
+      if (boundary === 'physical replacement') {
+        const successor = await connect(2);
+        expect(authority.mayCarryWork(physical)).toBe(false);
+        expect(authority.mayCarryWork(successor)).toBe(true);
+        release[0]!.resolve();
+        await expect(delivery).rejects.toThrow(/authoritative|connection|fenc/i);
+        expect(callerSettled).toBe(false);
+        // Unknown physical work still excludes a new producer after the old ACK is refused.
+        await expect(
+          dispatch.effect({
+            kind: 'sandbox.delete',
+            requestId: 'c'.repeat(64),
+            input: { sandboxId: 'excluded-successor' },
+          })
+        ).rejects.toThrow(/pending|enqueued|busy/i);
+        await expect(dispatch.poll(successor, 'sandbox.delete')).rejects.toThrow(/unknown|fenc/i);
+        await expect(original).rejects.toThrow(/unknown|fenc/i);
+        return;
+      }
+
+      let lateDelivery: Promise<void> | undefined;
+      if (boundary === 'pending replacement') {
+        // Hold both exact deliveries at consumption, then let only the first retire the original.
+        lateDelivery = dispatch.result(physical, 'sandbox.delete', result);
+        deliveries.push(lateDelivery);
+        await entered[1]!.promise;
+      }
+      release[0]!.resolve();
+      if (boundary === 'consumer rejection') {
+        await expect(delivery).rejects.toBe(consumerError);
+        expect(callerSettled).toBe(false);
+        await expect(dispatch.poll(physical, 'sandbox.delete')).resolves.toBeNull();
+        await expect(
+          dispatch.effect({
+            kind: 'sandbox.delete',
+            requestId: 'c'.repeat(64),
+            input: { sandboxId: 'excluded-after-refusal' },
+          })
+        ).rejects.toThrow(/pending|enqueued|busy/i);
+        // Reconcile the same admitted receipt; no original command is dispatched again.
+        const reconciliation = dispatch.result(physical, 'sandbox.delete', result);
+        deliveries.push(reconciliation);
+        await entered[1]!.promise;
+        expect(callerSettled).toBe(false);
+        release[1]!.resolve();
+        await reconciliation;
+      } else {
+        await delivery;
+      }
+      if (outcome === 'effect_failed')
+        await expect(original).rejects.toMatchObject({ status: 500 });
+      else await expect(original).resolves.toEqual(body);
+      expect(callerSettled).toBe(true);
+      expect(authority.mayCarryWork(physical)).toBe(true);
+
+      if (lateDelivery) {
+        let replacementSettled = false;
+        const replacementId = 'c'.repeat(64);
+        const replacementSandbox = 'replacement-sandbox';
+        const replacement = dispatch.effect({
+          kind: 'sandbox.delete',
+          requestId: replacementId,
+          input: { sandboxId: replacementSandbox },
+        });
+        callers.push(replacement);
+        void replacement.then(
+          () => {
+            replacementSettled = true;
+          },
+          () => {
+            replacementSettled = true;
+          }
+        );
+        release[1]!.resolve();
+        await expect(lateDelivery).rejects.toMatchObject({ status: 409 });
+        expect(replacementSettled).toBe(false);
+        await expect(dispatch.poll(physical, 'sandbox.delete')).resolves.toEqual({
+          sandboxId: replacementSandbox,
+          requestId: replacementId,
+        });
+        await dispatch.result(physical, 'sandbox.delete', {
+          requestId: replacementId,
+          sandboxId: replacementSandbox,
+          state: 'deleted',
+        });
+        await expect(replacement).resolves.toEqual({
+          sandboxId: replacementSandbox,
+          state: 'deleted',
+        });
+      } else {
+        const callsBeforeReplay = consumerCalls;
+        if (outcome === 'effect_failed')
+          await expect(dispatch.result(physical, 'sandbox.delete', result)).rejects.toMatchObject({
+            status: 409,
+          });
+        else
+          await expect(
+            dispatch.result(physical, 'sandbox.delete', result)
+          ).resolves.toBeUndefined();
+        expect(consumerCalls).toBe(callsBeforeReplay);
+      }
+      await expect(dispatch.poll(physical, 'sandbox.delete')).resolves.toBeNull();
+    } finally {
+      for (const gate of release) gate.resolve();
+      await Promise.allSettled(deliveries);
+      for (const client of clients) client.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      // Observe callers already settled by the tested owner, without awaiting retained unknown work.
+      for (const caller of callers) void caller.catch(() => undefined);
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('settles exact ordinary and import typed failures and preserves successor result fences', async () => {
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({ sessionAuthority: authority });

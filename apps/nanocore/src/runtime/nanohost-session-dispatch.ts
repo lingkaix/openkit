@@ -332,6 +332,13 @@ interface NanoHostReadinessRuntimeTarget {
   readonly targetId: string;
 }
 
+/** One process-local physical readiness observation, rechecked against its durable owner. */
+interface NanoHostPhysicalReadiness {
+  readonly connectionGeneration: number;
+  readonly physicalEpoch: string;
+  readonly runtimeTarget: NanoHostReadinessRuntimeTarget;
+}
+
 /** Authoritative NanoHost route and effect dispatcher. */
 export interface NanoHostSessionDispatch {
   /** Queues one fixed NanoHost effect for the authoritative client to poll. */
@@ -548,85 +555,10 @@ export function createNanoHostSessionDispatch(
 ): NanoHostSessionDispatch {
   const pendingEffects = new Map<NanoHostEffectOperation, PendingNanoHostEffect>();
   const completedEffects = new Map<NanoHostEffectOperation, CompletedNanoHostEffect>();
-  const readyPhysicalConnections = new WeakMap<
-    object,
-    {
-      readonly connectionGeneration: number;
-      readonly physicalEpoch: string;
-      readonly runtimeTarget: NanoHostReadinessRuntimeTarget;
-    }
-  >();
+  const readyPhysicalConnections = new WeakMap<object, NanoHostPhysicalReadiness>();
   // A completed poll distinguishes a live connection from a poll-first successor.
   const completedEffectPollConnections = new WeakSet<object>();
-  let currentReadiness: {
-    readonly connectionGeneration: number;
-    readonly physicalEpoch: string;
-    readonly runtimeTarget: NanoHostReadinessRuntimeTarget;
-  } | null = null;
-
-  /** Rechecks one process-local readiness observation against its durable current owner. */
-  const requireCurrentReadiness = (readiness: NonNullable<typeof currentReadiness>): string => {
-    const target = getNanoHostRuntimeTarget(
-      readiness.runtimeTarget.coreDb,
-      readiness.runtimeTarget.targetId
-    );
-    if (
-      !target ||
-      target.identityId !== readiness.runtimeTarget.identityId ||
-      target.deploymentId !== readiness.runtimeTarget.deploymentId ||
-      target.connectionGeneration !== readiness.connectionGeneration ||
-      !target.predecessorFenced ||
-      !target.ready ||
-      !target.freshEmpty ||
-      target.physicalEpoch !== readiness.physicalEpoch
-    ) {
-      throw new Error('NanoHost effect dispatch has no current physical Epoch authority.');
-    }
-    return readiness.physicalEpoch;
-  };
-
-  /** Checks disposal eligibility only; cleaned state is not proof of prior dispatch or settlement. */
-  const canDiscardCleanedDeleteResult = (
-    physicalConnection: object,
-    requestId: string,
-    result: Readonly<Record<string, unknown>>
-  ): boolean => {
-    const coreDb = input.coreDb;
-    const readiness = readyPhysicalConnections.get(physicalConnection);
-    if (
-      !coreDb ||
-      !readiness ||
-      readiness.runtimeTarget.coreDb !== coreDb ||
-      !/^[0-9a-f]{64}$/.test(requestId) ||
-      typeof result.sandboxId !== 'string' ||
-      result.state !== 'deleted'
-    )
-      return false;
-    requireCurrentReadiness(readiness);
-    const matches = listWorkerBackendSessions(coreDb).filter((row) => {
-      if (
-        row.backendKind !== 'openshell' ||
-        row.deploymentId !== readiness.runtimeTarget.deploymentId ||
-        row.runtimeTargetId !== readiness.runtimeTarget.targetId
-      )
-        return false;
-      if (!row.attemptId.trim() || !row.packageSnapshotId.trim()) {
-        throw effectTransportError(409, 'NanoHost delete correlation lineage is incomplete.');
-      }
-      const sandboxId = nanoHostSandboxIdFromBackendSessionId(row.backendSessionId);
-      return (
-        sandboxId === result.sandboxId &&
-        createNanoHostEffectRequest(row, row.attemptId, 'sandbox.delete', {
-          attemptId: row.attemptId,
-          sandboxId,
-        }).requestId === requestId
-      );
-    });
-    return (
-      matches.length === 1 &&
-      (matches[0]!.state === 'physical-cleaned' || matches[0]!.state === 'cleaned')
-    );
-  };
+  let currentReadiness: NanoHostPhysicalReadiness | null = null;
 
   return {
     effect(
@@ -1256,285 +1188,16 @@ export function createNanoHostSessionDispatch(
     },
 
     async result(physicalConnection, operation, result, telemetryHeaders) {
-      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      if (operation === 'workspace.collect') {
-        const pending = pendingEffects.get(operation);
-        if (!pending?.accepted || !pending.command)
-          throw effectTransportError(409, 'Workspace collection has no accepted pending command.');
-        result = admitWorkspaceCollectJsonResult(
-          result,
-          WorkspaceCollectCommandSchema.parse(pending.command)
-        );
-      }
-      const requestId = readRequestId(result);
-      result = readNanoHostEffectResult(operation, result);
-      const resourceSummary = result.resourceSummary;
-      // Host observations do not participate in receipt identity or cleanup decisions.
-      if (Object.hasOwn(result, 'resourceSummary')) {
-        const { resourceSummary: _diagnostic, ...receipt } = result;
-        result = receipt;
-      }
-      const resultNames = Object.keys(result);
-      const carriesFailureCode = resultNames.includes('failureCode');
-      const isExactEffectFailure =
-        carriesFailureCode &&
-        resultNames.length === 2 &&
-        /^[0-9a-f]{64}$/.test(requestId) &&
-        result.failureCode === 'effect_failed';
-      const isExactFileAbsence =
-        operation === 'file.export' &&
-        resultNames.length === 2 &&
-        /^[0-9a-f]{64}$/.test(requestId) &&
-        result.state === 'absent';
-      if (carriesFailureCode && !isExactEffectFailure) {
-        throw effectTransportError(409, 'NanoHost effect failure result is invalid.');
-      }
-      if (isExactEffectFailure && (operation === 'bridge.open' || operation === 'file.export')) {
-        throw effectTransportError(409, 'NanoHost special effect has no JSON failure result.');
-      }
-      const isExactFileRefusal =
-        operation === 'file.export' &&
-        resultNames.length === 3 &&
-        /^[0-9a-f]{64}$/.test(requestId) &&
-        result.state === 'refused' &&
-        result.reasonCode === 'artifact_file_not_regular';
-      if (operation === 'file.export' && !isExactFileAbsence && !isExactFileRefusal) {
-        throw effectTransportError(409, 'NanoHost file export JSON result is invalid.');
-      }
-      const resultBody = Object.fromEntries(
-        Object.entries(result).filter(([name]) => name !== 'requestId')
-      );
-      const resultJson = JSON.stringify(resultBody);
-      const pending = pendingEffects.get(operation);
-      if (!pending) {
-        if (input.coreDb && (operation === 'image.acquire' || operation === 'image.build')) {
-          const known = readWorkerImageSettlement(input.coreDb, requestId);
-          if (known) {
-            if (
-              known.operation !== operation ||
-              JSON.stringify(known.outcome) !== JSON.stringify(imageSettlementOutcome(resultBody))
-            ) {
-              throw new WorkerImageSettlementConflict();
-            }
-            return;
-          }
-        }
-        if (input.coreDb) {
-          const retained = input.coreDb.sqlite
-            .prepare(`SELECT execution_id, step_id
-            FROM control_execution_steps
-            WHERE json_extract(control_json, '$.definitionVersion') = ?
-              AND json_extract(invocation_json, '$.carriage.operation') = ?
-              AND json_extract(invocation_json, '$.carriage.requestId') = ?
-              AND json_extract(control_json, '$.kind') <> 'consume-receipt'`)
-            .all(CORE_IDLE_CLEANUP_EXECUTION_DEFINITION, operation, requestId) as {
-            execution_id: string;
-            step_id: string;
-          }[];
-          if (retained.length > 0) {
-            if (retained.length !== 1)
-              throw effectTransportError(409, 'NanoHost idle cleanup receipt identity conflicts.');
-            const selected = retained[0]!;
-            const ref = { owner: { kind: 'server' as const }, executionId: selected.execution_id };
-            const reader = createExecutionStepJournalReader(input.coreDb, ref.owner);
-            const original = await reader.readInvocation({
-              execution: ref,
-              stepId: selected.step_id,
-            });
-            const linked = await reader.readLinkedInspections({
-              execution: ref,
-              stepId: selected.step_id,
-            });
-            requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-            const readiness = readyPhysicalConnections.get(physicalConnection);
-            const epoch = readiness ? requireCurrentReadiness(readiness) : null;
-            const fingerprint = commandInputHash(resultBody);
-            if (
-              !readiness ||
-              epoch === null ||
-              original.control.target?.targetId !== readiness.runtimeTarget.targetId ||
-              !original.control.physicalFenceRefs.includes(epoch) ||
-              !['completed', 'failed', 'unknown'].includes(original.state) ||
-              (original.state !== 'unknown' &&
-                (original.control.outputRefs.length !== 1 ||
-                  original.control.outputRefs[0] !== fingerprint)) ||
-              !linked.some(
-                ({ inspection: step }) =>
-                  step.control.kind === 'consume-receipt' &&
-                  step.state === 'completed' &&
-                  step.control.operationId === requestId &&
-                  step.control.outputRefs.length === 1 &&
-                  step.control.outputRefs[0] === fingerprint
-              )
-            )
-              throw effectTransportError(
-                409,
-                'NanoHost idle cleanup retained consumption conflicts.'
-              );
-            return;
-          }
-        }
-        const completed = completedEffects.get(operation);
-        if (completed?.requestId === requestId && completed.resultJson === resultJson) {
-          if (
-            (operation === 'bridge.open' || isExactEffectFailure || isExactFileAbsence) &&
-            completed.redeliveredConnection === physicalConnection
-          ) {
-            throw effectTransportError(
-              409,
-              isExactEffectFailure
-                ? 'NanoHost settled effect failure duplicate cannot retry on one generation.'
-                : isExactFileAbsence
-                  ? 'NanoHost optional absence result cannot retry on one generation.'
-                  : 'NanoHost sensitive bridge result cannot retry on one generation.'
-            );
-          }
-          if (operation === 'bridge.open' || isExactEffectFailure || isExactFileAbsence) {
-            completed.redeliveredConnection = physicalConnection;
-          }
-          return;
-        }
-        if (operation === 'sandbox.delete' && completed?.requestId === requestId) {
-          throw effectTransportError(
-            409,
-            'NanoHost delete result conflicts with its completed outcome.'
-          );
-        }
-        if (
-          operation === 'sandbox.delete' &&
-          canDiscardCleanedDeleteResult(physicalConnection, requestId, resultBody)
-        )
-          return;
-        throw new Error('NanoHost effect result does not match a pending request.');
-      }
-      if ((!pending.accepted && !pending.resultOnlyGroup) || pending.requestId !== requestId) {
-        if (pending.resultOnlyGroup) {
-          const conflict = effectTransportError(
-            409,
-            'NanoHost retained effect result conflicts with its result-only expectation.'
-          );
-          await removePendingEffectGroup(pendingEffects, operation, pending);
-          pending.reject(conflict);
-          await input.sessionAuthority.closePhysicalConnection(physicalConnection);
-        }
-        throw new Error('NanoHost effect result requestId or operation does not match.');
-      }
-      if (
-        isExactFileRefusal &&
-        (pending.command?.purpose !== 'artifact-submission' ||
-          pending.command?.presence !== 'optional')
-      )
-        throw effectTransportError(409, 'NanoHost refusal has no admitted live request.');
-      if (isExactFileAbsence && pending.command?.presence !== 'optional') {
-        throw effectTransportError(409, 'NanoHost required file export cannot be absent.');
-      }
-      if (pending.imageSettlement) {
-        const settlement = WorkerImageSettlementSchema.parse({
-          ...pending.imageSettlement,
-          requestId,
-          operation,
-          outcome: imageSettlementOutcome(resultBody),
-        });
-        const coreDb = input.coreDb;
-        if (!coreDb) throw new Error('Missing image settlement database.');
-        try {
-          if (pending.imageExecution) {
-            const original = await createExecutionStepJournalReader(coreDb, {
-              kind: 'server',
-            }).readInvocation(pending.imageExecution.ref);
-            requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-            if (original.state === 'intent' && original.remainingMs <= 0)
-              await pending.imageExecution.abandon(true);
-          }
-          await writeWorkerImageSettlement(coreDb, settlement);
-        } catch (error) {
-          if (error instanceof WorkerImageSettlementConflict) throw error;
-          const deferred = new WorkerImageSettlementDeferred();
-          if (!pending.imageSettlementDeferred) {
-            pending.imageSettlementDeferred = true;
-            console.warn('nanohost image settlement deferred');
-            pending.reject(deferred);
-          }
-          throw deferred;
-        }
-        if (pending.imageSettlementDeferred || pending.resultOnlyGroup)
-          console.info('nanohost image settlement recovered');
-      }
-      if (isExactEffectFailure) {
-        await pending.consumeResult?.(resultBody);
-        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-        if (pendingEffects.get(operation) !== pending)
-          throw effectTransportError(
-            409,
-            'NanoHost effect consumer changed during acknowledgement.'
-          );
-        await removePendingEffectGroup(
-          pendingEffects,
-          operation,
-          pending,
-          pending.imageSettlement === undefined
-        );
-        completedEffects.set(operation, {
-          redeliveredConnection: physicalConnection,
-          requestId,
-          resultJson,
-        });
-        recordNanoHostEffectAcceptance(telemetryHeaders);
-        pending.reject(effectTransportError(500, 'NanoHost effect failed: effect_failed.'));
-        return;
-      }
-      if (
-        operation === 'sandbox.delete' &&
-        pending.command &&
-        (resultBody.sandboxId !== pending.command.sandboxId ||
-          typeof resultBody.sandboxId !== 'string' ||
-          resultBody.state !== 'deleted')
-      ) {
-        throw effectTransportError(409, 'NanoHost delete result disagrees with its command.');
-      }
-      if (operation === 'bridge.open') {
-        if (!pending.command) {
-          throw effectTransportError(500, 'NanoHost bridge command is unavailable.');
-        }
-        requireBridgeOpenResult(resultBody, pending.command);
-      }
-      if (operation === 'reference.import') {
-        if (!pending.command) {
-          throw effectTransportError(500, 'NanoHost import command is unavailable.');
-        }
-        const expectedReference = `sandbox://${String(pending.command.sandboxId)}/${String(
-          pending.command.slot
-        )}/${String(pending.command.relativePath)}`;
-        if (
-          resultBody.byteLength !==
-            (pending.command.entryKind === 'directory' ? 0 : pending.command.byteLength) ||
-          resultBody.reference !== expectedReference
-        ) {
-          throw effectTransportError(409, 'NanoHost import result disagrees with its command.');
-        }
-      }
-      const callerResult =
-        resourceSummary === undefined ? resultBody : { ...resultBody, resourceSummary };
-      await pending.consumeResult?.(callerResult);
-      requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
-      if (pendingEffects.get(operation) !== pending)
-        throw effectTransportError(409, 'NanoHost effect consumer changed during acknowledgement.');
-      await removePendingEffectGroup(
+      return settleNanoHostCorrelatedResult(
+        input.coreDb,
+        input.sessionAuthority,
+        readyPhysicalConnections,
         pendingEffects,
+        completedEffects,
+        physicalConnection,
         operation,
-        pending,
-        pending.imageSettlement === undefined
-      );
-      completedEffects.set(operation, {
-        requestId,
-        resultJson,
-        ...(operation === 'bridge.open' || isExactFileAbsence
-          ? { redeliveredConnection: physicalConnection }
-          : {}),
-      });
-      recordNanoHostEffectAcceptance(telemetryHeaders);
-      pending.resolve(
-        pending.resultOnlyGroup ? { kind: operation, result: callerResult } : callerResult
+        result,
+        telemetryHeaders
       );
     },
 
@@ -1741,6 +1404,361 @@ export function createNanoHostSessionDispatch(
       return input.routeHandler(request);
     },
   };
+}
+
+/** Rechecks one process-local readiness observation against its durable current owner. */
+function requireCurrentReadiness(readiness: NanoHostPhysicalReadiness): string {
+  const target = getNanoHostRuntimeTarget(
+    readiness.runtimeTarget.coreDb,
+    readiness.runtimeTarget.targetId
+  );
+  if (
+    !target ||
+    target.identityId !== readiness.runtimeTarget.identityId ||
+    target.deploymentId !== readiness.runtimeTarget.deploymentId ||
+    target.connectionGeneration !== readiness.connectionGeneration ||
+    !target.predecessorFenced ||
+    !target.ready ||
+    !target.freshEmpty ||
+    target.physicalEpoch !== readiness.physicalEpoch
+  ) {
+    throw new Error('NanoHost effect dispatch has no current physical Epoch authority.');
+  }
+  return readiness.physicalEpoch;
+}
+
+/** Checks disposal eligibility only; cleaned state is not proof of prior dispatch or settlement. */
+function canDiscardCleanedDeleteResult(
+  coreDb: CoreDb | undefined,
+  readiness: NanoHostPhysicalReadiness | undefined,
+  requestId: string,
+  result: Readonly<Record<string, unknown>>
+): boolean {
+  if (
+    !coreDb ||
+    !readiness ||
+    readiness.runtimeTarget.coreDb !== coreDb ||
+    !/^[0-9a-f]{64}$/.test(requestId) ||
+    typeof result.sandboxId !== 'string' ||
+    result.state !== 'deleted'
+  )
+    return false;
+  requireCurrentReadiness(readiness);
+  const matches = listWorkerBackendSessions(coreDb).filter((row) => {
+    if (
+      row.backendKind !== 'openshell' ||
+      row.deploymentId !== readiness.runtimeTarget.deploymentId ||
+      row.runtimeTargetId !== readiness.runtimeTarget.targetId
+    )
+      return false;
+    if (!row.attemptId.trim() || !row.packageSnapshotId.trim()) {
+      throw effectTransportError(409, 'NanoHost delete correlation lineage is incomplete.');
+    }
+    const sandboxId = nanoHostSandboxIdFromBackendSessionId(row.backendSessionId);
+    return (
+      sandboxId === result.sandboxId &&
+      createNanoHostEffectRequest(row, row.attemptId, 'sandbox.delete', {
+        attemptId: row.attemptId,
+        sandboxId,
+      }).requestId === requestId
+    );
+  });
+  return (
+    matches.length === 1 &&
+    (matches[0]!.state === 'physical-cleaned' || matches[0]!.state === 'cleaned')
+  );
+}
+
+/** Settles one exact correlated result through the original physical and pending-effect owners. */
+async function settleNanoHostCorrelatedResult(
+  sessionCoreDb: CoreDb | undefined,
+  sessionAuthority: NanoHostTransportSessionAuthority,
+  readyPhysicalConnections: WeakMap<object, NanoHostPhysicalReadiness>,
+  pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
+  completedEffects: Map<NanoHostEffectOperation, CompletedNanoHostEffect>,
+  physicalConnection: object,
+  operation: NanoHostEffectOperation,
+  result: Readonly<Record<string, unknown>>,
+  telemetryHeaders: Headers | undefined
+): Promise<void> {
+  requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  if (operation === 'workspace.collect') {
+    const pending = pendingEffects.get(operation);
+    if (!pending?.accepted || !pending.command)
+      throw effectTransportError(409, 'Workspace collection has no accepted pending command.');
+    result = admitWorkspaceCollectJsonResult(
+      result,
+      WorkspaceCollectCommandSchema.parse(pending.command)
+    );
+  }
+  const requestId = readRequestId(result);
+  result = readNanoHostEffectResult(operation, result);
+  const resourceSummary = result.resourceSummary;
+  // Host observations do not participate in receipt identity or cleanup decisions.
+  if (Object.hasOwn(result, 'resourceSummary')) {
+    const { resourceSummary: _diagnostic, ...receipt } = result;
+    result = receipt;
+  }
+  const resultNames = Object.keys(result);
+  const carriesFailureCode = resultNames.includes('failureCode');
+  const isExactEffectFailure =
+    carriesFailureCode &&
+    resultNames.length === 2 &&
+    /^[0-9a-f]{64}$/.test(requestId) &&
+    result.failureCode === 'effect_failed';
+  const isExactFileAbsence =
+    operation === 'file.export' &&
+    resultNames.length === 2 &&
+    /^[0-9a-f]{64}$/.test(requestId) &&
+    result.state === 'absent';
+  if (carriesFailureCode && !isExactEffectFailure) {
+    throw effectTransportError(409, 'NanoHost effect failure result is invalid.');
+  }
+  if (isExactEffectFailure && (operation === 'bridge.open' || operation === 'file.export')) {
+    throw effectTransportError(409, 'NanoHost special effect has no JSON failure result.');
+  }
+  const isExactFileRefusal =
+    operation === 'file.export' &&
+    resultNames.length === 3 &&
+    /^[0-9a-f]{64}$/.test(requestId) &&
+    result.state === 'refused' &&
+    result.reasonCode === 'artifact_file_not_regular';
+  if (operation === 'file.export' && !isExactFileAbsence && !isExactFileRefusal) {
+    throw effectTransportError(409, 'NanoHost file export JSON result is invalid.');
+  }
+  const resultBody = Object.fromEntries(
+    Object.entries(result).filter(([name]) => name !== 'requestId')
+  );
+  const resultJson = JSON.stringify(resultBody);
+  const pending = pendingEffects.get(operation);
+  if (!pending) {
+    if (sessionCoreDb && (operation === 'image.acquire' || operation === 'image.build')) {
+      const known = readWorkerImageSettlement(sessionCoreDb, requestId);
+      if (known) {
+        if (
+          known.operation !== operation ||
+          JSON.stringify(known.outcome) !== JSON.stringify(imageSettlementOutcome(resultBody))
+        ) {
+          throw new WorkerImageSettlementConflict();
+        }
+        return;
+      }
+    }
+    if (sessionCoreDb) {
+      const retained = sessionCoreDb.sqlite
+        .prepare(`SELECT execution_id, step_id
+        FROM control_execution_steps
+        WHERE json_extract(control_json, '$.definitionVersion') = ?
+          AND json_extract(invocation_json, '$.carriage.operation') = ?
+          AND json_extract(invocation_json, '$.carriage.requestId') = ?
+          AND json_extract(control_json, '$.kind') <> 'consume-receipt'`)
+        .all(CORE_IDLE_CLEANUP_EXECUTION_DEFINITION, operation, requestId) as {
+        execution_id: string;
+        step_id: string;
+      }[];
+      if (retained.length > 0) {
+        if (retained.length !== 1)
+          throw effectTransportError(409, 'NanoHost idle cleanup receipt identity conflicts.');
+        const selected = retained[0]!;
+        const ref = { owner: { kind: 'server' as const }, executionId: selected.execution_id };
+        const reader = createExecutionStepJournalReader(sessionCoreDb, ref.owner);
+        const original = await reader.readInvocation({
+          execution: ref,
+          stepId: selected.step_id,
+        });
+        const linked = await reader.readLinkedInspections({
+          execution: ref,
+          stepId: selected.step_id,
+        });
+        requireAuthoritativeSession(sessionAuthority, physicalConnection);
+        const readiness = readyPhysicalConnections.get(physicalConnection);
+        const epoch = readiness ? requireCurrentReadiness(readiness) : null;
+        const fingerprint = commandInputHash(resultBody);
+        if (
+          !readiness ||
+          epoch === null ||
+          original.control.target?.targetId !== readiness.runtimeTarget.targetId ||
+          !original.control.physicalFenceRefs.includes(epoch) ||
+          !['completed', 'failed', 'unknown'].includes(original.state) ||
+          (original.state !== 'unknown' &&
+            (original.control.outputRefs.length !== 1 ||
+              original.control.outputRefs[0] !== fingerprint)) ||
+          !linked.some(
+            ({ inspection: step }) =>
+              step.control.kind === 'consume-receipt' &&
+              step.state === 'completed' &&
+              step.control.operationId === requestId &&
+              step.control.outputRefs.length === 1 &&
+              step.control.outputRefs[0] === fingerprint
+          )
+        )
+          throw effectTransportError(409, 'NanoHost idle cleanup retained consumption conflicts.');
+        return;
+      }
+    }
+    const completed = completedEffects.get(operation);
+    if (completed?.requestId === requestId && completed.resultJson === resultJson) {
+      if (
+        (operation === 'bridge.open' || isExactEffectFailure || isExactFileAbsence) &&
+        completed.redeliveredConnection === physicalConnection
+      ) {
+        throw effectTransportError(
+          409,
+          isExactEffectFailure
+            ? 'NanoHost settled effect failure duplicate cannot retry on one generation.'
+            : isExactFileAbsence
+              ? 'NanoHost optional absence result cannot retry on one generation.'
+              : 'NanoHost sensitive bridge result cannot retry on one generation.'
+        );
+      }
+      if (operation === 'bridge.open' || isExactEffectFailure || isExactFileAbsence) {
+        completed.redeliveredConnection = physicalConnection;
+      }
+      return;
+    }
+    if (operation === 'sandbox.delete' && completed?.requestId === requestId) {
+      throw effectTransportError(
+        409,
+        'NanoHost delete result conflicts with its completed outcome.'
+      );
+    }
+    if (
+      operation === 'sandbox.delete' &&
+      canDiscardCleanedDeleteResult(
+        sessionCoreDb,
+        readyPhysicalConnections.get(physicalConnection),
+        requestId,
+        resultBody
+      )
+    )
+      return;
+    throw new Error('NanoHost effect result does not match a pending request.');
+  }
+  if ((!pending.accepted && !pending.resultOnlyGroup) || pending.requestId !== requestId) {
+    if (pending.resultOnlyGroup) {
+      const conflict = effectTransportError(
+        409,
+        'NanoHost retained effect result conflicts with its result-only expectation.'
+      );
+      await removePendingEffectGroup(pendingEffects, operation, pending);
+      pending.reject(conflict);
+      await sessionAuthority.closePhysicalConnection(physicalConnection);
+    }
+    throw new Error('NanoHost effect result requestId or operation does not match.');
+  }
+  if (
+    isExactFileRefusal &&
+    (pending.command?.purpose !== 'artifact-submission' || pending.command?.presence !== 'optional')
+  )
+    throw effectTransportError(409, 'NanoHost refusal has no admitted live request.');
+  if (isExactFileAbsence && pending.command?.presence !== 'optional') {
+    throw effectTransportError(409, 'NanoHost required file export cannot be absent.');
+  }
+  if (pending.imageSettlement) {
+    const settlement = WorkerImageSettlementSchema.parse({
+      ...pending.imageSettlement,
+      requestId,
+      operation,
+      outcome: imageSettlementOutcome(resultBody),
+    });
+    const coreDb = sessionCoreDb;
+    if (!coreDb) throw new Error('Missing image settlement database.');
+    try {
+      if (pending.imageExecution) {
+        const original = await createExecutionStepJournalReader(coreDb, {
+          kind: 'server',
+        }).readInvocation(pending.imageExecution.ref);
+        requireAuthoritativeSession(sessionAuthority, physicalConnection);
+        if (original.state === 'intent' && original.remainingMs <= 0)
+          await pending.imageExecution.abandon(true);
+      }
+      await writeWorkerImageSettlement(coreDb, settlement);
+    } catch (error) {
+      if (error instanceof WorkerImageSettlementConflict) throw error;
+      const deferred = new WorkerImageSettlementDeferred();
+      if (!pending.imageSettlementDeferred) {
+        pending.imageSettlementDeferred = true;
+        console.warn('nanohost image settlement deferred');
+        pending.reject(deferred);
+      }
+      throw deferred;
+    }
+    if (pending.imageSettlementDeferred || pending.resultOnlyGroup)
+      console.info('nanohost image settlement recovered');
+  }
+  if (isExactEffectFailure) {
+    await pending.consumeResult?.(resultBody);
+    requireAuthoritativeSession(sessionAuthority, physicalConnection);
+    if (pendingEffects.get(operation) !== pending)
+      throw effectTransportError(409, 'NanoHost effect consumer changed during acknowledgement.');
+    await removePendingEffectGroup(
+      pendingEffects,
+      operation,
+      pending,
+      pending.imageSettlement === undefined
+    );
+    completedEffects.set(operation, {
+      redeliveredConnection: physicalConnection,
+      requestId,
+      resultJson,
+    });
+    recordNanoHostEffectAcceptance(telemetryHeaders);
+    pending.reject(effectTransportError(500, 'NanoHost effect failed: effect_failed.'));
+    return;
+  }
+  if (
+    operation === 'sandbox.delete' &&
+    pending.command &&
+    (resultBody.sandboxId !== pending.command.sandboxId ||
+      typeof resultBody.sandboxId !== 'string' ||
+      resultBody.state !== 'deleted')
+  ) {
+    throw effectTransportError(409, 'NanoHost delete result disagrees with its command.');
+  }
+  if (operation === 'bridge.open') {
+    if (!pending.command) {
+      throw effectTransportError(500, 'NanoHost bridge command is unavailable.');
+    }
+    requireBridgeOpenResult(resultBody, pending.command);
+  }
+  if (operation === 'reference.import') {
+    if (!pending.command) {
+      throw effectTransportError(500, 'NanoHost import command is unavailable.');
+    }
+    const expectedReference = `sandbox://${String(pending.command.sandboxId)}/${String(
+      pending.command.slot
+    )}/${String(pending.command.relativePath)}`;
+    if (
+      resultBody.byteLength !==
+        (pending.command.entryKind === 'directory' ? 0 : pending.command.byteLength) ||
+      resultBody.reference !== expectedReference
+    ) {
+      throw effectTransportError(409, 'NanoHost import result disagrees with its command.');
+    }
+  }
+  const callerResult =
+    resourceSummary === undefined ? resultBody : { ...resultBody, resourceSummary };
+  await pending.consumeResult?.(callerResult);
+  requireAuthoritativeSession(sessionAuthority, physicalConnection);
+  if (pendingEffects.get(operation) !== pending)
+    throw effectTransportError(409, 'NanoHost effect consumer changed during acknowledgement.');
+  await removePendingEffectGroup(
+    pendingEffects,
+    operation,
+    pending,
+    pending.imageSettlement === undefined
+  );
+  completedEffects.set(operation, {
+    requestId,
+    resultJson,
+    ...(operation === 'bridge.open' || isExactFileAbsence
+      ? { redeliveredConnection: physicalConnection }
+      : {}),
+  });
+  recordNanoHostEffectAcceptance(telemetryHeaders);
+  pending.resolve(
+    pending.resultOnlyGroup ? { kind: operation, result: callerResult } : callerResult
+  );
 }
 
 /** Identifies effects without successor replay; purge remains fenced by its Core purge-pending owner. */
