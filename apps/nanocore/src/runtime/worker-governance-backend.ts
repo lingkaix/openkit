@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { type BigIntStats, constants } from 'node:fs';
-import { lstat, open, readdir, readFile, rm } from 'node:fs/promises';
+import { lstat, open, readdir, readFile } from 'node:fs/promises';
 import { dirname, join, posix, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
@@ -19,6 +19,7 @@ import {
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import { compareCodeUnits, isRecord } from '@openkit/protocol';
+import { removePrivateTree } from '@openkit/storage';
 import { workerSessionInputPaths, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import {
@@ -859,7 +860,7 @@ export async function inspectNanoHostStagedExport(
  * @param stagingPath Complete staging file path returned by the dispatcher.
  */
 export async function removeNanoHostStagedExport(stagingPath: string): Promise<void> {
-  await rm(dirname(stagingPath), { force: true, recursive: true });
+  await removePrivateTree(dirname(stagingPath));
 }
 
 /**

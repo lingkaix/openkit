@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, open, rename, rm } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
@@ -9,7 +9,12 @@ import {
   WorkerCredentialBindingsSchema,
 } from '@openkit/config-schema';
 import { type ActorRef, ActorRefSchema } from '@openkit/protocol';
-import { ensureCanonicalDirectoryAsync } from '@openkit/storage';
+import {
+  createPrivateTree,
+  ensureCanonicalDirectoryAsync,
+  movePrivateTree,
+  removePrivateTree,
+} from '@openkit/storage';
 import type { Context as TelemetryContext } from '@opentelemetry/api';
 import type { Context, Hono } from 'hono';
 import { createScanner } from 'jsonc-parser';
@@ -1386,7 +1391,7 @@ async function settleNanoHostWorkspaceCollection(
     if (pendingEffects.get('workspace.collect') !== pending)
       throw effectTransportError(409, 'Workspace collection delivery became unknown.');
   } catch (error) {
-    await rm(staged.directory, { force: true, recursive: true });
+    await removePrivateTree(staged.directory);
     throw error;
   }
   const result = {
@@ -1442,7 +1447,7 @@ async function settleNanoHostFileExport(
   });
   if (!pending) {
     const matchesCompleted = sameFileResult(completed?.fileResult, metadata);
-    await rm(staged.directory, { force: true, recursive: true });
+    await removePrivateTree(staged.directory);
     if (!matchesCompleted) {
       throw effectTransportError(409, 'NanoHost file export duplicate conflicts.');
     }
@@ -1454,7 +1459,7 @@ async function settleNanoHostFileExport(
 
   if (pending.fileExportAbandoned) {
     // A complete late copy is verified above and disposed before uncertain admission is freed.
-    await rm(staged.directory, { force: true, recursive: true });
+    await removePrivateTree(staged.directory);
   }
   const result = {
     byteLength: metadata.byteLength,
@@ -3219,7 +3224,7 @@ async function stageFileExport(
     signal?.throwIfAborted();
     const parent = join(input.dataRoot, 'workspaces', '.staging');
     await ensureCanonicalDirectoryAsync(parent);
-    directory = await mkdtemp(join(parent, 'nanohost-export-'));
+    directory = await createPrivateTree(parent, 'nanohost-export-');
     const partialPath = join(directory, '.partial');
     const finalPath = join(directory, 'complete');
     file = await open(partialPath, 'wx', 0o600);
@@ -3257,7 +3262,7 @@ async function stageFileExport(
     }
     await file.sync();
     await file.close();
-    await rename(partialPath, finalPath);
+    await movePrivateTree(partialPath, finalPath);
     const directoryHandle = await open(directory, 'r');
     try {
       await directoryHandle.sync();
@@ -3278,7 +3283,7 @@ async function stageFileExport(
     await file?.close().catch(() => undefined);
     if (directory) {
       try {
-        await rm(directory, { force: true, recursive: true });
+        await removePrivateTree(directory);
         safeToRelease = true;
       } catch {
         /* Keep unwritten capacity reserved when private staging cleanup is unproved. */
