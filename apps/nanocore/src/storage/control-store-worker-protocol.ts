@@ -1,7 +1,9 @@
 import { isAbsolute } from 'node:path';
-import { GoalViewSchema } from '@openkit/app-api-schemas';
+import { BootReadinessSnapshotSchema, GoalViewSchema } from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
+  AuditEventSchema,
+  deriveEntityId,
   ItemSchema,
   SseEventEnvelopeSchema,
   UserIdSchema,
@@ -243,7 +245,39 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 37;
+export const CONTROL_WORKER_VERSION = 38;
+
+/** The original boot row and Server Audit, committed on the existing Core native lifetime. */
+export const ControlBootAuditInputSchema = z
+  .object({
+    bootEventId: z.string().min(1),
+    bootId: z.string().min(1),
+    eventType: z.enum(['boot.start', 'boot.outcome', 'boot.shutdown']),
+    outcome: z.union([
+      BootReadinessSnapshotSchema.shape.overall,
+      z.enum(['started', 'ok', 'forced_exit']),
+    ]),
+    acceptingProductWork: z.boolean(),
+    phaseOutcomesJson: z.string(),
+    readinessJson: z.string(),
+    createdAt: z.iso.datetime(),
+    audit: AuditEventSchema,
+  })
+  .strict()
+  .refine((input) => {
+    const phase = input.eventType.slice('boot.'.length);
+    return (
+      input.bootEventId === `${input.bootId}_${phase}` &&
+      input.audit.id === deriveEntityId('aud', [input.bootId, phase]) &&
+      input.audit.action === input.eventType &&
+      input.audit.category === 'system' &&
+      input.audit.workspaceId === null &&
+      input.audit.resource === `server:boot:${input.bootId}`
+    );
+  });
+
+/** Validated lifecycle facts; this wire carries neither SQL nor a new durable record. */
+export type ControlBootAuditInput = z.infer<typeof ControlBootAuditInputSchema>;
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z
@@ -447,6 +481,7 @@ export type ControlWorkerCommand =
           readonly operation: 'worker-control-evidence';
           readonly input: ControlWorkerRejectedEvidence;
         }
+      | { readonly operation: 'boot-audit'; readonly input: ControlBootAuditInput }
       | { readonly operation: 'admin-recovery'; readonly input: ControlAdminRecoveryInput }
       | { readonly operation: 'better-auth'; readonly input: ControlBetterAuthInput }
       | { readonly operation: 'vault'; readonly input: ControlVaultInput }
@@ -680,6 +715,7 @@ export type ControlWorkerReply = {
         | 'open'
         | 'close'
         | 'shutdown'
+        | 'boot-audit'
         | 'worker-control-evidence'
         | 'products'
         | 'publication'
@@ -1086,6 +1122,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     reply.operation === 'open' ||
     reply.operation === 'close' ||
     reply.operation === 'shutdown' ||
+    reply.operation === 'boot-audit' ||
     reply.operation === 'worker-control-evidence' ||
     reply.operation === 'products' ||
     reply.operation === 'recovery-cleanup' ||
@@ -1534,6 +1571,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlBetterAuthInputSchema.safeParse(value.input).success
+    );
+  if (value.operation === 'boot-audit')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlBootAuditInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'admin-recovery')
     return (

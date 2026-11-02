@@ -272,6 +272,8 @@ async function startRetirementProcess(dataRoot: string) {
     env: {
       PATH: process.env.PATH,
       TMPDIR: tmpdir(),
+      // Share this invocation's compiled real native owners with the source child.
+      VITEST: 'true',
       HOME: dataRoot,
       OPENKIT_DATA_ROOT: dataRoot,
       OPENKIT_CORE_MODE: 'server',
