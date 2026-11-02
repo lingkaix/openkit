@@ -2420,3 +2420,76 @@ export function writeCanonicalFileAtomic(
     if (safeToRelease) reservation?.release();
   }
 }
+
+/** @internal
+ * Lists direct child directory names in stable order.
+ *
+ * @param path Parent path.
+ * @returns Sorted directory names.
+ */
+export function listCanonicalDirectoryNames(path: string): string[] {
+  const metadata = lstatSync(path, { throwIfNoEntry: false });
+
+  if (!metadata) {
+    return [];
+  }
+  assertCanonicalDirectory(path);
+
+  const names: string[] = [];
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) {
+      throw new Error(
+        `Canonical directory must not contain a symbolic link: ${join(path, entry.name)}.`
+      );
+    }
+    if (entry.isDirectory()) {
+      names.push(entry.name);
+    }
+  }
+  return names.sort();
+}
+
+/** @internal
+ * Lists direct child file names in stable order.
+ *
+ * @param path Parent path.
+ * @returns Sorted file names.
+ */
+export function listCanonicalFileNames(path: string): string[] {
+  const metadata = lstatSync(path, { throwIfNoEntry: false });
+
+  if (!metadata) {
+    return [];
+  }
+  assertCanonicalDirectory(path);
+
+  const names: string[] = [];
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) {
+      throw new Error(
+        `Canonical directory must not contain a symbolic link: ${join(path, entry.name)}.`
+      );
+    }
+    if (entry.isFile()) {
+      names.push(entry.name);
+    }
+  }
+  return names.sort();
+}
+
+/** @internal
+ * Removes unexpected direct child directories.
+ *
+ * @param root Parent directory.
+ * @param expectedNames Directory names to retain.
+ */
+export function removeUnkeptCanonicalDirectories(
+  root: string,
+  expectedNames: ReadonlySet<string>
+): void {
+  for (const name of listCanonicalDirectoryNames(root)) {
+    if (!expectedNames.has(name)) {
+      rmSync(join(root, name), { recursive: true, force: true });
+    }
+  }
+}

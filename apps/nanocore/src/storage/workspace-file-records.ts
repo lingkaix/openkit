@@ -3,10 +3,13 @@ import {
   assertCanonicalRegularFile,
   CanonicalPublicationError,
   ensureCanonicalDirectory,
+  listCanonicalDirectoryNames as listDirectoryNames,
+  listCanonicalFileNames as listFileNames,
   measureCanonicalFile,
   publishCanonicalPath,
   readCanonicalFile,
   readCanonicalTextFile,
+  removeUnkeptCanonicalDirectories as removeStaleDirectories,
   syncCanonicalDirectory,
   throwCanonicalLinkError,
   writeCanonicalFileAtomic,
@@ -16,6 +19,7 @@ export {
   assertCanonicalDirectory,
   assertCanonicalRegularFile,
   ensureCanonicalDirectory,
+  listCanonicalDirectoryNames as listDirectoryNames,
   measureCanonicalFile,
   measureCanonicalFileDescriptor,
   publishCanonicalPath,
@@ -2786,76 +2790,6 @@ export function writeOwnedDescriptiveJson(path: string, next: unknown, schema: z
  */
 function writeJsonAtomic(path: string, value: unknown): void {
   writeFileAtomic(path, `${JSON.stringify(value, null, 2)}\n`);
-}
-
-/**
- * Lists direct child directory names in stable order.
- *
- * @param path Parent path.
- * @returns Sorted directory names.
- */
-export function listDirectoryNames(path: string): string[] {
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-
-  if (!metadata) {
-    return [];
-  }
-  assertCanonicalDirectory(path);
-
-  const names: string[] = [];
-  for (const entry of readdirSync(path, { withFileTypes: true })) {
-    if (entry.isSymbolicLink()) {
-      throw new Error(
-        `Canonical directory must not contain a symbolic link: ${join(path, entry.name)}.`
-      );
-    }
-    if (entry.isDirectory()) {
-      names.push(entry.name);
-    }
-  }
-  return names.sort();
-}
-
-/**
- * Lists direct child file names in stable order.
- *
- * @param path Parent path.
- * @returns Sorted file names.
- */
-function listFileNames(path: string): string[] {
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-
-  if (!metadata) {
-    return [];
-  }
-  assertCanonicalDirectory(path);
-
-  const names: string[] = [];
-  for (const entry of readdirSync(path, { withFileTypes: true })) {
-    if (entry.isSymbolicLink()) {
-      throw new Error(
-        `Canonical directory must not contain a symbolic link: ${join(path, entry.name)}.`
-      );
-    }
-    if (entry.isFile()) {
-      names.push(entry.name);
-    }
-  }
-  return names.sort();
-}
-
-/**
- * Removes unexpected direct child directories.
- *
- * @param root Parent directory.
- * @param expectedNames Directory names to retain.
- */
-function removeStaleDirectories(root: string, expectedNames: ReadonlySet<string>): void {
-  for (const name of listDirectoryNames(root)) {
-    if (!expectedNames.has(name)) {
-      rmSync(join(root, name), { recursive: true, force: true });
-    }
-  }
 }
 
 /**
