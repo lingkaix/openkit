@@ -91,7 +91,7 @@ async function createFixture() {
     }
   );
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup: createTestAgentSetup(),
       agentSessionId: testEntityId('as', 'as_cancellation'),
@@ -117,7 +117,7 @@ async function createFixture() {
   await store.updateTurn(turn.id, { agentSessionId: environmentPackage.scope.agentSessionId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
   applyScopedMigrations(workspaceDb);
-  recordAgentEnvironmentPackageSnapshot(workspaceDb, { createdAt: now, environmentPackage });
+  await recordAgentEnvironmentPackageSnapshot(workspaceDb, { createdAt: now, environmentPackage });
   workspaceDb.sqlite.close();
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',

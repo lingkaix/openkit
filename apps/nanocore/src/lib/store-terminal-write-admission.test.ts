@@ -112,7 +112,7 @@ async function seedMcpBootItem(input: {
   applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
   const ledgerNow = new Date(COMPLETED_AT);
   try {
-    const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+    const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
       suffix: 'mcp_boot',
       triggerActor: turn.triggerActor,
       workspaceInputIds: [],
@@ -363,7 +363,7 @@ describe('post-terminal write admission', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     try {
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'mcp_admission',
         triggerActor: turn.triggerActor,
         workspaceInputIds: [],

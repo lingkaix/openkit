@@ -2,13 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { importWorkspaceVaultGrants } from '../storage/test-support/vault-retained-fixtures.js';
 import { createVaultInjectionPlan, listVaultInjectionPlans } from '../vault-injection-plans.js';
 import {
   createVaultGrant,
   getVaultGrant,
-  importWorkspaceVaultGrants,
   listExportableWorkspaceVaultGrants,
 } from './vault-grants.js';
 import { createVaultReference, rebindWorkspaceVaultReference } from './vault-references.js';
@@ -18,18 +19,19 @@ const referenceId = 'vault_01890f3e-0000-7000-8000-000000000001';
 const workspaceId = 'ws_01890f3e-0000-7000-8000-000000000001';
 const roots: string[] = [];
 const databases: ReturnType<typeof openCoreDb>[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 /** Creates a canonical metadata-only fixture; no secret backend or host is involved. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'openkit-grant-issuance-'));
   roots.push(root);
   const db = openCoreDb(root);
   databases.push(db);
   applyMigrations(db);
-  createVaultReference(db, {
+  await createVaultReference(db, {
     backendKind: 'encrypted-file',
     displayName: 'Synthetic reference',
     ownerScope: 'workspace',
@@ -37,7 +39,7 @@ function fixture() {
     referenceId,
     secretKind: 'provider-key',
   });
-  const grant = createVaultGrant(db, {
+  const grant = await createVaultGrant(db, {
     allowedInjectionPaths: ['gateway-only'],
     grantId,
     lifetime: 'workspace',
@@ -48,8 +50,8 @@ function fixture() {
   return { root, db, grant };
 }
 /** Exercises the actual effect-owner admission without resolving secret material. */
-function plan(db: ReturnType<typeof openCoreDb>) {
-  return createVaultInjectionPlan(db, {
+async function plan(db: ReturnType<typeof openCoreDb>) {
+  return await createVaultInjectionPlan(db, {
     planId: 'synthetic-plan',
     grantId,
     injectionVisibility: 'gateway-only',
@@ -61,13 +63,13 @@ function plan(db: ReturnType<typeof openCoreDb>) {
 }
 
 describe('immutable VaultGrant issuance', () => {
-  it('admits a normally issued target grant without inventing Approval lineage', () => {
-    const { db, grant } = fixture();
+  it('admits a normally issued target grant without inventing Approval lineage', async () => {
+    const { db, grant } = await fixture();
     expect(grant).toMatchObject({ issuance: 'target', approvalId: null, policyDecisionId: null });
-    expect(plan(db).grantId).toBe(grantId);
+    expect((await plan(db)).grantId).toBe(grantId);
   });
-  it('forces imported history even when the source claims target and refuses effects after reopen and re-export', () => {
-    const { root, db, grant } = fixture();
+  it('forces imported history even when the source claims target and refuses effects after reopen and re-export', async () => {
+    const { root, db, grant } = await fixture();
     db.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grantId);
     importWorkspaceVaultGrants(db, [grant]);
     expect(getVaultGrant(db, grantId)).toMatchObject({
@@ -75,14 +77,14 @@ describe('immutable VaultGrant issuance', () => {
       status: 'active',
       approvalId: null,
     });
-    expect(() => plan(db)).toThrow();
+    await expect(plan(db)).rejects.toThrow();
     expect(listVaultInjectionPlans(db)).toEqual([]);
     db.sqlite
       .prepare(
         "UPDATE vault_references SET status = 'unbound', backend_locator = NULL WHERE reference_id = ?"
       )
       .run(referenceId);
-    rebindWorkspaceVaultReference(db, {
+    await rebindWorkspaceVaultReference(db, {
       workspaceId,
       referenceId,
       backendKind: 'encrypted-file',
@@ -90,27 +92,28 @@ describe('immutable VaultGrant issuance', () => {
       currentVersion: 1,
     });
     expect(getVaultGrant(db, grantId)).toMatchObject({ issuance: 'imported-history' });
-    expect(() => plan(db)).toThrow();
+    await expect(plan(db)).rejects.toThrow();
     expect(listVaultInjectionPlans(db)).toEqual([]);
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     const reopened = openCoreDb(root);
     databases.push(reopened);
     applyMigrations(reopened);
-    expect(() => plan(reopened)).toThrow();
+    await expect(plan(reopened)).rejects.toThrow();
     const portable = listExportableWorkspaceVaultGrants(reopened, workspaceId);
     expect(portable).toHaveLength(1);
     expect(portable[0]).toMatchObject({ issuance: 'imported-history' });
     importWorkspaceVaultGrants(reopened, portable);
     expect(getVaultGrant(reopened, grantId)).toMatchObject({ issuance: 'imported-history' });
-    expect(() => plan(reopened)).toThrow();
+    await expect(plan(reopened)).rejects.toThrow();
     expect(listVaultInjectionPlans(reopened)).toEqual([]);
   });
-  it('does not promote an imported row through duplicate live issuance', () => {
-    const { db, grant } = fixture();
+  it('does not promote an imported row through duplicate live issuance', async () => {
+    const { db, grant } = await fixture();
     db.sqlite.prepare('DELETE FROM vault_grants WHERE grant_id = ?').run(grantId);
     importWorkspaceVaultGrants(db, [grant]);
     const before = db.sqlite.serialize();
-    expect(() =>
+    await expect(
       createVaultGrant(db, {
         allowedInjectionPaths: ['gateway-only'],
         grantId,
@@ -119,18 +122,18 @@ describe('immutable VaultGrant issuance', () => {
         workspaceId,
         vaultReferenceId: referenceId,
       })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(db.sqlite.serialize().equals(before)).toBe(true);
     expect(getVaultGrant(db, grantId)).toMatchObject({ issuance: 'imported-history' });
   });
-  it('fails closed on unknown canonical provenance before plan creation', () => {
-    const { db } = fixture();
+  it('fails closed on unknown canonical provenance before plan creation', async () => {
+    const { db } = await fixture();
     db.sqlite.pragma('ignore_check_constraints = ON');
     db.sqlite
       .prepare("UPDATE vault_grants SET issuance = 'unknown' WHERE grant_id = ?")
       .run(grantId);
     expect(() => getVaultGrant(db, grantId)).toThrow();
-    expect(() => plan(db)).toThrow();
+    await expect(plan(db)).rejects.toThrow();
     expect(listVaultInjectionPlans(db)).toEqual([]);
   });
 });

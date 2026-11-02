@@ -389,7 +389,7 @@ async function createFailedStartFixture(
     finalized || anchored
   );
   if (finalized || anchored) {
-    const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+    const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
       suffix,
       workspaceInputIds,
     });
@@ -1605,7 +1605,7 @@ describe('terminal failed-start product recovery', () => {
         'ws_00000000-0000-7000-8000-000000000001'
       );
       try {
-        recordTestAgentEnvironmentPackage(siblingWorkspace, {
+        await recordTestAgentEnvironmentPackage(siblingWorkspace, {
           suffix: sibling,
           workspaceInputIds: [],
         });
@@ -2517,7 +2517,7 @@ async function runRestartRecoveryThroughMaintenance(
 }
 
 /** Records one scheduler-recovery package with an explicit or default trigger actor. */
-function recordTestAgentEnvironmentPackage(
+async function recordTestAgentEnvironmentPackage(
   workspaceDb: ReturnType<typeof openWorkspaceDb>,
   input: {
     readonly suffix: string;
@@ -2525,14 +2525,14 @@ function recordTestAgentEnvironmentPackage(
     readonly triggerActor?: ActorRef;
     readonly workspaceInputIds: readonly string[];
   }
-): AgentEnvironmentPackage {
+): Promise<AgentEnvironmentPackage> {
   const coreDb = openCoreDb(workspaceDb.dataRoot);
   try {
     const setup = createTestAgentSetup();
     admitTestNativeEnvironment(coreDb, setup.manifest);
     const sourceCommit = 'a'.repeat(40);
     const triggerActor = input.triggerActor ?? { kind: 'user' as const, id: LOCAL_USER_ID };
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       coreDb,
       captureCoverage: { scope: 'server', value: 'off' },
       agentSetup: setup,
@@ -2582,7 +2582,7 @@ function recordTestAgentEnvironmentPackage(
         })),
       },
     });
-    recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+    await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: '2026-07-05T00:00:01.000Z',
       environmentPackage,
     });
@@ -2777,7 +2777,11 @@ async function recordBackendSession(
           `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`
       )
     ) {
-      recordTestAgentEnvironmentPackage(workspaceDb, { suffix, threadId, workspaceInputIds: [] });
+      await recordTestAgentEnvironmentPackage(workspaceDb, {
+        suffix,
+        threadId,
+        workspaceInputIds: [],
+      });
     }
   } finally {
     workspaceDb.sqlite.close();
@@ -3757,7 +3761,7 @@ describe('scheduler restart recovery', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, suffix);
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         workspaceInputIds,
       });
@@ -3849,7 +3853,7 @@ describe('scheduler restart recovery', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, suffix);
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         workspaceInputIds: ['repo'],
       });
@@ -3928,7 +3932,7 @@ describe('scheduler restart recovery', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, suffix);
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         workspaceInputIds: ['repo'],
       });
@@ -4010,7 +4014,7 @@ describe('scheduler restart recovery', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, suffix);
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         workspaceInputIds: ['repo'],
       });
@@ -4432,7 +4436,7 @@ describe('scheduler restart recovery', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, suffix);
-      recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds: [] });
+      await recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds: [] });
       await recordBackendSession(coreDb, suffix, 'launching');
 
       await expect(
@@ -4833,7 +4837,7 @@ describe('scheduler restart recovery', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       dispatchLease(coreDb, suffix, triggerActor);
-      recordTestAgentEnvironmentPackage(workspaceDb, {
+      await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         triggerActor,
         workspaceInputIds: [],
@@ -4870,7 +4874,7 @@ describe('scheduler restart recovery', () => {
         id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
         responsibleUserId: 'usr_00000000-0000-7177-883a-d86169c75e9b',
       });
-      recordTestAgentEnvironmentPackage(workspaceDb, {
+      await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
         triggerActor: {
           kind: 'automation',
@@ -7118,9 +7122,9 @@ async function createFinalReviewRecoveryFixture(
         writeFileSync(join(contextRoot, 'context.md'), context);
         const setup = createTestAgentSetup();
         admitTestNativeEnvironment(coreDb, setup.manifest);
-        recordAgentEnvironmentPackageSnapshot(workspace, {
+        await recordAgentEnvironmentPackageSnapshot(workspace, {
           createdAt: '2026-07-05T00:00:03.000Z',
-          environmentPackage: resolveAgentEnvironmentPackage({
+          environmentPackage: await resolveAgentEnvironmentPackage({
             coreDb,
             agentSetup: setup,
             agentSessionId,

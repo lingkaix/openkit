@@ -52,18 +52,58 @@ export function planLogicalModel(
   eligible: (route: ResolvedLogicalModelRoute, required: readonly string[]) => boolean
 ): readonly GatewaySelection[] {
   return model.routes.map((route, index) => {
-    const reason =
-      !model.autoFailover && index > 0
-        ? 'failover_disabled'
-        : !route.available
-          ? (route.unavailableReason ?? 'provider_unavailable')
-          : !eligible(route, requiredCapabilities)
-            ? 'pinned_capability_unavailable'
-            : index === 0
-              ? 'primary'
-              : 'backup';
-    return { route, selected: reason === 'primary' || reason === 'backup', reason };
+    const selection = logicalModelSelection(model, route, index, true);
+    return selection.selected
+      ? logicalModelSelection(model, route, index, eligible(route, requiredCapabilities))
+      : selection;
   });
+}
+
+/** Keeps asynchronous credential evidence in authored order without inspecting skipped members. */
+export async function planLogicalModelAsync(
+  model: ResolvedLogicalModel,
+  requiredCapabilities: readonly string[],
+  eligible: (
+    route: ResolvedLogicalModelRoute,
+    required: readonly string[],
+    selections: readonly GatewaySelection[]
+  ) => Promise<boolean>
+): Promise<readonly GatewaySelection[]> {
+  const selections: GatewaySelection[] = [];
+  for (const [index, route] of model.routes.entries()) {
+    const selection = logicalModelSelection(model, route, index, true);
+    selections.push(
+      selection.selected
+        ? logicalModelSelection(
+            model,
+            route,
+            index,
+            await eligible(route, requiredCapabilities, selections)
+          )
+        : selection
+    );
+  }
+  return selections;
+}
+
+/** Sole selection-reason owner for synchronous metadata and awaited dispatch preparation. */
+function logicalModelSelection(
+  model: ResolvedLogicalModel,
+  route: ResolvedLogicalModelRoute,
+  index: number,
+  eligible: boolean
+): GatewaySelection {
+  const reason =
+    !model.autoFailover && index > 0
+      ? 'failover_disabled'
+      : !route.available
+        ? (route.unavailableReason ?? 'provider_unavailable')
+        : !eligible
+          ? 'pinned_capability_unavailable'
+          : index === 0
+            ? 'primary'
+            : 'backup';
+  return { route, selected: reason === 'primary' || reason === 'backup', reason };
 }
 
 /** Stable tier exhaustion with only the terminating closed kind as its optional cause. */
@@ -106,7 +146,7 @@ export interface GatewayAttemptContext {
   /** Records optional effort facts at stock-adapter handoff after OpenKit admission, independently of output or commit. */
   readonly onProviderHandoff?: () => void | Promise<void>;
   /** Revalidates selected credentials after awaited Workspace preparation. */
-  readonly assertAuthority?: () => void;
+  readonly assertAuthority?: () => void | Promise<void>;
   /** True only after outward model content or a validated non-stream result is released. */
   readonly outputBegan: boolean;
   /** True once stream preparation succeeded; its terminal result arrives during consumption. */
@@ -128,7 +168,11 @@ export interface GatewayAttemptContext {
  * @returns First validated successful result; no committed or uncertain effect is repeated.
  */
 export async function executeGatewayPlan<T>(input: {
-  selections: readonly GatewaySelection[];
+  selections:
+    | readonly GatewaySelection[]
+    | ((
+        context: Pick<GatewayAttemptContext, 'signal' | 'deadline'>
+      ) => Promise<readonly GatewaySelection[]>);
   autoFailover: boolean;
   signal: AbortSignal;
   attempt(selection: GatewaySelection, context: GatewayAttemptContext): Promise<T>;
@@ -159,8 +203,13 @@ export async function executeGatewayPlan<T>(input: {
   let active = false;
   let attemptedRecovery = false;
   try {
+    let selections = input.selections;
+    if (typeof selections === 'function') {
+      selections = await selections({ signal: input.signal, deadline });
+      input.signal.throwIfAborted();
+    }
     for (let index = 0; ; index++) {
-      let selection = !input.autoFailover && lastFailure ? undefined : input.selections[index];
+      let selection = !input.autoFailover && lastFailure ? undefined : selections[index];
       // Extend this same plan once; do not introduce an await before its first admitted attempt.
       if (!selection) {
         if (

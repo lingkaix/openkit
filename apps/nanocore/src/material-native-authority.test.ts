@@ -514,7 +514,7 @@ async function preparedMaterial() {
     },
     admission
   );
-  const resolvedPackage = resolveAgentEnvironmentPackage({
+  const resolvedPackage = await resolveAgentEnvironmentPackage({
     coreDb: f.coreDb,
     agentSetup,
     agentSessionId,

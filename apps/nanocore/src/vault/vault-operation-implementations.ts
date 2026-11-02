@@ -17,13 +17,8 @@ import {
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { recordServerAuditEvent } from '../audit-events.js';
 import { isDeploymentAdminActor } from '../auth/identity.js';
-import {
-  currentWorkerLineageWorkspaceAuthority,
-  currentWorkspaceAuthority,
-  type WorkspaceAuthorityEvaluation,
-} from '../auth/operation-authorizer.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { loadProviderProfiles } from '../config/providers-loader.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -32,7 +27,7 @@ import {
   type FamilyImplementations,
   publicOperationActor,
 } from '../operation-contract.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import type { InterceptionDecision, InterceptionInput } from '../policy/interception.js';
 import { type PolicyProposal, policyDigest } from '../policy/statements.js';
@@ -40,7 +35,17 @@ import { readVaultReferenceId } from '../providers/vault-credential-resolver.js'
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { requireCoordinatorGoal } from '../runtime/goal-owner.js';
 import { readGoalTaskPolicyContext } from '../runtime/goal-task-policy-context.js';
+import { readVaultRequesterAuthority } from '../runtime/worker-credential-authority.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import type {
+  ControlVaultMainInputMap,
+  VaultBindingRequester,
+  VaultReferenceRecord,
+} from '../storage/vault-native-codecs.js';
 import {
   getVaultInjectionPlan,
   listExportableVaultInjectionPlans,
@@ -51,27 +56,23 @@ import {
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
 import { isServerMcpReference } from './server-mcp-authority.js';
-import { recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
+import {
+  prepareVaultAdminAudit,
+  recordVaultAuditEvent as recordServerAuditEvent,
+  recordVaultAdminAuditEvent,
+} from './vault-admin-audit-events.js';
 import { createVaultGrantRequestImplementations } from './vault-grant-requests.js';
 import {
-  createVaultGrant,
   getVaultGrant,
   listExportableWorkspaceVaultGrants,
   listVaultGrants,
-  narrowVaultGrant,
-  revokeVaultGrant,
   VaultGrantNarrowingError,
 } from './vault-grants.js';
 import { loadEncryptedFileVaultKeyFile } from './vault-key-file.js';
 import {
-  advanceActiveVaultReferenceVersion,
-  createVaultReference,
-  createVaultReferenceWithInsertEvidence,
   getVaultReference,
   listVaultReferences,
   listWorkspaceVaultReferences,
-  rebindWorkspaceVaultReference,
-  revokeVaultReference,
 } from './vault-references.js';
 import type { VaultUnlockState } from './vault-unlock-state.js';
 import {
@@ -187,6 +188,38 @@ export function createVaultOperationImplementations(
     if (vaultUnlockState) administrationStates.set(vaultUnlockState, administrationState);
   }
   const { vaultUnlockFailuresByActor, providerApiKeyWrites } = administrationState;
+
+  /** Submits public metadata mutations with the actual requester; native current facts decide after FIFO. */
+  async function publicMutation<
+    K extends
+      | 'reference-create'
+      | 'reference-advance'
+      | 'reference-revoke'
+      | 'reference-rebind'
+      | 'grant-create'
+      | 'grant-revoke',
+  >(
+    kind: K,
+    record: ControlVaultMainInputMap[K],
+    context: AdmittedOperationContext,
+    reference?: VaultReferenceRecord
+  ) {
+    return getControlStoreWorkerClient().vault(
+      coreDb!,
+      kind,
+      {
+        ...record,
+        publicMutation: {
+          actor: publicOperationActor(context),
+          ...(context.scope.kind === 'workspace' ? { workspaceId: context.scope.workspaceId } : {}),
+          ...(reference ? { reference } : {}),
+        },
+      },
+      async () => {
+        await context.recheckAdmission?.();
+      }
+    );
+  }
 
   /** One consumer of the existing operation definition and Policy owner for Vault effects and reads. */
   async function governedVaultOperation<T>(
@@ -304,36 +337,13 @@ export function createVaultOperationImplementations(
         revision: string;
         authorizationUses: InterceptionInput['authorizationUses'];
       } => {
-        let evaluated: WorkspaceAuthorityEvaluation | undefined;
-        const capture = {
-          dependencyFailure: 'throw' as const,
-          mutating: definition.mutating,
-          onEvaluation: (event: WorkspaceAuthorityEvaluation) => {
-            evaluated = event;
-          },
-        };
-        // This argument is current effect-specific eligibility, not mutation posture.
-        // Selection/currentness is supplied by readFacts for reads as well as effects.
-        const authority =
-          context.kind === 'worker'
-            ? currentWorkerLineageWorkspaceAuthority(
-                coreDb,
-                { ...context.lineage, triggerActor: context.actor },
-                definition.policyOperation,
-                true,
-                capture
-              )
-            : currentWorkspaceAuthority(
-                coreDb,
-                input.workspaceId,
-                context.actorRef,
-                definition.policyOperation,
-                true,
-                context.actor,
-                capture
-              );
-        if (!authority || !evaluated)
-          throw new Error('Current credential binding authority is unavailable.');
+        const evaluated = readVaultRequesterAuthority(
+          coreDb,
+          input.workspaceId,
+          vaultRequesterForContext(context),
+          definition.policyOperation,
+          definition.mutating
+        );
         const currentCoordinator =
           context.kind === 'coordinator' ? requireCoordinatorGoal(store, db, context) : null;
         const goalInput =
@@ -424,7 +434,7 @@ export function createVaultOperationImplementations(
       };
       await recheckAuthority();
       const result = await run(recheckAuthority);
-      recordServerAuditEvent({
+      await recordServerAuditEvent({
         coreDb,
         workspaceId: input.workspaceId,
         ...(input.requestId ? { requestId: input.requestId } : {}),
@@ -447,19 +457,31 @@ export function createVaultOperationImplementations(
       if (!definition.mutating) await recheckAuthority();
       return result;
     } catch (cause) {
-      recordServerAuditEvent({
-        coreDb,
-        workspaceId: input.workspaceId,
-        ...(input.requestId ? { requestId: input.requestId } : {}),
-        actor: auditActor,
-        action: operation,
-        resource: `workspace:${input.workspaceId}`,
-        outcome: 'failed',
-        summary: 'Governed Vault operation failed or requires inspection.',
-      });
-      if (cause instanceof OperationError) throw cause;
+      let failure = cause;
+      try {
+        await recordServerAuditEvent({
+          coreDb,
+          workspaceId: input.workspaceId,
+          ...(input.requestId ? { requestId: input.requestId } : {}),
+          actor: auditActor,
+          action: operation,
+          resource: `workspace:${input.workspaceId}`,
+          outcome: 'failed',
+          summary: 'Governed Vault operation failed or requires inspection.',
+        });
+      } catch (auditError) {
+        failure = new AggregateError(
+          [cause, auditError],
+          'Vault failure evidence could not settle.',
+          { cause }
+        );
+      }
+      if (cause instanceof OperationError) {
+        if (failure === cause) throw cause;
+        throw new OperationError(cause.code, cause.message, cause.status, { cause: failure });
+      }
       throw new OperationError('recovery_required', 'Vault operation requires inspection.', 409, {
-        cause,
+        cause: failure,
       });
     }
   }
@@ -571,6 +593,19 @@ export function createVaultOperationImplementations(
             dependencies.store!,
             {
               action,
+              coreAuthority: {
+                workspaceId: input.workspaceId,
+                requester: vaultRequesterForContext(context),
+                revision: policyDigest(
+                  readVaultRequesterAuthority(
+                    coreDb,
+                    input.workspaceId,
+                    vaultRequesterForContext(context),
+                    'vault.use',
+                    true
+                  )
+                ),
+              },
               workspaceId: input.workspaceId,
               threadId: input.bindingThreadId,
               planId: input.planId,
@@ -799,7 +834,7 @@ export function createVaultOperationImplementations(
    * @param c Trusted admitted operation context.
    * @param input Redacted audit fields.
    */
-  function recordVaultAdminAudit(
+  async function recordVaultAdminAudit(
     c: AdmittedOperationContext,
     input: {
       readonly action:
@@ -812,12 +847,12 @@ export function createVaultOperationImplementations(
       readonly summary: string;
       readonly errorCode?: string;
     }
-  ): void {
+  ): Promise<void> {
     if (!coreDb) {
       return;
     }
 
-    recordVaultAdminAuditEvent({
+    await recordVaultAdminAuditEvent({
       action: input.action,
       actor: publicOperationActor(c),
       backendKind: vaultUnlockState?.backend().kind ?? 'encrypted-file',
@@ -829,14 +864,14 @@ export function createVaultOperationImplementations(
   }
 
   /** Returns one redacted provider API-key error after recording the failed mutation. */
-  function providerApiKeyError(
+  async function providerApiKeyError(
     c: AdmittedOperationContext,
     message: string,
     errorCode: string,
     status: 400 | 404 | 409 | 423,
     outcome: 'failed' | 'denied' = 'failed'
-  ): never {
-    recordVaultAdminAudit(c, {
+  ): Promise<never> {
+    await recordVaultAdminAudit(c, {
       action: 'vault.set_provider_api_key',
       errorCode,
       outcome,
@@ -905,8 +940,8 @@ export function createVaultOperationImplementations(
 
     const backend = vaultUnlockState.backend();
     /** Record only fixed action and outcome text, never request or exception content. */
-    const audit = (outcome: 'succeeded' | 'failed') =>
-      recordVaultAdminAuditEvent({
+    const audit = async (outcome: 'succeeded' | 'failed') =>
+      await recordVaultAdminAuditEvent({
         coreDb,
         actor: publicOperationActor(c),
         action: `vault.workspace_${action}`,
@@ -924,11 +959,9 @@ export function createVaultOperationImplementations(
         const grant = getVaultGrant(coreDb, input.grantId!);
         if (!grant || grant.ownerScope !== 'workspace' || grant.workspaceId !== workspaceId)
           return vaultFailure('Vault grant not found.', 'vault_grant_not_found', 404);
-        const result = coreDb.sqlite.transaction(() =>
-          revokeVaultGrant(coreDb, { grantId: grant.grantId })
-        )();
+        const result = await publicMutation('grant-revoke', { grantId: grant.grantId }, c);
         await closeRevokedCredentialBindings(dependencies, { grantId: grant.grantId });
-        audit('succeeded');
+        await audit('succeeded');
         return result as WorkspaceVaultGrant;
       }
       if (action !== 'revoke' && backend.health().state !== 'available')
@@ -943,18 +976,22 @@ export function createVaultOperationImplementations(
         storedReferenceId = referenceId;
         if (inventory.currentVersion !== 1 || inventory.revoked)
           throw new Error('Invalid initial version.');
-        const created = createVaultReferenceWithInsertEvidence(coreDb, {
-          referenceId,
-          ownerScope: 'workspace',
-          workspaceId,
-          secretKind: input.secretKind!,
-          displayName: input.secretKind!,
-          backendKind: backend.kind,
-          backendLocator: `${backend.kind}://workspace/${workspaceId}/vault/${referenceId}`,
-        });
+        const created = await publicMutation(
+          'reference-create',
+          {
+            referenceId,
+            ownerScope: 'workspace',
+            workspaceId,
+            secretKind: input.secretKind!,
+            displayName: input.secretKind!,
+            backendKind: backend.kind,
+            backendLocator: `${backend.kind}://workspace/${workspaceId}/vault/${referenceId}`,
+          },
+          c
+        );
         if (!created.inserted) throw new Error('Reference conflict.');
         storedReferenceId = null;
-        audit('succeeded');
+        await audit('succeeded');
         return projectReference(created.reference);
       }
       const referenceId = input.referenceId!;
@@ -989,7 +1026,7 @@ export function createVaultOperationImplementations(
         }
       };
       if (action === 'revoke') {
-        const result = revokeVaultReference(coreDb, { referenceId });
+        const result = await publicMutation('reference-revoke', { referenceId }, c, reference);
         let backendFailure: { error: unknown } | undefined;
         try {
           validateInventory();
@@ -1010,7 +1047,7 @@ export function createVaultOperationImplementations(
           throw cleanupError;
         }
         if (backendFailure) throw backendFailure.error;
-        audit('succeeded');
+        await audit('succeeded');
         return projectReference(result);
       }
       validateInventory();
@@ -1031,48 +1068,65 @@ export function createVaultOperationImplementations(
             'invalid_request',
             400
           );
-        const grant = createVaultGrant(coreDb, {
-          grantId: allocateEntityId('grant'),
-          vaultReferenceId: referenceId,
-          ownerScope: 'workspace',
-          workspaceId,
-          allowedInjectionPaths: [input.injectionPath ?? 'gateway-only'],
-          targetAgentId: input.targetAgentId ?? null,
-          targetAgentSessionId: input.targetAgentSessionId ?? null,
-          targetCapabilityId: input.targetCapabilityId ?? null,
-          lifetime: 'workspace',
-          subjectSummary:
-            input.injectionPath === 'runtime-file'
-              ? 'High-risk static Worker file'
-              : workerVisible
-                ? 'Worker GitHub CLI'
-                : 'Gateway-only credential',
-          expiresAt: input.expiresAt ? new Date(input.expiresAt).toISOString() : null,
-        });
-        audit('succeeded');
+        const grant = await publicMutation(
+          'grant-create',
+          {
+            grantId: allocateEntityId('grant'),
+            vaultReferenceId: referenceId,
+            ownerScope: 'workspace',
+            workspaceId,
+            allowedInjectionPaths: [input.injectionPath ?? 'gateway-only'],
+            targetAgentId: input.targetAgentId ?? null,
+            targetAgentSessionId: input.targetAgentSessionId ?? null,
+            targetCapabilityId: input.targetCapabilityId ?? null,
+            lifetime: 'workspace',
+            subjectSummary:
+              input.injectionPath === 'runtime-file'
+                ? 'High-risk static Worker file'
+                : workerVisible
+                  ? 'Worker GitHub CLI'
+                  : 'Gateway-only credential',
+            expiresAt: input.expiresAt ? new Date(input.expiresAt).toISOString() : null,
+          },
+          c,
+          reference
+        );
+        await audit('succeeded');
         return grant as WorkspaceVaultGrant;
       }
       const rotated = backend.rotate({ referenceId, material: input.material! });
-      const result = advanceActiveVaultReferenceVersion(coreDb, {
-        referenceId,
-        currentVersion: rotated.currentVersion,
-      });
-      audit('succeeded');
+      const result = await publicMutation(
+        'reference-advance',
+        {
+          referenceId,
+          currentVersion: rotated.currentVersion,
+        },
+        c,
+        reference
+      );
+      await audit('succeeded');
       return projectReference(result);
     } catch (error) {
       if (error instanceof OperationError) throw error;
-      if (storedReferenceId) {
+      const unknown = error instanceof ControlStoreWorkerError && error.commit === 'unknown';
+      if (storedReferenceId && !unknown) {
         try {
           backend.revoke({ referenceId: storedReferenceId });
         } catch {
           /* Failed cleanup requires inspection. */
         }
       }
-      audit('failed');
+      try {
+        await audit('failed');
+      } catch (auditError) {
+        if (!unknown) throw auditError;
+        // An unacknowledged original stage stays unknown even if later failure evidence also refuses.
+      }
       return vaultFailure(
         'Vault mutation failed; inspect inventory before a new request.',
         'vault_mutation_failed',
-        409
+        409,
+        error
       );
     }
   }
@@ -1246,14 +1300,18 @@ export function createVaultOperationImplementations(
             throw new Error('Provider API-key Vault store returned an invalid initial version.');
           }
 
-          const created = createVaultReferenceWithInsertEvidence(coreDb, {
-            backendKind: backend.kind,
-            backendLocator: `${backend.kind}://server/vault/${referenceId}`,
-            displayName: 'Provider API key',
-            ownerScope: 'server',
-            referenceId,
-            secretKind: 'provider-api-key',
-          });
+          const created = await publicMutation(
+            'reference-create',
+            {
+              backendKind: backend.kind,
+              backendLocator: `${backend.kind}://server/vault/${referenceId}`,
+              displayName: 'Provider API key',
+              ownerScope: 'server',
+              referenceId,
+              secretKind: 'provider-api-key',
+            },
+            c
+          );
 
           if (!created.inserted) {
             throw new Error('Provider API-key Vault reference already exists.');
@@ -1287,10 +1345,15 @@ export function createVaultOperationImplementations(
             );
           }
           if (inventory.currentVersion === reference.currentVersion + 1) {
-            reference = advanceActiveVaultReferenceVersion(coreDb, {
-              currentVersion: inventory.currentVersion,
-              referenceId,
-            });
+            reference = await publicMutation(
+              'reference-advance',
+              {
+                currentVersion: inventory.currentVersion,
+                referenceId,
+              },
+              c,
+              reference
+            );
           } else if (inventory.currentVersion !== reference.currentVersion) {
             return providerApiKeyError(
               c,
@@ -1300,18 +1363,24 @@ export function createVaultOperationImplementations(
             );
           }
 
+          await c.recheckAdmission?.();
           const rotated = backend.rotate({ material: input.apiKey, referenceId });
-          reference = advanceActiveVaultReferenceVersion(coreDb, {
-            currentVersion: rotated.currentVersion,
-            referenceId,
-          });
+          reference = await publicMutation(
+            'reference-advance',
+            {
+              currentVersion: rotated.currentVersion,
+              referenceId,
+            },
+            c,
+            reference
+          );
         }
 
         if (!reference) {
           throw new Error('Provider API-key Vault reference was not stored.');
         }
 
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.set_provider_api_key',
           outcome: 'succeeded',
           summary: 'Provider API-key configuration succeeded.',
@@ -1320,9 +1389,10 @@ export function createVaultOperationImplementations(
         return response;
       } catch (error) {
         if (error instanceof OperationError) throw error;
-        let recoveryRequired = false;
+        const unknown = error instanceof ControlStoreWorkerError && error.commit === 'unknown';
+        let recoveryRequired = unknown;
 
-        if (storedNewMaterial) {
+        if (storedNewMaterial && !unknown) {
           recoveryRequired = true;
           try {
             vaultUnlockState.backend().revoke({ referenceId });
@@ -1332,25 +1402,32 @@ export function createVaultOperationImplementations(
           }
         }
 
-        recordVaultAdminAudit(c, {
-          action: 'vault.set_provider_api_key',
-          errorCode: recoveryRequired
-            ? 'provider_api_key_recovery_required'
-            : 'provider_api_key_persistence_failed',
-          outcome: 'failed',
-          summary: 'Provider API-key configuration failed.',
-        });
+        try {
+          await recordVaultAdminAudit(c, {
+            action: 'vault.set_provider_api_key',
+            errorCode: recoveryRequired
+              ? 'provider_api_key_recovery_required'
+              : 'provider_api_key_persistence_failed',
+            outcome: 'failed',
+            summary: 'Provider API-key configuration failed.',
+          });
+        } catch (auditError) {
+          if (!unknown) throw auditError;
+          // Secondary evidence cannot establish rollback of the unacknowledged original stage.
+        }
 
         return recoveryRequired
           ? vaultFailure(
               'Provider API-key storage requires recovery.',
               'provider_api_key_recovery_required',
-              409
+              409,
+              error
             )
           : vaultFailure(
               'Provider API-key configuration failed.',
               'provider_api_key_persistence_failed',
-              500
+              500,
+              error
             );
       } finally {
         providerApiKeyWrites.delete(referenceId);
@@ -1377,7 +1454,7 @@ export function createVaultOperationImplementations(
       }
 
       if (isVaultUnlockRateLimited(c)) {
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.unlock',
           errorCode: 'vault_unlock_rate_limited',
           outcome: 'denied',
@@ -1397,7 +1474,7 @@ export function createVaultOperationImplementations(
         masterKey = loadEncryptedFileVaultKeyFile({ dataRoot, keyFilePath });
         unlockState.unlock({ masterKey });
         clearVaultUnlockFailures(c);
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.unlock',
           outcome: 'succeeded',
           summary: 'Vault unlock succeeded.',
@@ -1407,7 +1484,7 @@ export function createVaultOperationImplementations(
       } catch (error) {
         if (error instanceof OperationError) throw error;
         rememberVaultUnlockFailure(c);
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.unlock',
           errorCode: 'vault_unlock_failed',
           outcome: 'failed',
@@ -1433,7 +1510,7 @@ export function createVaultOperationImplementations(
       const health = backend.health();
 
       if (health.state !== 'available') {
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.bootstrap_codex_auth_json',
           errorCode: 'vault_backend_not_available',
           outcome: 'failed',
@@ -1448,7 +1525,7 @@ export function createVaultOperationImplementations(
             reference.ownerScope === 'server' && reference.secretKind === 'codex-auth-json'
         )
       ) {
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.bootstrap_codex_auth_json',
           errorCode: 'vault_codex_auth_json_exists',
           outcome: 'failed',
@@ -1477,24 +1554,33 @@ export function createVaultOperationImplementations(
           metadata: { ownerScope: 'server' },
           referenceId: referenceId,
         });
-        createVaultReference(coreDb, {
-          backendKind: backend.kind,
-          backendLocator: `${backend.kind}://server/vault/${referenceId}`,
-          displayName: 'Codex auth JSON',
-          ownerScope: 'server',
-          referenceId: referenceId,
-          secretKind: 'codex-auth-json',
-        });
-        createVaultGrant(coreDb, {
-          allowedInjectionPaths: ['runtime-file'],
-          expiresAt: input.expiresAt ?? null,
-          grantId: grantId,
-          lifetime: 'agent-session',
-          ownerScope: 'server',
-          subjectSummary: 'Codex auth JSON runtime-file injection',
-          vaultReferenceId: referenceId,
-        });
-        recordVaultAdminAudit(c, {
+        await publicMutation(
+          'reference-create',
+          {
+            backendKind: backend.kind,
+            backendLocator: `${backend.kind}://server/vault/${referenceId}`,
+            displayName: 'Codex auth JSON',
+            ownerScope: 'server',
+            referenceId: referenceId,
+            secretKind: 'codex-auth-json',
+          },
+          c
+        );
+        await publicMutation(
+          'grant-create',
+          {
+            allowedInjectionPaths: ['runtime-file'],
+            expiresAt: input.expiresAt ?? null,
+            grantId: grantId,
+            lifetime: 'agent-session',
+            ownerScope: 'server',
+            subjectSummary: 'Codex auth JSON runtime-file injection',
+            vaultReferenceId: referenceId,
+          },
+          c,
+          getVaultReference(coreDb, referenceId) ?? undefined
+        );
+        await recordVaultAdminAudit(c, {
           action: 'vault.bootstrap_codex_auth_json',
           outcome: 'succeeded',
           summary: 'Codex auth JSON bootstrap succeeded.',
@@ -1511,7 +1597,7 @@ export function createVaultOperationImplementations(
         } as OperationOutput<'vault.bootstrap-codex-auth'>;
       } catch (error) {
         if (error instanceof OperationError) throw error;
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.bootstrap_codex_auth_json',
           errorCode: 'vault_codex_auth_json_bootstrap_failed',
           outcome: 'failed',
@@ -1567,7 +1653,7 @@ export function createVaultOperationImplementations(
       const health = backend.health();
 
       if (health.state !== 'available') {
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.rebind_workspace_reference',
           errorCode: 'vault_backend_not_available',
           outcome: 'failed',
@@ -1584,15 +1670,20 @@ export function createVaultOperationImplementations(
           metadata: { ownerScope: 'workspace', workspaceId },
           referenceId,
         });
-        const rebound = rebindWorkspaceVaultReference(coreDb, {
-          backendKind: backend.kind,
-          backendLocator: `${backend.kind}://workspace/${workspaceId}/vault/${referenceId}`,
-          currentVersion: inventory.currentVersion,
-          referenceId,
-          workspaceId,
-        });
+        const rebound = await publicMutation(
+          'reference-rebind',
+          {
+            backendKind: backend.kind,
+            backendLocator: `${backend.kind}://workspace/${workspaceId}/vault/${referenceId}`,
+            currentVersion: inventory.currentVersion,
+            referenceId,
+            workspaceId,
+          },
+          c,
+          reference
+        );
 
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.rebind_workspace_reference',
           outcome: 'succeeded',
           summary: 'Workspace vault reference rebind succeeded.',
@@ -1609,7 +1700,7 @@ export function createVaultOperationImplementations(
         } as OperationOutput<'vault.reference-rebind'>;
       } catch (error) {
         if (error instanceof OperationError) throw error;
-        recordVaultAdminAudit(c, {
+        await recordVaultAdminAudit(c, {
           action: 'vault.rebind_workspace_reference',
           errorCode: 'vault_reference_rebind_failed',
           outcome: 'failed',
@@ -1661,7 +1752,7 @@ export function createVaultOperationImplementations(
         vaultReadFailure(error);
       }
     },
-    'vault.lock': (_input, c) => {
+    'vault.lock': async (_input, c) => {
       const unlockState = vaultUnlockState;
 
       if (!unlockState) {
@@ -1669,7 +1760,7 @@ export function createVaultOperationImplementations(
       }
 
       unlockState.lock();
-      recordVaultAdminAudit(c, {
+      await recordVaultAdminAudit(c, {
         action: 'vault.lock',
         outcome: 'succeeded',
         summary: 'Vault lock succeeded.',
@@ -1742,28 +1833,32 @@ export function createVaultOperationImplementations(
       )
         return vaultFailure('Grant shape is not supported for narrowing.', 'invalid_request', 400);
       try {
-        const result = coreDb.sqlite.transaction(() => {
-          const result = narrowVaultGrant(coreDb, {
-            grantId: source.grantId,
-            replacementGrantId: allocateEntityId('grant'),
-            constraints: input.constraints,
-          });
-          recordVaultAdminAuditEvent({
-            coreDb,
-            actor,
-            action: 'vault.workspace_narrow-grant',
-            backendKind: vaultUnlockState.backend().kind,
-            outcome: 'succeeded',
-            summary:
-              'Workspace Vault grant narrowed through replacement. Explicit binding update is required.',
-            workspaceId: input.workspaceId,
-            resource: `vault-grant:${source.grantId}`,
-            vaultGrantId: result.grant.grantId,
-          });
-          return result as { revokedGrant: WorkspaceVaultGrant; grant: WorkspaceVaultGrant };
-        })();
+        const replacementGrantId = allocateEntityId('grant');
+        const evidence = prepareVaultAdminAudit({
+          actor,
+          action: 'vault.workspace_narrow-grant',
+          backendKind: vaultUnlockState.backend().kind,
+          outcome: 'succeeded',
+          summary:
+            'Workspace Vault grant narrowed through replacement. Explicit binding update is required.',
+          workspaceId: input.workspaceId,
+          resource: `vault-grant:${source.grantId}`,
+          vaultGrantId: replacementGrantId,
+        });
+        const result = await getControlStoreWorkerClient().vault(
+          coreDb,
+          'workspace-grant-narrow',
+          {
+            grant: { grantId: source.grantId, replacementGrantId, constraints: input.constraints },
+            publicMutation: { actor, workspaceId: input.workspaceId, reference },
+            ...evidence,
+          },
+          async () => {
+            await c.recheckAdmission?.();
+          }
+        );
         await closeRevokedCredentialBindings(dependencies, { grantId: source.grantId });
-        return result;
+        return result as OperationOutput<'vault.grant-narrow'>;
       } catch (error) {
         if (error instanceof OperationError) throw error;
         if (error instanceof VaultGrantNarrowingError)
@@ -1799,12 +1894,16 @@ function projectReference(reference: NonNullable<ReturnType<typeof getVaultRefer
 
 /** Uses the existing Vault failure owner for every non-enumerating Workspace access refusal. */
 function vaultWorkspaceAccessDenied(): never {
-  vaultFailure('Workspace access denied.', 'workspace_access_denied', 403);
+  vaultFailure(
+    WORKSPACE_ACCESS_DENIED.message,
+    WORKSPACE_ACCESS_DENIED.code,
+    WORKSPACE_ACCESS_DENIED.status
+  );
 }
 
 /** Publishes only fixed Vault refusal fields; backend causes stay inside their existing safe boundary. */
-function vaultFailure(message: string, code: string, status: number): never {
-  throw new OperationError(code, message, status);
+function vaultFailure(message: string, code: string, status: number, cause?: unknown): never {
+  throw new OperationError(code, message, status, cause === undefined ? {} : { cause });
 }
 /** Classifies only retained decoder and unavailable-record failures; unexpected read failures escape. */
 function vaultReadFailure(error: unknown): never {
@@ -1815,4 +1914,21 @@ function vaultReadFailure(error: unknown): never {
   if (error instanceof StoreRecordNotFoundError)
     throw new OperationError('not_found', error.message, 404, { cause: error });
   throw error;
+}
+
+/** Projects existing trusted invocation identity without callbacks, material or an allow decision. */
+function vaultRequesterForContext(context: AdmittedOperationContext): VaultBindingRequester {
+  return context.kind === 'worker'
+    ? {
+        kind: 'worker',
+        actor: context.actor,
+        lineage: {
+          workspaceId: context.lineage.workspaceId,
+          threadId: context.lineage.threadId,
+          turnId: context.lineage.turnId,
+          agentSessionId: context.lineage.agentSessionId,
+          packageSnapshotId: context.lineage.packageSnapshotId,
+        },
+      }
+    : { kind: 'public', actor: context.actor, actorRef: context.actorRef };
 }

@@ -64,14 +64,14 @@ async function createMigratedCoreDb() {
 }
 
 /** Records one production-shaped AEP after preparing its writable Git inputs. */
-function recordTestAgentEnvironmentPackage(
+async function recordTestAgentEnvironmentPackage(
   workspaceDb: ReturnType<typeof openWorkspaceDb>,
   input: {
     readonly suffix: string;
     readonly triggerActor?: ActorRef;
     readonly workspaceInputIds: readonly string[];
   }
-): AgentEnvironmentPackage {
+): Promise<AgentEnvironmentPackage> {
   const workspaceInputIds = input.workspaceInputIds.map(
     (inputId) => `maintenance_${input.suffix}_${inputId}`
   );
@@ -98,7 +98,7 @@ function recordTestAgentEnvironmentPackage(
 
   const coreDb = openCoreDb(workspaceDb.dataRoot);
   try {
-    return recordBaseTestAgentEnvironmentPackage(workspaceDb, {
+    return await recordBaseTestAgentEnvironmentPackage(workspaceDb, {
       coreDb,
       suffix: input.suffix,
       triggerActor: input.triggerActor ?? { kind: 'user', id: LOCAL_USER_ID },
@@ -343,7 +343,7 @@ describe('scheduler lease maintenance service', () => {
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'heartbeat',
         workspaceInputIds: ['repo'],
       });
@@ -386,7 +386,7 @@ describe('scheduler lease maintenance service', () => {
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'server_user',
         triggerActor,
         workspaceInputIds: ['repo'],
@@ -430,7 +430,7 @@ describe('scheduler lease maintenance service', () => {
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'actor_mismatch',
         triggerActor: {
           kind: 'automation',
@@ -465,7 +465,7 @@ describe('scheduler lease maintenance service', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await dispatchLease(coreDb, 'release_retry');
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_retry',
         workspaceInputIds: ['repo'],
       });
@@ -517,7 +517,7 @@ describe('scheduler lease maintenance service', () => {
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      recordTestAgentEnvironmentPackage(workspaceDb, {
+      await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'zero_input',
         workspaceInputIds: [],
       });
@@ -561,7 +561,7 @@ describe('scheduler lease maintenance service', () => {
         now: () => '2026-07-05T00:00:10.000Z',
         workerSequence: 1,
       });
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'partial_handoff',
         workspaceInputIds: ['repo_a', 'repo_b'],
       });
@@ -616,11 +616,11 @@ describe('scheduler lease maintenance service', () => {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await dispatchLease(coreDb, 'stale_retained');
       await dispatchLease(coreDb, 'release_retained');
-      const staleEnvironmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const staleEnvironmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'stale_retained',
         workspaceInputIds: ['repo'],
       });
-      const releaseEnvironmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const releaseEnvironmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_retained',
         workspaceInputIds: ['repo'],
       });
@@ -680,7 +680,7 @@ describe('scheduler lease maintenance service', () => {
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       await dispatchLease(coreDb, 'release_timeout');
-      const environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'release_timeout',
         workspaceInputIds: ['repo'],
       });

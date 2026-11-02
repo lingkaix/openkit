@@ -3296,7 +3296,7 @@ describe('quick chat app API', () => {
       }),
       vaultUnlockState,
     });
-    createVaultReference(fixture.coreDb, {
+    await createVaultReference(fixture.coreDb, {
       referenceId: referenceId,
       ownerScope: 'server',
       displayName: 'Timeline test key',

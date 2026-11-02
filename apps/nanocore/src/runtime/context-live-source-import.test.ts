@@ -159,7 +159,7 @@ it('streams a complete admitted Turn ZIP into the live Context input without ret
     ).toMatchObject({ status: 'unavailable', reason: 'unsupported' });
 
     const agentSessionId = allocateEntityId('as');
-    const base = resolveAgentEnvironmentPackage({
+    const base = await resolveAgentEnvironmentPackage({
       agentSessionId,
       agentSetup: createTestAgentSetup(),
       backend: { kind: 'openshell' },

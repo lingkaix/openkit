@@ -1,7 +1,14 @@
+import type { AuditEvent } from '@openkit/protocol';
 import { allocateEntityId } from '@openkit/protocol';
-import { recordServerAuditEvent } from '../audit-events.js';
+import {
+  prepareAuditEvent,
+  type RecordServerAuditEventInput,
+  type RecordWorkspaceAuditEventInput,
+} from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import type { VAULT_ADMIN_ACTIONS } from '../storage/vault-native-codecs.js';
 import type { VaultBackendKind } from './vault-backend.js';
 
 /** Input for recording one server-owned vault admin audit event. */
@@ -13,14 +20,7 @@ export interface RecordVaultAdminAuditEventInput {
   /** Actor that requested the admin operation. */
   readonly actor?: Actor;
   /** Stable admin action name. */
-  readonly action:
-    | `vault.workspace_${'create' | 'rotate' | 'revoke' | 'grant' | 'revoke-grant' | 'narrow-grant'}`
-    | 'vault.grant-issue'
-    | 'vault.unlock'
-    | 'vault.lock'
-    | 'vault.bootstrap_codex_auth_json'
-    | 'vault.set_provider_api_key'
-    | 'vault.rebind_workspace_reference';
+  readonly action: (typeof VAULT_ADMIN_ACTIONS)[number];
   /** Event outcome. */
   readonly outcome: 'succeeded' | 'failed' | 'denied';
   /** Event severity. */
@@ -48,45 +48,37 @@ export interface RecordVaultAdminAuditEventInput {
  *
  * @param input Vault admin audit event input.
  */
-export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInput): void {
+export async function recordVaultAdminAuditEvent(
+  input: RecordVaultAdminAuditEventInput
+): Promise<void> {
+  const evidence = prepareVaultAdminAudit(input);
+  const client = getControlStoreWorkerClient();
+  await client.vault(input.coreDb, 'admin-event-insert', evidence.admin);
+  await client.vault(input.coreDb, 'audit-insert', evidence.audit);
+}
+
+/** Prepares the same admin and general Audit facts for either their original separate commits or an existing outer tuple. */
+export function prepareVaultAdminAudit(input: Omit<RecordVaultAdminAuditEventInput, 'coreDb'>) {
   const auditEventId = input.auditEventId ?? allocateEntityId('aud');
   const severity = input.severity ?? (input.outcome === 'succeeded' ? 'info' : 'warning');
   const now = input.now ?? new Date();
-
-  input.coreDb.sqlite
-    .prepare(
-      `INSERT INTO vault_admin_audit_events (
-        audit_event_id,
-        actor_user_id,
-        actor_kind,
-        action,
-        outcome,
-        severity,
-        summary,
-        error_code,
-        backend_kind,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      auditEventId,
-      input.actor?.userId ?? null,
-      input.actor?.kind ?? null,
-      input.action,
-      input.outcome,
-      severity,
-      input.summary,
-      input.errorCode ?? null,
-      input.backendKind,
-      now.toISOString()
-    );
-
-  recordServerAuditEvent({
+  const admin = {
+    auditEventId,
+    actorUserId: input.actor?.userId ?? null,
+    actorKind: input.actor?.kind ?? null,
+    action: input.action,
+    outcome: input.outcome,
+    severity,
+    summary: input.summary,
+    errorCode: input.errorCode ?? null,
+    backendKind: input.backendKind,
+    createdAt: now.toISOString(),
+  };
+  const audit = prepareAuditEvent({
     actor: input.actor ? { kind: 'user', id: input.actor.userId } : null,
     action: input.action,
     auditEventId,
     category: 'system',
-    coreDb: input.coreDb,
     errorCode: input.errorCode ?? null,
     now,
     outcome: input.outcome,
@@ -97,4 +89,14 @@ export function recordVaultAdminAuditEvent(input: RecordVaultAdminAuditEventInpu
     severity,
     summary: input.summary,
   });
+  return { admin, audit };
+}
+
+/** Prepares the original Vault event on Main, then awaits the actual Core or Workspace evidence owner. */
+export async function recordVaultAuditEvent(
+  input: RecordServerAuditEventInput | RecordWorkspaceAuditEventInput
+): Promise<AuditEvent> {
+  const db = 'coreDb' in input ? input.coreDb : input.workspaceDb;
+  const event = prepareAuditEvent({ ...input, workspaceId: input.workspaceId ?? null });
+  return getControlStoreWorkerClient().vault(db, 'audit-insert', event);
 }

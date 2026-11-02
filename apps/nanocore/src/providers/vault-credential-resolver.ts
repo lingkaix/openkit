@@ -33,9 +33,9 @@ export interface CreateVaultProviderCredentialResolverInput {
 export function createVaultProviderCredentialResolver(
   input: CreateVaultProviderCredentialResolverInput
 ): ProviderCredentialResolver {
-  return (secretRef, context) => {
+  return async (secretRef, context) => {
     if (input.fallback) {
-      const fallbackValue = input.fallback(secretRef, context);
+      const fallbackValue = await input.fallback(secretRef, context);
 
       if (fallbackValue != null) {
         return fallbackValue;
@@ -59,7 +59,7 @@ export function createVaultProviderCredentialResolver(
         ...(input.createUseId ? { createUseId: input.createUseId } : {}),
       });
 
-      return vaultSecretMaterialToString(auditedBackend.resolve({ referenceId }));
+      return vaultSecretMaterialToString(await auditedBackend.resolve({ referenceId }));
     } catch (error) {
       if (error instanceof VaultBackendError) {
         throw new OpenAICompatibleProviderError({
@@ -83,7 +83,7 @@ export function createVaultProviderCredentialResolver(
  */
 export function createProviderCredentialConfigured(input: {
   readonly coreDb?: CoreDb;
-  readonly fallback: ProviderCredentialResolver;
+  readonly fallback: (secretRef: string) => string | null;
 }): ProviderCredentialConfigured {
   return (secretRef) => {
     if (!secretRef) return false;
@@ -124,10 +124,10 @@ export function readVaultReferenceId(secretRef: string): string | null {
  * @param secretRef Exact authored Vault reference; external references cannot be revoked here.
  * @throws VaultBackendError with redacted failure when authority or either effect fails.
  */
-export function revokeVaultProviderCredential(
+export async function revokeVaultProviderCredential(
   input: Pick<CreateVaultProviderCredentialResolverInput, 'coreDb' | 'vaultBackend'>,
   secretRef: string
-): void {
+): Promise<void> {
   const referenceId = readVaultReferenceId(secretRef);
   if (!referenceId)
     throw new VaultBackendError(
@@ -166,7 +166,7 @@ export function revokeVaultProviderCredential(
       throw new Error('Vault storage requires inspection.');
     }
     backend.revoke({ referenceId });
-    revokeVaultReference(input.coreDb, { referenceId });
+    await revokeVaultReference(input.coreDb, { referenceId });
   } catch {
     throw new VaultBackendError(
       'backend-unavailable',

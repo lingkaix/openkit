@@ -113,14 +113,14 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const app = createApp({ coreDb, dataRoot, store });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       displayName: 'Worker GitHub token',
       ownerScope: 'server',
       referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       secretKind: 'repository-token',
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       allowedInjectionPaths: ['runtime-env'],
       grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
       lifetime: 'turn',
@@ -128,7 +128,7 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
       vaultReferenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const plan = createVaultInjectionPlan(coreDb, {
+    const plan = await createVaultInjectionPlan(coreDb, {
       backendCapabilityRequirement: 'encrypted-file:resolve',
       expirationBehavior: 'unset-env-on-turn-end',
       grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',

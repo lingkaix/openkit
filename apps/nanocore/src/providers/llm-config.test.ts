@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { resolveProviderProfileToLLMConfig } from './llm-config.js';
 
 describe('resolveProviderProfileToLLMConfig', () => {
-  it('projects runtime instances directly onto their adapter identity', () => {
-    const provider = resolveProviderProfileToLLMConfig(
+  it('projects runtime instances directly onto their adapter identity', async () => {
+    const provider = await resolveProviderProfileToLLMConfig(
       {
         baseUrl: 'https://openrouter.example/v1',
         defaultModel: 'openai/gpt-5',
@@ -30,7 +30,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
     expect(provider).not.toHaveProperty('specId');
   });
 
-  it('projects strict Codex and xAI subscription profiles onto exact account pairs', () => {
+  it('projects strict Codex and xAI subscription profiles onto exact account pairs', async () => {
     const profiles = [
       {
         accountSlotId: 'codex_vendor',
@@ -49,7 +49,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
     ] as const;
 
     for (const profile of profiles) {
-      const provider = resolveProviderProfileToLLMConfig({
+      const provider = await resolveProviderProfileToLLMConfig({
         displayName: profile.id,
         extensions: {
           openkit: { subscriptionAccount: { accountSlotId: profile.accountSlotId } },
@@ -71,7 +71,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
       expect(provider).not.toHaveProperty('codexOAuthAccountSlotId');
     }
 
-    const directXai = resolveProviderProfileToLLMConfig(
+    const directXai = await resolveProviderProfileToLLMConfig(
       {
         baseUrl: 'https://api.x.ai/v1',
         displayName: 'xAI API',
@@ -93,8 +93,8 @@ describe('resolveProviderProfileToLLMConfig', () => {
     expect(directXai).not.toHaveProperty('subscriptionProviderId');
   });
 
-  it('rejects conflicting recognized subscription vendor and id families', () => {
-    expect(() =>
+  it('rejects conflicting recognized subscription vendor and id families', async () => {
+    await expect(
       resolveProviderProfileToLLMConfig({
         displayName: 'Conflicting Subscription',
         extensions: { openkit: { subscriptionAccount: { accountSlotId: 'conflict-slot' } } },
@@ -103,11 +103,11 @@ describe('resolveProviderProfileToLLMConfig', () => {
         models: ['grok-4'],
         vendor: 'xai',
       })
-    ).toThrow();
+    ).rejects.toThrow();
   });
 
-  it('resolves provider credentials through configured secret references', () => {
-    const provider = resolveProviderProfileToLLMConfig(
+  it('resolves provider credentials through configured secret references', async () => {
+    const provider = await resolveProviderProfileToLLMConfig(
       {
         displayName: 'Vault Provider',
         id: 'vault-provider',
@@ -125,8 +125,8 @@ describe('resolveProviderProfileToLLMConfig', () => {
     });
   });
 
-  it('keeps unresolved required credentials absent', () => {
-    const provider = resolveProviderProfileToLLMConfig(
+  it('keeps unresolved required credentials absent', async () => {
+    const provider = await resolveProviderProfileToLLMConfig(
       {
         displayName: 'Missing Provider',
         id: 'missing-provider',
@@ -143,8 +143,8 @@ describe('resolveProviderProfileToLLMConfig', () => {
     });
   });
 
-  it('projects known provider vendors onto pi-ai adapters', () => {
-    const provider = resolveProviderProfileToLLMConfig(
+  it('projects known provider vendors onto pi-ai adapters', async () => {
+    const provider = await resolveProviderProfileToLLMConfig(
       {
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
         displayName: 'Google Gemini',
@@ -165,8 +165,8 @@ describe('resolveProviderProfileToLLMConfig', () => {
     });
   });
 
-  it('routes runtime custom OpenAI-compatible endpoints through the pi-ai backend', () => {
-    const provider = resolveProviderProfileToLLMConfig(
+  it('routes runtime custom OpenAI-compatible endpoints through the pi-ai backend', async () => {
+    const provider = await resolveProviderProfileToLLMConfig(
       {
         baseUrl: 'https://proxy.example/v1',
         displayName: 'Custom OpenAI-Compatible',
@@ -186,8 +186,8 @@ describe('resolveProviderProfileToLLMConfig', () => {
     });
   });
 
-  it('normalizes an instance id used as the adapter fallback', () => {
-    const provider = resolveProviderProfileToLLMConfig({
+  it('normalizes an instance id used as the adapter fallback', async () => {
+    const provider = await resolveProviderProfileToLLMConfig({
       baseUrl: 'https://proxy.example/v1',
       displayName: 'Custom OpenAI-Compatible',
       id: 'Custom-Proxy',
@@ -198,8 +198,8 @@ describe('resolveProviderProfileToLLMConfig', () => {
     expect(provider.adapterId).toBe('custom_proxy');
   });
 
-  it('routes runtime direct provider profiles through the pi-ai backend', () => {
-    const provider = resolveProviderProfileToLLMConfig(
+  it('routes runtime direct provider profiles through the pi-ai backend', async () => {
+    const provider = await resolveProviderProfileToLLMConfig(
       {
         baseUrl: 'https://direct.example/v1',
         displayName: 'Direct Provider',
@@ -219,8 +219,8 @@ describe('resolveProviderProfileToLLMConfig', () => {
     });
   });
 
-  it('marks providers without secret refs as not requiring credentials', () => {
-    const provider = resolveProviderProfileToLLMConfig({
+  it('marks providers without secret refs as not requiring credentials', async () => {
+    const provider = await resolveProviderProfileToLLMConfig({
       displayName: 'Local Provider',
       id: 'local-provider',
       kind: 'local',
@@ -237,10 +237,10 @@ describe('resolveProviderProfileToLLMConfig', () => {
     'blocked',
     'disabled',
     'unknown',
-  ] as const)('rejects %s providers before credential resolution', (status) => {
+  ] as const)('rejects %s providers before credential resolution', async (status) => {
     const credentialResolver = vi.fn(() => 'must-not-resolve');
 
-    expect(() =>
+    await expect(
       resolveProviderProfileToLLMConfig(
         {
           displayName: 'Unavailable Provider',
@@ -252,13 +252,17 @@ describe('resolveProviderProfileToLLMConfig', () => {
         },
         credentialResolver
       )
-    ).toThrow(/not dispatchable/i);
+    ).rejects.toThrow(/not dispatchable/i);
     expect(credentialResolver).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, 'ready', 'degraded'] as const)('keeps readiness %s runnable', (status) => {
+  it.each([
+    undefined,
+    'ready',
+    'degraded',
+  ] as const)('keeps readiness %s runnable', async (status) => {
     const credentialResolver = vi.fn(() => 'resolved-secret');
-    const provider = resolveProviderProfileToLLMConfig(
+    const provider = await resolveProviderProfileToLLMConfig(
       {
         displayName: 'Runnable Provider',
         id: `provider-${status ?? 'omitted'}`,

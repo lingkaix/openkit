@@ -162,6 +162,33 @@ class EncryptedFileVaultBackend implements VaultBackend {
    * @throws VaultBackendError when state, attribution, authentication, or expiry checks fail.
    */
   public resolve(input: VaultResolveInput): VaultSecretMaterial {
+    const version = this.requireResolutionVersion(input);
+    return openEncryptedFileVaultEntry({
+      masterKey: this.masterKey,
+      referenceId: input.referenceId,
+      storeDir: this.storeDir,
+      version,
+    });
+  }
+
+  /**
+   * Validates current authority for the selected version without returning plaintext.
+   *
+   * @param input Reference id and optional exact version.
+   * @throws VaultBackendError under the same current predicates as material resolution.
+   */
+  public assertResolutionCurrent(input: VaultResolveInput): void {
+    this.requireResolutionVersion(input);
+  }
+
+  /**
+   * Owns the shared current key, authenticated snapshot, revocation and exact-version predicate.
+   *
+   * @param input Reference id and optional version.
+   * @returns The currently usable material version, never material.
+   * @throws VaultBackendError when the addressed generation cannot be used.
+   */
+  private requireResolutionVersion(input: VaultResolveInput): number {
     this.assertKeyActive();
     this.assertReferenceId(input.referenceId);
     if (input.version !== undefined) {
@@ -184,12 +211,7 @@ class EncryptedFileVaultBackend implements VaultBackend {
       throw new VaultBackendError('reference-not-found', 'Vault reference material was not found.');
     }
 
-    return openEncryptedFileVaultEntry({
-      masterKey: this.masterKey,
-      referenceId: input.referenceId,
-      storeDir: this.storeDir,
-      version,
-    });
+    return version;
   }
 
   /**

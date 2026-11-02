@@ -111,7 +111,7 @@ export async function createMeasurementEffectFixture(input: {
     ],
   };
   const requestIds = new Map<string, string | number>();
-  const packages = new Map<string, ReturnType<typeof resolveAgentEnvironmentPackage>>();
+  const packages = new Map<string, Awaited<ReturnType<typeof resolveAgentEnvironmentPackage>>>();
   const app = new Hono();
   const rows: Array<{
     workspaceId: string;
@@ -168,7 +168,7 @@ export async function createMeasurementEffectFixture(input: {
           null,
           { agentId: setup.manifest.id }
         );
-        const aep = resolveAgentEnvironmentPackage({
+        const aep = await resolveAgentEnvironmentPackage({
           coreDb: input.coreDb,
           agentSetup: setup,
           agentSessionId: protocol.allocateEntityId('as'),

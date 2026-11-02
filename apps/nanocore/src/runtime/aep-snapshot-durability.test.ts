@@ -140,9 +140,9 @@ vi.mock('node:fs', async (original) => {
 });
 
 /** Creates a safe redacted package with fixed, exact ownership. */
-function createEnvironmentPackage(): AgentEnvironmentPackage {
+async function createEnvironmentPackage(): Promise<AgentEnvironmentPackage> {
   return AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agent: {
         id: 'agent_codex_host',
@@ -211,10 +211,10 @@ afterEach(() => {
 });
 
 /** Opens a real Workspace ledger and selects only its snapshot publication syscalls. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'aep-publication-'));
   roots.push(root);
-  const environmentPackage = createEnvironmentPackage();
+  const environmentPackage = await createEnvironmentPackage();
   const db = openWorkspaceDb(root, environmentPackage.scope.workspaceId);
   applyScopedMigrations(db, undefined, 'pre-knowledge');
   fault.canonical = join(
@@ -232,15 +232,15 @@ function fixture() {
     db,
     input,
     path: fault.canonical,
-    write: () => recordAgentEnvironmentPackageSnapshot(db, input),
+    write: async () => await recordAgentEnvironmentPackageSnapshot(db, input),
   };
 }
 
 describe('durable AEP snapshot publication', () => {
-  it('synchronizes complete bytes before publication and the directory before success', () => {
-    const f = fixture();
+  it('synchronizes complete bytes before publication and the directory before success', async () => {
+    const f = await fixture();
     try {
-      const record = f.write();
+      const record = await f.write();
       expect(
         requireAgentEnvironmentPackageSnapshot(f.db, f.db.workspaceId, record.snapshotId)
       ).toMatchObject(record);
@@ -250,7 +250,7 @@ describe('durable AEP snapshot publication', () => {
         fault.events.indexOf('publish')
       );
       const accepted = readFileSync(f.path);
-      expect(f.write()).toMatchObject(record);
+      expect(await f.write()).toMatchObject(record);
       expect(readFileSync(f.path)).toEqual(accepted);
       expect(() =>
         recordAgentEnvironmentPackageSnapshot(f.db, {
@@ -267,12 +267,12 @@ describe('durable AEP snapshot publication', () => {
     }
   });
 
-  it('replays exact retained bytes and refuses a changed immutable record', () => {
-    const f = fixture();
+  it('replays exact retained bytes and refuses a changed immutable record', async () => {
+    const f = await fixture();
     try {
-      const record = f.write();
+      const record = await f.write();
       const bytes = readFileSync(f.path);
-      expect(f.write()).toMatchObject(record);
+      expect(await f.write()).toMatchObject(record);
       expect(() =>
         recordAgentEnvironmentPackageSnapshot(f.db, {
           ...f.input,
@@ -295,11 +295,11 @@ describe('durable AEP snapshot publication', () => {
     'partial',
     'file-sync',
     'publish',
-  ] as const)('propagates %s failure without a canonical snapshot', (mode) => {
-    const f = fixture();
+  ] as const)('propagates %s failure without a canonical snapshot', async (mode) => {
+    const f = await fixture();
     try {
       fault.mode = mode;
-      expect(() => f.write()).toThrow(/injected/);
+      await expect(f.write()).rejects.toThrow(/injected/);
       expect(fault.injections).toBe(1);
       expect(existsSync(f.path)).toBe(false);
       expect(() =>
@@ -310,34 +310,37 @@ describe('durable AEP snapshot publication', () => {
         )
       ).toThrow(/not found/);
       fault.mode = '';
-      expect(f.write().snapshotId).toBe(f.input.environmentPackage.snapshotId);
+      expect((await f.write()).snapshotId).toBe(f.input.environmentPackage.snapshotId);
     } finally {
       f.db.sqlite.close();
     }
   });
 
-  it('refuses directory-sync failure and retries synchronization for identical complete bytes', () => {
-    const f = fixture();
+  it('refuses directory-sync failure and retries synchronization for identical complete bytes', async () => {
+    const f = await fixture();
     try {
       fault.mode = 'directory-sync';
-      expect(() => f.write()).toThrow('injected directory sync');
+      await expect(f.write()).rejects.toThrow('injected directory sync');
       const complete = readFileSync(f.path);
-      expect(() => f.write()).toThrow('injected directory sync');
+      await expect(f.write()).rejects.toThrow('injected directory sync');
       expect(readFileSync(f.path)).toEqual(complete);
       fault.mode = '';
-      expect(f.write().snapshotId).toBe(f.input.environmentPackage.snapshotId);
+      expect((await f.write()).snapshotId).toBe(f.input.environmentPackage.snapshotId);
       expect(readFileSync(f.path)).toEqual(complete);
     } finally {
       f.db.sqlite.close();
     }
   });
 
-  it.each(['same', 'different'] as const)('preserves a %s racing immutable winner', (race) => {
-    const f = fixture();
+  it.each([
+    'same',
+    'different',
+  ] as const)('preserves a %s racing immutable winner', async (race) => {
+    const f = await fixture();
     try {
       fault.race = race;
       if (race === 'same') {
-        const record = f.write();
+        const record = await f.write();
         expect(fault.race).toBe('');
         expect(
           requireAgentEnvironmentPackageSnapshot(f.db, f.db.workspaceId, record.snapshotId)
@@ -348,7 +351,7 @@ describe('durable AEP snapshot publication', () => {
           fault.events.indexOf('publish')
         );
       } else {
-        expect(() => f.write()).toThrow();
+        await expect(f.write()).rejects.toThrow();
         expect(readFileSync(f.path, 'utf8')).toBe('a conflicting racing winner');
       }
     } finally {
@@ -356,10 +359,10 @@ describe('durable AEP snapshot publication', () => {
     }
   });
 
-  it('uses the same durable publication boundary for imported snapshots', () => {
-    const f = fixture();
+  it('uses the same durable publication boundary for imported snapshots', async () => {
+    const f = await fixture();
     try {
-      const record = f.write();
+      const record = await f.write();
       rmSync(f.path);
       fault.events = [];
       fault.mode = 'file-sync';

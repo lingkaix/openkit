@@ -40,6 +40,12 @@ export const CONTROL_ADMISSION_COMMANDS = [
 /** Activated native command partitions share the original receipt owner, not a second ledger or Main backfill. */
 export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   ...CONTROL_ADMISSION_COMMANDS,
+  'vault.server-mcp-secret-create',
+  'vault.server-mcp-secret-rotate',
+  'vault.server-mcp-secret-revoke',
+  'vault.server-mcp-grant-create',
+  'vault.server-mcp-grant-revoke',
+  'vault.server-mcp-grant-narrow',
   'approval.respond',
   'user_input.answer',
   'pending_request.withdraw',

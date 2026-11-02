@@ -56,7 +56,7 @@ async function createTranscriptFixture(
       id: 'usr_00000000-0000-7000-8000-000000000001',
     }
   );
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup(),
     agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
     triggerActor: turn.triggerActor,
@@ -87,7 +87,7 @@ async function createTranscriptFixture(
   });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-  recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+  await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     environmentPackage,
     createdAt: environmentPackage.createdAt,
   });

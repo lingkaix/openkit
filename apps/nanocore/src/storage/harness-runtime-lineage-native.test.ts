@@ -60,7 +60,7 @@ async function fixture() {
     physicalEpoch: 'e'.repeat(64),
     observedAt: timestamp,
   });
-  const reference = createVaultReference(db, {
+  const reference = await createVaultReference(db, {
     referenceId: testEntityId('vault', 'runtime-lineage-reference'),
     ownerScope: 'server',
     displayName: 'Synthetic comparison reference',
@@ -68,7 +68,7 @@ async function fixture() {
     backendKind: 'encrypted-file',
     now: () => timestamp,
   });
-  const grant = createVaultGrant(db, {
+  const grant = await createVaultGrant(db, {
     grantId: testEntityId('grant', 'runtime-lineage-grant'),
     vaultReferenceId: reference.referenceId,
     ownerScope: 'server',
@@ -77,7 +77,7 @@ async function fixture() {
     allowedInjectionPaths: ['runtime-file', 'runtime-env'],
     now: () => timestamp,
   });
-  const plan = createVaultInjectionPlan(db, {
+  const plan = await createVaultInjectionPlan(db, {
     planId: 'lineage-file-plan',
     grantId: grant.grantId,
     packageSnapshotId: 'lineage-package',
@@ -89,7 +89,7 @@ async function fixture() {
     backendCapabilityRequirement: 'ephemeral-protected-file',
     now: () => timestamp,
   });
-  const envPlan = createVaultInjectionPlan(db, {
+  const envPlan = await createVaultInjectionPlan(db, {
     planId: 'lineage-env-plan',
     grantId: grant.grantId,
     packageSnapshotId: 'lineage-package',

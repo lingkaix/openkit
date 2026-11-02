@@ -50,7 +50,6 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { controlStoreFor } from '../storage/control-store.js';
 import {
   decode as decodeControlProduct,
   openControlStoreProductReadHandle,
@@ -5362,7 +5361,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         session.environmentPackage.scope.threadId
       ) as { schemaVersion: unknown; versions: string | null } | undefined;
     if (row) readRetainedV1(row, () => row);
-    let resume: (() => void) | undefined;
     try {
       const consumer = session.environmentPackage;
       if (
@@ -5401,176 +5399,188 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           cause: 'check_values_unavailable',
         });
       const cached = session.runtimeCredentialValues;
-      // Only actual material rereads write VaultUse/Audit. The existing native hold protects Main's
-      // Workspace writer; all original authority is rechecked after this await, before resolution.
-      if (versions.length && cached === null) {
-        resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-          `workspace:${workspaceDb.sqlite.name}`
+      // Native evidence can wait behind withdrawal; reuse the original complete deciding read.
+      const verify = (item: (typeof versions)[number]) => {
+        const timestamp = new Date().toISOString();
+        const file = item.targetPath !== undefined;
+        const target = file ? item.targetPath : item.targetEnvVarName;
+        if (typeof target !== 'string' || (file && item.targetEnvVarName !== undefined))
+          throw new Error('Original credential target is unavailable.');
+        const generations = versions.filter(
+          (value) => (value.targetPath ?? value.targetEnvVarName) === target
         );
-      }
-      const timestamp = new Date().toISOString();
-      return Object.fromEntries(
-        versions.map((item) => {
-          const file = item.targetPath !== undefined;
-          const target = file ? item.targetPath : item.targetEnvVarName;
-          if (typeof target !== 'string' || (file && item.targetEnvVarName !== undefined))
-            throw new Error('Original credential target is unavailable.');
-          const generations = versions.filter(
-            (value) => (value.targetPath ?? value.targetEnvVarName) === target
+        const generation = generations.indexOf(item);
+        if (!file && generations.length !== 1)
+          throw new Error('Environment comparison lineage is contradictory.');
+        const comparisonKey =
+          generation === 0 ? target : credentialComparisonKey(target, item.receiptId);
+        if (
+          typeof item.vaultReferenceId !== 'string' ||
+          !item.vaultReferenceId ||
+          typeof item.grantId !== 'string' ||
+          !item.grantId ||
+          typeof item.planId !== 'string' ||
+          !item.planId ||
+          typeof item.receiptId !== 'string' ||
+          !item.receiptId ||
+          !Number.isSafeInteger(item.materialVersion) ||
+          item.materialVersion <= 0 ||
+          !this.collectionVaultBackend
+        )
+          throw new Error('Original Vault injection evidence is unavailable.');
+        const plan = getVaultInjectionPlan(this.coreDb, item.planId);
+        if (
+          !plan ||
+          plan.grantId !== item.grantId ||
+          plan.status !== 'active' ||
+          plan.injectionVisibility !== (file ? 'runtime-file' : 'runtime-env') ||
+          plan.targetEnvVarName !== (file ? null : target) ||
+          plan.targetPath !== (file ? target : null) ||
+          plan.capabilityId !== null ||
+          plan.backendCapabilityRequirement !==
+            (file ? JSON.stringify(WORKER_CREDENTIAL_FILE_REQUIREMENT) : 'runtime-env') ||
+          !plan.packageSnapshotId
+        )
+          throw new Error('Original Vault injection plan is unavailable.');
+        const original = requireAgentEnvironmentPackageSnapshot(
+          workspaceDb,
+          consumer.scope.workspaceId,
+          plan.packageSnapshotId
+        ).snapshot;
+        const declarations = original.credentials.declarations.filter(
+          (declaration) =>
+            (file
+              ? declaration.visibility === 'runtime-file' && declaration.targetPath === target
+              : declaration.visibility === 'runtime-env' &&
+                declaration.targetEnvVarName === target) &&
+            declaration.vaultGrantId === item.grantId
+        );
+        if (
+          declarations.length !== 1 ||
+          original.scope.workspaceId !== consumer.scope.workspaceId ||
+          original.scope.threadId !== consumer.scope.threadId ||
+          original.scope.agentSessionId !== consumer.scope.agentSessionId ||
+          original.agent.agentId !== consumer.agent.agentId
+        )
+          throw new Error('Original Vault injection package does not own this binding.');
+        const receipt = getVaultInjectionReceipt(this.coreDb, item.receiptId);
+        if (
+          !receipt ||
+          receipt.planId !== item.planId ||
+          receipt.grantId !== item.grantId ||
+          receipt.agentSessionId !== consumer.scope.agentSessionId ||
+          receipt.capabilityCallId !== null ||
+          receipt.revocationStatus !==
+            (file && generation < generations.length - 1 ? 'revoked' : 'active') ||
+          (receipt.expiresAt !== null && receipt.expiresAt <= timestamp)
+        )
+          throw new Error('Original successful Vault injection receipt is unavailable.');
+        if (file) {
+          const { replacesReceiptId, ...proof } = JSON.parse(receipt.backendSummary) as Record<
+            string,
+            unknown
+          >;
+          if (
+            replacesReceiptId !==
+            (generation === 0 ? undefined : generations[generation - 1]!.receiptId)
+          )
+            throw new Error('Credential replacement receipt chain is contradictory.');
+          requireExecutionCredentialReceipts(
+            [
+              workerCredentialFileBinding({
+                declarationId: declarations[0]!.id,
+                grantId: item.grantId,
+                planId: item.planId,
+                receiptId: item.receiptId,
+                vaultReferenceId: item.vaultReferenceId,
+                materialVersion: item.materialVersion,
+                targetPath: target,
+              }),
+            ],
+            [proof as ExecutionCredentialReceipt]
           );
-          const generation = generations.indexOf(item);
-          if (!file && generations.length !== 1)
-            throw new Error('Environment comparison lineage is contradictory.');
-          const comparisonKey =
-            generation === 0 ? target : credentialComparisonKey(target, item.receiptId);
-          if (
-            typeof item.vaultReferenceId !== 'string' ||
-            !item.vaultReferenceId ||
-            typeof item.grantId !== 'string' ||
-            !item.grantId ||
-            typeof item.planId !== 'string' ||
-            !item.planId ||
-            typeof item.receiptId !== 'string' ||
-            !item.receiptId ||
-            !Number.isSafeInteger(item.materialVersion) ||
-            item.materialVersion <= 0 ||
-            !this.collectionVaultBackend
-          )
-            throw new Error('Original Vault injection evidence is unavailable.');
-          const plan = getVaultInjectionPlan(this.coreDb, item.planId);
-          if (
-            !plan ||
-            plan.grantId !== item.grantId ||
-            plan.status !== 'active' ||
-            plan.injectionVisibility !== (file ? 'runtime-file' : 'runtime-env') ||
-            plan.targetEnvVarName !== (file ? null : target) ||
-            plan.targetPath !== (file ? target : null) ||
-            plan.capabilityId !== null ||
-            plan.backendCapabilityRequirement !==
-              (file ? JSON.stringify(WORKER_CREDENTIAL_FILE_REQUIREMENT) : 'runtime-env') ||
-            !plan.packageSnapshotId
-          )
-            throw new Error('Original Vault injection plan is unavailable.');
-          const original = requireAgentEnvironmentPackageSnapshot(
-            workspaceDb,
-            consumer.scope.workspaceId,
-            plan.packageSnapshotId
-          ).snapshot;
-          const declarations = original.credentials.declarations.filter(
-            (declaration) =>
-              (file
-                ? declaration.visibility === 'runtime-file' && declaration.targetPath === target
-                : declaration.visibility === 'runtime-env' &&
-                  declaration.targetEnvVarName === target) &&
-              declaration.vaultGrantId === item.grantId
-          );
-          if (
-            declarations.length !== 1 ||
-            original.scope.workspaceId !== consumer.scope.workspaceId ||
-            original.scope.threadId !== consumer.scope.threadId ||
-            original.scope.agentSessionId !== consumer.scope.agentSessionId ||
-            original.agent.agentId !== consumer.agent.agentId
-          )
-            throw new Error('Original Vault injection package does not own this binding.');
-          const receipt = getVaultInjectionReceipt(this.coreDb, item.receiptId);
-          if (
-            !receipt ||
-            receipt.planId !== item.planId ||
-            receipt.grantId !== item.grantId ||
-            receipt.agentSessionId !== consumer.scope.agentSessionId ||
-            receipt.capabilityCallId !== null ||
-            receipt.revocationStatus !==
-              (file && generation < generations.length - 1 ? 'revoked' : 'active') ||
-            (receipt.expiresAt !== null && receipt.expiresAt <= timestamp)
-          )
-            throw new Error('Original successful Vault injection receipt is unavailable.');
-          if (file) {
-            const { replacesReceiptId, ...proof } = JSON.parse(receipt.backendSummary) as Record<
-              string,
-              unknown
-            >;
-            if (
-              replacesReceiptId !==
-              (generation === 0 ? undefined : generations[generation - 1]!.receiptId)
-            )
-              throw new Error('Credential replacement receipt chain is contradictory.');
-            requireExecutionCredentialReceipts(
-              [
-                workerCredentialFileBinding({
-                  declarationId: declarations[0]!.id,
+        }
+        const { grant, reference } = assertCurrentWorkerCredentialAuthority(
+          this.coreDb,
+          consumer,
+          () => timestamp,
+          declarations[0]!
+        );
+        if (reference.referenceId !== item.vaultReferenceId || grant.ownerScope === 'user')
+          throw new Error('Original Vault reference does not match its grant.');
+        const originalGrants = original.vault.grants.filter((entry) => entry.id === item.grantId);
+        if (
+          originalGrants.length !== 1 ||
+          originalGrants[0]!.vaultRefId !== item.vaultReferenceId ||
+          originalGrants[0]!.scope !== grant.lifetime ||
+          (originalGrants[0]!.expiresAt ?? null) !== grant.expiresAt ||
+          (grant.lifetime === 'turn' && original.scope.turnId !== consumer.scope.turnId) ||
+          (receipt && receipt.expiresAt !== grant.expiresAt)
+        )
+          throw new Error('Original Vault lifetime does not authorize this consumer.');
+        const backend = this.collectionVaultBackend();
+        assertCredentialBackendMatchesReference(backend, reference);
+        return {
+          file,
+          target,
+          comparisonKey,
+          grant,
+          reference,
+          backend,
+          ownerScope: grant.ownerScope as 'server' | 'workspace',
+        };
+      };
+      const entries: Array<{ key: string; value: string; referenceVersion: number }> = [];
+      for (const item of versions) {
+        const { file, target, comparisonKey, grant, reference, backend, ownerScope } = verify(item);
+        const value =
+          cached !== null
+            ? cached[comparisonKey]
+            : vaultSecretMaterialToString(
+                await createVaultUseAuditedBackend({
+                  backend,
+                  db: grant.ownerScope === 'workspace' ? workspaceDb : this.coreDb,
+                  ownerScope,
+                  ...(grant.ownerScope === 'workspace'
+                    ? { workspaceId: consumer.scope.workspaceId }
+                    : { consumerWorkspaceId: consumer.scope.workspaceId }),
+                  actor: consumer.scope.triggerActor,
+                  agentSessionId: consumer.scope.agentSessionId,
                   grantId: item.grantId,
                   planId: item.planId,
                   receiptId: item.receiptId,
-                  vaultReferenceId: item.vaultReferenceId,
-                  materialVersion: item.materialVersion,
-                  targetPath: target,
-                }),
-              ],
-              [proof as ExecutionCredentialReceipt]
-            );
-          }
-          const { grant, reference } = assertCurrentWorkerCredentialAuthority(
-            this.coreDb,
-            consumer,
-            () => timestamp,
-            declarations[0]!
-          );
-          if (reference.referenceId !== item.vaultReferenceId || grant.ownerScope === 'user')
+                  resolvingPath: 'grant',
+                  now: () => new Date().toISOString(),
+                }).resolve({
+                  referenceId: item.vaultReferenceId,
+                  version: item.materialVersion,
+                })
+              );
+        if (cached === null && verify(item).reference.currentVersion !== reference.currentVersion)
+          throw new Error('Original Vault reference does not match its grant.');
+        if (
+          typeof value !== 'string' ||
+          value.length === 0 ||
+          (!file &&
+            (!NANO_HOST_RUNTIME_ENV_NAME_PATTERN.test(target) ||
+              value.includes('\0') ||
+              Buffer.byteLength(value) > NANO_HOST_RUNTIME_ENV_VALUE_MAX_BYTES))
+        )
+          throw new Error('Original credential comparison value is unavailable.');
+        entries.push({ key: comparisonKey, value, referenceVersion: reference.currentVersion });
+      }
+      if (cached === null) {
+        // A later awaited item cannot invalidate an earlier admission before the whole return.
+        for (const [index, item] of versions.entries())
+          if (verify(item).reference.currentVersion !== entries[index]!.referenceVersion)
             throw new Error('Original Vault reference does not match its grant.');
-          const originalGrants = original.vault.grants.filter((entry) => entry.id === item.grantId);
-          if (
-            originalGrants.length !== 1 ||
-            originalGrants[0]!.vaultRefId !== item.vaultReferenceId ||
-            originalGrants[0]!.scope !== grant.lifetime ||
-            (originalGrants[0]!.expiresAt ?? null) !== grant.expiresAt ||
-            (grant.lifetime === 'turn' && original.scope.turnId !== consumer.scope.turnId) ||
-            (receipt && receipt.expiresAt !== grant.expiresAt)
-          )
-            throw new Error('Original Vault lifetime does not authorize this consumer.');
-          const backend = this.collectionVaultBackend();
-          assertCredentialBackendMatchesReference(backend, reference);
-          const value =
-            cached !== null
-              ? cached[comparisonKey]
-              : vaultSecretMaterialToString(
-                  createVaultUseAuditedBackend({
-                    backend,
-                    db: grant.ownerScope === 'workspace' ? workspaceDb : this.coreDb,
-                    ownerScope: grant.ownerScope,
-                    ...(grant.ownerScope === 'workspace'
-                      ? { workspaceId: consumer.scope.workspaceId }
-                      : { consumerWorkspaceId: consumer.scope.workspaceId }),
-                    actor: consumer.scope.triggerActor,
-                    agentSessionId: consumer.scope.agentSessionId,
-                    grantId: item.grantId,
-                    planId: item.planId,
-                    receiptId: item.receiptId,
-                    resolvingPath: 'grant',
-                    now: () => timestamp,
-                  }).resolve({
-                    referenceId: item.vaultReferenceId,
-                    version: item.materialVersion,
-                  })
-                );
-          if (
-            typeof value !== 'string' ||
-            value.length === 0 ||
-            (!file &&
-              (!NANO_HOST_RUNTIME_ENV_NAME_PATTERN.test(target) ||
-                value.includes('\0') ||
-                Buffer.byteLength(value) > NANO_HOST_RUNTIME_ENV_VALUE_MAX_BYTES))
-          )
-            throw new Error('Original credential comparison value is unavailable.');
-          return [comparisonKey, value];
-        })
-      );
+      }
+      return Object.fromEntries(entries.map(({ key, value }) => [key, value]));
     } catch {
       throw new WorkspaceCollectionError({
         outcome: 'recovery_required',
         cause: 'check_values_unavailable',
       });
-    } finally {
-      resume?.();
     }
   }
 

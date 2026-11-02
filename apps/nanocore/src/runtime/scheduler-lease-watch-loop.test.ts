@@ -96,7 +96,7 @@ async function fixture() {
       const workspaceDb = openWorkspaceDb(dataRoot, entry.workspaceId);
       try {
         applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-        const pkg = recordTestAgentEnvironmentPackage(workspaceDb, {
+        const pkg = await recordTestAgentEnvironmentPackage(workspaceDb, {
           coreDb,
           suffix,
           triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },

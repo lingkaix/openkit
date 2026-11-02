@@ -433,7 +433,7 @@ async function createWorkerInferenceRouteFixture(
     agentSetup.logicalModels.allowed = [options.admittedLogicalModel];
   }
   const environmentPackage = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup,
       agentSessionId: trustedRelay
@@ -527,7 +527,7 @@ async function createWorkerInferenceRouteFixture(
     const workspaceDb = openWorkspaceDb(appCoreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         environmentPackage,
         createdAt: environmentPackage.createdAt,
       });

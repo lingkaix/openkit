@@ -233,7 +233,7 @@ async function fixture() {
     durationMs: null,
     triggerActor: actor,
   };
-  const unresolved = resolveAgentEnvironmentPackage({
+  const unresolved = await resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId,
     agentSetup: createTestAgentSetup(),

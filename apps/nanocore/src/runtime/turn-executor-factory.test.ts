@@ -16,6 +16,7 @@ import { connect as connectHttp2, createServer as createHttp2Server } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import { Worker as NativeWorker } from 'node:worker_threads';
 import { getRequestListener } from '@hono/node-server';
 import {
   type AgentEnvironmentPackage,
@@ -110,7 +111,7 @@ import { createNativeTaskAdmissionFixture } from '../test-support/native-task-ad
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
-import type { VaultBackend } from '../vault/vault-backend.js';
+import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import {
   advanceActiveVaultReferenceVersion,
@@ -635,7 +636,7 @@ async function anchorNanoHostMaterialization(
   try {
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     if (AgentEnvironmentPackageSchema.safeParse(environmentPackage).success)
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         environmentPackage,
         createdAt: environmentPackage.createdAt,
       });
@@ -761,15 +762,15 @@ async function attachNanoHostStorageFixture(
 }
 
 /** Completes the compatibility inputs omitted by narrow backend test fixtures. */
-function completeNanoHostPackage(input: {
+async function completeNanoHostPackage(input: {
   readonly [key: string]: unknown;
   readonly agentSetup?: ReturnType<typeof createTestAgentSetup>;
   readonly scope: Record<string, unknown>;
   readonly snapshotId: string;
   readonly workspace?: Record<string, unknown>;
-}): AgentEnvironmentPackage {
+}): Promise<AgentEnvironmentPackage> {
   const { agentSetup, ...packageInput } = input;
-  const base = resolveAgentEnvironmentPackage({
+  const base = await resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: String(input.scope.agentSessionId ?? testEntityId('as', 'as_factory_fixture')),
     agentSetup: agentSetup ?? createTestAgentSetup(),
@@ -983,7 +984,7 @@ async function failLivePartialSandboxActivation(
       throw new Error('Unexpected semantic route.');
     },
   };
-  const environmentPackage = completeNanoHostPackage({
+  const environmentPackage = await completeNanoHostPackage({
     runtime: {
       image: { kind: 'reference', pullPolicy: 'if-not-present', ref: 'openkit/worker:test' },
     },
@@ -1098,7 +1099,7 @@ async function prepareNonmemberAdminWorkerStorage(label: string) {
   const ownerUserId = 'usr_00000000-0000-7616-b399-55d24068709b';
   const tokenId = `token_${label}`;
   const workspaceId = testEntityId('ws', `workspace_${label}`);
-  const environmentPackage = completeNanoHostPackage({
+  const environmentPackage = await completeNanoHostPackage({
     scope: {
       agentSessionId: testEntityId('as', `as_${label}`),
       threadId: testEntityId('th', `thread_${label}`),
@@ -1423,7 +1424,7 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       const attemptId = testEntityId('attempt', 'lease_pre_witness_cleanup');
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'as_pre_witness_cleanup'),
           threadId: 'th_00000000-0000-7ca5-9987-116ab66f51c7',
@@ -1573,7 +1574,7 @@ describe('createConfiguredTurnExecutor', () => {
           '2026-08-21T00:00:01.000Z',
           '2026-08-21T00:00:01.000Z'
         );
-      const epochPackage = completeNanoHostPackage({
+      const epochPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: identity.agentSessionId,
           workspaceId: 'ws_00000000-0000-75f7-b25a-09c4b172778e',
@@ -1868,7 +1869,7 @@ describe('createConfiguredTurnExecutor', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
       workspaceRoots: [],
     });
-    const predecessorPackage = completeNanoHostPackage({
+    const predecessorPackage = await completeNanoHostPackage({
       agentSetup: createTestAgentSetup(),
       scope: {
         agentSessionId: 'as_00000000-0000-7ff2-9481-d757fe7ac840',
@@ -1881,7 +1882,7 @@ describe('createConfiguredTurnExecutor', () => {
     });
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
-      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         environmentPackage: predecessorPackage,
         createdAt: predecessorPackage.createdAt,
       });
@@ -2001,7 +2002,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {
           workspaceId: testEntityId('ws', 'harness-deadline'),
           threadId: testEntityId('th', 'harness-deadline'),
@@ -2357,7 +2358,7 @@ describe('createConfiguredTurnExecutor', () => {
            WHERE attempt_id = '${testEntityId('attempt', 'lease-continuity-commit')}'`
         )
         .run('as_00000000-0000-7ae9-8d3d-3dddb5075810');
-      const retirementPackage = completeNanoHostPackage({
+      const retirementPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: 'as_00000000-0000-7ae9-8d3d-3dddb5075810',
           threadId: input.threadId,
@@ -2530,7 +2531,7 @@ describe('createConfiguredTurnExecutor', () => {
         };
       }
     ).backend;
-    const environmentPackage = completeNanoHostPackage({
+    const environmentPackage = await completeNanoHostPackage({
       agentSetup: options.agentSetup,
       ...(nativeValues
         ? {
@@ -2882,7 +2883,7 @@ describe('createConfiguredTurnExecutor', () => {
         });
         onTestFinished(() => vault?.lock());
         vault.backend().store({ referenceId, material, metadata: { ownerScope: 'server' } });
-        createVaultReference(coreDb, {
+        await createVaultReference(coreDb, {
           referenceId,
           ownerScope: 'server',
           displayName: 'Synthetic capture source',
@@ -2890,7 +2891,7 @@ describe('createConfiguredTurnExecutor', () => {
           backendKind: 'encrypted-file',
           backendLocator: `encrypted-file://server/vault/${referenceId}`,
         });
-        createVaultGrant(coreDb, {
+        await createVaultGrant(coreDb, {
           grantId,
           vaultReferenceId: referenceId,
           ownerScope: 'server',
@@ -2957,9 +2958,9 @@ describe('createConfiguredTurnExecutor', () => {
         onTestFinished(() => workspaceDb.sqlite.close());
       },
       materializationContext: async ({ environmentPackage: pkg }) => {
-        const produced = resolveAgentEnvironmentPackage(resolution);
+        const produced = await resolveAgentEnvironmentPackage(resolution);
         expect(produced.snapshotId === pkg.snapshotId).toBe(true);
-        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           environmentPackage: pkg,
           createdAt: new Date().toISOString(),
         });
@@ -3007,7 +3008,7 @@ describe('createConfiguredTurnExecutor', () => {
       beforeFinalStatus: async ({ backend, environmentPackage: pkg, turnExecutor }) => {
         // The metadata is emitted by the real resolver; success follows actual Native import and turn.start proof.
         expect(originalProof.materialVersion).toBe(1);
-        createVaultInjectionReceipt(core, {
+        await createVaultInjectionReceipt(core, {
           ...pendingReceipts[0]!,
           backendSummary: JSON.stringify(originalProof),
         });
@@ -3076,7 +3077,7 @@ describe('createConfiguredTurnExecutor', () => {
         ]);
         if (mode !== 'ordinary') {
           const rotated = vault!.backend().rotate({ referenceId, material: successorMaterial });
-          advanceActiveVaultReferenceVersion(core, {
+          await advanceActiveVaultReferenceVersion(core, {
             referenceId,
             currentVersion: rotated.currentVersion,
           });
@@ -3249,7 +3250,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
         .backend;
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {},
         snapshotId: 'snapshot_thread_root',
       });
@@ -3768,8 +3769,8 @@ describe('createConfiguredTurnExecutor', () => {
   it('plans a new physical Sandbox identity when encoded-slash authority changes', async () => {
     const f = await admitIdleSupplyResident('encoding_identity');
     try {
-      const packageFor = (allowEncodedSlash?: boolean) =>
-        completeNanoHostPackage({
+      const packageFor = async (allowEncodedSlash?: boolean) =>
+        await completeNanoHostPackage({
           scope: f.environmentPackage.scope,
           snapshotId: 'snapshot_encoding_comparison',
           agentSetup: createTestAgentSetup({
@@ -3789,12 +3790,14 @@ describe('createConfiguredTurnExecutor', () => {
             }).network,
           }),
         });
-      const omitted = packageFor();
+      const omitted = await packageFor();
       const before = JSON.stringify(omitted);
       const nativeIdentity = (pkg: AgentEnvironmentPackage) =>
         f.backend.planSession(pkg).backendSessionId;
-      expect(nativeIdentity(packageFor(true))).not.toBe(nativeIdentity(packageFor(false)));
-      expect(nativeIdentity(packageFor(true))).not.toBe(nativeIdentity(omitted));
+      expect(nativeIdentity(await packageFor(true))).not.toBe(
+        nativeIdentity(await packageFor(false))
+      );
+      expect(nativeIdentity(await packageFor(true))).not.toBe(nativeIdentity(omitted));
       expect(JSON.stringify(omitted)).toBe(before);
     } finally {
       f.coreDb.sqlite.close();
@@ -5963,6 +5966,352 @@ describe('createConfiguredTurnExecutor', () => {
       f.coreDb.sqlite.close();
     }
   });
+  // S4 crosses the real producer, retained binding, native evidence owner and public cold capture consumer.
+  it.each([
+    'plan',
+    'receipt',
+  ] as const)('refuses uncached capture when original %s authority ends during its native evidence wait', async (withdrawal) => {
+    const label = `collection_evidence_${withdrawal}`;
+    const material = randomUUID() + randomUUID();
+    const targetPath = `/sandbox/synthetic-${label}`;
+    const referenceId = testEntityId('vault', label);
+    const grantId = testEntityId('grant', label);
+    const admission = new WorkspaceMutationAdmission();
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const pending: NonNullable<
+      Parameters<WorkerGovernanceBackend['materialize']>[1]
+    >['runtimeFileCredentials'] = [];
+    const pendingReceipts: CreateVaultInjectionReceiptInput[] = [];
+    const evidenceEntered = Promise.withResolvers<void>();
+    let deliverEvidence: (() => void) | undefined;
+    const releaseEvidence = () => {
+      const deliver = deliverEvidence;
+      deliverEvidence = undefined;
+      deliver?.();
+    };
+    onTestFinished(releaseEvidence);
+    let vault: ReturnType<typeof createVaultUnlockState> | undefined;
+    let store: FsStore;
+    let workspaceDb: ReturnType<typeof openWorkspaceDb>;
+    let resolution: Parameters<typeof resolveAgentEnvironmentPackage>[0];
+    let exported = 0;
+    const protection = {
+      ephemeral: true,
+      outsideRetainedStorage: true,
+      excludedFromCapture: true,
+      excludedFromExport: true,
+    } as const;
+    const fixture = await admitIdleSupplyResident(label, {
+      effects,
+      finishAfterLiveCheck: true,
+      workspaceMutationAdmission: admission,
+      vaultBackend: () => vault!.backend(),
+      onImport: async (request) => ({
+        state: 'imported',
+        ...(String(request.input.slot).startsWith('runtime-credential')
+          ? { credentialProtection: protection }
+          : {}),
+      }),
+      configurePackage: async (pkg, coreDb) => {
+        store = new FsStore({ dataRoot: coreDb.dataRoot });
+        store.setWorkspaceMutationAdmission(admission);
+        const { workspaceId, threadId, turnId, agentSessionId, triggerActor } = pkg.scope;
+        await store.createAgentSession({
+          id: agentSessionId,
+          agentId: pkg.agent.agentId,
+          workspaceId,
+          threadId,
+          status: 'busy',
+          message: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        const turn = await store.createTurn(
+          workspaceId,
+          threadId,
+          'Capture with original credential authority.',
+          triggerActor,
+          null,
+          {
+            turnId,
+            executorKind: 'worker',
+            agentId: pkg.agent.agentId,
+            agentSessionId,
+            captureCoverage: { scope: 'server', value: 'on' },
+          }
+        );
+        await store.updateTurn(turn.id, { status: 'running' });
+        vault = createVaultUnlockState({
+          backendKind: 'encrypted-file',
+          storeDir: join(coreDb.dataRoot, 'vault'),
+        });
+        vault.unlock({
+          masterKey: Buffer.from(
+            randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', ''),
+            'hex'
+          ),
+        });
+        onTestFinished(() => vault?.lock());
+        vault.backend().store({ referenceId, material, metadata: { ownerScope: 'server' } });
+        await createVaultReference(coreDb, {
+          referenceId,
+          ownerScope: 'server',
+          displayName: 'Synthetic uncached capture source',
+          secretKind: 'opaque',
+          backendKind: 'encrypted-file',
+          backendLocator: `encrypted-file://server/vault/${referenceId}`,
+        });
+        await createVaultGrant(coreDb, {
+          grantId,
+          vaultReferenceId: referenceId,
+          ownerScope: 'server',
+          lifetime: 'agent-session',
+          targetAgentSessionId: agentSessionId,
+          allowedInjectionPaths: ['runtime-file'],
+        });
+        createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:${testEntityId('attempt', `lease_${label}`)}`,
+          requestId: pkg.scope.requestId,
+          requestedAgentId: pkg.agent.agentId,
+          turnId,
+          threadId,
+          workspaceId,
+          triggerActor,
+          turnInput: 'Factory worker storage fixture',
+        });
+        resolution = {
+          coreDb,
+          captureCoverage: { scope: 'server', value: 'on' },
+          agentSessionId,
+          agentSetup: createTestAgentSetup({
+            agentId: pkg.agent.agentId,
+            credentialDeclarations: [
+              { id: 'static_file', vaultGrantId: grantId, visibility: 'runtime-file', targetPath },
+            ],
+          }),
+          backend: { kind: 'openshell' },
+          turn,
+          triggerActor,
+          requestId: pkg.scope.requestId,
+          workspaceRoots: [],
+          vaultBackend: () => vault!.backend(),
+          runtimeFileCredentialSink: (value) => pending!.push(value),
+          credentialReceiptSink: (value) => pendingReceipts.push(value),
+        };
+        const preview = resolveAgentEnvironmentPackageMetadata(resolution);
+        pkg.snapshotId = preview.snapshotId;
+        pkg.scope = preview.scope;
+        pkg.credentials = preview.credentials;
+        pkg.vault = preview.vault;
+        pkg.control = preview.control;
+        pkg.observability.captureCoverage = { scope: 'server', value: 'on' };
+        await store.updateAgentSession(agentSessionId, {
+          environmentPackageSnapshotId: pkg.snapshotId,
+        });
+        pkg.workspace.outputs = [
+          {
+            id: 'turn-output',
+            path: `${workerSessionInputPaths(agentSessionId).root}/outputs`,
+            registerAsArtifacts: true,
+            retention: 'sync-on-turn-end',
+          },
+        ];
+        workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+        onTestFinished(() => workspaceDb.sqlite.close());
+      },
+      materializationContext: async ({ environmentPackage: pkg }) => {
+        const produced = await resolveAgentEnvironmentPackage(resolution);
+        expect(produced.snapshotId).toBe(pkg.snapshotId);
+        await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+          environmentPackage: pkg,
+          createdAt: new Date().toISOString(),
+        });
+        return { runtimeFileCredentials: pending };
+      },
+      beforeSubmit: async ({ backend, environmentPackage: pkg, coreDb }) => {
+        const supply = pending![0]!;
+        const proof = await backend.deliverCredentialBinding!(
+          pkg.snapshotId,
+          supply.planId,
+          supply.receiptId,
+          material,
+          1,
+          async () => {
+            expect(
+              currentWorkerLineageWorkspaceAuthority(
+                coreDb,
+                { ...pkg.scope, packageSnapshotId: pkg.snapshotId },
+                'vault.use',
+                true
+              )
+            ).not.toBeNull();
+          }
+        );
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+        // The receipt still follows session.open, so retain only its actual private import proof here.
+        pendingReceipts[0] = { ...pendingReceipts[0]!, backendSummary: JSON.stringify(proof) };
+      },
+      beforeFinalStatus: async ({ coreDb, environmentPackage: pkg }) => {
+        await createVaultInjectionReceipt(coreDb, pendingReceipts[0]!);
+        const originalPlan = listVaultInjectionPlans(coreDb).find(
+          (plan) => plan.planId === pending![0]!.planId
+        )!;
+        const originalReceipt = listVaultInjectionReceipts(coreDb).find(
+          (receipt) => receipt.receiptId === pending![0]!.receiptId
+        )!;
+        expect(originalPlan).toMatchObject({ status: 'active', packageSnapshotId: pkg.snapshotId });
+        expect(originalReceipt).toMatchObject({ revocationStatus: 'active', grantId });
+        const restarted = createConfiguredWorkerLifecycleRuntime({
+          coreDb,
+          env: {},
+          workspaceMutationAdmission: admission,
+          vaultBackend: () => vault!.backend(),
+          nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects, {
+            onExport: async () => {
+              exported += 1;
+              throw new Error('Withdrawn uncached comparison evidence reached export.');
+            },
+          }),
+          workerControlGateway: new WorkerControlGateway(),
+        });
+        const cold = (
+          restarted.turnExecutor as unknown as {
+            backend: WorkerGovernanceBackend & {
+              restoreSession(pkg: AgentEnvironmentPackage, attemptId: string): void;
+              captureArtifact: WorkerArtifactCapture;
+              sessions: Map<string, { runtimeCredentialValues: Record<string, string> | null }>;
+            };
+          }
+        ).backend;
+        cold.restoreSession(
+          pkg,
+          attempts.listSchedulerExecutionAttemptsForTurn(coreDb, pkg.scope)[0]!.attemptId
+        );
+        expect(
+          cold.sessions.get(pkg.snapshotId)?.runtimeCredentialValues,
+          'Recovery must have no cached credential values.'
+        ).toBeNull();
+        const nativeClient = getControlStoreWorkerClient();
+        const previousUses = new Set(listVaultUseRecords(coreDb).map((row) => row.useId));
+        const resolveMaterial = vi.spyOn(vault!.backend(), 'resolve');
+        const emit = NativeWorker.prototype.emit;
+        let heldAudit = false;
+        let heldAuditResult: unknown;
+        const evidence = vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
+          this: NativeWorker,
+          event: string | symbol,
+          ...args: unknown[]
+        ): boolean {
+          const reply = args[0] as
+            | {
+                operation?: string;
+                status?: string;
+                result?: { kind?: string; value?: { action?: string; vaultGrantId?: string } };
+              }
+            | undefined;
+          if (
+            !heldAudit &&
+            event === 'message' &&
+            reply?.operation === 'vault' &&
+            reply.status === 'ok' &&
+            reply.result?.kind === 'audit-insert' &&
+            reply.result.value?.action === 'vault.resolve' &&
+            reply.result.value.vaultGrantId === grantId
+          ) {
+            heldAudit = true;
+            heldAuditResult = reply.result.value;
+            // Keep the actual committed Audit reply. The real Worker can still process withdrawal.
+            deliverEvidence = () => {
+              emit.call(this, event, ...args);
+            };
+            evidenceEntered.resolve();
+            return true;
+          }
+          return emit.call(this, event, ...args);
+        });
+        let settled = false;
+        const capture = cold
+          .captureArtifact({
+            packageSnapshotId: pkg.snapshotId,
+            workspaceDb,
+            requestId: randomUUID(),
+            path: `${pkg.workspace.outputs[0]!.path}/synthetic-report.md`,
+            maxByteLength: 4096,
+          })
+          .then(
+            (value) => {
+              settled = true;
+              return { ok: true as const, value };
+            },
+            (error: unknown) => {
+              settled = true;
+              return { ok: false as const, error };
+            }
+          );
+        try {
+          await Promise.race([
+            evidenceEntered.promise,
+            capture.then(() => {
+              throw new Error('Capture ended before the intended native evidence wait.');
+            }),
+          ]);
+          expect(settled).toBe(false);
+          expect(heldAuditResult).toMatchObject({ action: 'vault.resolve', vaultGrantId: grantId });
+          expect(resolveMaterial).toHaveBeenCalledExactlyOnceWith({ referenceId, version: 1 });
+          expect(listVaultUseRecords(coreDb).filter((row) => !previousUses.has(row.useId))).toEqual(
+            [
+              expect.objectContaining({
+                outcome: 'succeeded',
+                vaultReferenceId: referenceId,
+                planId: originalPlan.planId,
+                receiptId: originalReceipt.receiptId,
+              }),
+            ]
+          );
+          // A deliberate lifecycle change after valid setup uses the actual typed native owner.
+          if (withdrawal === 'plan')
+            await nativeClient.vault(coreDb, 'binding-revoke-plan-complete', {
+              planId: originalPlan.planId,
+            });
+          else
+            await nativeClient.vault(coreDb, 'binding-revoke-receipts-complete', {
+              planId: originalPlan.planId,
+            });
+          expect(getVaultGrant(coreDb, grantId)?.status).toBe('active');
+          expect(getVaultReference(coreDb, referenceId)?.status).toBe('active');
+          expect(
+            listVaultInjectionPlans(coreDb).find((row) => row.planId === originalPlan.planId)
+              ?.status
+          ).toBe(withdrawal === 'plan' ? 'revoked' : 'active');
+          expect(
+            listVaultInjectionReceipts(coreDb).find(
+              (row) => row.receiptId === originalReceipt.receiptId
+            )?.revocationStatus
+          ).toBe(withdrawal === 'receipt' ? 'revoked' : 'active');
+          releaseEvidence();
+          expect(await capture).toMatchObject({ ok: false, error: { code: 'recovery_required' } });
+          expect(exported).toBe(0);
+          expect(resolveMaterial).toHaveBeenCalledTimes(1);
+          expect(store.listArtifacts(pkg.scope.workspaceId)).toEqual([]);
+          expect(
+            JSON.stringify([
+              listVaultUseRecords(coreDb),
+              listVaultInjectionPlans(coreDb),
+              listVaultInjectionReceipts(coreDb),
+            ])
+          ).not.toContain(material);
+        } finally {
+          releaseEvidence();
+          await capture;
+          evidence.mockRestore();
+          resolveMaterial.mockRestore();
+        }
+      },
+    });
+    fixture.coreDb.sqlite.close();
+  });
+
   it('restores the exact injected Vault version and refuses unavailable or incomplete evidence', async () => {
     const referenceId = testEntityId('vault', 'collection-versions');
     const grantId = testEntityId('grant', 'collection-versions');
@@ -5991,6 +6340,16 @@ describe('createConfiguredTurnExecutor', () => {
           revoked: false,
         },
       ],
+      // This fixture retains version 7 through advancement to 8; validation must not resolve it again.
+      assertResolutionCurrent: (input: { referenceId: string; version?: number }) => {
+        if (input.referenceId !== referenceId)
+          throw new VaultBackendError('reference-not-found', 'Synthetic reference is unavailable.');
+        const version = input.version ?? currentVersion;
+        if (!Number.isSafeInteger(version) || version <= 0)
+          throw new VaultBackendError('backend-unavailable', 'Synthetic version is invalid.');
+        if (version < 7 || version > currentVersion)
+          throw new VaultBackendError('reference-not-found', 'Synthetic version is unavailable.');
+      },
       resolve,
     } as unknown as VaultBackend;
     const coreDb = createFactoryCoreDb();
@@ -6011,7 +6370,7 @@ describe('createConfiguredTurnExecutor', () => {
         },
       ],
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       referenceId,
       ownerScope: 'workspace',
       workspaceId,
@@ -6021,8 +6380,8 @@ describe('createConfiguredTurnExecutor', () => {
       backendLocator: 'synthetic-collection-reference',
     });
     for (let version = 2; version <= 7; version++)
-      advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: version });
-    createVaultGrant(coreDb, {
+      await advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: version });
+    await createVaultGrant(coreDb, {
       grantId,
       vaultReferenceId: referenceId,
       ownerScope: 'workspace',
@@ -6071,6 +6430,30 @@ describe('createConfiguredTurnExecutor', () => {
       readRuntimeConfig: () => configuration,
       vaultBackend: () => vault,
     });
+    // Delivery proof precedes receipt publication; join the original session's actual native ACK.
+    const receiptSettled = Promise.withResolvers<void>();
+    void receiptSettled.promise.catch(() => undefined);
+    const nativeClient = getControlStoreWorkerClient();
+    const nativeVault = nativeClient.vault.bind(nativeClient);
+    const receiptObservation = vi.spyOn(nativeClient, 'vault').mockImplementation(((
+      db,
+      kind,
+      record,
+      beforeSubmit
+    ) => {
+      const result = nativeVault(db, kind, record, beforeSubmit);
+      const receipt = record as { readonly grantId?: string; readonly agentSessionId?: string };
+      if (
+        db === coreDb &&
+        kind === 'receipt-create' &&
+        receipt.grantId === grantId &&
+        receipt.agentSessionId === agentSessionId
+      ) {
+        void result.then(() => receiptSettled.resolve(), receiptSettled.reject);
+      }
+      return result;
+    }) as typeof nativeClient.vault);
+    onTestFinished(() => receiptObservation.mockRestore());
     const backend = native.executor.executionBackend as WorkerGovernanceBackend & {
       readonly sessions: Map<string, unknown>;
     };
@@ -6097,6 +6480,8 @@ describe('createConfiguredTurnExecutor', () => {
       });
       admitted.push(turn);
       await native.waitForStartup(turnId);
+      // Reused Turns keep this session-static receipt; they do not create another receipt.
+      await receiptSettled.promise;
       return turn;
     };
     const failures: unknown[] = [];
@@ -6129,7 +6514,7 @@ describe('createConfiguredTurnExecutor', () => {
       // The shared native owner publishes the actual terminal tuple before another Turn is admitted.
       await original.complete();
       expect(store.getTurnById(original.pkg.scope.turnId)).toMatchObject({ status: 'completed' });
-      advanceActiveVaultReferenceVersion(f.coreDb, { referenceId, currentVersion: 8 });
+      await advanceActiveVaultReferenceVersion(f.coreDb, { referenceId, currentVersion: 8 });
       currentVersion = 8;
       // Losing live material requires an audited reread of the exact original version.
       const originalUseDb = workspaceDb;
@@ -6280,7 +6665,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
       // Cached material still requires current original-grant authority before it can be used.
       session.runtimeCredentialValues = { TOKEN: originalMaterial };
-      revokeVaultGrant(f.coreDb, { grantId });
+      await revokeVaultGrant(f.coreDb, { grantId });
       const resolutionsAfterRevocation = resolve.mock.calls.length;
       await expect
         .soft(collector.restoreCollectionRuntimeCredentials(session, workspaceDb))
@@ -6606,7 +6991,7 @@ describe('createConfiguredTurnExecutor', () => {
     });
     const { coreDb, environmentPackage, effects, runtime } = admitted;
     try {
-      const independent = completeNanoHostPackage({
+      const independent = await completeNanoHostPackage({
         scope: {
           ...environmentPackage.scope,
           agentSessionId: testEntityId('as', 'missing_skill_independent'),
@@ -7339,7 +7724,7 @@ describe('createConfiguredTurnExecutor', () => {
         runtime: { ...pkg.runtime, image: digestImage },
       });
       const environmentPackage = withDigestImage(
-        resolveAgentEnvironmentPackage({
+        await resolveAgentEnvironmentPackage({
           ...packageResolution,
           workerStorageWorkSlotRef: retainedWorkSlotRef,
         })
@@ -7607,10 +7992,10 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('returns null from a cold resident work-slot lookup without a durable Sandbox', () => {
+  it('returns null from a cold resident work-slot lookup without a durable Sandbox', async () => {
     const coreDb = createFactoryCoreDb();
     try {
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'as_cold_slot_absent'),
           threadId: 'th_00000000-0000-7d65-8e5e-41063cbfcd4f',
@@ -8005,7 +8390,7 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       backend.requireAttemptId = () => testEntityId('attempt', 'lease_absent_cleanup');
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'as_absent_cleanup'),
           threadId: 'th_00000000-0000-7a35-b70b-6c17df884783',
@@ -8164,7 +8549,7 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       backend.requireAttemptId = () => testEntityId('attempt', 'lease_pending_cleanup');
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'as_pending_cleanup'),
           threadId: 'th_00000000-0000-763f-8a74-8d8ab0efa3c7',
@@ -8357,7 +8742,7 @@ describe('createConfiguredTurnExecutor', () => {
           readonly backend: WorkerGovernanceBackend;
         }
       ).backend;
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'as_reserved_cleanup'),
           threadId: 'th_00000000-0000-7f8f-9c18-44d0901cf5ef',
@@ -8571,7 +8956,7 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       initialBackend.requireAttemptId = () => testEntityId('attempt', 'lease_post_fence');
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'as_post_fence'),
           threadId: 'th_00000000-0000-7c74-9ab7-ed20fc758df8',
@@ -9091,7 +9476,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('keys shared Sandboxes by static isolation inputs, with private Context and output namespaces', () => {
+  it('keys shared Sandboxes by static isolation inputs, with private Context and output namespaces', async () => {
     const coreDb = createFactoryCoreDb();
     try {
       coreDb.sqlite
@@ -9217,16 +9602,16 @@ describe('createConfiguredTurnExecutor', () => {
         backend.planSession(environmentPackage).backendSessionId;
       const keyFor = (environmentPackage: AgentEnvironmentPackage) =>
         planFor(environmentPackage).slice(0, 19);
-      const baselinePackage = packageFor('a');
+      const baselinePackage = await packageFor('a');
       const baseline = keyFor(baselinePackage);
 
-      expect(keyFor(packageFor('b'))).toBe(baseline);
-      expect(planFor(packageFor('b'))).not.toBe(planFor(baselinePackage));
+      expect(keyFor(await packageFor('b'))).toBe(baseline);
+      expect(planFor(await packageFor('b'))).not.toBe(planFor(baselinePackage));
       expect(
-        keyFor(packageFor('c', { actorId: 'usr_00000000-0000-7de9-993f-8088d6e797b7' }))
+        keyFor(await packageFor('c', { actorId: 'usr_00000000-0000-7de9-993f-8088d6e797b7' }))
       ).not.toBe(baseline);
-      expect(keyFor(packageFor('d', { mountLabel: 'secondary' }))).not.toBe(baseline);
-      expect(keyFor(packageFor('e', { sensitivity: 'restricted' }))).not.toBe(baseline);
+      expect(keyFor(await packageFor('d', { mountLabel: 'secondary' }))).not.toBe(baseline);
+      expect(keyFor(await packageFor('e', { sensitivity: 'restricted' }))).not.toBe(baseline);
       expect(
         keyFor({ ...baselinePackage, resources: { cpu: { limitMillicores: 1000 } } })
       ).not.toBe(baseline);
@@ -9255,8 +9640,8 @@ describe('createConfiguredTurnExecutor', () => {
           value.workspace.inputs[0]!.source.pathRef = `other/${value.scope.turnId}`;
         },
       ]) {
-        const first = packageFor('a');
-        const second = packageFor('b');
+        const first = await packageFor('a');
+        const second = await packageFor('b');
         change(first);
         change(second);
         expect(keyFor(first)).not.toBe(keyFor(second));
@@ -9307,7 +9692,7 @@ describe('createConfiguredTurnExecutor', () => {
       material: secret,
       metadata: owner,
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       referenceId,
       ...owner,
       displayName: serverReference ? 'Shared MCP credential' : 'Runtime revocation fixture',
@@ -9317,7 +9702,7 @@ describe('createConfiguredTurnExecutor', () => {
         ? `encrypted-file://server/vault/${referenceId}`
         : `encrypted-file://workspace/${workspaceId}/vault/${referenceId}`,
     });
-    createVaultGrant(coreDb, {
+    await createVaultGrant(coreDb, {
       grantId,
       vaultReferenceId: referenceId,
       ...owner,
@@ -9575,6 +9960,37 @@ describe('createConfiguredTurnExecutor', () => {
         )!;
         const siblingAgentSessionId = testEntityId('as', `${label}-sibling`);
         const siblingAttemptId = testEntityId('attempt', `${label}-sibling`);
+        const siblingReceiptSettled = Promise.withResolvers<void>();
+        if (siblingReceiptSettled) void siblingReceiptSettled.promise.catch(() => undefined);
+        const nativeClient = getControlStoreWorkerClient();
+        const nativeVault = nativeClient.vault.bind(nativeClient);
+        const receiptObservation = siblingReceiptSettled
+          ? vi.spyOn(nativeClient, 'vault').mockImplementation(((
+              db,
+              kind,
+              record,
+              beforeSubmit
+            ) => {
+              const result = nativeVault(db, kind, record, beforeSubmit);
+              const receipt = record as {
+                readonly grantId?: string;
+                readonly agentSessionId?: string;
+              };
+              if (
+                db === coreDb &&
+                kind === 'receipt-create' &&
+                receipt.grantId === grantId &&
+                receipt.agentSessionId === siblingAgentSessionId
+              ) {
+                void result.then(
+                  () => siblingReceiptSettled.resolve(),
+                  siblingReceiptSettled.reject
+                );
+              }
+              return result;
+            }) as typeof nativeClient.vault)
+          : undefined;
+        onTestFinished(() => receiptObservation?.mockRestore());
         const siblingEntry = createSchedulerAdmissionEntry(coreDb, {
           ...entry,
           queueEntryId: `queue:${label}-sibling`,
@@ -9599,6 +10015,9 @@ describe('createConfiguredTurnExecutor', () => {
         });
         // Peer acceptance can precede the executor's startup ACK and credential receipt publication.
         await native.waitForStartup(siblingEntry.turnId);
+        // This sibling has its own exposure receipt under the same grant.
+        if (siblingReceiptSettled) await siblingReceiptSettled.promise;
+        receiptObservation?.mockRestore();
         const backend = native.executor.executionBackend as WorkerGovernanceBackend;
         const collect = backend.collectTranscript.bind(backend);
         const firstCloseoutPaused = Promise.withResolvers<void>();
@@ -10189,7 +10608,7 @@ describe('createConfiguredTurnExecutor', () => {
                      1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-03T00:00:00.000Z');
-      let environmentPackage = completeNanoHostPackage({
+      let environmentPackage = await completeNanoHostPackage({
         extensions: {
           openkit: {
             workerStorage: {
@@ -10236,7 +10655,7 @@ describe('createConfiguredTurnExecutor', () => {
           encoding: 'utf8',
         }).trim();
         const setup = createTestAgentSetup({ adapter: 'pi' });
-        environmentPackage = resolveAgentEnvironmentPackage({
+        environmentPackage = await resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSessionId: testEntityId('as', 'as_human_gate'),
           agentSetup: {
@@ -10336,7 +10755,7 @@ describe('createConfiguredTurnExecutor', () => {
         material: 'private-dispatch-env-canary',
         metadata: { ownerScope: 'server' },
       });
-      createVaultReference(coreDb, {
+      await createVaultReference(coreDb, {
         referenceId,
         ownerScope: 'server',
         displayName: 'Private dispatch credential fixture',
@@ -10344,7 +10763,7 @@ describe('createConfiguredTurnExecutor', () => {
         backendKind: 'encrypted-file',
         backendLocator: `encrypted-file://server/vault/${referenceId}`,
       });
-      createVaultGrant(coreDb, {
+      await createVaultGrant(coreDb, {
         grantId,
         vaultReferenceId: referenceId,
         ownerScope: 'server',
@@ -10416,7 +10835,7 @@ describe('createConfiguredTurnExecutor', () => {
         attemptId: testEntityId('attempt', 'lease_human_gate'),
         sandboxBindingRef: 'sandbox-binding:resident-session',
       });
-      const produced = resolveAgentEnvironmentPackage(resolution);
+      const produced = await resolveAgentEnvironmentPackage(resolution);
       environmentPackage.credentials = produced.credentials;
       environmentPackage.vault = produced.vault;
       const runtime = createConfiguredWorkerLifecycleRuntime({
@@ -10642,7 +11061,7 @@ describe('createConfiguredTurnExecutor', () => {
       ]);
       await launch;
       // Native turn.start acknowledgement proves the generated private sink completed.
-      for (const receipt of receipts) createVaultInjectionReceipt(coreDb, receipt);
+      for (const receipt of receipts) await createVaultInjectionReceipt(coreDb, receipt);
       // This terminal-inspection subject begins with exact occupancy; Harness record regressions separately retain the leaseId-to-attemptId publication defect.
       coreDb.sqlite
         .prepare(`UPDATE agent_session_runtime_bindings
@@ -11222,7 +11641,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
     ).backend;
     backend.requireAttemptId = () => testEntityId('attempt', 'lease_factory_pre_bridge_failure');
-    const environmentPackage = completeNanoHostPackage({
+    const environmentPackage = await completeNanoHostPackage({
       policy: {
         filesystem: { default: 'deny', rules: [] },
         network: { default: 'deny', enforcement: 'openshell', rules: [] },
@@ -11321,7 +11740,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
     ).backend;
     backend.requireAttemptId = () => testEntityId('attempt', 'lease_factory_reservation_failure');
-    const environmentPackage = completeNanoHostPackage({
+    const environmentPackage = await completeNanoHostPackage({
       policy: {
         filesystem: { default: 'deny', rules: [] },
         network: { default: 'deny', enforcement: 'openshell', rules: [] },
@@ -11629,7 +12048,7 @@ describe('createConfiguredTurnExecutor', () => {
       const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
         .backend;
       const dockerfile = 'FROM scratch\n';
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         runtime: {
           image:
             operation === 'image.build'
@@ -12171,7 +12590,7 @@ describe('createConfiguredTurnExecutor', () => {
         return { backend, runtime };
       };
       const { backend, runtime } = createBackend();
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         runtime: {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
         },
@@ -12337,7 +12756,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         extensions: {
           openkit: {
             workerStorage: {
@@ -12527,7 +12946,7 @@ describe('createConfiguredTurnExecutor', () => {
         return { backend, runtime };
       };
       const { backend, runtime } = createBackend();
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         runtime: {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
         },
@@ -14261,10 +14680,10 @@ describe('createConfiguredTurnExecutor', () => {
         }
       ).backend;
       /** Uses real package resolution so returning OpenCode selects its original static identity. */
-      const packageFor = (adapter: string, number: number) => {
+      const packageFor = async (adapter: string, number: number) => {
         const setup = createTestAgentSetup({ adapter, agentId: `agent_${adapter}` });
         admitTestNativeEnvironment(coreDb, setup.manifest);
-        return resolveAgentEnvironmentPackage({
+        return await resolveAgentEnvironmentPackage({
           coreDb,
           captureCoverage: { scope: 'server', value: 'off' },
           agentSessionId: testEntityId('as', `as_admission_stall_${number}`),
@@ -14292,10 +14711,10 @@ describe('createConfiguredTurnExecutor', () => {
         });
       };
       const packages = [
-        packageFor('opencode', 23),
-        packageFor('deepseek', 24),
-        packageFor('opencode', 25),
-        packageFor('deepseek', 26),
+        await packageFor('opencode', 23),
+        await packageFor('deepseek', 24),
+        await packageFor('opencode', 25),
+        await packageFor('deepseek', 26),
       ];
       const settledOperations: string[] = [];
       /** Delivers the actual queued Harness command through its durable settlement owner. */
@@ -15395,7 +15814,7 @@ describe('createConfiguredTurnExecutor', () => {
       ).backend;
       backend.requireAttemptId = (packageSnapshotId) =>
         testEntityId('attempt', `lease-${packageSnapshotId}`);
-      const firstPackage = completeNanoHostPackage({
+      const firstPackage = await completeNanoHostPackage({
         runtime: {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'1'.repeat(64)}` },
         },
@@ -16059,7 +16478,7 @@ describe('createConfiguredTurnExecutor', () => {
       const backend = (
         runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
       ).backend;
-      const residentPackage = completeNanoHostPackage({
+      const residentPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'as_capacity_guard_resident'),
           threadId: 'th_00000000-0000-7e51-97fc-1eab919d6dc2',
@@ -16549,7 +16968,7 @@ describe('createConfiguredTurnExecutor', () => {
         expect(String(ownClosed.at(-1)!.terminal_cause)).not.toContain('session.close');
         return;
       }
-      const desiredPackage = completeNanoHostPackage({
+      const desiredPackage = await completeNanoHostPackage({
         agentSetup: createTestAgentSetup(),
         runtime: {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
@@ -16753,7 +17172,7 @@ describe('createConfiguredTurnExecutor', () => {
       const backend = (
         runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
       ).backend;
-      const desiredPackage = completeNanoHostPackage({
+      const desiredPackage = await completeNanoHostPackage({
         runtime: {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
         },
@@ -16973,7 +17392,7 @@ describe('createConfiguredTurnExecutor', () => {
       const backend = (
         runtime.turnExecutor as unknown as { readonly backend: WorkerGovernanceBackend }
       ).backend;
-      const desiredPackage = completeNanoHostPackage({
+      const desiredPackage = await completeNanoHostPackage({
         runtime: {
           image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
         },
@@ -17034,13 +17453,13 @@ describe('createConfiguredTurnExecutor', () => {
                      'deployment_restart_unproved', 1, 1, 1, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ?, 1)`
         )
         .run('2026-09-06T00:00:00.000Z');
-      const packageFor = (
+      const packageFor = async (
         agentSessionId: string,
         threadId: string,
         turnId: string,
         snapshotId: string
       ) =>
-        completeNanoHostPackage({
+        await completeNanoHostPackage({
           runtime: {
             image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'7'.repeat(64)}` },
           },
@@ -17052,7 +17471,7 @@ describe('createConfiguredTurnExecutor', () => {
           },
           snapshotId,
         });
-      const firstPackage = packageFor(
+      const firstPackage = await packageFor(
         testEntityId('as', 'as_restart_unproved_old'),
         'th_00000000-0000-7752-b888-31811df1ac3f',
         testEntityId('tu', 'turn_restart_unproved_old'),
@@ -17137,7 +17556,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run('9'.repeat(64));
       // The first binding retains ready proof for the positive reuse check; the synthetic incompatible Harness owns only restart retirement and has no accepted native proof.
-      const unprovedPackage = packageFor(
+      const unprovedPackage = await packageFor(
         testEntityId('as', 'as_restart_unproved_other_harness'),
         'th_00000000-0000-7faa-b25f-dc7565a66f04',
         testEntityId('tu', 'turn_restart_unproved_other_harness'),
@@ -17237,7 +17656,7 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
-      const secondPackage = packageFor(
+      const secondPackage = await packageFor(
         testEntityId('as', 'as_restart_unproved_fresh'),
         unprovedPackage.scope.threadId,
         testEntityId('tu', 'turn_restart_unproved_fresh'),
@@ -17410,7 +17829,7 @@ describe('createConfiguredTurnExecutor', () => {
     let restoreRelease: (() => void) | undefined;
     let restoreOpenObservation: (() => void) | undefined;
     try {
-      const scopePackage = completeNanoHostPackage({
+      const scopePackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'as_restart_selected_idle'),
           threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
@@ -17761,7 +18180,7 @@ describe('createConfiguredTurnExecutor', () => {
       const grantId = testEntityId('grant', randomUUID());
       const referenceId = testEntityId('vault', randomUUID());
       const targetPath = `/sandbox/${randomUUID()}/${randomUUID()}`;
-      const environmentPackage = completeNanoHostPackage({
+      const environmentPackage = await completeNanoHostPackage({
         scope: {
           agentSessionId: testEntityId('as', 'agent-session-credentials'),
           threadId: 'th_00000000-0000-7e27-9ef5-642b88a2b99c',
@@ -17935,7 +18354,7 @@ describe('createConfiguredTurnExecutor', () => {
         [testEntityId('as', 'as_wp5_gate_r3'), 'aepsnap_factory_dns_lower'],
         [testEntityId('as', 'as_wp5_gate_r3_second'), 'aepsnap_factory_dns_upper'],
       ] as const) {
-        const environmentPackage = completeNanoHostPackage({
+        const environmentPackage = await completeNanoHostPackage({
           agentSetup,
           policy,
           runtime: {
@@ -18436,7 +18855,7 @@ describe('createConfiguredTurnExecutor', () => {
     };
     const sibling = store.getTurnById(resident.scope.turnId);
     expect(sibling.status).toBe('completed');
-    const incoming = completeNanoHostPackage({
+    const incoming = await completeNanoHostPackage({
       ...(path === 'eviction'
         ? {
             runtime: {
@@ -18631,6 +19050,8 @@ describe('createConfiguredTurnExecutor', () => {
       coreDb: f.coreDb,
       sessionAuthority: authority,
     });
+    // Unknown-original recovery uses the same real result receiver as bridge effects.
+    native.sessionDispatch.expectResultOnly = (...args) => dispatch.expectResultOnly!(...args);
     // Select only actual committed originals by the public physical request identity.
     const originalRef = (
       db: ReturnType<typeof openCoreDb>,
@@ -20198,7 +20619,7 @@ describe('createConfiguredTurnExecutor', () => {
         completed
       );
       expect(f.effects).toHaveLength(beforeEffects);
-      const next = completeNanoHostPackage({
+      const next = await completeNanoHostPackage({
         scope: {
           ...pkg.scope,
           agentSessionId: testEntityId('as', `as_next_${label}`),

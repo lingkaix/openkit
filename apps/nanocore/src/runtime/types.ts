@@ -106,6 +106,8 @@ export interface TurnExecutor {
     store: FsStore,
     input: {
       readonly action: 'deliver' | 'replace' | 'revoke';
+      /** Original request identity/current Core evaluation, never a permission grant. */
+      readonly coreAuthority: import('../storage/vault-native-codecs.js').VaultBindingCoreAuthority;
       readonly workspaceId: string;
       readonly threadId: string;
       readonly planId: string;

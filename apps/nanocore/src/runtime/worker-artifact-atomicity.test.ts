@@ -107,7 +107,7 @@ async function fixture() {
     kind: 'user',
     id: userId,
   });
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb,
     agentSetup: createTestAgentSetup(),
     agentSessionId: allocateEntityId('as'),

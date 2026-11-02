@@ -163,6 +163,14 @@ import {
   type ControlThreadReadMembership,
   THREAD_READ_RECEIPT_INVALID,
 } from './thread-read-membership-codecs.js';
+import {
+  type ControlVaultInput,
+  ControlVaultInputSchema,
+  type ControlVaultMainInputMap,
+  type ControlVaultResultMap,
+  isControlVaultRefusal,
+  VaultGrantNarrowingError,
+} from './vault-native-codecs.js';
 import type {
   ControlWorkObservationCommandInput,
   ControlWorkObservationResult,
@@ -1478,6 +1486,72 @@ class ControlStoreWorkerClient {
         error.domain?.operation === 'thread-read-membership'
       )
         throw new Error(THREAD_READ_RECEIPT_INVALID, { cause: error });
+      throw error;
+    }
+  }
+
+  /** Opens the exact existing evidence database and publishes one original Vault stage after FULL acknowledgement. */
+  async vault<K extends ControlVaultInput['kind']>(
+    db: CoreDb | WorkspaceDb,
+    kind: K,
+    record: ControlVaultMainInputMap[K],
+    beforeSubmit?: () => Promise<void> | void
+  ): Promise<ControlVaultResultMap[K]> {
+    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const { now, ...facts } = record as typeof record & { readonly now?: () => string };
+    // Original public record helpers ignore additional row fields on replay; the private wire stays closed.
+    const recordSchema = ControlVaultInputSchema.options.find(
+      (option) => option.shape.kind.value === kind
+    )!.shape.record;
+    const input = ControlVaultInputSchema.parse({
+      kind,
+      record: recordSchema
+        .strip()
+        .parse({ ...facts, ...(now === undefined ? {} : { now: now() }) }),
+    });
+    const scope = nativeProductScope(
+      db.dataRoot,
+      db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId }
+    );
+    const database = `${db.scope === 'core' ? 'core' : 'workspace'}:${scope.path}`;
+    await this.open({
+      database,
+      path: scope.path,
+      create: false,
+      initialize: db.scope === 'core' ? 'core' : 'workspace',
+      dataRoot: db.dataRoot,
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const admission = beforeSubmit?.();
+    if (admission) await admission;
+    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+    try {
+      const reply = await this.request({ operation: 'vault', database, input });
+      const result = (reply as Extract<Success, { operation: 'vault' }>).result;
+      if (result.kind !== kind) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+      return result.value as ControlVaultResultMap[K];
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'vault' &&
+        isControlVaultRefusal(error.domain.code, error.domain.message, error.domain.status)
+      ) {
+        if (
+          !error.domain.code.startsWith('vault_record_') &&
+          error.domain.code !== 'vault_grant_narrowing'
+        )
+          throw new OperationError(error.domain.code, error.domain.message, error.domain.status, {
+            cause: error,
+          });
+        if (error.domain.code === 'vault_grant_narrowing')
+          throw new VaultGrantNarrowingError(error.domain.status as 400 | 409);
+        if (error.domain.code === 'vault_record_format')
+          throw new TypeError(error.domain.message, { cause: error });
+        throw new Error(error.domain.message, { cause: error });
+      }
       throw error;
     }
   }

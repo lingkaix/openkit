@@ -111,7 +111,7 @@ it.each([
         })
       : null;
     const oldPackage = oldTurn
-      ? resolveAgentEnvironmentPackage({
+      ? await resolveAgentEnvironmentPackage({
           coreDb,
           agentSetup: createTestAgentSetup({ agentId: oldAgentId!, adapter: oldAdapter }),
           agentSessionId: oldSessionId,
@@ -204,7 +204,7 @@ it.each([
       const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
       try {
         applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-        recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           environmentPackage: oldPackage,
           createdAt: timestamp,
         });

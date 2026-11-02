@@ -39,7 +39,10 @@ import {
   runSchedulerDispatchLoop,
 } from '../runtime/scheduler-dispatch-loop.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -666,27 +669,28 @@ it('records a committed grant with uncertain request settlement without retrying
       await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
     ).json();
     expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
-    const transaction = f.coreDb.sqlite.transaction.bind(f.coreDb.sqlite);
+    const native = getControlStoreWorkerClient();
+    const write = native.vault.bind(native);
     let interrupted = false;
-    // Lose the acknowledgement only after the real grant transaction has committed.
-    const settle = vi.spyOn(f.coreDb.sqlite, 'transaction').mockImplementation(
-      (...args) =>
-        new Proxy(transaction(...args), {
-          apply(target, receiver, parameters) {
-            const result = Reflect.apply(target, receiver, parameters);
-            if (
-              !interrupted &&
-              listVaultGrants(f.coreDb).some(
-                (grant) => grant.approvalId === request.approvalRequestId
-              )
-            ) {
-              interrupted = true;
-              throw new Error('Synthetic interruption after the Core grant commit.');
-            }
-            return result;
-          },
-        })
-    );
+    // Interrupt caller settlement after the real native grant stage acknowledgement.
+    const settle = vi.spyOn(native, 'vault').mockImplementation((async (
+      db,
+      kind,
+      record,
+      beforeSubmit
+    ) => {
+      const result = await write(db, kind, record, beforeSubmit);
+      if (
+        db === f.coreDb &&
+        kind === 'reviewed-grant-issue' &&
+        !interrupted &&
+        listVaultGrants(f.coreDb).some((grant) => grant.approvalId === request.approvalRequestId)
+      ) {
+        interrupted = true;
+        throw new Error('Synthetic interruption after the Core grant commit.');
+      }
+      return result;
+    }) as typeof native.vault);
     const command = {
       workspaceId: source.workspaceId,
       threadId: source.threadId,
@@ -791,7 +795,7 @@ it.each([
   try {
     const source = await prepare(f, ownerScope, 'workspace');
     const existingGrantId = allocateEntityId('grant');
-    createVaultGrant(f.coreDb, {
+    await createVaultGrant(f.coreDb, {
       grantId: existingGrantId,
       vaultReferenceId: source.terms.referenceId,
       ownerScope,
@@ -1191,7 +1195,7 @@ it('reads only retained Server shared-MCP delivery lineage, separately from requ
       const grantId = allocateEntityId('grant');
       const planId = `plan_${randomUUID()}`;
       const receiptId = `receipt_${randomUUID()}`;
-      createVaultGrant(f.coreDb, {
+      await createVaultGrant(f.coreDb, {
         grantId,
         vaultReferenceId: source.terms.referenceId,
         ownerScope: scope,
@@ -1199,7 +1203,7 @@ it('reads only retained Server shared-MCP delivery lineage, separately from requ
         lifetime: scope,
         allowedInjectionPaths: ['gateway-only'],
       });
-      createVaultInjectionPlan(f.coreDb, {
+      await createVaultInjectionPlan(f.coreDb, {
         grantId,
         planId,
         injectionVisibility: 'gateway-only',
@@ -1210,7 +1214,7 @@ it('reads only retained Server shared-MCP delivery lineage, separately from requ
         backendCapabilityRequirement: 'mcp-gateway:http',
       });
       // Seed retained completion only to test the read projection; actual sink proof stays with the Gateway tests.
-      createVaultInjectionReceipt(f.coreDb, {
+      await createVaultInjectionReceipt(f.coreDb, {
         grantId,
         planId,
         receiptId,

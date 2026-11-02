@@ -206,6 +206,8 @@ import {
   ThreadReadItemIdsSchema,
 } from './thread-read-membership-codecs.js';
 import { applyControlThreadReadReceipt } from './thread-read-membership-native.js';
+import { applyControlVault } from './vault-native.js';
+import { controlVaultRefusal } from './vault-native-codecs.js';
 import {
   applyControlWorkObservation,
   type ControlWorkObservationInput,
@@ -265,6 +267,7 @@ type WriteCommand = Extract<
       | 'thread-read-membership'
       | 'admin-recovery'
       | 'better-auth'
+      | 'vault'
       | 'nanohost-transport'
       | 'worker-control-evidence'
       | 'generative-presentation'
@@ -604,6 +607,7 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     isNanoHostTransportAdminRefusal(error.code, error.message, error.status)
   )
     return { operation, code: error.code, message: error.message, status: error.status };
+  if (operation === 'vault') return controlVaultRefusal(error);
   if (operation === 'better-auth' && error instanceof BetterAuthNativeError) {
     const refusal = BETTER_AUTH_REFUSALS[error.code];
     return { operation, code: error.code, message: refusal.message, status: refusal.status };
@@ -2063,6 +2067,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'thread-read-membership',
               itemIds: stored,
             };
+          } else if (request.operation === 'vault') {
+            if (
+              !owner.scopeDb ||
+              (owner.scopeDb.scope !== 'core' && owner.scopeDb.scope !== 'workspace')
+            )
+              throw new ControlProductPreconditionError();
+            const result = applyControlVault(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'vault',
+              result,
+            };
           } else if (request.operation === 'nanohost-transport') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlNanoHostTransport(owner.scopeDb, request.input);
@@ -2874,6 +2892,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'thread-read-membership' ||
       value.operation === 'admin-recovery' ||
       value.operation === 'better-auth' ||
+      value.operation === 'vault' ||
       value.operation === 'nanohost-transport' ||
       value.operation === 'worker-control-evidence' ||
       value.operation === 'generative-presentation' ||

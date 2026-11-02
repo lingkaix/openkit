@@ -104,7 +104,7 @@ describe('ProviderRegistry', () => {
     expect(JSON.stringify(summary)).not.toContain('user:password');
   });
 
-  it('checks whether a provider has resolvable required credentials', () => {
+  it('checks whether a provider has resolvable required credentials', async () => {
     const registry = new ProviderRegistry([
       {
         displayName: 'Hosted Missing',
@@ -137,16 +137,16 @@ describe('ProviderRegistry', () => {
     const resolveSecret = (secretRef: string): string | null =>
       secretRef === 'env:READY_KEY' ? 'sk-ready' : null;
 
-    expect(registry.hasResolvableCredentials('hosted-missing', resolveSecret)).toBe(false);
-    expect(registry.hasResolvableCredentials('hosted-ready', resolveSecret)).toBe(true);
-    expect(registry.hasResolvableCredentials('hosted-without-secret-ref', resolveSecret)).toBe(
-      false
-    );
-    expect(registry.hasResolvableCredentials('local', resolveSecret)).toBe(true);
-    expect(registry.hasResolvableCredentials('unknown', resolveSecret)).toBeNull();
+    expect(await registry.hasResolvableCredentials('hosted-missing', resolveSecret)).toBe(false);
+    expect(await registry.hasResolvableCredentials('hosted-ready', resolveSecret)).toBe(true);
+    expect(
+      await registry.hasResolvableCredentials('hosted-without-secret-ref', resolveSecret)
+    ).toBe(false);
+    expect(await registry.hasResolvableCredentials('local', resolveSecret)).toBe(true);
+    expect(await registry.hasResolvableCredentials('unknown', resolveSecret)).toBeNull();
   });
 
-  it('does not resolve env secret refs without an explicit credential resolver', () => {
+  it('does not resolve env secret refs without an explicit credential resolver', async () => {
     process.env.READY_KEY = 'sk-ready';
     const registry = new ProviderRegistry([
       {
@@ -159,7 +159,7 @@ describe('ProviderRegistry', () => {
     ]);
 
     try {
-      expect(registry.hasResolvableCredentials('hosted-ready')).toBe(false);
+      expect(await registry.hasResolvableCredentials('hosted-ready')).toBe(false);
     } finally {
       delete process.env.READY_KEY;
     }
@@ -229,7 +229,7 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
   });
 
   // V5 preserves the LLM-gateway class, including credentials, adapter, and endpoint capabilities.
-  it('keeps llm-gateway credential requirements and LLM dispatch projection', () => {
+  it('keeps llm-gateway credential requirements and LLM dispatch projection', async () => {
     const profile: ProviderProfile = {
       id: 'team-gateway',
       displayName: 'Team Gateway',
@@ -242,8 +242,8 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
 
     expect(registry.get('team-gateway')).toEqual(profile);
     expect(registry.summarize()[0]?.kind).toBe('llm-gateway');
-    expect(registry.hasResolvableCredentials('team-gateway')).toBe(false);
-    expect(resolveProviderProfileToLLMConfig(profile)).toEqual({
+    expect(await registry.hasResolvableCredentials('team-gateway')).toBe(false);
+    expect(await resolveProviderProfileToLLMConfig(profile)).toEqual({
       adapterId: 'openrouter',
       apiKey: null,
       baseUrl: 'https://gateway.example.invalid/v1',
@@ -257,7 +257,7 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
   });
 
   // Config Identity: versioned authored reads are projections; V5 changes only retained kind.
-  it('reads a retained v1 gateway as llm-gateway without rewriting any source bytes', () => {
+  it('reads a retained v1 gateway as llm-gateway without rewriting any source bytes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-kind-v5-'));
     try {
       const providersRoot = join(dataRoot, 'config', 'providers');
@@ -285,8 +285,8 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
         expect(result.profiles).toEqual([{ ...logical, kind: 'llm-gateway' }]);
         const registry = new ProviderRegistry(result.profiles);
         expect(registry.get('gateway')?.kind).toBe('llm-gateway');
-        expect(registry.hasResolvableCredentials('gateway')).toBe(false);
-        expect(resolveProviderProfileToLLMConfig(result.profiles[0]!)).toMatchObject({
+        expect(await registry.hasResolvableCredentials('gateway')).toBe(false);
+        expect(await resolveProviderProfileToLLMConfig(result.profiles[0]!)).toMatchObject({
           adapterId: 'gateway',
           baseUrl: 'https://gateway.example.invalid/v1',
           models: ['gateway'],

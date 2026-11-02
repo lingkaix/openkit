@@ -17,6 +17,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import {
   type AuthInteraction,
   fauxAssistantMessage,
@@ -632,8 +633,11 @@ function oauthCredential(suffix: string): OAuthCredential {
  * @param fixture Real manager fixture.
  * @param referenceId Vault reference id.
  */
-function createExactCoreReference(fixture: ProviderSubscriptionFixture, referenceId: string): void {
-  createVaultReference(fixture.coreDb, {
+async function createExactCoreReference(
+  fixture: ProviderSubscriptionFixture,
+  referenceId: string
+): Promise<void> {
+  await createVaultReference(fixture.coreDb, {
     backendKind: 'encrypted-file',
     backendLocator: `encrypted-file://server/vault/${referenceId}`,
     displayName: 'Provider subscription credential',
@@ -652,12 +656,12 @@ function createExactCoreReference(fixture: ProviderSubscriptionFixture, referenc
  * @param referenceId Vault reference id.
  * @param credential OAuth credential material.
  */
-function createLivePair(
+async function createLivePair(
   fixture: ProviderSubscriptionFixture,
   pair: ProviderSubscriptionAccountPair,
   referenceId: string,
   credential: OAuthCredential = oauthCredential(referenceId)
-): void {
+): Promise<void> {
   writeAccountJson(
     fixture.dataRoot,
     pair,
@@ -666,7 +670,7 @@ function createLivePair(
       vaultReferenceId: referenceId,
     })
   );
-  createExactCoreReference(fixture, referenceId);
+  await createExactCoreReference(fixture, referenceId);
   fixture.backend().store({
     material: JSON.stringify(credential),
     metadata: {
@@ -685,18 +689,18 @@ function createLivePair(
  * @param referenceId Vault reference id.
  * @param material Exact material string stored only by the encrypted-file backend.
  */
-function createLiveMaterialPair(
+async function createLiveMaterialPair(
   fixture: ProviderSubscriptionFixture,
   pair: ProviderSubscriptionAccountPair,
   referenceId: string,
   material: string
-): void {
+): Promise<void> {
   writeAccountJson(
     fixture.dataRoot,
     pair,
     validAccountRecord(pair, { status: 'logged_in', vaultReferenceId: referenceId })
   );
-  createExactCoreReference(fixture, referenceId);
+  await createExactCoreReference(fixture, referenceId);
   fixture.backend().store({
     material,
     metadata: { ownerScope: 'server', providerSubscriptionAccount: pair },
@@ -711,14 +715,14 @@ function createLiveMaterialPair(
  * @param pair Provider-slot pair.
  * @param referenceId Vault reference id.
  */
-function createCompletedHistory(
+async function createCompletedHistory(
   fixture: ProviderSubscriptionFixture,
   pair: ProviderSubscriptionAccountPair,
   referenceId: string
-): void {
-  createLivePair(fixture, pair, referenceId);
+): Promise<void> {
+  await createLivePair(fixture, pair, referenceId);
   fixture.backend().revoke({ referenceId });
-  revokeVaultReference(fixture.coreDb, { now: fixture.clock.now, referenceId });
+  await revokeVaultReference(fixture.coreDb, { now: fixture.clock.now, referenceId });
   rmSync(accountDirectory(fixture.dataRoot, pair), { force: true, recursive: true });
 }
 
@@ -780,15 +784,15 @@ async function createStoredPair(
  * @param referenceId Vault reference id.
  * @param suffix Stable dependent-record suffix.
  */
-function createReferenceCascade(
+async function createReferenceCascade(
   fixture: ProviderSubscriptionFixture,
   referenceId: string,
   suffix: string
-): void {
+): Promise<void> {
   const grantId = testEntityId('grant', `grant_${suffix}`);
   const planId = `plan_${suffix}`;
 
-  createVaultGrant(fixture.coreDb, {
+  await createVaultGrant(fixture.coreDb, {
     allowedInjectionPaths: ['runtime-file'],
     grantId,
     lifetime: 'turn',
@@ -796,7 +800,7 @@ function createReferenceCascade(
     vaultReferenceId: referenceId,
     workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
   });
-  createVaultInjectionPlan(fixture.coreDb, {
+  await createVaultInjectionPlan(fixture.coreDb, {
     backendCapabilityRequirement: 'encrypted-file:resolve',
     expirationBehavior: 'delete-on-turn-end',
     grantId,
@@ -806,7 +810,7 @@ function createReferenceCascade(
     revocationBehavior: 'mark-session-stale',
     targetPath: `/openkit/secrets/${suffix}`,
   });
-  createVaultInjectionReceipt(fixture.coreDb, {
+  await createVaultInjectionReceipt(fixture.coreDb, {
     agentSessionId: testEntityId('as', `session_${suffix}`),
     backendSummary: `encrypted-file:${referenceId}:v1`,
     grantId,
@@ -1645,7 +1649,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       readonly prepare: (
         fixture: ProviderSubscriptionFixture,
         pair: ProviderSubscriptionAccountPair
-      ) => void;
+      ) => void | Promise<void>;
       readonly expected: readonly Partial<ProviderSubscriptionAccountSnapshot>[];
     }> = [
       {
@@ -1658,9 +1662,9 @@ describe('ProviderSubscriptionAccountManager', () => {
         expected: [],
         name: 'completed histories',
         pair: accountPair('completed_histories'),
-        prepare: (fixture, pair) => {
-          createCompletedHistory(fixture, pair, 'vault_00000000-0000-758f-8b5e-f60cf57cb185');
-          createCompletedHistory(fixture, pair, 'vault_00000000-0000-7307-8f04-cb493e5503eb');
+        prepare: async (fixture, pair) => {
+          await createCompletedHistory(fixture, pair, 'vault_00000000-0000-758f-8b5e-f60cf57cb185');
+          await createCompletedHistory(fixture, pair, 'vault_00000000-0000-7307-8f04-cb493e5503eb');
         },
       },
       {
@@ -1675,15 +1679,15 @@ describe('ProviderSubscriptionAccountManager', () => {
         expected: [{ accountSlotId: 'live', status: 'logged_in' }],
         name: 'live account',
         pair: accountPair('live'),
-        prepare: (fixture, pair) => {
-          createLivePair(fixture, pair, 'vault_00000000-0000-7d72-9297-fbfffc9a831d');
+        prepare: async (fixture, pair) => {
+          await createLivePair(fixture, pair, 'vault_00000000-0000-7d72-9297-fbfffc9a831d');
         },
       },
     ];
 
     it.each(validCases)('classifies valid authority: $name', async (validCase) => {
       const fixture = createFixture();
-      validCase.prepare(fixture, validCase.pair);
+      await validCase.prepare(fixture, validCase.pair);
       const before = authoritySnapshot(fixture);
       const accounts = await fixture.manager.listAccounts('openai-codex');
 
@@ -1704,12 +1708,12 @@ describe('ProviderSubscriptionAccountManager', () => {
       readonly prepare: (
         fixture: ProviderSubscriptionFixture,
         pair: ProviderSubscriptionAccountPair
-      ) => void;
+      ) => void | Promise<void>;
     }> = [
       {
         name: 'ambiguous bound plus zero',
         pair: accountPair('ambiguous'),
-        prepare: (fixture, pair) => {
+        prepare: async (fixture, pair) => {
           writeAccountJson(
             fixture.dataRoot,
             pair,
@@ -1717,22 +1721,22 @@ describe('ProviderSubscriptionAccountManager', () => {
               vaultReferenceId: 'vault_00000000-0000-78c0-9ebb-5ccf1170e4c4',
             })
           );
-          createExactCoreReference(fixture, 'vault_00000000-0000-78c0-9ebb-5ccf1170e4c4');
+          await createExactCoreReference(fixture, 'vault_00000000-0000-78c0-9ebb-5ccf1170e4c4');
         },
       },
       {
         name: 'current tombstone',
         pair: accountPair('current_tombstone'),
-        prepare: (fixture, pair) => {
-          createLivePair(fixture, pair, 'vault_00000000-0000-7884-8d99-170b285a4d4a');
+        prepare: async (fixture, pair) => {
+          await createLivePair(fixture, pair, 'vault_00000000-0000-7884-8d99-170b285a4d4a');
           fixture.backend().revoke({ referenceId: 'vault_00000000-0000-7884-8d99-170b285a4d4a' });
         },
       },
       {
         name: 'invalid completed history',
         pair: accountPair('invalid_history'),
-        prepare: (fixture, pair) => {
-          createCompletedHistory(fixture, pair, 'vault_00000000-0000-7732-8819-318a6ca800a3');
+        prepare: async (fixture, pair) => {
+          await createCompletedHistory(fixture, pair, 'vault_00000000-0000-7732-8819-318a6ca800a3');
           mutateCoreReference(
             fixture,
             'vault_00000000-0000-7732-8819-318a6ca800a3',
@@ -1743,9 +1747,9 @@ describe('ProviderSubscriptionAccountManager', () => {
       {
         name: 'extra live reference',
         pair: accountPair('extra_live'),
-        prepare: (fixture, pair) => {
-          createLivePair(fixture, pair, 'vault_00000000-0000-7148-94cf-173991b1ac7e');
-          createExactCoreReference(fixture, 'vault_00000000-0000-7671-80a7-055a099db178');
+        prepare: async (fixture, pair) => {
+          await createLivePair(fixture, pair, 'vault_00000000-0000-7148-94cf-173991b1ac7e');
+          await createExactCoreReference(fixture, 'vault_00000000-0000-7671-80a7-055a099db178');
           fixture.backend().store({
             material: JSON.stringify(oauthCredential('extra-live-r2')),
             metadata: { ownerScope: 'server', providerSubscriptionAccount: pair },
@@ -1756,8 +1760,8 @@ describe('ProviderSubscriptionAccountManager', () => {
       {
         name: 'live orphan',
         pair: accountPair('orphan'),
-        prepare: (fixture, pair) => {
-          createLivePair(fixture, pair, 'vault_00000000-0000-7437-9883-74fba0368dbd');
+        prepare: async (fixture, pair) => {
+          await createLivePair(fixture, pair, 'vault_00000000-0000-7437-9883-74fba0368dbd');
           rmSync(accountDirectory(fixture.dataRoot, pair), { force: true, recursive: true });
         },
       },
@@ -1775,7 +1779,7 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     it.each(invalidCases)('rejects invalid authority: $name', async (invalidCase) => {
       const fixture = createFixture();
-      invalidCase.prepare(fixture, invalidCase.pair);
+      await invalidCase.prepare(fixture, invalidCase.pair);
       const before = authoritySnapshot(fixture);
 
       await expectAccountError(
@@ -1861,9 +1865,9 @@ describe('ProviderSubscriptionAccountManager', () => {
       const pair = accountPair(`${violation.authority}_core_${violation.index}`);
       const referenceId = testEntityId('vault', `${violation.authority}_core_r${violation.index}`);
       if (violation.authority === 'live') {
-        createLivePair(fixture, pair, referenceId);
+        await createLivePair(fixture, pair, referenceId);
       } else {
-        createCompletedHistory(fixture, pair, referenceId);
+        await createCompletedHistory(fixture, pair, referenceId);
       }
       if (violation.authority === 'history' && violation.name === 'wrong status') {
         mutateCoreReference(fixture, referenceId, "status = 'active'");
@@ -1894,7 +1898,7 @@ describe('ProviderSubscriptionAccountManager', () => {
           vaultReferenceId: 'vault_00000000-0000-7186-9211-c4d61fd1701b',
         })
       );
-      createExactCoreReference(allOrNothing, 'vault_00000000-0000-7186-9211-c4d61fd1701b');
+      await createExactCoreReference(allOrNothing, 'vault_00000000-0000-7186-9211-c4d61fd1701b');
       const allOrNothingBefore = authoritySnapshot(allOrNothing);
 
       await expectAccountError(
@@ -1917,16 +1921,30 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(
       getVaultReference(fixture.coreDb, 'vault_00000000-0000-74ca-9472-d99dcaf4497c')
     ).toBeNull();
-    fixture.coreDb.sqlite.function('observe_initial_binding', () => {
-      expect(readAccountJson(fixture.dataRoot, pair)).toMatchObject({
-        vaultReferenceId: 'vault_00000000-0000-74ca-9472-d99dcaf4497c',
-      });
-      observedOrder.push('binding-before-core');
-      return 1;
+    // Observe the exact real request before submission, not a cross-process SQLite callback.
+    // The backend.store observation below independently requires the committed complete Core row.
+    const postMessage = Worker.prototype.postMessage;
+    vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+      this: Worker,
+      value,
+      transferList
+    ) {
+      const command = value as {
+        operation?: string;
+        input?: { kind?: string; record?: { referenceId?: string } };
+      };
+      if (
+        command.operation === 'vault' &&
+        command.input?.kind === 'reference-create' &&
+        command.input.record?.referenceId === 'vault_00000000-0000-74ca-9472-d99dcaf4497c'
+      ) {
+        expect(readAccountJson(fixture.dataRoot, pair)).toMatchObject({
+          vaultReferenceId: 'vault_00000000-0000-74ca-9472-d99dcaf4497c',
+        });
+        observedOrder.push('binding-before-core');
+      }
+      postMessage.call(this, value, transferList);
     });
-    fixture.coreDb.sqlite.exec(
-      "CREATE TEMP TRIGGER observe_initial_core_insert\n      BEFORE INSERT ON vault_references\n      FOR EACH ROW\n      WHEN NEW.reference_id = 'vault_00000000-0000-74ca-9472-d99dcaf4497c'\n      BEGIN\n        SELECT observe_initial_binding();\n      END"
-    );
 
     vi.spyOn(backend, 'store').mockImplementation((input) => {
       const coreAtStore = getVaultReference(fixture.coreDb, input.referenceId);
@@ -1993,7 +2011,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const reusedPair = accountPair('reused_core');
     reusedFixture.queueReferenceIds('vault_00000000-0000-7bc1-9737-fc66c69d2cfc');
     await reusedFixture.manager.createAccount(reusedPair);
-    createExactCoreReference(reusedFixture, 'vault_00000000-0000-7bc1-9737-fc66c69d2cfc');
+    await createExactCoreReference(reusedFixture, 'vault_00000000-0000-7bc1-9737-fc66c69d2cfc');
     const reusedCoreBefore = getVaultReference(
       reusedFixture.coreDb,
       'vault_00000000-0000-7bc1-9737-fc66c69d2cfc'
@@ -2230,7 +2248,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       })
     );
     catchupFixture.coreDb.sqlite.exec(
-      "CREATE TEMP TRIGGER reject_direct_version_jump\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7625-902f-23c3e8ad21a0'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 3\n      BEGIN\n        SELECT RAISE(FAIL, 'direct version jump rejected');\n      END"
+      "CREATE TRIGGER reject_direct_version_jump\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7625-902f-23c3e8ad21a0'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 3\n      BEGIN\n        SELECT RAISE(FAIL, 'direct version jump rejected');\n      END"
     );
 
     const caughtUp = await catchupFixture.manager.reconcileAccount(catchupPair);
@@ -2259,7 +2277,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     );
     const rotatedProjectionCredential = oauthCredential('post-rotate-projection-v2');
     projectionFixture.coreDb.sqlite.exec(
-      "CREATE TEMP TRIGGER fail_post_rotate_core_projection\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7b9d-a719-036501daa980'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 2\n      BEGIN\n        SELECT RAISE(FAIL, 'injected post-rotate Core projection failure');\n      END"
+      "CREATE TRIGGER fail_post_rotate_core_projection\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7b9d-a719-036501daa980'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 2\n      BEGIN\n        SELECT RAISE(FAIL, 'injected post-rotate Core projection failure');\n      END"
     );
 
     await expectAccountError(
@@ -2386,7 +2404,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       'vault_00000000-0000-714b-90e0-ad74e40d0547',
       oauthCredential('delete-r1')
     );
-    createReferenceCascade(
+    await createReferenceCascade(
       credentialFixture,
       'vault_00000000-0000-714b-90e0-ad74e40d0547',
       'credential_delete'
@@ -2405,7 +2423,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       });
       return realRevoke(input);
     });
-    credentialFixture.coreDb.sqlite.exec(`CREATE TEMP TRIGGER fail_credential_delete_cascade
+    credentialFixture.coreDb.sqlite.exec(`CREATE TRIGGER fail_credential_delete_cascade
       BEFORE UPDATE OF status ON vault_grants
       FOR EACH ROW
       WHEN OLD.grant_id = '${testEntityId('grant', 'grant_credential_delete')}'
@@ -2523,7 +2541,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       revokedCredentialPair,
       'vault_00000000-0000-77e9-8488-0253ad6dc8ef'
     );
-    createReferenceCascade(
+    await createReferenceCascade(
       revokedCredentialFixture,
       'vault_00000000-0000-77e9-8488-0253ad6dc8ef',
       'credential_revoked'
@@ -2531,7 +2549,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     revokedCredentialFixture
       .backend()
       .revoke({ referenceId: 'vault_00000000-0000-77e9-8488-0253ad6dc8ef' });
-    revokeVaultReference(revokedCredentialFixture.coreDb, {
+    await revokeVaultReference(revokedCredentialFixture.coreDb, {
       referenceId: 'vault_00000000-0000-77e9-8488-0253ad6dc8ef',
     });
     const credentialRetryWrites = [
@@ -2569,7 +2587,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       accountDeletePair,
       'vault_00000000-0000-7896-a380-266fe3139fc2'
     );
-    createReferenceCascade(
+    await createReferenceCascade(
       accountDeleteFixture,
       'vault_00000000-0000-7896-a380-266fe3139fc2',
       'account_delete'
@@ -2577,7 +2595,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     accountDeleteFixture
       .backend()
       .revoke({ referenceId: 'vault_00000000-0000-7896-a380-266fe3139fc2' });
-    revokeVaultReference(accountDeleteFixture.coreDb, {
+    await revokeVaultReference(accountDeleteFixture.coreDb, {
       referenceId: 'vault_00000000-0000-7896-a380-266fe3139fc2',
     });
     const accountRetryWrites = [
@@ -2629,7 +2647,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       referenceId: 'vault_00000000-0000-725b-9c05-795eea4c7e9f',
     });
     laggedCredentialFixture.coreDb.sqlite.exec(
-      "CREATE TEMP TRIGGER reject_lagged_direct_jump\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-725b-9c05-795eea4c7e9f'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 3\n      BEGIN\n        SELECT RAISE(FAIL, 'direct lagged credential version jump rejected');\n      END"
+      "CREATE TRIGGER reject_lagged_direct_jump\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-725b-9c05-795eea4c7e9f'\n        AND OLD.current_version = 1\n        AND NEW.current_version = 3\n      BEGIN\n        SELECT RAISE(FAIL, 'direct lagged credential version jump rejected');\n      END"
     );
     const realLaggedCredentialRevoke = laggedCredentialBackend.revoke.bind(laggedCredentialBackend);
     const laggedCredentialRevoke = vi
@@ -2722,7 +2740,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       referenceId: 'vault_00000000-0000-7a1d-9d63-ff006a833ab7',
     });
     failedCatchupFixture.coreDb.sqlite.exec(
-      "CREATE TEMP TRIGGER fail_delete_core_catchup\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7a1d-9d63-ff006a833ab7'\n      BEGIN\n        SELECT RAISE(FAIL, 'injected delete catch-up failure');\n      END"
+      "CREATE TRIGGER fail_delete_core_catchup\n      BEFORE UPDATE OF current_version ON vault_references\n      FOR EACH ROW\n      WHEN OLD.reference_id = 'vault_00000000-0000-7a1d-9d63-ff006a833ab7'\n      BEGIN\n        SELECT RAISE(FAIL, 'injected delete catch-up failure');\n      END"
     );
     const failedCatchupRevoke = vi.spyOn(failedCatchupFixture.backend(), 'revoke');
     const failedCatchupBefore = authoritySnapshot(failedCatchupFixture);
@@ -2920,7 +2938,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       'vault_00000000-0000-78d9-8a93-45e55f0d69c2'
     );
     const orphanPair = accountPair('inventory_orphan');
-    createExactCoreReference(inventoryFixture, 'vault_00000000-0000-7d62-bbbc-80393536f030');
+    await createExactCoreReference(inventoryFixture, 'vault_00000000-0000-7d62-bbbc-80393536f030');
     inventoryFixture.backend().store({
       material: JSON.stringify(oauthCredential('inventory-orphan')),
       metadata: { ownerScope: 'server', providerSubscriptionAccount: orphanPair },
@@ -2947,7 +2965,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     for (const [index, malformedCase] of malformedCases.entries()) {
       const malformedFixture = createFixture();
       const malformedPair = accountPair(`malformed_material_${index}`);
-      createLiveMaterialPair(
+      await createLiveMaterialPair(
         malformedFixture,
         malformedPair,
         testEntityId('vault', `malformed_material_r${index}`),
@@ -3246,6 +3264,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         listReferenceInputs.push(input);
         return dynamicBackend.listReferences(input);
       },
+      assertResolutionCurrent: (input) => dynamicBackend.assertResolutionCurrent(input),
       resolve: (input) => dynamicBackend.resolve(input),
       revoke: (input) => dynamicBackend.revoke(input),
       rotate: (input) => dynamicBackend.rotate(input),
@@ -3266,6 +3285,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       health: () => dynamicBackend.health(),
       kind: dynamicBackend.kind,
       listReferences: (input) => dynamicBackend.listReferences(input),
+      assertResolutionCurrent: (input) => dynamicBackend.assertResolutionCurrent(input),
       resolve: (input) => dynamicBackend.resolve(input),
       revoke: (input) => dynamicBackend.revoke(input),
       rotate: (input) => dynamicBackend.rotate(input),
@@ -3304,6 +3324,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       health: () => dynamicBackend.health(),
       kind: dynamicBackend.kind,
       listReferences: (input) => dynamicBackend.listReferences(input),
+      assertResolutionCurrent: (input) => dynamicBackend.assertResolutionCurrent(input),
       resolve: (input) => dynamicBackend.resolve(input),
       revoke: (input) => dynamicBackend.revoke(input),
       rotate: (input) => {
@@ -3340,6 +3361,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       health: unlockedBackend.health.bind(unlockedBackend),
       kind: unlockedBackend.kind,
       listReferences: unlockedBackend.listReferences.bind(unlockedBackend),
+      assertResolutionCurrent: (input) => unlockedBackend.assertResolutionCurrent(input),
       resolve: (input) => unlockedBackend.resolve(input),
       revoke: (input) => unlockedBackend.revoke(input),
       rotate: unlockedBackend.rotate.bind(unlockedBackend),
@@ -4028,7 +4050,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       pair,
       validAccountRecord(pair, { vaultReferenceId: 'vault_00000000-0000-779b-80eb-ff407b303de3' })
     );
-    createExactCoreReference(fixture, 'vault_00000000-0000-779b-80eb-ff407b303de3');
+    await createExactCoreReference(fixture, 'vault_00000000-0000-779b-80eb-ff407b303de3');
     await expectAccountError(() => fixture.manager.deleteAccount(pair), PERSISTENCE_ERROR);
     expect(aborted).not.toHaveBeenCalled();
   });
@@ -4057,7 +4079,7 @@ describe('ProviderSubscriptionAccountManager', () => {
       pair,
       validAccountRecord(pair, { vaultReferenceId: 'vault_00000000-0000-752d-9b1d-28eb30b15d0f' })
     );
-    createExactCoreReference(fixture, 'vault_00000000-0000-752d-9b1d-28eb30b15d0f');
+    await createExactCoreReference(fixture, 'vault_00000000-0000-752d-9b1d-28eb30b15d0f');
 
     await expectAccountError(
       () => lifecycle.cancelLogin(pair, pending.interaction?.interactionId ?? ''),
@@ -4190,7 +4212,10 @@ describe('ProviderSubscriptionAccountManager', () => {
         vaultReferenceId: 'vault_00000000-0000-708a-80e9-c7af21ac9e04',
       })
     );
-    createExactCoreReference(invalidLogoutFixture, 'vault_00000000-0000-708a-80e9-c7af21ac9e04');
+    await createExactCoreReference(
+      invalidLogoutFixture,
+      'vault_00000000-0000-708a-80e9-c7af21ac9e04'
+    );
 
     await expectAccountError(
       () => lifecycleOperations(invalidLogoutFixture.manager).logout(invalidLogoutPair),
@@ -4964,7 +4989,7 @@ async function createObservedInferenceRouteFixture(
   let workerControlGateway: WorkerControlGateway | undefined;
   const token = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
   if (worker) {
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    const environmentPackage = await resolveAgentEnvironmentPackage({
       captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
       agentSetup: createTestAgentSetup({
         logicalModelId: 'observed-tier',
@@ -6024,6 +6049,7 @@ describe('Codex settings and manual reset public behavior', () => {
         { credit_id: 'soon-credit', redeem_request_id: redeemRequestId },
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       reopened.sqlite.close();
     }
   });
@@ -6524,7 +6550,26 @@ describe('native subscription credential attribution', () => {
     });
     await operations['provider-subscription.login-start']({ ...pair, mode: 'device_code' }, first);
     await operations['provider-subscription.account-status'](pair, second);
+    // Device-code acceptance precedes persistence; observe the real background store completion.
+    const modify = handle.credentials.modify.bind(handle.credentials);
+    const loginStore = Promise.withResolvers<Awaited<ReturnType<typeof modify>>>();
+    void loginStore.promise.catch(() => undefined);
+    const publication = vi.spyOn(handle.credentials, 'modify').mockImplementation((...args) => {
+      try {
+        const result = modify(...args);
+        loginStore.resolve(result);
+        return result;
+      } catch (error) {
+        loginStore.reject(error);
+        throw error;
+      }
+    });
     release.resolve();
+    try {
+      await loginStore.promise;
+    } finally {
+      publication.mockRestore();
+    }
     const actorFor = (action: string) =>
       fixture.coreDb.sqlite
         .prepare('SELECT actor_json FROM audit_events WHERE action = ? ORDER BY rowid DESC LIMIT 1')

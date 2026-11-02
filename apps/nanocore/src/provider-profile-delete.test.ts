@@ -77,7 +77,7 @@ async function fixture(subscription = false) {
       material: 'test-only-key',
       metadata: { ownerScope: 'server' },
     });
-    createVaultReference(coreDb, {
+    await createVaultReference(coreDb, {
       referenceId: 'vault_00000000-0000-7d1d-9a06-27e8a2468878',
       ownerScope: 'server',
       displayName: 'Removed',

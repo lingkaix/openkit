@@ -75,7 +75,7 @@ describe('work observation portable closure', () => {
         createdAt: turn.startedAt!,
         updatedAt: turn.startedAt!,
       });
-      const environmentPackage = resolveAgentEnvironmentPackage({
+      const environmentPackage = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'workspace', value: 'off' },
         agentSetup,
         agentSessionId: session.id,
@@ -87,7 +87,7 @@ describe('work observation portable closure', () => {
         workspaceCwd: '/workspace',
         workspaceRoots: [],
       });
-      recordAgentEnvironmentPackageSnapshot(db, {
+      await recordAgentEnvironmentPackageSnapshot(db, {
         createdAt: turn.startedAt!,
         environmentPackage,
       });

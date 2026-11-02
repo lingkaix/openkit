@@ -720,7 +720,7 @@ export class ProviderSubscriptionAccountManager {
         LIMIT 1`)
         .get(...CODEX_RESET_ACTIONS, prefix.length, prefix) as { requestId: string } | undefined;
       if (pending && pending.requestId !== redeemRequestId) throw resetConflictError();
-      const credential = this.resolveCredential(inspection.entry.referenceId);
+      const credential = await this.resolveCredential(inspection.entry.referenceId);
       if (typeof credential.accountId !== 'string' || !credential.accountId)
         throw providerUnavailableError();
       const presented: CodexPresentedCredential = {
@@ -1414,7 +1414,7 @@ export class ProviderSubscriptionAccountManager {
             'provider_subscription.credential.revoke',
             pair,
             async () => {
-              this.readLiveCredentialForRemoval(inspection);
+              await this.readLiveCredentialForRemoval(inspection);
               await this.removeCredential(pair, inspection, false);
             }
           );
@@ -1467,7 +1467,7 @@ export class ProviderSubscriptionAccountManager {
           const current =
             inspection.kind === 'live'
               ? versionedCredential(
-                  this.resolveCredential(inspection.entry.referenceId),
+                  await this.resolveCredential(inspection.entry.referenceId),
                   inspection.entry
                 )
               : undefined;
@@ -1501,7 +1501,7 @@ export class ProviderSubscriptionAccountManager {
                 }
                 state.observation = undefined;
                 try {
-                  this.advanceCoreVersion(inspection.coreReference, entry.currentVersion);
+                  await this.advanceCoreVersion(inspection.coreReference, entry.currentVersion);
                   this.writeLoggedInProjection(inspection.record);
                 } catch {
                   throw new ProviderSubscriptionAccountError(
@@ -1533,7 +1533,7 @@ export class ProviderSubscriptionAccountManager {
                 vaultReferenceId: referenceId,
               };
               this.writeAccount(boundRecord);
-              const created = createVaultReferenceWithInsertEvidence(this.coreDb, {
+              const created = await createVaultReferenceWithInsertEvidence(this.coreDb, {
                 backendKind: 'encrypted-file',
                 backendLocator: `encrypted-file://server/vault/${referenceId}`,
                 displayName: VAULT_REFERENCE_DISPLAY_NAME,
@@ -1587,7 +1587,7 @@ export class ProviderSubscriptionAccountManager {
           const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(pair));
           return inspection.kind === 'live'
             ? versionedCredential(
-                this.resolveCredential(inspection.entry.referenceId),
+                await this.resolveCredential(inspection.entry.referenceId),
                 inspection.entry
               )
             : undefined;
@@ -1680,7 +1680,7 @@ export class ProviderSubscriptionAccountManager {
             if (!proof || currentVersion() !== proof.version) return undefined;
             const inspection = this.inspectPair(pair);
             if (inspection.kind !== 'live') return undefined;
-            const credential = this.resolveCredential(inspection.entry.referenceId);
+            const credential = await this.resolveCredential(inspection.entry.referenceId);
             if (credential.access !== resolved.auth.apiKey) return undefined;
             if (
               pair.subscriptionProviderId === 'openai-codex' &&
@@ -1829,7 +1829,7 @@ export class ProviderSubscriptionAccountManager {
   ): Promise<ProviderSubscriptionAccountSnapshot> {
     const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(pair));
     if (inspection.kind === 'live') {
-      this.advanceCoreVersion(inspection.coreReference, inspection.entry.currentVersion);
+      await this.advanceCoreVersion(inspection.coreReference, inspection.entry.currentVersion);
       const record = this.loggedInRecord(inspection.record);
       if (!isDeepStrictEqual(record, inspection.record)) {
         this.writeAccount(record);
@@ -1849,11 +1849,11 @@ export class ProviderSubscriptionAccountManager {
    *
    * @param inspection Live or current-tombstone inspection.
    */
-  private readLiveCredentialForRemoval(
+  private async readLiveCredentialForRemoval(
     inspection: Extract<PairInspection, { kind: 'live' | 'current-tombstone' }>
-  ): void {
+  ): Promise<void> {
     if (inspection.kind === 'live') {
-      this.resolveCredential(inspection.entry.referenceId);
+      await this.resolveCredential(inspection.entry.referenceId);
     }
   }
 
@@ -1872,7 +1872,10 @@ export class ProviderSubscriptionAccountManager {
     const operation = async (): Promise<void> => {
       let coreReference = inspection.coreReference;
       if (inspection.kind === 'live') {
-        coreReference = this.advanceCoreVersion(coreReference, inspection.entry.currentVersion);
+        coreReference = await this.advanceCoreVersion(
+          coreReference,
+          inspection.entry.currentVersion
+        );
         const tombstone = this.currentBackend().revoke({
           referenceId: inspection.entry.referenceId,
         });
@@ -1885,7 +1888,7 @@ export class ProviderSubscriptionAccountManager {
         }
       }
       if (coreReference.status === 'active') {
-        coreReference = revokeVaultReference(this.coreDb, {
+        coreReference = await revokeVaultReference(this.coreDb, {
           now: this.now,
           referenceId: coreReference.referenceId,
         });
@@ -2050,13 +2053,13 @@ export class ProviderSubscriptionAccountManager {
    * @param targetVersion Backend current material version.
    * @returns Exact active Core reference at the target version.
    */
-  private advanceCoreVersion(
+  private async advanceCoreVersion(
     reference: VaultReferenceRecord,
     targetVersion: number
-  ): VaultReferenceRecord {
+  ): Promise<VaultReferenceRecord> {
     let current = reference;
     while (current.currentVersion < targetVersion) {
-      current = advanceActiveVaultReferenceVersion(this.coreDb, {
+      current = await advanceActiveVaultReferenceVersion(this.coreDb, {
         currentVersion: current.currentVersion + 1,
         now: this.now,
         referenceId: current.referenceId,
@@ -2077,7 +2080,7 @@ export class ProviderSubscriptionAccountManager {
    * @param referenceId Bound internal Vault reference id.
    * @returns Complete validated OAuth credential.
    */
-  private resolveCredential(referenceId: string): OAuthCredential {
+  private async resolveCredential(referenceId: string): Promise<OAuthCredential> {
     const backend = createVaultUseAuditedBackend({
       backend: this.currentBackend(),
       db: this.coreDb,
@@ -2085,7 +2088,7 @@ export class ProviderSubscriptionAccountManager {
       ownerScope: 'server',
       resolvingPath: 'provider',
     });
-    const material = backend.resolve({ referenceId });
+    const material = await backend.resolve({ referenceId });
     if (typeof material === 'string') {
       try {
         return requireOAuthCredential(JSON.parse(material));

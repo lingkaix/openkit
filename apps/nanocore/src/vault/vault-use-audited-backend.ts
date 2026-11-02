@@ -1,8 +1,7 @@
 import { type ActorRef, allocateEntityId } from '@openkit/protocol';
-
-import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { VaultUseOwnerScope, VaultUseResolvingPath } from '../storage/schema/index.js';
+import { recordVaultAuditEvent } from './vault-admin-audit-events.js';
 import {
   type VaultBackend,
   VaultBackendError,
@@ -53,6 +52,12 @@ export interface CreateVaultUseAuditedBackendInput {
   readonly createUseId?: () => string;
 }
 
+/** The existing material backend stays synchronous; only the evidence-owning resolution waits for native commits. */
+export interface AuditedVaultBackend extends Omit<VaultBackend, 'resolve'> {
+  /** Resolves private material only after every required Use and Audit acknowledgement. */
+  resolve(input: VaultResolveInput): Promise<VaultSecretMaterial>;
+}
+
 /**
  * Wraps a vault backend so every resolve attempt emits a non-secret VaultUse record.
  *
@@ -61,12 +66,12 @@ export interface CreateVaultUseAuditedBackendInput {
  */
 export function createVaultUseAuditedBackend(
   input: CreateVaultUseAuditedBackendInput
-): VaultBackend {
+): AuditedVaultBackend {
   return new VaultUseAuditedBackend(input);
 }
 
 /** Vault backend wrapper that records resolve attempts. */
-class VaultUseAuditedBackend implements VaultBackend {
+class VaultUseAuditedBackend implements AuditedVaultBackend {
   public readonly kind: VaultBackend['kind'];
 
   private readonly input: CreateVaultUseAuditedBackendInput;
@@ -97,20 +102,33 @@ class VaultUseAuditedBackend implements VaultBackend {
    * @returns Secret material from the wrapped backend.
    * @throws VaultBackendError when the wrapped backend cannot resolve material.
    */
-  public resolve(resolveInput: VaultResolveInput): VaultSecretMaterial {
+  public async resolve(resolveInput: VaultResolveInput): Promise<VaultSecretMaterial> {
+    let version: number;
+    let material: VaultSecretMaterial;
     try {
       const entry = this.assertResolutionScope(resolveInput.referenceId);
-      const version = resolveInput.version ?? entry.currentVersion;
-      const material = this.input.backend.resolve({ ...resolveInput, version });
-      this.recordUse(resolveInput, 'succeeded', null, version);
-      return material;
+      version = resolveInput.version ?? entry.currentVersion;
+      material = this.input.backend.resolve({ ...resolveInput, version });
     } catch (error) {
-      if (error instanceof VaultBackendError) {
-        this.recordUse(resolveInput, 'failed', error.code, resolveInput.version ?? null);
-      }
-
+      if (error instanceof VaultBackendError)
+        await this.recordUse(resolveInput, 'failed', error.code, resolveInput.version ?? null);
       throw error;
     }
+    // Evidence failure is a storage failure, never another backend resolution failure or an automatic second Use.
+    await this.recordUse(resolveInput, 'succeeded', null, version);
+    // Native evidence waits cannot retain authority to a locked, revoked or expired generation.
+    // The synchronous backend owns that validation; do not recurse through audited resolution.
+    const current = this.assertResolutionScope(resolveInput.referenceId);
+    if (resolveInput.version === undefined && current.currentVersion !== version)
+      throw new VaultBackendError('version-expired', 'Vault material generation changed.');
+    this.input.backend.assertResolutionCurrent({ ...resolveInput, version });
+    return material;
+  }
+
+  /** Revalidates this wrapper's addressed scope and backend version without resolving material. */
+  public assertResolutionCurrent(resolveInput: VaultResolveInput): void {
+    this.assertResolutionScope(resolveInput.referenceId);
+    this.input.backend.assertResolutionCurrent(resolveInput);
   }
 
   /**
@@ -190,15 +208,15 @@ class VaultUseAuditedBackend implements VaultBackend {
    * @param failureCode Failure code for failed attempts.
    * @param materialVersion Exact resolved version, explicit failed version, or null.
    */
-  private recordUse(
+  private async recordUse(
     resolveInput: VaultResolveInput,
     outcome: 'succeeded' | 'failed',
     failureCode: string | null,
     materialVersion: number | null
-  ): void {
+  ): Promise<void> {
     const auditEventId = this.auditEventId();
 
-    createVaultUseRecord(this.input.db, {
+    await createVaultUseRecord(this.input.db, {
       agentSessionId: this.input.agentSessionId ?? null,
       auditEventId,
       backendKind: this.kind,
@@ -237,13 +255,13 @@ class VaultUseAuditedBackend implements VaultBackend {
       };
 
       if (isWorkspaceDb(this.input.db)) {
-        recordWorkspaceAuditEvent({
+        await recordVaultAuditEvent({
           ...event,
           workspaceDb: this.input.db,
           workspaceId: this.input.workspaceId ?? this.input.db.workspaceId,
         });
       } else {
-        recordServerAuditEvent({
+        await recordVaultAuditEvent({
           ...event,
           coreDb: this.input.db,
           workspaceId: this.input.consumerWorkspaceId ?? null,

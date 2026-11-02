@@ -19,7 +19,10 @@ export function createAgentPolicyParticipant(deps: {
   readonly store: FsStore;
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly dispatcher: LLMGatewayProviderDispatcher;
-  readonly resolveGatewayProvider: (providerId: string, model: string) => ResolvedLLMProviderConfig;
+  readonly resolveGatewayProvider: (
+    providerId: string,
+    model: string
+  ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
 }): AgentPolicyParticipant {

@@ -35,6 +35,13 @@ describe('vault backend boundary', () => {
       backend.resolve({ referenceId: 'vault_00000000-0000-78b6-b4ac-a24bcc5d78a3' })
     ).toThrow('vault-locked');
 
+    expect(() =>
+      backend.assertResolutionCurrent({ referenceId: 'vault_00000000-0000-78b6-b4ac-a24bcc5d78a3' })
+    ).toThrow(VaultBackendError);
+    expect(() =>
+      backend.assertResolutionCurrent({ referenceId: 'vault_00000000-0000-78b6-b4ac-a24bcc5d78a3' })
+    ).toThrow('vault-locked');
+
     try {
       backend.store({
         material,

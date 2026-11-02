@@ -15,16 +15,14 @@ import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-le
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { importUnboundWorkspaceVaultReference } from './storage/test-support/vault-retained-fixtures.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { createVaultGrant } from './vault/vault-grants.js';
-import {
-  createVaultReference,
-  importUnboundWorkspaceVaultReference,
-} from './vault/vault-references.js';
+import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -70,9 +68,9 @@ const reads = [
 ] as const;
 
 /** Supplies one valid immutable snapshot using the existing preparation owner. */
-function createEnvironmentPackage(): AgentEnvironmentPackage {
+async function createEnvironmentPackage(): Promise<AgentEnvironmentPackage> {
   const snapshot = AgentEnvironmentPackageSchema.parse(
-    resolveAgentEnvironmentPackage({
+    await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agent: {
         id: 'agent_codex_host',
@@ -278,7 +276,7 @@ describe('B6 binding retirement', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         },
       });
-      createVaultReference(coreDb, {
+      await createVaultReference(coreDb, {
         referenceId: 'vault_00000000-0000-70a7-af6b-8038e2c48211',
         ownerScope: 'workspace',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -288,7 +286,7 @@ describe('B6 binding retirement', () => {
         backendLocator:
           'encrypted-file://workspace/ws_00000000-0000-7000-8000-000000000001/vault/vault_00000000-0000-70a7-af6b-8038e2c48211',
       });
-      createVaultGrant(coreDb, {
+      await createVaultGrant(coreDb, {
         grantId: 'grant_00000000-0000-721d-811b-4545a740e396',
         vaultReferenceId: 'vault_00000000-0000-70a7-af6b-8038e2c48211',
         ownerScope: 'workspace',
@@ -326,8 +324,8 @@ describe('B6 binding retirement', () => {
       const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       applyScopedMigrations(db, undefined, 'pre-knowledge');
       try {
-        recordAgentEnvironmentPackageSnapshot(db, {
-          environmentPackage: createEnvironmentPackage(),
+        await recordAgentEnvironmentPackageSnapshot(db, {
+          environmentPackage: await createEnvironmentPackage(),
           createdAt: '2026-07-06T00:00:01.000Z',
         });
       } finally {
@@ -391,6 +389,7 @@ describe('B6 binding retirement', () => {
       expect(vaultRows(coreDb)).toEqual(before);
     } finally {
       vaultUnlockState.lock();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
       if (keyDirectory) rmSync(keyDirectory, { recursive: true, force: true });

@@ -495,7 +495,7 @@ async function capturedFixture() {
     null,
     { agentId: setup.manifest.id }
   );
-  const environmentPackage = resolveAgentEnvironmentPackage({
+  const environmentPackage = await resolveAgentEnvironmentPackage({
     coreDb: f.coreDb,
     agentSetup: setup,
     agentSessionId: allocateEntityId('as'),
@@ -550,7 +550,10 @@ async function capturedFixture() {
       outcomeRef: null,
     })
   ).not.toBeNull();
-  recordAgentEnvironmentPackageSnapshot(f.db, { environmentPackage, createdAt: turn.startedAt! });
+  await recordAgentEnvironmentPackageSnapshot(f.db, {
+    environmentPackage,
+    createdAt: turn.startedAt!,
+  });
   const principal = { kind: 'human' as const, id: f.actor.userId };
   const policyScope = {
     subjects: [principal],

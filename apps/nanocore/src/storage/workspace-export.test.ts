@@ -1652,7 +1652,7 @@ describe('workspace export verifier', () => {
     );
   });
 
-  it('exports redacted worker setup evidence rows', () => {
+  it('exports redacted worker setup evidence rows', async () => {
     const agentSetup = createTestAgentSetup();
     const root = freshExportRoot('openkit-workspace-worker-evidence-');
     const workerThread = {
@@ -1679,7 +1679,7 @@ describe('workspace export verifier', () => {
       completedAt: timestamp,
       durationMs: 1,
     };
-    const workerPackage = resolveAgentEnvironmentPackage({
+    const workerPackage = await resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: 'as_00000000-0000-7b98-8803-ea4242ad797b',
       agentSetup,
