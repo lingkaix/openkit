@@ -20,13 +20,15 @@ import {
   readWorkspaceKnowledgeProposalInventory,
   serializeKnowledgeProposalRecord,
 } from '../storage/workspace-file-records.js';
+import { NotebookError } from './notebook-error.js';
 import { projectWorkspaceKnowledgeIndexes } from './notebook-index-projection.js';
 import {
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   validateScopeKnowledgeSchema,
 } from './okf.js';
-import { previewNotebookSchema } from './scope-schema-migration.js';
+import { previewNotebookSchemaContent } from './scope-schema-impact.js';
+import type { previewNotebookSchema } from './scope-schema-migration.js';
 
 type Inventory = PreviewKnowledgeSchemaResponse['dependencyInventory'][number];
 type Proposal = ReturnType<
@@ -52,10 +54,19 @@ type ParametersShape = Parameters<typeof previewNotebookSchema>[0];
 export function previewWorkspaceSchema(
   input: WorkspaceSchemaPreviewInput
 ): PreviewKnowledgeSchemaResponse {
-  const notebook = previewNotebookSchema(input);
+  const revision = input.notebook.publishedRevision();
+  const currentFiles = input.notebook.readContent(revision);
+  const notebook = previewNotebookSchemaContent({
+    workspaceId: input.workspaceId,
+    notebookRevision: revision,
+    files: currentFiles,
+    scopeSchemaText: input.scopeSchemaText,
+    candidateSchemaText: input.candidateSchemaText,
+    pageScopeId: input.pageScopeId,
+    registeredSources: input.registeredSources,
+  });
   const workspaceRoot = join(input.dataRoot, 'workspaces', input.workspaceId);
   const candidate = parseScopeKnowledgeSchema(input.candidateSchemaText);
-  const currentFiles = input.notebook.readContent(notebook.notebookRevision);
   const pages = new Map(
     Object.entries(currentFiles)
       .filter(([path]) => !path.startsWith('@sources/'))
@@ -373,7 +384,6 @@ export function previewWorkspaceSchema(
 
   const first = inspect();
   const dependencyInventory = first.rows;
-  input.revalidate();
   const later = inspect();
   for (const row of dependencyInventory) {
     const current = later.rows.find((entry) => entry.family === row.family)!;
@@ -388,7 +398,9 @@ export function previewWorkspaceSchema(
       row.diagnostics = [{ code: 'schema.inventory_changed' }];
     }
   }
+  // The complete inspection is synchronous; current authority is checked at its return boundary.
   input.revalidate();
+  if (input.notebook.publishedRevision() !== revision) throw new NotebookError('conflict');
   return {
     ...notebook,
     coverage: 'workspace',
