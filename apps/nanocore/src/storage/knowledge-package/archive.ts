@@ -1,8 +1,9 @@
 import { constants, createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, open, rm, stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { createPrivateTree, makePrivateTreeDirectory, removePrivateTree } from '@openkit/storage';
 import { extract, pack } from 'tar-stream';
 import type { FileStorageAdmission } from '../artifacts/file-admission.js';
 import { MAX_ARTIFACT_FILE_BYTES } from '../artifacts/file-admission.js';
@@ -20,9 +21,9 @@ export const KNOWLEDGE_PACKAGE_LIMITS: KnowledgePackageLimits = {
 /** Uses the existing boot-cleaned archive request namespace; staging is never content authority. */
 export async function createKnowledgePackageStaging(dataRoot: string) {
   const parent = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
-  await mkdir(parent, { recursive: true, mode: 0o700 });
-  const root = await mkdtemp(join(parent, 'knowledge-'));
-  return { root, remove: () => rm(root, { recursive: true, force: true }) };
+  await makePrivateTreeDirectory(parent);
+  const root = await createPrivateTree(parent, 'knowledge-');
+  return { root, remove: () => removePrivateTree(root) };
 }
 
 /** Extracts regular files into request-private staging before any native destination is touched. */
@@ -94,7 +95,7 @@ export async function stageKnowledgePackage(
       });
       try {
         const target = join(directory, path);
-        await mkdir(directoryEntry ? target : dirname(target), { recursive: true, mode: 0o700 });
+        await makePrivateTreeDirectory(directoryEntry ? target : dirname(target));
         if (directoryEntry) {
           for await (const _chunk of stream) throw new Error('Package directory has bytes.');
         } else {
