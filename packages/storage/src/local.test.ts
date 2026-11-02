@@ -192,6 +192,139 @@ describe('trusted durable file removal', () => {
   });
 });
 
+/** Canonical directory MOVE retains path refusal, durable parent ordering and descriptor cleanup. */
+describe('trusted canonical directory ensure and sync', () => {
+  it('creates missing parents and synchronizes each published entry before creating its child', async () => {
+    const f = await fixture();
+    const parent = join(f.root, 'new-parent');
+    const child = join(parent, 'new-child');
+    const rootIdentity = await stat(f.root);
+    const published: string[] = [];
+    const descriptors: FileHandle[] = [];
+    mutation.opened = (handle) => {
+      descriptors.push(handle);
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        const current = await handle.stat();
+        if (current.dev === rootIdentity.dev && current.ino === rootIdentity.ino) {
+          expect((await lstat(parent)).isDirectory()).toBe(true);
+          await expect(lstat(child)).rejects.toMatchObject({ code: 'ENOENT' });
+          await sync();
+          published.push('parent');
+          return;
+        }
+        const parentIdentity = published.length > 0 ? await lstat(parent) : null;
+        if (
+          parentIdentity &&
+          current.dev === parentIdentity.dev &&
+          current.ino === parentIdentity.ino
+        ) {
+          // The canonical MOVE contract commits the parent entry before the child can be used.
+          expect(published).toEqual(['parent']);
+          expect((await lstat(child)).isDirectory()).toBe(true);
+          await sync();
+          published.push('child');
+          return;
+        }
+        await sync();
+      };
+    };
+    await treeStorage.ensureTreeDirectory(child);
+    expect(published).toEqual(['parent', 'child']);
+    expect(await readdir(parent)).toEqual(['new-child']);
+    expect(await readdir(child)).toEqual([]);
+    for (const descriptor of descriptors) {
+      await expect(descriptor.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    }
+  });
+
+  it('propagates failed parent synchronization before child creation and closes descriptors before retry', async () => {
+    const f = await fixture();
+    const parent = join(f.root, 'new-parent');
+    const child = join(parent, 'new-child');
+    const rootIdentity = await stat(f.root);
+    const refusal = new Error('Independent canonical parent sync refusal.');
+    const descriptors: FileHandle[] = [];
+    mutation.opened = (handle) => {
+      descriptors.push(handle);
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        const current = await handle.stat();
+        if (current.dev === rootIdentity.dev && current.ino === rootIdentity.ino) throw refusal;
+        await sync();
+      };
+    };
+    await expect(treeStorage.ensureTreeDirectory(child)).rejects.toBe(refusal);
+    expect((await lstat(parent)).isDirectory()).toBe(true);
+    await expect(lstat(child)).rejects.toMatchObject({ code: 'ENOENT' });
+    for (const descriptor of descriptors) {
+      await expect(descriptor.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    }
+    mutation.opened = undefined;
+    await treeStorage.ensureTreeDirectory(child);
+    expect(await readdir(parent)).toEqual(['new-child']);
+    expect(await readdir(child)).toEqual([]);
+  });
+
+  it.each([
+    'ensure',
+    'sync',
+  ] as const)('refuses regular files and final symlinks during %s', async (operation) => {
+    const f = await fixture();
+    const outside = join(f.directory, 'outside');
+    const regular = join(f.root, 'regular.bin');
+    const link = join(f.root, 'link');
+    await mkdir(outside);
+    await writeFile(join(outside, 'sentinel.bin'), 'Unselected outside bytes.');
+    await writeFile(regular, 'Regular file bytes.');
+    await symlink(outside, link);
+    const descriptors: FileHandle[] = [];
+    mutation.opened = (handle) => {
+      descriptors.push(handle);
+    };
+    const execute =
+      operation === 'ensure' ? treeStorage.ensureTreeDirectory : treeStorage.syncTreeDirectory;
+    for (const path of [regular, link]) {
+      await expect(execute(path)).rejects.toThrow();
+      if (operation === 'ensure') {
+        await expect(execute(join(path, 'missing-child'))).rejects.toThrow();
+      }
+    }
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await readFile(regular, 'utf8')).toBe('Regular file bytes.');
+    expect(await readFile(join(outside, 'sentinel.bin'), 'utf8')).toBe('Unselected outside bytes.');
+    expect(await readdir(outside)).toEqual(['sentinel.bin']);
+    for (const descriptor of descriptors) {
+      await expect(descriptor.stat()).rejects.toMatchObject({ code: 'EBADF' });
+    }
+  });
+
+  it.each([
+    'sync',
+    'stat',
+  ] as const)('propagates an exact directory %s failure and closes its descriptor', async (failure) => {
+    const f = await fixture();
+    const refusal = new Error(`Independent canonical directory ${failure} refusal.`);
+    let descriptorStat!: FileHandle['stat'];
+    mutation.opened = (handle) => {
+      descriptorStat = handle.stat.bind(handle);
+      if (failure === 'stat') {
+        handle.stat = (async () => {
+          throw refusal;
+        }) as FileHandle['stat'];
+      } else {
+        handle.sync = async () => {
+          throw refusal;
+        };
+      }
+    };
+    await expect(treeStorage.syncTreeDirectory(f.root)).rejects.toBe(refusal);
+    await expect(descriptorStat()).rejects.toMatchObject({ code: 'EBADF' });
+    expect((await lstat(f.root)).isDirectory()).toBe(true);
+    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+  });
+});
+
 /** COORD 11:01 ZIP move: private writes retain accounting, cleanup and truthful publication failures. */
 describe('trusted private tree failure paths', () => {
   it('records actual short writes before validation refusal and leaves cleanup with the tree owner', async () => {

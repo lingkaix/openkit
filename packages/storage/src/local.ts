@@ -1021,6 +1021,7 @@ export async function ensureTreeDirectory(path: string): Promise<void> {
     throw error;
   });
   if (!metadata) {
+    // Commit each parent before creating children so a failed retry has one entry to verify.
     await ensureTreeDirectory(dirname(path));
     try {
       await mkdir(path);
