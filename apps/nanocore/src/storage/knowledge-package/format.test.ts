@@ -90,6 +90,51 @@ describe('Knowledge package v1 format', () => {
     expect(await readFile(join(second, 'manifest.json'), 'utf8')).toBe(expected);
   });
 
+  it('round trips a bounded binary original across multiple copy and verification chunks', async () => {
+    const root = await temporaryRoot();
+    const bytes = Buffer.from(Array.from({ length: 65536 + 29 }, (_, index) => index % 251));
+    const sourcePath = join(root, 'large-original.bin');
+    await writeFile(sourcePath, bytes);
+    const directory = join(root, 'package');
+    const input = await packageInput(directory);
+    const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    const member = {
+      path: 'raw/original.bin',
+      sourcePath,
+      byteLength: bytes.length,
+      contentDigest,
+    };
+    // Keep the original small quota tests intact; this case has its own bounded admission.
+    const largeLimits = { maxEntries: 32, maxBytes: 128 * 1024 };
+    await writeKnowledgePackageFormat({
+      ...input,
+      files: input.files.map((file) => (file.path === member.path ? member : file)),
+      limits: largeLimits,
+    });
+    const verified = await verifyKnowledgePackageFormat({ directory, limits: largeLimits });
+    expect(verified.contentInventory.find((entry) => entry.path === member.path)).toEqual({
+      path: member.path,
+      byteLength: bytes.length,
+      contentDigest,
+    });
+    expect(await readFile(join(directory, member.path))).toEqual(bytes);
+    expect(await readFile(sourcePath)).toEqual(bytes);
+    const second = join(root, 'second-package');
+    await writeKnowledgePackageFormat({
+      directory: second,
+      metadata: input.metadata,
+      files: verified.contentInventory.map((entry) => ({
+        ...entry,
+        sourcePath: join(directory, entry.path),
+      })),
+      limits: largeLimits,
+    });
+    expect(await verifyKnowledgePackageFormat({ directory: second, limits: largeLimits })).toEqual(
+      verified
+    );
+    expect(await readFile(join(second, member.path))).toEqual(bytes);
+  });
+
   it('refuses changed, missing, undeclared and incorrectly sized bytes', async () => {
     for (const fault of ['changed', 'missing', 'undeclared', 'length'] as const) {
       const directory = await writeFixture();

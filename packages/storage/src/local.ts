@@ -2028,3 +2028,65 @@ export function assertContextPackageFileProof(
     closeSync(descriptor);
   }
 }
+
+const chunkBytes = 64 * 1024;
+
+/** @internal Verifies admitted private members and optionally copies exact bytes; parents, publication and cleanup stay with the caller. */
+export async function verifyPrivateFileCopy(
+  path: string,
+  expected: { readonly byteLength: number; readonly contentDigest: string },
+  output?: string
+): Promise<void> {
+  const source = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let destination: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    const before = await source.stat({ bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || before.size !== BigInt(expected.byteLength))
+      throw new Error('Knowledge package member is not the declared regular file.');
+    if (output)
+      destination = await open(
+        output,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+        0o600
+      );
+    const buffer = Buffer.alloc(chunkBytes);
+    const hash = createHash('sha256');
+    let total = 0;
+    while (true) {
+      const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > expected.byteLength)
+        throw new Error('Knowledge package member changed during capture.');
+      const chunk = buffer.subarray(0, bytesRead);
+      hash.update(chunk);
+      if (destination) {
+        let written = 0;
+        while (written < bytesRead) {
+          const result = await destination.write(chunk, written, bytesRead - written, null);
+          if (result.bytesWritten === 0)
+            throw new Error('Knowledge package output write made no progress.');
+          written += result.bytesWritten;
+        }
+      }
+    }
+    const after = await source.stat({ bigint: true });
+    if (
+      total !== expected.byteLength ||
+      `sha256:${hash.digest('hex')}` !== expected.contentDigest ||
+      before.dev !== after.dev ||
+      before.ino !== after.ino ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      after.nlink !== 1n
+    )
+      throw new Error('Knowledge package member bytes do not match their captured identity.');
+  } finally {
+    try {
+      await destination?.close();
+    } finally {
+      await source.close();
+    }
+  }
+}

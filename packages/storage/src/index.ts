@@ -49,6 +49,7 @@ export {
   syncVerifiedFile,
   telemetrySegmentNeedsClose,
   throwCanonicalLinkError,
+  verifyPrivateFileCopy,
   withStagedMediaSource,
   writePrivateTreeFile,
   writePrivateTreeMetadata,

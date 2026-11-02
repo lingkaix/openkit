@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, opendir, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { verifyPrivateFileCopy } from '@openkit/storage';
 import {
   createKnowledgePackageManifest,
   isKnowledgePackagePath,
@@ -24,8 +24,6 @@ export interface KnowledgePackageFile extends KnowledgePackageInventoryEntry {
   readonly sourcePath: string;
 }
 
-const chunkBytes = 64 * 1024;
-
 function validateLimits(limits: KnowledgePackageLimits): void {
   if (
     !Number.isSafeInteger(limits.maxEntries) ||
@@ -39,66 +37,6 @@ function validateLimits(limits: KnowledgePackageLimits): void {
 function checkUsage(entries: number, bytes: number, limits: KnowledgePackageLimits): void {
   if (!Number.isSafeInteger(bytes) || entries > limits.maxEntries || bytes > limits.maxBytes)
     throw new Error('Knowledge package resource limit exceeded.');
-}
-
-/** Hashes stable regular bytes in bounded chunks, optionally copying into a fresh output file. */
-async function verifyFile(
-  path: string,
-  expected: KnowledgePackageInventoryEntry,
-  output?: string
-): Promise<void> {
-  const source = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let destination: Awaited<ReturnType<typeof open>> | undefined;
-  try {
-    const before = await source.stat({ bigint: true });
-    if (!before.isFile() || before.nlink !== 1n || before.size !== BigInt(expected.byteLength))
-      throw new Error('Knowledge package member is not the declared regular file.');
-    if (output)
-      destination = await open(
-        output,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-        0o600
-      );
-    const buffer = Buffer.alloc(chunkBytes);
-    const hash = createHash('sha256');
-    let total = 0;
-    while (true) {
-      const { bytesRead } = await source.read(buffer, 0, buffer.length, null);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-      if (total > expected.byteLength)
-        throw new Error('Knowledge package member changed during capture.');
-      const chunk = buffer.subarray(0, bytesRead);
-      hash.update(chunk);
-      if (destination) {
-        let written = 0;
-        while (written < bytesRead) {
-          const result = await destination.write(chunk, written, bytesRead - written, null);
-          if (result.bytesWritten === 0)
-            throw new Error('Knowledge package output write made no progress.');
-          written += result.bytesWritten;
-        }
-      }
-    }
-    const after = await source.stat({ bigint: true });
-    if (
-      total !== expected.byteLength ||
-      `sha256:${hash.digest('hex')}` !== expected.contentDigest ||
-      before.dev !== after.dev ||
-      before.ino !== after.ino ||
-      before.size !== after.size ||
-      before.mtimeNs !== after.mtimeNs ||
-      before.ctimeNs !== after.ctimeNs ||
-      after.nlink !== 1n
-    )
-      throw new Error('Knowledge package member bytes do not match their captured identity.');
-  } finally {
-    try {
-      await destination?.close();
-    } finally {
-      await source.close();
-    }
-  }
 }
 
 /** Reads only the separately bounded manifest; large included files never enter a whole-file buffer. */
@@ -191,7 +129,8 @@ export async function verifyKnowledgePackageFormat(input: {
   }
   if (found.size !== expected.size)
     throw new Error('Knowledge package is missing an inventoried file.');
-  for (const file of manifest.contentInventory) await verifyFile(join(directory, file.path), file);
+  for (const file of manifest.contentInventory)
+    await verifyPrivateFileCopy(join(directory, file.path), file);
   return manifest;
 }
 
@@ -229,7 +168,7 @@ export async function writeKnowledgePackageFormat(input: {
       await mkdir(join(directory, parent), { recursive: true, mode: 0o700 });
     const sources = new Map(files.map((file) => [file.path, file.sourcePath]));
     for (const file of manifest.contentInventory)
-      await verifyFile(sources.get(file.path)!, file, join(directory, file.path));
+      await verifyPrivateFileCopy(sources.get(file.path)!, file, join(directory, file.path));
     const output = await open(
       join(directory, 'manifest.json'),
       constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
