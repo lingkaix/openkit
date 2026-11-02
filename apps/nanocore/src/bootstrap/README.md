@@ -45,3 +45,5 @@ Boot start, outcome and orderly shutdown prepare their original two-row Audit tu
 Audit admission depends on successful Core migrations, not on boot-start Audit success. A migration failure retains its original process diagnostic and cannot trigger a migration-capable native open through boot-outcome or partial-shutdown Audit.
 
 Real source-process retirement fixtures use the invocation-private, freshly compiled native Worker from global setup. The source entry, real native owner, exclusion assertions and original startup/shutdown bounds remain unchanged.
+
+Readiness uses the existing OperationError constructor directly from operation-error-core. Its scope refusal does not load the native Worker transport through error projection.

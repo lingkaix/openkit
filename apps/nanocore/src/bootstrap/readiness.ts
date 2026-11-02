@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { WorkspaceIdSchema } from '@openkit/protocol';
-import { OperationError } from '../operation-error.js';
+import { OperationError } from '../operation-error-core.js';
 import type { CoreDb } from '../storage/db.js';
 import type {
   WorkspaceFrozenAdmission,
