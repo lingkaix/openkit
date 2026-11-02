@@ -8,6 +8,7 @@ import {
   fsyncSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
@@ -32,7 +33,8 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
-import type { Readable } from 'node:stream';
+import { type Readable, Transform, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import {
   ContentReferenceSchema,
   KnowledgeBaseIdSchema,
@@ -1449,4 +1451,128 @@ export function directoryContainsFiles(root: string): boolean {
     }
   }
   return false;
+}
+
+/** @internal Creates a unique private tree for an existing synchronous publication owner. */
+export function createPrivateTreeSync(parent: string, prefix: string): string {
+  return mkdtempSync(join(parent, prefix));
+}
+
+/** @internal Removes only the synchronous caller's selected private or unacknowledged tree. */
+export function removePrivateTreeSync(path: string): void {
+  rmSync(path, { recursive: true, force: true });
+}
+
+/** @internal Stages exact admitted bytes with the original domain counters and refusals; the caller retains product and capacity authority. */
+export async function stagePrivateFile(
+  stagingParent: string,
+  input: {
+    readonly source: Readable;
+    readonly expectedByteLength: number;
+    readonly expectedDigest: string;
+    readonly reservation: {
+      assertAvailable(): void;
+      recordWritten(byteLength: number): void;
+    };
+    readonly submission?: { consume(byteLength: number): void };
+    readonly signal?: AbortSignal;
+    readonly inspectChunk?: (chunk: Buffer) => void;
+  },
+  FileByteAdmission: new () => {
+    readonly byteLength: number;
+    consume(byteLength: number): void;
+  },
+  ArtifactPayloadIntegrityError: new (code: 'invalid_request' | 'source_digest_mismatch') => Error,
+  ArtifactPayloadCleanupError: new (causes: readonly unknown[]) => Error
+): Promise<{
+  readonly path: string;
+  readonly byteLength: number;
+  readonly contentDigest: string;
+  remove(): Promise<void>;
+}> {
+  await ensureTreeDirectory(stagingParent);
+  const requestRoot = await mkdtemp(join(stagingParent, 'artifact-'));
+  const path = join(requestRoot, 'payload');
+  const counter = new FileByteAdmission();
+  const hash = createHash('sha256');
+  let descriptor: Awaited<ReturnType<typeof open>> | undefined;
+  let pendingWrite: Promise<void> | undefined;
+  try {
+    descriptor = await open(
+      path,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+      0o600
+    );
+    const count = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        try {
+          input.inspectChunk?.(chunk);
+          counter.consume(chunk.byteLength);
+          input.submission?.consume(chunk.byteLength);
+          if (counter.byteLength > input.expectedByteLength) {
+            throw new ArtifactPayloadIntegrityError('invalid_request');
+          }
+          hash.update(chunk);
+          callback(null, chunk);
+        } catch (error) {
+          callback(error as Error);
+        }
+      },
+    });
+    const file = descriptor;
+    const sink = new Writable({
+      write(chunk: Buffer, _encoding, callback) {
+        // Keep descriptor ownership here so pipeline cancellation cannot close it
+        // before durable synchronization or request-local cleanup.
+        const writeChunk = async () => {
+          let offset = 0;
+          while (offset < chunk.byteLength) {
+            const { bytesWritten } = await file.write(chunk, offset);
+            if (bytesWritten === 0) throw new Error('The file write made no progress.');
+            input.reservation.recordWritten(bytesWritten);
+            offset += bytesWritten;
+          }
+        };
+        pendingWrite = writeChunk();
+        void pendingWrite.then(() => callback(), callback);
+      },
+    });
+    await pipeline(input.source, count, sink, { signal: input.signal });
+    const contentDigest = `sha256:${hash.digest('hex')}`;
+    if (counter.byteLength !== input.expectedByteLength || contentDigest !== input.expectedDigest) {
+      throw new ArtifactPayloadIntegrityError(
+        counter.byteLength !== input.expectedByteLength
+          ? 'invalid_request'
+          : 'source_digest_mismatch'
+      );
+    }
+    await descriptor.sync();
+    await descriptor.close();
+    descriptor = undefined;
+    await syncTreeDirectory(requestRoot);
+    input.signal?.throwIfAborted();
+    input.reservation.assertAvailable();
+    return {
+      path,
+      byteLength: counter.byteLength,
+      contentDigest,
+      remove: () => rm(requestRoot, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    // Pipeline destruction may precede completion of an already-started file write.
+    await pendingWrite?.catch(() => {});
+    const cleanupErrors: unknown[] = [];
+    try {
+      await descriptor?.close();
+    } catch (closeError) {
+      cleanupErrors.push(closeError);
+    }
+    try {
+      await rm(requestRoot, { recursive: true, force: true });
+    } catch (removeError) {
+      cleanupErrors.push(removeError);
+    }
+    if (cleanupErrors.length) throw new ArtifactPayloadCleanupError([error, ...cleanupErrors]);
+    throw error;
+  }
 }

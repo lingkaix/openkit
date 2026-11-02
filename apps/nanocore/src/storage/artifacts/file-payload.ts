@@ -1,10 +1,6 @@
-import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { mkdtemp, open, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { type Readable, Transform, Writable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import { ensureCanonicalDirectoryAsync, syncCanonicalDirectoryAsync } from '@openkit/storage';
+import type { Readable } from 'node:stream';
+import { stagePrivateFile } from '@openkit/storage';
 
 import {
   FileAdmissionError,
@@ -64,89 +60,11 @@ export async function stageArtifactPayload(input: {
   input.signal?.throwIfAborted();
   input.reservation.assertAvailable();
   const stagingParent = join(dirname(input.workspaceRoot), '.staging');
-  await ensureCanonicalDirectoryAsync(stagingParent);
-  const requestRoot = await mkdtemp(join(stagingParent, 'artifact-'));
-  const path = join(requestRoot, 'payload');
-  const counter = new FileByteAdmission();
-  const hash = createHash('sha256');
-  let descriptor: Awaited<ReturnType<typeof open>> | undefined;
-  let pendingWrite: Promise<void> | undefined;
-  try {
-    descriptor = await open(
-      path,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600
-    );
-    const count = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        try {
-          input.inspectChunk?.(chunk);
-          counter.consume(chunk.byteLength);
-          input.submission?.consume(chunk.byteLength);
-          if (counter.byteLength > input.expectedByteLength) {
-            throw new ArtifactPayloadIntegrityError('invalid_request');
-          }
-          hash.update(chunk);
-          callback(null, chunk);
-        } catch (error) {
-          callback(error as Error);
-        }
-      },
-    });
-    const file = descriptor;
-    const sink = new Writable({
-      write(chunk: Buffer, _encoding, callback) {
-        // Keep descriptor ownership here so pipeline cancellation cannot close it
-        // before durable synchronization or request-local cleanup.
-        const writeChunk = async () => {
-          let offset = 0;
-          while (offset < chunk.byteLength) {
-            const { bytesWritten } = await file.write(chunk, offset);
-            if (bytesWritten === 0) throw new Error('The file write made no progress.');
-            input.reservation.recordWritten(bytesWritten);
-            offset += bytesWritten;
-          }
-        };
-        pendingWrite = writeChunk();
-        void pendingWrite.then(() => callback(), callback);
-      },
-    });
-    await pipeline(input.source, count, sink, { signal: input.signal });
-    const contentDigest = `sha256:${hash.digest('hex')}`;
-    if (counter.byteLength !== input.expectedByteLength || contentDigest !== input.expectedDigest) {
-      throw new ArtifactPayloadIntegrityError(
-        counter.byteLength !== input.expectedByteLength
-          ? 'invalid_request'
-          : 'source_digest_mismatch'
-      );
-    }
-    await descriptor.sync();
-    await descriptor.close();
-    descriptor = undefined;
-    await syncCanonicalDirectoryAsync(requestRoot);
-    input.signal?.throwIfAborted();
-    input.reservation.assertAvailable();
-    return {
-      path,
-      byteLength: counter.byteLength,
-      contentDigest,
-      remove: () => rm(requestRoot, { recursive: true, force: true }),
-    };
-  } catch (error) {
-    // Pipeline destruction may precede completion of an already-started file write.
-    await pendingWrite?.catch(() => {});
-    const cleanupErrors: unknown[] = [];
-    try {
-      await descriptor?.close();
-    } catch (closeError) {
-      cleanupErrors.push(closeError);
-    }
-    try {
-      await rm(requestRoot, { recursive: true, force: true });
-    } catch (removeError) {
-      cleanupErrors.push(removeError);
-    }
-    if (cleanupErrors.length) throw new ArtifactPayloadCleanupError([error, ...cleanupErrors]);
-    throw error;
-  }
+  return stagePrivateFile(
+    stagingParent,
+    input,
+    FileByteAdmission,
+    ArtifactPayloadIntegrityError,
+    ArtifactPayloadCleanupError
+  );
 }

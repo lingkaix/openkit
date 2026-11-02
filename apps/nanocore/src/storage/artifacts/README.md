@@ -4,7 +4,7 @@ This directory owns admission and exact-byte payload operations for arbitrary-fi
 
 `file-admission.ts` counts actual bytes against one upload submission or one Worker file and reserves staging, extraction, derivative and publication capacity against the current filesystem and server reserve. A reservation remains held until publication or proved cleanup. Existing on-disk staging reduces available capacity after restart.
 
-`file-payload.ts` streams into the existing `workspaces/.staging` namespace without text conversion. It checks actual size and digest, applies backpressure and cancellation, synchronizes the completed payload and removes incomplete request files. The caller retains reservation ownership.
+`file-payload.ts` streams into the existing `workspaces/.staging` namespace without text conversion. It checks actual size and digest, applies backpressure and cancellation, synchronizes the completed payload and removes incomplete request files. The caller retains reservation ownership. Its byte counter and integrity/cleanup error classes remain here; the shared Storage owner executes the same pipeline, descriptor lifetime and durable request cleanup through concrete inputs. Version publication also uses Storage for synchronous private directory creation and removal; Artifact metadata, lineage and handled compensation decisions stay here.
 
 `file-records.ts` resolves version-owned paths, verifies originals with a bounded buffer and opens exact-version streams. It never substitutes another version or reconstructs original bytes from a text projection. The existing synchronous Store and boot owner use synchronous integrity verification; capture itself remains asynchronous and bounded in memory.
 

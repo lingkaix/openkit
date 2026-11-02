@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { Item, Turn } from '@openkit/protocol';
@@ -12,11 +12,13 @@ import {
 } from '@openkit/protocol';
 import {
   assertCanonicalDirectory,
+  createPrivateTreeSync,
   ensureCanonicalDirectory,
   measureCanonicalFile,
   publishCanonicalPath,
   readCanonicalFile,
   readCanonicalTextFile,
+  removePrivateTreeSync,
 } from '@openkit/storage';
 import { ArtifactAuthorityError } from '../../artifact-authority.js';
 import {
@@ -161,13 +163,13 @@ export function publishArtifactVersionRecord(input: {
   if (existsSync(dirname(path))) throw new Error('The immutable Artifact version already exists.');
   const stagingRoot = join(dirname(input.workspaceRoot), '.staging');
   ensureCanonicalDirectory(stagingRoot);
-  const stage = mkdtempSync(join(stagingRoot, 'artifact-version-'));
+  const stage = createPrivateTreeSync(stagingRoot, 'artifact-version-');
   try {
     stageArtifactVersionRecord(stage, record, input.payloadPath);
     ensureCanonicalDirectory(dirname(dirname(path)));
     publishCanonicalPath(stage, dirname(path));
   } finally {
-    rmSync(stage, { recursive: true, force: true });
+    removePrivateTreeSync(stage);
   }
 }
 
@@ -177,10 +179,7 @@ export function rollbackArtifactVersionRecord(
   artifactId: string,
   version: number
 ): void {
-  rmSync(dirname(artifactVersionRecordPath(workspaceRoot, artifactId, version)), {
-    recursive: true,
-    force: true,
-  });
+  removePrivateTreeSync(dirname(artifactVersionRecordPath(workspaceRoot, artifactId, version)));
 }
 
 /** Loads exact retained history with the same lineage and Item proof before restart or import admission. */
