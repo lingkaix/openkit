@@ -355,11 +355,12 @@ Final status includes:
 - `status`
 - product-safe `stopReason`
 - final worker sequence
-- transcript manifest digest
-- artifact manifest digest
+- optional descriptive `evidenceManifestDigests` map, open for extension; empty means not reported
 - capability summary ids
 - audit summary ids when available
 - error summary when failed
+
+Manifest digests are Worker-reported description, never coverage, proof or acceptance. The two mandatory transcript/artifact digest requirements are retired by the [reserved audit ruling](../decisions/20261031-reserved_audit_question_rulings.md#decision). Implementation projection: `packages/worker-shim/src/control-client.ts` (`WorkerControlClient.recordFinalStatus`) emits the optional map; `apps/nanocore/src/runtime/worker-control-gateway.ts` (`recordFinalStatus`) defaults an omitted map to `{}`. This map contract is implemented; no additional manifest producer is required by this amendment.
 
 Valid `status` values:
 

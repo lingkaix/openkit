@@ -17,6 +17,8 @@ This specification owns retained work-data completeness: capture coverage, nativ
 
 Storage owners decide physical placement, canonical commit points, and projections. References below to JSONL, directory manifests, and file synchronization describe the applicable file representation; they never require a second canonical write beside a control-store row. Core retains Thread, Turn, Item, and AgentSession meanings. This specification introduces no store or migration.
 
+The [progress consent boundary](../decisions/20261027-inline_retained_work_bodies.md#progress-durability-consent) is banked, not active: final messages, tool results and other durable-class Items keep per-Item ACK. Any per-type progress relaxation needs its measured owner amendment, bounded crash-loss window and unchanged live delivery; missing progress must remain benign. Implementation projection: `apps/nanocore/src/storage/immutable-content.ts` (`prepareRetainedProductJson`) implements inline work bodies; `apps/nanocore/src/storage/control-store-worker.ts` (`flush`) keeps FULL ACK. Progress relaxation remains pending, without changing the existing C-a/r2 acceptance populations.
+
 The unique first-release criterion is: for every class of information that will only be collected later, the first-release format MUST let a reader distinguish "was not collected then" from "did not happen then". A format that cannot make that distinction would later claim completeness by default, which cannot be repaired after production data exists.
 
 ## Owns

@@ -8,6 +8,8 @@ updated: "2026-10-02"
 
 ## Summary
 
+The accepted physical foundation uses one off-Main DatabaseOwner writer per database, bounded snapshot readers released before checkpoint/close, and no WAL/SHM at rest. Shared L0 byte primitives and scope-local immutable blobs follow [Core Storage](../core/storage.md#sqlite-layers); no cross-scope deduplication is permitted. The mixed-writer/cold-family allowance is superseded and production direct access must shrink to zero. Implementation projection: `apps/nanocore/src/storage/control-store-worker.ts` (`openDatabase`), `apps/nanocore/src/storage/control-store-products.ts` (`closeWorkspaceProductReadHandles`) and `scripts/validate-storage-access.mjs` (`scanStorageAccess`) implement parts of this boundary; full writer retirement, bounded reader pooling and common blob adoption remain storage-foundation work.
+
 This spec owns storage placement by scope and the existing retained record graph. [Storage](../core/storage.md) now requires one transaction per mutable control transition over already durable immutable content.
 
 The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) supersedes this document's file-first control authority, server-global Workspace execution tables, and split-file/database publication mechanisms. [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md#commit-rule-and-scope-layout) is the Draft replacement mechanism. The detailed file layouts and cross-store repair rules below describe the pre-cutover realization for those concerns, not an alternative target. Product meanings, exact lineage, audience, retention, content verification and independent business-store rules remain binding unless explicitly replaced.

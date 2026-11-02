@@ -18,7 +18,7 @@ Each mutable control-state transition MUST commit in exactly one transaction in 
 
 Each Workspace MUST retain independently backupable and movable control data and locally retained content inside its own directory. Server-owned physical state and global capacity remain separate. An operation across those scopes is an effect with intent and outcome, not one transaction across stores. External references, retained Worker volumes and Vault material require explicit coverage; local content identity does not make them portable bytes.
 
-[The Workspace snapshot decision](../decisions/20261027-online_workspace_snapshots_and_recovery.md) selects online local capture, target-scoped restore and identity-preserving MOVE. Running work blocks their freeze without waiting or interruption. Outward export is separate. Ordinary portable import is removed and supplies no recovery path. Whole-server recovery remains a separate offline operation.
+[The Workspace snapshot decision](../decisions/20261027-online_workspace_snapshots_and_recovery.md) selects online local capture, target-scoped restore and identity-preserving MOVE. The [busy-capture amendment](../decisions/20261031-reserved_audit_question_rulings.md#decision) permits a bounded crash-consistent cut while work runs only when every physical SQL and mutable-file writer is fenced; draining acknowledgements alone is insufficient. Restore MUST interrupt captured in-flight work, preserve unknown effects and replay nothing. Destructive restore, MOVE and delete retain their running-work blockers. Outward export is separate. Ordinary portable import is removed and supplies no recovery path. Whole-server recovery remains a separate offline operation.
 
 Full-text retrieval MUST use the rebuildable Retrieval Kernel projection. Its per-scope generations and derived sidecars retain their canonical source ownership and audience. Query indexes remain separate from canonical control authority. Arbitrary-byte originals remain canonical under their existing Artifact/upload owners. Versioned media derivatives remain rebuildable projections; file storage and transfer capacity is separate from raw model output and model-context budgets. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records this separation.
 
@@ -61,6 +61,8 @@ Storage ownership is divided into three conceptual areas:
 The concrete path tree is defined in the server config and data layout spec, not duplicated here.
 
 ### SQLite Layers
+
+Core DatabaseOwner and the user-data Storage Service MUST share durable atomic-write, verified-copy, publication, hold-aware deletion, digest, path-safety and temporary-root primitives. Immutable blobs MUST have separate Server, User and Workspace namespaces, with no cross-scope deduplication. DatabaseOwner owns SQLite lifecycle and transactions; Storage Service owns user-data locations, backends and Policy leases. Neither depends on the other's backend or transaction abstraction. Each physical database MUST have one off-Main writer and bounded snapshot readers; close MUST drain writes, release readers, checkpoint/truncate and close without WAL/SHM at rest. Production access outside these physical owners MUST shrink to zero. This supersedes the mixed-writer and unmeasured-cold-family allowance.
 
 One Core server may use multiple SQLite databases.
 
@@ -105,7 +107,11 @@ Each Light App data kernel, defined in [Generative Apps](generative-apps.md), re
 
 When an admitted Workspace lifecycle closes its exact canonical database before replacing or removing that Workspace root, that same close owner MUST first drain and close every already-open App database beneath the exact bound root; its proof authorizes those dependent closes only and MUST NOT authorize App publication.
 
+A dependent close MUST bind the same Workspace identity, actual root, exact canonical App path and current inode, using only already-open children. Failed or unknown child close MUST prevent Workspace database close. App rollback MUST be one ordered owner publication: verify immutable candidate content before admission, then recheck path, inode, size and receipt before rename, directory synchronization and reopen.
+
 ### Item Log Invariants
+
+The [progress consent](../decisions/20261027-inline_retained_work_bodies.md#progress-durability-consent) permits a later batched or latest-wins progress class only. Effects, decisions, user input, terminal outcomes, final messages and tool results MUST retain per-Item durability.
 
 Item logs MUST be append-only.
 

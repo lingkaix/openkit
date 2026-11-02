@@ -109,7 +109,7 @@ If migration cannot repair a record safely, that record becomes an invalid or ne
 
 If schema migration cannot prove a complete valid result, OpenKit MUST retain the previous valid schema and MUST NOT publish a partially migrated active schema.
 
-Reviewed Workspace schema application uses the [existing lifecycle freeze and exact native permission](20261019-durable_execution_and_control_store.md#reviewed-workspace-schema-application).
+Reviewed Workspace schema application uses the [short exclusive DatabaseOwner section](20261019-durable_execution_and_control_store.md#reviewed-workspace-schema-application), without an idle requirement or lifecycle freeze. Activation commits byte-identical reviewed candidate content with Audit and original receipt; reviewed impact classes must bound actual impact, and Audit records actual inventory. A changed base or new class refuses for re-review. Pending schema-dependent writes retain and revalidate their schema head; immutable traces remain history. Implementation projection: `apps/nanocore/src/knowledge-operations.ts` (`createKnowledgeOperationImplementations`, `knowledge.schema.apply`) still uses the old freeze; its removal and native impact-class application remain pending in MAIN #598.
 
 ## Conformance And Required Fields
 

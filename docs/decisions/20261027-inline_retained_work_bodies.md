@@ -13,6 +13,12 @@ This narrowly supplements the file-content choice in [Durable Execution And Cont
 
 Implement the inline change after the Workspace capture owner lands, then measure it with the unchanged reference populations. Sequence allocation, Turn-CAS removal, same-Turn batching changes and a progress durability class require demonstrated remaining need and their own accepted owner changes. The engineer's separate consent to a weaker progress class is not activated here.
 
+### Progress Durability Consent
+
+The engineer permits batched or latest-wins progress only. Effects, decisions, user input, terminal outcomes, final messages and tool results retain per-Item durable acknowledgement. Activation requires the staged measurement and a separate owner amendment choosing per type, bounding the crash-loss window, preserving live delivery and treating lost progress as benign, without unknown effect or recovery-required status. Progress must not block a durable-class Item of the same Turn. No loss window is selected here; scale aspirations do not replace the existing C-a/r2 acceptance populations.
+
+Implementation projection: `apps/nanocore/src/storage/immutable-content.ts` (`prepareRetainedProductJson`) and `apps/nanocore/src/storage/control-store-products.ts` (`CONTROL_PRODUCT_LIMITS`) implement the inline threshold. `apps/nanocore/src/storage/control-store-worker.ts` (`flush`) retains FULL ACK; the weaker progress class remains pending the measured amendment.
+
 ## Reason
 
 The measured native append path spends substantial time preparing and publishing small immutable files. Exact inline bytes remove that file preparation within the existing SQL transaction authority. The threshold bounds each inline entry without changing admission limits. Keeping existing file descriptors valid avoids a converter, reset dependency or duplicate writer. A staged measurement can establish whether further append changes are necessary without attributing several simultaneous changes to one result.
