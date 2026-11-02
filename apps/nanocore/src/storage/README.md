@@ -1,5 +1,7 @@
 # Storage
 
+`control-store-maintenance-native.ts` contains the existing synchronous Knowledge maintenance admission tuple. Its worker import excludes the model, editor and provider orchestration in `knowledge-agent-maintenance.ts`; authority, savepoint and FULL acknowledgement stay unchanged.
+
 Token bearer verification stays on Main. Only its exact existing identity/hash proof and last-use options enter the Core owner; the deciding section rereads current token and User facts, checks revocation, expiry and rotation grace, and records use before FULL acknowledgement. The reply is the existing redacted record or null. Other credential writes remain with their current owners.
 
 Derived index sidecar validation uses the Protocol non-array record predicate and retains its schema, Workspace, revision and collection checks.

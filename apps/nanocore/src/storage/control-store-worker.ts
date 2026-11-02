@@ -52,7 +52,6 @@ import {
   type PreparedControlGenerativePresentation,
   prepareControlGenerativePresentation,
 } from '../generative-ui/native-publication.js';
-import { applyControlMaintenanceAdmission } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
@@ -114,6 +113,7 @@ import {
   prepareControlCapabilityCommand,
   tryControlCapabilityReuse,
 } from './control-store-capability.js';
+import { applyControlMaintenanceAdmission } from './control-store-maintenance-native.js';
 import {
   applyControlPendingTransition,
   prepareControlPendingArchive,

@@ -44,7 +44,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
   const require = createRequire(import.meta.url);
   const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
   const modules = {
-    admission: new URL('./knowledge-agent-maintenance.ts', import.meta.url).href,
+    admission: new URL('../storage/control-store-maintenance-native.ts', import.meta.url).href,
     db: new URL('../storage/db.ts', import.meta.url).href,
     products: new URL('../storage/control-store-products.ts', import.meta.url).href,
     bootstrap: new URL('../storage/control-store-admission.ts', import.meta.url).href,
