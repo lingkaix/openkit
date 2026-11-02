@@ -14,16 +14,15 @@ import type {
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import {
-  cancelSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
   requireSchedulerAdmissionEntry,
-  retryDeniedSchedulerAdmissionEntry,
   SchedulerAdmissionTransitionError,
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
+import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { externalTriggerTurnPublicationComplete } from './external-trigger-source.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
@@ -102,7 +101,7 @@ export function createSchedulerAdmissionOperationImplementations(
         throw error;
       }
     },
-    'scheduler.retry': (input, context) => {
+    'scheduler.retry': async (input, context) => {
       const actor = context.actorRef;
       try {
         const workspaceId = input.workspaceId;
@@ -120,10 +119,25 @@ export function createSchedulerAdmissionOperationImplementations(
           administratorEligible(context)
         );
 
-        const retried = retryDeniedSchedulerAdmissionEntry(coreDb, {
-          queueEntryId,
-          workspaceId,
-        });
+        const published = await publishSchedulerAdmission(
+          coreDb,
+          { mode: 'retry', queueEntryId, workspaceId, actor: context.actor },
+          (request) => {
+            store.getWorkspace(workspaceId);
+            requireVisibleSchedulerAdmissionEntry(
+              coreDb,
+              store,
+              workspaceId,
+              queueEntryId,
+              actor.id,
+              administratorEligible(context)
+            );
+            return request;
+          }
+        );
+        if (published.kind !== 'queue')
+          throw new Error('Scheduler publication returned another family.');
+        const retried = published.entry;
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
         try {
           recordWorkspaceAuditEvent({
@@ -187,10 +201,25 @@ export function createSchedulerAdmissionOperationImplementations(
               requireSchedulerAdmissionEntry(coreDb, queueEntryId)
             )
           : eventSource && !externalTriggerTurnPublicationComplete(coreDb, store, eventSource);
-        const cancelled = cancelSchedulerAdmissionEntry(coreDb, {
-          queueEntryId,
-          workspaceId,
-        });
+        const published = await publishSchedulerAdmission(
+          coreDb,
+          { mode: 'cancel', queueEntryId, workspaceId, actor: context.actor },
+          (request) => {
+            store.getWorkspace(workspaceId);
+            requireVisibleSchedulerAdmissionEntry(
+              coreDb,
+              store,
+              workspaceId,
+              queueEntryId,
+              actor.id,
+              administratorEligible(context)
+            );
+            return request;
+          }
+        );
+        if (published.kind !== 'queue')
+          throw new Error('Scheduler publication returned another family.');
+        const cancelled = published.entry;
         if (!publicationIssue)
           await terminalizeGovernedWorkerTurn({
             store,

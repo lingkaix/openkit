@@ -14,8 +14,6 @@ import { type RuntimeConfigSnapshot, resolveDefaultAgentId } from '../config/run
 import type { CommandRequestRecord, FsStore } from '../lib/store.js';
 import type { ProviderCredentialResolver } from '../providers/registry.js';
 import {
-  cancelSchedulerAdmissionEntry,
-  createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
   type SchedulerAdmissionEntryRecord,
   SchedulerAdmissionTransitionError,
@@ -23,6 +21,9 @@ import {
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb } from '../storage/db.js';
+import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
+import type { ExternalSourceSchema } from '../storage/scheduler-admission-codecs.js';
+import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import type { IdempotentCommandReceipt } from './idempotent-command.js';
@@ -78,8 +79,15 @@ interface StartProductTurnInput
   readonly fileWriteAdmission?: FileStorageAdmission;
   /** Synchronous live file-input admission immediately before publication. */
   readonly assertFileInputAdmission?: () => void;
-  /** Commits source-owned lineage with the queue row; must be synchronous and Core-local. */
-  readonly onAdmissionCommitted?: (entry: SchedulerAdmissionEntryRecord) => void;
+  /** Exact external source consumed in the same native queue savepoint. */
+  readonly externalAdmission?: z.infer<typeof ExternalSourceSchema>;
+  /** Rechecks current readonly source facts after native open while the source admission remains held. */
+  readonly validateAdmissionSource?: () => void;
+  /** Observes only the already FULL-acknowledged original admission; never writes Core. */
+  readonly onAdmissionCommitted?: (
+    entry: SchedulerAdmissionEntryRecord,
+    external?: ExternalTriggerAdmission
+  ) => void;
   /**
    * Optional callback once this admission's Turn and resolved setup are durable, carrying its nullable AgentSession while queued acceptance remains independent of execution.
    *
@@ -184,24 +192,27 @@ export async function startProductTurn(input: StartProductTurnInput) {
       input.input.requestId,
       null,
     ]);
-  // Product pending state is real nonterminal ownership, before any backend acquisition.
-  if (
-    input.store
-      .listThreadTurns(input.input.workspaceId, input.input.threadId)
-      .some(
-        (turn) => turn.id !== turnId && (turn.status === 'pending' || turn.status === 'running')
-      ) ||
-    input.coreDb.sqlite
-      .prepare(
-        "SELECT 1 FROM scheduler_admission_entries WHERE workspace_id = ? AND thread_id = ? AND turn_id <> ? AND status = 'queued' LIMIT 1"
-      )
-      .get(input.input.workspaceId, input.input.threadId, turnId)
-  )
-    throw new TurnStartValidationError(
-      'thread_busy',
-      'Thread already has a nonterminal Turn.',
-      409
-    );
+  // Repeat the existing pending predicate after opening, immediately before FIFO submission.
+  function requireAvailableThread(): void {
+    if (
+      input.store
+        .listThreadTurns(input.input.workspaceId, input.input.threadId)
+        .some(
+          (turn) => turn.id !== turnId && (turn.status === 'pending' || turn.status === 'running')
+        ) ||
+      input
+        .coreDb!.sqlite.prepare(
+          "SELECT 1 FROM scheduler_admission_entries WHERE workspace_id = ? AND thread_id = ? AND turn_id <> ? AND status = 'queued' LIMIT 1"
+        )
+        .get(input.input.workspaceId, input.input.threadId, turnId)
+    )
+      throw new TurnStartValidationError(
+        'thread_busy',
+        'Thread already has a nonterminal Turn.',
+        409
+      );
+  }
+  requireAvailableThread();
 
   const backend = input.turnExecutor.executionBackend;
   if (!backend)
@@ -246,31 +257,42 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.input.reasoningEffort ?? setup.setup.manifest.models.reasoningEffort;
   if (input.fileInputs?.length) input.assertFileInputAdmission?.();
   try {
-    const commit = () => {
-      const entry = createSchedulerAdmissionEntry(input.coreDb!, {
-        backendId: backend.id,
-        modelId: input.input.modelId ?? null,
-        ...(input.input.reasoningEffort !== undefined
-          ? { reasoningEffort: input.input.reasoningEffort }
-          : {}),
-        profileRef: input.input.profileId ?? null,
-        queueEntryId,
-        requestId: input.input.requestId,
-        requestedAgentId,
-        threadId: input.input.threadId,
-        turnId,
-        turnInput: input.input.input,
-        ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
-        triggerActor: canonicalTriggerActor,
-        serverAdminTokenId: presentedServerAdminTokenId,
-        workspaceCwd,
-        workspaceId: input.input.workspaceId,
-        workspaceRoots,
-      });
-      input.onAdmissionCommitted?.(entry);
-    };
-    if (input.onAdmissionCommitted) input.coreDb.sqlite.transaction(commit).immediate();
-    else commit();
+    const result = await publishSchedulerAdmission(
+      input.coreDb,
+      {
+        mode: 'create',
+        entry: {
+          backendId: backend.id,
+          modelId: input.input.modelId ?? null,
+          ...(input.input.reasoningEffort !== undefined
+            ? { reasoningEffort: input.input.reasoningEffort }
+            : {}),
+          profileRef: input.input.profileId ?? null,
+          queueEntryId,
+          requestId: input.input.requestId,
+          requestedAgentId,
+          threadId: input.input.threadId,
+          turnId,
+          turnInput: input.input.input,
+          ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
+          triggerActor: canonicalTriggerActor,
+          serverAdminTokenId: presentedServerAdminTokenId,
+          workspaceCwd,
+          workspaceId: input.input.workspaceId,
+          workspaceRoots,
+        },
+        ...(input.externalAdmission ? { external: input.externalAdmission } : {}),
+      },
+      (request) => {
+        input.validateAdmissionSource?.();
+        input.store.getWorkspace(input.input.workspaceId);
+        requireAvailableThread();
+        if (input.fileInputs?.length) input.assertFileInputAdmission?.();
+        return request;
+      }
+    );
+    if (result.kind !== 'queue') throw new Error('Scheduler publication returned another family.');
+    input.onAdmissionCommitted?.(result.entry, result.external);
   } catch (error) {
     if (error instanceof SchedulerAdmissionTransitionError)
       throw new TurnStartValidationError('scheduler_admission_denied', error.message, 409);
@@ -399,10 +421,10 @@ export async function startProductTurn(input: StartProductTurnInput) {
  * @param coreDb Open Core database handle.
  * @param input Exact admission owner.
  */
-export function cancelOwnedQueuedAdmission(
+export async function cancelOwnedQueuedAdmission(
   coreDb: CoreDb,
   input: { readonly queueEntryId: string; readonly workspaceId: string }
-): void {
+): Promise<void> {
   try {
     const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, {
       workspaceId: input.workspaceId,
@@ -410,7 +432,7 @@ export function cancelOwnedQueuedAdmission(
     if (entry.status !== 'queued' && entry.status !== 'denied') {
       return;
     }
-    cancelSchedulerAdmissionEntry(coreDb, input);
+    await publishSchedulerAdmission(coreDb, { mode: 'cancel', ...input });
   } catch {
     // The dispatch failure remains authoritative when concurrent admission progress blocks cleanup.
   }

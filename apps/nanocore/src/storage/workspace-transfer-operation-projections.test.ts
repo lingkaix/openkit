@@ -208,7 +208,7 @@ describe('Workspace JSON transfer cutover', () => {
       scheduledAt: instant,
     });
     const occurrence = schedules.collectScanCandidates(instant)[0]!;
-    schedules.commitAttempt(occurrence.id, 2, {
+    await schedules.commitAttempt(occurrence.id, 2, {
       kind: 'ready',
       payload: {
         backendId: 'modeled',

@@ -14,7 +14,6 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import {
   type ExternalTriggerAdmission,
   findExternalTriggerAdmission,
-  insertExternalTriggerAdmission,
 } from '../storage/external-trigger-admissions.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
 import {
@@ -115,17 +114,24 @@ export async function admitExternalTriggerEvent(
           ...(schedule.profileId ? { profileId: schedule.profileId } : {}),
           ...(schedule.modelId ? { modelId: schedule.modelId } : {}),
         },
-        onAdmissionCommitted: (entry) => {
+        externalAdmission: {
+          scheduleId: schedule.id,
+          eventKey: eventKey.data,
+          source: {
+            workspaceId: input.source.workspaceId,
+            threadId: input.source.threadId,
+            turnId: input.source.turnId,
+            agentSessionId: input.source.agentSessionId,
+            packageSnapshotId: input.source.packageSnapshotId,
+            triggerActor: input.source.triggerActor,
+          },
+        },
+        validateAdmissionSource: () => {
           validateSource();
-          admission = insertExternalTriggerAdmission(coreDb, {
-            scheduleId: schedule.id,
-            eventKey: eventKey.data,
-            sourceTurnId: input.source.turnId,
-            queueEntryId: entry.queueEntryId,
-          });
-          // A concurrent winner owns this key. Roll back the losing queue insertion.
-          if (admission.queueEntryId !== entry.queueEntryId)
-            throw externalTriggerRecoveryRequired();
+        },
+        onAdmissionCommitted: (_entry, joined) => {
+          if (!joined) throw externalTriggerRecoveryRequired();
+          admission = joined;
         },
         onTurnCreated: () => {
           if (!admission) throw externalTriggerRecoveryRequired();

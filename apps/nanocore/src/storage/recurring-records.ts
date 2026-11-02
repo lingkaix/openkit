@@ -1,6 +1,6 @@
-import { type AutomationRecord, MaterializedWorkspaceRootSchema } from '@openkit/app-api-schemas';
-import { deriveEntityId, ReasoningEffortSchema, readRetainedV1 } from '@openkit/protocol';
-import { z } from 'zod';
+import type { AutomationRecord } from '@openkit/app-api-schemas';
+import { deriveEntityId, readRetainedV1 } from '@openkit/protocol';
+import type { z } from 'zod';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import {
   recurringNominalMatches,
@@ -23,17 +23,9 @@ import {
 /** Fixed admission deadline measured from the original nominal instant. */
 export const RECURRING_DEADLINE_MS = 600_000;
 
-/** Exact complete scheduler payload frozen by the first successful selection resolution. */
-export const RecurringAdmissionPayloadSchema = z.object({
-  backendId: z.string().min(1),
-  requestedAgentId: z.string().min(1),
-  profileRef: z.string().min(1).nullable(),
-  modelId: z.string().min(1),
-  workspaceCwd: z.string().min(1).nullable(),
-  workspaceRoots: z.array(MaterializedWorkspaceRootSchema),
-  reasoningEffort: ReasoningEffortSchema.optional(),
-  requiredFeatures: z.array(z.never()).optional(),
-});
+export { RecurringAdmissionPayloadSchema } from './scheduler-admission-codecs.js';
+
+import type { RecurringAdmissionPayloadSchema } from './scheduler-admission-codecs.js';
 /** Closed native v1 attempt outcomes, independent of current operation projections. */
 export const RecurringAttemptCodeSchema = StoredRecurringAttemptCodeV1Schema;
 /** Fixed native snapshot shared by occurrence and expired-range history. */

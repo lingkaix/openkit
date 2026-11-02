@@ -79,7 +79,6 @@ import {
 } from '../runtime/worker-backend-sessions.js';
 import { recordWorkspaceApplyPlan } from '../runtime/workspace-apply-plans.js';
 import { recordWorkspaceApplyResult } from '../runtime/workspace-apply-results.js';
-import * as schedulerRecords from '../scheduler-records.js';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
@@ -112,6 +111,7 @@ import * as databaseOwner from './db.js';
 import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import * as migrationOwner from './migrate.js';
+import * as schedulerPublication from './scheduler-admission-publication.js';
 import {
   createWorkspaceBackup,
   readBlockers,
@@ -1535,7 +1535,7 @@ describe('C-a frozen scheduler pre-post ordering', () => {
     const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
     const beforeWorkspace = tree(f.workspaceRoot);
     const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-    const deny = vi.spyOn(schedulerRecords, 'denySchedulerAdmissionEntry');
+    const deny = vi.spyOn(schedulerPublication, 'publishSchedulerAdmission');
     const open = vi.spyOn(databaseOwner, 'openWorkspaceDb');
     const read = vi.spyOn(databaseOwner, 'openWorkspaceReadDb');
     const migrate = vi.spyOn(migrationOwner, 'applyScopedMigrations');
@@ -1593,7 +1593,11 @@ describe('C-a frozen scheduler pre-post ordering', () => {
           denialReason: 'authority-denied',
         },
       });
-      expect(deny).toHaveBeenCalledOnce();
+      expect(deny).toHaveBeenCalledExactlyOnceWith(f.coreDb, {
+        mode: 'deny',
+        queueEntryId: entry.queueEntryId,
+        denialReason: 'authority-denied',
+      });
       expect(open).not.toHaveBeenCalled();
       expect(read).not.toHaveBeenCalled();
       expect(migrate).not.toHaveBeenCalled();

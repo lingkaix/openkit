@@ -576,7 +576,7 @@ async function recurringFixture(queued: boolean) {
   let queueEntryId: string | undefined;
   try {
     if (queued) {
-      schedules.commitAttempt(occurrence.id, 2, {
+      await schedules.commitAttempt(occurrence.id, 2, {
         kind: 'ready',
         payload: {
           backendId: 'source-only-backend',

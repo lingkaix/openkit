@@ -12,24 +12,16 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
-import {
-  createSchedulerAdmissionEntry,
-  requireSchedulerAdmissionEntry,
-  SchedulerAdmissionTransitionError,
-  schedulerAdmissionInputHash,
-} from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   RECURRING_DEADLINE_MS as DEADLINE_MS,
   type ExpiredOccurrenceRange,
   ExpiredOccurrenceRangeSchema,
-  RecurringAdmissionPayloadSchema,
   type RecurringOccurrence,
   type RecurringPreparation,
   readRecurringOccurrence,
   readRecurringSchedule,
   recurringRequestId,
-  recurringSchedulerAdmissionInput,
 } from '../storage/recurring-records.js';
 import { StoredAutomationCadenceV1Schema } from '../storage/recurring-retained-v1.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -42,10 +34,22 @@ import {
 
 const SCAN_LIMIT = 128;
 
-/** Native record absence, distinguished from unexpected storage failures. */
-export class AutomationRecordNotFoundError extends Error {}
-/** A stale revision or invalid lifecycle request has no effect. */
-export class AutomationMutationError extends Error {}
+export {
+  AutomationMutationError,
+  AutomationRecordNotFoundError,
+} from '../storage/scheduler-admission-codecs.js';
+
+import {
+  findRecurringAutomationFromDb,
+  finishRecurringOccurrenceInDb,
+  readRecurringOccurrenceFromDb,
+  writeRecurringOccurrenceInDb,
+} from '../storage/recurring-attempt-native.js';
+import {
+  AutomationMutationError,
+  AutomationRecordNotFoundError,
+} from '../storage/scheduler-admission-codecs.js';
+import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 
 /** Durable Workspace schedule authority sharing the scheduler's Core SQLite connection. */
 export class AutomationStore {
@@ -317,141 +321,47 @@ export class AutomationStore {
   }
 
   /** Atomically records one attempt and exact queue acceptance, or proves an existing deterministic acceptance. */
-  public commitAttempt(
+  public async commitAttempt(
     occurrenceId: string,
     definitionRevision: number,
     preparation: RecurringPreparation,
     revalidate?: () => RecurringPreparation | undefined
-  ): RecurringOccurrence | null {
-    return this.withMutation(this.getOccurrence(occurrenceId).workspaceId, () =>
-      this.coreDb.sqlite
-        .transaction(() => {
-          let occurrence = this.getOccurrence(occurrenceId);
-          if (occurrence.state !== 'pending') return occurrence;
-          const schedule = this.getAutomation(occurrence.scheduleId);
-          if (
-            schedule.status !== 'active' ||
-            schedule.revision !== definitionRevision ||
-            occurrence.definitionRevision !== definitionRevision
-          )
-            return null;
-          const timestamp = this.now();
-          const now = Date.parse(timestamp);
-          if (now < Date.parse(occurrence.scheduledAt)) return occurrence;
-          if (now >= Date.parse(occurrence.deadline))
-            return this.finish(occurrence, 'expired', timestamp);
-          const payload =
-            preparation.kind === 'ready' || preparation.kind === 'failure'
-              ? preparation.payload
-              : undefined;
-          const resolved =
-            occurrence.resolvedPayload ??
-            (payload ? RecurringAdmissionPayloadSchema.parse(payload) : null);
-          if (
-            occurrence.resolvedPayload &&
-            payload &&
-            JSON.stringify(RecurringAdmissionPayloadSchema.parse(payload)) !==
-              JSON.stringify(occurrence.resolvedPayload)
-          )
-            return this.finish(occurrence, 'recovery_required', timestamp);
-          const request = resolved
-            ? recurringSchedulerAdmissionInput(occurrence, resolved, timestamp)
-            : null;
-          const ownQueues = this.coreDb.sqlite
-            .prepare(`SELECT queue_entry_id FROM scheduler_admission_entries
-        WHERE queue_entry_id = ? OR request_id = ? OR turn_id = ? LIMIT 2`)
-            .all(
-              occurrence.requestId,
-              occurrence.requestId,
-              deriveEntityId('tu', ['recurring', occurrence.scheduleId, occurrence.scheduledAt])
-            ) as { queue_entry_id: string }[];
-          if (ownQueues.length > 1) return this.finish(occurrence, 'recovery_required', timestamp);
-          if (ownQueues[0]) {
-            const existing = requireSchedulerAdmissionEntry(
-              this.coreDb,
-              ownQueues[0].queue_entry_id
-            );
-            if (
-              !request ||
-              existing.queueEntryId !== request.queueEntryId ||
-              existing.inputHash !== schedulerAdmissionInputHash(request) ||
-              schedulerAdmissionInputHash(existing) !== schedulerAdmissionInputHash(request)
-            )
-              return this.finish(occurrence, 'recovery_required', timestamp);
-            occurrence = {
-              ...occurrence,
-              resolvedPayload: resolved,
-              queueEntryId: existing.queueEntryId,
-              turnId: existing.turnId,
-            };
-            return this.finish(occurrence, 'admission-accepted', timestamp);
-          }
-          // A later authority refusal cannot prove an unknown preparation had no effects.
+  ): Promise<RecurringOccurrence | null> {
+    const release = this.mutationAdmission.enter(this.getOccurrence(occurrenceId).workspaceId);
+    if (!release) throw new AutomationMutationError('Workspace mutations are fenced.');
+    try {
+      const result = await publishSchedulerAdmission(
+        this.coreDb,
+        {
+          mode: 'recurring-attempt',
+          occurrenceId,
+          definitionRevision,
+          preparation: structuredClone(preparation),
+        },
+        (request) => {
+          // A supplied public source preflight stays distinct from the original trusted no-callback domain entry.
           const current =
-            preparation.kind === 'recovery_required'
-              ? preparation
-              : (revalidate?.() ?? preparation);
-          if (current.kind === 'recovery_required')
-            return this.finish(occurrence, 'recovery_required', timestamp);
-          let code = current.kind === 'failure' ? current.code : ('accepted' as const);
-          if (code === 'accepted') {
-            const waiting = this.coreDb.sqlite
-              .prepare(`SELECT 1 FROM recurring_occurrences occurrence
-          JOIN scheduler_admission_entries entry ON entry.queue_entry_id = occurrence.queue_entry_id
-          WHERE occurrence.schedule_id = ? AND occurrence.id <> ?
-            AND occurrence.state = 'admission-accepted' AND entry.status = 'queued' LIMIT 1`)
-              .get(occurrence.scheduleId, occurrence.id);
-            if (waiting) code = 'queue_backlog_full';
-            else if (!request) code = 'selection_unavailable';
-            else {
-              try {
-                const entry = createSchedulerAdmissionEntry(this.coreDb, request);
-                occurrence = {
-                  ...occurrence,
-                  queueEntryId: entry.queueEntryId,
-                  turnId: entry.turnId,
-                };
-              } catch (error) {
-                if (!(error instanceof SchedulerAdmissionTransitionError)) throw error;
-                code = error.reason === 'queue-full' ? 'queue_full' : 'admission_failed';
-              }
-            }
-          }
-          occurrence = {
-            ...occurrence,
-            resolvedPayload: resolved,
-            attempts: [
-              ...occurrence.attempts,
-              {
-                number: occurrence.attempts.length + 1,
-                at: timestamp,
-                code,
-                summary:
-                  code === 'accepted'
-                    ? 'Scheduler admission accepted.'
-                    : `Admission refused: ${code}.`,
-              },
-            ],
+            preparation.kind === 'recovery_required' || !revalidate
+              ? undefined
+              : (revalidate() ?? preparation);
+          return {
+            ...request,
+            ...(current ? { current } : {}),
+            ...(request.mode === 'recurring-attempt' ? { timestamp: this.now() } : {}),
           };
-          if (code === 'accepted') return this.finish(occurrence, 'admission-accepted', timestamp);
-          if (occurrence.attempts.length === 3)
-            return this.finish(occurrence, 'admission-failed', timestamp);
-          this.writeOccurrence(occurrence);
-          return occurrence;
-        })
-        .immediate()
-    );
+        }
+      );
+      if (result.kind !== 'occurrence')
+        throw new Error('Native recurring attempt returned the wrong result.');
+      return result.occurrence;
+    } finally {
+      release();
+    }
   }
 
   /** Reads one validated individual occurrence, including its immutable input and bounded attempts. */
   public getOccurrence(id: string): RecurringOccurrence {
-    const row = this.coreDb.sqlite
-      .prepare(
-        'SELECT schema_version AS schemaVersion, record_json FROM recurring_occurrences WHERE id = ?'
-      )
-      .get(id) as JsonRow | undefined;
-    if (!row) throw new AutomationRecordNotFoundError(`Recurring occurrence not found: ${id}`);
-    return readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
+    return readRecurringOccurrenceFromDb(this.coreDb, id);
   }
 
   /** Returns bounded history directly as individual occurrences or lossless ranges, newest first. */
@@ -652,30 +562,7 @@ export class AutomationStore {
     timestamp: string,
     insert = false
   ): RecurringOccurrence {
-    const updated = { ...occurrence, state, terminalAt: timestamp };
-    this.writeOccurrence(updated, insert);
-    recordServerAuditEvent({
-      coreDb: this.coreDb,
-      workspaceId: occurrence.workspaceId,
-      actor: occurrence.snapshot.actor,
-      threadId: occurrence.snapshot.threadId,
-      // Core acceptance reserves a Turn identity; it does not prove canonical file publication.
-      turnId: null,
-      requestId: occurrence.requestId,
-      action: 'recurring.occurrence.terminal',
-      resource: occurrence.id,
-      outcome:
-        state === 'admission-accepted'
-          ? 'succeeded'
-          : state === 'cancelled'
-            ? 'cancelled'
-            : state === 'recovery_required'
-              ? 'unknown'
-              : 'failed',
-      summary: `Recurring occurrence terminal: ${state}.`,
-      now: new Date(timestamp),
-    });
-    return updated;
+    return finishRecurringOccurrenceInDb(this.coreDb, occurrence, state, timestamp, insert);
   }
 
   /** Uses the existing Workspace fence for every recurrence mutation, including scanner writes. */
@@ -712,30 +599,7 @@ export class AutomationStore {
 
   /** Writes both indexed selectors and the validated known-core payload in one owner mutation. */
   private writeOccurrence(record: RecurringOccurrence, insert = false): void {
-    readRecurringOccurrence(JSON.stringify(record));
-    if (!insert) this.getOccurrence(record.id);
-    if (insert)
-      this.coreDb.sqlite
-        .prepare(`INSERT INTO recurring_occurrences
-      (id, schedule_id, workspace_id, scheduled_at, deadline, state, queue_entry_id, record_json, schema_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(
-          record.id,
-          record.scheduleId,
-          record.workspaceId,
-          Date.parse(record.scheduledAt),
-          Date.parse(record.deadline),
-          record.state,
-          record.queueEntryId,
-          JSON.stringify(record),
-          writeRetainedV1({}).schemaVersion
-        );
-    else
-      this.coreDb.sqlite
-        .prepare(
-          `UPDATE recurring_occurrences SET state = ?, queue_entry_id = ?, record_json = ? WHERE id = ?`
-        )
-        .run(record.state, record.queueEntryId, JSON.stringify(record), record.id);
+    writeRecurringOccurrenceInDb(this.coreDb, record, insert);
   }
 
   /** Writes one definition and the indexed cursor under the caller's transaction when present. */
@@ -764,12 +628,7 @@ export class AutomationStore {
 
   /** Reads the one definition authority without private content enumeration. */
   private findSchedule(id: string): AutomationRecord | null {
-    const row = this.coreDb.sqlite
-      .prepare(
-        'SELECT schema_version AS schemaVersion, record_json FROM recurring_schedules WHERE id = ?'
-      )
-      .get(id) as JsonRow | undefined;
-    return row ? readRetainedV1(row, () => readRecurringSchedule(row.record_json)) : null;
+    return findRecurringAutomationFromDb(this.coreDb, id);
   }
 
   /** Reads a bounded owner-selected definition collection. */

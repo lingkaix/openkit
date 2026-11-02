@@ -35,11 +35,9 @@ import {
 } from './runtime/product-turn-start.js';
 import type { TurnCommandRuntimeContext, TurnExecutor } from './runtime/types.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
-import {
-  cancelSchedulerAdmissionEntry,
-  listSchedulerAdmissionEntriesForWorkspace,
-} from './scheduler-records.js';
+import { listSchedulerAdmissionEntriesForWorkspace } from './scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { publishSchedulerAdmission } from './storage/scheduler-admission-publication.js';
 
 /** Parsed turn read model shape used by route-level guards. */
 type TurnReadModel = z.infer<typeof TurnSchema>;
@@ -378,7 +376,8 @@ export async function interruptProductTurn(input: {
           turnId,
         }).find((candidate) => candidate.phase !== 'closed');
         if (!attempt && (admission.status === 'queued' || admission.status === 'denied')) {
-          cancelSchedulerAdmissionEntry(coreDb, {
+          await publishSchedulerAdmission(coreDb, {
+            mode: 'cancel',
             queueEntryId: admission.queueEntryId,
             workspaceId,
           });

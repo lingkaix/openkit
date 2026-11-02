@@ -117,7 +117,7 @@ it('retains the immutable external admission join in deletion evidence before it
       scheduledAt: instant,
     });
     const occurrence = schedules.collectScanCandidates(instant)[0]!;
-    const accepted = schedules.commitAttempt(occurrence.id, 2, {
+    const accepted = (await schedules.commitAttempt(occurrence.id, 2, {
       kind: 'ready',
       payload: {
         backendId: 'nanohost',
@@ -127,7 +127,7 @@ it('retains the immutable external admission join in deletion evidence before it
         workspaceRoots: [],
         workspaceCwd: null,
       },
-    })!;
+    }))!;
     const target = await store.createThread(workspace.id, 'Case', undefined, 'conversation', {
       visibility: 'workspace',
       threadSource: 'worker',

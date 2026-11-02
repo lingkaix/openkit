@@ -155,6 +155,11 @@ import type {
   ControlRuntimeTargetResult,
 } from './runtime-target-codecs.js';
 import {
+  type ControlSchedulerAdmission,
+  type ControlSchedulerAdmissionResult,
+  SchedulerAdmissionTransitionError,
+} from './scheduler-admission-codecs.js';
+import {
   type ControlThreadReadMembership,
   THREAD_READ_RECEIPT_INVALID,
 } from './thread-read-membership-codecs.js';
@@ -727,6 +732,7 @@ class ControlStoreWorkerClient {
         entry.counted &&
         (entry.command.operation === 'observation' ||
           entry.command.operation === 'provenance' ||
+          entry.command.operation === 'scheduler-admission' ||
           entry.command.operation === 'generative-presentation' ||
           entry.command.operation === 'worker-control-evidence') &&
         this.openings.get(entry.command.database)?.path === physical &&
@@ -2154,6 +2160,39 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Publishes the complete scheduler/source tuple, returning only after covering FULL commit. */
+  async schedulerAdmission(
+    database: string,
+    input: ControlSchedulerAdmission
+  ): Promise<ControlSchedulerAdmissionResult> {
+    try {
+      const json = JSON.stringify(input);
+      const reply = await this.request(
+        {
+          operation: 'scheduler-admission',
+          database,
+          input: {
+            byteLength: Buffer.byteLength(json),
+            turnId: input.mode === 'create' ? input.entry.turnId : null,
+          },
+        },
+        [json]
+      );
+      return (reply as Extract<Success, { operation: 'scheduler-admission' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'scheduler-admission'
+      ) {
+        if (error.domain.kind === 'decoder') throw new SyntaxError(error.domain.message);
+        if (error.domain.kind === 'transition')
+          throw new SchedulerAdmissionTransitionError(error.domain.message, error.domain.code);
+        throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
+  }
+
   /** Commits the exact Core sharing mutation, Audit and original receipt in one covering FULL acknowledgement. */
   async coreSharing(
     database: string,
@@ -2527,9 +2566,11 @@ class ControlStoreWorkerClient {
           CONTROL_WORKER_LIMITS.pendingTransitions) ||
       ((command.operation === 'observation' ||
         command.operation === 'provenance' ||
+        command.operation === 'scheduler-admission' ||
         command.operation === 'generative-presentation' ||
         command.operation === 'worker-control-evidence') &&
         opening &&
+        (command.operation !== 'scheduler-admission' || command.input.turnId !== null) &&
         !borrowed &&
         this.pendingTurnPublications(JSON.stringify([opening.path, command.input.turnId])) >=
           CONTROL_WORKER_LIMITS.pendingTurnTransitions)
@@ -2562,6 +2603,7 @@ class ControlStoreWorkerClient {
       command.operation === 'material' ||
       command.operation === 'capability' ||
       command.operation === 'observation' ||
+      command.operation === 'scheduler-admission' ||
       command.operation === 'generative-presentation' ||
       command.operation === 'app-kernel' ||
       command.operation === 'thread-read-membership' ||
@@ -2578,7 +2620,8 @@ class ControlStoreWorkerClient {
             }
           : command.operation === 'material'
             ? controlMaterialTransferSize(command.input)
-            : command.operation === 'generative-presentation' ||
+            : command.operation === 'scheduler-admission' ||
+                command.operation === 'generative-presentation' ||
                 command.operation === 'app-kernel' ||
                 command.operation === 'thread-read-membership' ||
                 command.operation === 'worker-control-final-status' ||
