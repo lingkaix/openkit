@@ -225,6 +225,8 @@ import { applyControlWorkerHeartbeat } from './worker-control-heartbeat-native.j
 import { applyControlWorkerRecord } from './worker-control-record-native.js';
 import { applyControlWorkerImage } from './worker-image-native.js';
 import { applyControlWorkerStorageBinding } from './worker-storage-binding-native.js';
+import { WorkspaceApplyPlanConflictError } from './workspace-apply-plan-codecs.js';
+import { recordWorkspaceApplyPlanInDb } from './workspace-apply-plan-records.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { ControlCoreSharingRefusalSchema } from './workspace-sharing-codecs.js';
 import { applyControlCoreSharing } from './workspace-sharing-native.js';
@@ -253,6 +255,7 @@ type WriteCommand = Extract<
       | 'project-cleanup'
       | 'app-kernel'
       | 'worker-storage-binding'
+      | 'workspace-apply-plan'
       | 'harness-lifecycle'
       | 'execution-attempt'
       | 'core-journal'
@@ -544,6 +547,19 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       status: 409,
       ...(error.exhaustedBound ? { exhaustedBound: error.exhaustedBound } : {}),
     };
+  if (operation === 'workspace-apply-plan' && error instanceof WorkspaceApplyPlanConflictError)
+    return {
+      operation,
+      code: 'workspace_sync_review_failed',
+      message: 'Workspace apply plan replay conflict.',
+      status: 404,
+    };
+  if (
+    operation === 'workspace-apply-plan' &&
+    error instanceof TypeError &&
+    error.message === 'Unsupported retained record format.'
+  )
+    return { operation, code: 'unsupported_retained_format', message: error.message, status: 409 };
   if (operation === 'worker-storage-binding' && error instanceof WorkerStorageBindingError)
     return { operation, code: error.code, message: error.message, status: 409 };
   if (
@@ -1872,6 +1888,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'runtime-target',
               result,
             };
+          } else if (request.operation === 'workspace-apply-plan') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            const result = recordWorkspaceApplyPlanInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-apply-plan',
+              result,
+            };
           } else if (request.operation === 'backend-session') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlBackendSession(owner.scopeDb, request.input);
@@ -2904,6 +2934,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'goal' ||
       value.operation === 'maintenance' ||
       value.operation === 'worker-storage-binding' ||
+      value.operation === 'workspace-apply-plan' ||
       value.operation === 'harness-lifecycle' ||
       value.operation === 'execution-attempt' ||
       value.operation === 'core-journal' ||

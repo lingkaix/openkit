@@ -15,7 +15,7 @@ import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
@@ -287,11 +287,8 @@ async function executeWorkspaceSyncReviewDecision(
       404
     );
   const staging = requireFilesystemWorkspaceStaging(workspaceDb, review);
-  const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-    `workspace:${workspaceDb.sqlite.name}`
-  );
-  let plan: ReturnType<typeof recordWorkspaceApplyPlanForReview>;
-  try {
+  // Current Core authority remains on Main, after native open and again before filesystem contact.
+  const requireEffectAuthority = (): void => {
     // The existing authorizer supplies administrator eligibility and current credential limits at this effect check too.
     const effectAuthority = input.requestActor
       ? input.authorityActor.kind === 'user' &&
@@ -309,15 +306,20 @@ async function executeWorkspaceSyncReviewDecision(
         );
     if (!effectAuthority) {
       throw new TurnStartValidationError(
-        'workspace_access_denied',
-        'Workspace access denied.',
-        403
+        WORKSPACE_ACCESS_DENIED.code,
+        WORKSPACE_ACCESS_DENIED.message,
+        WORKSPACE_ACCESS_DENIED.status
       );
     }
-    plan = recordWorkspaceApplyPlanForReview(workspaceDb, review, input.decidedAt);
-  } finally {
-    resume();
-  }
+  };
+  requireEffectAuthority();
+  const plan = await recordWorkspaceApplyPlanForReview(
+    workspaceDb,
+    review,
+    input.decidedAt,
+    requireEffectAuthority
+  );
+  requireEffectAuthority();
   await applyWorkspaceSyncReviewFilesystem({
     appliedAt: plan.createdAt,
     persistResult: async (appliedResult) => {
@@ -476,13 +478,15 @@ function requireFilesystemWorkspaceStaging(
  * @param workspaceDb Open workspace database.
  * @param review Accepted workspace review.
  * @param createdAt Plan timestamp.
+ * @param beforeSubmit Current-authority check after native open and before posting.
  * @returns Stored apply plan.
  */
 function recordWorkspaceApplyPlanForReview(
   workspaceDb: WorkspaceDb,
   review: WorkspaceSyncReviewItem,
-  createdAt: string
-): WorkspaceApplyPlan {
+  createdAt: string,
+  beforeSubmit: () => void
+): Promise<WorkspaceApplyPlan> {
   return recordWorkspaceApplyPlan(
     workspaceDb,
     WorkspaceApplyPlanSchema.parse({
@@ -510,7 +514,8 @@ function recordWorkspaceApplyPlanForReview(
       reviewId: review.review.id,
       strategy: review.changeSet.strategy,
       workspaceId: review.review.workspaceId,
-    })
+    }),
+    beforeSubmit
   );
 }
 

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { ListWorkspaceApplyPlansResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -13,17 +14,18 @@ import {
 } from './workspace-apply-plans.js';
 
 describe('workspace apply plans', () => {
-  it('records apply plans before workspace apply mutation', () => {
+  it('records apply plans before workspace apply mutation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-'));
     let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const plan = workspaceApplyPlan();
-      const first = recordWorkspaceApplyPlan(workspaceDb, plan);
+      const first = await recordWorkspaceApplyPlan(workspaceDb, plan);
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      const replayed = recordWorkspaceApplyPlan(workspaceDb, plan);
+      const replayed = await recordWorkspaceApplyPlan(workspaceDb, plan);
 
       expect(first).toEqual(plan);
       expect(replayed).toEqual(plan);
@@ -33,21 +35,22 @@ describe('workspace apply plans', () => {
         })
       ).toEqual({ items: [plan] });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('reuses the first apply-plan timestamp when an accepted decision is retried', () => {
+  it('reuses the first apply-plan timestamp when an accepted decision is retried', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-plan-retry-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       const original = workspaceApplyPlan();
-      recordWorkspaceApplyPlan(workspaceDb, original);
+      await recordWorkspaceApplyPlan(workspaceDb, original);
 
       expect(
-        recordWorkspaceApplyPlan(workspaceDb, {
+        await recordWorkspaceApplyPlan(workspaceDb, {
           ...original,
           createdAt: '2026-07-05T00:01:00.000Z',
         })
@@ -56,6 +59,7 @@ describe('workspace apply plans', () => {
         listWorkspaceApplyPlans(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([original]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
@@ -85,22 +89,24 @@ function workspaceApplyPlan(): Parameters<typeof recordWorkspaceApplyPlan>[1] {
 }
 
 /** Creates and cleans one native retained Plan fixture. */
-function retainedApplyPlanFixture() {
+async function retainedApplyPlanFixture() {
   const root = mkdtempSync(join(tmpdir(), 'openkit-retained-apply-plan-'));
   const plan = workspaceApplyPlan();
   const db = openWorkspaceDb(root, plan.workspaceId);
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
   applyScopedMigrations(db, undefined, 'pre-knowledge');
-  recordWorkspaceApplyPlan(db, plan);
+  await recordWorkspaceApplyPlan(db, plan);
   return { db, plan };
 }
 
 describe('retained Workspace Apply Plan SQL format', () => {
-  it('writes v1 and reads descriptive additions without replacing retained payloads', () => {
-    const { db, plan } = retainedApplyPlanFixture();
+  it('writes v1 and reads descriptive additions without replacing retained payloads', async () => {
+    const { db, plan } = await retainedApplyPlanFixture();
+    await shutdownControlStoreWorkerClient();
     db.sqlite
       .prepare('UPDATE workspace_apply_plans SET payload_json=?')
       .run(JSON.stringify({ ...plan, annotation: 'Retained plan description' }));
@@ -110,12 +116,13 @@ describe('retained Workspace Apply Plan SQL format', () => {
     expect(listExportableWorkspaceApplyPlans(db, plan.workspaceId)[0]).toMatchObject({
       annotation: 'Retained plan description',
     });
-    expect(recordWorkspaceApplyPlan(db, plan)).toEqual(plan);
+    expect(await recordWorkspaceApplyPlan(db, plan)).toEqual(plan);
     expect(db.sqlite.prepare('SELECT * FROM workspace_apply_plans').get()).toEqual(before);
   });
 
-  it('refuses an unknown version before malformed JSON decoding or replay replacement', () => {
-    const { db, plan } = retainedApplyPlanFixture();
+  it('refuses an unknown version before malformed JSON decoding or replay replacement', async () => {
+    const { db, plan } = await retainedApplyPlanFixture();
+    await shutdownControlStoreWorkerClient();
     db.sqlite
       .prepare("UPDATE workspace_apply_plans SET schema_version=2, payload_json='{invalid'")
       .run();
@@ -123,7 +130,9 @@ describe('retained Workspace Apply Plan SQL format', () => {
     expect(() => listWorkspaceApplyPlans(db, plan.workspaceId)).toThrow(
       'Unsupported retained record format'
     );
-    expect(() => recordWorkspaceApplyPlan(db, plan)).toThrow('Unsupported retained record format');
+    await expect(recordWorkspaceApplyPlan(db, plan)).rejects.toThrow(
+      'Unsupported retained record format'
+    );
     expect(db.sqlite.prepare('SELECT * FROM workspace_apply_plans').get()).toEqual(before);
   });
 });

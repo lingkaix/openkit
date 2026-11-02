@@ -184,6 +184,7 @@ import type { ControlWorkerHeartbeatCommand } from './worker-control-heartbeat-c
 import type { ControlWorkerRecordCommand } from './worker-control-record-codecs.js';
 import type { ControlWorkerImageInput } from './worker-image-codecs.js';
 import type { ControlWorkerStorageInput } from './worker-storage-binding-codecs.js';
+import type { ControlWorkspaceApplyPlan } from './workspace-apply-plan-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import type { ControlCoreSharing, ControlCoreSharingResult } from './workspace-sharing-codecs.js';
 
@@ -2128,6 +2129,31 @@ class ControlStoreWorkerClient {
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'runtime-target')
         throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Publishes one immutable preflight Plan only after the existing covering FULL commit. */
+  async workspaceApplyPlan(
+    database: string,
+    input: ControlWorkspaceApplyPlan
+  ): Promise<ControlWorkspaceApplyPlan> {
+    try {
+      const reply = await this.request({ operation: 'workspace-apply-plan', database, input });
+      return (reply as Extract<Success, { operation: 'workspace-apply-plan' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'workspace-apply-plan'
+      ) {
+        if (error.domain.code === 'unsupported_retained_format')
+          throw new TypeError('Unsupported retained record format.');
+        throw new OperationError(
+          error.domain.code,
+          `Workspace apply plan replay conflict: ${input.id}`,
+          error.domain.status
+        );
+      }
       throw error;
     }
   }

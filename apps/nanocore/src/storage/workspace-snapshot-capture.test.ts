@@ -1446,7 +1446,7 @@ describe('C-a additional owner families', () => {
     const reviewId = `review-${randomUUID()}`;
     const changeSetId = `change-${randomUUID()}`;
     try {
-      recordWorkspaceApplyPlan(db, {
+      await recordWorkspaceApplyPlan(db, {
         id: `plan-${randomUUID()}`,
         workspaceId,
         reviewId,

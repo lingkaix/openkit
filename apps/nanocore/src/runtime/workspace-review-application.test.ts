@@ -1,4 +1,7 @@
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -14,7 +17,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -26,11 +29,13 @@ import {
 } from '../test-support/local-user.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import * as filesystemSync from './filesystem-workspace-sync.js';
 import {
   buildFilesystemWorkspaceChangeSet,
   createFilesystemSnapshotManifest,
   stageFilesystemWorkspaceChanges,
 } from './filesystem-workspace-sync.js';
+import * as applyPlans from './workspace-apply-plans.js';
 import { listWorkspaceApplyPlans } from './workspace-apply-plans.js';
 import {
   listWorkspaceApplyResults,
@@ -48,6 +53,7 @@ const temporaryRoots: string[] = [];
 const LOCAL_AUTHORITY_ACTOR = { kind: 'user', id: LOCAL_USER_ID } as const;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
   for (const root of temporaryRoots.splice(0)) {
     rmSync(root, { force: true, recursive: true });
@@ -70,112 +76,166 @@ function openAuthorizedCoreDb(dataRoot: string, workspaceId: string) {
 }
 
 describe('workspace review application', () => {
-  it('denies a fresh accepted decision after its authenticated user is disabled', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-disabled-user-data-'));
-    const targetRoot = mkdtempSync(
-      join(tmpdir(), 'openkit-workspace-review-disabled-user-target-')
-    );
-    const workerRoot = mkdtempSync(
-      join(tmpdir(), 'openkit-workspace-review-disabled-user-worker-')
-    );
-    const stagingRoot = mkdtempSync(
-      join(tmpdir(), 'openkit-workspace-review-disabled-user-staging-')
-    );
-    temporaryRoots.push(dataRoot, targetRoot, workerRoot, stagingRoot);
-    const workspaceId = 'ws_00000000-0000-769d-bfe1-5a67ada4aec2';
-    const reviewId = 'swr_workspace_review_disabled_user';
-    const timestamp = '2026-07-19T00:00:00.000Z';
-    writeFileSync(join(targetRoot, 'review.txt'), 'before\n', 'utf8');
-    writeFileSync(join(workerRoot, 'review.txt'), 'after\n', 'utf8');
+  for (const { title, point: revocationPoint } of [
+    {
+      title: 'denies a fresh accepted decision after its authenticated user is disabled',
+      point: 'before decision',
+    },
+    {
+      title:
+        'denies a fresh accepted decision after its authenticated user is disabled after native open',
+      point: 'after native open',
+    },
+    {
+      title:
+        'denies a fresh accepted decision after its authenticated user is disabled after Plan ACK',
+      point: 'after Plan ACK',
+    },
+  ] as const) {
+    it(title, async () => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-review-disabled-user-data-'));
+      const targetRoot = mkdtempSync(
+        join(tmpdir(), 'openkit-workspace-review-disabled-user-target-')
+      );
+      const workerRoot = mkdtempSync(
+        join(tmpdir(), 'openkit-workspace-review-disabled-user-worker-')
+      );
+      const stagingRoot = mkdtempSync(
+        join(tmpdir(), 'openkit-workspace-review-disabled-user-staging-')
+      );
+      temporaryRoots.push(dataRoot, targetRoot, workerRoot, stagingRoot);
+      const workspaceId = 'ws_00000000-0000-769d-bfe1-5a67ada4aec2';
+      const reviewId = 'swr_workspace_review_disabled_user';
+      const timestamp = '2026-07-19T00:00:00.000Z';
+      writeFileSync(join(targetRoot, 'review.txt'), 'before\n', 'utf8');
+      writeFileSync(join(workerRoot, 'review.txt'), 'after\n', 'utf8');
 
-    const before = await createFilesystemSnapshotManifest({
-      createdAt: timestamp,
-      resourceId: 'fs_default',
-      rootPath: targetRoot,
-      workspaceId,
-    });
-    const after = await createFilesystemSnapshotManifest({
-      createdAt: timestamp,
-      resourceId: 'fs_default',
-      rootPath: workerRoot,
-      workspaceId,
-    });
-    const changeSet = buildFilesystemWorkspaceChangeSet({
-      after,
-      before,
-      changeSetId: 'wcs_workspace_review_disabled_user',
-      createdAt: timestamp,
-      inputSnapshotId: 'wis_workspace_review_disabled_user',
-      materializationRecordId: 'wmr_workspace_review_disabled_user',
-    });
-    await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
-
-    const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
-    const store = new FsStore({ dataRoot });
-    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    try {
-      const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
-        artifactId: 'ar_00000000-0000-761d-a0e1-b821a3910378',
-        changeSet,
-        patchPayload: null,
-        review: {
-          actionCenterRowId: `workspace-review:${reviewId}`,
-          changeSetId: changeSet.id,
-          createdAt: timestamp,
-          diffSummary: { additions: 0, deletions: 0, filesChanged: 1 },
-          id: reviewId,
-          riskSummary: '1 changed path staged for human review.',
-          staging: {
-            branch: null,
-            ref: `filesystem-staging://${reviewId}`,
-            strategy: 'filesystem_staging',
-          },
-          status: 'pending',
-          updatedAt: timestamp,
-          validation: [],
-          workspaceId,
-        },
-      };
-      recordTestWorkspaceReviewMaterialization(workspaceDb, item);
-      recordWorkspaceSyncReview(workspaceDb, { item });
-      recordFilesystemWorkspaceStagingRoot(workspaceDb, {
-        before,
-        changeSetId: changeSet.id,
+      const before = await createFilesystemSnapshotManifest({
         createdAt: timestamp,
-        reviewId,
-        stagingRootPath: stagingRoot,
-        targetRootPath: targetRoot,
+        resourceId: 'fs_default',
+        rootPath: targetRoot,
         workspaceId,
       });
-      coreDb.sqlite.transaction(() => {
-        disableCanonicalUser(coreDb, LOCAL_USER_ID, new Date(timestamp));
-      })();
+      const after = await createFilesystemSnapshotManifest({
+        createdAt: timestamp,
+        resourceId: 'fs_default',
+        rootPath: workerRoot,
+        workspaceId,
+      });
+      const changeSet = buildFilesystemWorkspaceChangeSet({
+        after,
+        before,
+        changeSetId: 'wcs_workspace_review_disabled_user',
+        createdAt: timestamp,
+        inputSnapshotId: 'wis_workspace_review_disabled_user',
+        materializationRecordId: 'wmr_workspace_review_disabled_user',
+      });
+      await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
 
-      await expect(
-        decideWorkspaceSyncReview({
-          authorityActor: LOCAL_AUTHORITY_ACTOR,
-          coreDb,
-          decidedAt: timestamp,
-          decision: 'accepted',
-          requestId: 'request-workspace-review-disabled-user',
+      const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
+      const store = new FsStore({ dataRoot });
+      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      try {
+        const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
+          artifactId: 'ar_00000000-0000-761d-a0e1-b821a3910378',
+          changeSet,
+          patchPayload: null,
+          review: {
+            actionCenterRowId: `workspace-review:${reviewId}`,
+            changeSetId: changeSet.id,
+            createdAt: timestamp,
+            diffSummary: { additions: 0, deletions: 0, filesChanged: 1 },
+            id: reviewId,
+            riskSummary: '1 changed path staged for human review.',
+            staging: {
+              branch: null,
+              ref: `filesystem-staging://${reviewId}`,
+              strategy: 'filesystem_staging',
+            },
+            status: 'pending',
+            updatedAt: timestamp,
+            validation: [],
+            workspaceId,
+          },
+        };
+        recordTestWorkspaceReviewMaterialization(workspaceDb, item);
+        recordWorkspaceSyncReview(workspaceDb, { item });
+        recordFilesystemWorkspaceStagingRoot(workspaceDb, {
+          before,
+          changeSetId: changeSet.id,
+          createdAt: timestamp,
           reviewId,
-          store,
-          workspaceDb,
+          stagingRootPath: stagingRoot,
+          targetRootPath: targetRoot,
           workspaceId,
-        })
-      ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
-      expect(readFileSync(join(targetRoot, 'review.txt'), 'utf8')).toBe('before\n');
-      expect(listWorkspaceApplyPlans(workspaceDb, workspaceId)).toEqual([]);
-      expect(listWorkspaceApplyResults(workspaceDb, workspaceId)).toEqual([]);
-      expect(getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId)?.review.status).toBe(
-        'pending'
-      );
-    } finally {
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
-    }
-  });
+        });
+        let revoked = false;
+        const disableUser = () => {
+          coreDb.sqlite.transaction(() => {
+            disableCanonicalUser(coreDb, LOCAL_USER_ID, new Date(timestamp));
+          })();
+          revoked = true;
+        };
+        const filesystemApply = vi.spyOn(filesystemSync, 'applyStagedFilesystemChanges');
+        if (revocationPoint === 'before decision') {
+          disableUser();
+        } else if (revocationPoint === 'after native open') {
+          const client = getControlStoreWorkerClient();
+          const open = client.open.bind(client);
+          vi.spyOn(client, 'open').mockImplementation(async (...args) => {
+            await open(...args);
+            disableUser();
+          });
+        } else {
+          const record = applyPlans.recordWorkspaceApplyPlan;
+          vi.spyOn(applyPlans, 'recordWorkspaceApplyPlan').mockImplementation(async (...args) => {
+            // Call the real owner; revoke only after its original persistence acknowledgement.
+            const plan = await record(...args);
+            disableUser();
+            return plan;
+          });
+        }
+
+        await expect(
+          decideWorkspaceSyncReview({
+            authorityActor: LOCAL_AUTHORITY_ACTOR,
+            coreDb,
+            decidedAt: timestamp,
+            decision: 'accepted',
+            requestId: 'request-workspace-review-disabled-user',
+            reviewId,
+            store,
+            workspaceDb,
+            workspaceId,
+          })
+        ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
+        expect(readFileSync(join(targetRoot, 'review.txt'), 'utf8')).toBe('before\n');
+        expect(revoked).toBe(true);
+        // Review And Apply: failed authority handoff never enters the filesystem owner.
+        expect(filesystemApply).not.toHaveBeenCalled();
+        if (revocationPoint === 'after Plan ACK') {
+          expect(listWorkspaceApplyPlans(workspaceDb, workspaceId)).toEqual([
+            expect.objectContaining({
+              id: `wap_${reviewId}`,
+              reviewId,
+              changeSetId: changeSet.id,
+              createdAt: timestamp,
+            }),
+          ]);
+        } else {
+          expect(listWorkspaceApplyPlans(workspaceDb, workspaceId)).toEqual([]);
+        }
+        expect(listWorkspaceApplyResults(workspaceDb, workspaceId)).toEqual([]);
+        expect(getWorkspaceSyncReview(workspaceDb, workspaceId, reviewId)?.review.status).toBe(
+          'pending'
+        );
+      } finally {
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      }
+    });
+  }
 
   it.each([
     'workspaceId',

@@ -234,6 +234,10 @@ import {
   ControlWorkerStorageResultSchema,
 } from './worker-storage-binding-codecs.js';
 import {
+  type ControlWorkspaceApplyPlan,
+  ControlWorkspaceApplyPlanSchema,
+} from './workspace-apply-plan-codecs.js';
+import {
   type ControlCoreSharing,
   type ControlCoreSharingRefusal,
   ControlCoreSharingRefusalSchema,
@@ -243,7 +247,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 37;
+export const CONTROL_WORKER_VERSION = 38;
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z
@@ -464,6 +468,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'worker-image'; readonly input: ControlWorkerImageInput }
       | { readonly operation: 'runtime-target'; readonly input: ControlRuntimeTargetInput }
       | { readonly operation: 'backend-session'; readonly input: ControlBackendSessionInput }
+      | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | {
           readonly operation: 'access-token-verification';
           readonly input: ControlAccessTokenVerification;
@@ -622,6 +627,7 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'better-auth'
     | 'nanohost-transport'
     | 'worker-storage-binding'
+    | 'workspace-apply-plan'
     | 'vault'
     | 'thread-read-membership'
     | 'generative-presentation'
@@ -736,6 +742,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'core-sharing';
       readonly result: ControlCoreSharingResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'workspace-apply-plan';
+      readonly result: ControlWorkspaceApplyPlan;
     }
   | {
       readonly status: 'ok';
@@ -914,6 +925,19 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'workspace-apply-plan')
+    return (
+      exactFields(value, ['operation', 'code', 'message', 'status']) &&
+      typeof value.message === 'string' &&
+      Buffer.byteLength(value.message) <= CONTROL_PRODUCT_LIMITS.metadataBytes &&
+      ((value.code === 'workspace_sync_review_failed' &&
+        value.status === 404 &&
+        value.message === 'Workspace apply plan replay conflict.') ||
+        (value.code === 'unsupported_retained_format' &&
+          value.status === 409 &&
+          value.message === 'Unsupported retained record format.'))
+    );
+
   if (isRecord(value) && value.operation === 'core-journal')
     return ControlCoreJournalRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'worker-image')
@@ -1164,6 +1188,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlAccessTokenVerificationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'runtime-target')
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'workspace-apply-plan')
+    return ControlWorkspaceApplyPlanSchema.safeParse(reply.result).success;
   if (reply.operation === 'backend-session')
     return ControlBackendSessionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'execution-attempt')
@@ -1622,6 +1648,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(value, [...scoped, 'input']) &&
       ControlRuntimeTargetInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'workspace-apply-plan')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceApplyPlanSchema.safeParse(value.input).success
     );
   if (value.operation === 'backend-session')
     return (
