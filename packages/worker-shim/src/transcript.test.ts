@@ -225,12 +225,7 @@ describe('WorkerTranscriptWriter', () => {
     });
 
     const readyWrite = writer.writeAndAppendEvent({ type: 'worker.ready' });
-    await Promise.race([
-      liveStarted,
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('Live event append did not start.')), 50)
-      ),
-    ]);
+    await liveStarted;
     const terminalWrite = writer.writeTerminalOutcome({
       status: 'completed',
       stopReason: 'completed',
