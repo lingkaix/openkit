@@ -10,6 +10,7 @@ import { isScopeAdmitted } from './bootstrap/readiness.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
+import { prepareAuthorizedWorkspaceNotebookRead } from './retrieval-knowledge-adapter.js';
 import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
@@ -80,12 +81,23 @@ export function createAppSearchOperationImplementations(
             query: input.query,
             limit: 20,
           });
+          // Prepare immutable bytes here; the resolver still rechecks current disclosure authority.
+          const notebookRead =
+            trace.notebookRevision === null
+              ? undefined
+              : await prepareAuthorizedWorkspaceNotebookRead({
+                  dataRoot,
+                  workspaceId: workspace.id,
+                  access,
+                  notebookRevision: trace.notebookRevision,
+                });
           const pages = resolveWorkspaceKnowledgeRetrievalPages({
             dataRoot,
             workspaceId: workspace.id,
             access,
             caller: 'app-api',
             selection: trace,
+            notebookRead,
           });
           if (!pages)
             throw new OperationError(
