@@ -19102,7 +19102,12 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .all(anchor.sandboxBindingRef)
       ).toEqual([{ drain_state: 'draining' }]);
-      const pending = dispatch.effect({ ...request, signal: pendingAbort.signal });
+      const pending = dispatch.effect({
+        ...request,
+        signal: request.signal
+          ? AbortSignal.any([request.signal, pendingAbort.signal])
+          : pendingAbort.signal,
+      });
       queued.resolve();
       return pending;
     });
@@ -19294,6 +19299,12 @@ describe('createConfiguredTurnExecutor', () => {
           WHERE execution_id = ? ORDER BY ordinal`)
           .all(bridgeRef!.execution.executionId),
       });
+      const liveResultOnly = vi.spyOn(dispatch, 'expectResultOnly');
+      const liveEffects = vi.spyOn(dispatch, 'effect');
+      onTestFinished(() => {
+        liveResultOnly.mockRestore();
+        liveEffects.mockRestore();
+      });
       if (originalOutcome === 'unknown') {
         // DX Unknown command/result: the live real producer must end its accepted wait unknown.
         pendingAbort.abort();
@@ -19327,9 +19338,65 @@ describe('createConfiguredTurnExecutor', () => {
         expect(unknownSnapshot.root.exclusionRefs.length).toBeGreaterThan(0);
         expect(unknownSnapshot.bytes.steps).toHaveLength(1);
       }
-      // The original variant cuts before abort; the unknown variant first joins real settlement.
-
+      if (unknownSnapshot) {
+        // DX373: observe the real live backend/reconciler handoff before cold reopening can hide it.
+        await expect(runtime.executionReconciler.runOnce()).resolves.toBeUndefined();
+        expect(liveResultOnly).toHaveBeenCalledTimes(1);
+        expect(
+          liveResultOnly.mock.calls[0]![0].map(({ kind, requestId, originPhysicalEpoch }) => ({
+            kind,
+            requestId,
+            originPhysicalEpoch,
+          }))
+        ).toEqual([
+          {
+            kind: 'bridge.close',
+            requestId: bridgeRequest!.requestId,
+            originPhysicalEpoch: anchor.originPhysicalEpoch,
+          },
+        ]);
+        expect(liveEffects).not.toHaveBeenCalled();
+        expect(await dispatch.poll(physical!, 'bridge.close')).toBeNull();
+        expect(settlementBytes()).toStrictEqual(unknownSnapshot.bytes);
+        expect(journalOwners.hasIdleCleanupExecution(currentDb, anchor)).toBe(true);
+        expect(await recoveryBackend.inspectMaterializationCapacity?.(pkg)).toBe(
+          'capacity-saturated'
+        );
+        expect(await readHistorical()).toEqual(historical);
+        expect(store.getTurnById(pkg.scope.turnId)).toEqual(originalTurn);
+        expect(attempts.requireSchedulerExecutionAttempt(currentDb, attemptId)).toEqual(
+          originalAttempt
+        );
+        // Fail the live original consumer's real native transaction. Its retained slot must survive.
+        currentDb.sqlite.exec(`CREATE TRIGGER reject_live_idle_bridge_consumption
+          BEFORE UPDATE ON control_execution_steps
+          WHEN json_extract(NEW.control_json, '$.kind') = 'consume-receipt'
+            AND json_extract(NEW.invocation_json, '$.carriage.requestId') = '${bridgeRequest!.requestId}'
+          BEGIN SELECT RAISE(ABORT, 'injected live idle bridge consumption refusal'); END`);
+        try {
+          await expect(
+            dispatch.result(physical!, 'bridge.close', {
+              requestId: bridgeRequest!.requestId,
+              sandboxId: bridgeRequest!.input.sandboxId,
+              state: 'closed',
+            })
+          ).rejects.toMatchObject({
+            name: ControlStoreWorkerError.name,
+            code: 'constraint',
+            commit: 'not-committed',
+          });
+          expect(settlementBytes()).toStrictEqual(unknownSnapshot.bytes);
+          expect(beforeAck).toBeUndefined();
+          expect(liveEffects).not.toHaveBeenCalled();
+          expect(await dispatch.poll(physical!, 'bridge.close')).toBeNull();
+        } finally {
+          currentDb.sqlite.exec('DROP TRIGGER reject_live_idle_bridge_consumption');
+        }
+      }
+      // The original variant cuts before abort; the unknown variant joins live result-only ownership.
       await runtime.executionReconciler.stop();
+      liveResultOnly.mockRestore();
+      liveEffects.mockRestore();
       await nativeFixture.restore();
       await shutdownControlStoreWorkerClient();
       currentDb.sqlite.close();

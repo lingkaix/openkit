@@ -1018,6 +1018,165 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
+  it.each([
+    'bridge.close',
+    'sandbox.delete',
+  ] as const)('joins only the exact aborted accepted %s slot and retains its original consumer', async (kind) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-aborted-cleanup-join-'));
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = {
+      deploymentId: 'cleanup-join',
+      identityId: 'cleanup-join',
+      targetId: 'cleanup-join',
+    };
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: new Date().toISOString(),
+    });
+    const connected = Promise.withResolvers<object>();
+    const server = createHttp2Server((request, response) => {
+      connected.resolve(readNanoHostPhysicalConnectionContext(request)!);
+      response.writeHead(204).end();
+    });
+    const abort = new AbortController();
+    const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const commit = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const refusal = new Error('Original receipt consumption rolled back.');
+    const deliveries: Promise<void>[] = [];
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    let original: Promise<unknown> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing cleanup join address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      client.request({ ':method': 'POST', ':path': '/' }).end();
+      const physical = await connected.promise;
+      authority.admit({
+        identityId: target.identityId,
+        connectionGeneration: 1,
+        physicalConnection: physical,
+      });
+      const epoch = 'a'.repeat(64);
+      await dispatch.readiness!(physical, Buffer.from(JSON.stringify({ physicalEpoch: epoch })), {
+        ...target,
+        coreDb,
+      });
+      const requestId = 'b'.repeat(64);
+      const sandboxId = 'retained-cleanup';
+      const body = { sandboxId, state: kind === 'bridge.close' ? 'closed' : 'deleted' };
+      const consumer = vi.fn(async (value: unknown) => {
+        const index = consumer.mock.calls.length - 1;
+        expect(value).toEqual(body);
+        if (index > 1) throw new Error('Unexpected extra original consumption.');
+        entered[index]!.resolve();
+        await commit[index]!.promise;
+        if (index === 0) throw refusal;
+      });
+      const replacementConsumer = vi.fn(async () => {});
+      original = dispatch.effect({
+        kind,
+        requestId,
+        input: { sandboxId },
+        signal: abort.signal,
+        consumeResult: consumer,
+      });
+      void original.catch(() => undefined);
+      await expect(dispatch.poll(physical, kind)).resolves.toEqual({ sandboxId, requestId });
+      const expectation = {
+        kind,
+        requestId,
+        originPhysicalEpoch: epoch,
+        consumeResult: replacementConsumer,
+      };
+      // DX Physical Receipt Consumption: a live producer cannot be displaced by inspection.
+      expect(() => dispatch.expectResultOnly!([expectation])).toThrow(/conflict|pending/i);
+      abort.abort();
+      await expect(original).rejects.toThrow(
+        'NanoHost original effect allowance ended; outcome requires inspection.'
+      );
+      for (const mismatch of [
+        { ...expectation, requestId: 'c'.repeat(64) },
+        { ...expectation, originPhysicalEpoch: 'd'.repeat(64) },
+      ])
+        expect(() => dispatch.expectResultOnly!([mismatch])).toThrow(/conflict|pending|origin/i);
+
+      // DX373: same operation/request/origin joins retained ownership without another contact.
+      const retained = dispatch.expectResultOnly!([expectation]);
+      void retained.catch(() => undefined);
+      let joined = false;
+      void retained.then(
+        () => {
+          joined = true;
+        },
+        () => {}
+      );
+      await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
+      await expect(
+        dispatch.effect({ kind, requestId: 'e'.repeat(64), input: { sandboxId: 'excluded' } })
+      ).rejects.toThrow(/pending|enqueued|busy/i);
+      const result = { ...body, requestId };
+      const refused = dispatch.result(physical, kind, result);
+      deliveries.push(refused);
+      void refused.catch(() => undefined);
+      await Promise.race([
+        entered[0]!.promise,
+        refused.then(() => {
+          throw new Error('Result bypassed original consumer.');
+        }),
+      ]);
+      expect(joined).toBe(false);
+      expect(replacementConsumer).not.toHaveBeenCalled();
+      commit[0]!.resolve();
+      await expect(refused).rejects.toBe(refusal);
+      expect(joined).toBe(false);
+      await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
+      const retried = dispatch.result(physical, kind, result);
+      deliveries.push(retried);
+      let acknowledged = false;
+      void retried.then(
+        () => {
+          acknowledged = true;
+        },
+        () => {}
+      );
+      await Promise.race([
+        entered[1]!.promise,
+        retried.then(() => {
+          throw new Error('Retry bypassed original consumer.');
+        }),
+      ]);
+      // The callback models the owning FULL barrier; Factory proves the actual native commit.
+      expect(acknowledged).toBe(false);
+      expect(joined).toBe(false);
+      expect(consumer).toHaveBeenCalledTimes(2);
+      expect(replacementConsumer).not.toHaveBeenCalled();
+      commit[1]!.resolve();
+      await retried;
+      await expect(retained).resolves.toEqual({ kind, result: body });
+      expect(acknowledged).toBe(true);
+      await expect(original).rejects.toThrow(/allowance ended/);
+      await expect(dispatch.result(physical, kind, result)).resolves.toBeUndefined();
+      expect(consumer).toHaveBeenCalledTimes(2);
+      expect(replacementConsumer).not.toHaveBeenCalled();
+      await expect(dispatch.poll(physical, kind)).resolves.toBeNull();
+      expect(authority.mayCarryWork(physical)).toBe(true);
+    } finally {
+      abort.abort();
+      for (const gate of commit) gate.resolve();
+      await Promise.allSettled(deliveries);
+      await original?.catch(() => undefined);
+      client?.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('pairs every Rust effect route with empty idle polls and admits additive baseline results', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-collection-')));
     applyMigrations(coreDb);

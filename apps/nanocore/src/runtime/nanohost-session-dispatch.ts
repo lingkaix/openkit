@@ -407,6 +407,8 @@ export interface NanoHostSessionDispatch {
 
 /** One process-local pending effect owned by the dispatcher. */
 interface PendingNanoHostEffect {
+  /** Original allowance, retained to distinguish an ended producer from a live one. */
+  readonly signal?: AbortSignal | undefined;
   readonly beforeDelivery?: (() => Promise<void>) | undefined;
   readonly consumeResult?:
     | ((result: Readonly<Record<string, unknown>>) => Promise<void>)
@@ -433,10 +435,10 @@ interface PendingNanoHostEffect {
   };
   acceptedConnection?: object;
   command: Readonly<Record<string, unknown>> | null;
-  /** Rejects the existing caller promise for one acknowledged definite failure. */
-  readonly reject: (error: Error) => void;
+  /** Completes the current waiter; an ended cleanup producer can hand off to result-only inspection. */
+  reject: (error: Error) => void;
   readonly requestId: string;
-  readonly resolve: (result: unknown) => void;
+  resolve: (result: unknown) => void;
   accepted: boolean;
   imageBuildInputServed?: boolean;
   /** Physical Epoch current when this command entered the dispatch queue. */
@@ -447,6 +449,23 @@ interface PendingNanoHostEffect {
 /** Process-local correlation shared by one bounded result-only expectation set. */
 interface NanoHostResultOnlyGroup {
   readonly expectations: readonly NanoHostResultOnlyExpectation[];
+}
+
+/** Joins only an exact cleanup slot whose original producer allowance has ended. */
+function canAdoptCleanupResult(
+  expectations: readonly NanoHostResultOnlyExpectation[],
+  expectation: NanoHostResultOnlyExpectation,
+  pending: PendingNanoHostEffect
+): boolean {
+  return (
+    expectations.length === 1 &&
+    (expectation.kind === 'bridge.close' || expectation.kind === 'sandbox.delete') &&
+    pending.accepted &&
+    pending.signal?.aborted === true &&
+    pending.resultOnlyGroup === undefined &&
+    pending.requestId === expectation.requestId &&
+    pending.originPhysicalEpoch === expectation.originPhysicalEpoch
+  );
 }
 
 /** One bounded completed result retained for exact duplicate recognition. */
@@ -777,6 +796,7 @@ export function createNanoHostSessionDispatch(
             telemetryContext: captureTelemetryContext(),
             ...(collectionAbort ? { collectionAbort } : {}),
             accepted: false,
+            signal: request.signal,
             beforeDelivery: request.beforeDelivery,
             consumeResult: request.consumeResult,
             ...(request.imageSettlement ? { imageSettlement: request.imageSettlement } : {}),
@@ -907,7 +927,12 @@ export function createNanoHostSessionDispatch(
             expectation.kind
           ) ||
           !/^[0-9a-f]{64}$/.test(expectation.requestId) ||
-          pendingEffects.has(expectation.kind)
+          (pendingEffects.has(expectation.kind) &&
+            !canAdoptCleanupResult(
+              expectations,
+              expectation,
+              pendingEffects.get(expectation.kind)!
+            ))
         ) {
           throw new Error('NanoHost result-only expectation conflicts with current effect state.');
         }
@@ -930,7 +955,10 @@ export function createNanoHostSessionDispatch(
           }
         }
         for (const expectation of expectations) {
-          if (pendingEffects.has(expectation.kind))
+          if (
+            pendingEffects.has(expectation.kind) &&
+            !canAdoptCleanupResult(expectations, expectation, pendingEffects.get(expectation.kind)!)
+          )
             throw new Error(
               'NanoHost result-only expectation conflicts with current effect state.'
             );
@@ -938,6 +966,15 @@ export function createNanoHostSessionDispatch(
         const resultPromise = new Promise<NanoHostResultOnlySettlement>((resolve, reject) => {
           const group: NanoHostResultOnlyGroup = { expectations: [...expectations] };
           for (const expectation of expectations) {
+            const retained = pendingEffects.get(expectation.kind);
+            if (retained) {
+              // Keep the exact accepted slot, command and original receipt consumer. Its
+              // producer already ended; only its waiter changes, without renewed delivery.
+              retained.reject = reject;
+              retained.resolve = (value) => resolve(value as NanoHostResultOnlySettlement);
+              retained.resultOnlyGroup = group;
+              continue;
+            }
             pendingEffects.set(expectation.kind, {
               accepted: false,
               command: null,
