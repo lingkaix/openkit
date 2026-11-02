@@ -20,7 +20,7 @@ import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
-import type { WorkerBackendSessionRecord } from './worker-backend-sessions.js';
+import type { WorkerBackendSessionRecord } from './worker-backend-session-records.js';
 
 /** Release-authored interpretation for the first existing administrative image-acquisition invocation. */
 export const CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION = 'core-image-acquire/v1';
@@ -97,7 +97,7 @@ export function hasIdleCleanupExecution(db: CoreDb, session: WorkerBackendSessio
     )
       continue;
     const root = readRoot(db, ref.execution);
-    const invocation = invocationView(db, ref);
+    const invocation = readExecutionJournalInvocation(db, ref);
     if (
       root.definitionVersion !== CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
       root.workId !== request.requestId ||
@@ -136,6 +136,11 @@ const workspaceStepKinds = new Set([
 
 // A witness is process-local evidence, not a clock registry or a restart allowance.
 const processWitness = randomUUID();
+
+/** Returns the existing boot witness for a Core producer whose deciding writer runs in another isolate. */
+export function executionJournalProcessWitness(): string {
+  return processWitness;
+}
 const text = z.string().min(1);
 const count = z.number().int().nonnegative().safe();
 const integer = z.union([
@@ -609,7 +614,7 @@ function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
 }
 
 /** Computes a conservative allowance from this live process's original anchor, never from reopening. */
-function invocationView(
+export function readExecutionJournalInvocation(
   db: CoreDb | WorkspaceDb,
   ref: ExecutionStepRef,
   ancestors = new Set<string>()
@@ -633,7 +638,7 @@ function invocationView(
   }
   const parent = stored.invocation.parent;
   if (parent !== null && remainingMs > 0) {
-    const originalParent = invocationView(db, parent.ref, ancestors);
+    const originalParent = readExecutionJournalInvocation(db, parent.ref, ancestors);
     if (
       parent.deadlineUnixNano !== originalParent.control.deadlineUnixNano ||
       (parent.deadlineUnixNano !== null && (expiry === null || expiry > parent.deadlineUnixNano))
@@ -665,6 +670,28 @@ function endedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef): EndedExecut
   };
 }
 
+/** Reads the original linked inspection projection on the deciding connection without an async boundary. */
+export function readExecutionJournalLinkedInspections(
+  db: CoreDb | WorkspaceDb,
+  ref: ExecutionStepRef
+) {
+  const owner = ref.execution.owner;
+  requireScope(db, owner);
+  storedStep(db, ref);
+  const rows = db.sqlite
+    .prepare(
+      "SELECT execution_id, step_id FROM control_execution_steps WHERE inspected_execution_id = ? AND inspected_step_id = ? AND state <> 'intent' ORDER BY execution_id, ordinal"
+    )
+    .all(ref.execution.executionId, ref.stepId) as { execution_id: string; step_id: string }[];
+  return rows.map((row) => ({
+    inspectedStep: ref,
+    inspection: endedStep(db, {
+      execution: { owner, executionId: row.execution_id },
+      stepId: row.step_id,
+    }),
+  }));
+}
+
 /**
  * Creates a read-only view over the caller's existing owning connection; it opens no database or timer.
  * @param db Existing connection selected under current scope admission.
@@ -688,7 +715,7 @@ export function createExecutionStepJournalReader(
     },
     async readInvocation(ref) {
       check(ref.execution);
-      return invocationView(db, ref);
+      return readExecutionJournalInvocation(db, ref);
     },
     async readEndedSteps(ref) {
       check(ref);
@@ -702,19 +729,7 @@ export function createExecutionStepJournalReader(
     },
     async readLinkedInspections(ref) {
       check(ref.execution);
-      storedStep(db, ref);
-      const rows = db.sqlite
-        .prepare(
-          "SELECT execution_id, step_id FROM control_execution_steps WHERE inspected_execution_id = ? AND inspected_step_id = ? AND state <> 'intent' ORDER BY execution_id, ordinal"
-        )
-        .all(ref.execution.executionId, ref.stepId) as { execution_id: string; step_id: string }[];
-      return rows.map((row) => ({
-        inspectedStep: ref,
-        inspection: endedStep(db, {
-          execution: { owner, executionId: row.execution_id },
-          stepId: row.step_id,
-        }),
-      }));
+      return readExecutionJournalLinkedInspections(db, ref);
     },
   };
 }
@@ -728,7 +743,8 @@ export function createExecutionStepJournalReader(
  */
 export function writeExecutionJournalIntent(
   db: CoreDb | WorkspaceDb,
-  input: ExecutionJournalIntent
+  input: ExecutionJournalIntent,
+  producerProcessWitness?: string
 ): ExecutionInvocation {
   requireWriter(db, input.execution.ref);
   const admission = input.execution;
@@ -773,7 +789,7 @@ export function writeExecutionJournalIntent(
       !isDeepStrictEqual(stored.span, span)
     )
       throw new Error('Execution invocation input conflicts.');
-    return invocationView(db, ref);
+    return readExecutionJournalInvocation(db, ref);
   }
   const exists = db.sqlite
     .prepare('SELECT 1 FROM control_executions WHERE id = ?')
@@ -842,7 +858,10 @@ export function writeExecutionJournalIntent(
     parent: input.parent,
     carriage: input.carriage,
     clock: {
-      processWitness,
+      processWitness:
+        db.scope === 'core' && producerProcessWitness !== undefined
+          ? text.parse(producerProcessWitness)
+          : processWitness,
       admittedUnixNano: BigInt(Date.now()) * 1_000_000n,
       admittedMonotonicNano: process.hrtime.bigint(),
     },
@@ -871,7 +890,7 @@ export function writeExecutionJournalIntent(
   db.sqlite
     .prepare('UPDATE control_executions SET revision = revision + 1 WHERE id = ? AND revision = ?')
     .run(admission.ref.executionId, root.revision);
-  return invocationView(db, ref);
+  return readExecutionJournalInvocation(db, ref);
 }
 
 /**

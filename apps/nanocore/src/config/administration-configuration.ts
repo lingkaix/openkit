@@ -447,7 +447,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
           persisted = true;
           revision = written.file.revision;
           reload = 'failed';
-          const result = options.reload();
+          const result = await options.reload();
           reload = result.status === 'dry-run' ? 'failed' : result.status;
           restartRequired = result.plan.requiresRestart.length > 0;
         } catch {

@@ -101,7 +101,7 @@ async function fixture(explicitSetupVersion = true) {
       models: ['openai/gpt-5.2'],
     })
   );
-  recordTestNativeRuntimeTarget(coreDb);
+  await recordTestNativeRuntimeTarget(coreDb);
   const executor = new SimulatedTurnExecutor({ coreDb });
   const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
   const submit = vi.spyOn(executor, 'submit');

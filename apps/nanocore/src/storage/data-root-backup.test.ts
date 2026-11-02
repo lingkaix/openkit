@@ -15,10 +15,8 @@ import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
-import {
-  createOpenKitAccessTokenRecord,
-  verifyOpenKitAccessTokenRecord,
-} from '../auth/access-token-store.js';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import {
   createLightApp,
   createRecord,
@@ -435,7 +433,7 @@ describe('data-root backup manifest', () => {
       tokenId: 'token_backup_workspace',
       workspaceIds: [workspaceId],
     });
-    verifyOpenKitAccessTokenRecord(sourceDb, issuedToken.secret, {
+    await verifyOpenKitAccessTokenRecord(sourceDb, issuedToken.secret, {
       channel: 'cli',
       now: new Date('2026-07-06T01:00:00.000Z'),
       source: 'same-deployment-backup-test',
@@ -554,7 +552,7 @@ describe('data-root backup manifest', () => {
     const restoredCoreDb = openCoreDb(restoredDataRoot);
     try {
       expect(
-        verifyOpenKitAccessTokenRecord(restoredCoreDb, issuedToken.secret, {
+        await verifyOpenKitAccessTokenRecord(restoredCoreDb, issuedToken.secret, {
           channel: 'cli',
           now: new Date('2026-07-06T01:00:00.000Z'),
           source: 'same-deployment-backup-test',

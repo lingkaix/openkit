@@ -1,17 +1,18 @@
 import type { Http2Session } from 'node:http2';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { Context, Hono } from 'hono';
-
 import { asApiError, asInvalidRequestError } from '../api-errors.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   recordNanoHostRuntimeTargetConnectionClose,
 } from '../runtime/nanohost-runtime-target.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import type { AuthVariables } from './middleware.js';
 import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
+  consumeNanoHostPhysicalConnectionAdmission,
   isNanoHostPhysicalConnectionContext,
   readNanoHostPhysicalConnectionContext,
 } from './nanohost-transport-session.js';
@@ -117,17 +118,15 @@ export async function admitNanoHostTransportConnection(
     return { ok: false, reason: 'unauthorized' };
   }
 
-  if (
-    !request.physicalConnection ||
-    !isNanoHostPhysicalConnectionContext(request.physicalConnection)
-  ) {
+  const physicalConnection = request.physicalConnection;
+  if (!physicalConnection || !isNanoHostPhysicalConnectionContext(physicalConnection)) {
     return { ok: false, reason: 'missing_connection_context' };
   }
-  const connection = request.physicalConnection as Http2Session;
+  const connection = physicalConnection as Http2Session;
   if (
     connection.destroyed ||
     connection.closed ||
-    authority.connectionGeneration(request.physicalConnection) !== null
+    authority.connectionGeneration(physicalConnection) !== null
   ) {
     return { ok: false, reason: 'rejected' };
   }
@@ -136,53 +135,84 @@ export async function admitNanoHostTransportConnection(
     return { ok: false, reason: 'nanohost_protocol_mismatch' };
   }
 
-  const targetId = request.targetId?.trim() || verified.ownerNanoHostIdentityId;
-  const observedAt = (request.now ?? new Date()).toISOString();
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
-    deploymentId: verified.deploymentId,
-    identityId: verified.ownerNanoHostIdentityId,
-    observedAt,
-    targetId,
-  });
-  const session = authority.admit({
-    connectionGeneration: target.connectionGeneration,
-    identityId: verified.ownerNanoHostIdentityId,
-    physicalConnection: request.physicalConnection,
-    onClose: (closed) => {
-      if (!coreDb.sqlite.open) {
-        return;
-      }
-      if (closed.closedGeneration === null) {
-        return;
-      }
-      recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-        authoritativeGeneration: closed.authoritativeGeneration,
-        closedGeneration: closed.closedGeneration,
-        observedAt: new Date().toISOString(),
-        targetId,
-      });
-    },
-  });
-
-  if (session.role !== 'authoritative' && session.role !== 'candidate') {
-    recordNanoHostRuntimeTargetConnectionClose(coreDb, {
-      authoritativeGeneration: authority.authoritativeGeneration(verified.ownerNanoHostIdentityId),
-      closedGeneration: target.connectionGeneration,
-      observedAt,
-      targetId,
-    });
+  if (!consumeNanoHostPhysicalConnectionAdmission(physicalConnection)) {
     return { ok: false, reason: 'rejected' };
   }
 
-  return {
-    ok: true,
-    tokenId: verified.tokenId,
-    identityId: verified.ownerNanoHostIdentityId,
-    deploymentId: verified.deploymentId,
-    connectionGeneration: session.connectionGeneration,
-    role: session.role,
-    mayCarryWork: authority.mayCarryWork(request.physicalConnection),
-  };
+  // Allocation and its closed-physical continuation are one accepted producer lifetime.
+  return getControlStoreWorkerClient().runOperation(async () => {
+    const targetId = request.targetId?.trim() || verified.ownerNanoHostIdentityId;
+    const observedAt = (request.now ?? new Date()).toISOString();
+    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      deploymentId: verified.deploymentId,
+      identityId: verified.ownerNanoHostIdentityId,
+      observedAt,
+      targetId,
+    });
+    const admittedToken = getNanoHostTransportTokenRecord(coreDb, verified.tokenId);
+    if (
+      connection.destroyed ||
+      connection.closed ||
+      !admittedToken ||
+      !evaluateNanoHostTransportTokenUsability(admittedToken, request.now).usable ||
+      !isNanoHostTransportIdentityActive(
+        coreDb,
+        verified.ownerNanoHostIdentityId,
+        verified.deploymentId
+      )
+    ) {
+      await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+        authoritativeGeneration: authority.authoritativeGeneration(
+          verified.ownerNanoHostIdentityId
+        ),
+        closedGeneration: target.connectionGeneration,
+        observedAt,
+        targetId,
+      });
+      return { ok: false, reason: 'rejected' };
+    }
+    const session = authority.admit({
+      connectionGeneration: target.connectionGeneration,
+      identityId: verified.ownerNanoHostIdentityId,
+      physicalConnection: physicalConnection,
+      onClose: async (closed) => {
+        if (!coreDb.sqlite.open) {
+          return;
+        }
+        if (closed.closedGeneration === null) {
+          return;
+        }
+        await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+          authoritativeGeneration: closed.authoritativeGeneration,
+          closedGeneration: closed.closedGeneration,
+          observedAt: new Date().toISOString(),
+          targetId,
+        });
+      },
+    });
+
+    if (session.role !== 'authoritative' && session.role !== 'candidate') {
+      await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+        authoritativeGeneration: authority.authoritativeGeneration(
+          verified.ownerNanoHostIdentityId
+        ),
+        closedGeneration: target.connectionGeneration,
+        observedAt,
+        targetId,
+      });
+      return { ok: false, reason: 'rejected' };
+    }
+
+    return {
+      ok: true,
+      tokenId: verified.tokenId,
+      identityId: verified.ownerNanoHostIdentityId,
+      deploymentId: verified.deploymentId,
+      connectionGeneration: session.connectionGeneration,
+      role: session.role,
+      mayCarryWork: authority.mayCarryWork(physicalConnection),
+    };
+  });
 }
 
 /**

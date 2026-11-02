@@ -222,7 +222,7 @@ describe('runtime config loading and reload planning', () => {
     }
     const manager = createRuntimeConfigManager({ dataRoot, captureCoverage: store });
     writeProviderConfig(dataRoot, 'openai/gpt-5.2');
-    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
     expect(manager.status().pendingRestart.length).toBeGreaterThan(0);
     const before = manager.current();
     const status = manager.status();
@@ -385,12 +385,12 @@ describe('runtime config loading and reload planning', () => {
     foreign.release();
   });
 
-  it('reloads fresh shipped templates without credentials with exactly the authored tiers and routes', () => {
+  it('reloads fresh shipped templates without credentials with exactly the authored tiers and routes', async () => {
     const dataRoot = createDataRoot();
     ensureConfigTemplateSurface(dataRoot);
     const manager = createRuntimeConfigManager({ dataRoot });
 
-    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
     const snapshot = manager.current();
     expect(snapshot.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual(
       []
@@ -408,7 +408,7 @@ describe('runtime config loading and reload planning', () => {
   it.each([
     'absent',
     'delisted',
-  ])('reloads a retained tier with a warning for its %s route', (kind) => {
+  ])('reloads a retained tier with a warning for its %s route', async (kind) => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot, '{ "schemaVersion": 1 }');
     writeProviderConfig(dataRoot, 'openai/gpt-5.1');
@@ -422,7 +422,7 @@ describe('runtime config loading and reload planning', () => {
         readFileSync(path, 'utf8').replace('agent-openrouter', 'absent-provider')
       );
     }
-    const reload = manager.reload({ mode: 'safe' });
+    const reload = await manager.reload({ mode: 'safe' });
     expect(reload.status).toBe('applied');
     expect(manager.current().gatewayConfig.logicalModels[0]?.id).toBe('reasoning');
     expect(manager.current().diagnostics).toContainEqual(
@@ -434,7 +434,7 @@ describe('runtime config loading and reload planning', () => {
     );
   });
 
-  it('warns and ignores an additive routing key on reload', () => {
+  it('warns and ignores an additive routing key on reload', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeGatewayConfig(dataRoot);
@@ -443,7 +443,7 @@ describe('runtime config loading and reload planning', () => {
     const raw = JSON.parse(readFileSync(path, 'utf8'));
     raw.logicalModels[0].routing = { autoFailover: false, futureStrategy: 'ignored' };
     writeFileSync(path, JSON.stringify(raw));
-    expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
     expect(manager.current().diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'authored_config.unknown_key',
@@ -709,7 +709,7 @@ describe('runtime config loading and reload planning', () => {
     ]);
   });
 
-  it('retains Discord startup identity through safe reload and reports the pending restart', () => {
+  it('retains Discord startup identity through safe reload and reports the pending restart', async () => {
     const dataRoot = createDataRoot();
     const discord = { applicationId: '123456789012345678', publicKey: 'ab'.repeat(32) };
     const configured = (value: typeof discord) =>
@@ -722,7 +722,7 @@ describe('runtime config loading and reload planning', () => {
         'openai/gpt-5.1',
         configured({ ...discord, publicKey: 'cd'.repeat(32) })
       );
-      const applied = manager.reload({ dryRun: false, mode: 'safe' });
+      const applied = await manager.reload({ dryRun: false, mode: 'safe' });
       expect(applied.status).toBe('applied');
       expect(manager.current().openKitConfig.channels).toEqual({ discord });
       expect(manager.status().pendingRestart).toEqual([
@@ -737,7 +737,7 @@ describe('runtime config loading and reload planning', () => {
     }
   });
 
-  it('refuses the retired inert Workspace approval configuration without publishing it', () => {
+  it('refuses the retired inert Workspace approval configuration without publishing it', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const initialSnapshot = loadRuntimeConfig(dataRoot, { version: 1 });
@@ -747,7 +747,7 @@ describe('runtime config loading and reload planning', () => {
       'openai/gpt-5.1',
       ', "policy": { "workspaceApprovalModes": { "ws_00000000-0000-779d-821b-9fd29ef901ba": { "repo.push": "auto_allow" } } }'
     );
-    expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('failed');
+    expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('failed');
     expect(manager.current()).toBe(initialSnapshot);
   });
 
@@ -825,7 +825,7 @@ describe('runtime config loading and reload planning', () => {
       { name: 'removal', previous: initialHost, next: undefined },
     ];
 
-    it('applies a capacity-only change without requiring restart', () => {
+    it('applies a capacity-only change without requiring restart', async () => {
       const dataRoot = createDataRoot();
       try {
         writeConfiguredServer(
@@ -837,7 +837,7 @@ describe('runtime config loading and reload planning', () => {
         const next = { ...initialHost, maxActiveTurnsPerSandbox: 8 };
         writeConfiguredServer(dataRoot, 'openai/gpt-5.1', `, "nanohost": ${JSON.stringify(next)}`);
 
-        const response = manager.reload({ mode: 'strict' });
+        const response = await manager.reload({ mode: 'strict' });
 
         expect(response.status).toBe('applied');
         expect(response.plan.requiresRestart).toEqual([]);
@@ -854,7 +854,7 @@ describe('runtime config loading and reload planning', () => {
           ? (['dry-run', 'strict', 'safe'] as const)
           : (['safe'] as const);
       for (const mode of modes) {
-        it(`keeps ${transition.name} startup-owned during ${mode} reload`, () => {
+        it(`keeps ${transition.name} startup-owned during ${mode} reload`, async () => {
           const dataRoot = createDataRoot();
           try {
             writeConfiguredServer(
@@ -872,7 +872,7 @@ describe('runtime config loading and reload planning', () => {
               }`
             );
 
-            const response = manager.reload({
+            const response = await manager.reload({
               dryRun: mode === 'dry-run',
               mode: mode === 'strict' ? 'strict' : 'safe',
             });
@@ -948,13 +948,13 @@ describe('runtime config loading and reload planning', () => {
     expect(plan.requiresRestart).toEqual([]);
   });
 
-  it('keeps the current snapshot after failed and strict rejected reloads', () => {
+  it('keeps the current snapshot after failed and strict rejected reloads', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const manager = createRuntimeConfigManager({ dataRoot });
 
     writeServerConfig(dataRoot, '{ invalid jsonc');
-    const failed = manager.reload({ dryRun: false, mode: 'safe' });
+    const failed = await manager.reload({ dryRun: false, mode: 'safe' });
 
     expect(failed.status).toBe('failed');
     expect(manager.current().version).toBe(1);
@@ -969,14 +969,14 @@ describe('runtime config loading and reload planning', () => {
       `,
     "server": { "bind": { "host": "0.0.0.0", "port": 4000 } }`
     );
-    const rejected = manager.reload({ dryRun: false, mode: 'strict' });
+    const rejected = await manager.reload({ dryRun: false, mode: 'strict' });
 
     expect(rejected.status).toBe('rejected');
     expect(manager.current().version).toBe(1);
     expect(manager.status().pendingRestart).toHaveLength(1);
   });
 
-  it('safe reload preserves provider and server state until restart', () => {
+  it('safe reload preserves provider and server state until restart', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const manager = createRuntimeConfigManager({ dataRoot });
@@ -988,7 +988,7 @@ describe('runtime config loading and reload planning', () => {
     "server": { "bind": { "host": "0.0.0.0", "port": 4000 } }`
     );
 
-    const applied = manager.reload({ dryRun: false, mode: 'safe' });
+    const applied = await manager.reload({ dryRun: false, mode: 'safe' });
 
     expect(applied.status).toBe('applied');
     expect(manager.current().version).toBe(2);
@@ -1010,7 +1010,7 @@ describe('runtime config loading and reload planning', () => {
     ]);
   });
 
-  it('keeps the current snapshot when candidate config has blocking diagnostics', () => {
+  it('keeps the current snapshot when candidate config has blocking diagnostics', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     const manager = createRuntimeConfigManager({ dataRoot });
@@ -1027,7 +1027,7 @@ describe('runtime config loading and reload planning', () => {
       })
     );
 
-    const failed = manager.reload({ dryRun: false, mode: 'safe' });
+    const failed = await manager.reload({ dryRun: false, mode: 'safe' });
 
     expect(failed.status).toBe('failed');
     expect(manager.current().version).toBe(1);
@@ -1123,7 +1123,7 @@ describe('runtime config loading and reload planning', () => {
     expect(createRuntimeConfigManager({ dataRoot: authored }).current().diagnostics).toEqual([]);
   });
 
-  it('rejects an unrouted configured model without known context and keeps the active snapshot', () => {
+  it('rejects an unrouted configured model without known context and keeps the active snapshot', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeGatewayConfig(dataRoot);
@@ -1142,7 +1142,7 @@ describe('runtime config loading and reload planning', () => {
       })
     );
 
-    const failed = manager.reload({ dryRun: false, mode: 'safe' });
+    const failed = await manager.reload({ dryRun: false, mode: 'safe' });
 
     expect(failed.status).toBe('failed');
     expect(manager.current().version).toBe(1);
@@ -1220,7 +1220,7 @@ describe('runtime config loading and reload planning', () => {
       'openai/gpt-5.1',
       ', "policy": { "workDataCapture": { "value": "on" } }'
     );
-    const reloaded = manager.reload({ dryRun: false, mode: 'safe' });
+    const reloaded = await manager.reload({ dryRun: false, mode: 'safe' });
     expect(reloaded.status).toBe('applied');
     expect(reloaded.plan.applied).toEqual([
       expect.objectContaining({ path: 'policy.workDataCapture', action: 'applied' }),
@@ -1249,7 +1249,7 @@ describe('runtime config loading and reload planning', () => {
   });
 });
 
-it('reload warns by route name when its required API key is missing', () => {
+it('reload warns by route name when its required API key is missing', async () => {
   const dataRoot = createDataRoot();
   writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
   writeGatewayConfig(dataRoot);
@@ -1257,7 +1257,7 @@ it('reload warns by route name when its required API key is missing', () => {
     dataRoot,
     providerCredentialConfigured: () => false,
   });
-  expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+  expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
   expect(manager.current().diagnostics).toContainEqual(
     expect.objectContaining({
       code: 'gateway.unavailable_member',
@@ -1286,7 +1286,7 @@ it('RET-2 reload selects a checked log bound without changing a running Turn cap
       'openai/gpt-5.1',
       ', "policy": { "workDataCapture": { "nativeLogMaxBytes": 97 } }'
     );
-    expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+    expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
     expect(manager.current().openKitConfig.policy?.workDataCapture).toEqual({
       value: 'off',
       nativeLogMaxBytes: 97,
@@ -1302,7 +1302,7 @@ it('RET-2 reload selects a checked log bound without changing a running Turn cap
       'openai/gpt-5.1',
       ', "policy": { "workDataCapture": { "nativeLogMaxBytes": 0 } }'
     );
-    expect(manager.reload({ dryRun: false, mode: 'safe' }).status).not.toBe('applied');
+    expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).not.toBe('applied');
     expect(manager.current()).toBe(accepted);
   } finally {
     await shutdownControlStoreWorkerClient();

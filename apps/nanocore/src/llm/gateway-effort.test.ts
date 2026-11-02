@@ -813,10 +813,10 @@ describe('Gateway reasoning effort admission and fitting', () => {
     const read = async () => (await (await f.app.request('/v1/models')).json()).data[0];
     expect(await read()).toMatchObject({ id: 'tier', reasoningEffortLevels: ['low', 'high'] });
     f.writeRoutes(['b']);
-    expect(f.config.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await f.config.reload({ mode: 'safe' })).status).toBe('applied');
     expect(await read()).toHaveProperty('reasoningEffortLevels', []);
     f.writeRoutes(['c']);
-    expect(f.config.reload({ mode: 'safe' }).status).toBe('applied');
+    expect((await f.config.reload({ mode: 'safe' })).status).toBe('applied');
     expect(await read()).not.toHaveProperty('reasoningEffortLevels');
     const restarted = f.restartedApp();
     const restartedModel = (await (await restarted.request('/v1/models')).json()).data[0];

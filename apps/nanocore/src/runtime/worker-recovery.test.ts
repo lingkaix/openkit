@@ -58,7 +58,7 @@ import { commandInputHash } from './idempotent-command.js';
 import {
   dispatchNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
-} from './nanohost-harness-records.js';
+} from './nanohost-harness.js';
 import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import {
@@ -103,7 +103,7 @@ async function createCheckpointCloseoutFixture(
   });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-  recordTestNativeRuntimeTarget(coreDb);
+  await recordTestNativeRuntimeTarget(coreDb);
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
   admitTestNativeEnvironment(coreDb, setup.manifest);
   const requestId = options.requestId ?? '00000000-0000-4000-8000-000000000501';
@@ -437,7 +437,7 @@ async function createCheckpointCloseoutFixture(
         .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
         .all() as { ref: string }[];
       for (const integration of integrations) {
-        const queued = dispatchNanoHostHarnessOperation(coreDb, {
+        const queued = await dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: integration.ref,
         });
         if (!queued) continue;
@@ -474,7 +474,7 @@ async function createCheckpointCloseoutFixture(
           schemaVersion: 2 as const,
           sequence: command.sequence,
         };
-        settleNanoHostHarnessOperation(coreDb, {
+        await settleNanoHostHarnessOperation(coreDb, {
           result,
           sandboxIntegrationBindingRef: integration.ref,
           timestamp: new Date().toISOString(),
@@ -491,7 +491,7 @@ async function createCheckpointCloseoutFixture(
           expect(finalWaitEntered).toBe(true);
           const authorization = `Bearer ${command.body.workerControlToken}`;
           finalAuthorization = authorization;
-          gateway.recordHeartbeat({
+          await gateway.recordHeartbeat({
             authorization,
             lineage,
             schemaVersion: 2,
@@ -551,7 +551,7 @@ async function createCheckpointCloseoutFixture(
             sequence: 1,
             data: { status, stopReason, evidenceManifestDigests: {} },
           });
-          gateway.recordFinalStatus({
+          await gateway.recordFinalStatus({
             authorization: finalAuthorization,
             lineage,
             sequence: 1,

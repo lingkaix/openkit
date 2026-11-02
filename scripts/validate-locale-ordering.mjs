@@ -59,7 +59,7 @@ const deferredComparisons = {
     'left.id.localeCompare(right.id)': 1,
     'left.path.localeCompare(right.path)': 2,
   },
-  'apps/nanocore/src/runtime/worker-storage-bindings.ts': {
+  'apps/nanocore/src/runtime/worker-storage-binding-records.ts': {
     'left.target.localeCompare(right.target)': 3,
   },
   'apps/nanocore/src/storage/command-request-records.ts': {

@@ -273,7 +273,7 @@ async function configurationFixture() {
     store,
     files,
     runtimeConfig: () => manager.current(),
-    reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+    reload: async () => await manager.reload({ mode: 'safe', dryRun: false }),
     repositoryWorkspaceDb: () => workspaceDb,
     inflightCommands: new WeakMap(),
   };

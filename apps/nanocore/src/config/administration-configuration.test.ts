@@ -150,7 +150,7 @@ async function fixture(withWorkspaceSchemas = false) {
     cleanup.unshift(() => workspaceDb.sqlite.close());
     await openTestNativeWorkspace(workspaceDb);
   }
-  const reload = vi.fn(() => manager.reload({ mode: 'safe', dryRun: false }));
+  const reload = vi.fn(async () => await manager.reload({ mode: 'safe', dryRun: false }));
   const inflightCommands = new WeakMap();
   const options = {
     actor,
@@ -223,7 +223,7 @@ async function mcpPolicyFixture(observed = true) {
     expectedRevision: created.catalog.revision,
     binding: { ...created.catalog.mcp.bindings[0]!, enabled: true },
   });
-  f.manager.reload({ mode: 'safe', dryRun: false });
+  await f.manager.reload({ mode: 'safe', dryRun: false });
   const catalog = f.manager
     .current()
     .workspaceMcpServerCatalogs.find((entry) => entry.workspaceId === f.workspaceId)!.catalog;

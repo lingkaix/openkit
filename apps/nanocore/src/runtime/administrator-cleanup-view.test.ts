@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import {
@@ -32,22 +33,85 @@ import { readRuntimeCleanupView } from './administrator-cleanup-view.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
-} from './nanohost-harness-records.js';
+} from './nanohost-harness.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import {
+  getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
+import { createWorkerStorageBinding as createLegacyWorkerStorageBinding } from './worker-storage-binding-records.js';
 import {
-  createWorkerStorageBinding,
+  createAndReserveWorkerStorageAttachment,
+  getWorkerStorageBinding,
   markWorkerStoragePurgePending,
-  reserveWorkerStorageAttachment,
   settleWorkerStoragePurge,
 } from './worker-storage-bindings.js';
+
+// The reader stays synchronous. This test-only prelude gates the real native owner,
+// then signals only after its actual SQLite COMMIT returns.
+const snapshotNativeInterception = vi.hoisted(() => ({
+  gate: undefined as SharedArrayBuffer | undefined,
+}));
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (snapshotNativeInterception.gate === undefined) {
+          super(filename, options);
+        } else {
+          const require = createRequire(import.meta.url);
+          const prelude = `
+            const {workerData, parentPort} = require('node:worker_threads');
+            const Database = require(workerData.databaseModule);
+            const originalExec = Database.prototype.exec;
+            const gate = workerData.snapshotGate;
+            let crossing = false;
+            parentPort.on('message', value => {
+              if (value.operation === 'backend-session' && value.input.kind === 'transition' &&
+                  Atomics.compareExchange(gate, 0, 1, 0) === 1) {
+                crossing = true;
+                Atomics.store(gate, 1, 1);
+                Atomics.notify(gate, 1);
+                if (Atomics.wait(gate, 2, 0, 10000) === 'timed-out') {
+                  throw new Error('Snapshot owner transition was not released.');
+                }
+              }
+            });
+            Database.prototype.exec = function(sql) {
+              const result = originalExec.call(this, sql);
+              if (crossing && /^COMMIT$/i.test(sql)) {
+                crossing = false;
+                Atomics.store(gate, 4, this.pragma('synchronous', {simple: true}));
+                Atomics.store(gate, 3, 1);
+                Atomics.notify(gate, 3);
+              }
+              return result;
+            };
+          `;
+          const entry = options?.eval
+            ? String(filename)
+            : `import(${JSON.stringify(String(filename))});`;
+          super(prelude + entry, {
+            ...options,
+            eval: true,
+            workerData: {
+              ...options?.workerData,
+              databaseModule: require.resolve('better-sqlite3'),
+              snapshotGate: new Int32Array(snapshotNativeInterception.gate),
+            },
+          });
+        }
+      }
+    },
+  };
+});
 
 const NOW = '2026-10-16T00:00:10.000Z';
 const CREATED = '2026-10-16T00:00:00.000Z';
@@ -76,7 +140,7 @@ const PRIVATE = 'private-cleanup-canary';
 const fixtures: Array<{ coreDb: CoreDb; dataRoot: string }> = [];
 
 /** Builds current identity, Token, Workspace and NanoHost authority through their real owners. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'administrator-cleanup-'));
   const coreDb = openCoreDb(dataRoot);
   fixtures.push({ coreDb, dataRoot });
@@ -106,13 +170,13 @@ function fixture() {
     tokenId: token.tokenId,
     tokenScope: 'server-admin',
   };
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: testEntityId('dep', 'deployment_cleanup'),
     identityId: 'identity_cleanup',
     targetId: 'target_cleanup',
     observedAt: CREATED,
   });
-  upsertNanoHostRuntimeTarget(coreDb, {
+  await upsertNanoHostRuntimeTarget(coreDb, {
     ...target,
     freshEmpty: true,
     predecessorFenced: true,
@@ -124,8 +188,8 @@ function fixture() {
 }
 
 /** Creates one opaque native Sandbox record for a UTF-8 byte-budget proof. */
-function sandbox(coreDb: CoreDb, sandboxId: string) {
-  createNanoHostHarnessRuntime(coreDb, {
+async function sandbox(coreDb: CoreDb, sandboxId: string): Promise<void> {
+  await createNanoHostHarnessRuntime(coreDb, {
     adapterId: 'pi',
     adapterVersion: '1',
     harnessInstanceId: 'harness_cleanup',
@@ -168,9 +232,9 @@ function attempt(coreDb: CoreDb, label = 'attempt_001') {
 }
 
 /** Composes each actual Core record producer; physical effects are never requested. */
-function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
+async function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
   const execution = attempt(coreDb);
-  recordWorkerBackendSessionMaterializing(coreDb, {
+  await recordWorkerBackendSessionMaterializing(coreDb, {
     identity: {
       agentSessionId: execution.agentSessionId!,
       backendKind: 'openshell',
@@ -179,7 +243,9 @@ function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
       packageSnapshotId: execution.inputRef!,
       runtimeTargetId: 'target_cleanup',
       stagingDirectoryRef: `server/runtime/${PRIVATE}`,
+      transientProviderInstanceId: null,
     },
+    backendVersion: null,
     lineage: {
       workspaceId: execution.workspaceId,
       threadId: execution.threadId,
@@ -189,7 +255,7 @@ function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
     sandboxBindingRef: execution.bindingRef!,
     now: () => CREATED,
   });
-  createNanoHostHarnessRuntime(coreDb, {
+  await createNanoHostHarnessRuntime(coreDb, {
     adapterId: 'pi',
     adapterVersion: '1',
     harnessInstanceId: 'harness_cleanup',
@@ -204,7 +270,7 @@ function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
     runtimeTargetId: 'target_cleanup',
     timestamp: CREATED,
   });
-  openNanoHostAgentSessionBinding(coreDb, {
+  await openNanoHostAgentSessionBinding(coreDb, {
     agentSessionCompatibilityKey: 'b'.repeat(64),
     agentSessionId: execution.agentSessionId!,
     agentSessionRuntimeBindingId: 'binding_cleanup',
@@ -214,11 +280,9 @@ function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
     workspaceId: execution.workspaceId,
     timestamp: CREATED,
   });
-  const storage = createWorkerStorageBinding(coreDb, {
+  // Retained pre-admission idle records have no contributors; this isolated fixture has no live writer.
+  const storage = createLegacyWorkerStorageBinding(coreDb, {
     deploymentId: testEntityId('dep', 'deployment_cleanup'),
-    runtimeTargetId: 'target_cleanup',
-    workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
-    now: CREATED,
     layout: {
       family: 'worker',
       version: '1',
@@ -228,6 +292,9 @@ function populate(coreDb: CoreDb, sandboxId = 'sandbox_cleanup') {
       platform: { architecture: 'amd64', os: 'linux' },
       targets: [{ target: '/workspace' }],
     },
+    now: CREATED,
+    runtimeTargetId: 'target_cleanup',
+    workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
   });
   return { execution, storage };
 }
@@ -274,6 +341,7 @@ function files(root: string, directory = root): Array<[string, string]> {
 
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  snapshotNativeInterception.gate = undefined;
   vi.restoreAllMocks();
   for (const entry of fixtures.splice(0)) {
     if (entry.coreDb.sqlite.open) entry.coreDb.sqlite.close();
@@ -283,7 +351,7 @@ afterEach(async () => {
 
 describe('administrator runtime cleanup view', () => {
   it('declares all five empty runtime sources without inferring cleanup certainty', async () => {
-    const result = await read(fixture());
+    const result = await read(await fixture());
     expect(result).toEqual({
       observedAt: NOW,
       items: [],
@@ -298,8 +366,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('projects all five actual producers with source identity, original timestamps and no private material', async () => {
-    const input = fixture();
-    const { execution, storage } = populate(input.coreDb);
+    const input = await fixture();
+    const { execution, storage } = await populate(input.coreDb);
     const result = await read(input);
     expect(result.sources.map((source) => source.source)).toEqual(SOURCES);
     expect(result.items.map((item) => item.source)).toEqual(SOURCES);
@@ -359,8 +427,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('does not substitute row timestamps or observation time for absent source cleanup proof', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     const result = await read(input);
     for (const item of result.items) {
       expect(item.evidence).toEqual({ kind: 'unknown', reason: 'missing' });
@@ -374,21 +442,21 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('records backend physical cleanup with its original proof timestamp and exact source target', async () => {
-    const input = fixture();
-    const { execution } = populate(input.coreDb);
-    transitionWorkerBackendSessionState(input.coreDb, {
+    const input = await fixture();
+    const { execution } = await populate(input.coreDb);
+    await transitionWorkerBackendSessionState(input.coreDb, {
       attemptId: execution.attemptId,
       fromState: 'materializing',
       toState: 'cleanup-pending',
       now: () => CREATED,
     });
-    transitionWorkerBackendSessionState(input.coreDb, {
+    await transitionWorkerBackendSessionState(input.coreDb, {
       attemptId: execution.attemptId,
       fromState: 'cleanup-pending',
       toState: 'physical-cleaned',
       now: () => CREATED,
     });
-    transitionWorkerBackendSessionState(input.coreDb, {
+    await transitionWorkerBackendSessionState(input.coreDb, {
       attemptId: execution.attemptId,
       fromState: 'physical-cleaned',
       toState: 'cleaned',
@@ -415,8 +483,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('keeps contradictory backend state and proof explicit instead of inferring cleanup', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     input.coreDb.sqlite
       .prepare('UPDATE worker_backend_sessions SET physical_cleaned_at = ?')
       .run(CREATED);
@@ -427,9 +495,9 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('preserves stale Epoch uncertainty when current connection readiness is lost', async () => {
-    const input = fixture();
-    populate(input.coreDb);
-    recordNanoHostRuntimeTargetConnectionClose(input.coreDb, {
+    const input = await fixture();
+    await populate(input.coreDb);
+    await recordNanoHostRuntimeTargetConnectionClose(input.coreDb, {
       targetId: 'target_cleanup',
       closedGeneration: 1,
       authoritativeGeneration: null,
@@ -445,21 +513,21 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('preserves a recorded historical backend cleanup receipt after current readiness is lost', async () => {
-    const input = fixture();
-    const { execution } = populate(input.coreDb);
-    transitionWorkerBackendSessionState(input.coreDb, {
+    const input = await fixture();
+    const { execution } = await populate(input.coreDb);
+    await transitionWorkerBackendSessionState(input.coreDb, {
       attemptId: execution.attemptId,
       fromState: 'materializing',
       toState: 'cleanup-pending',
       now: () => CREATED,
     });
-    transitionWorkerBackendSessionState(input.coreDb, {
+    await transitionWorkerBackendSessionState(input.coreDb, {
       attemptId: execution.attemptId,
       fromState: 'cleanup-pending',
       toState: 'physical-cleaned',
       now: () => CREATED,
     });
-    recordNanoHostRuntimeTargetConnectionClose(input.coreDb, {
+    await recordNanoHostRuntimeTargetConnectionClose(input.coreDb, {
       targetId: 'target_cleanup',
       closedGeneration: 1,
       authoritativeGeneration: null,
@@ -480,15 +548,15 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('reports a different freshly admitted physical Epoch without manufacturing cleanup proof', async () => {
-    const input = fixture();
-    populate(input.coreDb);
-    const successor = allocateNanoHostRuntimeTargetConnectionGeneration(input.coreDb, {
+    const input = await fixture();
+    await populate(input.coreDb);
+    const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(input.coreDb, {
       targetId: 'target_cleanup',
       identityId: 'identity_cleanup',
       deploymentId: testEntityId('dep', 'deployment_cleanup'),
       observedAt: NOW,
     });
-    upsertNanoHostRuntimeTarget(input.coreDb, {
+    await upsertNanoHostRuntimeTarget(input.coreDb, {
       ...successor,
       physicalEpoch: 'e'.repeat(64),
       freshEmpty: true,
@@ -505,9 +573,9 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('records retained-storage purge only from the exact settled purge timestamp', async () => {
-    const input = fixture();
-    const { storage } = populate(input.coreDb);
-    const pending = markWorkerStoragePurgePending(input.coreDb, {
+    const input = await fixture();
+    const { storage } = await populate(input.coreDb);
+    const pending = await markWorkerStoragePurgePending(input.coreDb, {
       storageRef: storage.storageRef,
       expectedRevision: storage.revision,
       now: CREATED,
@@ -520,7 +588,7 @@ describe('administrator runtime cleanup view', () => {
             .get(storage.storageRef)
         ),
     });
-    const settled = settleWorkerStoragePurge(input.coreDb, {
+    const settled = await settleWorkerStoragePurge(input.coreDb, {
       storageRef: storage.storageRef,
       expectedRevision: pending.revision,
       outcome: 'purged',
@@ -547,8 +615,8 @@ describe('administrator runtime cleanup view', () => {
     'revoked',
     'expired',
   ] as const)('refuses %s authority before enumerating any runtime source', async (kind) => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     if (kind === 'ordinary' || kind === 'readonly') {
       const scope = kind === 'readonly' ? 'workspace-readonly' : 'workspace';
       const issued = createOpenKitAccessTokenRecord(input.coreDb, {
@@ -584,16 +652,16 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('rechecks a previously successful administrator instead of retaining admission', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     expect((await read(input)).items).toHaveLength(5);
     revokeOpenKitAccessTokenRecord(input.coreDb, input.token.tokenId, new Date(NOW));
     await expect(async () => read(input)).rejects.toBeInstanceOf(DeploymentAdminRequiredError);
   });
 
   it('uses the current selected administrator Token for a session without manufacturing membership', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     expect(
       setDefaultServerAdminTokenId(
         input.coreDb,
@@ -620,7 +688,7 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('fails the operation when current authority storage is missing', async () => {
-    const input = fixture();
+    const input = await fixture();
     const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
     vi.spyOn(input.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
       if (sql.includes('openkit_access_tokens')) {
@@ -634,8 +702,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it.each(TABLES)('keeps independent source observations when %s is unavailable', async (table) => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
     vi.spyOn(input.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
       if (sql.includes(table)) throw new Error(`unavailable_${table}`);
@@ -656,8 +724,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('withholds malformed required identity and unknown owner state without leaking invalid rows', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     input.coreDb.sqlite.prepare("UPDATE worker_backend_sessions SET thread_id = ''").run();
     input.coreDb.sqlite
       .prepare('UPDATE agent_session_runtime_bindings SET lifecycle_state = ?')
@@ -675,8 +743,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('withholds identifiers when required source Workspace authority is absent', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     input.coreDb.sqlite
       .prepare(
         "DELETE FROM workspace_registry WHERE workspace_id = 'ws_00000000-0000-740d-a2ee-b63efda55617'"
@@ -700,8 +768,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('keeps non-content observations of a deleting Workspace without reopening it', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     input.coreDb.sqlite
       .prepare(
         "UPDATE workspace_registry SET status = 'deleting' WHERE workspace_id = 'ws_00000000-0000-740d-a2ee-b63efda55617'"
@@ -714,8 +782,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('withholds contributed storage whose current private-source audience cannot be proved from Core records', async () => {
-    const input = fixture();
-    const { storage: empty } = populate(input.coreDb);
+    const input = await fixture();
+    const { storage: empty } = await populate(input.coreDb);
     const store = await createDemoStore({ dataRoot: input.dataRoot });
     const workspace = store.listWorkspaces().find((entry) => entry.kind === 'code')!;
     recordWorkspaceOwnerMembership({
@@ -730,14 +798,7 @@ describe('administrator runtime cleanup view', () => {
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    const restricted = createWorkerStorageBinding(input.coreDb, {
-      deploymentId: testEntityId('dep', 'deployment_cleanup'),
-      runtimeTargetId: 'target_cleanup',
-      workspaceId: workspace.id,
-      now: CREATED,
-      layout: empty.layout,
-    });
-    reserveWorkerStorageAttachment(input.coreDb, {
+    const restricted = await createAndReserveWorkerStorageAttachment(input.coreDb, {
       agentSessionId: testEntityId('as', 'private_storage_session'),
       authorizeContributor: (contributor) =>
         isThreadIdVisible(
@@ -746,16 +807,23 @@ describe('administrator runtime cleanup view', () => {
           contributor.threadId,
           contributor.responsibleUserId
         ),
-      expectedRevision: restricted.revision,
-      layout: restricted.layout,
+      deploymentId: testEntityId('dep', 'deployment_cleanup'),
+      layout: empty.layout,
+      now: CREATED,
       purpose: 'work',
       responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      runtimeTargetId: restricted.runtimeTargetId,
-      storageRef: restricted.storageRef,
+      runtimeTargetId: 'target_cleanup',
       threadId: thread.id,
       workspaceId: workspace.id,
-      now: CREATED,
     });
+    await shutdownControlStoreWorkerClient();
+    // Finish cross-connection setup before measuring only the read subject's file effects.
+    input.coreDb.sqlite.close();
+    input.coreDb = openCoreDb(input.dataRoot);
+    fixtures[fixtures.length - 1]!.coreDb = input.coreDb;
+    expect(getWorkerStorageBinding(input.coreDb, { storageRef: restricted.storageRef })).toEqual(
+      restricted
+    );
     const before = files(input.dataRoot);
     const result = await read(input);
     expect(JSON.stringify(result)).not.toContain(restricted.storageRef);
@@ -769,8 +837,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('retains stable global source and opaque identity order with one count budget', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     attempt(input.coreDb, 'attempt_003');
     attempt(input.coreDb, 'attempt_002');
     const first = await read(input, 2);
@@ -790,7 +858,7 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('distinguishes exact count coverage from a sentinel proving omitted entries', async () => {
-    const input = fixture();
+    const input = await fixture();
     attempt(input.coreDb);
     const exact = await read(input, 1);
     expect(exact.items).toHaveLength(1);
@@ -802,8 +870,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('consumes no more than the count budget plus its sentinel and stops after proved truncation', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     for (let index = 2; index <= 25; index += 1)
       attempt(input.coreDb, `attempt_${String(index).padStart(3, '0')}`);
     const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
@@ -849,14 +917,14 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('rejects internal budgets above the fixed public ceilings', async () => {
-    const input = fixture();
+    const input = await fixture();
     await expect(async () => read(input, 101)).rejects.toThrow();
     await expect(async () => read(input, 100, 262145)).rejects.toThrow();
   });
 
   it('counts the complete UTF-8 fragment and coverage flags without cutting identity fields', async () => {
-    const input = fixture();
-    sandbox(input.coreDb, `sandbox_${'界'.repeat(150)}`);
+    const input = await fixture();
+    await sandbox(input.coreDb, `sandbox_${'界'.repeat(150)}`);
     const complete = await read(input);
     const completeBytes = Buffer.byteLength(JSON.stringify(complete), 'utf8');
     expect(completeBytes).toBeGreaterThan(JSON.stringify(complete).length);
@@ -871,12 +939,12 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('refuses a byte budget that cannot contain even the five-source metadata', async () => {
-    await expect(async () => read(fixture(), 100, 1)).rejects.toThrow();
+    await expect(async () => read(await fixture(), 100, 1)).rejects.toThrow();
   });
 
   it('does not mutate SQLite or files, including unknown cleanup records and inert filesystem entries', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     input.coreDb.sqlite.prepare("UPDATE worker_storage_bindings SET state = 'unknown'").run();
     input.coreDb.sqlite
       .prepare(
@@ -896,8 +964,8 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('reads current canonical records after reopening instead of using a retained summary', async () => {
-    const input = fixture();
-    populate(input.coreDb);
+    const input = await fixture();
+    await populate(input.coreDb);
     await read(input);
     input.coreDb.sqlite.close();
     input.coreDb = openCoreDb(input.dataRoot);
@@ -913,26 +981,54 @@ describe('administrator runtime cleanup view', () => {
   });
 
   it('preserves actual source state and timestamp tuples during a concurrent owner transition', async () => {
-    const input = fixture();
-    const { execution } = populate(input.coreDb);
+    const gate = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 5));
+    snapshotNativeInterception.gate = gate.buffer as SharedArrayBuffer;
+    const input = await fixture();
+    const { execution } = await populate(input.coreDb);
     const concurrent = openCoreDb(input.dataRoot);
+    concurrent.sqlite.pragma('query_only = ON');
+    input.coreDb.sqlite.pragma('query_only = ON');
     const prepare = input.coreDb.sqlite.prepare.bind(input.coreDb.sqlite);
     let changed = false;
+    let committedBeforeReaderResumed = false;
+    let transition: ReturnType<typeof transitionWorkerBackendSessionState> | undefined;
     try {
+      Atomics.store(gate, 0, 1);
+      transition = transitionWorkerBackendSessionState(concurrent, {
+        attemptId: execution.attemptId,
+        fromState: 'materializing',
+        toState: 'cleanup-pending',
+        now: () => NOW,
+      });
+      await vi.waitFor(() => expect(Atomics.load(gate, 1)).toBe(1), {
+        timeout: 5000,
+        interval: 5,
+      });
       const probe = vi.spyOn(input.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
         if (!changed && /\bFROM\s+scheduler_execution_attempts\b/i.test(sql)) {
           changed = true;
-          transitionWorkerBackendSessionState(concurrent, {
-            attemptId: execution.attemptId,
-            fromState: 'materializing',
-            toState: 'cleanup-pending',
-            now: () => NOW,
-          });
+          // Release the actual writer at the original source-read seam and do not let
+          // this synchronous snapshot continue until its FULL commit is observed.
+          Atomics.store(gate, 2, 1);
+          Atomics.notify(gate, 2);
+          const wait = Atomics.wait(gate, 3, 0, 5000);
+          const committed = getWorkerBackendSession(concurrent, execution.attemptId);
+          committedBeforeReaderResumed =
+            wait !== 'timed-out' &&
+            Atomics.load(gate, 3) === 1 &&
+            Atomics.load(gate, 4) === 2 &&
+            input.coreDb.sqlite.inTransaction &&
+            committed?.state === 'cleanup-pending' &&
+            committed.updatedAt === NOW;
+          if (!committedBeforeReaderResumed) {
+            throw new Error('The owner did not commit before the snapshot reader resumed.');
+          }
         }
         return prepare(sql);
       });
       const during = await read(input);
       expect(changed).toBe(true);
+      expect(committedBeforeReaderResumed).toBe(true);
       const backend = during.items.find((item) => item.source === 'backend-session');
       expect(backend).toBeDefined();
       expect([
@@ -940,6 +1036,7 @@ describe('administrator runtime cleanup view', () => {
         { sourceUpdatedAt: NOW, state: 'cleanup-pending' },
       ]).toContainEqual({ sourceUpdatedAt: backend?.sourceUpdatedAt, state: backend?.state.state });
       probe.mockRestore();
+      await transition;
       expect(
         (await read(input)).items.find((item) => item.source === 'backend-session')
       ).toMatchObject({
@@ -947,7 +1044,13 @@ describe('administrator runtime cleanup view', () => {
         state: { state: 'cleanup-pending', workspaceHandoffState: 'pending' },
       });
     } finally {
-      concurrent.sqlite.close();
+      Atomics.store(gate, 2, 1);
+      Atomics.notify(gate, 2);
+      try {
+        await transition;
+      } finally {
+        concurrent.sqlite.close();
+      }
     }
   });
 });

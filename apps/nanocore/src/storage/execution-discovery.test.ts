@@ -23,7 +23,7 @@ import type {
   ExecutionJournalSpan,
 } from '../runtime/execution-step-journal.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import { drainNanoHostSandboxAdmission } from '../runtime/nanohost-harness-records.js';
+import { drainNanoHostSandboxAdmission } from '../runtime/nanohost-harness.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-sessions.js';
 import type { WorkerGovernanceBackend } from '../runtime/worker-governance-backend.js';
 import { getWorkerStorageBinding } from '../runtime/worker-storage-bindings.js';
@@ -39,7 +39,10 @@ import { admitTestNativeEnvironment } from '../test-support/native-environment.j
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { controlStoreFor } from './control-store.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { ensureLayout } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -244,7 +247,7 @@ describe('Core execution candidate discovery', () => {
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
     admitTestNativeEnvironment(db, manifest);
-    const native = createNativeTaskAdmissionFixture(db, store, {
+    const native = await createNativeTaskAdmissionFixture(db, store, {
       readRuntimeConfig: () =>
         createInMemoryRuntimeConfigSnapshot({
           ...loadRuntimeConfig(dataRoot),
@@ -328,37 +331,58 @@ describe('Core execution candidate discovery', () => {
         store.getAgentSession(agentSessionId).retainedStorage!
       );
       if (!storage?.currentSandboxBindingRef) throw new Error('Missing actual retained resident.');
-      drainNanoHostSandboxAdmission(db, {
+      await drainNanoHostSandboxAdmission(db, {
         sandboxBindingRef: storage.currentSandboxBindingRef,
         originPhysicalEpoch: anchor.originPhysicalEpoch,
       });
-      const preDeleteCut = new Error('Stop before the pending resident first delete intent.');
-      const write = journalOwner.writeExecutionJournalIntent;
-      let bridge: ReturnType<typeof write> | undefined;
+      // Fail the actual native INSERT; the old Main journal spy cannot observe the moved owner.
+      db.sqlite.exec(`CREATE TRIGGER reject_discovery_delete_intent
+        BEFORE INSERT ON control_execution_steps
+        WHEN json_extract(NEW.invocation_json, '$.carriage.operation') = 'sandbox.delete'
+          AND json_extract(NEW.control_json, '$.attemptId') = '${attempt.attemptId}'
+        BEGIN SELECT RAISE(ABORT, 'injected discovery pre-delete cut'); END`);
+      cut = {
+        mockRestore: () => {
+          db.sqlite.exec('DROP TRIGGER reject_discovery_delete_intent');
+        },
+      };
       let deleteRefused = false;
-      cut = vi.spyOn(journalOwner, 'writeExecutionJournalIntent').mockImplementation((...args) => {
-        if (args[0] === db && args[1].carriage.operation === 'sandbox.delete') {
-          deleteRefused = true;
-          throw preDeleteCut;
-        }
-        const original = write(...args);
-        if (
-          args[0] === db &&
-          original.carriage.operation === 'bridge.close' &&
-          original.control.kind !== 'consume-receipt'
-        )
-          bridge = original;
-        return original;
-      });
-      await backend
-        .cleanupSession(identity, { failedCloseout: false, wholeSandbox: true })
-        .catch(() => undefined);
+      try {
+        await backend.cleanupSession(identity, { failedCloseout: false, wholeSandbox: true });
+      } catch (failure) {
+        const causes = (error: unknown, depth = 0): unknown[] =>
+          error instanceof AggregateError && depth < 3 && error.errors.length <= 8
+            ? error.errors.flatMap((cause) => causes(cause, depth + 1))
+            : [error];
+        const original = causes(failure);
+        deleteRefused =
+          original.length > 0 &&
+          original.every(
+            (error) =>
+              error instanceof ControlStoreWorkerError &&
+              error.code === 'constraint' &&
+              error.commit === 'not-committed'
+          );
+        if (!deleteRefused) throw failure;
+      }
       expect(deleteRefused, 'Real cleanup must reach the pre-delete cut.').toBe(true);
-      await native.runtime.executionReconciler.stop().catch(() => undefined);
+      await native.runtime.executionReconciler.stop();
       cut.mockRestore();
       cut = undefined;
-      if (!bridge) throw new Error('Real cleanup has no admitted bridge original.');
+      const physicalBridge = native.effects.find(({ kind }) => kind === 'bridge.close');
+      if (!physicalBridge?.requestId)
+        throw new Error('Real cleanup has no admitted bridge original.');
+      const originalBridge = db.sqlite
+        .prepare(`SELECT execution_id AS executionId, step_id AS stepId FROM control_execution_steps
+        WHERE json_extract(invocation_json, '$.carriage.requestId') = ?
+          AND json_extract(control_json, '$.kind') <> 'consume-receipt'`)
+        .get(physicalBridge.requestId) as { executionId: string; stepId: string } | undefined;
+      if (!originalBridge) throw new Error('Real cleanup has no retained bridge original.');
       const reader = createExecutionStepJournalReader(db, { kind: 'server' });
+      const bridge = await reader.readInvocation({
+        execution: { owner: { kind: 'server' }, executionId: originalBridge.executionId },
+        stepId: originalBridge.stepId,
+      });
       const root = await reader.readExecution(bridge.ref.execution);
       const completed = await reader.readInvocation(bridge.ref);
       expect(root.phase).toBe('closed');

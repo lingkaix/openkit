@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { once } from 'node:events';
+import { connect, createServer } from 'node:http2';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   bindRequiresServerAuthenticatedTls,
   createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
   resolveNanoHostTransportListener,
 } from './nanohost-transport-session.js';
 
@@ -34,7 +38,6 @@ describe('nanohost-transport-session authority', () => {
       identityId,
       physicalConnection: {} as never,
       connectionGeneration: 1,
-      predecessorGeneration: null,
     });
     expect(forged.role).toBe('rejected');
     expect(authority.mayCarryWork(forged)).toBe(false);
@@ -96,4 +99,62 @@ describe('nanohost-transport-session authority', () => {
       'App and NanoHost listeners must use distinct TCP ports.'
     );
   });
+});
+
+it('contains a failed physical-close event and retains the same failure for explicit owner joins', async () => {
+  const authority = createNanoHostTransportSessionAuthority();
+  let capture!: (physical: import('node:http2').Http2Session) => void;
+  const captured = new Promise<import('node:http2').Http2Session>((resolve) => {
+    capture = resolve;
+  });
+  const fault = new Error('Native close publication refused.');
+  const publish = vi.fn(async () => {
+    throw fault;
+  });
+  const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const server = createServer((request, response) => {
+    const physical = readNanoHostPhysicalConnectionContext(
+      request
+    )! as import('node:http2').Http2Session;
+    authority.admit({
+      identityId: 'failed-close-test',
+      connectionGeneration: 1,
+      physicalConnection: physical,
+      onClose: publish,
+    });
+    capture(physical);
+    response.end();
+  });
+  let client: ReturnType<typeof connect> | undefined;
+  try {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing test listener.');
+    client = connect(`http://127.0.0.1:${address.port}`);
+    const request = client.request({ ':path': '/' });
+    request.resume();
+    request.end();
+    const physical = await captured;
+    await once(request, 'end');
+    const closed = once(physical, 'close');
+    await expect(authority.closeAllPhysicalConnections()).rejects.toMatchObject({
+      errors: [fault],
+    });
+    await closed;
+    await nextTurn();
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(diagnostic).toHaveBeenCalledWith('NanoHost physical close publication failed.', fault);
+    expect(authority.mayCarryWork(physical)).toBe(false);
+    await expect(authority.closeAllPhysicalConnections()).rejects.toMatchObject({
+      errors: [fault],
+    });
+    expect(publish).toHaveBeenCalledTimes(1);
+  } finally {
+    client?.destroy();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve()))
+    );
+    diagnostic.mockRestore();
+  }
 });

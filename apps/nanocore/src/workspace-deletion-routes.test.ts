@@ -37,7 +37,7 @@ import {
   dispatchNanoHostHarnessOperation,
   openNanoHostAgentSessionBinding,
   settleNanoHostHarnessOperation,
-} from './runtime/nanohost-harness-records.js';
+} from './runtime/nanohost-harness.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
@@ -913,8 +913,8 @@ it.each([
         createdAt: timestamp,
         updatedAt: timestamp,
       });
-      const target = recordTestNativeRuntimeTarget(coreDb);
-      createNanoHostHarnessRuntime(coreDb, {
+      const target = await recordTestNativeRuntimeTarget(coreDb);
+      await createNanoHostHarnessRuntime(coreDb, {
         maxActiveTurns: 1,
         adapterId: 'codex',
         adapterVersion: 'test',
@@ -939,19 +939,19 @@ it.each([
         threadId: thread.id,
         workspaceId: workspace.id,
       };
-      openNanoHostAgentSessionBinding(coreDb, { ...binding, timestamp });
+      await openNanoHostAgentSessionBinding(coreDb, { ...binding, timestamp });
       const { harnessInstanceId, ...sessionOpen } = binding;
-      queueTestPreparedHarnessOperation(coreDb, {
+      await queueTestPreparedHarnessOperation(coreDb, {
         body: { ...sessionOpen, adapterId: 'codex', resume: null },
         harnessInstanceId,
         operation: 'session.open',
         timestamp,
       });
-      const command = dispatchNanoHostHarnessOperation(coreDb, {
+      const command = (await dispatchNanoHostHarnessOperation(coreDb, {
         sandboxIntegrationBindingRef: 'integration-binding-deletion-idle',
-      })!;
+      }))!;
       expect(command).not.toBeNull();
-      settleNanoHostHarnessOperation(coreDb, {
+      await settleNanoHostHarnessOperation(coreDb, {
         sandboxIntegrationBindingRef: 'integration-binding-deletion-idle',
         timestamp,
         result: {

@@ -21,7 +21,7 @@ import {
   listSchedulerExecutionAttemptsForTurn,
   markSchedulerAttemptForTerminalTurn,
   markSchedulerExecutionAttemptClosing,
-} from './runtime/execution-attempt-records.js';
+} from './runtime/execution-attempts.js';
 import {
   commandInputHash,
   type InflightIdempotentCommand,
@@ -186,7 +186,7 @@ export async function startTurn(
               admit(created);
             },
           }),
-        closeout: (handle) => markSchedulerAttemptForTerminalTurn(coreDb, handle.turn),
+        closeout: async (handle) => await markSchedulerAttemptForTerminalTurn(coreDb, handle.turn),
         settled: () => {
           if (admittedTurnId) closeouts.delete(admittedTurnId);
         },
@@ -396,11 +396,11 @@ export async function interruptProductTurn(input: {
           return acceptedTurn();
         }
         if (attempt?.phase === 'open' && attempt.operationId === null) {
-          markSchedulerExecutionAttemptClosing(coreDb, {
+          await markSchedulerExecutionAttemptClosing(coreDb, {
             attemptId: attempt.attemptId,
             cause: 'turn-cancelled',
           });
-          closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+          await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
             attemptId: attempt.attemptId,
             noOutstandingEffects: true,
             cause: 'turn-cancelled',
@@ -494,7 +494,7 @@ export async function interruptProductTurn(input: {
     throw error;
   });
 
-  markSchedulerAttemptForTerminalTurn(coreDb, turn);
+  await markSchedulerAttemptForTerminalTurn(coreDb, turn);
 
   return turn;
 }

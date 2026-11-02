@@ -193,7 +193,7 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     environmentPackage,
     createdAt: f.turn.startedAt!,
   });
-  const target = recordTestNativeRuntimeTarget(f.coreDb);
+  const target = await recordTestNativeRuntimeTarget(f.coreDb);
   const entry = createSchedulerAdmissionEntry(f.coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'observer-names',

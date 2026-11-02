@@ -93,7 +93,7 @@ describe('scheduler dispatch service', () => {
         ownerUserId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
         workspaceId: workspace.id,
       });
-      recordTestNativeRuntimeTarget(coreDb);
+      await recordTestNativeRuntimeTarget(coreDb);
       const requestId = '0190f4c8-0000-7000-8000-000000000801';
       const scope = {
         actorId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
@@ -272,7 +272,7 @@ describe('scheduler dispatch service', () => {
         ownerUserId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
         workspaceId: workspace.id,
       });
-      recordTestNativeRuntimeTarget(coreDb);
+      await recordTestNativeRuntimeTarget(coreDb);
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         priorityClass: 'interactive',

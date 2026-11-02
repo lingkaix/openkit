@@ -142,8 +142,8 @@ async function restrictSourceThread(
   expect(applied.status, await applied.clone().text()).toBe(200);
   delayed?.mockRestore();
   expect((await applied.json()).reloadStatus).toBe(deferReload ? 'dry-run' : 'applied');
-  return () => {
-    expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+  return async () => {
+    expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
   };
 }
 

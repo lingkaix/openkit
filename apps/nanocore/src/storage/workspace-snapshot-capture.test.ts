@@ -1371,13 +1371,13 @@ describe('C-a additional owner families', () => {
       now,
     });
     const deploymentId = readDataRootLayoutMarker(f.dataRoot).deploymentId;
-    const target = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
       deploymentId,
       identityId: 'snapshot-cleanup-fixture',
       observedAt: now(),
       targetId: 'snapshot-cleanup-target',
     });
-    upsertNanoHostRuntimeTarget(f.coreDb, {
+    await upsertNanoHostRuntimeTarget(f.coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: now(),
@@ -1385,7 +1385,7 @@ describe('C-a additional owner families', () => {
       predecessorFenced: true,
       ready: true,
     });
-    recordWorkerBackendSessionMaterializing(f.coreDb, {
+    await recordWorkerBackendSessionMaterializing(f.coreDb, {
       backendLineage: {
         kind: 'reference',
         imageRef: `registry.invalid/fixture@sha256:${'b'.repeat(64)}`,
@@ -1405,7 +1405,7 @@ describe('C-a additional owner families', () => {
       now,
       sandboxBindingRef: 'lease-binding:cleanup-fixture',
     });
-    transitionWorkerBackendSessionState(f.coreDb, {
+    await transitionWorkerBackendSessionState(f.coreDb, {
       attemptId,
       fromState: 'materializing',
       toState: 'cleanup-pending',
@@ -1422,13 +1422,13 @@ describe('C-a additional owner families', () => {
       ])
     );
     await refusal(f);
-    transitionWorkerBackendSessionState(f.coreDb, {
+    await transitionWorkerBackendSessionState(f.coreDb, {
       attemptId,
       fromState: 'cleanup-pending',
       toState: 'physical-cleaned',
       now,
     });
-    transitionWorkerBackendSessionState(f.coreDb, {
+    await transitionWorkerBackendSessionState(f.coreDb, {
       attemptId,
       fromState: 'physical-cleaned',
       toState: 'cleaned',

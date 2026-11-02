@@ -198,7 +198,7 @@ import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
 import {
   dispatchNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
-} from './nanohost-harness-records.js';
+} from './nanohost-harness.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
@@ -252,7 +252,7 @@ import {
   importWorkerRuntimeProvenance,
 } from './worker-runtime-provenance.js';
 import {
-  createWorkerStorageBinding,
+  createAndReserveWorkerStorageAttachment,
   getWorkerStorageBinding,
   releaseWorkerStorageAttachment,
   reserveWorkerStorageAttachment,
@@ -299,7 +299,7 @@ function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
 }
 
 /** Dispatches the scheduler lease that authorizes one executor fixture. */
-function recordExecutorAttempt(
+async function recordExecutorAttempt(
   coreDb: CoreDb,
   input: {
     readonly agentSessionId: string;
@@ -314,15 +314,15 @@ function recordExecutorAttempt(
     readonly triggerActor?: ActorRef;
     readonly serverAdminTokenId?: string;
   }
-): void {
+): Promise<void> {
   if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
-    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const runtimeTarget = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: 'deployment_fake_executor',
       identityId: 'identity_fake_executor',
       observedAt: '2026-07-15T00:00:00.000Z',
       targetId: 'runtime-target-test',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...runtimeTarget,
       freshEmpty: true,
       observedAt: '2026-07-15T00:00:01.000Z',
@@ -360,7 +360,7 @@ function recordExecutorAttempt(
 }
 
 /** Starts one fixture Worker with a real admission and lease for its exact package lineage. */
-function startWithExecutorAttempt(
+async function startWithExecutorAttempt(
   coreDb: CoreDb,
   executor: WorkerGovernanceTurnExecutor,
   store: FsStore,
@@ -371,7 +371,7 @@ function startWithExecutorAttempt(
   context: NonNullable<Parameters<WorkerGovernanceTurnExecutor['startTurn']>[3]>
 ): Promise<void> {
   const sandboxBindingRef = `lease-binding:${turn.id}`;
-  recordExecutorAttempt(coreDb, {
+  await recordExecutorAttempt(coreDb, {
     admittedAt,
     agentSessionId,
     packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
@@ -704,7 +704,9 @@ async function createWorkerContextExecutorFixture(
   });
   const agentSessionId = testEntityId('as', `as_context_${name}`);
   const sandboxBindingRef = `lease-binding:context-${name}`;
-  recordExecutorAttempt(coreDb, {
+  await recordExecutorAttempt(coreDb, {
+    // This real Native backend uses the current physical clock, not the historical fixture default.
+    admittedAt: new Date().toISOString(),
     agentSessionId,
     packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
     requestId,
@@ -1199,7 +1201,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: LOCAL_USER_ID,
     });
-    const target = recordTestNativeRuntimeTarget(coreDb);
+    const target = await recordTestNativeRuntimeTarget(coreDb);
     const backend = new FakeWorkerGovernanceBackend();
     const planSession = backend.planSession.bind(backend);
     backend.planSession = (pkg) => ({
@@ -1242,6 +1244,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const setup = createTestAgentSetup();
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -1427,6 +1431,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     Object.assign(backend, { prepareAgentSessionContinuity: async () => 'absent' as const });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
       backend,
       coreDb: fixture.coreDb,
@@ -1754,6 +1760,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     Object.assign(backend, { prepareAgentSessionContinuity: continuity });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -2114,7 +2122,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         throw cause;
       },
     });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
+      backend,
+    });
     // Fault only the guarded preview/inspector boundary; admission and refusal stay production-owned.
     Object.assign(executor, {
       previewAgentEnvironmentPackage: () => {
@@ -2355,7 +2367,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'reusable' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
+      backend,
+      coreDb,
+    });
     const preview = vi.fn((agentSessionId: string) => {
       if (agentSessionId !== 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6') {
         throw new Error('Fresh target must not be previewed for compatible reuse.');
@@ -2431,7 +2448,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'replacement-required' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
+      backend,
+      coreDb,
+    });
     Object.assign(executor, {
       previewAgentSessionCompatibilityKey: (agentSessionId: string) => {
         if (agentSessionId === 'as_00000000-0000-79f4-a228-8748c8f8333f') {
@@ -2579,8 +2601,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const retirement = new Promise<void>((resolve) => {
       finishRetirement = resolve;
     });
+    let retirementEntered!: () => void;
+    const enteredRetirement = new Promise<void>((resolve) => {
+      retirementEntered = resolve;
+    });
     const continuity = vi.fn(async (input: { readonly reuseAllowed: boolean }) => {
       if (input.reuseAllowed) return 'sandbox-replacement-required' as const;
+      retirementEntered();
       await retirement;
       return 'closed' as const;
     });
@@ -2624,7 +2651,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       prepared,
       preparation,
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await enteredRetirement;
 
     expect(continuity).toHaveBeenCalledTimes(4);
     expect(continuity.mock.calls.map(([input]) => input.reuseAllowed)).toEqual([
@@ -2696,6 +2723,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const closeGate = new Promise<void>((resolve) => {
       finishClose = resolve;
     });
+    let closeEntered!: () => void;
+    const enteredClose = new Promise<void>((resolve) => {
+      closeEntered = resolve;
+    });
     const continuity = vi.fn(
       async (input: { readonly agentSessionId: string; readonly reuseAllowed: boolean }) => {
         events.push(
@@ -2705,6 +2736,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           throw new Error('Fresh identity must not inspect the blocking Thread binding.');
         }
         if (input.reuseAllowed) return 'replacement-required' as const;
+        closeEntered();
         await closeGate;
         return 'closed' as const;
       }
@@ -2759,7 +2791,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       prepared,
       preparation,
     });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await enteredClose;
     expect(events).toEqual([
       'inspect:as_00000000-0000-7fab-94ef-b9e0d894e72e',
       'inspect:as_00000000-0000-7fab-94ef-b9e0d894e72e',
@@ -2925,6 +2957,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
           : { agentSessionId: 'as_00000000-0000-7c02-b5f7-4874fb86e258' },
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -2991,6 +3025,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     Object.assign(backend, { prepareAgentSessionContinuity: inspectContinuity });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       backend,
       resolveResidentWorkerStorageWorkSlotRef: resolveResident,
     });
@@ -3068,7 +3104,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceRoots,
       });
       const sandboxBindingRef = `lease-binding:${turn.id}`;
-      recordExecutorAttempt(coreDb, {
+      await recordExecutorAttempt(coreDb, {
         admittedAt: '2026-08-21T11:59:59.000Z',
         agentSessionId,
         packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
@@ -3103,12 +3139,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('advertises interrupts only with the worker-control gateway and a backend interrupt channel', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const interruptible = interruptibleBackend();
-    const withoutGateway = new WorkerGovernanceTurnExecutor({ backend: interruptible });
+    const withoutGateway = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
+      backend: interruptible,
+    });
     const withoutChannel = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       backend,
       workerControlGateway: new WorkerControlGateway(),
     });
     const withBoth = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       backend: interruptible,
       workerControlGateway: new WorkerControlGateway(),
     });
@@ -3134,7 +3178,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     stopReason,
   }) => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime('2026-07-15T00:00:10.000Z');
+    // The native owner has a real clock; freeze this fixture at its current epoch, then advance intervals.
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await launchFinalReviewWorker('cancel');
     try {
       expect(f.executor.isTurnExecutionActive(f.turn.id)).toBe(true);
@@ -3152,7 +3197,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             data: { status: 'cancelled', stopReason: 'aborted' },
           })
         )}\n`;
-      f.gateway.recordFinalStatus({
+      await f.gateway.recordFinalStatus({
         authorization: `Bearer ${f.token}`,
         lineage: f.lineage,
         sequence: 1,
@@ -3211,11 +3256,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'startup',
   ] as const)('wakes the real final-status waiter at the %s deadline while execution is active', async (deadlineKind) => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime('2026-07-15T00:00:10.000Z');
+    // The native owner has a real clock; freeze this fixture at its current epoch, then advance intervals.
+    vi.setSystemTime(vi.getRealSystemTime());
     const f = await launchFinalReviewWorker(`active-${deadlineKind}`);
     try {
       if (deadlineKind === 'heartbeat') {
-        acceptNanoHostAttemptHeartbeat(f.coreDb, {
+        await acceptNanoHostAttemptHeartbeat(f.coreDb, {
           attemptId: f.attemptId,
           heartbeatTimeoutMs: 30_000,
           workerSequence: 0,
@@ -3223,7 +3269,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             .update('owned-worker-process')
             .digest('base64url'),
         });
-        acceptNanoHostAttemptHeartbeat(f.coreDb, {
+        await acceptNanoHostAttemptHeartbeat(f.coreDb, {
           attemptId: f.attemptId,
           heartbeatTimeoutMs: 30_000,
           workerSequence: 1,
@@ -3287,7 +3333,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workerControlGateway,
       turn
     );
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef: `lease-binding:${turn.id}`,
@@ -3308,6 +3354,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const cancel = vi.spyOn(backend, 'cancel');
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -3365,6 +3413,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const workerControlGateway = new WorkerControlGateway();
     const backend = interruptibleBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       backend,
       workerControlGateway,
     });
@@ -3434,7 +3484,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     backend.artifactCollectionInvalid = mode === 'artifact-invalid';
-    backend.eventsJsonlFactory = (environmentPackage) => {
+    backend.eventsJsonlFactory = async (environmentPackage) => {
       if (mode === 'invalid-json') {
         return '{private-transcript-payload\n';
       }
@@ -3462,7 +3512,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
                 event: { data: { status: 'different' }, type: 'worker.heartbeat' },
               })
             : transcriptRecord;
-        recordWorkerControlAcceptedRecord(coreDb, {
+        await recordWorkerControlAcceptedRecord(coreDb, {
           acceptedAt: '2026-07-15T00:00:00.000Z',
           lineage,
           operation: 'event_append',
@@ -3956,6 +4006,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       .spyOn(operationAuthorizer, 'currentWorkerLineageWorkspaceAuthority')
       .mockImplementation((_db, _lineage, operation) => (operation === mode ? null : 'owner'));
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
@@ -4017,7 +4069,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'th_00000000-0000-7000-8000-000000000001',
       'Do not publish fenced output'
     );
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId: testEntityId('as', 'as_governance_deletion_fence_1'),
       packageSnapshotId: `aepsnap_${turn.id}_as_governance_deletion_fence_1`,
       sandboxBindingRef: `lease-binding:${turn.id}`,
@@ -4470,7 +4522,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = testEntityId('as', 'as_failed_status_1');
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:failed-status';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -4718,7 +4770,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const agentSessionId = testEntityId('as', 'as_retained_1');
     const sandboxBindingRef = 'lease-binding:retained';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -4787,6 +4839,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     backend.prepareAgentSessionContinuity = async () => 'absent';
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -4837,7 +4891,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     Object.assign(backend, { prepareAgentSessionContinuity: async () => 'reusable' as const });
-    const executor = new WorkerGovernanceTurnExecutor({ backend });
+    const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
+      backend,
+    });
     const input = {
       agentSetup: createTestAgentSetup(),
       freshAgentSessionId: testEntityId('as', 'as_unrecorded_ready_next'),
@@ -4892,10 +4950,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
         `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, observed_at, slot_count) VALUES ('target_retained', 'identity_retained', 'deployment_retained', 1, 1, 1, 1, ?, 1)`
       )
       .run('2026-10-03T00:00:00.000Z');
-    const binding = createWorkerStorageBinding(coreDb, {
+    const reserved = await createAndReserveWorkerStorageAttachment(coreDb, {
+      agentSessionId: testEntityId('as', 'as_retained_proof'),
+      authorizeContributor: () => true,
       deploymentId: 'deployment_retained',
-      runtimeTargetId: 'target_retained',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       layout: {
         family: 'openkit-worker',
         version: '1',
@@ -4905,19 +4963,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         platform: { architecture: 'amd64', os: 'linux' },
         targets: [{ target: '/sandbox' }, { target: '/workspace' }],
       },
-    });
-    const reserved = reserveWorkerStorageAttachment(coreDb, {
-      storageRef: binding.storageRef,
-      expectedRevision: binding.revision,
-      layout: binding.layout,
       purpose: 'work',
       responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      runtimeTargetId: 'target_retained',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      authorizeContributor: () => true,
-      agentSessionId: testEntityId('as', 'as_retained_proof'),
-      runtimeTargetId: 'target_retained',
     });
+    const binding = reserved;
     // A prior explicit handoff supplied a slot that differs from the Thread's generated default.
     coreDb.sqlite
       .prepare('UPDATE worker_storage_contributors SET work_slot_ref = ? WHERE storage_ref = ?')
@@ -4960,6 +5012,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const inspect = vi.fn(async () => 'absent' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: inspect });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -5008,7 +5062,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         })
       );
       if (explicit) {
-        expect(() =>
+        await expect(
           reserveWorkerStorageAttachment(coreDb, {
             ...callerChoice,
             reuseWorkSlotRef: 'slot-exact',
@@ -5020,9 +5074,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
             agentSessionId: testEntityId('as', 'as_retained_next'),
             runtimeTargetId: 'target_retained',
           })
-        ).toThrow('revision changed');
+        ).rejects.toThrow('revision changed');
       }
-      const occupied = reserveWorkerStorageAttachment(coreDb, {
+      const occupied = await reserveWorkerStorageAttachment(coreDb, {
         storageRef: binding.storageRef,
         expectedRevision: reserved.revision,
         reuseWorkSlotRef: 'slot-exact',
@@ -5035,7 +5089,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         agentSessionId: testEntityId('as', 'as_other_live'),
         runtimeTargetId: 'target_retained',
       });
-      expect(() =>
+      await expect(
         reserveWorkerStorageAttachment(coreDb, {
           storageRef: binding.storageRef,
           expectedRevision: occupied.revision,
@@ -5049,7 +5103,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           agentSessionId: testEntityId('as', 'as_retained_next'),
           runtimeTargetId: 'target_retained',
         })
-      ).toThrow('already has an attachment');
+      ).rejects.toThrow('already has an attachment');
       expect(
         restarted.getAgentSession(testEntityId('as', 'as_retained_proof')).retainedStorage
       ).toEqual(retainedStorage);
@@ -5114,6 +5168,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
     }
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -5202,7 +5258,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const inspect = vi.fn(async () => 'absent' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: inspect });
-    const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
+    const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
+      backend,
+      coreDb,
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -5257,11 +5318,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ownerUserId: LOCAL_USER_ID,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const target = recordTestNativeRuntimeTarget(coreDb);
-    const binding = createWorkerStorageBinding(coreDb, {
+    const target = await recordTestNativeRuntimeTarget(coreDb);
+    const reserved = await createAndReserveWorkerStorageAttachment(coreDb, {
+      agentSessionId: testEntityId('as', 'as_queued_predecessor'),
+      authorizeContributor: () => true,
       deploymentId: target.deploymentId,
-      runtimeTargetId: target.targetId,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       layout: {
         family: 'openkit-worker',
         version: '1',
@@ -5271,20 +5332,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         platform: { architecture: 'amd64', os: 'linux' },
         targets: [{ target: '/sandbox' }, { target: '/workspace' }],
       },
-    });
-    const reserved = reserveWorkerStorageAttachment(coreDb, {
-      storageRef: binding.storageRef,
-      expectedRevision: binding.revision,
-      layout: binding.layout,
       purpose: 'work',
       responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      runtimeTargetId: target.targetId,
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      authorizeContributor: () => true,
-      agentSessionId: testEntityId('as', 'as_queued_predecessor'),
-      runtimeTargetId: target.targetId,
     });
-    releaseWorkerStorageAttachment(coreDb, {
+    await releaseWorkerStorageAttachment(coreDb, {
       storageRef: reserved.storageRef,
       expectedRevision: reserved.revision,
       attachmentGeneration: reserved.attachmentGeneration,
@@ -5302,7 +5356,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       sessionCompatibilityKey: `sha256:${'0'.repeat(64)}`,
       nativeHandleDigest: 'a'.repeat(64),
       retainedStorage: {
-        storageRef: binding.storageRef,
+        storageRef: reserved.storageRef,
         workSlotRef: workerStorageDefaultWorkSlotRef(
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
@@ -5342,6 +5396,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       retainedStorage: { ...predecessor.retainedStorage!, attachmentGeneration: 1 },
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -5487,6 +5543,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       retainedStorage,
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
     });
@@ -5571,7 +5629,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         `Resume turn ${index}`
       );
       const sandboxBindingRef = `lease-binding:resume-${index}`;
-      recordExecutorAttempt(coreDb, {
+      await recordExecutorAttempt(coreDb, {
         agentSessionId,
         packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
         sandboxBindingRef,
@@ -5663,6 +5721,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       throw new Error('reference import failed');
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -5799,6 +5859,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -5929,7 +5991,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = testEntityId('as', 'as_completion_gate_1');
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:completion-gate';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -5992,7 +6054,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     if (!awaitedEnvironmentPackage || !session) {
       throw new Error('Restart fixture did not reach the durable launch boundary.');
     }
-    recordWorkerControlAcceptedRecord(coreDb, {
+    await recordWorkerControlAcceptedRecord(coreDb, {
       acceptedAt: '2026-07-15T00:00:04.000Z',
       lineage: {
         agentSessionId,
@@ -6748,6 +6810,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -6794,6 +6858,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend,
@@ -7561,7 +7627,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = testEntityId('as', 'as_failed_closeout_1');
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:failed-closeout';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -7993,6 +8059,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend({ sandboxName: 'sandbox_teardown_retry_1' });
     backend.teardownFailuresRemaining = 1;
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -8084,6 +8152,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -8150,7 +8220,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'th_00000000-0000-7000-8000-000000000001',
       'Fail workspace storage open'
     );
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId: testEntityId('as', 'as_workspace_open_fail_1'),
       packageSnapshotId: `aepsnap_${turn.id}_as_workspace_open_fail_1`,
       sandboxBindingRef: `lease-binding:${turn.id}`,
@@ -8167,6 +8237,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     await verifyAndMigrateExistingScopedDatabases(dataRoot);
     const reopenedStore = new FsStore({ dataRoot });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
@@ -8275,7 +8347,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'th_00000000-0000-7000-8000-000000000001',
       'Fail workspace storage migration'
     );
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       admittedAt: new Date().toISOString(),
       agentSessionId: testEntityId('as', 'as_workspace_migrate_fail_1'),
       packageSnapshotId: `aepsnap_${turn.id}_as_workspace_migrate_fail_1`,
@@ -8284,6 +8356,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnId: turn.id,
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
@@ -8354,6 +8428,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return close.call(this);
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
       coreDb,
@@ -8422,6 +8498,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         return await terminal(database, input);
       });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend: new FakeWorkerGovernanceBackend(),
@@ -8487,6 +8565,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const collectEvidenceSpy = vi.spyOn(backend, 'collectEvidence').mockRejectedValue(undefined);
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend,
@@ -8557,6 +8637,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend: new FakeWorkerGovernanceBackend(),
@@ -8670,6 +8752,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
 
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend,
@@ -8744,6 +8828,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         return persisted;
       });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
       backend: new FakeWorkerGovernanceBackend(),
@@ -8878,6 +8964,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       };
     });
     const executor = new WorkerGovernanceTurnExecutor({
+      // Keep the existing deterministic fixture clock across the native owner boundary.
+      now: () => new Date().toISOString(),
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend,
       coreDb,
@@ -10891,7 +10979,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnId: turn.id,
       workspaceId: workspaceIdForOwner(turn.owner),
     };
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       ...lineage,
       sandboxBindingRef,
     });
@@ -10905,7 +10993,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => {
-        recordWorkerControlAcceptedRecord(coreDb, {
+        await recordWorkerControlAcceptedRecord(coreDb, {
           acceptedAt: '2026-07-15T00:00:04.000Z',
           lineage,
           operation: 'final_status',
@@ -10914,7 +11002,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           sandboxBindingRef,
           sequence: 1,
         });
-        beginOwnedAttemptCloseout(coreDb, {
+        await beginOwnedAttemptCloseout(coreDb, {
           attemptId: leaseId,
           now: () => '2026-07-15T00:00:04.000Z',
           firstTerminalCause: 'worker-final-status',
@@ -11028,7 +11116,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const agentSessionId = testEntityId('as', 'as_governance_binding_1');
     const sandboxBindingRef = 'lease-binding:executor_1';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -11106,7 +11194,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const agentSessionId = testEntityId('as', 'as_admin_worker_effect');
     const sandboxBindingRef = 'lease-binding:admin-worker-effect';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -11170,7 +11258,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const agentSessionId = testEntityId('as', 'as_prematerialize_authority_1');
     const sandboxBindingRef = 'lease-binding:prematerialize-authority';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
       sandboxBindingRef,
@@ -11245,7 +11333,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = testEntityId('as', 'as_anchor_order_1');
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:anchor-order';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -11321,7 +11409,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = testEntityId('as', 'as_materialize_failure_1');
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:materialize-failure';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -11405,7 +11493,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const agentSessionId = testEntityId('as', 'as_prelaunch_gate_1');
     const packageSnapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
     const sandboxBindingRef = 'lease-binding:prelaunch-gate';
-    recordExecutorAttempt(coreDb, {
+    await recordExecutorAttempt(coreDb, {
       agentSessionId,
       packageSnapshotId,
       sandboxBindingRef,
@@ -11416,7 +11504,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const materialize = backend.materialize.bind(backend);
     const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
       const result = await materialize(...args);
-      attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+      await attempts.markSchedulerExecutionAttemptClosing(coreDb, {
         attemptId: testEntityId('attempt', `lease_${turn.id}`),
         cause: 'authority-revoked',
       });
@@ -12453,8 +12541,9 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /** Private comparison evidence acquired only after admitted file delivery. */
   public readonly fileCredentialCheckValues: string[] = [];
   /** Optional canonical event transcript factory used by reconciliation tests. */
-  public eventsJsonlFactory: ((environmentPackage: AgentEnvironmentPackage) => string) | null =
-    null;
+  public eventsJsonlFactory:
+    | ((environmentPackage: AgentEnvironmentPackage) => string | Promise<string>)
+    | null = null;
   public runtimeProvenanceFactory:
     | ((
         environmentPackage: AgentEnvironmentPackage
@@ -12665,7 +12754,7 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
         },
       },
       ...(this.eventsJsonlFactory
-        ? { eventsJsonl: this.eventsJsonlFactory(this.lastPackage) }
+        ? { eventsJsonl: await this.eventsJsonlFactory(this.lastPackage) }
         : {}),
       itemsJsonl: `${JSON.stringify({
         schemaVersion: 1,
@@ -12856,7 +12945,7 @@ describe('credential carrier neutral placement acceptance', () => {
           store: fixture.store,
           files,
           runtimeConfig: () => manager.current(),
-          reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+          reload: async () => await manager.reload({ mode: 'safe', dryRun: false }),
           repositoryWorkspaceDb: (id) => {
             const db = createTestWorkspaceDb(fixture.coreDb.dataRoot, id);
             handles.push(db);
@@ -13595,7 +13684,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
             store: fixture.store,
             files,
             runtimeConfig: () => manager.current(),
-            reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+            reload: async () => await manager.reload({ mode: 'safe', dryRun: false }),
             repositoryWorkspaceDb: (id) => {
               const db = createTestWorkspaceDb(fixture.coreDb.dataRoot, id);
               handles.push(db);
@@ -14708,9 +14797,27 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
         .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
         .all() as { ref: string }[];
       for (const integration of integrations) {
-        let command = dispatchNanoHostHarnessOperation(coreDb, {
-          sandboxIntegrationBindingRef: integration.ref,
-        });
+        let command: Awaited<ReturnType<typeof dispatchNanoHostHarnessOperation>>;
+        try {
+          command = await dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: integration.ref,
+          });
+        } catch (error) {
+          // Native cleanup can delete this captured peer before its queued poll reaches the owner.
+          // Join the real execution; all named-fault, no-submit and cleanup oracles remain below.
+          if (
+            !(error instanceof Error) ||
+            error.message !== 'NanoHost Sandbox Integration binding is missing or stale.' ||
+            coreDb.sqlite
+              .prepare(
+                'SELECT 1 FROM sandbox_runtime_records WHERE sandbox_integration_binding_ref = ?'
+              )
+              .get(integration.ref)
+          )
+            throw error;
+          await running;
+          break;
+        }
         if (!command) continue;
         if (command.operation === 'session.open') {
           const preparation = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
@@ -14756,7 +14863,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
           schemaVersion: 2 as const,
           sequence: command.sequence,
         };
-        settleNanoHostHarnessOperation(coreDb, {
+        await settleNanoHostHarnessOperation(coreDb, {
           result,
           sandboxIntegrationBindingRef: integration.ref,
           timestamp: new Date().toISOString(),
@@ -14863,6 +14970,8 @@ async function launchFinalReviewWorker(suffix: string) {
   });
   let settled = false;
   const executor = new WorkerGovernanceTurnExecutor({
+    // Keep the existing deterministic fixture clock across the native owner boundary.
+    now: () => new Date().toISOString(),
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     backend,
     coreDb,
@@ -14921,7 +15030,7 @@ async function launchFinalReviewWorker(suffix: string) {
     settled: () => settled,
     async dispose() {
       if (!settled) {
-        attempts.markSchedulerExecutionAttemptClosing(coreDb, {
+        await attempts.markSchedulerExecutionAttemptClosing(coreDb, {
           attemptId,
           cause: 'test-disposal',
         });

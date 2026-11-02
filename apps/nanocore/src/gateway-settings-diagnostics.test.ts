@@ -136,7 +136,7 @@ describe('Gateway settings active diagnostics', () => {
     );
     catalog.providers.openai_codex.models['openai-codex/gpt-5'].limit.context = 280000;
     writeFileSync(catalogPath, JSON.stringify(catalog));
-    const reload = manager.reload({ mode: 'safe', dryRun: false });
+    const reload = await manager.reload({ mode: 'safe', dryRun: false });
     expect(reload.status).toBe('applied');
     const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(response.status).toBe(200);

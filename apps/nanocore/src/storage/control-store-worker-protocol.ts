@@ -77,6 +77,12 @@ import {
   controlMaterialTextSpans,
 } from '../workspace-materials.js';
 import {
+  type ControlAccessTokenVerification,
+  type ControlAccessTokenVerificationResult,
+  ControlAccessTokenVerificationResultSchema,
+  ControlAccessTokenVerificationSchema,
+} from './access-token-verification-codecs.js';
+import {
   type ControlAdmission,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
@@ -125,11 +131,41 @@ import type {
   ControlRecoverySafetyResult,
 } from './control-store-recovery.js';
 import {
+  type ControlCoreJournalInput,
+  ControlCoreJournalInputSchema,
+  ControlCoreJournalRefusalSchema,
+} from './core-journal-codecs.js';
+import {
   type ControlEvaluationCandidate,
   ControlEvaluationCandidateResultSchema,
   ControlEvaluationCandidateSchema,
 } from './evaluation-candidate-codecs.js';
+import {
+  type ControlExecutionAttemptInput,
+  ControlExecutionAttemptInputSchema,
+  ControlExecutionAttemptRefusalSchema,
+  type ControlExecutionAttemptResult,
+  ControlExecutionAttemptResultSchema,
+} from './execution-attempt-codecs.js';
+import {
+  type ControlHarnessLifecycleInput,
+  ControlHarnessLifecycleInputSchema,
+  ControlHarnessLifecycleRefusalSchema,
+  type ControlHarnessLifecycleResult,
+  ControlHarnessLifecycleResultSchema,
+} from './harness-lifecycle-codecs.js';
+import {
+  type ControlRemoteMcpAudit,
+  ControlRemoteMcpAuditSchema,
+} from './remote-mcp-audit-codecs.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
+import {
+  type ControlRuntimeTargetInput,
+  ControlRuntimeTargetInputSchema,
+  ControlRuntimeTargetRefusalSchema,
+  type ControlRuntimeTargetResult,
+  ControlRuntimeTargetResultSchema,
+} from './runtime-target-codecs.js';
 import {
   type ControlThreadReadMembershipWire,
   ControlThreadReadMembershipWireSchema,
@@ -144,6 +180,45 @@ import {
   parseWorkObservationRecord,
 } from './work-observations.js';
 import {
+  type ControlBackendSessionInput,
+  ControlBackendSessionInputSchema,
+  ControlBackendSessionRefusalSchema,
+  type ControlBackendSessionResult,
+  ControlBackendSessionResultSchema,
+} from './worker-backend-session-codecs.js';
+import {
+  type ControlWorkerFinalStatusInput,
+  ControlWorkerFinalStatusInputSchema,
+  ControlWorkerFinalStatusRefusalSchema,
+  type ControlWorkerFinalStatusResult,
+  ControlWorkerFinalStatusResultSchema,
+} from './worker-control-final-status-codecs.js';
+import {
+  type ControlWorkerHeartbeatInput,
+  ControlWorkerHeartbeatInputSchema,
+  ControlWorkerHeartbeatRefusalSchema,
+  type ControlWorkerHeartbeatResult,
+  ControlWorkerHeartbeatResultSchema,
+} from './worker-control-heartbeat-codecs.js';
+import {
+  type ControlWorkerRecordInput,
+  ControlWorkerRecordInputSchema,
+  ControlWorkerRecordRefusalSchema,
+  type ControlWorkerRecordResult,
+  ControlWorkerRecordResultSchema,
+} from './worker-control-record-codecs.js';
+import {
+  type ControlWorkerImageInput,
+  ControlWorkerImageInputSchema,
+  ControlWorkerImageRefusalSchema,
+} from './worker-image-codecs.js';
+import {
+  type ControlWorkerStorageInput,
+  ControlWorkerStorageInputSchema,
+  ControlWorkerStorageRefusalSchema,
+  ControlWorkerStorageResultSchema,
+} from './worker-storage-binding-codecs.js';
+import {
   type ControlCoreSharing,
   type ControlCoreSharingRefusal,
   ControlCoreSharingRefusalSchema,
@@ -153,7 +228,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 33;
+export const CONTROL_WORKER_VERSION = 34;
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z
@@ -368,6 +443,37 @@ export type ControlWorkerCommand =
           readonly input: ControlMaterialWireInput;
           readonly content?: ArrayBuffer;
         }
+      | { readonly operation: 'worker-storage-binding'; readonly input: ControlWorkerStorageInput }
+      | { readonly operation: 'core-journal'; readonly input: ControlCoreJournalInput }
+      | { readonly operation: 'worker-image'; readonly input: ControlWorkerImageInput }
+      | { readonly operation: 'runtime-target'; readonly input: ControlRuntimeTargetInput }
+      | { readonly operation: 'backend-session'; readonly input: ControlBackendSessionInput }
+      | {
+          readonly operation: 'access-token-verification';
+          readonly input: ControlAccessTokenVerification;
+        }
+      | { readonly operation: 'remote-mcp-audit'; readonly input: ControlRemoteMcpAudit }
+      | {
+          readonly operation: 'execution-attempt';
+          readonly input: ControlExecutionAttemptInput;
+          readonly content?: ArrayBuffer;
+        }
+      | {
+          readonly operation: 'worker-control-final-status';
+          readonly input: ControlWorkerFinalStatusInput;
+          readonly content?: ArrayBuffer;
+        }
+      | {
+          readonly operation: 'worker-control-heartbeat';
+          readonly input: ControlWorkerHeartbeatInput;
+          readonly content?: ArrayBuffer;
+        }
+      | {
+          readonly operation: 'worker-control-record';
+          readonly input: ControlWorkerRecordInput;
+          readonly content?: ArrayBuffer;
+        }
+      | { readonly operation: 'harness-lifecycle'; readonly input: ControlHarnessLifecycleInput }
       | { readonly operation: 'core-sharing'; readonly input: ControlCoreSharing }
       | { readonly operation: 'evaluation-candidate'; readonly input: ControlEvaluationCandidate }
       | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
@@ -410,7 +516,11 @@ export function controlWorkerInputBytes(
               command.operation === 'observation' ||
               command.operation === 'generative-presentation' ||
               command.operation === 'app-kernel' ||
-              command.operation === 'thread-read-membership') &&
+              command.operation === 'thread-read-membership' ||
+              command.operation === 'execution-attempt' ||
+              command.operation === 'worker-control-final-status' ||
+              command.operation === 'worker-control-heartbeat' ||
+              command.operation === 'worker-control-record') &&
             key === 'content' &&
             this === command
           )
@@ -489,6 +599,7 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'admin-recovery'
     | 'better-auth'
     | 'nanohost-transport'
+    | 'worker-storage-binding'
     | 'thread-read-membership'
     | 'generative-presentation'
     | 'evaluation-candidate'
@@ -506,7 +617,7 @@ interface OrdinaryControlWorkerDomainRefusal {
   readonly message: string;
   readonly status: number;
   /** Trusted original owner class for this capability refusal. */
-  readonly kind?: 'operation' | 'mcp' | 'turn' | 'pending';
+  readonly kind?: 'operation' | 'mcp' | 'turn' | 'pending' | 'ledger';
   readonly appDetails?: {
     readonly path?: string | undefined;
     readonly limit?: string | undefined;
@@ -519,6 +630,15 @@ interface OrdinaryControlWorkerDomainRefusal {
 /** Existing native refusals plus the sharing family's exact current-record projection. */
 export type ControlWorkerDomainRefusal =
   | OrdinaryControlWorkerDomainRefusal
+  | z.infer<typeof ControlWorkerFinalStatusRefusalSchema>
+  | z.infer<typeof ControlWorkerHeartbeatRefusalSchema>
+  | z.infer<typeof ControlWorkerRecordRefusalSchema>
+  | z.infer<typeof ControlExecutionAttemptRefusalSchema>
+  | z.infer<typeof ControlCoreJournalRefusalSchema>
+  | z.infer<typeof ControlWorkerImageRefusalSchema>
+  | z.infer<typeof ControlRuntimeTargetRefusalSchema>
+  | z.infer<typeof ControlBackendSessionRefusalSchema>
+  | z.infer<typeof ControlHarnessLifecycleRefusalSchema>
   | ControlCoreSharingRefusal;
 
 /**
@@ -586,6 +706,54 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'core-sharing';
       readonly result: ControlCoreSharingResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'worker-storage-binding';
+      readonly result: import('../runtime/worker-storage-binding-records.js').WorkerStorageBinding;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'harness-lifecycle';
+      readonly result: ControlHarnessLifecycleResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'execution-attempt';
+      readonly result: ControlExecutionAttemptResult;
+    }
+  | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
+  | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'access-token-verification';
+      readonly result: ControlAccessTokenVerificationResult;
+    }
+  | { readonly status: 'ok'; readonly operation: 'remote-mcp-audit'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'runtime-target';
+      readonly result: ControlRuntimeTargetResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'backend-session';
+      readonly result: ControlBackendSessionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'worker-control-final-status';
+      readonly result: ControlWorkerFinalStatusResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'worker-control-heartbeat';
+      readonly result: ControlWorkerHeartbeatResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'worker-control-record';
+      readonly result: ControlWorkerRecordResult;
     }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
@@ -716,6 +884,26 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'core-journal')
+    return ControlCoreJournalRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'worker-image')
+    return ControlWorkerImageRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'runtime-target')
+    return ControlRuntimeTargetRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'backend-session')
+    return ControlBackendSessionRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'worker-control-record')
+    return ControlWorkerRecordRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'worker-control-heartbeat')
+    return ControlWorkerHeartbeatRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'worker-control-final-status')
+    return ControlWorkerFinalStatusRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'execution-attempt')
+    return ControlExecutionAttemptRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'harness-lifecycle')
+    return ControlHarnessLifecycleRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'worker-storage-binding')
+    return ControlWorkerStorageRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'core-sharing')
     return ControlCoreSharingRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'app-kernel')
@@ -726,7 +914,11 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     exactFields(value, ['operation', 'code', 'message', 'status'], ['kind']) &&
     (value.kind === undefined ||
       (value.operation === 'capability' &&
-        ['operation', 'mcp', 'turn', 'pending'].includes(String(value.kind)))) &&
+        ['operation', 'mcp', 'turn', 'pending', 'ledger'].includes(String(value.kind)))) &&
+    (value.kind !== 'ledger' ||
+      (value.operation === 'capability' &&
+        value.code === 'capability_ledger_refused' &&
+        value.status === 409)) &&
     // This reserved owner refusal carries no native exception text or SQL details.
     (value.code !== 'unsupported_retained_format' ||
       ((value.operation === 'goal' || value.operation === 'capability') &&
@@ -920,6 +1112,28 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     );
   if (reply.operation === 'review')
     return ControlReviewCommandResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'worker-control-record')
+    return ControlWorkerRecordResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'worker-control-heartbeat')
+    return ControlWorkerHeartbeatResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'worker-control-final-status')
+    return ControlWorkerFinalStatusResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'core-journal')
+    return reply.result === null || typeof reply.result === 'string';
+  if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
+    return reply.result === null;
+  if (reply.operation === 'access-token-verification')
+    return ControlAccessTokenVerificationResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'runtime-target')
+    return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'backend-session')
+    return ControlBackendSessionResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'execution-attempt')
+    return ControlExecutionAttemptResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'harness-lifecycle')
+    return ControlHarnessLifecycleResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'worker-storage-binding')
+    return ControlWorkerStorageResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'core-sharing')
     return ControlCoreSharingResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'evaluation-candidate')
@@ -1288,6 +1502,92 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
   }
+  if (value.operation === 'worker-control-final-status') {
+    const parsed = ControlWorkerFinalStatusInputSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
+  if (value.operation === 'worker-control-heartbeat') {
+    const parsed = ControlWorkerHeartbeatInputSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
+  if (value.operation === 'worker-control-record') {
+    const parsed = ControlWorkerRecordInputSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
+  if (value.operation === 'execution-attempt') {
+    const parsed = ControlExecutionAttemptInputSchema.safeParse(value.input);
+    if (!parsed.success || !exactFields(value, [...scoped, 'input'], ['content'])) return false;
+    return (
+      Buffer.byteLength(JSON.stringify(parsed.data)) <= CONTROL_PRODUCT_LIMITS.payloadBytes &&
+      (parsed.data.kind === 'create'
+        ? parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+          controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+        : value.content === undefined)
+    );
+  }
+  if (value.operation === 'core-journal')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlCoreJournalInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'worker-image')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkerImageInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'access-token-verification')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlAccessTokenVerificationSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'remote-mcp-audit')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlRemoteMcpAuditSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'runtime-target')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlRuntimeTargetInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'backend-session')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlBackendSessionInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'harness-lifecycle')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlHarnessLifecycleInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'worker-storage-binding')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkerStorageInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'thread-read-membership') {
     const parsed = ControlThreadReadMembershipWireSchema.safeParse(value.input);
     return (

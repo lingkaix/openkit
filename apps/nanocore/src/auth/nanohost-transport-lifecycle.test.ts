@@ -59,14 +59,14 @@ function openMigratedCoreDb(): CoreDb {
 }
 
 /** Records one current authenticated RuntimeTarget for lifecycle fencing assertions. */
-function seedReadyRuntimeTarget(coreDb: CoreDb): void {
-  const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+async function seedReadyRuntimeTarget(coreDb: CoreDb): Promise<void> {
+  const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: DEPLOYMENT,
     identityId: IDENTITY,
     observedAt: '2026-08-08T00:00:00.000Z',
     targetId: TARGET,
   });
-  upsertNanoHostRuntimeTarget(coreDb, {
+  await upsertNanoHostRuntimeTarget(coreDb, {
     ...allocated,
     freshEmpty: true,
     observedAt: '2026-08-08T00:00:01.000Z',
@@ -205,7 +205,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
-      seedReadyRuntimeTarget(coreDb);
+      await seedReadyRuntimeTarget(coreDb);
       const issued = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',
@@ -244,7 +244,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
-      seedReadyRuntimeTarget(coreDb);
+      await seedReadyRuntimeTarget(coreDb);
       const issued = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-08-08T01:00:00.000Z',
@@ -252,7 +252,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         ownerNanoHostIdentityId: IDENTITY,
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
-      const fenced = fenceNanoHostTransportOnTokenUnusable(coreDb, authority, {
+      const fenced = await fenceNanoHostTransportOnTokenUnusable(coreDb, authority, {
         identityId: IDENTITY,
         now: new Date('2026-08-08T01:30:00.000Z'),
         tokenId: issued.tokenId,
@@ -280,7 +280,7 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
     const authority = createNanoHostTransportSessionAuthority();
 
     try {
-      seedReadyRuntimeTarget(coreDb);
+      await seedReadyRuntimeTarget(coreDb);
       const first = await createNanoHostTransportTokenRecord(coreDb, {
         deploymentId: DEPLOYMENT,
         expiresAt: '2026-09-08T00:00:00.000Z',

@@ -156,13 +156,13 @@ async function fixture(
   };
   // Production owns the preparation, effect-capable operation record, and submission crossing.
   // The double owns only external backend behavior; it never grants Core authority.
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(db, {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(db, {
     deploymentId: 'fixture-deployment',
     identityId: 'fixture-identity',
     targetId: 'fixture-target',
     observedAt: '2026-10-06T00:00:00.000Z',
   });
-  upsertNanoHostRuntimeTarget(db, {
+  await upsertNanoHostRuntimeTarget(db, {
     ...target,
     freshEmpty: true,
     ready: true,
@@ -1148,12 +1148,15 @@ describe('execution backend port through real Core coordination', () => {
       expect(late.attemptId).not.toBe(original.attemptId);
       expect(late.bindingRef).not.toBe(original.bindingRef);
       expect(late.operationId).not.toBe(original.operationId);
+      // Backend entry precedes the native observation ACK; join its durable publication.
+      await vi.waitFor(() =>
+        expect(attempts(f.db).find((row) => row.turn_id === sibling.turnId)).toMatchObject({
+          attempt_id: late.attemptId,
+          disposition: 'accepted',
+          turn_id: sibling.turnId,
+        })
+      );
       const siblingAttempt = attempts(f.db).find((row) => row.turn_id === sibling.turnId)!;
-      expect(siblingAttempt).toMatchObject({
-        attempt_id: late.attemptId,
-        disposition: 'accepted',
-        turn_id: sibling.turnId,
-      });
       expect(siblingAttempt.phase).not.toBe('closed');
       expect(siblingAttempt.terminal_cause).not.toBe('backend-busy');
       const stillLost = attempts(f.db).find((row) => row.attempt_id === original.attemptId)!;

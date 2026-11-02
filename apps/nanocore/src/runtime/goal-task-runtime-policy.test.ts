@@ -316,7 +316,7 @@ async function fixture(
     repositoryWorkspaceDb: () => db,
     files,
     currentPolicy: () => manager.current().openKitConfig.policy?.mediation,
-    reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+    reload: async () => await manager.reload({ mode: 'safe', dryRun: false }),
   });
   const services = {
     coreDb,
@@ -891,7 +891,7 @@ async function fixture(
           policy: { ...manager.current().openKitConfig.policy, mediation: policy },
         })
       );
-      manager.reload({ mode: 'safe', dryRun: false });
+      await manager.reload({ mode: 'safe', dryRun: false });
     }
     const app = new Hono<{ Variables: AuthVariables }>();
     const interception = new PolicyInterception();
@@ -1126,7 +1126,7 @@ describe('Goal Coordinator missing Task grant routing', () => {
       readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
     ).toBe(0);
     // Administration and effect are separate requests to their real existing owners.
-    const granted = f.domains.administer({
+    const granted = await f.domains.administer({
       workspaceDb: f.db,
       goalId: f.scope.goalId,
       coordinatorTurnId: f.coordinator.id,
@@ -1937,7 +1937,7 @@ it.each([
           409
         );
       admitTestNativeEnvironment(coreDb, manifest);
-      recordTestNativeRuntimeTarget(coreDb);
+      await recordTestNativeRuntimeTarget(coreDb);
       const executor = new SimulatedTurnExecutor({
         coreDb,
         fileAdmission: new FileStorageAdmission(f.dataRoot, () => 1_000_000_000n),

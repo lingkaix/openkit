@@ -1,14 +1,24 @@
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import type { Worker as NativeWorker } from 'node:worker_threads';
 import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
   type MaterializedWorkspaceRoot,
 } from '@openkit/config-schema';
+import { canonicalJsonText } from '@openkit/protocol';
+import {
+  type WorkerCanonicalEventRecord,
+  WorkerObservationDataSchema,
+  workerObservationSourceRelativePath,
+} from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { WorkerControlClient } from '../../../packages/worker-shim/src/control-client.js';
+import { WorkerTranscriptWriter } from '../../../packages/worker-shim/src/transcript.js';
 import { createDefaultWorkerControlGateway } from './app.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
@@ -21,7 +31,10 @@ import {
   requireNanoHostExecutionAttempt,
   resolveNanoHostAttemptTokenBinding,
 } from './runtime/nanohost-attempt-records.js';
-import { runNanoHostAttemptRecoveryMaintenance } from './runtime/nanohost-attempt-recovery.js';
+import {
+  classifyNanoHostAttemptsAfterRestart,
+  runNanoHostAttemptRecoveryMaintenance,
+} from './runtime/nanohost-attempt-recovery.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   getNanoHostRuntimeTarget,
@@ -44,6 +57,7 @@ import {
 import {
   createWorkerControlAcceptedRecordRecorder,
   listWorkerControlAcceptedEvents,
+  recoverWorkerObservationSource,
   resolveWorkerControlFinalStatusTokenBinding,
 } from './runtime/worker-control-records.js';
 import { listWorkerControlRejectedEvidenceForWorkspace } from './runtime/worker-control-rejected-evidence.js';
@@ -83,6 +97,7 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { nativeProductScope } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -119,6 +134,81 @@ vi.mock('node:timers/promises', async (original) => {
   };
 });
 
+const heartbeatNativeInterception = vi.hoisted(() => ({
+  gate: undefined as SharedArrayBuffer | undefined,
+  corePath: '',
+  postedHeartbeats: 0,
+}));
+
+// Use the real worker entry and SQLite COMMIT, as in control-store-worker-client.test.ts.
+// Only the selected private Core journal is held or faulted; no SQL service is replaced.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (heartbeatNativeInterception.gate === undefined) {
+          super(filename, options);
+          return;
+        }
+        const prelude = `
+          const { workerData } = require('node:worker_threads');
+          const Database = require(workerData.databaseModule);
+          const original = Database.prototype.exec;
+          Database.prototype.exec = function(sql) {
+            if (this.name === workerData.corePath && /^COMMIT$/i.test(sql)) {
+              const mode = Atomics.exchange(workerData.gate, 0, 0);
+              if (mode !== 0) Atomics.add(workerData.gate, 1, 1);
+              if (mode === 1) throw new Error('injected heartbeat native COMMIT failure');
+              if (mode === 2) Atomics.wait(workerData.gate, 2, 0);
+            }
+            return original.call(this, sql);
+          };
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        const require = createRequire(import.meta.url);
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            databaseModule: require.resolve('better-sqlite3'),
+            gate: new Int32Array(heartbeatNativeInterception.gate),
+            corePath: heartbeatNativeInterception.corePath,
+          },
+        });
+      }
+
+      postMessage(...args: Parameters<NativeWorker['postMessage']>): void {
+        const [message] = args;
+        super.postMessage(...args);
+        if (message?.operation === 'worker-control-heartbeat')
+          heartbeatNativeInterception.postedHeartbeats += 1;
+      }
+    },
+  };
+});
+
+/** Arms one actual Core COMMIT; setup and all other journals remain outside the fault. */
+function armHeartbeatNativeCommit(gate: Int32Array, mode: 1 | 2): void {
+  Atomics.store(gate, 1, 0);
+  Atomics.store(gate, 2, 0);
+  Atomics.store(gate, 0, mode);
+}
+
+/** Releases a held COMMIT on every success, refusal and test-cleanup path. */
+function releaseHeartbeatNativeCommit(gate: Int32Array): void {
+  Atomics.store(gate, 2, 1);
+  Atomics.notify(gate, 2);
+}
+
+/** Keeps Main responsive while the existing test timeout bounds native crossing observation. */
+async function waitForHeartbeatNativeObservation(observed: () => boolean): Promise<void> {
+  while (!observed()) await nextTurn();
+}
+
 /** Private Core handles explicitly opened by the control-envelope cases; drained before disposal. */
 const workerControlCoreFixtures: CoreDb[] = [];
 
@@ -127,11 +217,13 @@ const workerControlCoreFixtures: CoreDb[] = [];
  *
  * @param workspaceRoots Workspace inputs declared by the package fixture.
  * @param coreDb Existing migrated Core owner for an explicitly native product fixture.
+ * @param captureOn Enables capture before admitting the Turn for restricted-content cases.
  * @returns App, gateway, token, package, and lineage fixtures.
  */
 async function createWorkerControlRouteFixture(
   workspaceRoots: MaterializedWorkspaceRoot[],
-  coreDb: CoreDb
+  coreDb: CoreDb,
+  captureOn = false
 ): Promise<{
   app: ReturnType<typeof createApp>;
   environmentPackage: AgentEnvironmentPackage;
@@ -143,6 +235,7 @@ async function createWorkerControlRouteFixture(
 }> {
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  if (captureOn) store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -309,21 +402,21 @@ function registerDurableWorkerControlSession(
 }
 
 /** Records the exact durable backend identity owned by one worker-control lease fixture. */
-function recordWorkerControlBackendSession(
+async function recordWorkerControlBackendSession(
   coreDb: CoreDb,
   _environmentPackage: AgentEnvironmentPackage,
   lineage: WorkerControlLineage,
   sandboxBindingRef: string,
   backendSessionId: string
-): string {
+): Promise<string> {
   if (!getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) {
-    const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: 'deployment-worker-control-test',
       identityId: 'identity-worker-control-test',
       observedAt: '2026-06-16T00:00:00.000Z',
       targetId: 'runtime-target-test',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...allocated,
       freshEmpty: true,
       observedAt: '2026-06-16T00:00:01.000Z',
@@ -332,30 +425,35 @@ function recordWorkerControlBackendSession(
       ready: true,
     });
   }
-  return recordWorkerBackendSessionMaterializing(coreDb, {
-    backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
-    backendVersion: '0.0.80',
-    identity: {
-      agentSessionId: lineage.agentSessionId,
-      backendKind: 'openshell',
-      backendSessionId,
-      deploymentId: 'deployment-worker-control-test',
-      packageSnapshotId: lineage.packageSnapshotId,
-      runtimeTargetId: 'runtime-target-test',
-      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${lineage.packageSnapshotId}`,
-      transientProviderInstanceId: null,
-    },
-    lineage: {
-      threadId: lineage.threadId,
-      turnId: lineage.turnId,
-      workspaceId: lineage.workspaceId,
-    },
-    sandboxBindingRef,
-  }).attemptId;
+  return (
+    await recordWorkerBackendSessionMaterializing(coreDb, {
+      backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
+      backendVersion: '0.0.80',
+      identity: {
+        agentSessionId: lineage.agentSessionId,
+        backendKind: 'openshell',
+        backendSessionId,
+        deploymentId: 'deployment-worker-control-test',
+        packageSnapshotId: lineage.packageSnapshotId,
+        runtimeTargetId: 'runtime-target-test',
+        stagingDirectoryRef: `server/runtime/worker-backend-sessions/${lineage.packageSnapshotId}`,
+        transientProviderInstanceId: null,
+      },
+      lineage: {
+        threadId: lineage.threadId,
+        turnId: lineage.turnId,
+        workspaceId: lineage.workspaceId,
+      },
+      sandboxBindingRef,
+    })
+  ).attemptId;
 }
 
 /** Advances one test backend identity through successful physical and durable cleanup. */
-function markWorkerControlBackendSessionCleaned(coreDb: CoreDb, attemptId: string): void {
+async function markWorkerControlBackendSessionCleaned(
+  coreDb: CoreDb,
+  attemptId: string
+): Promise<void> {
   const transitions = [
     ['materializing', 'cleanup-pending'],
     ['cleanup-pending', 'physical-cleaned'],
@@ -363,7 +461,7 @@ function markWorkerControlBackendSessionCleaned(coreDb: CoreDb, attemptId: strin
   ] as const;
 
   for (const [fromState, toState] of transitions) {
-    transitionWorkerBackendSessionState(coreDb, { fromState, attemptId, toState });
+    await transitionWorkerBackendSessionState(coreDb, { fromState, attemptId, toState });
   }
 }
 
@@ -530,6 +628,7 @@ describe('worker control routes', () => {
       .catch((error: unknown) => error);
     try {
       await firstAccepted;
+      vi.setSystemTime(new Date(baseline!.lastAcceptedHeartbeatAt!));
       await vi.advanceTimersByTimeAsync(31_000);
       expect(attempts.length).toBeGreaterThanOrEqual(3);
       expect(new Set(attempts).size).toBe(1);
@@ -793,24 +892,24 @@ describe('worker control routes', () => {
         fixture.lineage,
         'process_key_reconnect'
       );
-      const attemptId = recordWorkerControlBackendSession(
+      const attemptId = await recordWorkerControlBackendSession(
         coreDb,
         fixture.environmentPackage,
         fixture.lineage,
         binding,
         'sandbox-process-key-reconnect'
       );
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
         attemptId,
         toState: 'materialized',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materialized',
         attemptId,
         toState: 'launching',
       });
-      markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
+      await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId });
       const absoluteDeadline = absoluteAttemptDeadline(coreDb, fixture.lineage.turnId);
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
       registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
@@ -842,7 +941,7 @@ describe('worker control routes', () => {
         )
         .run();
       if (clearRuntimeTargetReadiness) {
-        recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+        await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
           authoritativeGeneration: null,
           closedGeneration: 1,
           observedAt: '2026-07-05T00:00:01.000Z',
@@ -850,7 +949,7 @@ describe('worker control routes', () => {
         });
       }
       if (beginBackendCleanup) {
-        transitionWorkerBackendSessionState(coreDb, {
+        await transitionWorkerBackendSessionState(coreDb, {
           fromState: 'launching',
           attemptId,
           toState: 'cleanup-pending',
@@ -1183,6 +1282,416 @@ describe('worker control routes', () => {
       await shutdownControlStoreWorkerClient();
       closeWorkspaceProductReadHandles(coreDb.dataRoot);
       coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps native chunk fingerprints and receipts content-free across replay and source recovery', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-chunk-receipt-'));
+    let coreDb = openCoreDb(dataRoot);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const fixture = await createWorkerControlRouteFixture([], coreDb, true);
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } = fixture;
+    await store.createAgentSession({
+      id: lineage.agentSessionId,
+      agentId: environmentPackage.agent.agentId,
+      workspaceId: lineage.workspaceId,
+      threadId: lineage.threadId,
+      status: 'busy',
+      message: null,
+      createdAt: environmentPackage.createdAt,
+      updatedAt: environmentPackage.createdAt,
+    });
+    await store.updateTurn(lineage.turnId, { agentSessionId: lineage.agentSessionId });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: lineage.workspaceId,
+      ownerUserId: LOCAL_USER_ID,
+    });
+    const binding = createDurableWorkerControlLease(
+      coreDb,
+      environmentPackage,
+      lineage,
+      'chunk_receipt'
+    );
+    let gateway = createDefaultWorkerControlGateway(coreDb);
+    const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
+    let app = createApp({
+      coreDb,
+      mode: 'server',
+      store,
+      workerControlGateway: gateway,
+      workspaceMutationAdmission,
+    });
+    const authorization = `Bearer ${registration.token}`;
+    const send = (record: WorkerCanonicalEventRecord) =>
+      app.request('/api/worker-control/events/append', {
+        body: JSON.stringify({ lineage, record }),
+        headers: { authorization, 'content-type': 'application/json' },
+        method: 'POST',
+      });
+    const delivered: WorkerCanonicalEventRecord[] = [];
+    const acknowledgements: unknown[] = [];
+    const sessionDir = join(dataRoot, 'capture');
+    const writer = new WorkerTranscriptWriter({
+      sessionDir,
+      lineage,
+      appendEvent: async (record) => {
+        const response = await send(record);
+        expect(response.status).toBe(200);
+        delivered.push(record);
+        acknowledgements.push(await response.json());
+      },
+    });
+    const bytes = Buffer.from('restricted-native-control-chunk-content');
+    const digest = createHash('sha256').update(bytes).digest('hex');
+    await writer.writeObservation(
+      WorkerObservationDataSchema.parse({
+        observationId: 'safe-core-receipt',
+        sourceRef: 'control-source',
+        sourceSequence: 0,
+        observedAt: environmentPackage.createdAt,
+        fact: {
+          kind: 'assistant',
+          runtimeOriginRef: null,
+          phase: 'updated',
+          messageRef: 'control',
+          representation: 'delta',
+        },
+        content: {
+          state: 'expected',
+          mediaType: 'text/plain',
+          boundary: 'assistant.text',
+          bytes: bytes.length,
+          sha256: `sha256:${digest}`,
+          chunkCount: 1,
+        },
+      }),
+      bytes
+    );
+    expect(delivered).toHaveLength(2);
+    // WCP Incremental Work Observations: only coordinates, byte count and digest enter Core.
+    const safeReceipt = {
+      schemaVersion: 1,
+      kind: 'event',
+      lineage,
+      sequence: 1,
+      event: {
+        type: 'observation.content.chunk',
+        data: {
+          observationId: 'safe-core-receipt',
+          chunkIndex: 0,
+          byteOffset: 0,
+          encoding: 'base64',
+          bytes: bytes.length,
+          sha256: digest,
+        },
+      },
+    };
+    const retained = () => ({
+      fingerprints: coreDb.sqlite
+        .prepare(
+          "SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id = ? AND operation = 'event_append' ORDER BY sequence"
+        )
+        .all(lineage.packageSnapshotId) as { sequence: number; fingerprint: string }[],
+      receipts: coreDb.sqlite
+        .prepare(
+          "SELECT sequence, record_json AS recordJson FROM worker_control_records WHERE package_snapshot_id = ? AND operation = 'event_append' ORDER BY sequence"
+        )
+        .all(lineage.packageSnapshotId) as { sequence: number; recordJson: string }[],
+    });
+    const original = retained();
+    expect(original.fingerprints).toHaveLength(2);
+    expect(original.receipts).toHaveLength(2);
+    expect(original.fingerprints[1]!.fingerprint).toBe(canonicalJsonText(safeReceipt));
+    expect(JSON.parse(original.receipts[1]!.recordJson)).toEqual(safeReceipt);
+    expect(JSON.stringify(original)).not.toContain(bytes.toString('utf8'));
+    expect(JSON.stringify(original)).not.toContain(bytes.toString('base64'));
+
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(dataRoot);
+    coreDb.sqlite.close();
+    coreDb = openCoreDb(dataRoot);
+    gateway = createDefaultWorkerControlGateway(coreDb);
+    app = createApp({
+      coreDb,
+      mode: 'server',
+      store,
+      workerControlGateway: gateway,
+      workspaceMutationAdmission,
+    });
+    const replay = await send(delivered[1]!);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(acknowledgements[1]);
+    // The actual recovery reader must accept the same safe fingerprints against the producer's original source.
+    await recoverWorkerObservationSource(coreDb, {
+      environmentPackage,
+      metadata: delivered[0]!,
+      sourcePath: join(sessionDir, workerObservationSourceRelativePath(0)),
+      assertPublicationAuthority: () => {
+        gateway.authenticateRequest({ authorization, lineage });
+      },
+    });
+    expect(retained()).toEqual(original);
+  });
+
+  it.each([
+    ['artifact_notice', '/api/worker-control/artifacts', 'artifact', 'noticedAt'],
+    [
+      'supply_refresh_ack',
+      '/api/worker-control/supply-refresh-ack',
+      'supplyRefreshAck',
+      'acknowledgedAt',
+    ],
+  ] as const)('replays the original native %s receipt with an inert retained annotation', async (operation, route, responseKey, timestampKey) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-descriptive-receipt-'));
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture([], coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: lineage.workspaceId,
+      ownerUserId: LOCAL_USER_ID,
+    });
+    const binding = createDurableWorkerControlLease(coreDb, environmentPackage, lineage, operation);
+    let gateway = createDefaultWorkerControlGateway(coreDb);
+    const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
+    let app = createApp({
+      coreDb,
+      mode: 'server',
+      store,
+      workerControlGateway: gateway,
+      workspaceMutationAdmission,
+    });
+    const payload =
+      operation === 'artifact_notice'
+        ? {
+            artifact: {
+              path: 'reports/result.md',
+              title: 'Original report',
+              mediaType: 'text/markdown',
+            },
+            lineage,
+            sequence: 1,
+          }
+        : {
+            body: {
+              refreshId: 'refresh_original',
+              status: 'applied',
+              message: 'Original acknowledgement',
+            },
+            lineage,
+            sequence: 1,
+            schemaVersion: 2,
+            operation,
+          };
+    const send = () =>
+      app.request(route, {
+        body: JSON.stringify(payload),
+        headers: {
+          authorization: `Bearer ${registration.token}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      });
+    const first = await send();
+    expect(first.status).toBe(200);
+    const original = (await first.json()) as Record<string, Record<string, unknown>>;
+    const readReceipt = () =>
+      coreDb.sqlite
+        .prepare(
+          'SELECT accepted_at AS acceptedAt, record_json AS recordJson FROM worker_control_records WHERE package_snapshot_id = ? AND operation = ? AND record_key = ?'
+        )
+        .get(lineage.packageSnapshotId, operation, '1') as {
+        acceptedAt: string;
+        recordJson: string;
+      };
+    const accepted = readReceipt();
+    expect(JSON.parse(accepted.recordJson)).toEqual(original[responseKey]);
+    expect(original[responseKey]![timestampKey]).toBe(accepted.acceptedAt);
+    // Deliberate retained-boundary fault injection follows valid public publication; it changes no known core or request fingerprint.
+    const annotated = JSON.stringify({
+      ...JSON.parse(accepted.recordJson),
+      futureNote: 'inert descriptive annotation',
+    });
+    coreDb.sqlite
+      .prepare(
+        'UPDATE worker_control_records SET record_json = ? WHERE package_snapshot_id = ? AND operation = ? AND record_key = ?'
+      )
+      .run(annotated, lineage.packageSnapshotId, operation, '1');
+    const beforeReplay = readReceipt();
+    const fingerprints = () =>
+      coreDb.sqlite
+        .prepare(
+          'SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id = ? AND operation = ? ORDER BY sequence'
+        )
+        .all(lineage.packageSnapshotId, operation);
+    const originalFingerprints = fingerprints();
+    // A fresh default gateway with the exact original credentials must obtain the original receipt from its durable reader.
+    gateway = createDefaultWorkerControlGateway(coreDb);
+    expect(registerDurableWorkerControlSession(gateway, environmentPackage, binding).token).toBe(
+      registration.token
+    );
+    app = createApp({
+      coreDb,
+      mode: 'server',
+      store,
+      workerControlGateway: gateway,
+      workspaceMutationAdmission,
+    });
+    const replay = await send();
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(original);
+    // Contract Evolution's descriptive reader ignores additions without rewriting retained bytes or timestamps.
+    expect(readReceipt()).toEqual(beforeReplay);
+    expect(beforeReplay).toEqual({ acceptedAt: accepted.acceptedAt, recordJson: annotated });
+    expect(fingerprints()).toEqual(originalFingerprints);
+  });
+
+  it('replays an ordinary native event with retained descriptive additions without a second live event', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-event-descriptive-receipt-'));
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(dataRoot);
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
+      await createWorkerControlRouteFixture([], coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: lineage.workspaceId,
+      ownerUserId: LOCAL_USER_ID,
+    });
+    const binding = await createDurableWorkerControlLease(
+      coreDb,
+      environmentPackage,
+      lineage,
+      'ordinary_event_annotation'
+    );
+    const gateway = createDefaultWorkerControlGateway(coreDb);
+    const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
+    const app = createApp({
+      coreDb,
+      mode: 'server',
+      store,
+      workerControlGateway: gateway,
+      workspaceMutationAdmission,
+    });
+    const record: WorkerCanonicalEventRecord = {
+      schemaVersion: 1,
+      kind: 'event',
+      lineage,
+      sequence: 1,
+      event: {
+        type: 'item.delta',
+        data: { itemId: 'ordinary_annotation_item', delta: 'original content' },
+      },
+    };
+    const send = (event: unknown = record) =>
+      app.request('/api/worker-control/events/append', {
+        method: 'POST',
+        body: JSON.stringify({ lineage, record: event }),
+        headers: {
+          authorization: `Bearer ${registration.token}`,
+          'content-type': 'application/json',
+        },
+      });
+    const first = await send();
+    expect(first.status).toBe(200);
+    const original = await first.json();
+    expect(original).toEqual({
+      schemaVersion: 2,
+      accepted: true,
+      nextExpectedSequence: 2,
+      diagnostics: [],
+    });
+    const readReceipt = () =>
+      coreDb.sqlite
+        .prepare(
+          "SELECT accepted_at AS acceptedAt, record_json AS recordJson FROM worker_control_records WHERE package_snapshot_id = ? AND operation = 'event_append' AND record_key = '1'"
+        )
+        .get(lineage.packageSnapshotId) as { acceptedAt: string; recordJson: string };
+    const fingerprints = () =>
+      coreDb.sqlite
+        .prepare(
+          "SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints WHERE package_snapshot_id = ? AND operation = 'event_append' ORDER BY sequence"
+        )
+        .all(lineage.packageSnapshotId);
+    const accepted = readReceipt();
+    expect(JSON.parse(accepted.recordJson)).toEqual(record);
+    const originalFingerprints = fingerprints();
+    expect(originalFingerprints).toEqual([{ sequence: 1, fingerprint: canonicalJsonText(record) }]);
+    expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.events).toEqual([record]);
+    const liveBefore = gateway.getSessionSnapshot(lineage.packageSnapshotId)?.events;
+    const setReceipt = (value: unknown) =>
+      coreDb.sqlite
+        .prepare(
+          "UPDATE worker_control_records SET record_json = ? WHERE package_snapshot_id = ? AND operation = 'event_append' AND record_key = '1'"
+        )
+        .run(JSON.stringify(value), lineage.packageSnapshotId);
+    // Valid public publication precedes this retained-reader fault; known core, time and fingerprint stay original.
+    const annotated = {
+      ...JSON.parse(accepted.recordJson),
+      futureNote: 'inert descriptive annotation',
+    };
+    setReceipt(annotated);
+    const retainedBefore = readReceipt();
+    const replay = await send();
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual(original);
+    // Contract Evolution / Worker Control Descriptive Readers: no rewrite, new timestamp or live event on replay.
+    expect(readReceipt()).toEqual(retainedBefore);
+    expect(retainedBefore).toEqual({
+      acceptedAt: accepted.acceptedAt,
+      recordJson: JSON.stringify(annotated),
+    });
+    expect(fingerprints()).toEqual(originalFingerprints);
+    expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.events).toEqual(liveBefore);
+    const changed = await send({
+      ...record,
+      event: {
+        type: 'item.delta',
+        data: { itemId: 'ordinary_annotation_item', delta: 'changed content' },
+      },
+    });
+    expect(changed.status).toBe(409);
+    expect(await changed.json()).toMatchObject({ code: 'worker_control_sequence_conflict' });
+    for (const invalid of [
+      {
+        ...annotated,
+        event: {
+          type: 'item.delta',
+          data: { itemId: 'ordinary_annotation_item', delta: 'changed retained content' },
+        },
+      },
+      { ...annotated, requiredFeatures: ['unsupported.required'] },
+      { ...annotated, event: { type: 'future.authority', data: {} } },
+    ]) {
+      setReceipt(invalid);
+      const invalidBefore = readReceipt();
+      const refused = await send();
+      expect(refused.status).toBeGreaterThanOrEqual(400);
+      expect(readReceipt()).toEqual(invalidBefore);
+      expect(fingerprints()).toEqual(originalFingerprints);
+      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.events).toEqual(liveBefore);
     }
   });
 
@@ -1676,7 +2185,7 @@ describe('worker control routes', () => {
         workerRouteToken('lease-binding:lease_default_binding', 'inference')
       ),
     });
-    const backendLeaseId = recordWorkerControlBackendSession(
+    const backendLeaseId = await recordWorkerControlBackendSession(
       coreDb,
       environmentPackage,
       lineage,
@@ -1690,7 +2199,7 @@ describe('worker control routes', () => {
     );
     const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
 
-    gateway.recordHeartbeat({
+    await gateway.recordHeartbeat({
       authorization: `Bearer ${registration.token}`,
       ...heartbeatEnvelope(lineage, 1, 'running'),
     });
@@ -1815,7 +2324,7 @@ describe('worker control routes', () => {
 
     expect(staleResponse.status).toBe(403);
     expect(staleBody.code).toBe('worker_control_lease_not_live');
-    markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
+    await markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
     await closeOwnedExecutionAttempt(coreDb, {
       attemptId: testEntityId('attempt', 'lease_default_binding'),
       firstTerminalCause: 'completed',
@@ -2155,7 +2664,7 @@ describe('worker control routes', () => {
         workerRouteToken('lease-binding:lease_final_status', 'inference')
       ),
     });
-    const backendLeaseId = recordWorkerControlBackendSession(
+    const backendLeaseId = await recordWorkerControlBackendSession(
       coreDb,
       environmentPackage,
       lineage,
@@ -2362,7 +2871,7 @@ describe('worker control routes', () => {
       threadId: lineage.threadId,
       workspaceId: lineage.workspaceId,
     };
-    markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
+    await markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
     // This route-level fixture supplies settled handoff barriers after checking the accepted
     // transcript and unchanged Workspace handle; executor integration tests prove their producers.
     attemptActionOwners.markSchedulerAttemptForTerminalTurn(coreDb, completedTurn);
@@ -2486,6 +2995,7 @@ describe('worker control routes', () => {
   it('rejects exact final-status replay when the authority deadline expires at transaction entry', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-status-replay-race-')));
     let transactionCount = 0;
+    let deadlineExpiredAtTransactionEntry = false;
 
     try {
       applyMigrations(coreDb);
@@ -2503,7 +3013,7 @@ describe('worker control routes', () => {
         lineage,
         'final_status_replay_race'
       );
-      const backendLeaseId = recordWorkerControlBackendSession(
+      const backendLeaseId = await recordWorkerControlBackendSession(
         coreDb,
         environmentPackage,
         lineage,
@@ -2535,7 +3045,7 @@ describe('worker control routes', () => {
                 '2000-01-01T00:00:00.000Z',
                 testEntityId('attempt', 'lease_final_status_replay_race')
               );
-            markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
+            deadlineExpiredAtTransactionEntry = true;
             beginOwnedAttemptCloseout(coreDb, {
               attemptId: testEntityId('attempt', 'lease_final_status_replay_race'),
 
@@ -2569,6 +3079,8 @@ describe('worker control routes', () => {
         method: 'POST' as const,
       };
       const accepted = await app.request('/api/worker-control/final-status', request);
+      // Cleanup is a settled replay precondition; deadline expiry remains the synchronous transaction-entry fault.
+      await markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
       const replay = await app.request('/api/worker-control/final-status', request);
       const acceptedRecordCount = coreDb.sqlite
         .prepare(
@@ -2587,6 +3099,7 @@ describe('worker control routes', () => {
 
       expect(accepted.status).toBe(200);
       expect(replay.status).toBe(403);
+      expect(deadlineExpiredAtTransactionEntry).toBe(true);
       expect.soft(acceptedRecordCount.count).toBe(2);
       expect.soft(fingerprintCount.count).toBe(2);
       expect(
@@ -2657,7 +3170,7 @@ describe('worker control routes', () => {
         createdAt: environmentPackage.createdAt,
         environmentPackage,
       });
-      const backendLeaseId = recordWorkerControlBackendSession(
+      const backendLeaseId = await recordWorkerControlBackendSession(
         coreDb,
         environmentPackage,
         lineage,
@@ -2721,7 +3234,7 @@ describe('worker control routes', () => {
       });
       recordWorkspaceInputSnapshots(workspaceDb, inputSnapshots);
       recordWorkspaceMaterializationRecords(workspaceDb, materializations);
-      markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendLeaseId });
+      await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendLeaseId });
       await endWorkerTurnMaterialization(store, workspaceDb, lineage.turnId, 'completed', [
         backendSession.backendSessionId,
       ]);
@@ -2795,7 +3308,7 @@ describe('worker control routes', () => {
       expect(replay.status).toBe(200);
       expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual(pendingHandles);
 
-      markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
+      await markWorkerControlBackendSessionCleaned(coreDb, backendLeaseId);
       const releasingLease = requireNanoHostExecutionAttempt(
         coreDb,
         testEntityId('attempt', 'lease_final_status_workspace')
@@ -3586,6 +4099,336 @@ describe('worker control routes', () => {
     }
   });
 
+  it.each([
+    'ordinary',
+    'reconnect',
+  ] as const)('keeps the native %s heartbeat tuple and memory unchanged on UPDATE and outer COMMIT failure', async (kind) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-heartbeat-native-rollback-'));
+    const coreDb = openCoreDb(dataRoot);
+    const gate = new Int32Array(new SharedArrayBuffer(12));
+    await shutdownControlStoreWorkerClient();
+    heartbeatNativeInterception.gate = gate.buffer as SharedArrayBuffer;
+    heartbeatNativeInterception.corePath = coreDbPath(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const fixture = await createWorkerControlRouteFixture([], coreDb);
+      const { environmentPackage, lineage } = fixture;
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: lineage.workspaceId,
+        ownerUserId: LOCAL_USER_ID,
+      });
+      const binding = await createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        `heartbeat_native_${kind}`
+      );
+      const attemptId = testEntityId('attempt', `lease_heartbeat_native_${kind}`);
+      const backendAttemptId = await recordWorkerControlBackendSession(
+        coreDb,
+        environmentPackage,
+        lineage,
+        binding,
+        `sandbox-heartbeat-native-${kind}`
+      );
+      await transitionWorkerBackendSessionState(coreDb, {
+        attemptId: backendAttemptId,
+        fromState: 'materializing',
+        toState: 'materialized',
+      });
+      await transitionWorkerBackendSessionState(coreDb, {
+        attemptId: backendAttemptId,
+        fromState: 'materialized',
+        toState: 'launching',
+      });
+      await markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendAttemptId });
+      let gateway = createDefaultWorkerControlGateway(coreDb);
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        binding
+      );
+      const authorization = `Bearer ${registration.token}`;
+      const reconnectKey = createHash('sha256')
+        .update(`native-process-${kind}`)
+        .digest('base64url');
+      const processKeyHash = createHash('sha256')
+        .update(Buffer.from(reconnectKey, 'base64url'))
+        .digest('base64url');
+      await gateway.recordHeartbeat({
+        authorization,
+        ...heartbeatEnvelope(lineage, 0, 'starting', null, processKeyHash),
+      });
+      await gateway.recordHeartbeat({
+        authorization,
+        ...heartbeatEnvelope(lineage, 1, 'running', 'Before the fault.'),
+      });
+      if (kind === 'reconnect') {
+        // Worker Control restart adoption requires accepted sequence one before recovery can arm.
+        const restoreBackendSession = vi.fn(async () => {});
+        await classifyNanoHostAttemptsAfterRestart(coreDb, {
+          store: fixture.store,
+          executionBackend: new SimulatedTurnExecutor({ coreDb }),
+          reconcileExecutions: async () => {},
+          cleanupBackendSession: vi.fn(),
+          prepareBackendCleanup: vi.fn(() => false),
+          restoreBackendSession,
+          reconcileAcceptedFinalStatus: vi.fn(),
+          projectRecoveredTurn: vi.fn(),
+        });
+        expect(restoreBackendSession).toHaveBeenCalledOnce();
+        expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
+          phase: 'open',
+          recoveryState: 'awaiting-reconnect',
+          recoveryDeadline: expect.any(String),
+        });
+        gateway = createDefaultWorkerControlGateway(coreDb);
+        registerDurableWorkerControlSession(gateway, environmentPackage, binding);
+      }
+      const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      // Both proofs hash their decoded bytes; the route digest is hex and the process digest is base64url.
+      expect(before.workerControlTokenHash).toBe(
+        createHash('sha256').update(Buffer.from(registration.token, 'base64url')).digest('hex')
+      );
+      expect(before.workerProcessKeyHash).toBe(processKeyHash);
+      const memoryBefore = gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat;
+      const fingerprints = () =>
+        coreDb.sqlite
+          .prepare(
+            `SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints
+           WHERE package_snapshot_id = ? AND operation = 'heartbeat' ORDER BY sequence`
+          )
+          .all(lineage.packageSnapshotId);
+      const fingerprintsBefore = fingerprints();
+      const heartbeatRows = () =>
+        coreDb.sqlite
+          .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
+          .all();
+      const request = {
+        authorization,
+        ...heartbeatEnvelope(lineage, 2, 'running', 'After the fault.'),
+        ...(kind === 'reconnect' ? { reconnectKey } : {}),
+      };
+      coreDb.sqlite.exec(`
+          CREATE TRIGGER reject_native_heartbeat_acceptance
+          BEFORE UPDATE ON scheduler_execution_attempts
+          WHEN NEW.attempt_id = '${attemptId}' AND NEW.last_worker_sequence = 2
+          BEGIN SELECT RAISE(ABORT, 'injected native heartbeat UPDATE failure'); END
+        `);
+      coreDb.sqlite.pragma('query_only = ON');
+      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      await expect(gateway.recordHeartbeat(request)).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+      });
+      // Storage complete-tuple rule also rolls back adoption when later liveness fails.
+      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+      expect(fingerprints()).toEqual(fingerprintsBefore);
+      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
+        memoryBefore
+      );
+      expect(heartbeatRows()).toEqual([]);
+      coreDb.sqlite.pragma('query_only = OFF');
+      coreDb.sqlite.exec('DROP TRIGGER reject_native_heartbeat_acceptance');
+      coreDb.sqlite.pragma('query_only = ON');
+
+      armHeartbeatNativeCommit(gate, 1);
+      await expect(gateway.recordHeartbeat(request)).rejects.toMatchObject({
+        code: 'commit-unknown',
+        commit: 'unknown',
+      });
+      expect(Atomics.load(gate, 1)).toBe(1);
+      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+      expect(fingerprints()).toEqual(fingerprintsBefore);
+      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
+        memoryBefore
+      );
+      expect(heartbeatRows()).toEqual([]);
+
+      // Native COMMIT failure poisons the owner. Inspect absence before explicit reopen and retry.
+      await shutdownControlStoreWorkerClient();
+      const scope = nativeProductScope(dataRoot, { kind: 'server' });
+      // Finish any opening/migration transaction before holding the heartbeat's own COMMIT.
+      await getControlStoreWorkerClient().open({
+        database: `core:${scope.path}`,
+        path: scope.path,
+        dataRoot,
+        create: false,
+        initialize: 'core',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      armHeartbeatNativeCommit(gate, 2);
+      let settled = false;
+      const retry = Promise.resolve()
+        .then(() => gateway.recordHeartbeat(request))
+        .then(
+          (ack) => {
+            settled = true;
+            return { ack };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { error };
+          }
+        );
+      await waitForHeartbeatNativeObservation(() => Atomics.load(gate, 1) === 1 || settled);
+      expect(Atomics.load(gate, 1)).toBe(1);
+      expect(settled).toBe(false);
+      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+      expect(fingerprints()).toEqual(fingerprintsBefore);
+      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
+        memoryBefore
+      );
+      releaseHeartbeatNativeCommit(gate);
+      expect(await retry).toEqual({
+        ack: { schemaVersion: 2, accepted: true, nextExpectedSequence: 3, diagnostics: [] },
+      });
+      expect(fingerprints()).toHaveLength(fingerprintsBefore.length + 1);
+      const accepted = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      expect(accepted).toMatchObject({
+        phase: 'open',
+        lastWorkerSequence: 2,
+        lastAcceptedHeartbeatAt: expect.any(String),
+        recoveryState: null,
+        recoveryDeadline: null,
+        workerProcessKeyHash: processKeyHash,
+      });
+      expect(accepted.heartbeatDeadline).not.toBe(before.heartbeatDeadline);
+      expect(accepted.deadline).toBe(before.deadline);
+      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toMatchObject({
+        sequence: 2,
+        message: 'After the fault.',
+      });
+      expect(heartbeatRows()).toEqual([]);
+      // Raw process keys and route tokens never enter retained heartbeat evidence.
+      expect(JSON.stringify(fingerprints())).not.toContain(reconnectKey);
+      expect(JSON.stringify(fingerprints())).not.toContain(registration.token);
+    } finally {
+      releaseHeartbeatNativeCommit(gate);
+      await shutdownControlStoreWorkerClient();
+      heartbeatNativeInterception.gate = undefined;
+      vi.useRealTimers();
+      closeWorkspaceProductReadHandles(dataRoot);
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a heartbeat queued behind native attempt revocation using current Core authority', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-heartbeat-native-authority-'));
+    const coreDb = openCoreDb(dataRoot);
+    const gate = new Int32Array(new SharedArrayBuffer(12));
+    await shutdownControlStoreWorkerClient();
+    heartbeatNativeInterception.gate = gate.buffer as SharedArrayBuffer;
+    heartbeatNativeInterception.corePath = coreDbPath(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const { environmentPackage, lineage } = await createWorkerControlRouteFixture([], coreDb);
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: lineage.workspaceId,
+        ownerUserId: LOCAL_USER_ID,
+      });
+      const binding = await createDurableWorkerControlLease(
+        coreDb,
+        environmentPackage,
+        lineage,
+        'heartbeat_native_authority'
+      );
+      const attemptId = testEntityId('attempt', 'lease_heartbeat_native_authority');
+      const gateway = createDefaultWorkerControlGateway(coreDb);
+      const registration = registerDurableWorkerControlSession(
+        gateway,
+        environmentPackage,
+        binding
+      );
+      const authorization = `Bearer ${registration.token}`;
+      await gateway.recordHeartbeat({ authorization, ...heartbeatEnvelope(lineage, 1, 'running') });
+      const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      const memoryBefore = gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat;
+      const fingerprints = () =>
+        coreDb.sqlite
+          .prepare(
+            `SELECT sequence, fingerprint FROM worker_control_sequence_fingerprints
+         WHERE package_snapshot_id = ? AND operation = 'heartbeat' ORDER BY sequence`
+          )
+          .all(lineage.packageSnapshotId);
+      const fingerprintsBefore = fingerprints();
+      coreDb.sqlite.pragma('query_only = ON');
+      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      armHeartbeatNativeCommit(gate, 2);
+      const closing = getControlStoreWorkerClient().executionAttempt(
+        `core:${coreDbPath(dataRoot)}`,
+        { kind: 'closing', attemptId, cause: 'native-heartbeat-authority-race' }
+      );
+      await waitForHeartbeatNativeObservation(() => Atomics.load(gate, 1) === 1);
+      // Main still sees open authority while the earlier native revocation waits before COMMIT.
+      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toEqual(before);
+      const postedBefore = heartbeatNativeInterception.postedHeartbeats;
+      let settled = false;
+      const heartbeat = Promise.resolve()
+        .then(() =>
+          gateway.recordHeartbeat({
+            authorization,
+            ...heartbeatEnvelope(lineage, 2, 'running', 'Queued before revocation ACK.'),
+          })
+        )
+        .then(
+          (ack) => {
+            settled = true;
+            return { ack };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { error };
+          }
+        );
+      await waitForHeartbeatNativeObservation(
+        () => heartbeatNativeInterception.postedHeartbeats === postedBefore + 1 || settled
+      );
+      expect(heartbeatNativeInterception.postedHeartbeats).toBe(postedBefore + 1);
+      expect(settled).toBe(false);
+      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
+        memoryBefore
+      );
+      releaseHeartbeatNativeCommit(gate);
+      expect(await closing).toMatchObject({
+        phase: 'closing',
+        terminalCause: 'native-heartbeat-authority-race',
+      });
+      expect(await heartbeat).toMatchObject({
+        error: { code: 'worker_control_lease_not_live', status: 403 },
+      });
+      const revoked = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      expect(revoked).toMatchObject({
+        phase: 'closing',
+        lastWorkerSequence: before.lastWorkerSequence,
+        lastAcceptedHeartbeatAt: before.lastAcceptedHeartbeatAt,
+        heartbeatDeadline: before.heartbeatDeadline,
+      });
+      expect(fingerprints()).toEqual(fingerprintsBefore);
+      expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat).toEqual(
+        memoryBefore
+      );
+      expect(
+        coreDb.sqlite
+          .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
+          .all()
+      ).toEqual([]);
+    } finally {
+      releaseHeartbeatNativeCommit(gate);
+      await shutdownControlStoreWorkerClient();
+      heartbeatNativeInterception.gate = undefined;
+      closeWorkspaceProductReadHandles(dataRoot);
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('replays the heartbeat ACK after database reopen without a retained heartbeat or liveness renewal', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-'));
     let coreDb = openCoreDb(dataRoot);
@@ -3598,6 +4441,7 @@ describe('worker control routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
+    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Rebuild worker session'
@@ -3695,11 +4539,14 @@ describe('worker control routes', () => {
         mode: 'server',
         store,
         workerControlGateway: firstGateway,
+        workspaceMutationAdmission,
       });
 
       const absoluteDeadline = absoluteAttemptDeadline(coreDb, lineage.turnId);
       const attemptId = testEntityId('attempt', 'lease_rebuild');
       const beforeHeartbeat = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      coreDb.sqlite.pragma('query_only = ON');
+      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
       const firstHeartbeatResponse = await firstApp.request('/api/worker-control/heartbeat', {
         body: JSON.stringify(heartbeatEnvelope(lineage, 1, 'running', 'Worker is alive.')),
         headers: {
@@ -3728,6 +4575,7 @@ describe('worker control routes', () => {
           .prepare("SELECT record_json FROM worker_control_records WHERE operation = 'heartbeat'")
           .all();
       expect.soft(heartbeatRows()).toEqual([]);
+      coreDb.sqlite.pragma('query_only = OFF');
       await firstApp.request('/api/worker-control/events/append', {
         body: JSON.stringify({
           lineage,
@@ -3757,10 +4605,11 @@ describe('worker control routes', () => {
         workspaceDb.sqlite.close();
       }
 
+      await shutdownControlStoreWorkerClient();
       closeWorkspaceProductReadHandles(dataRoot);
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
-      vi.useFakeTimers();
+      vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(Date.parse(acceptedAttempt.lastAcceptedHeartbeatAt!) + 1_000));
       const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
       expect
@@ -3771,7 +4620,10 @@ describe('worker control routes', () => {
         mode: 'server',
         store,
         workerControlGateway: rebuiltGateway,
+        workspaceMutationAdmission,
       });
+      coreDb.sqlite.pragma('query_only = ON');
+      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
       const authorization = `Bearer ${workerRouteToken(
         'lease-binding:lease_rebuild',
         'worker-control'

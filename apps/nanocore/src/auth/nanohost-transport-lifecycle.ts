@@ -79,12 +79,12 @@ export interface DecommissionNanoHostTransportAndFenceInput {
 }
 
 /** Fences process authority before attempting the existing durable readiness close. */
-export function fenceNanoHostTransportAuthority(
+export async function fenceNanoHostTransportAuthority(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
   identityId: string,
   observedAt: string
-): void {
+): Promise<void> {
   // Process authority must stop even when reading or updating its durable readiness witness fails.
   authority.fenceAuthoritative(identityId);
   const target = coreDb.sqlite
@@ -96,7 +96,7 @@ export function fenceNanoHostTransportAuthority(
     | { readonly connectionGeneration: number; readonly targetId: string }
     | undefined;
   if (!target) return;
-  recordNanoHostRuntimeTargetConnectionClose(coreDb, {
+  await recordNanoHostRuntimeTargetConnectionClose(coreDb, {
     authoritativeGeneration: null,
     closedGeneration: target.connectionGeneration,
     observedAt,
@@ -105,28 +105,28 @@ export function fenceNanoHostTransportAuthority(
 }
 
 /** Preserves the original uncertain write when the separately attempted readiness close also fails. */
-function fenceUncertainNanoHostCredential(
+async function fenceUncertainNanoHostCredential(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
   identityId: string,
   observedAt: string
-): void {
+): Promise<void> {
   try {
-    fenceNanoHostTransportAuthority(coreDb, authority, identityId, observedAt);
+    await fenceNanoHostTransportAuthority(coreDb, authority, identityId, observedAt);
   } catch {
     /* Process fencing ran first; secondary readiness refusal cannot prove this credential's rollback. */
   }
 }
 
 /** Evaluates the existing retained Token without introducing another writer or lifecycle. */
-export function fenceNanoHostTransportOnTokenUnusable(
+export async function fenceNanoHostTransportOnTokenUnusable(
   coreDb: CoreDb,
   authority: NanoHostTransportSessionAuthority,
   input: FenceNanoHostTransportOnTokenUnusableInput
-): FenceNanoHostTransportOnTokenUnusableResult {
+): Promise<FenceNanoHostTransportOnTokenUnusableResult> {
   const record = getNanoHostTransportTokenRecord(coreDb, input.tokenId);
   if (!record) {
-    fenceNanoHostTransportAuthority(
+    await fenceNanoHostTransportAuthority(
       coreDb,
       authority,
       input.identityId,
@@ -149,7 +149,7 @@ export function fenceNanoHostTransportOnTokenUnusable(
   }
 
   const hadAuthority = authority.authoritativeGeneration(input.identityId) !== null;
-  fenceNanoHostTransportAuthority(
+  await fenceNanoHostTransportAuthority(
     coreDb,
     authority,
     input.identityId,
@@ -242,7 +242,7 @@ export async function revokeNanoHostTransportTokenAndFence(
     record = await submitNanoHostTransportRevocation(writer, tokenId, now ? { now } : {}, admin);
   } catch (error) {
     if (nanoHostTransportCommitState(error) === 'unknown' && prior)
-      fenceUncertainNanoHostCredential(
+      await fenceUncertainNanoHostCredential(
         coreDb,
         authority,
         prior.ownerNanoHostIdentityId,
@@ -251,7 +251,7 @@ export async function revokeNanoHostTransportTokenAndFence(
     throw error;
   }
   if (!record) return null;
-  fenceNanoHostTransportAuthority(
+  await fenceNanoHostTransportAuthority(
     coreDb,
     authority,
     record.ownerNanoHostIdentityId,
@@ -277,7 +277,7 @@ export async function decommissionNanoHostTransportAndFence(
     revoked = await submitNanoHostTransportDecommission(writer, snapshot, admin);
   } catch (error) {
     if (nanoHostTransportCommitState(error) === 'unknown')
-      fenceUncertainNanoHostCredential(
+      await fenceUncertainNanoHostCredential(
         coreDb,
         authority,
         snapshot.identityId,
@@ -285,7 +285,7 @@ export async function decommissionNanoHostTransportAndFence(
       );
     throw error;
   }
-  fenceNanoHostTransportAuthority(
+  await fenceNanoHostTransportAuthority(
     coreDb,
     authority,
     snapshot.identityId,

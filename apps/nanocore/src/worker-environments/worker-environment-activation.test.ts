@@ -23,8 +23,7 @@ import {
 } from '../runtime/worker-image-settlements.js';
 import {
   activateWorkerStorageAttachment,
-  createWorkerStorageBinding,
-  reserveWorkerStorageAttachment,
+  createAndReserveWorkerStorageAttachment,
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -161,7 +160,7 @@ function agentConfigurationSource(): string {
 }
 
 /** Creates an exact immutable A/B pair for one activation request. */
-function candidatePair(
+async function candidatePair(
   fixture: BaseFixture,
   affectedStorage: readonly WorkerEnvironmentAffectedStorage[],
   replaceNow: WorkerEnvironmentReplaceNow | null,
@@ -212,7 +211,7 @@ function candidatePair(
     schemaVersion: 1,
     target: TARGET,
   };
-  writeWorkerImageSettlement(fixture.coreDb, {
+  await writeWorkerImageSettlement(fixture.coreDb, {
     authoredArtifactId: authoredCandidate.artifactId,
     authoredArtifactVersion: 1,
     authoredContentDigest: authoredCandidate.contentDigest,
@@ -302,7 +301,7 @@ describe('Worker environment activation', () => {
     'during-inspection',
   ] as const)('refuses a Thread that becomes busy %s without admitting defaults or changing configuration', async (phase) => {
     const fixture = await createBaseFixture();
-    const pair = candidatePair(fixture, [], null);
+    const pair = await candidatePair(fixture, [], null);
     const config = configurationService();
     let otherTurn: ReturnType<FsStore['createTurn']> | undefined;
     const occupyThread = async () => {
@@ -364,7 +363,7 @@ describe('Worker environment activation', () => {
     ['build declaration', BUILD_DECLARATION],
   ] as const)('pins resolved B after a %s by exact SHA CAS and replays the immutable result Artifact', async (_kind, declaration) => {
     const fixture = await createBaseFixture();
-    const pair = candidatePair(fixture, [], null, declaration);
+    const pair = await candidatePair(fixture, [], null, declaration);
     const request = activationRequest(pair);
     const config = configurationService();
     const replaceResidentWork = vi.fn();
@@ -420,7 +419,7 @@ describe('Worker environment activation', () => {
     'wrong-image',
   ] as const)('refuses %s fresh inspection before admission or configuration effects', async (variant) => {
     const fixture = await createBaseFixture();
-    const pair = candidatePair(fixture, [], null);
+    const pair = await candidatePair(fixture, [], null);
     const config = configurationService();
     const replaceResidentWork = vi.fn();
     const activation = createWorkerEnvironmentActivation({
@@ -467,7 +466,7 @@ describe('Worker environment activation', () => {
 
   it('binds explicit non-secret admission to exact image/default confirmation before inspection', async () => {
     const fixture = await createBaseFixture();
-    const pair = candidatePair(fixture, [], null);
+    const pair = await candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService();
     const inspectImage = vi.fn();
@@ -501,7 +500,7 @@ describe('Worker environment activation', () => {
     'revision',
   ] as const)('rechecks %s after fresh inspection and before admitting raw values', async (variant) => {
     const fixture = await createBaseFixture();
-    const pair = candidatePair(fixture, [], null);
+    const pair = await candidatePair(fixture, [], null);
     const config = configurationService();
     let revoked = false;
     const activation = createWorkerEnvironmentActivation({
@@ -546,7 +545,7 @@ describe('Worker environment activation', () => {
 
   it('returns null configuration after a write fails following confirmed admission', async () => {
     const fixture = await createBaseFixture();
-    const pair = candidatePair(fixture, [], null);
+    const pair = await candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService();
     const initialContent = config.readContent();
@@ -597,7 +596,7 @@ describe('Worker environment activation', () => {
 
   it('never repeats configuration effects after a result-Artifact write failure', async () => {
     const fixture = await createBaseFixture();
-    const pair = candidatePair(fixture, [], null);
+    const pair = await candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService();
     const activation = createWorkerEnvironmentActivation({
@@ -636,7 +635,7 @@ describe('Worker environment activation', () => {
     true,
   ])('rejects a stale configuration SHA before creating an activation Turn with already-pinned=%s', async (alreadyPinned) => {
     const fixture = await createBaseFixture();
-    const pair = candidatePair(fixture, [], null);
+    const pair = await candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService(alreadyPinned);
     config.readFile.mockImplementation(() => ({
@@ -715,7 +714,7 @@ describe('Worker environment activation', () => {
     [true, 'failed'],
   ] as const)('reports replacement uncertainty with already-pinned=%s and reload=%s', async (alreadyPinned, reloadStatus) => {
     const resident = await createResidentFixture();
-    const pair = candidatePair(
+    const pair = await candidatePair(
       resident,
       [{ expectedRevision: resident.bindingRevision, storageRef: resident.storageRef }],
       resident.replaceNow
@@ -801,30 +800,23 @@ async function createResidentFixture(): Promise<ResidentFixture> {
          1, 1, 1, 1, ?, ?, 1)`
     )
     .run('a'.repeat(64), NOW);
-  const created = createWorkerStorageBinding(fixture.coreDb, {
+  const reserved = await createAndReserveWorkerStorageAttachment(fixture.coreDb, {
+    agentSessionId: testEntityId('as', 'agent_session_activation'),
+    authorizeContributor: () => true,
     deploymentId: 'deployment_activation',
     layout: LAYOUT,
     now: NOW,
-    runtimeTargetId: 'target_activation',
-    workspaceId: workspace.id,
-  });
-  const reserved = reserveWorkerStorageAttachment(fixture.coreDb, {
-    agentSessionId: testEntityId('as', 'agent_session_activation'),
-    authorizeContributor: () => true,
-    expectedRevision: created.revision,
-    layout: LAYOUT,
     purpose: 'work',
     responsibleUserId: ACTOR.userId,
     runtimeTargetId: 'target_activation',
-    storageRef: created.storageRef,
     threadId: thread.id,
     workspaceId: workspace.id,
   });
-  const attached = activateWorkerStorageAttachment(fixture.coreDb, {
+  const attached = await activateWorkerStorageAttachment(fixture.coreDb, {
     attachmentGeneration: reserved.attachmentGeneration,
     expectedRevision: reserved.revision,
     sandboxBindingRef: 'sandbox_binding_activation',
-    storageRef: created.storageRef,
+    storageRef: reserved.storageRef,
     targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
   });
   fixture.coreDb.sqlite

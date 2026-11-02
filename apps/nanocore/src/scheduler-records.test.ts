@@ -55,15 +55,17 @@ function createMigratedCoreDb() {
 }
 
 /** Seeds the current physical Epoch required by backend-anchor fixtures. */
-function seedBackendRuntimeTarget(coreDb: ReturnType<typeof createMigratedCoreDb>): void {
+async function seedBackendRuntimeTarget(
+  coreDb: ReturnType<typeof createMigratedCoreDb>
+): Promise<void> {
   if (getNanoHostRuntimeTarget(coreDb, 'runtime-target-test')) return;
-  const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: 'deployment-test',
     identityId: 'identity-test',
     observedAt: '2026-07-05T00:00:00.000Z',
     targetId: 'runtime-target-test',
   });
-  upsertNanoHostRuntimeTarget(coreDb, {
+  await upsertNanoHostRuntimeTarget(coreDb, {
     ...allocated,
     freshEmpty: true,
     observedAt: '2026-07-05T00:00:01.000Z',
@@ -921,8 +923,8 @@ describe('scheduler records', () => {
 
     try {
       createPreparedAttempt(coreDb, 'lease_cleanup_barrier');
-      seedBackendRuntimeTarget(coreDb);
-      recordWorkerBackendSessionMaterializing(coreDb, {
+      await seedBackendRuntimeTarget(coreDb);
+      await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
         identity: {
@@ -963,12 +965,12 @@ describe('scheduler records', () => {
         )?.phase
       );
 
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
         attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
         toState: 'cleanup-pending',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
         attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
         toState: 'physical-cleaned',
@@ -984,7 +986,7 @@ describe('scheduler records', () => {
           (attempt) => attempt.attempt_id === testEntityId('attempt', 'lease_cleanup_barrier')
         )?.phase
       );
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'physical-cleaned',
         attemptId: testEntityId('attempt', 'lease_cleanup_barrier'),
         toState: 'cleaned',
@@ -1058,8 +1060,8 @@ describe('scheduler records', () => {
 
     try {
       createPreparedAttempt(coreDb, 'lease_cleanup_grace');
-      seedBackendRuntimeTarget(coreDb);
-      recordWorkerBackendSessionMaterializing(coreDb, {
+      await seedBackendRuntimeTarget(coreDb);
+      await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
         identity: {
@@ -1092,17 +1094,17 @@ describe('scheduler records', () => {
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         now: () => '2026-07-05T00:05:11.000Z',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
         attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'cleanup-pending',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
         attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'physical-cleaned',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'physical-cleaned',
         attemptId: testEntityId('attempt', 'lease_cleanup_grace'),
         toState: 'cleaned',
@@ -1260,13 +1262,13 @@ describe('scheduler records', () => {
     }
   });
 
-  it('retains the native fence when an anchored startup times out', () => {
+  it('retains the native fence when an anchored startup times out', async () => {
     const coreDb = createMigratedCoreDb();
 
     try {
       createPreparedAttempt(coreDb, 'lease_anchored_startup_timeout');
-      seedBackendRuntimeTarget(coreDb);
-      recordWorkerBackendSessionMaterializing(coreDb, {
+      await seedBackendRuntimeTarget(coreDb);
+      await recordWorkerBackendSessionMaterializing(coreDb, {
         backendLineage: { imageRef: 'openkit/worker-codex:dev', kind: 'reference' },
         backendVersion: '0.0.99',
         identity: {

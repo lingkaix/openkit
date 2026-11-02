@@ -167,6 +167,7 @@ describe('NanoHost transport production admission', () => {
       expect(JSON.stringify(stored)).not.toContain('ignored');
       expect(JSON.stringify(stored)).not.toContain('body-cannot-select');
     } finally {
+      await authority.closeAllPhysicalConnections();
       client?.destroy();
       server.close();
       await once(server, 'close');

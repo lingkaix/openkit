@@ -650,7 +650,7 @@ it('reaches the existing Workspace Gateway with real registered capability token
       ],
     },
   });
-  expect(f.manager.reload({ mode: 'safe', dryRun: false }).status).toBe('applied');
+  expect((await f.manager.reload({ mode: 'safe', dryRun: false })).status).toBe('applied');
   const worker = await f.worker(
     workspaceId,
     composeWorkspaceMcpCatalog({ dataRoot: f.dataRoot, workspaceId })
@@ -840,7 +840,7 @@ describe('Server-shared MCP through governed Worker routes', () => {
         ],
       },
     });
-    expect(f.manager.reload({ mode: 'safe', dryRun: false }).status).toBe('applied');
+    expect((await f.manager.reload({ mode: 'safe', dryRun: false })).status).toBe('applied');
     for (const forgedOrigin of [false, true]) {
       const catalog = composeWorkspaceMcpCatalog({ dataRoot: f.dataRoot, workspaceId });
       if (forgedOrigin) catalog.servers[0]!.scope = 'server';

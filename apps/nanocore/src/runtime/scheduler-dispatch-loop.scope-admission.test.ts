@@ -45,7 +45,7 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
       recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
     const manifest = createTestAgentSetup().manifest;
     admitTestNativeEnvironment(coreDb, manifest);
-    recordTestNativeRuntimeTarget(coreDb);
+    await recordTestNativeRuntimeTarget(coreDb);
     const executor = new SimulatedTurnExecutor({ coreDb });
     const starts = vi.spyOn(executor, 'startTurn');
     const publish = async (workspaceId: string, name: string) => {

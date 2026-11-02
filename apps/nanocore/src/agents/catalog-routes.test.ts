@@ -56,7 +56,9 @@ describe('agent.list and agent.read operations', () => {
       previousManifest.id
     );
     rmSync(join(agentsRoot, `${previousManifest.id}.agent.jsonc`));
-    expect(runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+    expect((await runtimeConfigManager.reload({ dryRun: false, mode: 'safe' })).status).toBe(
+      'applied'
+    );
     expect(runtimeConfigManager.current().agentManifests.map((manifest) => manifest.id)).toEqual([
       allowedManifest.id,
     ]);
@@ -174,7 +176,9 @@ describe('agent.list and agent.read operations', () => {
       previousManifest.id
     );
     rmSync(join(agentsRoot, `${previousManifest.id}.agent.jsonc`));
-    expect(runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+    expect((await runtimeConfigManager.reload({ dryRun: false, mode: 'safe' })).status).toBe(
+      'applied'
+    );
     expect(runtimeConfigManager.current().agentManifests.map((manifest) => manifest.id)).toEqual([
       allowedManifest.id,
       otherManifest.id,
@@ -455,7 +459,9 @@ describe('agent.list and agent.read operations', () => {
     expect(loadedUnready?.workspace?.env).toEqual(unready.workspace.env);
     expect(loadedUnready?.readiness).toEqual(unready.readiness);
     rmSync(join(agentsRoot, `${previousManifest.id}.agent.jsonc`));
-    expect(runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+    expect((await runtimeConfigManager.reload({ dryRun: false, mode: 'safe' })).status).toBe(
+      'applied'
+    );
     expect(runtimeConfigManager.current().agentManifests.map((manifest) => manifest.id)).toEqual([
       configured.id,
       unready.id,

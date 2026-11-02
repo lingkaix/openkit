@@ -410,7 +410,7 @@ export const taskTerminalReplayCloseoutOwnership: (input: {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
-  const native = createNativeTaskAdmissionFixture(coreDb, store);
+  const native = await createNativeTaskAdmissionFixture(coreDb, store);
   const executor = native.executor;
   executor.failCloseout = entry === 'assistant' && failCollection;
   const setup = createTestAgentSetup({
@@ -773,7 +773,7 @@ export const independentTasksAdmissionOwnership: () => Promise<void> = async () 
       },
     } as unknown as Parameters<typeof createInMemoryRuntimeConfigSnapshot>[0]),
   });
-  const native = createNativeTaskAdmissionFixture(coreDb, store, {
+  const native = await createNativeTaskAdmissionFixture(coreDb, store, {
     readRuntimeConfig: () => config.current(),
   });
   const executor = native.executor;

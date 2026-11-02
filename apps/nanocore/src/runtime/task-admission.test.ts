@@ -96,7 +96,7 @@ it.each([
       readRuntimeConfigStatus: () => manager.status(),
     }),
     currentPolicy: () => manager.current().openKitConfig.policy?.mediation,
-    reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+    reload: async () => await manager.reload({ mode: 'safe', dryRun: false }),
   });
   const services = {
     coreDb,
@@ -109,7 +109,7 @@ it.each([
   const selectedAgentId = createTestAgentSetup().manifest.id;
   const originalAuthorize = operationAuthorizer.authorizeWorkspace;
   const authorization = vi.spyOn(operationAuthorizer, 'authorizeWorkspace');
-  let interruptedNative: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
+  let interruptedNative: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
   let drainingInterruptedPeer = false;
   const enteredWorkerStarts: Promise<void>[] = [];
   const enteredWorkerLoops: Promise<unknown>[] = [];
@@ -163,7 +163,7 @@ it.each([
           : {}
       ).manifest;
       admitTestNativeEnvironment(coreDb, manifest);
-      recordTestNativeRuntimeTarget(coreDb);
+      await recordTestNativeRuntimeTarget(coreDb);
       const snapshot = createInMemoryRuntimeConfigSnapshot({
         workspaceConfigs: outcome === 'interrupted' ? loadRuntimeConfig(root).workspaceConfigs : [],
         agentManifests: [manifest],
@@ -182,7 +182,7 @@ it.each([
       });
       // The shared peer holds the admitted Turn until the actual interrupt owner stops it.
       if (outcome === 'interrupted') {
-        const native = createNativeTaskAdmissionFixture(coreDb, store, {
+        const native = await createNativeTaskAdmissionFixture(coreDb, store, {
           readRuntimeConfig: () => snapshot,
         });
         interruptedNative = native;

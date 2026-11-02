@@ -22,7 +22,6 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { OperationError } from '../operation-error.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { controlStoreFor } from '../storage/control-store.js';
 import type { CoreDb } from '../storage/db.js';
 import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
 import {
@@ -30,12 +29,14 @@ import {
   injectTelemetryContext,
   recordNanoHostEffectAcceptance,
 } from '../telemetry.js';
+import { publishCoreJournal } from './core-journal-owner.js';
 import {
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   createExecutionStepJournalReader,
-  settleExecutionJournalStep,
-  writeExecutionJournalIntent,
+  decodeExecutionJournalInvocation,
+  encodeExecutionJournalValue,
+  executionJournalProcessWitness,
 } from './execution-journal.js';
 import type {
   ExecutionJournalIntent,
@@ -54,14 +55,14 @@ import {
   type NanoHostHarnessCommand,
   type NanoHostHarnessResult,
   settleNanoHostHarnessOperation,
-} from './nanohost-harness-records.js';
+} from './nanohost-harness.js';
 import {
   getNanoHostRuntimeTarget,
   requireNanoHostPhysicalEpoch,
   requireStoredNanoHostPhysicalEpoch,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
-import { listWorkerBackendSessions } from './worker-backend-sessions.js';
+import { listWorkerBackendSessions } from './worker-backend-session-records.js';
 import {
   type NanoHostFileImportSource,
   WorkerSandboxPolicyIntentSchema,
@@ -411,7 +412,7 @@ interface PendingNanoHostEffect {
   imageExecution?: {
     readonly ref: ExecutionStepRef;
     readonly authorize: () => boolean;
-    readonly abandon: (accepted: boolean) => void;
+    readonly abandon: (accepted: boolean) => Promise<void>;
     /** Process-local wake-up only; never transported or treated as execution authority. */
     readonly deadlineMonotonicNano: bigint;
     readonly deadlineUnixNano: bigint;
@@ -490,48 +491,19 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
 }
 
 /** Ends local cancellation or uncertain carriage without claiming a remote stop or physical release. */
-function abandonImageExecution(coreDb: CoreDb, ref: ExecutionStepRef, accepted: boolean): void {
-  const current = coreDb.sqlite
-    .prepare(
-      'SELECT schema_version, state FROM control_execution_steps WHERE execution_id = ? AND step_id = ?'
-    )
-    .get(ref.execution.executionId, ref.stepId);
-  const parsed = z
-    .object({
-      schema_version: z.literal(1),
-      state: z.enum(['intent', 'completed', 'failed', 'unknown', 'cancelled']),
-    })
-    .parse(current);
-  if (parsed.state !== 'intent') return;
-  controlStoreFor(coreDb.sqlite).write((sqlite) => {
-    if (sqlite !== coreDb.sqlite) throw new Error('Image journal requires its owning connection.');
-    const row = sqlite
-      .prepare(`SELECT s.state, s.span_json, r.revision
-      FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
-      WHERE s.execution_id = ? AND s.step_id = ?`)
-      .get(ref.execution.executionId, ref.stepId) as
-      | { state: string; span_json: string; revision: number }
-      | undefined;
-    if (!row) throw new Error('Image invocation authority is missing.');
-    if (row.state !== 'intent') return;
-    // The journal primitive validates/decodes the full stored span, including decimal nanoseconds.
-    const span = JSON.parse(row.span_json);
-    const now = BigInt(Date.now()) * 1_000_000n;
-    const start = BigInt(span.startTimeUnixNano);
-    settleExecutionJournalStep(coreDb, {
-      ref,
-      expectedExecutionRevision: row.revision,
-      state: accepted ? 'unknown' : 'cancelled',
-      outputRefs: [],
-      span: { ...span, endTimeUnixNano: now < start ? start : now, status: { code: 'ERROR' } },
-      nextPhase: accepted ? 'closing' : 'closed',
-      terminalCause: accepted
-        ? 'Image acquisition outcome is unknown.'
-        : 'Image acquisition was not delivered.',
-      exclusionRefs: accepted
-        ? [`native-image-invocation/v1:${ref.execution.executionId}:${ref.stepId}`]
-        : [],
-    });
+async function abandonImageExecution(
+  coreDb: CoreDb,
+  ref: ExecutionStepRef,
+  accepted: boolean
+): Promise<void> {
+  if (ref.execution.owner.kind !== 'server') throw new Error('Core journal owner conflicts.');
+  await publishCoreJournal(coreDb, {
+    kind: 'image-abandon',
+    ref: {
+      ...ref,
+      execution: { owner: { kind: 'server' }, executionId: ref.execution.executionId },
+    },
+    accepted,
   });
 }
 
@@ -748,7 +720,7 @@ export function createNanoHostSessionDispatch(
           if (previous.length !== 0) {
             if (previous.length !== 1) throw new WorkerImageSettlementConflict();
             const original = previous[0]!;
-            abandonImageExecution(
+            await abandonImageExecution(
               coreDb,
               {
                 execution: { owner: { kind: 'server' }, executionId: original.execution_id },
@@ -819,11 +791,35 @@ export function createNanoHostSessionDispatch(
               parentSpanId: rootSpan.spanId,
             },
           };
-          const admitted = controlStoreFor(coreDb.sqlite).write((sqlite) => {
-            if (sqlite !== coreDb.sqlite)
-              throw new Error('Image journal requires its owning connection.');
-            return writeExecutionJournalIntent(coreDb, intent);
+          const admittedJson = await publishCoreJournal(coreDb, {
+            kind: 'image-intent',
+            intentJson: encodeExecutionJournalValue(intent),
+            processWitness: executionJournalProcessWitness(),
+            target: {
+              targetId: readiness.runtimeTarget.targetId,
+              identityId: readiness.runtimeTarget.identityId,
+              deploymentId: readiness.runtimeTarget.deploymentId,
+              connectionGeneration: readiness.connectionGeneration,
+              physicalEpoch: originPhysicalEpoch,
+            },
           });
+          if (admittedJson === null) throw new Error('Image intent acknowledgement is missing.');
+          const admitted = decodeExecutionJournalInvocation(admittedJson);
+          let deliverable: boolean;
+          try {
+            deliverable =
+              provenance.authorize() &&
+              currentReadiness === readiness &&
+              requireCurrentReadiness(readiness) === originPhysicalEpoch &&
+              !pendingEffects.has(operation);
+          } catch (cause) {
+            await abandonImageExecution(coreDb, admitted.ref, false);
+            throw cause;
+          }
+          if (!deliverable) {
+            await abandonImageExecution(coreDb, admitted.ref, false);
+            throw new Error('Image execution provenance is unavailable.');
+          }
           imageExecution = {
             ref: admitted.ref,
             authorize: provenance.authorize,
@@ -860,10 +856,16 @@ export function createNanoHostSessionDispatch(
             const abandon = () => {
               if (pendingEffects.get(operation) !== pending) return;
               pending.collectionAbort?.abort();
-              if (!pending.accepted) removePendingEffectGroup(pendingEffects, operation, pending);
-              pending.reject(
-                new Error('NanoHost original effect allowance ended; outcome requires inspection.')
-              );
+              const finish = async () => {
+                if (!pending.accepted)
+                  await removePendingEffectGroup(pendingEffects, operation, pending);
+                pending.reject(
+                  new Error(
+                    'NanoHost original effect allowance ended; outcome requires inspection.'
+                  )
+                );
+              };
+              void finish().catch(() => pending.reject(new WorkerImageSettlementDeferred()));
             };
             pending.fileExportWaitCleanup = () =>
               request.signal?.removeEventListener('abort', abandon);
@@ -878,12 +880,12 @@ export function createNanoHostSessionDispatch(
             const remaining =
               wallRemaining < monotonicRemaining ? wallRemaining : monotonicRemaining;
             journal.timer = setTimeout(
-              () => {
+              async () => {
                 if (pendingEffects.get(operation) !== pending) return;
                 try {
-                  journal.abandon(pending.accepted);
                   if (!pending.accepted)
-                    removePendingEffectGroup(pendingEffects, operation, pending);
+                    await removePendingEffectGroup(pendingEffects, operation, pending);
+                  else await journal.abandon(true);
                   pending.reject(
                     new Error(
                       'Image acquisition deadline ended; result-only reconciliation is required.'
@@ -972,49 +974,85 @@ export function createNanoHostSessionDispatch(
           throw new Error('NanoHost result-only expectation conflicts with current effect state.');
         }
       }
-      if (input.coreDb) {
+      const register = () => {
+        if (input.coreDb) {
+          for (const expectation of expectations) {
+            if (!expectation.imageSettlement) continue;
+            const known = readWorkerImageSettlement(input.coreDb, expectation.requestId);
+            if (known)
+              return Promise.resolve({
+                kind: expectation.kind,
+                result: settledImageResult(
+                  known,
+                  expectation.imageSettlement,
+                  expectation.requestId,
+                  expectation.kind
+                ),
+              });
+          }
+        }
         for (const expectation of expectations) {
-          if (expectation.kind !== 'image.acquire' || !expectation.imageSettlement) continue;
-          const rows = input.coreDb.sqlite
-            .prepare(`SELECT execution_id, step_id FROM control_execution_steps
+          if (pendingEffects.has(expectation.kind))
+            throw new Error(
+              'NanoHost result-only expectation conflicts with current effect state.'
+            );
+        }
+        const resultPromise = new Promise<NanoHostResultOnlySettlement>((resolve, reject) => {
+          const group: NanoHostResultOnlyGroup = { expectations: [...expectations] };
+          for (const expectation of expectations) {
+            pendingEffects.set(expectation.kind, {
+              accepted: false,
+              command: null,
+              ...(expectation.imageSettlement
+                ? { imageSettlement: expectation.imageSettlement }
+                : {}),
+              reject,
+              requestId: expectation.requestId,
+              ...('consumeResult' in expectation
+                ? { consumeResult: expectation.consumeResult }
+                : {}),
+              resolve: (value) => resolve(value as NanoHostResultOnlySettlement),
+              resultOnlyGroup: group,
+              ...(expectation.originPhysicalEpoch !== undefined
+                ? { originPhysicalEpoch: expectation.originPhysicalEpoch }
+                : {}),
+            });
+          }
+        });
+        void resultPromise.catch(() => undefined);
+        return resultPromise;
+      };
+      if (
+        input.coreDb &&
+        expectations.some((value) => value.kind === 'image.acquire' && value.imageSettlement)
+      ) {
+        return (async () => {
+          if (input.coreDb) {
+            for (const expectation of expectations) {
+              if (expectation.kind !== 'image.acquire' || !expectation.imageSettlement) continue;
+              const rows = input.coreDb.sqlite
+                .prepare(`SELECT execution_id, step_id FROM control_execution_steps
             WHERE json_extract(invocation_json, '$.carriage.operation') = 'image.acquire'
             AND json_extract(invocation_json, '$.carriage.requestId') = ?
             AND json_extract(control_json, '$.kind') = 'resolve-setup'`)
-            .all(expectation.requestId) as { execution_id: string; step_id: string }[];
-          if (rows.length > 1) throw new WorkerImageSettlementConflict();
-          if (rows[0])
-            abandonImageExecution(
-              input.coreDb,
-              {
-                execution: { owner: { kind: 'server' }, executionId: rows[0].execution_id },
-                stepId: rows[0].step_id,
-              },
-              true
-            );
-        }
+                .all(expectation.requestId) as { execution_id: string; step_id: string }[];
+              if (rows.length > 1) throw new WorkerImageSettlementConflict();
+              if (rows[0])
+                await abandonImageExecution(
+                  input.coreDb,
+                  {
+                    execution: { owner: { kind: 'server' }, executionId: rows[0].execution_id },
+                    stepId: rows[0].step_id,
+                  },
+                  true
+                );
+            }
+          }
+
+          return register();
+        })();
       }
-      const resultPromise = new Promise<NanoHostResultOnlySettlement>((resolve, reject) => {
-        const group: NanoHostResultOnlyGroup = { expectations: [...expectations] };
-        for (const expectation of expectations) {
-          pendingEffects.set(expectation.kind, {
-            accepted: false,
-            command: null,
-            ...(expectation.imageSettlement
-              ? { imageSettlement: expectation.imageSettlement }
-              : {}),
-            reject,
-            requestId: expectation.requestId,
-            ...('consumeResult' in expectation ? { consumeResult: expectation.consumeResult } : {}),
-            resolve: (value) => resolve(value as NanoHostResultOnlySettlement),
-            resultOnlyGroup: group,
-            ...(expectation.originPhysicalEpoch !== undefined
-              ? { originPhysicalEpoch: expectation.originPhysicalEpoch }
-              : {}),
-          });
-        }
-      });
-      void resultPromise.catch(() => undefined);
-      return resultPromise;
+      return register();
     },
 
     async poll(physicalConnection, operation, telemetryHeaders) {
@@ -1032,7 +1070,7 @@ export function createNanoHostSessionDispatch(
         ) {
           continue;
         }
-        removePendingEffectGroup(pendingEffects, candidateOperation, candidate);
+        await removePendingEffectGroup(pendingEffects, candidateOperation, candidate);
         candidate.reject(
           new Error(
             'NanoHost cleanup result-only origin physical Epoch is absent from the current coordinator.'
@@ -1066,11 +1104,11 @@ export function createNanoHostSessionDispatch(
           if (candidate.resultOnlyGroup) {
             rejectedResultOnlyGroups.add(candidate.resultOnlyGroup);
           }
-          removePendingEffectGroup(pendingEffects, candidateOperation, candidate);
+          await removePendingEffectGroup(pendingEffects, candidateOperation, candidate);
           candidate.reject(unknown);
         }
         if (mutatingOutcomeUnknown) {
-          input.sessionAuthority.closePhysicalConnection(physicalConnection);
+          await input.sessionAuthority.closePhysicalConnection(physicalConnection);
           throw unknown;
         }
       }
@@ -1084,7 +1122,7 @@ export function createNanoHostSessionDispatch(
         pending.originPhysicalEpoch !== undefined &&
         pending.originPhysicalEpoch !== pollingPhysicalEpoch
       ) {
-        removePendingEffectGroup(pendingEffects, operation, pending);
+        await removePendingEffectGroup(pendingEffects, operation, pending);
         pending.reject(
           new Error('NanoHost queued effect origin physical Epoch is no longer current.')
         );
@@ -1101,13 +1139,14 @@ export function createNanoHostSessionDispatch(
         }).readInvocation(pending.imageExecution.ref);
         requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
         requireCurrentReadiness(pollingReadiness);
-        if (pendingEffects.get(operation) !== pending || pending.accepted) return null;
+        if (pendingEffects.get(operation) !== pending || pending.accepted || !pending.command)
+          return null;
         if (
           !pending.imageExecution.authorize() ||
           original.remainingMs <= 0 ||
           original.state !== 'intent'
         ) {
-          removePendingEffectGroup(pendingEffects, operation, pending);
+          await removePendingEffectGroup(pendingEffects, operation, pending);
           pending.reject(new Error('Image delivery authority is no longer usable.'));
           return null;
         }
@@ -1118,7 +1157,7 @@ export function createNanoHostSessionDispatch(
         } catch (cause) {
           // Reject only this unaccepted command. It must never become deliverable on a later poll.
           if (pendingEffects.get(operation) === pending && !pending.accepted) {
-            removePendingEffectGroup(pendingEffects, operation, pending);
+            await removePendingEffectGroup(pendingEffects, operation, pending);
             pending.reject(
               cause instanceof Error
                 ? cause
@@ -1196,7 +1235,7 @@ export function createNanoHostSessionDispatch(
       if (connectionGeneration === null) {
         throw new Error('NanoHost readiness connection generation is unavailable.');
       }
-      upsertNanoHostRuntimeTarget(runtimeTarget.coreDb, {
+      await upsertNanoHostRuntimeTarget(runtimeTarget.coreDb, {
         connectionGeneration,
         deploymentId: runtimeTarget.deploymentId,
         freshEmpty: true,
@@ -1374,9 +1413,9 @@ export function createNanoHostSessionDispatch(
             409,
             'NanoHost retained effect result conflicts with its result-only expectation.'
           );
-          removePendingEffectGroup(pendingEffects, operation, pending);
+          await removePendingEffectGroup(pendingEffects, operation, pending);
           pending.reject(conflict);
-          input.sessionAuthority.closePhysicalConnection(physicalConnection);
+          await input.sessionAuthority.closePhysicalConnection(physicalConnection);
         }
         throw new Error('NanoHost effect result requestId or operation does not match.');
       }
@@ -1405,9 +1444,9 @@ export function createNanoHostSessionDispatch(
             }).readInvocation(pending.imageExecution.ref);
             requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
             if (original.state === 'intent' && original.remainingMs <= 0)
-              pending.imageExecution.abandon(true);
+              await pending.imageExecution.abandon(true);
           }
-          writeWorkerImageSettlement(coreDb, settlement);
+          await writeWorkerImageSettlement(coreDb, settlement);
         } catch (error) {
           if (error instanceof WorkerImageSettlementConflict) throw error;
           const deferred = new WorkerImageSettlementDeferred();
@@ -1429,7 +1468,12 @@ export function createNanoHostSessionDispatch(
             409,
             'NanoHost effect consumer changed during acknowledgement.'
           );
-        removePendingEffectGroup(pendingEffects, operation, pending);
+        await removePendingEffectGroup(
+          pendingEffects,
+          operation,
+          pending,
+          pending.imageSettlement === undefined
+        );
         completedEffects.set(operation, {
           redeliveredConnection: physicalConnection,
           requestId,
@@ -1475,7 +1519,12 @@ export function createNanoHostSessionDispatch(
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
       if (pendingEffects.get(operation) !== pending)
         throw effectTransportError(409, 'NanoHost effect consumer changed during acknowledgement.');
-      removePendingEffectGroup(pendingEffects, operation, pending);
+      await removePendingEffectGroup(
+        pendingEffects,
+        operation,
+        pending,
+        pending.imageSettlement === undefined
+      );
       completedEffects.set(operation, {
         requestId,
         resultJson,
@@ -1750,25 +1799,34 @@ function armLiveFileExportWait(
 function removePendingEffectGroup(
   pendingEffects: Map<NanoHostEffectOperation, PendingNanoHostEffect>,
   operation: NanoHostEffectOperation,
-  pending: PendingNanoHostEffect
-): void {
-  pending.imageExecution?.abandon(pending.accepted);
-  clearTimeout(pending.imageExecution?.timer);
-  clearTimeout(pending.collectionTimeout);
-  pending.fileExportWaitCleanup?.();
-  if (operation === 'workspace.collect') {
-    pending.command = null;
-    pending.collectionAbort?.abort();
-  }
-  if (!pending.resultOnlyGroup) {
-    if (pendingEffects.get(operation) === pending) pendingEffects.delete(operation);
-    return;
-  }
-  for (const expectation of pending.resultOnlyGroup.expectations) {
-    if (pendingEffects.get(expectation.kind)?.resultOnlyGroup === pending.resultOnlyGroup) {
-      pendingEffects.delete(expectation.kind);
+  pending: PendingNanoHostEffect,
+  abandonImage = true
+): void | Promise<void> {
+  const finish = () => {
+    clearTimeout(pending.imageExecution?.timer);
+    clearTimeout(pending.collectionTimeout);
+    pending.fileExportWaitCleanup?.();
+    if (operation === 'workspace.collect') {
+      pending.command = null;
+      pending.collectionAbort?.abort();
     }
+    if (!pending.resultOnlyGroup) {
+      if (pendingEffects.get(operation) === pending) pendingEffects.delete(operation);
+      return;
+    }
+    for (const expectation of pending.resultOnlyGroup.expectations) {
+      if (pendingEffects.get(expectation.kind)?.resultOnlyGroup === pending.resultOnlyGroup) {
+        pendingEffects.delete(expectation.kind);
+      }
+    }
+  };
+  if (pending.imageExecution && abandonImage) {
+    // Fence delivery before the native wait; failed/unknown publication retains this exclusion.
+    pending.command = null;
+    clearTimeout(pending.imageExecution.timer);
+    return pending.imageExecution.abandon(pending.accepted).then(finish);
   }
+  return finish();
 }
 
 /**
@@ -1804,13 +1862,13 @@ export function registerNanoHostSessionSemanticRoutes(
       | { harnessBindingRef: string }
       | undefined;
   /** Settles incomplete delivery immediately through the existing unknown/cleanup owner. */
-  const failDelivery = (command: NanoHostHarnessCommand) => {
+  const failDelivery = async (command: NanoHostHarnessCommand) => {
     const delivery = deliveries.get(command.harnessInstanceId);
     if (delivery?.command.operationId === command.operationId) releaseDelivery(delivery);
     try {
       const pending = pendingDelivery(command);
       if (!pending || !input.coreDb) return;
-      markNanoHostHarnessOperationUnknown(input.coreDb, {
+      await markNanoHostHarnessOperationUnknown(input.coreDb, {
         harnessBindingRef: pending.harnessBindingRef,
         operationId: command.operationId,
         timestamp: new Date().toISOString(),
@@ -1930,7 +1988,7 @@ export function registerNanoHostSessionSemanticRoutes(
               candidate.proofExpiresAt !== undefined &&
               performance.now() >= candidate.proofExpiresAt
             ) {
-              failDelivery(candidate.command);
+              await failDelivery(candidate.command);
               continue;
             }
             if (
@@ -1944,9 +2002,9 @@ export function registerNanoHostSessionSemanticRoutes(
           const dispatchStarted = performance.now();
           let command =
             delivery?.command ??
-            dispatchNanoHostHarnessOperation(input.coreDb, {
+            (await dispatchNanoHostHarnessOperation(input.coreDb, {
               sandboxIntegrationBindingRef,
-            });
+            }));
           const committedAt = performance.now();
           if (command) {
             if (!input.harnessCommandDispatched)
@@ -2013,7 +2071,7 @@ export function registerNanoHostSessionSemanticRoutes(
           }
           observeHarnessResponse(context, command, { receivedAt, committedAt }, () => {
             if (!selectedDelivery) {
-              failDelivery(selected);
+              void failDelivery(selected);
               return;
             }
             // A subsequent serial proof already resolved an older carriage's ambiguity.
@@ -2029,13 +2087,13 @@ export function registerNanoHostSessionSemanticRoutes(
               }
             } catch {
               // Storage refusal must settle the live waiter, not escape a native event callback.
-              failDelivery(selected);
+              void failDelivery(selected);
               return;
             }
             if (selectedDelivery.proofExpiresAt !== undefined) return;
             selectedDelivery.proofExpiresAt = performance.now() + HARNESS_DELIVERY_PROOF_MS;
             selectedDelivery.proofTimer = setTimeout(
-              () => failDelivery(selected),
+              () => void failDelivery(selected),
               HARNESS_DELIVERY_PROOF_MS
             );
             selectedDelivery.proofTimer.unref();
@@ -2043,7 +2101,7 @@ export function registerNanoHostSessionSemanticRoutes(
           return context.body(wire, 200, { 'content-type': 'application/json' });
         }
         const result = value as unknown as NanoHostHarnessResult;
-        settleNanoHostHarnessOperation(input.coreDb, {
+        await settleNanoHostHarnessOperation(input.coreDb, {
           sandboxIntegrationBindingRef,
           result,
           timestamp: new Date().toISOString(),

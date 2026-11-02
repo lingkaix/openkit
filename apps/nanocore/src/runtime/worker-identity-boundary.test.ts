@@ -13,7 +13,7 @@ import { WorkspaceDeletionRequestRecordSchema } from '../workspace-deletion-requ
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
 import { WorkerControlLineageRequestSchema } from './worker-http.js';
-import { WorkerImageSettlementIdentitySchema } from './worker-image-settlements.js';
+import { WorkerImageSettlementIdentitySchema } from './worker-image-settlements-records.js';
 
 /** Builds a preparation boundary whose first backend read is observable and deliberately unavailable. */
 async function fixture() {

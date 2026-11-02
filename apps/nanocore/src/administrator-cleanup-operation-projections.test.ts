@@ -8,7 +8,7 @@ import fs, {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import {
@@ -32,17 +32,18 @@ import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
-} from './runtime/nanohost-harness-records.js';
+} from './runtime/nanohost-harness.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   recordNanoHostRuntimeTargetConnectionClose,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
 import {
+  getWorkerBackendSession,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
 } from './runtime/worker-backend-sessions.js';
-import { createWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
+import { createWorkerStorageBinding as createLegacyWorkerStorageBinding } from './runtime/worker-storage-binding-records.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
@@ -61,6 +62,67 @@ import {
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { beginWorkspaceDeletion } from './workspace-sharing.js';
+
+// The reader stays synchronous. This test-only prelude gates the real native owner,
+// then signals only after its actual SQLite COMMIT returns.
+const snapshotNativeInterception = vi.hoisted(() => ({
+  gate: undefined as SharedArrayBuffer | undefined,
+}));
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (snapshotNativeInterception.gate === undefined) {
+          super(filename, options);
+        } else {
+          const require = createRequire(import.meta.url);
+          const prelude = `
+            const {workerData, parentPort} = require('node:worker_threads');
+            const Database = require(workerData.databaseModule);
+            const originalExec = Database.prototype.exec;
+            const gate = workerData.snapshotGate;
+            let crossing = false;
+            parentPort.on('message', value => {
+              if (value.operation === 'backend-session' && value.input.kind === 'transition' &&
+                  Atomics.compareExchange(gate, 0, 1, 0) === 1) {
+                crossing = true;
+                Atomics.store(gate, 1, 1);
+                Atomics.notify(gate, 1);
+                if (Atomics.wait(gate, 2, 0, 10000) === 'timed-out') {
+                  throw new Error('Snapshot owner transition was not released.');
+                }
+              }
+            });
+            Database.prototype.exec = function(sql) {
+              const result = originalExec.call(this, sql);
+              if (crossing && /^COMMIT$/i.test(sql)) {
+                crossing = false;
+                Atomics.store(gate, 4, this.pragma('synchronous', {simple: true}));
+                Atomics.store(gate, 3, 1);
+                Atomics.notify(gate, 3);
+              }
+              return result;
+            };
+          `;
+          const entry = options?.eval
+            ? String(filename)
+            : `import(${JSON.stringify(String(filename))});`;
+          super(prelude + entry, {
+            ...options,
+            eval: true,
+            workerData: {
+              ...options?.workerData,
+              databaseModule: require.resolve('better-sqlite3'),
+              snapshotGate: new Int32Array(snapshotNativeInterception.gate),
+            },
+          });
+        }
+      }
+    },
+  };
+});
 
 const OPERATION = 'administration.cleanup-read';
 const CREATED = '2026-10-16T00:00:00.000Z';
@@ -168,14 +230,14 @@ function attempt(coreDb: CoreDb, label = 'attempt_cleanup_operation') {
 }
 
 /** Creates a native Sandbox identity to exercise complete UTF-8 response bounds without invalid Core IDs. */
-function sandbox(coreDb: CoreDb, id: string) {
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+async function sandbox(coreDb: CoreDb, id: string): Promise<void> {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: testEntityId('dep', 'deployment_cleanup'),
     identityId: 'identity_cleanup',
     targetId: 'target_cleanup',
     observedAt: CREATED,
   });
-  upsertNanoHostRuntimeTarget(coreDb, {
+  await upsertNanoHostRuntimeTarget(coreDb, {
     ...target,
     freshEmpty: true,
     predecessorFenced: true,
@@ -183,7 +245,7 @@ function sandbox(coreDb: CoreDb, id: string) {
     physicalEpoch: 'a'.repeat(64),
     observedAt: CREATED,
   });
-  createNanoHostHarnessRuntime(coreDb, {
+  await createNanoHostHarnessRuntime(coreDb, {
     adapterId: 'pi',
     adapterVersion: '1',
     harnessInstanceId: `harness_${id}`,
@@ -215,13 +277,13 @@ async function populate(f: ReturnType<typeof fixture>) {
   );
   await verifyAndMigrateExistingScopedDatabases(f.dataRoot);
   const execution = attempt(f.coreDb);
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
     deploymentId: testEntityId('dep', 'deployment_cleanup'),
     identityId: 'identity_cleanup',
     targetId: 'target_cleanup',
     observedAt: CREATED,
   });
-  upsertNanoHostRuntimeTarget(f.coreDb, {
+  await upsertNanoHostRuntimeTarget(f.coreDb, {
     ...target,
     freshEmpty: true,
     predecessorFenced: true,
@@ -229,7 +291,7 @@ async function populate(f: ReturnType<typeof fixture>) {
     physicalEpoch: 'a'.repeat(64),
     observedAt: CREATED,
   });
-  recordWorkerBackendSessionMaterializing(f.coreDb, {
+  await recordWorkerBackendSessionMaterializing(f.coreDb, {
     identity: {
       agentSessionId: execution.agentSessionId!,
       backendKind: 'openshell',
@@ -238,7 +300,9 @@ async function populate(f: ReturnType<typeof fixture>) {
       packageSnapshotId: execution.inputRef!,
       runtimeTargetId: 'target_cleanup',
       stagingDirectoryRef: `server/runtime/${PRIVATE}`,
+      transientProviderInstanceId: null,
     },
+    backendVersion: null,
     lineage: {
       workspaceId: execution.workspaceId,
       threadId: execution.threadId,
@@ -248,7 +312,7 @@ async function populate(f: ReturnType<typeof fixture>) {
     sandboxBindingRef: execution.bindingRef!,
     now: () => CREATED,
   });
-  createNanoHostHarnessRuntime(f.coreDb, {
+  await createNanoHostHarnessRuntime(f.coreDb, {
     adapterId: 'pi',
     adapterVersion: '1',
     harnessInstanceId: 'harness_cleanup',
@@ -263,7 +327,7 @@ async function populate(f: ReturnType<typeof fixture>) {
     runtimeTargetId: 'target_cleanup',
     timestamp: CREATED,
   });
-  openNanoHostAgentSessionBinding(f.coreDb, {
+  await openNanoHostAgentSessionBinding(f.coreDb, {
     agentSessionCompatibilityKey: 'b'.repeat(64),
     agentSessionId: execution.agentSessionId!,
     agentSessionRuntimeBindingId: 'binding_cleanup',
@@ -273,11 +337,10 @@ async function populate(f: ReturnType<typeof fixture>) {
     workspaceId: execution.workspaceId,
     timestamp: CREATED,
   });
-  const storage = createWorkerStorageBinding(f.coreDb, {
+  await shutdownControlStoreWorkerClient();
+  // Retained pre-admission idle records have no contributors; this isolated fixture has no live writer.
+  const storage = createLegacyWorkerStorageBinding(f.coreDb, {
     deploymentId: testEntityId('dep', 'deployment_cleanup'),
-    runtimeTargetId: 'target_cleanup',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    now: CREATED,
     layout: {
       family: 'worker',
       version: '1',
@@ -287,6 +350,9 @@ async function populate(f: ReturnType<typeof fixture>) {
       platform: { architecture: 'amd64', os: 'linux' },
       targets: [{ target: '/workspace' }],
     },
+    now: CREATED,
+    runtimeTargetId: 'target_cleanup',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   return { request, execution, storage, quarantinedId };
 }
@@ -330,6 +396,7 @@ function bounded(value: unknown): AdministratorCleanupReadResponse {
 
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  snapshotNativeInterception.gate = undefined;
   vi.restoreAllMocks();
   syncBuiltinESMExports();
   for (const f of fixtures.splice(0)) {
@@ -678,7 +745,7 @@ describe('administrator cleanup public operation composition', () => {
       state: { state: 'materializing', physicalCleanedAt: CREATED },
       evidence: { kind: 'unknown', reason: 'contradictory' },
     });
-    recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+    await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
       targetId: 'target_cleanup',
       closedGeneration: 1,
       authoritativeGeneration: null,
@@ -815,7 +882,7 @@ describe('administrator cleanup public operation composition', () => {
       { length: 96 },
       (_, index) => `sandbox_${String(index).padStart(3, '0')}_${'界'.repeat(470)}`
     );
-    for (const id of ids) sandbox(f.coreDb, id);
+    for (const id of ids) await sandbox(f.coreDb, id);
 
     const result = bounded(await f.native());
     const serialized = JSON.stringify(result);
@@ -846,7 +913,7 @@ describe('administrator cleanup public operation composition', () => {
       { length: 4 },
       (_, index) => `sandbox_${String(index).padStart(3, '0')}_${'界'.repeat(470)}`
     );
-    for (const id of ids) sandbox(f.coreDb, id);
+    for (const id of ids) await sandbox(f.coreDb, id);
 
     const result = bounded(await f.native());
     expect(result.items).toHaveLength(ids.length + 1);
@@ -863,26 +930,54 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('preserves coherent current owner facts during a concurrent source transition', async () => {
+    const gate = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 5));
+    snapshotNativeInterception.gate = gate.buffer as SharedArrayBuffer;
     const f = await fixture();
     const { execution } = await populate(f);
     const concurrent = openCoreDb(f.dataRoot);
+    concurrent.sqlite.pragma('query_only = ON');
+    f.coreDb.sqlite.pragma('query_only = ON');
     const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
     let changed = false;
+    let committedBeforeReaderResumed = false;
+    let transition: ReturnType<typeof transitionWorkerBackendSessionState> | undefined;
     try {
+      Atomics.store(gate, 0, 1);
+      transition = transitionWorkerBackendSessionState(concurrent, {
+        attemptId: execution.attemptId,
+        fromState: 'materializing',
+        toState: 'cleanup-pending',
+        now: () => CHANGED,
+      });
+      await vi.waitFor(() => expect(Atomics.load(gate, 1)).toBe(1), {
+        timeout: 5000,
+        interval: 5,
+      });
       const fault = vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
         if (!changed && /\bFROM\s+scheduler_execution_attempts\b/i.test(sql)) {
           changed = true;
-          transitionWorkerBackendSessionState(concurrent, {
-            attemptId: execution.attemptId,
-            fromState: 'materializing',
-            toState: 'cleanup-pending',
-            now: () => CHANGED,
-          });
+          // Release the actual writer at the original source-read seam and do not let
+          // this synchronous snapshot continue until its FULL commit is observed.
+          Atomics.store(gate, 2, 1);
+          Atomics.notify(gate, 2);
+          const wait = Atomics.wait(gate, 3, 0, 5000);
+          const committed = getWorkerBackendSession(concurrent, execution.attemptId);
+          committedBeforeReaderResumed =
+            wait !== 'timed-out' &&
+            Atomics.load(gate, 3) === 1 &&
+            Atomics.load(gate, 4) === 2 &&
+            f.coreDb.sqlite.inTransaction &&
+            committed?.state === 'cleanup-pending' &&
+            committed.updatedAt === CHANGED;
+          if (!committedBeforeReaderResumed) {
+            throw new Error('The owner did not commit before the snapshot reader resumed.');
+          }
         }
         return prepare(sql);
       });
       const result = bounded(await f.native());
       expect(changed).toBe(true);
+      expect(committedBeforeReaderResumed).toBe(true);
       const backend = result.items.find((item) => item.source === 'backend-session');
       expect(backend?.source).toBe('backend-session');
       if (backend?.source !== 'backend-session') throw new Error('Backend observation is absent.');
@@ -892,11 +987,18 @@ describe('administrator cleanup public operation composition', () => {
       ]).toContainEqual({ state: backend.state.state, sourceUpdatedAt: backend.sourceUpdatedAt });
       expect(backend.evidence.kind).toBe('unknown');
       fault.mockRestore();
+      await transition;
       expect(
         bounded(await f.native()).items.find((item) => item.source === 'backend-session')
       ).toMatchObject({ sourceUpdatedAt: CHANGED, state: { state: 'cleanup-pending' } });
     } finally {
-      concurrent.sqlite.close();
+      Atomics.store(gate, 2, 1);
+      Atomics.notify(gate, 2);
+      try {
+        await transition;
+      } finally {
+        concurrent.sqlite.close();
+      }
     }
   });
 
@@ -963,7 +1065,7 @@ describe('administrator cleanup public operation composition', () => {
     f.coreDb = openCoreDb(f.dataRoot);
     fixtures[fixtures.length - 1]!.coreDb = f.coreDb;
     writeWorkspaceDeletionRequest(f.dataRoot, { ...request, phase: 'blocked' });
-    transitionWorkerBackendSessionState(f.coreDb, {
+    await transitionWorkerBackendSessionState(f.coreDb, {
       attemptId: execution.attemptId,
       fromState: 'materializing',
       toState: 'cleanup-pending',

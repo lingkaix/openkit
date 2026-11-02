@@ -32,7 +32,7 @@ import {
   type NanoHostHarnessCommand,
   openNanoHostAgentSessionBinding,
   prepareNanoHostHarnessOperation,
-} from './nanohost-harness-records.js';
+} from './nanohost-harness.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
@@ -154,15 +154,15 @@ describe('Harness delivery localization through real Core and shim owners', () =
       ReturnType<typeof prepareNanoHostHarnessOperation>
     >();
     // Core transport owns the queued identity; the outside admission owner retains its wire body.
-    const queueOperation = (input: Parameters<typeof prepareNanoHostHarnessOperation>[1]) => {
+    const queueOperation = async (input: Parameters<typeof prepareNanoHostHarnessOperation>[1]) => {
       const prepared = prepareNanoHostHarnessOperation(coreDb, input);
-      queueTestPreparedHarnessOperation(coreDb, { ...input, prepared });
+      await queueTestPreparedHarnessOperation(coreDb, { ...input, prepared });
       preparedOperations.set(prepared.command.operationId, prepared);
       return prepared.command;
     };
     const authority = createNanoHostTransportSessionAuthority();
     const target = { deploymentId: 'diag', identityId: 'diag', targetId: 'diag' };
-    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       ...target,
       observedAt: new Date().toISOString(),
     });
@@ -287,8 +287,8 @@ describe('Harness delivery localization through real Core and shim owners', () =
         return wireCommand;
       },
       // Model the outside Workspace consumer; this suite proves Core/shim diagnostics, not native execution.
-      harnessResultSettled: () =>
-        acknowledgeTestExternalWorkspaceConsumer(coreDb, {
+      harnessResultSettled: async () =>
+        await acknowledgeTestExternalWorkspaceConsumer(coreDb, {
           harnessInstanceId: 'diag-harness',
           harnessBindingRef: 'diag-harness-binding',
           workspaceId: testEntityId('ws', 'diag-workspace'),
@@ -416,7 +416,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
                   )
                 ).status
               ).toBe(204);
-              queueOperation({
+              await queueOperation({
                 harnessInstanceId: 'diag-harness',
                 operation: 'session.inspect',
                 timestamp: new Date().toISOString(),
@@ -451,7 +451,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
         ).status
       ).toBe(204);
       const now = new Date().toISOString();
-      createNanoHostHarnessRuntime(coreDb, {
+      await createNanoHostHarnessRuntime(coreDb, {
         adapterId: 'codex',
         adapterVersion: '0.166.0',
         harnessBindingRef: 'diag-harness-binding',
@@ -466,7 +466,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
         runtimeTargetId: target.identityId,
         timestamp: now,
       });
-      openNanoHostAgentSessionBinding(coreDb, {
+      await openNanoHostAgentSessionBinding(coreDb, {
         agentSessionCompatibilityKey: 'c'.repeat(64),
         agentSessionId: testEntityId('as', 'diag-session'),
         agentSessionRuntimeBindingId: 'diag-session-binding',
@@ -504,7 +504,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
         operationId: 'diag-submit',
         now: () => now,
       });
-      const queuedCommand = queueOperation({
+      const queuedCommand = await queueOperation({
         harnessInstanceId: 'diag-harness',
         operation: 'turn.start',
         timestamp: now,
@@ -562,7 +562,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
             )
           ).status
         ).toBe(204);
-        queueOperation({
+        await queueOperation({
           harnessInstanceId: 'diag-harness',
           operation: 'session.inspect',
           timestamp: new Date().toISOString(),
@@ -615,7 +615,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
               )
             ).status
           ).toBe(204);
-          queueOperation({
+          await queueOperation({
             harnessInstanceId: 'diag-harness',
             operation: 'session.inspect',
             timestamp: new Date().toISOString(),
@@ -810,7 +810,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
       }
       // A completed local write without a result still consumes the unchanged outage budget.
       if (shape === 'withhold-result') {
-        markNanoHostHarnessOperationUnknown(coreDb, {
+        await markNanoHostHarnessOperationUnknown(coreDb, {
           harnessBindingRef: 'diag-harness-binding',
           operationId,
           timestamp: new Date(Date.now() + 300_000).toISOString(),

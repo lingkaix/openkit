@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
@@ -17,7 +18,8 @@ import {
 const imageDigest = `sha256:${'d'.repeat(64)}`;
 const roots: string[] = [];
 const dbs: CoreDb[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   dbs.splice(0).forEach((db) => {
     db.sqlite.close();
   });
@@ -48,7 +50,7 @@ function nativeEnvironmentManifest(environment: Record<string, string | null> = 
 }
 
 /** Admits synthetic non-secret defaults through the production settlement path. */
-function fixture(
+async function fixture(
   values: Record<string, string> = { DEFAULT: 'from-image', EMPTY: '', HOME: '/image/home' }
 ) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-native-resolution-'));
@@ -63,7 +65,7 @@ function fixture(
     inputDigest: `sha256:${'b'.repeat(64)}`,
   };
   const defaultsDigest = `sha256:${createHash('sha256').update(canonicalNativeEnvironment(values)).digest('hex')}`;
-  writeWorkerImageSettlement(db, {
+  await writeWorkerImageSettlement(db, {
     ...candidate,
     requestId: '1'.repeat(64),
     operation: 'image.acquire',
@@ -73,8 +75,8 @@ function fixture(
 }
 
 describe('public native environment resolution', () => {
-  it('blocks absent or merely acquired defaults without dispatching any image effect', () => {
-    const f = fixture();
+  it('blocks absent or merely acquired defaults without dispatching any image effect', async () => {
+    const f = await fixture();
     expect(() => resolvePublicNativeEnvironment(undefined, nativeEnvironmentManifest())).toThrow(
       'Core storage is unavailable'
     );
@@ -86,8 +88,8 @@ describe('public native environment resolution', () => {
       )
     );
   });
-  it('keeps corrupt admitted defaults distinct from missing preparation', () => {
-    const f = fixture();
+  it('keeps corrupt admitted defaults distinct from missing preparation', async () => {
+    const f = await fixture();
     f.db.sqlite
       .prepare('UPDATE worker_image_settlements SET native_environment_json = ?')
       .run('{invalid-json');
@@ -95,9 +97,9 @@ describe('public native environment resolution', () => {
       SyntaxError
     );
   });
-  it('inherits, overrides, suppresses and restores empty/literal values while excluding managed defaults', () => {
-    const f = fixture();
-    admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
+  it('inherits, overrides, suppresses and restores empty/literal values while excluding managed defaults', async () => {
+    const f = await fixture();
+    await admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
     expect(
       resolvePublicNativeEnvironment(
         f.db,
@@ -116,9 +118,9 @@ describe('public native environment resolution', () => {
       EMPTY: '',
     });
   });
-  it('refuses protected overrides and credential collisions, including null removals', () => {
-    const f = fixture();
-    admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
+  it('refuses protected overrides and credential collisions, including null removals', async () => {
+    const f = await fixture();
+    await admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
     expect(() => nativeEnvironmentManifest({ HOME: null })).toThrow();
     const protectedManifest = nativeEnvironmentManifest();
     protectedManifest.runtime.environment = { HOME: null };
@@ -143,9 +145,9 @@ describe('public native environment resolution', () => {
     'DSH_PERMISSION_MODE',
     'DSH_TELEMETRY_MODE',
     'DSH_TELEMETRY_OTLP_URL',
-  ])('refuses DeepSeek public override or removal of %s at resolution', (name) => {
-    const f = fixture();
-    admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
+  ])('refuses DeepSeek public override or removal of %s at resolution', async (name) => {
+    const f = await fixture();
+    await admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
     const manifest = nativeEnvironmentManifest();
     manifest.runtime.adapter = 'deepseek';
     for (const value of ['literal-canary', null]) {
@@ -153,15 +155,15 @@ describe('public native environment resolution', () => {
       expect(() => resolvePublicNativeEnvironment(f.db, manifest)).toThrow('authority conflict');
     }
   });
-  it('filters DeepSeek managed image defaults while resolving ordinary public settings', () => {
-    const f = fixture({
+  it('filters DeepSeek managed image defaults while resolving ordinary public settings', async () => {
+    const f = await fixture({
       DSH_HOME: 'image-home',
       DSH_PERMISSION_MODE: 'image-mode',
       DSH_TELEMETRY_MODE: 'image-telemetry',
       DSH_TELEMETRY_OTLP_URL: 'image-url',
       DSH_PUBLIC_SETTING: 'from-image',
     });
-    admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
+    await admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
     const manifest = nativeEnvironmentManifest({ DSH_PUBLIC_SETTING: 'public-canary' });
     manifest.runtime.adapter = 'deepseek';
     expect(resolvePublicNativeEnvironment(f.db, manifest)).toEqual({
@@ -170,19 +172,19 @@ describe('public native environment resolution', () => {
       values: { DSH_PUBLIC_SETTING: 'public-canary' },
     });
   });
-  it('resolves prototype-looking names literally instead of assigning object authority', () => {
-    const f = fixture();
-    admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
+  it('resolves prototype-looking names literally instead of assigning object authority', async () => {
+    const f = await fixture();
+    await admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
     const overrides = JSON.parse('{"__proto__":"literal","constructor":"own"}');
     expect(
       resolvePublicNativeEnvironment(f.db, nativeEnvironmentManifest(overrides)).values
     ).toMatchObject(overrides);
   });
-  it('refuses a combined map outside the final bound even when both inputs fit separately', () => {
-    const f = fixture(
+  it('refuses a combined map outside the final bound even when both inputs fit separately', async () => {
+    const f = await fixture(
       Object.fromEntries(Array.from({ length: 128 }, (_, i) => [`DEFAULT_${i}`, '']))
     );
-    admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
+    await admitWorkerImageEnvironment(f.db, f.candidate, f.defaults);
     expect(() =>
       resolvePublicNativeEnvironment(f.db, nativeEnvironmentManifest({ EXTRA: 'x' }))
     ).toThrow();
