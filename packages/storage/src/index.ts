@@ -52,6 +52,7 @@ export {
   throwCanonicalLinkError,
   verifyPrivateFileCopy,
   withStagedMediaSource,
+  writePortableTextFile,
   writePrivateTreeFile,
   writePrivateTreeMetadata,
   writeVerifiedRepresentation,

@@ -1,14 +1,4 @@
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { ProductRetrievalTrace } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
@@ -19,7 +9,11 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { assertCanonicalDirectory, readCanonicalTextFile } from '@openkit/storage';
+import {
+  assertCanonicalDirectory,
+  readCanonicalTextFile,
+  writePortableTextFile,
+} from '@openkit/storage';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { assertPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
@@ -532,45 +526,7 @@ function writeText(root: string, relativePath: string, content: string, replace:
   }
   const byteLength = Buffer.byteLength(content, 'utf8');
   const reservation = reserveCanonicalFileWrite(byteLength);
-  let descriptor: number | undefined;
-  let release = true;
-  let opened = false;
-  try {
-    descriptor = openSync(
-      path,
-      constants.O_WRONLY |
-        constants.O_CREAT |
-        constants.O_NOFOLLOW |
-        (exists ? constants.O_TRUNC : constants.O_EXCL),
-      0o600
-    );
-    opened = true;
-    release = false;
-    if (!fstatSync(descriptor).isFile()) {
-      throw new Error(`Portable workspace path must be a regular file: ${path}.`);
-    }
-    writeFileSync(descriptor, content);
-    reservation?.recordWritten(byteLength);
-    closeSync(descriptor);
-    descriptor = undefined;
-    reservation?.assertAvailable();
-    release = true;
-  } catch (error) {
-    if (descriptor !== undefined) {
-      closeSync(descriptor);
-      descriptor = undefined;
-    }
-    // This writer owns only unpublished staging files. Failed cleanup keeps its reservation.
-    if (opened) rmSync(path, { force: true });
-    release = true;
-    throw error;
-  } finally {
-    try {
-      if (descriptor !== undefined) closeSync(descriptor);
-    } finally {
-      if (release) reservation?.release();
-    }
-  }
+  writePortableTextFile(path, content, Boolean(exists), byteLength, reservation);
 }
 
 /** Resolves or creates a real directory beneath the verified workspace root. */

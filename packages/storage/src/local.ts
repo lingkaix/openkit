@@ -2167,3 +2167,56 @@ export function copyBackupTree(
     }
   }
 }
+
+/** @internal Writes one admitted portable text file with the existing close-only completion and concrete capacity lifetime; path and replacement admission remain caller-owned. */
+export function writePortableTextFile(
+  path: string,
+  content: string,
+  exists: boolean,
+  byteLength: number,
+  reservation?: {
+    recordWritten(byteLength: number): void;
+    assertAvailable(): void;
+    release(): void;
+  }
+): void {
+  let descriptor: number | undefined;
+  let release = true;
+  let opened = false;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_NOFOLLOW |
+        (exists ? constants.O_TRUNC : constants.O_EXCL),
+      0o600
+    );
+    opened = true;
+    release = false;
+    if (!fstatSync(descriptor).isFile()) {
+      throw new Error(`Portable workspace path must be a regular file: ${path}.`);
+    }
+    writeFileSync(descriptor, content);
+    reservation?.recordWritten(byteLength);
+    closeSync(descriptor);
+    descriptor = undefined;
+    reservation?.assertAvailable();
+    release = true;
+  } catch (error) {
+    if (descriptor !== undefined) {
+      closeSync(descriptor);
+      descriptor = undefined;
+    }
+    // This writer owns only unpublished staging files. Failed cleanup keeps its reservation.
+    if (opened) rmSync(path, { force: true });
+    release = true;
+    throw error;
+  } finally {
+    try {
+      if (descriptor !== undefined) closeSync(descriptor);
+    } finally {
+      if (release) reservation?.release();
+    }
+  }
+}
