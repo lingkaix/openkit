@@ -11,6 +11,7 @@ import {
   measureCanonicalFile,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';
+import { NotebookError } from './notebook.js';
 import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { updateOkfFrontmatter } from './okf.js';
 import {
@@ -58,10 +59,11 @@ export function exportWorkspaceSources(input: {
   assertCanonicalDirectory(notebookRoot);
   if (
     input.selection.workspaceRoot !== input.workspaceRoot ||
-    input.selection.head.workspaceId !== input.workspaceId ||
-    input.selection.head.notebookCommit !== input.revision
+    input.selection.head.workspaceId !== input.workspaceId
   )
     throw new Error('Source export selection does not match the pinned Workspace.');
+  if (input.selection.head.notebookCommit !== input.revision)
+    throw new NotebookError('invalid_request');
   input.selection.notebook.history({ revision: input.revision, limit: 1 });
   // Workspace pointer reads use the admitted selection, not this scope owner's data-root ancestry.
   const owner = { dataRoot: dirname(dirname(input.workspaceRoot)), ownerScope: scope };

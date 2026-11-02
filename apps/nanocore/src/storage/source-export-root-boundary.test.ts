@@ -189,6 +189,36 @@ describe('Source export explicit workspace root', () => {
     expect(snapshot.notebook.readSourcePointers(candidateRevision)[snapshot.source.id]).toBe(
       candidatePointer
     );
+    // A caller's wrong physical root or Workspace remains an internal invariant failure,
+    // even when the requested revision is also an unpublished candidate.
+    const selection = snapshot.captured.sourceNotebookSelection;
+    for (const sourceNotebookSelection of [
+      { ...selection, workspaceRoot: join(snapshot.root, 'wrong-workspace') },
+      { ...selection, head: { ...selection.head, workspaceId: allocateEntityId('ws') } },
+    ]) {
+      let refusal: unknown;
+      try {
+        writeWorkspaceExportTree({
+          ...snapshot.captured,
+          sourceNotebookSelection,
+          sourceWorkspaceRoot: snapshot.workspaceRoot,
+          exportRoot: join(snapshot.root, 'mismatched-selection-export'),
+          exportId: allocateEntityId('wsexp'),
+          portableFileState: {
+            ...snapshot.captured.portableFileState!,
+            notebookRevision: candidateRevision,
+          },
+        });
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal).toBeInstanceOf(Error);
+      expect(refusal).toHaveProperty(
+        'message',
+        'Source export selection does not match the pinned Workspace.'
+      );
+      expect(refusal).not.toHaveProperty('code');
+    }
     expect(snapshot.notebook.publishedRevision()).toBe(snapshot.revision);
     expect(() => snapshot.notebook.history({ revision: candidateRevision, limit: 1 })).toThrowError(
       expect.objectContaining({ code: 'invalid_request' })
