@@ -5585,9 +5585,6 @@ describe('W4 round-eight refused setup cleanup', () => {
             if (stop === 'unproved') {
               // This fence predicate uses the existing peer; real persistence stays in the proved case.
               native = stubbornChild([]);
-              Object.assign(native, {
-                stdin: Object.assign(new EventEmitter(), { end: () => native.stdin }),
-              });
               native.kill = () => {
                 Object.assign(native, { exitCode: 1 });
                 native.stdout?.emit('end');
