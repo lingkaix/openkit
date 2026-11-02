@@ -2,23 +2,25 @@ import {
   assertCanonicalDirectory,
   assertCanonicalRegularFile,
   ensureCanonicalDirectory,
+  publishCanonicalPath,
   syncCanonicalDirectory,
-  syncCanonicalTree,
 } from '@openkit/storage';
 
 export {
   assertCanonicalDirectory,
   assertCanonicalRegularFile,
   ensureCanonicalDirectory,
+  publishCanonicalPath,
+  publishCanonicalPathAsync,
   syncCanonicalDirectory,
   syncCanonicalTree,
+  syncCanonicalTreeAsync,
 } from '@openkit/storage';
 
 import {
   readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
 } from '../knowledge/notebook-workspace-selection.js';
-import { syncCanonicalDirectoryAsync } from './canonical-filesystem.js';
 import { readControlKnowledgeProposal } from './control-store-knowledge-heads.js';
 import { readImmutableContentBytes } from './immutable-content-read.js';
 import {
@@ -62,7 +64,6 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import * as fsPromises from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -2972,56 +2973,6 @@ function listFileNames(path: string): string[] {
     }
   }
   return names.sort();
-}
-
-/** Publishes a complete staged file or tree and commits both sides of a cross-parent rename. */
-export function publishCanonicalPath(staged: string, destination: string): void {
-  syncCanonicalTree(staged);
-  renameSync(staged, destination);
-  try {
-    syncCanonicalDirectory(dirname(destination));
-    if (dirname(staged) !== dirname(destination)) syncCanonicalDirectory(dirname(staged));
-  } catch (error) {
-    throw new CanonicalPublicationError(
-      `Directory sync after rename failed during publication acknowledgement: ${error instanceof Error ? error.message : 'I/O failure'}`,
-      error
-    );
-  }
-}
-
-/** Synchronizes a complete asynchronous staging tree, with child entries committed before their parents. */
-export async function syncCanonicalTreeAsync(path: string): Promise<void> {
-  const metadata = await fsPromises.lstat(path);
-  if (metadata.isDirectory()) {
-    for (const entry of await fsPromises.readdir(path))
-      await syncCanonicalTreeAsync(join(path, entry));
-    await syncCanonicalDirectoryAsync(path);
-    return;
-  }
-  if (!metadata.isFile() || metadata.isSymbolicLink())
-    throw new Error(`Canonical path must be a regular file: ${path}.`);
-  const descriptor = await fsPromises.open(
-    path,
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-  );
-  try {
-    if (!(await descriptor.stat()).isFile())
-      throw new Error(`Canonical path must be a regular file: ${path}.`);
-    await descriptor.sync();
-  } finally {
-    await descriptor.close();
-  }
-}
-
-/** Publishes staged asynchronous bytes and commits the destination and any distinct source parent. */
-export async function publishCanonicalPathAsync(
-  staged: string,
-  destination: string
-): Promise<void> {
-  await syncCanonicalTreeAsync(staged);
-  await fsPromises.rename(staged, destination);
-  await syncCanonicalDirectoryAsync(dirname(destination));
-  if (dirname(staged) !== dirname(destination)) await syncCanonicalDirectoryAsync(dirname(staged));
 }
 
 /**
