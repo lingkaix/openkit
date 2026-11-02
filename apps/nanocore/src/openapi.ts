@@ -728,9 +728,6 @@ export function createAppOpenApiDocument() {
   };
 }
 
-/** Process-wide OpenAPI projection reused for document serving. */
-export const APP_OPENAPI_DOCUMENT = createAppOpenApiDocument();
-
 /**
  * Converts a Zod schema into the JSON Schema fragment embedded in OpenAPI.
  *

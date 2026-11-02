@@ -25,7 +25,7 @@ import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js'
 import * as commands from './generative-kernel/commands.js';
 import { createLightApp, listRecords, updateRecord } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
-import { APP_OPENAPI_DOCUMENT, getRegisteredAppApiOperationIds } from './openapi.js';
+import { createAppOpenApiDocument, getRegisteredAppApiOperationIds } from './openapi.js';
 import * as invocation from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
 import type {
@@ -2280,7 +2280,7 @@ describe('#144 private native invocation and public exclusion', () => {
     try {
       expect(Object.keys(OPERATION_DEFINITIONS)).not.toContain('skill.read');
       expect(getRegisteredAppApiOperationIds(f.app)).not.toContain('skill.read');
-      expect(JSON.stringify(APP_OPENAPI_DOCUMENT)).not.toContain('skill.read');
+      expect(JSON.stringify(createAppOpenApiDocument())).not.toContain('skill.read');
       const client = createCoreClient({ baseUrl: 'http://nanocore.test' });
       expect(Object.keys(client.operations)).not.toContain('skill.read');
       const cliModule = new URL('../../../skills/openkit-operations.mjs', import.meta.url).href;

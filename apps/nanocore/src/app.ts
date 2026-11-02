@@ -132,7 +132,7 @@ import {
   createTaskStartOperation,
   type WorkerCoordinatorCandidateRequest,
 } from './mode-entry-routes.js';
-import { APP_OPENAPI_DOCUMENT, registerAppApiRoute } from './openapi.js';
+import { createAppOpenApiDocument, registerAppApiRoute } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
@@ -281,6 +281,9 @@ import {
 } from './workspace-deletion-request.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
+
+/** Main HTTP projection is built once here, not by native workers importing shared route metadata. */
+const APP_OPENAPI_DOCUMENT = createAppOpenApiDocument();
 
 /**
  * Process-local NanoHost transport session authority owned by one Hono app.
