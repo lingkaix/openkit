@@ -11,6 +11,7 @@ import {
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
 import { AutomationStore } from './lib/automation-store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -148,7 +149,7 @@ describe('workspace audit events', () => {
     }
   });
 
-  it('exports only exact recurring actions with retained subjects before decoding Core content', () => {
+  it('exports only exact recurring actions with retained subjects before decoding Core content', async () => {
     const dataRoot = createDataRoot();
     const workspaceId = testEntityId('ws', 'audit-selected-workspace');
     const coreDb = openCoreDb(dataRoot);
@@ -161,7 +162,7 @@ describe('workspace audit events', () => {
         new WorkspaceMutationAdmission(),
         () => '2026-10-16T00:00:00.000Z'
       );
-      const schedule = schedules.createAutomation(testEntityId('usr', 'audit-user'), {
+      const schedule = await schedules.createAutomation(testEntityId('usr', 'audit-user'), {
         workspaceId,
         threadId: testEntityId('th', 'audit-thread'),
         name: 'Portable',
@@ -203,6 +204,7 @@ describe('workspace audit events', () => {
       ]);
       expect(listPortableWorkspaceAuditEvents(workspaceDb, workspaceId)).toEqual([local]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });

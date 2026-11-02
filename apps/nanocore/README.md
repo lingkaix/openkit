@@ -1,6 +1,6 @@
 # nanocore
 
-Machine digest, identity, retained-inventory and wire orderings corrected under #532 use Protocol `compareCodeUnits`, which compares UTF-16 code units without host locale or ICU state. Producers and their corresponding verifiers use the same order. The recurring admission tie-breaker remains with its owning cut until the #532 handoff lands.
+Machine digest, identity, retained-inventory and wire orderings corrected under #532 use Protocol `compareCodeUnits`, which compares UTF-16 code units without host locale or ICU state. Producers and their corresponding verifiers use the same order. The recurring admission tie-breaker uses the same shared code-unit order.
 
 This accepted pre-v0.1.0 reset correction can change identities for mixed-case or non-ASCII object keys and ordered paths. On dev/a1 after upgrade, new Session compatibility keys and re-resolved package snapshots can result. In-flight effect or idempotent retries across the upgrade can refuse through the existing recovery path. There is no migration, dual lookup or fallback order. Cross-release continuity starts at v0.1.0 under [Pre-Stable Data Continuity](../../docs/decisions/20261014-pre_stable_data_continuity.md).
 

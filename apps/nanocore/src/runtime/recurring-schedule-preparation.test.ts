@@ -39,14 +39,14 @@ async function fixture() {
     new WorkspaceMutationAdmission(),
     () => '2026-10-16T00:00:00.000Z'
   );
-  const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+  const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
     workspaceId: DEMO_WORKSPACE_ID,
     threadId: thread.id,
     name: 'Inspect',
     prompt: 'Inspect status',
     intervalSeconds: 5,
   });
-  schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+  await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',

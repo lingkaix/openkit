@@ -1,4 +1,10 @@
-import { MaterializedWorkspaceRootSchema } from '@openkit/app-api-schemas';
+import {
+  type AutomationRecord,
+  AutomationRecordSchema,
+  CreateAutomationRequestSchema,
+  MaterializedWorkspaceRootSchema,
+  UpdateAutomationRequestSchema,
+} from '@openkit/app-api-schemas';
 import { ActorRefSchema, ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { SchedulerAdmissionEntryRecord } from '../scheduler-records.js';
@@ -125,8 +131,38 @@ export const ExternalSourceSchema = z
       .strict(),
   })
   .strict();
+/** Only the exact existing definition mutation crosses the private family boundary. */
+export const AutomationDefinitionMutationSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('create'),
+      id: z.string().min(1),
+      input: CreateAutomationRequestSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('update'),
+      id: z.string().min(1),
+      input: UpdateAutomationRequestSchema.strict(),
+    })
+    .strict(),
+  z.object({ action: z.literal('delete'), id: z.string().min(1) }).strict(),
+]);
+/** Typed existing create, edit, lifecycle and tombstone input; no SQL or callback. */
+export type AutomationDefinitionMutation = z.infer<typeof AutomationDefinitionMutationSchema>;
 /** One closed Core queue/conditional-source family; each member commits only its original tuple. */
 export const ControlSchedulerAdmissionSchema = z.discriminatedUnion('mode', [
+  z
+    .object({
+      mode: z.literal('definition'),
+      actor: actor.optional(),
+      workspaceId: z.string().min(1),
+      userId: z.string().min(1),
+      mutation: AutomationDefinitionMutationSchema,
+      timestamp: z.string().datetime(),
+    })
+    .strict(),
   z
     .object({
       mode: z.literal('create'),
@@ -181,7 +217,10 @@ export type ControlSchedulerAdmission = z.infer<typeof ControlSchedulerAdmission
 /** Main finishes the existing injected clock only after native open. */
 export type SchedulerAdmissionDraft =
   | ControlSchedulerAdmission
-  | Omit<Extract<ControlSchedulerAdmission, { mode: 'recurring-attempt' }>, 'timestamp'>;
+  | Omit<
+      Extract<ControlSchedulerAdmission, { mode: 'recurring-attempt' | 'definition' }>,
+      'timestamp'
+    >;
 const entry = SchedulerCreateSchema.omit({ timestamp: true }).extend({
   requestId: z.string().nullable(),
   serverAdminTokenId: z.string().nullable(),
@@ -205,6 +244,7 @@ const external = z
   .strict();
 /** Complete native results; no post-ACK result reread or reply reservation. */
 export const ControlSchedulerAdmissionResultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('definition'), record: AutomationRecordSchema.nullable() }).strict(),
   z.object({ kind: z.literal('queue'), entry, external: external.optional() }).strict(),
   z
     .object({
@@ -225,10 +265,29 @@ export type ControlSchedulerAdmissionResult =
         queueEntryId: string;
       };
     }
-  | { kind: 'occurrence'; occurrence: RecurringOccurrence | null };
+  | { kind: 'occurrence'; occurrence: RecurringOccurrence | null }
+  | { kind: 'definition'; record: AutomationRecord | null };
 
 /** Original transition metadata, never SQLite diagnostics or statement bindings. */
 export const ControlSchedulerAdmissionRefusalSchema = z.union([
+  z
+    .object({
+      operation: z.literal('scheduler-admission'),
+      kind: z.literal('turn'),
+      code: z.literal('automation_conflict'),
+      message: z.string(),
+      status: z.literal(409),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('scheduler-admission'),
+      kind: z.literal('turn'),
+      code: z.enum(['automation_update_failed', 'automation_delete_failed']),
+      message: z.string(),
+      status: z.literal(404),
+    })
+    .strict(),
   z
     .object({
       operation: z.literal('scheduler-admission'),

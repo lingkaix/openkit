@@ -195,14 +195,14 @@ describe('Workspace JSON transfer cutover', () => {
     const thread = store.listThreads(DEMO_WORKSPACE_ID)[0]!;
     const instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), () => instant);
-    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+    const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
       name: 'Inspect retained bytes',
       prompt: 'Inspect retained bytes',
       intervalSeconds: 5,
     });
-    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+    await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,

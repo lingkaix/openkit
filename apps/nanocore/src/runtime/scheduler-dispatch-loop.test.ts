@@ -593,14 +593,14 @@ describe('scheduler dispatch loop', () => {
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Monthly existing target');
     const instant = '2026-10-28T09:30:00.000Z';
     const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
-    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+    const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
       name: 'Monthly instruction',
       prompt: 'Exact monthly input',
       monthlyUtc: { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 },
     });
-    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+    await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -692,14 +692,14 @@ describe('scheduler dispatch loop', () => {
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
     const instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
-    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+    const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
       name: 'Inspect cache disagreement',
       prompt: 'Exact recurring input',
       intervalSeconds: 5,
     });
-    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+    await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -831,14 +831,14 @@ describe('scheduler dispatch loop', () => {
       new WorkspaceMutationAdmission(),
       () => '2026-10-16T00:00:00.000Z'
     );
-    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+    const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: pollThread.id,
       name: 'External event poll',
       prompt: 'Read the selected source.',
       intervalSeconds: 5,
     });
-    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+    await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -1018,14 +1018,14 @@ describe('scheduler dispatch loop', () => {
     const mutationAdmission = new WorkspaceMutationAdmission();
     let instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, mutationAdmission, () => instant);
-    const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
+    const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
       name: 'Inspect',
       prompt: 'Exact recurring input',
       intervalSeconds: 5,
     });
-    schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+    await schedules.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -1153,16 +1153,16 @@ describe('scheduler dispatch loop', () => {
         // Use an authorized paused target edit after cancellation; contradictory old history cannot authorize a repair.
         if (fault === 'contradictory') {
           const nextThread = await reopened.createThread(DEMO_WORKSPACE_ID, 'Next target');
-          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+          await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
             expectedRevision: 2,
             status: 'paused',
           });
-          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+          await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
             expectedRevision: 3,
             threadId: nextThread.id,
           });
           instant = '2026-10-16T00:00:10.000Z';
-          restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
+          await restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
             expectedRevision: 4,
             status: 'active',
             scheduledAt: instant,

@@ -46,14 +46,14 @@ async function fixture() {
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;
   const schedules = new AutomationStore(db, gate, clock);
-  const created = schedules.createAutomation(localUserId, {
+  const created = await schedules.createAutomation(localUserId, {
     name: 'Poll',
     workspaceId: workspace.id,
     threadId: thread.id,
     intervalSeconds: 5,
     prompt: 'Inspect status',
   });
-  const schedule = schedules.updateAutomation(localUserId, created.id, {
+  const schedule = await schedules.updateAutomation(localUserId, created.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: instant,
@@ -179,18 +179,18 @@ describe('serialized recurring scanner', () => {
 
   it('keeps healthy admission and maintenance running after an admitted cadence exhausts the UTC range', async () => {
     const { schedules, schedule, start, setTime } = await fixture();
-    const paused = schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
+    const paused = await schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
       expectedRevision: schedule.revision,
       status: 'paused',
     });
-    const created = schedules.createAutomation(schedule.responsibleUserId, {
+    const created = await schedules.createAutomation(schedule.responsibleUserId, {
       workspaceId: schedule.workspaceId,
       threadId: schedule.threadId,
       name: 'Long cadence',
       intervalSeconds: 250_000_000_000,
       prompt: 'Inspect status',
     });
-    const active = schedules.updateAutomation(schedule.responsibleUserId, created.id, {
+    const active = await schedules.updateAutomation(schedule.responsibleUserId, created.id, {
       expectedRevision: created.revision,
       status: 'active',
       scheduledAt: '2026-10-16T00:00:00.000Z',
@@ -200,7 +200,7 @@ describe('serialized recurring scanner', () => {
     await schedules.commitAttempt(initial!.id, initial!.definitionRevision, structuredClone(ready));
     // This state is produced by admission and scan owners, without fabricating retained rows.
     const finalInstant = '9948-12-22T12:26:40.000Z';
-    schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
+    await schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
       expectedRevision: paused.revision,
       status: 'active',
       scheduledAt: finalInstant,
@@ -358,7 +358,7 @@ describe('serialized recurring scanner', () => {
         })
     );
     const scan = service.runOnce();
-    schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
+    await schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
       expectedRevision: schedule.revision,
       status: 'paused',
     });

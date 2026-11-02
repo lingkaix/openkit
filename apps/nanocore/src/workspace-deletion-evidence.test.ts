@@ -104,14 +104,14 @@ it('retains the immutable external admission join in deletion evidence before it
     const pollThread = await store.createThread(workspace.id, 'Poll');
     const instant = '2026-10-18T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
-    const schedule = schedules.createAutomation(actorId, {
+    const schedule = await schedules.createAutomation(actorId, {
       workspaceId: workspace.id,
       threadId: pollThread.id,
       name: 'Poll',
       prompt: 'Read selected source.',
       intervalSeconds: 30,
     });
-    schedules.updateAutomation(actorId, schedule.id, {
+    await schedules.updateAutomation(actorId, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,

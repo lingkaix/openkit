@@ -41,10 +41,10 @@ test('deferred expressions do not permit a new caller in the same owner', () => 
   );
 });
 
-test('a held exception has only its original path and multiplicity', () => {
+test('the retired automation exception permits no locale comparison', () => {
   const retainedPath = 'apps/nanocore/src/lib/automation-store.ts';
   const original = 'a.schedule.id.localeCompare(b.schedule.id);';
-  assert.deepEqual(unexpectedLocaleComparisons(retainedPath, original), []);
-  assert.equal(unexpectedLocaleComparisons(retainedPath, original.repeat(2)).length, 1);
+  assert.equal(unexpectedLocaleComparisons(retainedPath, original).length, 1);
+  assert.equal(unexpectedLocaleComparisons(retainedPath, original.repeat(2)).length, 2);
   assert.equal(unexpectedLocaleComparisons(path, original).length, 1);
 });

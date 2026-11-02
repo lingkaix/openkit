@@ -236,7 +236,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 35;
+export const CONTROL_WORKER_VERSION = 36;
 
 /** Physical copy sizes selected after admitted predecessors, while the original FIFO slot remains held. */
 export const ControlPhysicalForecastSchema = z

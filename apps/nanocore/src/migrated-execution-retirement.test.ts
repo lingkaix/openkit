@@ -43,7 +43,7 @@ describe('migrated execution route retirement', () => {
     });
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
-    const automation = automationStore.createAutomation(FIXTURE_LOCAL_USER_ID, {
+    const automation = await automationStore.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       name: 'Retained',
       intervalSeconds: 60,

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Blocks locale-dependent machine ordering except the one explicitly held #532 site. */
+/** Blocks locale-dependent machine ordering in production sources. */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -8,11 +8,7 @@ import ts from 'typescript';
 
 // #532: exact held expressions only. Remove each entry with its owning cut.
 // BEGIN DEFERRED COMPARISONS
-const deferredComparisons = {
-  'apps/nanocore/src/lib/automation-store.ts': {
-    'a.schedule.id.localeCompare(b.schedule.id)': 1,
-  },
-};
+const deferredComparisons = {};
 // END DEFERRED COMPARISONS
 
 /** Reports direct locale comparisons beyond each named, deferred source expression. */
@@ -70,7 +66,7 @@ function main() {
   if (failures.length) {
     console.error(failures.join('\n'));
     process.exitCode = 1;
-  } else console.log('Locale ordering: PASS (one held #532 comparison deferred)');
+  } else console.log('Locale ordering: PASS (no deferred comparisons)');
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

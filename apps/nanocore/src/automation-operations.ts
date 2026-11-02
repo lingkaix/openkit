@@ -7,7 +7,7 @@ import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { AutomationMutationError, AutomationRecordNotFoundError } from './lib/automation-store.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
-import type { OperationImplementations } from './operation-contract.js';
+import { type OperationImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { recurringTurnPublicationIssue } from './runtime/recurring-turn-publication.js';
 import { requireSchedulerAdmissionEntry } from './scheduler-records.js';
@@ -56,13 +56,20 @@ export function createAutomationOperationImplementations(
       });
       return { items, nextBefore: history.nextBefore };
     },
-    'automation.create': (input, context) => {
+    'automation.create': async (input, context) => {
       const actor = context.actorRef;
       requireWorkspaceRecords([input.workspaceId]);
       requireThread(input.workspaceId, input.threadId, actor.id, context);
-      return store.createAutomation(actor.id, input);
+      return await store.createAutomation(actor.id, input, {
+        actor: publicOperationActor(context),
+        revalidate: async () => {
+          await context.recheckAdmission?.();
+          requireWorkspaceRecords([input.workspaceId]);
+          requireThread(input.workspaceId, input.threadId, actor.id, context);
+        },
+      });
     },
-    'automation.update': (input, context) => {
+    'automation.update': async (input, context) => {
       const actor = context.actorRef;
       try {
         requireAdmittedSchedule(input.automationId, context);
@@ -74,7 +81,20 @@ export function createAutomationOperationImplementations(
             context
           );
         const { automationId, ...mutation } = input;
-        return store.updateAutomation(actor.id, automationId, mutation);
+        return await store.updateAutomation(actor.id, automationId, mutation, {
+          actor: publicOperationActor(context),
+          revalidate: async () => {
+            await context.recheckAdmission?.();
+            requireAdmittedSchedule(automationId, context);
+            if (input.threadId)
+              requireThread(
+                store.getAutomation(automationId).workspaceId,
+                input.threadId,
+                actor.id,
+                context
+              );
+          },
+        });
       } catch (error) {
         if (error instanceof AutomationMutationError)
           throw new OperationError('automation_conflict', error.message, 409, { cause: error });
@@ -88,11 +108,17 @@ export function createAutomationOperationImplementations(
         throw error;
       }
     },
-    'automation.delete': (input, context) => {
+    'automation.delete': async (input, context) => {
       const actor = context.actorRef;
       try {
         requireAdmittedSchedule(input.automationId, context);
-        store.deleteAutomation(actor.id, input.automationId);
+        await store.deleteAutomation(actor.id, input.automationId, {
+          actor: publicOperationActor(context),
+          revalidate: async () => {
+            await context.recheckAdmission?.();
+            requireAdmittedSchedule(input.automationId, context);
+          },
+        });
         return null;
       } catch (error) {
         if (error instanceof AutomationMutationError)

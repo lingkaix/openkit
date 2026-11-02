@@ -49,14 +49,14 @@ describe('recurring portable history', () => {
     rmSync(dataRoot, { recursive: true, force: true });
   });
   async function acceptedHistory(publish = true) {
-    const schedule = store.createAutomation(localUserId, {
+    const schedule = await store.createAutomation(localUserId, {
       workspaceId: workspace.id,
       threadId: thread.id,
       name: 'Inspect',
       prompt: 'Retained exact input',
       intervalSeconds: 5,
     });
-    store.updateAutomation(localUserId, schedule.id, {
+    await store.updateAutomation(localUserId, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,
@@ -285,17 +285,17 @@ describe('recurring portable history', () => {
     );
   });
 
-  it('preserves exact monthly rules and compact ranges as inert portable history', () => {
+  it('preserves exact monthly rules and compact ranges as inert portable history', async () => {
     instant = '2026-01-01T00:00:00.000Z';
     const monthlyUtc = { zone: 'UTC', dayOfMonth: 28, hour: 9, minute: 30, second: 0 } as const;
-    const schedule = store.createAutomation(localUserId, {
+    const schedule = await store.createAutomation(localUserId, {
       workspaceId: workspace.id,
       threadId: thread.id,
       name: 'Monthly',
       prompt: 'Monthly input',
       monthlyUtc,
     });
-    store.updateAutomation(localUserId, schedule.id, {
+    await store.updateAutomation(localUserId, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: '2026-01-28T09:30:00.000Z',

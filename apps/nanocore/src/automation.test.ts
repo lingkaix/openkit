@@ -140,7 +140,10 @@ describe('fixed-interval automation operations', () => {
 
   it('lists admitted Workspace definitions without treating the responsible user as a privilege tier', async () => {
     const { db, store, input, automationStore } = await fixture();
-    const created = automationStore.createAutomation(testEntityId('usr', 'user_creator'), input);
+    const created = await automationStore.createAutomation(
+      testEntityId('usr', 'user_creator'),
+      input
+    );
     const operations = createAutomationOperationImplementations({
       coreDb: db,
       store,
@@ -230,8 +233,12 @@ it('paginates lossless ranges directly and joins accepted-but-queued truth witho
 });
 
 it('attributes a member edit to the actual caller while preserving the responsible actor', async () => {
-  const { db, store, input, automationStore } = await fixture();
-  const schedule = automationStore.createAutomation(testEntityId('usr', 'user_creator'), input);
+  const { db, store, input, automationStore, localUserId } = await fixture();
+  // The fixture's owner-created active membership is distinct from the retained responsible actor.
+  const schedule = await automationStore.createAutomation(
+    testEntityId('usr', 'user_creator'),
+    input
+  );
   const operations = createAutomationOperationImplementations({
     coreDb: db,
     store,
@@ -239,8 +246,8 @@ it('attributes a member edit to the actual caller while preserving the responsib
   });
   const context = {
     kind: 'public',
-    actor: { kind: 'session', userId: testEntityId('usr', 'user_member') },
-    actorRef: { kind: 'user', id: testEntityId('usr', 'user_member') },
+    actor: { kind: 'session', userId: localUserId },
+    actorRef: { kind: 'user', id: localUserId },
     scope: {
       kind: 'workspace',
       workspaceId: input.workspaceId,
@@ -261,6 +268,6 @@ it('attributes a member edit to the actual caller while preserving the responsib
       .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edit'")
       .get()
   ).toEqual({
-    actor_json: JSON.stringify({ kind: 'user', id: testEntityId('usr', 'user_member') }),
+    actor_json: JSON.stringify({ kind: 'user', id: localUserId }),
   });
 });

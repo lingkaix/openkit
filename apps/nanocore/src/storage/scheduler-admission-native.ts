@@ -14,6 +14,7 @@ import {
   retryDeniedSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { accessDenied } from '../workspace-sharing-operations.js';
+import { applyAutomationDefinitionInDb } from './automation-definition-native.js';
 import { presentControlFacts } from './control-store-input.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
@@ -23,6 +24,8 @@ import {
   findRecurringAutomationFromDb,
 } from './recurring-attempt-native.js';
 import {
+  AutomationMutationError,
+  AutomationRecordNotFoundError,
   type ControlSchedulerAdmission,
   type ControlSchedulerAdmissionResult,
   ControlSchedulerAdmissionSchema,
@@ -34,6 +37,42 @@ export function applyControlSchedulerAdmission(
 ): ControlSchedulerAdmissionResult {
   assertControlProductWriter(db.sqlite);
   const input = ControlSchedulerAdmissionSchema.parse(raw);
+  if (input.mode === 'definition') {
+    if (
+      input.actor &&
+      (input.actor.userId !== input.userId ||
+        !isWorkspaceOperationAuthorized(db, presentControlFacts(input.actor), input.workspaceId, {
+          mutating: true,
+          policyOperation: 'workspace.configure',
+        }))
+    )
+      throw accessDenied();
+    try {
+      const actualWorkspace =
+        input.mutation.action === 'create'
+          ? input.mutation.input.workspaceId
+          : findRecurringAutomationFromDb(db, input.mutation.id)?.workspaceId;
+      if (actualWorkspace !== input.workspaceId)
+        throw new AutomationRecordNotFoundError(`Automation not found: ${input.mutation.id}`);
+      return {
+        kind: 'definition',
+        record: applyAutomationDefinitionInDb(db, input.userId, input.mutation, input.timestamp),
+      };
+    } catch (error) {
+      if (error instanceof AutomationMutationError)
+        throw new OperationError('automation_conflict', error.message, 409, { cause: error });
+      if (error instanceof AutomationRecordNotFoundError)
+        throw new OperationError(
+          input.mutation.action === 'delete'
+            ? 'automation_delete_failed'
+            : 'automation_update_failed',
+          error.message,
+          404,
+          { cause: error }
+        );
+      throw error;
+    }
+  }
   if (input.mode === 'recurring-attempt')
     return { kind: 'occurrence', occurrence: applyNativeRecurringAttempt(db, input) };
   if (input.mode === 'create') {

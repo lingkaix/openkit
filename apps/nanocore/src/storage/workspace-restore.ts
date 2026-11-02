@@ -15,7 +15,6 @@ import {
   settleWorkspaceRecoveryScope,
 } from '../bootstrap/readiness.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
-import { AutomationStore } from '../lib/automation-store.js';
 import type { FsStore } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
@@ -23,8 +22,8 @@ import { OperationError } from '../operation-error.js';
 import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { WorkspaceDeletionRequestRecord } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import {
-  type WorkspaceFrozenAdmission,
+import type {
+  WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
 import {
@@ -32,6 +31,7 @@ import {
   recoverDeletedWorkspaceRegistry,
 } from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { applyAutomationDefinitionInDb } from './automation-definition-native.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest as candidateDigest } from './data-root-backup.js';
 import type { CoreDb } from './db.js';
@@ -254,17 +254,22 @@ async function finishTarget(
             .run(workspaceId, userId, now, now, now);
         }
       } else {
-        const schedules = new AutomationStore(core, new WorkspaceMutationAdmission());
         const rows = core.sqlite
           .prepare(
             "SELECT id, revision FROM recurring_schedules WHERE workspace_id=? AND status='active'"
           )
           .all(workspaceId) as { id: string; revision: number }[];
         for (const row of rows)
-          schedules.updateAutomation(owned.proof.manifest.accounts.ownerId, row.id, {
-            expectedRevision: row.revision,
-            status: 'paused',
-          });
+          applyAutomationDefinitionInDb(
+            core,
+            owned.proof.manifest.accounts.ownerId,
+            {
+              action: 'update',
+              id: row.id,
+              input: { expectedRevision: row.revision, status: 'paused' },
+            },
+            new Date().toISOString()
+          );
         const queued = core.sqlite
           .prepare(
             "SELECT queue_entry_id FROM scheduler_admission_entries WHERE workspace_id=? AND status IN ('queued','denied')"

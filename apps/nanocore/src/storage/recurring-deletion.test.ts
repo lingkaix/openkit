@@ -39,14 +39,14 @@ it('seals the complete recurring graph before deletion removes its Core rows and
       new WorkspaceMutationAdmission(),
       () => instant
     );
-    const schedule = automationStore.createAutomation(localUserId, {
+    const schedule = await automationStore.createAutomation(localUserId, {
       workspaceId: workspace.id,
       threadId: thread.id,
       name: 'Inspect',
       prompt: 'Retained recurring input',
       intervalSeconds: 3600,
     });
-    automationStore.updateAutomation(localUserId, schedule.id, {
+    await automationStore.updateAutomation(localUserId, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,

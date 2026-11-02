@@ -5,13 +5,14 @@ import {
   type UpdateAutomationRequest,
   UpdateAutomationRequestSchema,
 } from '@openkit/app-api-schemas';
+import { allocateEntityId, compareCodeUnits, readRetainedV1 } from '@openkit/protocol';
+import type { Actor } from '../auth/identity.js';
 import {
-  allocateEntityId,
-  deriveEntityId,
-  readRetainedV1,
-  writeRetainedV1,
-} from '@openkit/protocol';
-import { recordServerAuditEvent } from '../audit-events.js';
+  accountRecurringExpiredPrefix,
+  advanceRecurringSchedule,
+  newRecurringOccurrence,
+  nextRecurringNominal,
+} from '../storage/automation-definition-native.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   RECURRING_DEADLINE_MS as DEADLINE_MS,
@@ -21,16 +22,10 @@ import {
   type RecurringPreparation,
   readRecurringOccurrence,
   readRecurringSchedule,
-  recurringRequestId,
 } from '../storage/recurring-records.js';
 import { StoredAutomationCadenceV1Schema } from '../storage/recurring-retained-v1.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import {
-  advanceRecurringNominal,
-  RecurringCadenceExhaustedError,
-  recurringNominalMatches,
-  recurringPrefixThrough,
-} from './recurring-cadence.js';
+import { recurringPrefixThrough } from './recurring-cadence.js';
 
 const SCAN_LIMIT = 128;
 
@@ -46,6 +41,7 @@ import {
   writeRecurringOccurrenceInDb,
 } from '../storage/recurring-attempt-native.js';
 import {
+  type AutomationDefinitionMutation,
   AutomationMutationError,
   AutomationRecordNotFoundError,
 } from '../storage/scheduler-admission-codecs.js';
@@ -104,125 +100,52 @@ export class AutomationStore {
     return record;
   }
 
-  /** Creates a paused definition with an immutable exact automation actor. */
-  public createAutomation(userId: string, value: CreateAutomationRequest): AutomationRecord {
+  /** Creates the exact paused definition through the existing native Core publisher. */
+  public async createAutomation(
+    userId: string,
+    value: CreateAutomationRequest,
+    authorization?: { readonly actor: Actor; readonly revalidate?: () => Promise<void> }
+  ): Promise<AutomationRecord> {
     const input = CreateAutomationRequestSchema.strict().parse(value);
-    const timestamp = this.now();
-    if (input.intervalSeconds !== undefined)
-      this.requireRepresentableSuccessor(input, Date.parse(timestamp));
-    const id = allocateEntityId('auto');
-    const record: AutomationRecord = {
-      ...input,
-      id,
-      responsibleUserId: userId,
-      actor: { kind: 'automation', id, responsibleUserId: userId },
-      status: 'paused',
-      revision: 1,
-      nextScheduledAt: null,
-      greatestAccountedScheduledAt: null,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      deletedAt: null,
-    };
-    return this.withMutation(record.workspaceId, () =>
-      this.coreDb.sqlite
-        .transaction(() => {
-          this.writeSchedule(record, true);
-          this.auditDefinition(record, userId, 'create');
-          return record;
-        })
-        .immediate()
+    const result = await this.publishDefinition(
+      userId,
+      input.workspaceId,
+      { action: 'create', id: allocateEntityId('auto'), input },
+      authorization
     );
+    if (!result) throw new Error('Native definition create returned no record.');
+    return result;
   }
 
-  /** Pauses or resumes a schedule, or edits an already-paused definition with revision protection. */
-  public updateAutomation(
+  /** Publishes revision-protected edits and their complete old-cadence history tuple. */
+  public async updateAutomation(
     userId: string,
     automationId: string,
-    value: UpdateAutomationRequest
-  ): AutomationRecord {
+    value: UpdateAutomationRequest,
+    authorization?: { readonly actor: Actor; readonly revalidate?: () => Promise<void> }
+  ): Promise<AutomationRecord> {
     const input = UpdateAutomationRequestSchema.strict().parse(value);
-    return this.withMutation(this.getAutomation(automationId).workspaceId, () =>
-      this.coreDb.sqlite
-        .transaction(() => {
-          let schedule = this.getAutomation(automationId);
-          if (schedule.status === 'deleted' || schedule.revision !== input.expectedRevision)
-            throw new AutomationMutationError(
-              'Recurring schedule revision or lifecycle conflicts.'
-            );
-          const timestamp = this.now();
-          const { expectedRevision: _revision, status, scheduledAt, ...edits } = input;
-          const editing = Object.keys(edits).length > 0;
-          if (!editing && status === undefined)
-            throw new AutomationMutationError('A recurring schedule mutation is required.');
-          if (editing && (schedule.status !== 'paused' || status === 'active'))
-            throw new AutomationMutationError('Edit requires a paused recurring schedule.');
-          if (status === 'active') {
-            // Date.parse truncates finer precision, so authored monthly fractions need an exact zero check.
-            if (
-              schedule.status !== 'paused' ||
-              !scheduledAt ||
-              !recurringNominalMatches(schedule, Date.parse(scheduledAt)) ||
-              (schedule.monthlyUtc !== undefined && /\.[0-9]*[1-9][0-9]*Z$/.test(scheduledAt)) ||
-              Date.parse(scheduledAt) < Date.parse(timestamp) ||
-              (schedule.greatestAccountedScheduledAt !== null &&
-                Date.parse(scheduledAt) <= Date.parse(schedule.greatestAccountedScheduledAt))
-            )
-              throw new AutomationMutationError(
-                'Resume requires a new current-or-future nominal instant.'
-              );
-            schedule = {
-              ...schedule,
-              status,
-              nextScheduledAt: new Date(scheduledAt).toISOString(),
-            };
-            this.requireRepresentableSuccessor(schedule, Date.parse(scheduledAt));
-          } else {
-            if (scheduledAt !== undefined)
-              throw new AutomationMutationError('A nominal instant is accepted only on resume.');
-            if (status === 'paused') schedule = this.sealSchedule(schedule, timestamp);
-            const candidate = { ...schedule, ...edits };
-            if (edits.monthlyUtc !== undefined) delete candidate.intervalSeconds;
-            if (edits.intervalSeconds !== undefined) delete candidate.monthlyUtc;
-            for (const field of ['agentId', 'profileId', 'modelId'] as const)
-              if (candidate[field] === null) delete candidate[field];
-            schedule = readRecurringSchedule(JSON.stringify(candidate));
-            if (edits.intervalSeconds !== undefined)
-              this.requireRepresentableSuccessor(schedule, Date.parse(timestamp));
-          }
-          const updated = { ...schedule, revision: schedule.revision + 1, updatedAt: timestamp };
-          this.writeSchedule(updated);
-          this.auditDefinition(
-            updated,
-            userId,
-            status === 'active' ? 'resume' : status === 'paused' ? 'pause' : 'edit'
-          );
-          return updated;
-        })
-        .immediate()
+    const result = await this.publishDefinition(
+      userId,
+      this.getAutomation(automationId).workspaceId,
+      { action: 'update', id: automationId, input },
+      authorization
     );
+    if (!result) throw new Error('Native definition update returned no record.');
+    return result;
   }
 
-  /** Seals the old cadence and retains a terminal identity tombstone without cancelling accepted work. */
-  public deleteAutomation(userId: string, automationId: string): void {
-    this.withMutation(this.getAutomation(automationId).workspaceId, () =>
-      this.coreDb.sqlite
-        .transaction(() => {
-          let schedule = this.getAutomation(automationId);
-          if (schedule.status === 'deleted') return;
-          const timestamp = this.now();
-          schedule = this.sealSchedule(schedule, timestamp);
-          const deleted: AutomationRecord = {
-            ...schedule,
-            status: 'deleted',
-            revision: schedule.revision + 1,
-            updatedAt: timestamp,
-            deletedAt: timestamp,
-          };
-          this.writeSchedule(deleted);
-          this.auditDefinition(deleted, userId, 'delete');
-        })
-        .immediate()
+  /** Publishes the original terminal tombstone without cancelling accepted work. */
+  public async deleteAutomation(
+    userId: string,
+    automationId: string,
+    authorization?: { readonly actor: Actor; readonly revalidate?: () => Promise<void> }
+  ): Promise<void> {
+    await this.publishDefinition(
+      userId,
+      this.getAutomation(automationId).workspaceId,
+      { action: 'delete', id: automationId },
+      authorization
     );
   }
 
@@ -279,20 +202,26 @@ export class AutomationStore {
             for (
               let at = first, count = 0;
               at !== null && at <= now && count < SCAN_LIMIT;
-              at = this.nextNominal(schedule, at), count++
+              at = nextRecurringNominal(schedule, at), count++
             )
               candidates.push({ schedule, at });
           }
-          candidates.sort((a, b) => a.at - b.at || a.schedule.id.localeCompare(b.schedule.id));
+          candidates.sort((a, b) => a.at - b.at || compareCodeUnits(a.schedule.id, b.schedule.id));
           let expiredRangeCount = 0;
           const selected = candidates.slice(0, SCAN_LIMIT).map((candidate) => {
             if (candidate.occurrence) return candidate.occurrence;
             let schedule = this.getAutomation(candidate.schedule.id);
             if (Date.parse(schedule.nextScheduledAt!) <= now - DEADLINE_MS) expiredRangeCount++;
-            schedule = this.accountExpiredPrefix(schedule, now, timestamp, onError);
-            const occurrence = this.newOccurrence(schedule, candidate.at, timestamp);
+            schedule = accountRecurringExpiredPrefix(
+              this.coreDb,
+              schedule,
+              now,
+              timestamp,
+              onError
+            );
+            const occurrence = newRecurringOccurrence(schedule, candidate.at, timestamp);
             this.writeOccurrence(occurrence, true);
-            this.advanceSchedule(schedule, candidate.at, onError);
+            advanceRecurringSchedule(this.coreDb, schedule, candidate.at, onError);
             return occurrence;
           });
           // Expiring pending history and expired-only schedules also have a fixed per-scan bound.
@@ -310,7 +239,7 @@ export class AutomationStore {
             .all(now - DEADLINE_MS, SCAN_LIMIT - expiredRangeCount) as JsonRow[]) {
             const schedule = readRetainedV1(row, () => readRecurringSchedule(row.record_json));
             if (admit(schedule.workspaceId))
-              this.accountExpiredPrefix(schedule, now, timestamp, onError);
+              accountRecurringExpiredPrefix(this.coreDb, schedule, now, timestamp, onError);
           }
           return selected;
         })
@@ -408,153 +337,6 @@ export class AutomationStore {
     };
   }
 
-  /** Seals all old-cadence instants through the mutation time before pause, edit or delete. */
-  private sealSchedule(schedule: AutomationRecord, timestamp: string): AutomationRecord {
-    const now = Date.parse(timestamp);
-    if (schedule.status === 'active' && schedule.nextScheduledAt) {
-      schedule = this.accountExpiredPrefix(schedule, now, timestamp);
-      const first = schedule.nextScheduledAt === null ? null : Date.parse(schedule.nextScheduledAt);
-      for (let at = first; at !== null && at <= now; at = this.nextNominal(schedule, at)) {
-        const occurrence = this.newOccurrence(schedule, at, timestamp);
-        this.finish(occurrence, 'cancelled', timestamp, true);
-        schedule = this.advanceSchedule(schedule, at);
-      }
-    }
-    for (const row of this.coreDb.sqlite
-      .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_occurrences
-      WHERE schedule_id = ? AND state = 'pending'`)
-      .all(schedule.id) as JsonRow[])
-      this.finish(
-        readRetainedV1(row, () => readRecurringOccurrence(row.record_json)),
-        'cancelled',
-        timestamp
-      );
-    return { ...schedule, status: 'paused', nextScheduledAt: null };
-  }
-
-  /** Records one exact old prefix and moves the same definition cursor atomically. */
-  private accountExpiredPrefix(
-    schedule: AutomationRecord,
-    now: number,
-    timestamp: string,
-    onError?: (error: unknown) => void
-  ): AutomationRecord {
-    if (!schedule.nextScheduledAt) return schedule;
-    const first = Date.parse(schedule.nextScheduledAt);
-    if (first > now - DEADLINE_MS) return schedule;
-    const coverage = recurringPrefixThrough(schedule, first, now - DEADLINE_MS);
-    if (!coverage) return schedule;
-    const { count, last } = coverage;
-    const record: ExpiredOccurrenceRange = {
-      id: allocateEntityId('range'),
-      scheduleId: schedule.id,
-      workspaceId: schedule.workspaceId,
-      definitionRevision: schedule.revision,
-      ...StoredAutomationCadenceV1Schema.parse(schedule),
-      firstScheduledAt: new Date(first).toISOString(),
-      lastScheduledAt: new Date(last).toISOString(),
-      count,
-      snapshot: snapshot(schedule),
-      reason: 'deadline_elapsed',
-      createdAt: timestamp,
-      terminalAt: timestamp,
-    };
-    this.coreDb.sqlite
-      .prepare(`INSERT INTO recurring_expired_ranges
-      (id, schedule_id, workspace_id, definition_revision, first_scheduled_at, last_scheduled_at, record_json, schema_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(
-        record.id,
-        record.scheduleId,
-        record.workspaceId,
-        record.definitionRevision,
-        first,
-        last,
-        JSON.stringify(record),
-        writeRetainedV1({}).schemaVersion
-      );
-    recordServerAuditEvent({
-      coreDb: this.coreDb,
-      workspaceId: schedule.workspaceId,
-      actor: schedule.actor,
-      threadId: schedule.threadId,
-      action: 'recurring.expired-range.record',
-      resource: record.id,
-      resourceRevision: schedule.revision,
-      outcome: 'failed',
-      summary: `Expired nominal range ${record.firstScheduledAt} through ${record.lastScheduledAt}; count ${count}.`,
-      now: new Date(timestamp),
-    });
-    return this.advanceSchedule(schedule, last, onError);
-  }
-
-  /** Refuses new cadence authority when its actual admission anchor has no valid successor. */
-  private requireRepresentableSuccessor(
-    cadence: Parameters<typeof advanceRecurringNominal>[0],
-    at: number
-  ): void {
-    if (this.nextNominal(cadence, at) === null)
-      throw new AutomationMutationError('Recurring cadence has no representable UTC successor.');
-  }
-
-  /** Exhaustion ends only this cadence; invalid core values still fail closed. */
-  private nextNominal(
-    cadence: Parameters<typeof advanceRecurringNominal>[0],
-    at: number,
-    onError?: (error: unknown) => void
-  ): number | null {
-    try {
-      return advanceRecurringNominal(cadence, at);
-    } catch (error) {
-      if (!(error instanceof RecurringCadenceExhaustedError)) throw error;
-      onError?.(error);
-      return null;
-    }
-  }
-
-  /** Advances the exact nominal cadence, retaining its final instant when the calendar ends. */
-  private advanceSchedule(
-    schedule: AutomationRecord,
-    at: number,
-    onError?: (error: unknown) => void
-  ): AutomationRecord {
-    const next = this.nextNominal(schedule, at, onError);
-    const updated = {
-      ...schedule,
-      greatestAccountedScheduledAt: new Date(at).toISOString(),
-      nextScheduledAt: next === null ? null : new Date(next).toISOString(),
-    };
-    this.writeSchedule(updated);
-    return updated;
-  }
-
-  /** Captures immutable authored inputs before any bounded preparation starts. */
-  private newOccurrence(
-    schedule: AutomationRecord,
-    at: number,
-    timestamp: string
-  ): RecurringOccurrence {
-    const scheduledAt = new Date(at).toISOString();
-    const requestId = recurringRequestId(schedule.id, scheduledAt);
-    return {
-      id: deriveEntityId('occ', [schedule.id, scheduledAt]),
-      requestId,
-      scheduleId: schedule.id,
-      workspaceId: schedule.workspaceId,
-      definitionRevision: schedule.revision,
-      scheduledAt,
-      deadline: new Date(at + DEADLINE_MS).toISOString(),
-      snapshot: snapshot(schedule),
-      resolvedPayload: null,
-      state: 'pending',
-      attempts: [],
-      queueEntryId: null,
-      turnId: null,
-      createdAt: timestamp,
-      terminalAt: null,
-    };
-  }
-
   /** Commits a terminal trigger outcome without rewriting prior terminal history. */
   private finish(
     occurrence: RecurringOccurrence,
@@ -565,65 +347,41 @@ export class AutomationStore {
     return finishRecurringOccurrenceInDb(this.coreDb, occurrence, state, timestamp, insert);
   }
 
-  /** Uses the existing Workspace fence for every recurrence mutation, including scanner writes. */
-  private withMutation<T>(workspaceId: string, operation: () => T): T {
+  /** Holds the existing Workspace admission through FULL acknowledgement, with current public admission rechecked after open. */
+  private async publishDefinition(
+    userId: string,
+    workspaceId: string,
+    mutation: AutomationDefinitionMutation,
+    authorization?: { readonly actor: Actor; readonly revalidate?: () => Promise<void> }
+  ): Promise<AutomationRecord | null> {
     const release = this.mutationAdmission.enter(workspaceId);
     if (!release) throw new AutomationMutationError('Workspace mutations are fenced.');
     try {
-      return operation();
+      const result = await publishSchedulerAdmission(
+        this.coreDb,
+        {
+          mode: 'definition',
+          userId,
+          workspaceId,
+          mutation,
+          ...(authorization ? { actor: authorization.actor } : {}),
+        },
+        async (request) => {
+          await authorization?.revalidate?.();
+          return { ...request, timestamp: this.now() };
+        }
+      );
+      if (result.kind !== 'definition')
+        throw new Error('Native definition returned the wrong result.');
+      return result.record;
     } finally {
       release();
     }
   }
 
-  /** Attributes a definition mutation to its actual caller in the same Core transaction. */
-  private auditDefinition(
-    schedule: AutomationRecord,
-    userId: string,
-    action: 'create' | 'edit' | 'pause' | 'resume' | 'delete'
-  ): void {
-    recordServerAuditEvent({
-      coreDb: this.coreDb,
-      workspaceId: schedule.workspaceId,
-      actor: { kind: 'user', id: userId },
-      threadId: schedule.threadId,
-      category: 'command',
-      action: `recurring.schedule.${action}`,
-      resource: schedule.id,
-      resourceRevision: schedule.revision,
-      outcome: 'succeeded',
-      summary: `Recurring schedule ${action}.`,
-      now: new Date(schedule.updatedAt),
-    });
-  }
-
   /** Writes both indexed selectors and the validated known-core payload in one owner mutation. */
   private writeOccurrence(record: RecurringOccurrence, insert = false): void {
     writeRecurringOccurrenceInDb(this.coreDb, record, insert);
-  }
-
-  /** Writes one definition and the indexed cursor under the caller's transaction when present. */
-  private writeSchedule(record: AutomationRecord, insert = false): void {
-    readRecurringSchedule(JSON.stringify(record));
-    if (!insert) this.getAutomation(record.id);
-    const values = [
-      record.workspaceId,
-      record.responsibleUserId,
-      record.status,
-      record.revision,
-      record.nextScheduledAt === null ? null : Date.parse(record.nextScheduledAt),
-      JSON.stringify(record),
-    ];
-    if (insert)
-      this.coreDb.sqlite
-        .prepare(`INSERT INTO recurring_schedules
-      (workspace_id, responsible_user_id, status, revision, next_scheduled_at, record_json, id, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(...values, record.id, writeRetainedV1({}).schemaVersion);
-    else
-      this.coreDb.sqlite
-        .prepare(`UPDATE recurring_schedules SET workspace_id = ?, responsible_user_id = ?,
-      status = ?, revision = ?, next_scheduled_at = ?, record_json = ? WHERE id = ?`)
-        .run(...values, record.id);
   }
 
   /** Reads the one definition authority without private content enumeration. */
@@ -644,15 +402,3 @@ export class AutomationStore {
 }
 
 type JsonRow = { schemaVersion: unknown; record_json: string };
-/** Preserves the exact old authored request in each occurrence and missed-history range. */
-function snapshot(schedule: AutomationRecord): RecurringOccurrence['snapshot'] {
-  return {
-    threadId: schedule.threadId,
-    actor: schedule.actor,
-    prompt: schedule.prompt,
-    ...(schedule.monthlyUtc === undefined ? {} : { monthlyUtc: { ...schedule.monthlyUtc } }),
-    ...(schedule.agentId === undefined ? {} : { agentId: schedule.agentId }),
-    ...(schedule.profileId === undefined ? {} : { profileId: schedule.profileId }),
-    ...(schedule.modelId === undefined ? {} : { modelId: schedule.modelId }),
-  };
-}

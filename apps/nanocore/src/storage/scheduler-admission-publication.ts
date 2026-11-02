@@ -3,6 +3,8 @@ import { TurnStartValidationError } from '../runtime/orchestrator.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import type { CoreDb } from './db.js';
 import {
+  AutomationMutationError,
+  AutomationRecordNotFoundError,
   type ControlSchedulerAdmission,
   type ControlSchedulerAdmissionResult,
   ControlSchedulerAdmissionSchema,
@@ -13,7 +15,7 @@ import { nativeProductScope } from './workspace-file-records.js';
 export async function publishSchedulerAdmission<I extends SchedulerAdmissionDraft>(
   db: CoreDb,
   input: I,
-  prepare?: (input: I) => I | ControlSchedulerAdmission
+  prepare?: (input: I) => I | ControlSchedulerAdmission | Promise<I | ControlSchedulerAdmission>
 ): Promise<ControlSchedulerAdmissionResult> {
   const snapshot = structuredClone(input);
   const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
@@ -28,7 +30,7 @@ export async function publishSchedulerAdmission<I extends SchedulerAdmissionDraf
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
-  const prepared = prepare ? prepare(snapshot) : snapshot;
+  const prepared = prepare ? await prepare(snapshot) : snapshot;
   const ready = ControlSchedulerAdmissionSchema.parse(
     prepared.mode === 'create'
       ? {
@@ -43,6 +45,11 @@ export async function publishSchedulerAdmission<I extends SchedulerAdmissionDraf
   try {
     return await client.schedulerAdmission(database, ready);
   } catch (error) {
+    if (input.mode === 'definition' && error instanceof OperationError) {
+      if (error.code === 'automation_conflict') throw new AutomationMutationError(error.message);
+      if (error.code === 'automation_update_failed' || error.code === 'automation_delete_failed')
+        throw new AutomationRecordNotFoundError(error.message);
+    }
     if (input.mode === 'create' && error instanceof OperationError)
       throw new TurnStartValidationError(error.code, error.message, error.status);
     throw error;

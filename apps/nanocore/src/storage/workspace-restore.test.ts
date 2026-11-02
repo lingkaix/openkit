@@ -1766,14 +1766,14 @@ describe('D0-2 same-deployment restore', () => {
     const core = openCoreDb(f.dataRoot);
     const instant = new Date().toISOString();
     const schedules = new AutomationStore(core, new WorkspaceMutationAdmission(), () => instant);
-    const schedule = schedules.createAutomation(f.ownerId, {
+    const schedule = await schedules.createAutomation(f.ownerId, {
       name: 'Current automation',
       workspaceId,
       threadId: DEMO_THREAD_ID,
       intervalSeconds: 60,
       prompt: 'Must not run after restricted recovery',
     });
-    schedules.updateAutomation(f.ownerId, schedule.id, {
+    await schedules.updateAutomation(f.ownerId, schedule.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: instant,

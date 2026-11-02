@@ -103,7 +103,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
   const schedules = new AutomationStore(db, mutationAdmission, () => instant);
   const agentSetup = createTestAgentSetup();
   const manifest = agentSetup.manifest;
-  const created = schedules.createAutomation(userId, {
+  const created = await schedules.createAutomation(userId, {
     name: 'Poll',
     workspaceId: workspace.id,
     threadId: thread.id,
@@ -111,7 +111,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     prompt: 'Read new events',
     agentId: manifest.id,
   });
-  const schedule = schedules.updateAutomation(userId, created.id, {
+  const schedule = await schedules.updateAutomation(userId, created.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: instant,
@@ -241,18 +241,18 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     admit,
     nextPoll: async () => {
       // A paused target edit admits another real poll without inventing completion of the first.
-      const paused = schedules.updateAutomation(userId, schedule.id, {
+      const paused = await schedules.updateAutomation(userId, schedule.id, {
         expectedRevision: schedules.getAutomation(schedule.id).revision,
         status: 'paused',
       });
       thread = await store.createThread(workspace.id, 'Later scheduled poll');
-      const edited = schedules.updateAutomation(userId, schedule.id, {
+      const edited = await schedules.updateAutomation(userId, schedule.id, {
         expectedRevision: paused.revision,
         threadId: thread.id,
       });
       instant = '2026-10-26T00:00:00.000Z';
       vi.setSystemTime(instant);
-      schedules.updateAutomation(userId, schedule.id, {
+      await schedules.updateAutomation(userId, schedule.id, {
         expectedRevision: edited.revision,
         status: 'active',
         scheduledAt: instant,
@@ -892,11 +892,11 @@ describe('bounded scheduled poll event admission', () => {
     const f = await fixture({ privateSource: reason === 'private-source' });
     let source = f.source;
     if (reason === 'paused')
-      f.schedules.updateAutomation(f.userId, f.schedule.id, {
+      await f.schedules.updateAutomation(f.userId, f.schedule.id, {
         expectedRevision: f.schedule.revision,
         status: 'paused',
       });
-    if (reason === 'deleted') f.schedules.deleteAutomation(f.userId, f.schedule.id);
+    if (reason === 'deleted') await f.schedules.deleteAutomation(f.userId, f.schedule.id);
     if (reason === 'disabled-user')
       f.db.sqlite.transaction(() => {
         expect(disableCanonicalUser(f.db, f.userId)?.changed).toBe(true);

@@ -730,13 +730,16 @@ describe('remote MCP App endpoint', () => {
     let readiness = computeBootReadinessSnapshot({ bootId: 'boot_b9_admission' });
     const f = await fixture('server', () => readiness);
     const token = f.token();
-    const automation = f.automationStore.createAutomation(testEntityId('usr', 'user_remote_mcp'), {
-      workspaceId: DEMO_WORKSPACE_ID,
-      name: 'Existing',
-      intervalSeconds: 60,
-      threadId: DEMO_THREAD_ID,
-      prompt: 'Work',
-    });
+    const automation = await f.automationStore.createAutomation(
+      testEntityId('usr', 'user_remote_mcp'),
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        name: 'Existing',
+        intervalSeconds: 60,
+        threadId: DEMO_THREAD_ID,
+        prompt: 'Work',
+      }
+    );
     const thread = await f.store.createThread(DEMO_WORKSPACE_ID, 'Recovery admission');
     const turn = await f.store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Interrupted work', {
       kind: 'user',
@@ -836,13 +839,16 @@ describe('remote MCP App endpoint', () => {
     const f = await fixture();
     const token = f.token();
     const readonly = f.token('workspace-readonly');
-    const automation = f.automationStore.createAutomation(testEntityId('usr', 'user_remote_mcp'), {
-      workspaceId: DEMO_WORKSPACE_ID,
-      name: 'Existing',
-      intervalSeconds: 60,
-      threadId: DEMO_THREAD_ID,
-      prompt: 'Work',
-    });
+    const automation = await f.automationStore.createAutomation(
+      testEntityId('usr', 'user_remote_mcp'),
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+        name: 'Existing',
+        intervalSeconds: 60,
+        threadId: DEMO_THREAD_ID,
+        prompt: 'Work',
+      }
+    );
     try {
       for (const [operation, input] of [
         [
@@ -870,13 +876,16 @@ describe('remote MCP App endpoint', () => {
         actor: automation.actor,
         revision: 2,
       });
-      const retained = f.automationStore.createAutomation(testEntityId('usr', 'user_remote_mcp'), {
-        workspaceId: DEMO_WORKSPACE_ID,
-        name: 'Retained',
-        intervalSeconds: 60,
-        threadId: DEMO_THREAD_ID,
-        prompt: 'Work',
-      });
+      const retained = await f.automationStore.createAutomation(
+        testEntityId('usr', 'user_remote_mcp'),
+        {
+          workspaceId: DEMO_WORKSPACE_ID,
+          name: 'Retained',
+          intervalSeconds: 60,
+          threadId: DEMO_THREAD_ID,
+          prompt: 'Work',
+        }
+      );
       revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
       const revoked = await f.message(
         'tools/call',

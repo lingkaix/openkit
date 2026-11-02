@@ -559,14 +559,14 @@ async function recurringFixture(queued: boolean) {
   const core = openCoreDb(f.dataRoot);
   let instant = '2026-10-16T00:00:00.000Z';
   const schedules = new AutomationStore(core, new WorkspaceMutationAdmission(), () => instant);
-  const schedule = schedules.createAutomation(f.ownerId, {
+  const schedule = await schedules.createAutomation(f.ownerId, {
     name: 'Retained weekly work',
     workspaceId: f.badId,
     threadId: DEMO_THREAD_ID,
     intervalSeconds: 60,
     prompt: 'Historical recurring work must not restart.',
   });
-  schedules.updateAutomation(f.ownerId, schedule.id, {
+  await schedules.updateAutomation(f.ownerId, schedule.id, {
     expectedRevision: 1,
     status: 'active',
     scheduledAt: instant,

@@ -580,13 +580,15 @@ export async function seedSqlCorpus({
       new o.admission.WorkspaceMutationAdmission(),
       () => NOW
     );
-    sql.automationId = automation.createAutomation(userId, {
-      workspaceId,
-      threadId,
-      name: 'Synthetic continuity',
-      prompt: 'Keep this schedule paused.',
-      intervalSeconds: 60,
-    }).id;
+    sql.automationId = (
+      await automation.createAutomation(userId, {
+        workspaceId,
+        threadId,
+        name: 'Synthetic continuity',
+        prompt: 'Keep this schedule paused.',
+        intervalSeconds: 60,
+      })
+    ).id;
     sql.queueEntryId = 'upgrade-corpus-queue';
     sql.externalEventKey = 'synthetic-source:event-1';
     const entry = core.sqlite.transaction(() => {

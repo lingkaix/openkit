@@ -43,7 +43,7 @@ describe('execution operation authority', () => {
     });
     const workspaceMutationAdmission = new WorkspaceMutationAdmission();
     const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
-    const automation = automationStore.createAutomation(testEntityId('usr', 'user_other'), {
+    const automation = await automationStore.createAutomation(testEntityId('usr', 'user_other'), {
       workspaceId: DEMO_WORKSPACE_ID,
       name: 'Other owner',
       intervalSeconds: 60,

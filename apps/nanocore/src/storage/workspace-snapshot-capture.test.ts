@@ -757,14 +757,14 @@ describe('C-a snapshot authoritative blockers', () => {
     } else if (family === 'recurring-occurrence') {
       const now = '2026-10-27T01:00:00.000Z';
       const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
-      const schedule = schedules.createAutomation(f.ownerId, {
+      const schedule = await schedules.createAutomation(f.ownerId, {
         workspaceId,
         threadId: DEMO_THREAD_ID,
         name: 'Owned occurrence header',
         intervalSeconds: 60,
         prompt: 'Queued only.',
       });
-      schedules.updateAutomation(f.ownerId, schedule.id, {
+      await schedules.updateAutomation(f.ownerId, schedule.id, {
         expectedRevision: schedule.revision,
         status: 'active',
         scheduledAt: now,
@@ -1059,26 +1059,26 @@ describe('C-a manual recovery closure after restart', () => {
     const beforeTime = '2026-10-27T00:00:00.000Z';
     const due = '2099-01-01T00:00:00.000Z';
     const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => beforeTime);
-    const target = schedules.createAutomation(f.ownerId, {
+    const target = await schedules.createAutomation(f.ownerId, {
       workspaceId,
       threadId: DEMO_THREAD_ID,
       name: 'Manual recovery target recurrence',
       intervalSeconds: 60,
       prompt: 'Do not mutate quarantined target.',
     });
-    const targetActive = schedules.updateAutomation(f.ownerId, target.id, {
+    const targetActive = await schedules.updateAutomation(f.ownerId, target.id, {
       expectedRevision: target.revision,
       status: 'active',
       scheduledAt: due,
     });
-    const healthy = schedules.createAutomation(f.ownerId, {
+    const healthy = await schedules.createAutomation(f.ownerId, {
       workspaceId: sibling.id,
       threadId: siblingThread.id,
       name: 'Healthy sibling recurrence',
       intervalSeconds: 60,
       prompt: 'Healthy sibling may progress.',
     });
-    schedules.updateAutomation(f.ownerId, healthy.id, {
+    await schedules.updateAutomation(f.ownerId, healthy.id, {
       expectedRevision: healthy.revision,
       status: 'active',
       scheduledAt: due,
@@ -1192,7 +1192,7 @@ describe('C-a manual recovery closure after restart', () => {
     expect(siblingOperations).toContain('checkpoint');
     expect(tree(f.workspaceRoot)).toEqual(beforeSource);
     const restartedSchedules = new AutomationStore(coreDb, mutationAdmission, () => due);
-    expect(() =>
+    await expect(
       restartedSchedules.createAutomation(f.ownerId, {
         workspaceId,
         threadId: DEMO_THREAD_ID,
@@ -1200,13 +1200,13 @@ describe('C-a manual recovery closure after restart', () => {
         intervalSeconds: 60,
         prompt: 'No restart bypass.',
       })
-    ).toThrow(/fenced/);
-    expect(() =>
+    ).rejects.toThrow(/fenced/);
+    await expect(
       restartedSchedules.updateAutomation(f.ownerId, target.id, {
         expectedRevision: targetActive.revision,
         status: 'paused',
       })
-    ).toThrow(/fenced/);
+    ).rejects.toThrow(/fenced/);
     const candidates = restartedSchedules.collectScanCandidates(due);
     expect(candidates.map((candidate) => candidate.scheduleId)).toEqual([healthy.id]);
     expect(targetCoreRows()).toEqual(beforeRows);
@@ -1235,28 +1235,28 @@ describe('C-a additional owner families', () => {
     const f = await fixture();
     const now = '2026-10-27T01:00:00.000Z';
     const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
-    const schedule = schedules.createAutomation(f.ownerId, {
+    const schedule = await schedules.createAutomation(f.ownerId, {
       workspaceId,
       threadId: DEMO_THREAD_ID,
       name: 'Future schedule',
       intervalSeconds: 60,
       prompt: 'Future work',
     });
-    schedules.updateAutomation(f.ownerId, schedule.id, {
+    await schedules.updateAutomation(f.ownerId, schedule.id, {
       expectedRevision: schedule.revision,
       status: 'active',
       scheduledAt: '2026-10-28T01:00:00.000Z',
     });
     expect(readBlockers({ ...f, workspaceId })).toEqual([]);
     expect(schedules.collectScanCandidates(now)).toEqual([]);
-    const due = schedules.createAutomation(f.ownerId, {
+    const due = await schedules.createAutomation(f.ownerId, {
       workspaceId,
       threadId: DEMO_THREAD_ID,
       name: 'Queued occurrence',
       intervalSeconds: 60,
       prompt: 'Queued only',
     });
-    schedules.updateAutomation(f.ownerId, due.id, {
+    await schedules.updateAutomation(f.ownerId, due.id, {
       expectedRevision: due.revision,
       status: 'active',
       scheduledAt: now,
@@ -1283,14 +1283,14 @@ describe('C-a additional owner families', () => {
     const f = await fixture();
     const now = '2026-10-27T01:00:00.000Z';
     const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
-    const created = schedules.createAutomation(f.ownerId, {
+    const created = await schedules.createAutomation(f.ownerId, {
       workspaceId,
       threadId: DEMO_THREAD_ID,
       name: 'Current preparation',
       intervalSeconds: 60,
       prompt: 'Prepare owned recurring work',
     });
-    schedules.updateAutomation(f.ownerId, created.id, {
+    await schedules.updateAutomation(f.ownerId, created.id, {
       expectedRevision: created.revision,
       status: 'active',
       scheduledAt: now,

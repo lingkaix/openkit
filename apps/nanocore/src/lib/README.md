@@ -157,3 +157,5 @@ File Artifact review refusal fixtures share the App's real Core and Store and se
 Dynamic resource serialization fixtures use the existing App current manifest projection on their prepared Store root and join actual coordinator boot before inspecting Workspace files. The original file scan excludes the SQLite db subtree.
 
 Artifact redo fixtures author and reload the current Agent manifest through the same RuntimeConfigManager. Exact receipt replay and missing-proof refusals retain their original owners.
+
+`AutomationStore` publishes ordinary definition create, edit, pause, resume and delete through the existing native Core scheduler family. The native deciding section validates current presented public Actor facts, revision and lifecycle, then commits the complete old-cadence history, definition and attributed Audit tuple before FULL acknowledgement. The shared synchronous deciding leaf also runs inside the existing exclusive restore registration transaction; it does not create a separately committed pause. The bounded recurring scanner still uses Main Core transactions and is a separate rollout residual.

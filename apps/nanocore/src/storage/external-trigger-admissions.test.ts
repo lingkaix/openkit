@@ -10,6 +10,7 @@ import {
 } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import {
   findExternalTriggerAdmission,
@@ -23,13 +24,13 @@ const workspaceId = testEntityId('ws', 'external-events');
 const sourceTurnId = testEntityId('tu', 'poll');
 
 /** Creates ordinary Core schedule and queue owners for the retained join regressions. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'external-trigger-admissions-'));
   const db = openCoreDb(root);
   applyMigrations(db);
   fixtures.push({ root, db });
   const schedules = new AutomationStore(db, new WorkspaceMutationAdmission());
-  const schedule = schedules.createAutomation(testEntityId('usr', 'owner'), {
+  const schedule = await schedules.createAutomation(testEntityId('usr', 'owner'), {
     workspaceId,
     threadId: testEntityId('th', 'poll'),
     name: 'Poll source',
@@ -42,7 +43,7 @@ function fixture() {
 /** Creates a real scheduler queue entry inside its caller's Core transaction. */
 function queue(
   db: CoreDb,
-  schedule: ReturnType<typeof fixture>['schedule'],
+  schedule: Awaited<ReturnType<typeof fixture>>['schedule'],
   key: string,
   targetWorkspaceId = workspaceId
 ) {
@@ -58,7 +59,8 @@ function queue(
   });
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   const remaining = fixtures.splice(0);
   for (const { db } of remaining) if (db.sqlite.open) db.sqlite.close();
   for (const root of new Set(remaining.map((entry) => entry.root)))
@@ -66,8 +68,8 @@ afterEach(() => {
 });
 
 describe('ExternalTriggerAdmission Core joins', () => {
-  it('retains immutable event admission across reopen and allows distinct events from one poll', () => {
-    const { root, db, schedule } = fixture();
+  it('retains immutable event admission across reopen and allows distinct events from one poll', async () => {
+    const { root, db, schedule } = await fixture();
     const admissions = db.sqlite.transaction(() =>
       ['mail:one', 'mail:two'].map((eventKey) => {
         const entry = queue(db, schedule, eventKey);
@@ -105,8 +107,8 @@ describe('ExternalTriggerAdmission Core joins', () => {
     expect(listWorkspaceExternalTriggerAdmissions(reopened, workspaceId)).toHaveLength(2);
   });
 
-  it('rolls back the join and the real queue entry together', () => {
-    const { db, schedule } = fixture();
+  it('rolls back the join and the real queue entry together', async () => {
+    const { db, schedule } = await fixture();
     let queueEntryId = '';
     expect(() =>
       db.sqlite.transaction(() => {
@@ -125,8 +127,8 @@ describe('ExternalTriggerAdmission Core joins', () => {
     expect(() => requireSchedulerAdmissionEntry(db, queueEntryId)).toThrow();
   });
 
-  it('refuses missing or cross-Workspace lineage and invalid required fields without retaining a join', () => {
-    const { db, schedule } = fixture();
+  it('refuses missing or cross-Workspace lineage and invalid required fields without retaining a join', async () => {
+    const { db, schedule } = await fixture();
     const entry = queue(db, schedule, 'invalid', testEntityId('ws', 'other'));
     const record = {
       scheduleId: schedule.id,
@@ -151,8 +153,8 @@ describe('ExternalTriggerAdmission Core joins', () => {
     expect(listWorkspaceExternalTriggerAdmissions(db, workspaceId)).toEqual([]);
   });
 
-  it('refuses invalid retained core fields', () => {
-    const { db, schedule } = fixture();
+  it('refuses invalid retained core fields', async () => {
+    const { db, schedule } = await fixture();
     const record = db.sqlite.transaction(() => {
       const entry = queue(db, schedule, 'retained');
       return insertExternalTriggerAdmission(db, {
