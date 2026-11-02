@@ -2285,3 +2285,24 @@ export function resolvePortableDirectory(
   }
   return current;
 }
+
+/** @internal Creates a selected filesystem parent and synchronizes only a newly created child and its parent. */
+export async function prepareFilesystemParent(
+  candidatePath: string,
+  parentPath: string
+): Promise<void> {
+  let created = false;
+  try {
+    await mkdir(candidatePath, { mode: 0o755 });
+    created = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+      throw error;
+    }
+  }
+  if (created) {
+    await chmod(candidatePath, 0o755);
+    await syncTreeDirectory(candidatePath);
+    await syncTreeDirectory(parentPath);
+  }
+}

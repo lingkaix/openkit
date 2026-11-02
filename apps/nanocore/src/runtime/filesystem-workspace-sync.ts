@@ -21,13 +21,14 @@ import {
   WorkspaceChangeSetSchema,
 } from '@openkit/app-api-schemas';
 import { compareCodeUnits } from '@openkit/protocol';
-import { removePrivateTree, removePrivateTreeInventory } from '@openkit/storage';
+import {
+  prepareFilesystemParent,
+  removePrivateTree,
+  removePrivateTreeInventory,
+} from '@openkit/storage';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
-import {
-  publishCanonicalPathAsync,
-  syncCanonicalDirectoryAsync,
-} from '../storage/workspace-file-records.js';
+import { publishCanonicalPathAsync } from '../storage/workspace-file-records.js';
 
 const defaultIgnoredPathPrefixes = ['.git', 'node_modules'];
 const unsafeRelativePathPattern = /(^|\/)\.\.(\/|$)/;
@@ -1710,20 +1711,7 @@ async function prepareWritablePathWithinRoot(
 
   for (const segment of segments) {
     const candidatePath = join(parentPath, segment);
-    let created = false;
-    try {
-      await mkdir(candidatePath, { mode: 0o755 });
-      created = true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw error;
-      }
-    }
-    if (created) {
-      await chmod(candidatePath, 0o755);
-      await syncCanonicalDirectoryAsync(candidatePath);
-      await syncCanonicalDirectoryAsync(parentPath);
-    }
+    await prepareFilesystemParent(candidatePath, parentPath);
     const stats = await lstat(candidatePath);
     if (!stats.isDirectory() || stats.isSymbolicLink()) {
       throw new OperationError(

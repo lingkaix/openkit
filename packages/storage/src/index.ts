@@ -30,6 +30,7 @@ export {
   measureCanonicalFileDescriptor,
   measureDerivedTreeBytes,
   movePrivateTree,
+  prepareFilesystemParent,
   publishCanonicalPath,
   publishCanonicalPathAsync,
   publishContextPackageMember,
