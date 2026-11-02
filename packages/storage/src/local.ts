@@ -3,6 +3,7 @@ import {
   chmodSync,
   closeSync,
   constants,
+  cpSync,
   existsSync,
   fstatSync,
   fsyncSync,
@@ -16,6 +17,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
   writeSync,
 } from 'node:fs';
@@ -2087,6 +2089,81 @@ export async function verifyPrivateFileCopy(
       await destination?.close();
     } finally {
       await source.close();
+    }
+  }
+}
+
+/** Destination directories remain private until the original copy restores admitted source metadata. */
+const BACKUP_OWNER_ONLY_DIRECTORY_MODE = 0o700;
+
+/**
+ * Copies one data-root tree through `cpSync`, keeping destination directories owner-only
+ * until native copy finishes. Node recursive copy drops directory modes under umask 022;
+ * creating directories as 0700 also keeps a 0555 source directory writable during copy.
+ *
+ * @param sourceRoot Source data-root or backup tree.
+ * @param destinationRoot Destination tree root.
+ * @param options Optional existence check, path filter, and timestamp preservation.
+ * @throws Error when the source is unsafe, the destination exists with `errorOnExist`, or a node is unsupported.
+ */
+export function copyBackupTree(
+  sourceRoot: string,
+  destinationRoot: string,
+  options: {
+    errorOnExist?: boolean;
+    filter?: (source: string) => boolean;
+    preserveTimestamps?: boolean;
+  } = {}
+): void {
+  const source = resolve(sourceRoot);
+  const destination = resolve(destinationRoot);
+  const rootStat = lstatSync(source);
+
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new Error(`Copy source must be a real directory: ${source}`);
+  }
+  if (existsSync(destination)) {
+    if (options.errorOnExist) {
+      throw new Error('Copy destination must not already exist.');
+    }
+    rmSync(destination, { recursive: true, force: true });
+  }
+
+  mkdirSync(dirname(destination), { recursive: true });
+  mkdirSync(destination, { mode: BACKUP_OWNER_ONLY_DIRECTORY_MODE });
+  chmodSync(destination, BACKUP_OWNER_ONLY_DIRECTORY_MODE);
+
+  const directoryStats = [{ path: destination, stat: rootStat }];
+  cpSync(source, destination, {
+    filter: (src, dest) => {
+      const stat = lstatSync(src);
+      const relativePath = relative(source, src).split(sep).join('/');
+
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Backup tree must not contain symlinks: ${relativePath}`);
+      }
+      if (stat.isDirectory()) {
+        if (resolve(src) !== source) {
+          mkdirSync(dest, { mode: BACKUP_OWNER_ONLY_DIRECTORY_MODE });
+          chmodSync(dest, BACKUP_OWNER_ONLY_DIRECTORY_MODE);
+          directoryStats.push({ path: dest, stat });
+        }
+        return true;
+      }
+      if (!stat.isFile()) {
+        throw new Error(`Backup tree contains unsupported file type: ${relativePath}`);
+      }
+      return options.filter?.(src) ?? true;
+    },
+    force: true,
+    preserveTimestamps: options.preserveTimestamps === true,
+    recursive: true,
+  });
+
+  for (const entry of directoryStats.reverse()) {
+    chmodSync(entry.path, entry.stat.mode & 0o7777);
+    if (options.preserveTimestamps) {
+      utimesSync(entry.path, entry.stat.atime, entry.stat.mtime);
     }
   }
 }

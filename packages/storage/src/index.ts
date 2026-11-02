@@ -7,6 +7,7 @@ export {
   CanonicalPublicationError,
   changeVerifiedFileMode,
   closeTelemetrySegment,
+  copyBackupTree,
   copyFileForCut,
   copyVerifiedFile,
   createDirectoryExclusive,
