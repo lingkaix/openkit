@@ -745,7 +745,8 @@ async function publishAdmittedNotebook(
       if (
         workspaceSelection &&
         (workspaceSelection.head.notebookCommit !== request.baseRevision ||
-          workspaceSelection.scopeSchemaText !== admission.scopeSchemaText)
+          (operation !== 'knowledge.package.import' &&
+            workspaceSelection.scopeSchemaText !== admission.scopeSchemaText))
       )
         throw new NotebookError('conflict');
       const validated = check(admission);
@@ -808,7 +809,7 @@ async function publishAdmittedNotebook(
           });
           if (
             !isDeepStrictEqual(current.head, workspaceSelection.head) ||
-            current.scopeSchemaText !== admission.scopeSchemaText ||
+            current.scopeSchemaText !== workspaceSelection.scopeSchemaText ||
             finalAdmission.scopeSchemaText !== admission.scopeSchemaText
           )
             throw new NotebookError('conflict');

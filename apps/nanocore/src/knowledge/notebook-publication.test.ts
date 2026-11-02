@@ -20,7 +20,7 @@ import {
 } from '../test-support/knowledge-proposal-authority.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
-import { parseOkfDocument } from './okf.js';
+import { parseOkfDocument, parseScopeKnowledgeSchema } from './okf.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const producer = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -96,6 +96,7 @@ async function fixture(initialFiles: Readonly<Record<string, string>> = {}) {
     ...dependencies,
     dataRoot,
     repositoryPath,
+    selectNotebook,
     initial,
     retainedCounts,
     request,
@@ -122,6 +123,65 @@ function currentFixtureRevision(f: {
 }
 
 describe('Notebook publication through existing Audit and command receipts', () => {
+  it('refuses a differing admitted schema for an ordinary Notebook update', async () => {
+    const f = await fixture();
+    const before = f.selectNotebook();
+    const facts = f.revalidate();
+    const differingSchema = `${facts.scopeSchemaText}\n# Ordinary updates cannot replace schema authority.\n`;
+    expect(differingSchema).not.toBe(before.scopeSchemaText);
+    expect(parseScopeKnowledgeSchema(differingSchema).ok).toBe(true);
+    f.revalidate.mockReturnValue({ ...facts, scopeSchemaText: differingSchema });
+    const beforeContent = before.notebook.readContent(before.head.notebookCommit);
+    const beforeReceipts = f.store.listCommandRequests(workspaceId);
+
+    await expect(f.publish()).rejects.toMatchObject({ code: 'conflict' });
+
+    const after = f.selectNotebook();
+    expect(after.head).toEqual(before.head);
+    expect(after.scopeSchemaText).toBe(before.scopeSchemaText);
+    expect(after.notebook.readContent(after.head.notebookCommit)).toEqual(beforeContent);
+    expect(f.store.listCommandRequests(workspaceId)).toEqual(beforeReceipts);
+    expect(
+      f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()
+    ).toEqual({ count: f.retainedCounts.audit });
+  });
+
+  it('keeps current protected-page requirements when an import admits a differing schema', async () => {
+    const f = await fixture();
+    const before = f.selectNotebook();
+    const facts = f.revalidate();
+    const importedSchema = `${facts.scopeSchemaText}\n# Imported schema is not target permission.\n`;
+    expect(importedSchema).not.toBe(before.scopeSchemaText);
+    expect(parseScopeKnowledgeSchema(importedSchema).ok).toBe(true);
+    f.revalidate.mockReturnValue({
+      ...facts,
+      scopeSchemaText: importedSchema,
+      reviewRequiredPageIds: ['index'],
+    });
+    const beforeContent = before.notebook.readContent(before.head.notebookCommit);
+    const beforeReceipts = f.store.listCommandRequests(workspaceId);
+
+    await expect(
+      publishWorkspaceNotebook(
+        {
+          ...f,
+          notebook: f.notebook,
+          command: { name: 'knowledge.package.import', input: f.request },
+        },
+        f.request
+      )
+    ).rejects.toMatchObject({ code: 'review_required' });
+
+    const after = f.selectNotebook();
+    expect(after.head).toEqual(before.head);
+    expect(after.scopeSchemaText).toBe(before.scopeSchemaText);
+    expect(after.notebook.readContent(after.head.notebookCommit)).toEqual(beforeContent);
+    expect(f.store.listCommandRequests(workspaceId)).toEqual(beforeReceipts);
+    expect(
+      f.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()
+    ).toEqual({ count: f.retainedCounts.audit });
+  });
+
   it('edits an existing curated Page below the sources bundle directory', async () => {
     const path = 'sources/notes.md';
     const original = serializeKnowledgePageFixture(

@@ -12,7 +12,6 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { deriveManagedSourceAccess } from '../knowledge/managed-source-access.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   parseOkfDocument,
@@ -25,6 +24,7 @@ import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -110,7 +110,12 @@ async function fixture() {
     return {
       id: record.id,
       root,
-      notebook: new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') }),
+      get selection() {
+        return readTestWorkspaceNotebookSelection(dataRoot, record.id);
+      },
+      get notebook() {
+        return this.selection.notebook;
+      },
       knowledgeBaseId: readDefaultKnowledgeBaseId({
         dataRoot,
         scope: { kind: 'workspace', workspaceId: record.id },
@@ -128,11 +133,33 @@ async function fixture() {
   ) => {
     const response = await app.request(`/api/app/operations/${operation}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+      headers: {
+        'content-type': 'application/json',
+        'x-openkit-request-id':
+          typeof input.requestId === 'string' ? input.requestId : randomUUID(),
+      },
       body: JSON.stringify({ workspaceId, ...input }),
     });
     const text = await response.text();
     return { status: response.status, body: text.startsWith('{') ? JSON.parse(text) : text };
+  };
+  // Admit exact schema bytes through the same public owner used by schema application.
+  const applySchema = async (workspaceId: string, schemaText: string) => {
+    const baseRevision = readTestWorkspaceNotebookSelection(dataRoot, workspaceId).head
+      .notebookCommit;
+    const preview = await call('knowledge.schema.preview', workspaceId, {
+      requestId: randomUUID(),
+      baseRevision,
+      schemaText,
+    });
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    const applied = await call('knowledge.schema.apply', workspaceId, {
+      requestId: randomUUID(),
+      baseRevision,
+      schemaText,
+      reviewedReport: preview.body,
+    });
+    expect(applied.status, JSON.stringify(applied.body)).toBe(200);
   };
   const transfer = (operation: 'export' | 'import', workspaceId: string, bytes?: Buffer) => {
     // Split tiny fixture bytes across framing boundaries to exercise streamed request consumption.
@@ -159,7 +186,19 @@ async function fixture() {
     );
     return app.fetch(request);
   };
-  return { source, target, tamperTarget, call, transfer, dataRoot, coreDb, store, userId, app };
+  return {
+    source,
+    target,
+    tamperTarget,
+    call,
+    applySchema,
+    transfer,
+    dataRoot,
+    coreDb,
+    store,
+    userId,
+    app,
+  };
 }
 
 /** Applies an exact Source Thread audience through the current request, decision and configuration owners. */
@@ -280,7 +319,9 @@ describe('Knowledge package public operation round trip', () => {
       },
       content: original,
     });
-    const binaryPointer = readSourcePointers(owner).get(binarySource.id)!;
+    const binaryPointer = readSourcePointers(owner, undefined, f.source.selection).get(
+      binarySource.id
+    )!;
     expect(binaryPointer.source).toMatchObject({
       id: binarySource.id,
       contentDigest: digest(original),
@@ -344,6 +385,7 @@ describe('Knowledge package public operation round trip', () => {
     const schemaPath = `schema/${schemaNames[0]}`;
     const schema = `${readFileSync(join(f.source.root, schemaPath), 'utf8')}\n# Authored package round-trip schema annotation.\n`;
     writeFileSync(join(f.source.root, schemaPath), schema);
+    await f.applySchema(f.source.id, schema);
     const capturedText = 'Exact Source original.\r\nUnicode Ω 雪.\n';
     const registered = await f.call('knowledge.source.register', f.source.id, {
       kind: 'document',
@@ -415,7 +457,7 @@ describe('Knowledge package public operation round trip', () => {
       content: guideContent,
       contentDigest: digest(guideContent),
     });
-    const sourcePointers = readSourcePointers(owner, pinnedRevision);
+    const sourcePointers = readSourcePointers(owner, pinnedRevision, f.source.selection);
     expect([...sourcePointers.keys()].sort()).toEqual(
       [binarySource.id, registered.body.source.id].sort()
     );
@@ -507,7 +549,8 @@ describe('Knowledge package public operation round trip', () => {
     ]);
     const targetBinaryPointer = readSourcePointers(
       { dataRoot: f.dataRoot, ownerScope: targetOwnerScope },
-      result.notebookRevision
+      result.notebookRevision,
+      f.target.selection
     ).get(targetBinarySource.id)!;
     expect(targetBinaryPointer.fields).toMatchObject({
       byteLength: original.length,
@@ -631,6 +674,46 @@ describe('Knowledge package public operation round trip', () => {
 });
 
 describe('Independent package boundary probes', () => {
+  it('refuses a differing-schema package after native target maintenance without changing the target', async () => {
+    const f = await fixture();
+    const importedSchema = `${f.source.selection.scopeSchemaText}\n# Maintained-target refusal package.\n`;
+    expect(parseScopeKnowledgeSchema(importedSchema).ok).toBe(true);
+    await f.applySchema(f.source.id, importedSchema);
+    const exported = await f.transfer('export', f.source.id);
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const archive = Buffer.from(await exported.arrayBuffer());
+    const maintained = await f.call('knowledge.notebook.update', f.target.id, {
+      baseRevision: f.target.selection.head.notebookCommit,
+      changes: [
+        {
+          path: 'index.md',
+          content: '---\nokf_version: "0.2"\n---\n# Authored target overview\n',
+        },
+      ],
+      summary: 'Maintain the target before package import',
+    });
+    expect(maintained.status, JSON.stringify(maintained.body)).toBe(200);
+    const before = f.target.selection;
+    expect(before.head.notebookCommit).toBe(maintained.body.notebookRevision);
+    expect(before.scopeSchemaText).not.toBe(importedSchema);
+    const beforeFiles = knowledgeFiles(f.target.root);
+    const beforeReceipts = f.store.listCommandRequests(f.target.id);
+
+    const refused = await f.transfer('import', f.target.id, archive);
+    expect(refused.status, await refused.clone().text()).toBe(409);
+    expect(await refused.json()).toMatchObject({ code: 'conflict' });
+    expect(f.target.selection.head).toEqual(before.head);
+    expect(f.target.selection.scopeSchemaText).toBe(before.scopeSchemaText);
+    expect(knowledgeFiles(f.target.root)).toEqual(beforeFiles);
+    expect(f.store.listCommandRequests(f.target.id)).toEqual(beforeReceipts);
+    expect(
+      readDefaultKnowledgeBaseId({
+        dataRoot: f.dataRoot,
+        scope: { kind: 'workspace', workspaceId: f.target.id },
+      })
+    ).toBe(f.target.knowledgeBaseId);
+  });
+
   it('keeps bootstrap replacement exact while preserving the legacy default seed', async () => {
     const f = await fixture();
     const exported = await f.transfer('export', f.source.id);
@@ -641,6 +724,7 @@ describe('Independent package boundary probes', () => {
     const customized = `${seedText.replace(/^maintainer:.*\n/m, '')}maintainer: Another maintainer\n`;
     expect(parseScopeKnowledgeSchema(customized).ok).toBe(true);
     writeFileSync(schemaPath, customized);
+    await f.applySchema(f.target.id, customized);
     const seed = f.target.notebook.publishedRevision();
     const before = knowledgeFiles(f.target.root);
     const refused = await f.transfer('import', f.target.id, archive);
@@ -648,6 +732,7 @@ describe('Independent package boundary probes', () => {
     expect(f.target.notebook.publishedRevision()).toBe(seed);
     expect(knowledgeFiles(f.target.root)).toEqual(before);
     writeFileSync(schemaPath, DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
+    await f.applySchema(f.target.id, DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
     const legacy = await f.transfer('import', f.target.id, archive);
     expect(legacy.status, await legacy.clone().text()).toBe(200);
     expect(readFileSync(schemaPath, 'utf8')).toBe(
@@ -664,10 +749,11 @@ describe('Independent package boundary probes', () => {
     });
     expect(registered.status).toBe(200);
     const id = registered.body.source.id;
-    const pointer = readSourcePointers({
-      dataRoot: f.dataRoot,
-      ownerScope: { kind: 'workspace', workspaceId: f.source.id },
-    }).get(id)!;
+    const pointer = readSourcePointers(
+      { dataRoot: f.dataRoot, ownerScope: { kind: 'workspace', workspaceId: f.source.id } },
+      undefined,
+      f.source.selection
+    ).get(id)!;
     const href = `../raw/${pointer.fields.contentRef.locator.path}`;
     const body = `[Original](${href})\n\n[Reference][original]\n\n[original]: ${href}\n\nKeep this literal: \`${href}\`\n\n\`\`\`md\n[literal](${href})\n\`\`\`\n`;
     const content = serializeKnowledgePageFixture(
@@ -715,10 +801,11 @@ describe('Independent package boundary probes', () => {
     if (!imported.ok) throw new Error('No imported guide.');
     expect.soft(imported.document.body).toContain(`Keep this literal: \`${href}\``);
     expect.soft(imported.document.body).toContain(`[literal](${href})`);
-    const sources = readSourcePointers({
-      dataRoot: f.dataRoot,
-      ownerScope: { kind: 'workspace', workspaceId: f.target.id },
-    });
+    const sources = readSourcePointers(
+      { dataRoot: f.dataRoot, ownerScope: { kind: 'workspace', workspaceId: f.target.id } },
+      undefined,
+      f.target.selection
+    );
     const targetHref = `../raw/${[...sources.values()][0]!.fields.contentRef.locator.path}`;
     expect.soft(imported.document.body).toContain(`[Original](${targetHref})`);
     expect.soft(imported.document.body).toContain(`[original]: ${targetHref}`);

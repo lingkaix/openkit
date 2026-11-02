@@ -400,8 +400,6 @@ export async function importKnowledgePackage(input: {
     throw new NotebookError('invalid_request');
   const schema = readCanonicalTextFile(join(input.directory, 'schema', 'scope-schema.yaml'));
   if (!parseScopeKnowledgeSchema(schema).ok) throw new NotebookError('invalid_request');
-  // Scope Schema migration remains preview-only. A package cannot replace the selected authority.
-  if (schema !== selection.scopeSchemaText) throw new NotebookError('conflict');
   const files = new Map<string, string>();
   const payloadFiles = new Map<string, string>();
   for (const entry of manifest.contentInventory) {
