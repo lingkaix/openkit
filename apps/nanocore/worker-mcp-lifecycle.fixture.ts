@@ -29,7 +29,7 @@ import { listSchedulerExecutionAttemptsForTurn } from './src/runtime/execution-a
 import {
   dispatchNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
-} from './src/runtime/nanohost-harness-records.js';
+} from './src/runtime/nanohost-harness.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
@@ -218,13 +218,13 @@ export async function assertCapturedOutcome(
       ],
     }),
   });
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: 'deployment_mcp_lifecycle',
     identityId: 'identity_mcp_lifecycle',
     observedAt: '2026-09-03T00:00:00.000Z',
     targetId: 'target_local',
   });
-  upsertNanoHostRuntimeTarget(coreDb, {
+  await upsertNanoHostRuntimeTarget(coreDb, {
     ...target,
     freshEmpty: true,
     observedAt: '2026-09-03T00:00:01.000Z',
@@ -399,9 +399,9 @@ export async function assertCapturedOutcome(
             FROM sandbox_runtime_records`)
         .all() as { integrationRef: string }[];
       let binding: { integrationRef: string } | undefined;
-      let command: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+      let command: Awaited<ReturnType<typeof dispatchNanoHostHarnessOperation>> = null;
       for (const candidate of bindings) {
-        command = dispatchNanoHostHarnessOperation(coreDb, {
+        command = await dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: candidate.integrationRef,
         });
         if (command) {
@@ -451,7 +451,7 @@ export async function assertCapturedOutcome(
       schemaVersion: 2 as const,
       sequence: dispatched.command.sequence,
     };
-    settleNanoHostHarnessOperation(coreDb, {
+    await settleNanoHostHarnessOperation(coreDb, {
       result,
       sandboxIntegrationBindingRef: dispatched.integrationRef,
       timestamp: new Date().toISOString(),

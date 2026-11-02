@@ -47,8 +47,8 @@ import type { ExecutionJournalIntent } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { requireNanoHostExecutionAttempt } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
+import * as harnessRecords from './nanohost-harness.js';
 import type { NanoHostHarnessCommand } from './nanohost-harness-records.js';
-import * as harnessRecords from './nanohost-harness-records.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
   createNanoHostSessionDispatch,
@@ -64,6 +64,7 @@ import {
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
+import * as controlPublication from './worker-control-final-status.js';
 import {
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
@@ -235,7 +236,7 @@ async function faultFixture() {
     nanoHostSessionDispatch: operationDouble(effects, transcript, dataRoot),
   });
   const target = { deploymentId: 'fault-deployment', identityId: 'fault-host' };
-  allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     ...target,
     targetId: target.identityId,
     observedAt: NOW,
@@ -460,8 +461,8 @@ async function faultFixture() {
   // Observe the committed real enqueue, including one that precedes its readiness waiter.
   const enqueueObserver = vi
     .spyOn(harnessRecords, 'queueNanoHostHarnessOperation')
-    .mockImplementation((db, input) => {
-      const sequence = queueOperation(db, input);
+    .mockImplementation(async (db, input) => {
+      const sequence = await queueOperation(db, input);
       if (db === coreDb && input.operation in enqueued) {
         enqueued[input.operation as keyof typeof enqueued].resolve();
       }
@@ -1305,6 +1306,18 @@ describe('first-release worker faults (real Core crossings)', () => {
   it('keeps the Native attempt live across multiple heartbeat deadlines while a Pending Request is unanswered', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(vi.getRealSystemTime());
+    // This case deliberately advances Main's verification clock. Carry it through the existing
+    // typed clock seam; the real native owner still validates and commits every heartbeat.
+    const publish = controlPublication.publishWorkerControlHeartbeat;
+    const heartbeatClock = vi
+      .spyOn(controlPublication, 'publishWorkerControlHeartbeat')
+      .mockImplementation((db, input) =>
+        publish(db, {
+          ...input,
+          payload: { ...input.payload, acceptedAt: new Date().toISOString() },
+        })
+      );
+    onTestFinished(() => heartbeatClock.mockRestore());
     const f = await faultFixture();
     const workspaceDb = openWorkspaceDb(
       f.coreDb.dataRoot,

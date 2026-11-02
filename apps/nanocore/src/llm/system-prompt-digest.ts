@@ -112,12 +112,20 @@ export function digestLlmSystemPrompt(input: {
   return SystemPromptDigestSchema.parse(`sha256:${sha256Hex(canonicalizeLlmSystemPrompt(input))}`);
 }
 
-/** Writes Workspace attribution through the native owner; Core attribution keeps its existing SQL owner. */
+/** Publishes exact attribution through the retained Call database owner in either scope. */
 export function persistLlmCapabilityCallSystemPromptDigest(
   input: Parameters<typeof persistLlmCapabilityCallSystemPromptDigestInDb>[0]
-): void | Promise<void> {
+): Promise<void> {
   if (input.workspaceDb.scope === 'core')
-    return persistLlmCapabilityCallSystemPromptDigestInDb(input);
+    return getControlStoreWorkerClient()
+      .coreCapability(input.workspaceDb, {
+        kind: 'server-attribution',
+        callId: input.callId,
+        systemPromptDigest: SystemPromptDigestSchema.parse(input.systemPromptDigest),
+      })
+      .then((result) => {
+        if (result !== null) throw new TypeError('Invalid native prompt attribution result.');
+      });
   return getControlStoreWorkerClient()
     .workspaceCapability(input.workspaceDb, {
       kind: 'attribution',

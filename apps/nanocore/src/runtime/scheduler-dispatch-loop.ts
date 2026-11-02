@@ -52,7 +52,7 @@ import {
   markSchedulerExecutionAttemptClosing,
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
-} from './execution-attempt-records.js';
+} from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import { externalTriggerTurnPublicationComplete } from './external-trigger-source.js';
 import {
@@ -402,7 +402,7 @@ async function dispatchSchedulerAdmission(
   const workspaceMcpServerCatalog = input.workspaceMcpServerCatalogs?.find(
     (candidate) => candidate.workspaceId === entry.workspaceId
   )?.catalog;
-  const attempt = createSchedulerExecutionAttempt(input.coreDb, {
+  const attempt = await createSchedulerExecutionAttempt(input.coreDb, {
     entry,
     attemptId: (input.createAttemptId ?? (() => allocateEntityId('attempt')))(),
     preparationInput: {
@@ -447,7 +447,7 @@ async function dispatchSchedulerAdmission(
     if (!input.turnExecutor.prepareAgentSessionForTurn)
       throw new Error('Configured executor has no AgentSession preparation owner.');
     const prepared = await input.turnExecutor.prepareAgentSessionForTurn(input.store, preparation);
-    bindSchedulerExecutionAttemptSession(input.coreDb, {
+    await bindSchedulerExecutionAttemptSession(input.coreDb, {
       attemptId: attempt.attemptId,
       agentSessionId: prepared.agentSessionId,
     });
@@ -561,7 +561,7 @@ async function dispatchSchedulerAdmission(
         .listThreadAgentSessions(entry.workspaceId, entry.threadId)
         .some((session) => session.id === current.agentSessionId && session.status === 'busy')
     ) {
-      closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
+      await closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
         attemptId: attempt.attemptId,
         noOutstandingEffects: true,
         cause: 'backend-busy',
@@ -570,13 +570,13 @@ async function dispatchSchedulerAdmission(
       return { startedTurns: [], terminalResult: { status: 'queued', reason: 'backend-busy' } };
     }
     if (current.operationId === null)
-      closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
+      await closeSchedulerExecutionAttemptWithoutEffects(input.coreDb, {
         attemptId: attempt.attemptId,
         noOutstandingEffects: true,
         cause: 'turn-start-failed',
       });
     else
-      markSchedulerExecutionAttemptClosing(input.coreDb, {
+      await markSchedulerExecutionAttemptClosing(input.coreDb, {
         attemptId: attempt.attemptId,
         cause: 'preparation-or-execution-failed',
       });

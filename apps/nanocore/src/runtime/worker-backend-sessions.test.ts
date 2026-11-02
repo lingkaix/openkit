@@ -1,8 +1,14 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import type { Worker as NativeWorker } from 'node:worker_threads';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -19,14 +25,16 @@ import {
   markWorkerBackendSessionLaunching,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
+  retireOrphanWorkerBackendSession,
   transitionWorkerBackendSessionState,
 } from './worker-backend-sessions.js';
 
 /** Creates one dispatched lease in an isolated Core database. */
-function createFixture() {
+async function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-backend-session-'));
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });
   });
@@ -58,13 +66,13 @@ function createFixture() {
     sessionCompatibilityKey: 'fixture-compatibility',
     now: () => '2026-07-15T00:00:02.000Z',
   });
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: 'deployment-test',
     identityId: 'nanohost-test',
     observedAt: '2026-07-15T00:00:02.500Z',
     targetId: 'runtime-target-test',
   });
-  upsertNanoHostRuntimeTarget(coreDb, {
+  await upsertNanoHostRuntimeTarget(coreDb, {
     ...target,
     freshEmpty: true,
     observedAt: '2026-07-15T00:00:02.750Z',
@@ -110,11 +118,11 @@ describe('worker backend sessions', () => {
   it.each([
     'reference',
     'build',
-  ] as const)('reads retained %s lineage annotations without reminting or rewriting identity', (kind) => {
-    const coreDb = createFixture();
+  ] as const)('reads retained %s lineage annotations without reminting or rewriting identity', async (kind) => {
+    const coreDb = await createFixture();
     try {
       const input = materializingInput();
-      const original = recordWorkerBackendSessionMaterializing(coreDb, {
+      const original = await recordWorkerBackendSessionMaterializing(coreDb, {
         ...input,
         backendLineage:
           kind === 'reference'
@@ -150,10 +158,10 @@ describe('worker backend sessions', () => {
       buildInputDigest: 'sha256:input',
       resultingImageDigest: null,
     },
-  ])('refuses unknown or invalid required retained backend lineage %# without rewriting it', (lineage) => {
-    const coreDb = createFixture();
+  ])('refuses unknown or invalid required retained backend lineage %# without rewriting it', async (lineage) => {
+    const coreDb = await createFixture();
     try {
-      const original = recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      const original = await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       const retained = JSON.stringify(lineage);
       coreDb.sqlite
         .prepare('UPDATE worker_backend_sessions SET backend_lineage_json = ? WHERE attempt_id = ?')
@@ -171,12 +179,12 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('persists v1 package-scoped identity before materialization and accepts exact replay', () => {
-    const coreDb = createFixture();
+  it('persists v1 package-scoped identity before materialization and accepts exact replay', async () => {
+    const coreDb = await createFixture();
 
     try {
-      const first = recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
-      const replay = recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      const first = await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      const replay = await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
 
       expect(first).toEqual({
         agentSessionId: 'as_00000000-0000-741c-b104-26abc3a228bc',
@@ -218,10 +226,10 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('refuses an unknown backend version before lineage decode, replay or lifecycle updates', () => {
-    const coreDb = createFixture();
+  it('refuses an unknown backend version before lineage decode, replay or lifecycle updates', async () => {
+    const coreDb = await createFixture();
     try {
-      const original = recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      const original = await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       coreDb.sqlite
         .prepare(`UPDATE worker_backend_sessions SET schema_version = 2,
         backend_lineage_json = '{' WHERE attempt_id = ?`)
@@ -231,22 +239,22 @@ describe('worker backend sessions', () => {
       expect(() => getWorkerBackendSession(coreDb, original.attemptId)).toThrow(
         'Unsupported retained record format.'
       );
-      expect(() => recordWorkerBackendSessionMaterializing(coreDb, materializingInput())).toThrow(
-        'Unsupported retained record format.'
-      );
-      expect(() =>
+      await expect(
+        recordWorkerBackendSessionMaterializing(coreDb, materializingInput())
+      ).rejects.toThrow('Unsupported retained record format.');
+      await expect(
         transitionWorkerBackendSessionState(coreDb, {
           attemptId: original.attemptId,
           fromState: 'materializing',
           toState: 'materialized',
         })
-      ).toThrow('Unsupported retained record format.');
-      expect(() =>
+      ).rejects.toThrow('Unsupported retained record format.');
+      await expect(
         markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: original.attemptId })
-      ).toThrow('Unsupported retained record format.');
-      expect(() =>
+      ).rejects.toThrow('Unsupported retained record format.');
+      await expect(
         markWorkerBackendSessionLaunching(coreDb, { attemptId: original.attemptId })
-      ).toThrow('Unsupported retained record format.');
+      ).rejects.toThrow('Unsupported retained record format.');
       expect(
         coreDb.sqlite
           .prepare(`SELECT schema_version AS schemaVersion, backend_lineage_json, state,
@@ -263,22 +271,23 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('retains the pre-effect origin across same-Epoch reconnect and rejects a different Epoch', () => {
-    const coreDb = createFixture();
+  it('retains the pre-effect origin across same-Epoch reconnect and rejects a different Epoch', async () => {
+    const coreDb = await createFixture();
     try {
       expect(
-        recordWorkerBackendSessionMaterializing(coreDb, materializingInput()).originPhysicalEpoch
+        (await recordWorkerBackendSessionMaterializing(coreDb, materializingInput()))
+          .originPhysicalEpoch
       ).toBe('a'.repeat(64));
-      const successor = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         deploymentId: 'deployment-test',
         identityId: 'nanohost-test',
         observedAt: '2026-07-15T00:00:04.000Z',
         targetId: 'runtime-target-test',
       });
-      expect(() => recordWorkerBackendSessionMaterializing(coreDb, materializingInput())).toThrow(
-        /physical Epoch authority/i
-      );
-      upsertNanoHostRuntimeTarget(coreDb, {
+      await expect(
+        recordWorkerBackendSessionMaterializing(coreDb, materializingInput())
+      ).rejects.toThrow(/physical Epoch authority/i);
+      await upsertNanoHostRuntimeTarget(coreDb, {
         ...successor,
         freshEmpty: true,
         observedAt: '2026-07-15T00:00:05.000Z',
@@ -287,15 +296,16 @@ describe('worker backend sessions', () => {
         ready: true,
       });
       expect(
-        recordWorkerBackendSessionMaterializing(coreDb, materializingInput()).originPhysicalEpoch
+        (await recordWorkerBackendSessionMaterializing(coreDb, materializingInput()))
+          .originPhysicalEpoch
       ).toBe('a'.repeat(64));
-      const replacement = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      const replacement = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         deploymentId: 'deployment-test',
         identityId: 'nanohost-test',
         observedAt: '2026-07-15T00:00:06.000Z',
         targetId: 'runtime-target-test',
       });
-      upsertNanoHostRuntimeTarget(coreDb, {
+      await upsertNanoHostRuntimeTarget(coreDb, {
         ...replacement,
         freshEmpty: true,
         observedAt: '2026-07-15T00:00:07.000Z',
@@ -303,27 +313,27 @@ describe('worker backend sessions', () => {
         predecessorFenced: true,
         ready: true,
       });
-      expect(() => recordWorkerBackendSessionMaterializing(coreDb, materializingInput())).toThrow(
-        /identity conflicts|physical Epoch/i
-      );
+      await expect(
+        recordWorkerBackendSessionMaterializing(coreDb, materializingInput())
+      ).rejects.toThrow(/identity conflicts|physical Epoch/i);
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('rejects a conflicting identity or lease lineage', () => {
-    const coreDb = createFixture();
+  it('rejects a conflicting identity or lease lineage', async () => {
+    const coreDb = await createFixture();
 
     try {
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
 
-      expect(() =>
+      await expect(
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
           identity: { ...materializingInput().identity, backendSessionId: 'openkit-conflict' },
         })
-      ).toThrow('Worker backend session identity conflicts with its durable lease.');
-      expect(() =>
+      ).rejects.toThrow('Worker backend session identity conflicts with its durable lease.');
+      await expect(
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
           identity: {
@@ -331,8 +341,8 @@ describe('worker backend sessions', () => {
             runtimeTargetId: 'runtime-target-changed',
           },
         })
-      ).toThrow(/physical Epoch authority/i);
-      expect(() =>
+      ).rejects.toThrow(/physical Epoch authority/i);
+      await expect(
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
           backendLineage: {
@@ -340,8 +350,8 @@ describe('worker backend sessions', () => {
             resultingImageDigest: 'sha256:changed-image',
           },
         })
-      ).toThrow('Worker backend session identity conflicts with its durable lease.');
-      expect(() =>
+      ).rejects.toThrow('Worker backend session identity conflicts with its durable lease.');
+      await expect(
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
           identity: {
@@ -349,8 +359,8 @@ describe('worker backend sessions', () => {
             transientProviderInstanceId: 'provider-conflict',
           },
         })
-      ).toThrow('Worker backend session identity conflicts with its durable lease.');
-      expect(() =>
+      ).rejects.toThrow('Worker backend session identity conflicts with its durable lease.');
+      await expect(
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
           lineage: {
@@ -358,17 +368,17 @@ describe('worker backend sessions', () => {
             turnId: 'tu_00000000-0000-7e18-a597-336d92a699e9',
           },
         })
-      ).toThrow('execution attempt binding does not match worker backend session lineage.');
+      ).rejects.toThrow('execution attempt binding does not match worker backend session lineage.');
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('rejects a physical plan from another lease lineage before anchoring either identity', () => {
-    const coreDb = createFixture();
+  it('rejects a physical plan from another lease lineage before anchoring either identity', async () => {
+    const coreDb = await createFixture();
 
     try {
-      expect(() =>
+      await expect(
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
           identity: {
@@ -377,7 +387,7 @@ describe('worker backend sessions', () => {
             packageSnapshotId: 'aepsnap_plan_from_another_lease',
           },
         })
-      ).toThrow('execution attempt binding does not match worker backend session lineage.');
+      ).rejects.toThrow('execution attempt binding does not match worker backend session lineage.');
       expect(
         getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_backend_session'))
       ).toBeNull();
@@ -386,9 +396,9 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('rejects terminal or deadline-expired leases before recording an external-effect identity', () => {
-    const terminalDb = createFixture();
-    const expiredDb = createFixture();
+  it('rejects terminal or deadline-expired leases before recording an external-effect identity', async () => {
+    const terminalDb = await createFixture();
+    const expiredDb = await createFixture();
 
     try {
       attemptActionOwners.closeSchedulerExecutionAttemptWithoutEffects(terminalDb, {
@@ -402,15 +412,15 @@ describe('worker backend sessions', () => {
         submission: true,
         now: () => '2026-07-15T00:00:02.000Z',
       });
-      expect(() =>
+      await expect(
         recordWorkerBackendSessionMaterializing(terminalDb, materializingInput())
-      ).toThrow('execution attempt is not live for worker backend materialization.');
-      expect(() =>
+      ).rejects.toThrow('execution attempt is not live for worker backend materialization.');
+      await expect(
         recordWorkerBackendSessionMaterializing(expiredDb, {
           ...materializingInput(),
           now: () => '2026-07-15T02:00:03.000Z',
         })
-      ).toThrow('execution attempt is not live for worker backend materialization.');
+      ).rejects.toThrow('execution attempt is not live for worker backend materialization.');
       expect(
         getWorkerBackendSession(terminalDb, testEntityId('attempt', 'lease_backend_session'))
       ).toBeNull();
@@ -426,8 +436,8 @@ describe('worker backend sessions', () => {
   it.each([
     ['terminal', '2026-07-15T00:00:04.000Z'],
     ['deadline-expired', '2026-07-15T02:00:03.000Z'],
-  ] as const)('rejects an exact anchor replay after its lease becomes %s', (condition, now) => {
-    const coreDb = createFixture();
+  ] as const)('rejects an exact anchor replay after its lease becomes %s', async (condition, now) => {
+    const coreDb = await createFixture();
 
     try {
       attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
@@ -436,19 +446,19 @@ describe('worker backend sessions', () => {
         submission: true,
         now: () => '2026-07-15T00:00:02.000Z',
       });
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       if (condition === 'terminal') {
         coreDb.sqlite
           .prepare("UPDATE scheduler_execution_attempts SET phase = 'closing' WHERE attempt_id = ?")
           .run(testEntityId('attempt', 'lease_backend_session'));
       }
 
-      expect(() =>
+      await expect(
         recordWorkerBackendSessionMaterializing(coreDb, {
           ...materializingInput(),
           now: () => now,
         })
-      ).toThrow('execution attempt is not live for worker backend materialization.');
+      ).rejects.toThrow('execution attempt is not live for worker backend materialization.');
       expect(
         getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_backend_session'))
       ).toMatchObject({
@@ -459,11 +469,11 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('gives one lease exclusive ownership of a sandbox binding', () => {
-    const coreDb = createFixture();
+  it('gives one lease exclusive ownership of a sandbox binding', async () => {
+    const coreDb = await createFixture();
 
     try {
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
 
       expect(() =>
         coreDb.sqlite
@@ -491,11 +501,11 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('gives one lease exclusive ownership of a transient provider', () => {
-    const coreDb = createFixture();
+  it('gives one lease exclusive ownership of a transient provider', async () => {
+    const coreDb = await createFixture();
 
     try {
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
 
       expect(() =>
         coreDb.sqlite
@@ -525,26 +535,26 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('rejects replay once the anchored lifecycle has advanced beyond materializing', () => {
-    const coreDb = createFixture();
+  it('rejects replay once the anchored lifecycle has advanced beyond materializing', async () => {
+    const coreDb = await createFixture();
 
     try {
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
-      transitionWorkerBackendSessionState(coreDb, {
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
         attemptId: testEntityId('attempt', 'lease_backend_session'),
         toState: 'materialized',
       });
       expect(
-        markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+        await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
           attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => '2026-07-15T00:00:04.500Z',
         })
       ).toMatchObject({ workspaceHandoffState: 'complete' });
 
-      expect(() => recordWorkerBackendSessionMaterializing(coreDb, materializingInput())).toThrow(
-        'Worker backend session is not materializing.'
-      );
+      await expect(
+        recordWorkerBackendSessionMaterializing(coreDb, materializingInput())
+      ).rejects.toThrow('Worker backend session is not materializing.');
     } finally {
       coreDb.sqlite.close();
     }
@@ -559,11 +569,11 @@ describe('worker backend sessions', () => {
       'staging_directory_ref',
       "'server/runtime/worker-backend-sessions/aepsnap_backend_session'",
     ],
-  ] as const)('enforces exclusive ownership of each %s', (_description, preservedColumn, value) => {
-    const coreDb = createFixture();
+  ] as const)('enforces exclusive ownership of each %s', async (_description, preservedColumn, value) => {
+    const coreDb = await createFixture();
 
     try {
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
       const replacements: Record<string, string> = {
         package_snapshot_id: "'aepsnap_other'",
         backend_session_id: "'openkit-as_other'",
@@ -598,31 +608,31 @@ describe('worker backend sessions', () => {
     }
   });
 
-  it('uses compare-and-set transitions for cleanup and retry', () => {
-    const coreDb = createFixture();
+  it('uses compare-and-set transitions for cleanup and retry', async () => {
+    const coreDb = await createFixture();
 
     try {
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
-      transitionWorkerBackendSessionState(coreDb, {
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
         attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'cleanup-pending',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-pending',
         attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:05.000Z',
         toState: 'cleanup-failed',
       });
-      transitionWorkerBackendSessionState(coreDb, {
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'cleanup-failed',
         attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:06.000Z',
         toState: 'cleanup-pending',
       });
       expect(
-        transitionWorkerBackendSessionState(coreDb, {
+        await transitionWorkerBackendSessionState(coreDb, {
           fromState: 'cleanup-pending',
           attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => '2026-07-15T00:00:07.000Z',
@@ -634,7 +644,7 @@ describe('worker backend sessions', () => {
         updatedAt: '2026-07-15T00:00:07.000Z',
       });
       expect(
-        transitionWorkerBackendSessionState(coreDb, {
+        await transitionWorkerBackendSessionState(coreDb, {
           fromState: 'physical-cleaned',
           attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => '2026-07-15T00:00:08.000Z',
@@ -645,20 +655,20 @@ describe('worker backend sessions', () => {
         state: 'cleaned',
         updatedAt: '2026-07-15T00:00:08.000Z',
       });
-      expect(() =>
+      await expect(
         transitionWorkerBackendSessionState(coreDb, {
           fromState: 'physical-cleaned',
           attemptId: testEntityId('attempt', 'lease_backend_session'),
           toState: 'cleaned',
         })
-      ).toThrow('Worker backend session state changed before transition.');
+      ).rejects.toThrow('Worker backend session state changed before transition.');
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('opens the launch gate only while the owning lease remains live', () => {
-    const coreDb = createFixture();
+  it('opens the launch gate only while the owning lease remains live', async () => {
+    const coreDb = await createFixture();
 
     try {
       attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
@@ -667,20 +677,20 @@ describe('worker backend sessions', () => {
         submission: true,
         now: () => '2026-07-15T00:00:02.000Z',
       });
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
-      transitionWorkerBackendSessionState(coreDb, {
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
         attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'materialized',
       });
-      markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+      await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
         attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.500Z',
       });
 
       expect(
-        markWorkerBackendSessionLaunching(coreDb, {
+        await markWorkerBackendSessionLaunching(coreDb, {
           attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => '2026-07-15T00:00:05.000Z',
         })
@@ -693,8 +703,8 @@ describe('worker backend sessions', () => {
   it.each([
     ['stale lease', '2026-07-15T00:00:05.000Z'],
     ['expired startup deadline', '2026-07-15T00:26:00.000Z'],
-  ] as const)('keeps the session materialized when the launch gate rejects a %s', (condition, now) => {
-    const coreDb = createFixture();
+  ] as const)('keeps the session materialized when the launch gate rejects a %s', async (condition, now) => {
+    const coreDb = await createFixture();
 
     try {
       attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
@@ -703,14 +713,14 @@ describe('worker backend sessions', () => {
         submission: true,
         now: () => '2026-07-15T00:00:02.000Z',
       });
-      recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
-      transitionWorkerBackendSessionState(coreDb, {
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await transitionWorkerBackendSessionState(coreDb, {
         fromState: 'materializing',
         attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.000Z',
         toState: 'materialized',
       });
-      markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+      await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
         attemptId: testEntityId('attempt', 'lease_backend_session'),
         now: () => '2026-07-15T00:00:04.500Z',
       });
@@ -720,12 +730,12 @@ describe('worker backend sessions', () => {
           .run(testEntityId('attempt', 'lease_backend_session'));
       }
 
-      expect(() =>
+      await expect(
         markWorkerBackendSessionLaunching(coreDb, {
           attemptId: testEntityId('attempt', 'lease_backend_session'),
           now: () => now,
         })
-      ).toThrow('execution attempt is not live for worker backend launch.');
+      ).rejects.toThrow('execution attempt is not live for worker backend launch.');
       expect(
         getWorkerBackendSession(coreDb, testEntityId('attempt', 'lease_backend_session'))
       ).toMatchObject({
@@ -734,5 +744,402 @@ describe('worker backend sessions', () => {
     } finally {
       coreDb.sqlite.close();
     }
+  });
+});
+
+// The real Worker and SQLite connection remain the producer and consumer of this L2 seam.
+// The prelude observes a physical FULL commit and can lose its ACK after that commit.
+const backendNativeInterception = vi.hoisted(() => ({
+  gate: undefined as SharedArrayBuffer | undefined,
+  workers: [] as NativeWorker[],
+}));
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        if (backendNativeInterception.gate === undefined) {
+          super(filename, options);
+        } else {
+          const require = createRequire(import.meta.url);
+          const prelude = `
+            const {workerData, parentPort} = require('node:worker_threads');
+            const Database = require(workerData.databaseModule);
+            const originalExec = Database.prototype.exec;
+            const gate = workerData.backendGate;
+            parentPort.on('message', value => {
+              if (value.operation !== 'open' && value.operation !== 'close') Atomics.add(gate, 3, 1);
+              if (value.operation === 'backend-session' && Atomics.compareExchange(gate, 4, 1, 0) === 1) {
+                Atomics.store(gate, 5, 1);
+                Atomics.notify(gate, 5);
+                if (Atomics.wait(gate, 6, 0, 10000) === 'timed-out') {
+                  throw new Error('Native backend deadline crossing was not released.');
+                }
+              }
+            });
+            Database.prototype.exec = function(sql) {
+              const result = originalExec.call(this, sql);
+              if (/^COMMIT$/i.test(sql)) {
+                Atomics.store(gate, 1, this.pragma('synchronous', {simple: true}));
+                Atomics.add(gate, 0, 1);
+                if (Atomics.load(gate, 2) === 1) process.exit(0);
+              }
+              return result;
+            };
+          `;
+          const entry = options?.eval
+            ? String(filename)
+            : `import(${JSON.stringify(String(filename))});`;
+          super(prelude + entry, {
+            ...options,
+            eval: true,
+            workerData: {
+              ...options?.workerData,
+              databaseModule: require.resolve('better-sqlite3'),
+              backendGate: new Int32Array(backendNativeInterception.gate),
+            },
+          });
+        }
+        backendNativeInterception.workers.push(this);
+      }
+    },
+  };
+});
+
+/** Uses the existing valid Core fixture, then denies every Main mutation. */
+async function createNativeBackendFixture() {
+  const coreDb = await createFixture();
+  // Launch requires a genuine submitted attempt, not a fabricated acceptance receipt.
+  attemptActionOwners.recordSchedulerExecutionOperation(coreDb, {
+    attemptId: testEntityId('attempt', 'lease_backend_session'),
+    operationId: 'fixture-submit:lease_backend_session',
+    submission: true,
+    now: () => '2026-07-15T00:00:02.000Z',
+  });
+  // Setup now opens the native owner; the physical observer must bind its next Worker.
+  await shutdownControlStoreWorkerClient();
+  const gate = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 7));
+  backendNativeInterception.gate = gate.buffer as SharedArrayBuffer;
+  backendNativeInterception.workers = [];
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    backendNativeInterception.gate = undefined;
+  });
+  coreDb.sqlite.pragma('query_only = ON');
+  return { coreDb, gate };
+}
+
+/** Observes all retained columns and the complete Server Audit tuple. */
+function nativeBackendTuple(coreDb: ReturnType<typeof createFixture>) {
+  return {
+    sessions: coreDb.sqlite
+      .prepare('SELECT * FROM worker_backend_sessions ORDER BY attempt_id')
+      .all() as Record<string, unknown>[],
+    audits: coreDb.sqlite
+      .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
+      .all() as Record<string, unknown>[],
+  };
+}
+
+/** Reopens the same database only after the native writer has closed. */
+async function reopenNativeBackendTuple(coreDb: ReturnType<typeof createFixture>) {
+  await shutdownControlStoreWorkerClient();
+  const reopened = openCoreDb(coreDb.dataRoot);
+  try {
+    reopened.sqlite.pragma('query_only = ON');
+    return nativeBackendTuple(reopened);
+  } finally {
+    reopened.sqlite.close();
+  }
+}
+
+/** Reaches cleanup through the existing lifecycle owner; this proves no physical Host effect. */
+async function prepareNativeBackendPhysicalCleaned(coreDb: ReturnType<typeof createFixture>) {
+  await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+  await transitionWorkerBackendSessionState(coreDb, {
+    attemptId: testEntityId('attempt', 'lease_backend_session'),
+    fromState: 'materializing',
+    toState: 'cleanup-pending',
+    now: () => '2026-07-15T00:00:04.000Z',
+  });
+  return transitionWorkerBackendSessionState(coreDb, {
+    attemptId: testEntityId('attempt', 'lease_backend_session'),
+    fromState: 'cleanup-pending',
+    toState: 'physical-cleaned',
+    now: () => '2026-07-15T00:00:05.000Z',
+  });
+}
+
+describe('native worker backend session ownership', () => {
+  it.each([
+    'materialization',
+    'launch',
+  ] as const)('refuses default-clock %s after a real queued Worker request crosses its absolute deadline', async (operation) => {
+    const { coreDb, gate } = await createNativeBackendFixture();
+    const attemptId = testEntityId('attempt', 'lease_backend_session');
+    if (operation === 'launch') {
+      await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+      await transitionWorkerBackendSessionState(coreDb, {
+        attemptId: attemptId,
+        fromState: 'materializing',
+        toState: 'materialized',
+        now: () => '2026-07-15T00:00:04.000Z',
+      });
+      await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+        attemptId: attemptId,
+        now: () => '2026-07-15T00:00:04.500Z',
+      });
+    }
+    // Fault injection shortens only the valid attempt's absolute deadline. The operation
+    // below has no clock override; both Main and the native owner use actual wall time.
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.pragma('query_only = OFF');
+    const deadlineMs = Date.now() + 2000;
+    const deadline = new Date(deadlineMs).toISOString();
+    coreDb.sqlite
+      .prepare(`UPDATE scheduler_execution_attempts
+          SET deadline = ?, startup_deadline = ?, heartbeat_deadline = ? WHERE attempt_id = ?`)
+      .run(
+        deadline,
+        new Date(deadlineMs + 60000).toISOString(),
+        new Date(deadlineMs + 60000).toISOString(),
+        attemptId
+      );
+    coreDb.sqlite.pragma('query_only = ON');
+    const before = nativeBackendTuple(coreDb);
+    const submissions = Atomics.load(gate, 3);
+    Atomics.store(gate, 4, 1);
+    let pending: Promise<unknown> | undefined;
+    try {
+      expect(Date.now()).toBeLessThan(deadlineMs);
+      pending =
+        operation === 'materialization'
+          ? recordWorkerBackendSessionMaterializing(coreDb, {
+              ...materializingInput(),
+              now: undefined,
+            })
+          : markWorkerBackendSessionLaunching(coreDb, { attemptId: attemptId });
+      const refusal = expect(pending).rejects.toThrow(
+        operation === 'materialization'
+          ? 'execution attempt is not live for worker backend materialization.'
+          : 'execution attempt is not live for worker backend launch.'
+      );
+      await vi.waitFor(() => expect(Atomics.load(gate, 5)).toBe(1), {
+        timeout: 1500,
+        interval: 5,
+      });
+      // A failure here is a fixture timing failure, not the expected deadline refusal.
+      expect(Date.now()).toBeLessThan(deadlineMs);
+      await new Promise<void>((resolve) => setTimeout(resolve, deadlineMs - Date.now() + 5));
+      expect(Date.now()).toBeGreaterThanOrEqual(deadlineMs);
+      Atomics.store(gate, 6, 1);
+      Atomics.notify(gate, 6);
+      await refusal;
+      expect(Atomics.load(gate, 3) - submissions).toBe(1);
+      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      expect(nativeBackendTuple(coreDb)).toEqual(before);
+      expect(await reopenNativeBackendTuple(coreDb)).toEqual(before);
+    } finally {
+      Atomics.store(gate, 6, 1);
+      Atomics.notify(gate, 6);
+      // The deciding expectation above owns the refusal; always join before fixture cleanup.
+      await pending?.catch(() => undefined);
+    }
+  });
+
+  it('executes the four existing mutation APIs while Main is query-only', async () => {
+    const { coreDb, gate } = await createNativeBackendFixture();
+    expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    const first = await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+    expect(first).toMatchObject({ state: 'materializing', workspaceHandoffState: 'pending' });
+    expect(await recordWorkerBackendSessionMaterializing(coreDb, materializingInput())).toEqual(
+      first
+    );
+    expect(
+      await transitionWorkerBackendSessionState(coreDb, {
+        attemptId: first.attemptId,
+        fromState: 'materializing',
+        toState: 'materialized',
+        now: () => '2026-07-15T00:00:04.000Z',
+      })
+    ).toEqual({ ...first, state: 'materialized', updatedAt: '2026-07-15T00:00:04.000Z' });
+    const handoff = await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
+      attemptId: first.attemptId,
+      now: () => '2026-07-15T00:00:04.500Z',
+    });
+    expect(handoff).toEqual({
+      ...first,
+      state: 'materialized',
+      workspaceHandoffState: 'complete',
+      updatedAt: '2026-07-15T00:00:04.500Z',
+    });
+    const launched = await markWorkerBackendSessionLaunching(coreDb, {
+      attemptId: first.attemptId,
+      now: () => '2026-07-15T00:00:05.000Z',
+    });
+    expect(launched).toEqual({
+      ...handoff,
+      state: 'launching',
+      updatedAt: '2026-07-15T00:00:05.000Z',
+    });
+    expect(getWorkerBackendSession(coreDb, first.attemptId)).toEqual(launched);
+    expect(coreDb.sqlite.inTransaction).toBe(false);
+    expect(Atomics.load(gate, 0)).toBeGreaterThan(0);
+    expect(Atomics.load(gate, 1)).toBe(2); // Storage: covering FULL acknowledgement.
+  });
+
+  it('preserves the exact identity-conflict refusal without changing retained bytes', async () => {
+    const { coreDb } = await createNativeBackendFixture();
+    await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+    const before = nativeBackendTuple(coreDb);
+    await expect(
+      recordWorkerBackendSessionMaterializing(coreDb, {
+        ...materializingInput(),
+        identity: { ...materializingInput().identity, backendSessionId: 'openkit-conflict' },
+      })
+    ).rejects.toThrow('Worker backend session identity conflicts with its durable lease.');
+    expect(nativeBackendTuple(coreDb)).toEqual(before);
+  });
+
+  it('preserves current-state and handoff refusal without a Main fallback', async () => {
+    const { coreDb } = await createNativeBackendFixture();
+    const first = await recordWorkerBackendSessionMaterializing(coreDb, materializingInput());
+    const before = nativeBackendTuple(coreDb);
+    await expect(
+      transitionWorkerBackendSessionState(coreDb, {
+        attemptId: first.attemptId,
+        fromState: 'materialized',
+        toState: 'launching',
+      })
+    ).rejects.toThrow('Worker backend session state changed before transition.');
+    await expect(
+      markWorkerBackendSessionLaunching(coreDb, {
+        attemptId: first.attemptId,
+        now: () => '2026-07-15T00:00:04.000Z',
+      })
+    ).rejects.toThrow('execution attempt is not live for worker backend launch.');
+    expect(nativeBackendTuple(coreDb)).toEqual(before);
+  });
+
+  it('retains every original row column after FULL acknowledgement and reopen', async () => {
+    const { coreDb, gate } = await createNativeBackendFixture();
+    await prepareNativeBackendPhysicalCleaned(coreDb);
+    const before = nativeBackendTuple(coreDb);
+    expect(before.sessions).toHaveLength(1);
+    expect(before.sessions[0]).toMatchObject({
+      schema_version: 1,
+      state: 'physical-cleaned',
+      physical_cleaned_at: '2026-07-15T00:00:05.000Z',
+      created_at: '2026-07-15T00:00:03.000Z',
+      updated_at: '2026-07-15T00:00:05.000Z',
+      backend_lineage_json: JSON.stringify({
+        buildArgumentsDigest: 'sha256:arguments',
+        buildContextDigest: 'sha256:context',
+        buildInputDigest: 'sha256:dockerfile',
+        resultingImageDigest: 'sha256:image',
+      }),
+    });
+    expect(Atomics.load(gate, 1)).toBe(2);
+    expect(await reopenNativeBackendTuple(coreDb)).toEqual(before);
+  });
+
+  it('returns unknown after a real post-COMMIT ACK loss and never retries the mutation', async () => {
+    const { coreDb, gate } = await createNativeBackendFixture();
+    Atomics.store(gate, 2, 1);
+    const outcome = await recordWorkerBackendSessionMaterializing(
+      coreDb,
+      materializingInput()
+    ).then(
+      (value) => ({ value, error: undefined }),
+      (error) => ({ value: undefined, error })
+    );
+    expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
+    expect(outcome.error).toMatchObject({ commit: 'unknown' });
+    expect(outcome.value).toBeUndefined();
+    expect(Atomics.load(gate, 0)).toBe(1);
+    expect(Atomics.load(gate, 1)).toBe(2);
+    expect(Atomics.load(gate, 3)).toBe(1);
+    expect(backendNativeInterception.workers).toHaveLength(1);
+    const before = nativeBackendTuple(coreDb);
+    expect(before.sessions).toHaveLength(1);
+    expect(before.sessions[0]).toMatchObject({
+      state: 'materializing',
+      created_at: '2026-07-15T00:00:03.000Z',
+      updated_at: '2026-07-15T00:00:03.000Z',
+    });
+    expect(await reopenNativeBackendTuple(coreDb)).toEqual(before);
+  });
+});
+
+describe('native orphan backend retirement tuple', () => {
+  it('commits only the exact cleaned transition and original Server Audit, then reopens both', async () => {
+    const { coreDb, gate } = await createNativeBackendFixture();
+    const physical = await prepareNativeBackendPhysicalCleaned(coreDb);
+    const before = nativeBackendTuple(coreDb);
+    await retireOrphanWorkerBackendSession(coreDb, {
+      attemptId: physical.attemptId,
+      now: () => '2026-07-15T00:00:06.000Z',
+    });
+    const after = nativeBackendTuple(coreDb);
+    expect(after.sessions).toEqual([
+      { ...before.sessions[0], state: 'cleaned', updated_at: '2026-07-15T00:00:06.000Z' },
+    ]);
+    const added = after.audits.filter(
+      (row) => !before.audits.some((prior) => prior.audit_event_id === row.audit_event_id)
+    );
+    expect(after.audits).toHaveLength(before.audits.length + 1);
+    expect(added).toEqual([
+      expect.objectContaining({
+        schema_version: 1,
+        action: 'scheduler.orphan-backend-retired',
+        category: 'system',
+        outcome: 'succeeded',
+        resource: `server:worker-backend-session:${physical.attemptId}`,
+        severity: 'warning',
+        summary: 'Unowned worker backend session physically cleaned and retired.',
+        workspace_id: physical.workspaceId,
+        thread_id: physical.threadId,
+        turn_id: physical.turnId,
+        agent_session_id: physical.agentSessionId,
+      }),
+    ]);
+    expect(Atomics.load(gate, 1)).toBe(2);
+    expect(coreDb.sqlite.inTransaction).toBe(false);
+    expect(await reopenNativeBackendTuple(coreDb)).toEqual(after);
+  });
+
+  it('rolls the cleaned transition and Audit back together on a real Audit SQL fault', async () => {
+    const { coreDb } = await createNativeBackendFixture();
+    const physical = await prepareNativeBackendPhysicalCleaned(coreDb);
+    const before = nativeBackendTuple(coreDb);
+    await shutdownControlStoreWorkerClient();
+    coreDb.sqlite.pragma('query_only = OFF');
+    coreDb.sqlite.exec(`CREATE TRIGGER reject_orphan_retirement_audit BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'scheduler.orphan-backend-retired'
+      BEGIN SELECT RAISE(ABORT, 'orphan retirement Audit fault'); END`);
+    coreDb.sqlite.pragma('query_only = ON');
+    await expect(
+      retireOrphanWorkerBackendSession(coreDb, {
+        attemptId: physical.attemptId,
+        now: () => '2026-07-15T00:00:06.000Z',
+      })
+    ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+    expect(nativeBackendTuple(coreDb)).toEqual(before);
+    expect(await reopenNativeBackendTuple(coreDb)).toEqual(before);
+    // Removing only the deliberate fault must admit the same complete original tuple.
+    coreDb.sqlite.pragma('query_only = OFF');
+    coreDb.sqlite.exec('DROP TRIGGER reject_orphan_retirement_audit');
+    coreDb.sqlite.pragma('query_only = ON');
+    await retireOrphanWorkerBackendSession(coreDb, {
+      attemptId: physical.attemptId,
+      now: () => '2026-07-15T00:00:06.000Z',
+    });
+    expect(getWorkerBackendSession(coreDb, physical.attemptId)).toEqual({
+      ...physical,
+      state: 'cleaned',
+      updatedAt: '2026-07-15T00:00:06.000Z',
+    });
+    expect(nativeBackendTuple(coreDb).audits).toHaveLength(before.audits.length + 1);
   });
 });

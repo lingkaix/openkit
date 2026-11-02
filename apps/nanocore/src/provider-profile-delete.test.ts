@@ -251,10 +251,10 @@ describe('provider profile removal', () => {
     expect(Object.keys(f.references).map((path) => readFileSync(join(f.dataRoot, path)))).toEqual(
       f.referenceBytes
     );
-    const strict = f.runtimeConfigManager.reload({ mode: 'strict' });
+    const strict = await f.runtimeConfigManager.reload({ mode: 'strict' });
     expect(strict.status).toBe('rejected');
     expect(f.runtimeConfigManager.current().providerRegistry.get('removed')).not.toBeNull();
-    const safe = f.runtimeConfigManager.reload({ mode: 'safe' });
+    const safe = await f.runtimeConfigManager.reload({ mode: 'safe' });
     expect(safe.status).toBe('applied');
     expect(safe.runtimeConfig.pendingRestart).toContainEqual(
       expect.objectContaining({ path: 'providers' })
@@ -262,7 +262,7 @@ describe('provider profile removal', () => {
     expect(f.runtimeConfigManager.current().providerRegistry.get('removed')).not.toBeNull();
     const restarted = createRuntimeConfigManager({ dataRoot: f.dataRoot });
     expect(restarted.current().providerRegistry.get('removed')).toBeNull();
-    const reload = restarted.reload({ mode: 'safe' });
+    const reload = await restarted.reload({ mode: 'safe' });
     expect(reload.status).toBe('applied');
     expect(reload.plan.warnings).toContainEqual(
       expect.objectContaining({ message: expect.stringContaining('primary') })

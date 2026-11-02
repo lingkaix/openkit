@@ -47,6 +47,17 @@ function handoffBytes(db: WorkspaceDb): string {
   );
 }
 
+/** Captures every durable Core member of the final-status atomic tuple. */
+function finalTupleBytes(db: ReturnType<typeof openCoreDb>, attemptId: string): string {
+  return JSON.stringify({
+    attempt: requireSchedulerExecutionAttempt(db, attemptId),
+    fingerprints: db.sqlite
+      .prepare('SELECT * FROM worker_control_sequence_fingerprints ORDER BY rowid')
+      .all(),
+    receipts: db.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all(),
+  });
+}
+
 it('accepts the original Core final under a Workspace write lock without claiming handoff cleanup', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-final-handoff-'));
   let coreDb = openCoreDb(dataRoot);
@@ -187,10 +198,34 @@ it('accepts the original Core final under a Workspace write lock without claimin
       evidenceManifestDigests: { output: 'sha256:final-handoff' },
     };
     expect(coreDb.sqlite.pragma('synchronous', { simple: true })).toBe(2);
+    const tupleBeforeRefusal = finalTupleBytes(coreDb, attemptId);
+    const sessionBeforeRefusal = gateway.getSessionSnapshot(lineage.packageSnapshotId);
+    // This persistent hook runs after both fingerprint and receipt writes, at the final attempt close.
+    coreDb.sqlite.exec(`CREATE TRIGGER reject_final_status_attempt_close
+      BEFORE UPDATE OF phase ON scheduler_execution_attempts
+      WHEN OLD.attempt_id = '${attemptId}' AND NEW.phase = 'closing'
+      BEGIN SELECT RAISE(ABORT, 'injected final status attempt-close refusal'); END`);
+    coreDb.sqlite.pragma('query_only = ON');
+    expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    const refused = gateway.recordFinalStatus(request);
+    await expect(refused).rejects.toMatchObject({
+      name: 'ControlStoreWorkerError',
+      code: 'constraint',
+      commit: 'not-committed',
+    });
+    expect(finalTupleBytes(coreDb, attemptId)).toBe(tupleBeforeRefusal);
+    expect(gateway.getSessionSnapshot(lineage.packageSnapshotId)).toEqual(sessionBeforeRefusal);
+    expect(notifications).toEqual([]);
+    const triggerWriter = openCoreDb(dataRoot);
+    try {
+      triggerWriter.sqlite.exec('DROP TRIGGER reject_final_status_attempt_close');
+    } finally {
+      triggerWriter.sqlite.close();
+    }
     // A real competing SQLite writer models contention without inventing a native pause protocol.
     competingWriter.sqlite.exec('BEGIN IMMEDIATE');
     expect(competingWriter.sqlite.inTransaction).toBe(true);
-    const response = gateway.recordFinalStatus(request);
+    const response = await gateway.recordFinalStatus(request);
     expect(response).toMatchObject({ accepted: true, nextExpectedSequence: 2 });
     expect(notifications).toHaveLength(1);
     const originalFinal = getWorkerControlAcceptedFinalStatus(coreDb, lineage);
@@ -211,12 +246,32 @@ it('accepts the original Core final under a Workspace write lock without claimin
     const coreRows = JSON.stringify(
       coreDb.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all()
     );
-    expect(gateway.recordFinalStatus(request)).toEqual(response);
+    expect(await gateway.recordFinalStatus(request)).toEqual(response);
     expect(
       JSON.stringify(
         coreDb.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all()
       )
     ).toBe(coreRows);
+    const expectedEvents = gateway.getSessionSnapshot(lineage.packageSnapshotId).events;
+    expect(expectedEvents).toHaveLength(1);
+    const coreTuple = finalTupleBytes(coreDb, attemptId);
+    const replayGateway = createDefaultWorkerControlGateway(coreDb);
+    replayGateway.registerSession(environmentPackage, { ...tokens, sandboxBindingRef });
+    expect(replayGateway.getSessionSnapshot(lineage.packageSnapshotId).events).toEqual([]);
+    const concurrentReplay = await Promise.all([
+      replayGateway.recordFinalStatus(request),
+      replayGateway.recordFinalStatus(request),
+    ]);
+    expect(concurrentReplay).toEqual([response, response]);
+    expect(finalTupleBytes(coreDb, attemptId)).toBe(coreTuple);
+    expect(
+      JSON.stringify(
+        coreDb.sqlite.prepare('SELECT * FROM worker_control_records ORDER BY rowid').all()
+      )
+    ).toBe(coreRows);
+    expect(replayGateway.getSessionSnapshot(lineage.packageSnapshotId).events).toEqual(
+      expectedEvents
+    );
     expect(
       coreDb.sqlite.prepare('SELECT operation FROM worker_control_records ORDER BY operation').all()
     ).toEqual([{ operation: 'event_append' }, { operation: 'final_status' }]);

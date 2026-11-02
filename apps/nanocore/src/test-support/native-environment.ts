@@ -17,13 +17,13 @@ import {
   admitWorkerImageEnvironment,
   readWorkerImageSettlement,
   writeWorkerImageSettlement,
-} from '../runtime/worker-image-settlements.js';
+} from '../runtime/worker-image-settlements-records.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { materializeRuntimeImage } from '../worker-environments/worker-environment-preparation.js';
 
-/** Explicit synthetic confirmed image evidence for tests whose subject is another contract. */
+/** Populates metadata-only fixtures through the raw record leaf; this does not prove native image publication. */
 export function admitTestNativeEnvironment(
   coreDb: CoreDb,
   manifest: Pick<AgentManifest, 'runtime'>,
@@ -108,16 +108,16 @@ export function withTestPreparedNativeEnvironment<
  * @param targetId Fixture target identity, never a production default.
  * @returns The current target record; existing evidence is left untouched.
  */
-export function recordTestNativeRuntimeTarget(coreDb: CoreDb, targetId = 'target_local') {
+export async function recordTestNativeRuntimeTarget(coreDb: CoreDb, targetId = 'target_local') {
   const existing = getNanoHostRuntimeTarget(coreDb, targetId);
   if (existing) return existing;
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
     deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
     identityId: 'identity_local',
     observedAt: new Date().toISOString(),
     targetId,
   });
-  return upsertNanoHostRuntimeTarget(coreDb, {
+  return await upsertNanoHostRuntimeTarget(coreDb, {
     ...target,
     freshEmpty: true,
     observedAt: new Date().toISOString(),

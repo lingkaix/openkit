@@ -423,8 +423,19 @@ export async function checkIdleNativeBinding({ appRoot, dataRoot }, previous, ca
   }
 }
 
-/** Seeds current SQLite families with the previous revision's real producers and stopped writers. */
-export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, selectors }) {
+/** Seeds current SQLite families with the selected revision's explicit producers and stopped writers. */
+export async function seedSqlCorpus({
+  appRoot,
+  corpusProducer,
+  dataRoot,
+  retainedRoot,
+  userId,
+  selectors,
+}) {
+  assert(
+    corpusProducer === 'historical' || corpusProducer === 'current',
+    'Corpus producer must be historical or current.'
+  );
   const o = await owners(appRoot);
   const { workspaceId, threadId, turnId } = selectors;
   let core = o.db.openCoreDb(dataRoot);
@@ -626,13 +637,13 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
     const target =
       targetIds.length === 1
         ? o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId)
-        : o.targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+        : await o.targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
             targetId: sql.runtimeTargetId,
             deploymentId: 'upgrade-corpus',
             identityId: 'upgrade-corpus',
             observedAt: NOW,
           });
-    o.targets.upsertNanoHostRuntimeTarget(core, {
+    await o.targets.upsertNanoHostRuntimeTarget(core, {
       ...target,
       physicalEpoch: target.physicalEpoch ?? 'a'.repeat(64),
       freshEmpty: true,
@@ -640,23 +651,44 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       predecessorFenced: true,
       observedAt: new Date().toISOString(),
     });
-    const binding = o.bindings.createWorkerStorageBinding(core, {
+    const storageLayout = {
+      family: 'openkit-worker',
+      version: '1',
+      uid: 1000,
+      gid: 1000,
+      workingDirectory: '/tmp/openkit-bootstrap',
+      platform: { architecture: 'amd64', os: 'linux' },
+      targets: [{ target: '/workspace' }, { target: '/sandbox' }],
+    };
+    const storageCreateFacts = {
       deploymentId: target.deploymentId,
       runtimeTargetId: sql.runtimeTargetId,
       workspaceId,
       now: NOW,
-      layout: {
-        family: 'openkit-worker',
-        version: '1',
-        uid: 1000,
-        gid: 1000,
-        workingDirectory: '/tmp/openkit-bootstrap',
-        platform: { architecture: 'amd64', os: 'linux' },
-        targets: [{ target: '/workspace' }, { target: '/sandbox' }],
-      },
-    });
+      layout: storageLayout,
+    };
+    let binding;
+    if (corpusProducer === 'historical') {
+      binding = o.bindings.createWorkerStorageBinding(core, storageCreateFacts);
+    } else {
+      const reservedStorage = await o.bindings.createAndReserveWorkerStorageAttachment(core, {
+        ...storageCreateFacts,
+        agentSessionId: sql.agentSessionId,
+        authorizeContributor: () => true,
+        purpose: 'work',
+        responsibleUserId: userId,
+        threadId,
+      });
+      binding = await o.bindings.releaseWorkerStorageAttachment(core, {
+        attachmentGeneration: reservedStorage.attachmentGeneration,
+        cleanupProved: true,
+        expectedRevision: reservedStorage.revision,
+        storageRef: reservedStorage.storageRef,
+        now: NOW,
+      });
+    }
     sql.storageRef = binding.storageRef;
-    o.backend.recordWorkerBackendSessionMaterializing(core, {
+    await o.backend.recordWorkerBackendSessionMaterializing(core, {
       backendLineage: {
         kind: 'reference',
         imageRef: 'example.invalid/synthetic-worker:continuity',
@@ -715,14 +747,14 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       ['cleanup-pending', 'physical-cleaned'],
       ['physical-cleaned', 'cleaned'],
     ]) {
-      o.backend.transitionWorkerBackendSessionState(core, {
+      await o.backend.transitionWorkerBackendSessionState(core, {
         attemptId: sql.attemptId,
         fromState,
         toState,
         now: () => NOW,
       });
     }
-    o.targets.recordNanoHostRuntimeTargetConnectionClose(core, {
+    await o.targets.recordNanoHostRuntimeTargetConnectionClose(core, {
       targetId: sql.runtimeTargetId,
       closedGeneration: target.connectionGeneration,
       authoritativeGeneration: null,
@@ -1083,25 +1115,25 @@ export async function produceStoppedSqlContext({
     inputDigest,
   };
   const imageDigest = `sha256:${'a'.repeat(64)}`;
-  images.writeWorkerImageSettlement(core, {
+  await images.writeWorkerImageSettlement(core, {
     ...candidate,
     requestId: digest('upgrade-corpus-image'),
     operation: 'image.acquire',
     outcome: { kind: 'success', imageDigest },
   });
-  images.admitWorkerImageEnvironment(core, candidate, {
+  await images.admitWorkerImageEnvironment(core, candidate, {
     imageDigest,
     defaultsDigest: `sha256:${digest('{}')}`,
     values: {},
   });
   const previousTarget = o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
-  const target = o.targets.upsertNanoHostRuntimeTarget(core, {
-    ...o.targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+  const target = await o.targets.upsertNanoHostRuntimeTarget(core, {
+    ...(await o.targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
       targetId: previousTarget.targetId,
       identityId: previousTarget.identityId,
       deploymentId: previousTarget.deploymentId,
       observedAt: new Date().toISOString(),
-    }),
+    })),
     physicalEpoch: o.backend.getWorkerBackendSession(core, sql.attemptId).originPhysicalEpoch,
     freshEmpty: true,
     ready: true,
@@ -1301,7 +1333,7 @@ export async function produceStoppedSqlContext({
         },
       });
       model.eventsJsonl = `${JSON.stringify(terminal)}\n`;
-      const accepted = gateway.recordFinalStatus({
+      const accepted = await gateway.recordFinalStatus({
         authorization: `Bearer ${model.registration.token}`,
         tokenFamily: 'worker-control',
         lineage,
@@ -1485,7 +1517,7 @@ export async function recoverStoppedSqlCorpus({ appRoot, dataRoot, sql }) {
       coreDb: core,
       workspaceMutationAdmission: admission,
     });
-    o.usage.recoverRunningCapabilityCalls({ workspaceDb: core });
+    await o.usage.recoverRunningCapabilityCalls({ workspaceDb: core });
     await (
       await o.load('storage/workspace-storage-migration')
     ).verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
@@ -1498,7 +1530,7 @@ export async function recoverStoppedSqlCorpus({ appRoot, dataRoot, sql }) {
       dataRoot,
       workspaceMutationAdmission: admission,
     });
-    o.targets.fenceNanoHostRuntimeTargetAfterRestart(core, new Date().toISOString());
+    await o.targets.fenceNanoHostRuntimeTargetAfterRestart(core, new Date().toISOString());
     records.discardAbandonedWorkspaceStaging(dataRoot);
     await managers.recoverServerKnowledgeManagerTurns(store);
     // The real lifecycle backend is constructed without ambient environment or an effect dispatcher.

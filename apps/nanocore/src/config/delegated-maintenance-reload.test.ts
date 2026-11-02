@@ -66,7 +66,9 @@ describe('loaded Worker Git-read maintenance assignments', () => {
     { change: 'disable', entries: [{ ...assignment, state: 'inactive' }] },
     { change: 'remove the entry', entries: [] },
     { change: 'omit the field', entries: undefined },
-  ])('loads assignment changes only after a successful hot reload: $change', ({ entries }) => {
+  ])('loads assignment changes only after a successful hot reload: $change', async ({
+    entries,
+  }) => {
     const { path, save, manager } = fixture();
     const loaded = manager.current();
     expect(loaded.openKitConfig.policy?.mediation).toEqual(document([assignment]));
@@ -76,7 +78,7 @@ describe('loaded Worker Git-read maintenance assignments', () => {
     expect(manager.current()).toBe(loaded);
     expect(manager.current().openKitConfig.policy?.mediation).toEqual(document([assignment]));
 
-    const result = manager.reload({ mode: 'safe', dryRun: false });
+    const result = await manager.reload({ mode: 'safe', dryRun: false });
     expect(result.status).toBe('applied');
     expect(result.plan.requiresRestart).toEqual([]);
     expect(result.plan.applied).toContainEqual(
@@ -91,7 +93,7 @@ describe('loaded Worker Git-read maintenance assignments', () => {
     expect(readFileSync(path, 'utf8')).toBe(saved);
   });
 
-  it('retains the last loaded assignment and its original validity after an invalid reload', () => {
+  it('retains the last loaded assignment and its original validity after an invalid reload', async () => {
     const { path, save, manager } = fixture();
     const loaded = manager.current();
     expect(loaded.openKitConfig.policy?.mediation).toEqual(document([assignment]));
@@ -104,7 +106,7 @@ describe('loaded Worker Git-read maintenance assignments', () => {
         grant: { ...assignment.grant, protocol: 'ftp' },
       },
     ]);
-    const result = manager.reload({ mode: 'safe', dryRun: false });
+    const result = await manager.reload({ mode: 'safe', dryRun: false });
 
     expect(result.status).toBe('failed');
     expect(result.plan.rejected).not.toEqual([]);

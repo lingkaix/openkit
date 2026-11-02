@@ -784,7 +784,7 @@ it.each([
   const ownerScope = selection === 'revoked-agent' ? 'workspace' : selection;
   const f = fixture();
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
-  let native: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
+  let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
   const admittedTurns: string[] = [];
   let successorCloseout: Promise<unknown> | undefined;
   const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
@@ -867,7 +867,7 @@ it.each([
       initialSnapshot: snapshot,
     });
     vi.spyOn(runtimeConfigManager, 'current').mockImplementation(() => snapshot);
-    native = createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+    native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
       readRuntimeConfig: () => snapshot,
     });
     const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
@@ -1465,7 +1465,7 @@ it.each([
   const gateway = createDefaultWorkerMcpGateway(f.coreDb);
   const client = new Client({ name: 'reviewed-grant-sink-fixture', version: '1.0.0' });
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
-  let native: ReturnType<typeof createNativeTaskAdmissionFixture> | undefined;
+  let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
   const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
   try {
     const source = await prepare(f, ownerScope, 'workspace');
@@ -1548,7 +1548,7 @@ it.each([
         },
       ],
     });
-    native = createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+    native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
       readRuntimeConfig: () => snapshot,
     });
     const app = createApp({

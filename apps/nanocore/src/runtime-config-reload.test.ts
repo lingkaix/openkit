@@ -104,6 +104,7 @@ describe('NanoHost restart-required reload fencing', () => {
       const clients: ReturnType<typeof connect>[] = [];
       const sessions: ServerHttp2Session[] = [];
       let server: ReturnType<typeof createServer> | undefined;
+      const authorities: ReturnType<typeof getNanoHostTransportSessionAuthority>[] = [];
       try {
         applyMigrations(coreDb);
         const localUserId = ensureLocalUser(coreDb);
@@ -129,6 +130,7 @@ describe('NanoHost restart-required reload fencing', () => {
         const initial = manager.current();
         let app = createApp({ coreDb, dataRoot, runtimeConfigManager: manager, store });
         const authority = getNanoHostTransportSessionAuthority(app);
+        authorities.push(authority);
         coreDb.sqlite
           .prepare(
             'INSERT INTO nanohost_integration_identities (identity_id, deployment_id, status, created_at) VALUES (?, ?, ?, ?)'
@@ -183,7 +185,7 @@ describe('NanoHost restart-required reload fencing', () => {
         expect(first.status).toBe(200);
         expect(first.body.role).toBe('authoritative');
         const target = getNanoHostRuntimeTarget(coreDb, host.identityId)!;
-        upsertNanoHostRuntimeTarget(coreDb, {
+        await upsertNanoHostRuntimeTarget(coreDb, {
           ...target,
           freshEmpty: true,
           observedAt: new Date().toISOString(),
@@ -216,7 +218,7 @@ describe('NanoHost restart-required reload fencing', () => {
               return prepare(sql);
             });
           try {
-            expect(() => manager.reload({ mode: 'safe' })).toThrow(failure);
+            await expect(manager.reload({ mode: 'safe' })).rejects.toThrow(failure);
             expect(authority.mayCarryWork(sessions[0]!)).toBe(false);
             expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
             expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
@@ -225,7 +227,8 @@ describe('NanoHost restart-required reload fencing', () => {
           }
           // Failed durable observation stays unchanged; process fencing does not claim a committed readiness update.
           expect(getNanoHostRuntimeTarget(coreDb, host.identityId)).toEqual(targetBeforeReload);
-        } else if (mode === 'safe') expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+        } else if (mode === 'safe')
+          expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
         else {
           const response = await app.request(
             ...operationRequest(
@@ -259,14 +262,14 @@ describe('NanoHost restart-required reload fencing', () => {
           physicalEpoch: null,
         });
         if (mode === 'strict' || mode === 'read-failed') {
-          authority.closePhysicalConnection(sessions[0]!);
+          await authority.closePhysicalConnection(sessions[0]!);
           expect(authority.mayCarryWork(sessions[1]!)).toBe(false);
           expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
         }
         expect((await admit()).status).toBe(409);
 
         writeHost(host);
-        expect(manager.reload({ mode: 'safe' }).status).toBe('applied');
+        expect((await manager.reload({ mode: 'safe' })).status).toBe('applied');
         expect(manager.status().pendingRestart).toEqual([]);
         expect((await admit()).status).toBe(409);
         expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
@@ -278,8 +281,10 @@ describe('NanoHost restart-required reload fencing', () => {
           runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
           store,
         });
+        authorities.push(getNanoHostTransportSessionAuthority(app));
         expect((await admit()).status).toBe(200);
       } finally {
+        for (const authority of authorities) await authority.closeAllPhysicalConnections();
         for (const client of clients) client.destroy();
         for (const session of sessions) session.destroy();
         if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
@@ -382,13 +387,13 @@ describe('runtime config reload API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_reload_fixture',
       observedAt: new Date().toISOString(),
       targetId: 'target_reload_fixture',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: new Date().toISOString(),

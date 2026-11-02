@@ -547,20 +547,22 @@ export function createGoalTools(input: {
               409
             );
           const attempt = attempts[0]!;
-          const result = input.services.goalDomain!.forActor(input.actor, input.db).administer({
-            workspaceDb: input.db,
-            goalId: goal.goalId,
-            coordinatorTurnId: input.turnId,
-            taskLineage: {
-              workspaceId: goal.workspaceId,
-              threadId: attempt.threadId,
-              turnId: attempt.turnId,
-              agentSessionId: attempt.agentSessionId!,
-              packageSnapshotId: attempt.inputRef!,
-            },
-            expectedPolicyRevision: parsed.data.expectedPolicyRevision,
-            grant: parsed.data.grant,
-          });
+          const result = await input.services
+            .goalDomain!.forActor(input.actor, input.db)
+            .administer({
+              workspaceDb: input.db,
+              goalId: goal.goalId,
+              coordinatorTurnId: input.turnId,
+              taskLineage: {
+                workspaceId: goal.workspaceId,
+                threadId: attempt.threadId,
+                turnId: attempt.turnId,
+                agentSessionId: attempt.agentSessionId!,
+                packageSnapshotId: attempt.inputRef!,
+              },
+              expectedPolicyRevision: parsed.data.expectedPolicyRevision,
+              grant: parsed.data.grant,
+            });
           return {
             content: [
               {

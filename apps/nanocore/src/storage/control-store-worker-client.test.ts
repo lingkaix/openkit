@@ -22,13 +22,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
+import {
+  createSchedulerExecutionAttempt,
+  requireSchedulerExecutionAttempt,
+} from '../runtime/execution-attempt-records.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -47,6 +55,7 @@ import {
   userDbPath,
   workspaceDbPath,
 } from './fs-layout.js';
+import { applyMigrations } from './migrate.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
 const interception = vi.hoisted(() => ({
@@ -1493,6 +1502,79 @@ describe('control writer parent admission', () => {
       commit: 'not-committed',
     });
     expect(interception.workers).toHaveLength(1);
+  });
+
+  it('reopens and exactly replays an execution-attempt transition after its FULL reply is lost', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'control-attempt-lost-ack-'));
+    roots.push(root);
+    ensureLayout(root);
+    const coreDb = openCoreDb(root);
+    nativeHandles.push(coreDb);
+    applyMigrations(coreDb);
+    const ownerUserId = ensureLocalUser(coreDb);
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      queueEntryId: 'queue-attempt-lost-ack',
+      backendId: 'nanohost',
+      triggerActor: { kind: 'user', id: ownerUserId },
+      workspaceId,
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: 'tu_00000000-0000-7000-8000-000000000001',
+      turnInput: 'Retain one exact attempt transition across a lost FULL reply.',
+      requestedAgentId: 'agent_worker',
+    });
+    const attempt = createSchedulerExecutionAttempt(coreDb, {
+      entry,
+      attemptId: 'attempt_00000000-0000-7000-8000-000000000001',
+      preparationInput: { admission: entry },
+      now: () => '2026-11-01T00:05:00.000Z',
+    });
+    const scope = nativeProductScope(root, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    interception.gate = new SharedArrayBuffer(8);
+    interception.point = 'after';
+    const gate = new Int32Array(interception.gate);
+    client = getControlStoreWorkerClient();
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: root,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    const command = {
+      kind: 'bind-session' as const,
+      attemptId: attempt.attemptId,
+      agentSessionId: 'as_00000000-0000-7000-8000-000000000001',
+      observedAt: '2026-11-01T00:05:01.000Z',
+    };
+    const original = client.executionAttempt(database, command).catch((error: unknown) => error);
+    await waitForHold(gate);
+    const committed = requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
+    expect(committed).toMatchObject({
+      agentSessionId: command.agentSessionId,
+      updatedAt: command.observedAt,
+    });
+    await interception.workers[0]!.terminate();
+    await expect(original).resolves.toMatchObject({ code: 'unavailable', commit: 'unknown' });
+
+    interception.gate = undefined;
+    await shutdownControlStoreWorkerClient();
+    client = getControlStoreWorkerClient();
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: root,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    await expect(client.executionAttempt(database, command)).resolves.toEqual(committed);
+    expect(requireSchedulerExecutionAttempt(coreDb, attempt.attemptId)).toEqual(committed);
   });
 
   it('fails closed on an unsupported reply rather than satisfying a pending command', async () => {

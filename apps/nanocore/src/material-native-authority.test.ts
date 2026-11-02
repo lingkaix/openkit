@@ -443,13 +443,13 @@ async function preparedMaterial() {
     agentId: agentSetup.manifest.id,
     agentSessionId,
   });
-  const target = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+  const target = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
     deploymentId: 'fixture-deployment',
     identityId: 'fixture-host',
     observedAt: timestamp,
     targetId: 'fixture-target',
   });
-  upsertNanoHostRuntimeTarget(f.coreDb, {
+  await upsertNanoHostRuntimeTarget(f.coreDb, {
     ...target,
     freshEmpty: true,
     observedAt: timestamp,
@@ -549,7 +549,7 @@ async function preparedMaterial() {
   });
   await recordAgentEnvironmentPackageSnapshot(f.db, { environmentPackage, createdAt: timestamp });
   const backendSessionId = `fixture-session-${agentSessionId}`;
-  recordWorkerBackendSessionMaterializing(f.coreDb, {
+  await recordWorkerBackendSessionMaterializing(f.coreDb, {
     identity: {
       agentSessionId,
       backendKind: 'openshell',
@@ -588,7 +588,7 @@ async function preparedMaterial() {
     },
   });
   recordWorkspaceBackendHandoff(f.db, snapshots, materializations);
-  markWorkerBackendWorkspaceHandoffComplete(f.coreDb, { attemptId, now });
+  await markWorkerBackendWorkspaceHandoffComplete(f.coreDb, { attemptId, now });
   return {
     f,
     materialId,

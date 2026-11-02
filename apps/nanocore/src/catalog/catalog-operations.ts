@@ -147,8 +147,8 @@ export function createCatalogOperationImplementations(
     if (!value) throw new Error('Workspace catalog operations require a data root.');
     return value;
   };
-  const afterMutation = (workspaceId: string) => {
-    dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
+  const afterMutation = async (workspaceId: string) => {
+    await dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
     void dependencies.closeWorkspaceMcpSessions?.(workspaceId);
   };
   const management = createSkillManagementCommands(dependencies, hooks, afterMutation);
@@ -443,7 +443,7 @@ export function createCatalogOperationImplementations(
           } finally {
             resumeCompletion();
           }
-          afterMutation(input.workspaceId);
+          await afterMutation(input.workspaceId);
           return { revision: catalog.revision };
         },
       });
@@ -460,7 +460,7 @@ export function createCatalogOperationImplementations(
     return response;
   };
   /** Create and stage share immutable publication; only create moves the current selection. */
-  const createMcp = (
+  const createMcp = async (
     input: OperationInput<'catalog.mcp-create'> | OperationInput<'catalog.mcp-stage-version'>,
     context: AdmittedOperationContext
   ) => {
@@ -495,7 +495,7 @@ export function createCatalogOperationImplementations(
         `mcp:${result.version.entryId}@${result.version.digest}`,
         result.catalog.revision
       );
-      afterMutation(input.workspaceId);
+      await afterMutation(input.workspaceId);
       return {
         entry: mcpEntries(result.catalog).find((item) => item.id === result.version.entryId)!,
         revision: result.catalog.revision,
@@ -774,7 +774,7 @@ export function createCatalogOperationImplementations(
             } finally {
               resumeCompletion();
             }
-            afterMutation(input.workspaceId);
+            await afterMutation(input.workspaceId);
             return {
               candidate: publicSkillCandidate(result.candidate),
               revision: result.catalog.revision,
@@ -835,7 +835,7 @@ export function createCatalogOperationImplementations(
     },
     'catalog.mcp-create': createMcp,
     'catalog.mcp-stage-version': createMcp,
-    'catalog.mcp-remove': (input, context) => {
+    'catalog.mcp-remove': async (input, context) => {
       const workspaceDb = mutationAuditDb(input.workspaceId);
       try {
         const catalog = removeMcpEntry({
@@ -852,7 +852,7 @@ export function createCatalogOperationImplementations(
           `mcp:${input.mcpId}`,
           catalog.revision
         );
-        afterMutation(input.workspaceId);
+        await afterMutation(input.workspaceId);
         return { revision: catalog.revision };
       } catch (error) {
         catalogFailure(error, 'mcp_remove_failed');
@@ -860,7 +860,7 @@ export function createCatalogOperationImplementations(
         workspaceDb.sqlite.close();
       }
     },
-    'catalog.mcp-select': (input, context) => {
+    'catalog.mcp-select': async (input, context) => {
       const workspaceDb = mutationAuditDb(input.workspaceId);
       try {
         const catalog = selectMcpVersion({
@@ -880,7 +880,7 @@ export function createCatalogOperationImplementations(
           `mcp:${input.mcpId}@${input.digest}`,
           catalog.revision
         );
-        afterMutation(input.workspaceId);
+        await afterMutation(input.workspaceId);
         return { revision: catalog.revision };
       } catch (error) {
         catalogFailure(error, 'mcp_select_failed');
@@ -888,7 +888,7 @@ export function createCatalogOperationImplementations(
         workspaceDb.sqlite.close();
       }
     },
-    'catalog.mcp-binding': (input, context) => {
+    'catalog.mcp-binding': async (input, context) => {
       const workspaceDb = mutationAuditDb(input.workspaceId);
       try {
         const catalog = loadWorkspaceResourceCatalog(root(), input.workspaceId);
@@ -931,7 +931,7 @@ export function createCatalogOperationImplementations(
           `mcp:${input.mcpId}`,
           next.revision
         );
-        afterMutation(input.workspaceId);
+        await afterMutation(input.workspaceId);
         return { revision: next.revision };
       } catch (error) {
         catalogFailure(error, 'mcp_binding_failed');
@@ -946,7 +946,7 @@ export function createCatalogOperationImplementations(
         catalogFailure(error, 'plugin_catalog_list_failed');
       }
     },
-    'catalog.plugin-import': (input, context) => {
+    'catalog.plugin-import': async (input, context) => {
       const staging = mkdtempSync(join(tmpdir(), 'openkit-plugin-upload-'));
       let workspaceDb: WorkspaceDb | undefined;
       try {
@@ -975,7 +975,7 @@ export function createCatalogOperationImplementations(
           `plugin:${result.version.entryId}@${result.version.digest}`,
           result.catalog.revision
         );
-        afterMutation(input.workspaceId);
+        await afterMutation(input.workspaceId);
         return {
           diagnostics: result.diagnostics,
           entry: pluginEntries(result.catalog).find((item) => item.id === result.version.entryId)!,

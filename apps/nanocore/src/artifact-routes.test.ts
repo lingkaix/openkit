@@ -973,13 +973,13 @@ describe('Core artifact routes', () => {
     );
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       identityId: 'identity_artifact_redo_fixture',
       observedAt: new Date().toISOString(),
       targetId: 'target_artifact_redo_fixture',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...target,
       freshEmpty: true,
       observedAt: new Date().toISOString(),
@@ -1220,7 +1220,9 @@ describe('Core artifact routes', () => {
         agentPath,
         JSON.stringify({ ...setup.manifest, readiness: { status: 'disabled' } })
       );
-      expect(runtimeConfigManager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+      expect((await runtimeConfigManager.reload({ dryRun: false, mode: 'safe' })).status).toBe(
+        'applied'
+      );
       expect(
         store
           .getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001')

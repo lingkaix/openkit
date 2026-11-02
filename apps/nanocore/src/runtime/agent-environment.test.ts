@@ -2898,7 +2898,7 @@ describe('public network AEP admission', () => {
       );
       writeFileSync(join(dataRoot, 'config', 'gateway.jsonc'), JSON.stringify(gatewayConfig));
       const version = manager.current().version;
-      expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+      expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
       expect(manager.current().version).toBeGreaterThan(version);
       expect(() =>
         preview.previewAgentEnvironmentPackage(input.freshAgentSessionId, input)

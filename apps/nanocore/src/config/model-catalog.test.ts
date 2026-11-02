@@ -126,7 +126,7 @@ describe('deployment model extension catalog', () => {
     expect(JSON.parse(before).openai.models['future-model']).toBeUndefined();
   });
 
-  it('edits through the generic file service and retains active metadata until restart', () => {
+  it('edits through the generic file service and retains active metadata until restart', async () => {
     const { root, path, catalog } = fixture();
     const manager = createRuntimeConfigManager({ dataRoot: root });
     const service = new RuntimeConfigFileService({
@@ -163,9 +163,9 @@ describe('deployment model extension catalog', () => {
         expectedRevision: revision,
       })
     ).toThrow();
-    expect(manager.reload({ mode: 'safe', dryRun: false }).plan.requiresRestart).toContainEqual(
-      expect.objectContaining({ path: 'modelCatalog' })
-    );
+    expect(
+      (await manager.reload({ mode: 'safe', dryRun: false })).plan.requiresRestart
+    ).toContainEqual(expect.objectContaining({ path: 'modelCatalog' }));
     expect(
       resolveEffectiveModelMetadata(
         manager.current().providerRegistry.get('primary')!,
@@ -183,7 +183,7 @@ describe('deployment model extension catalog', () => {
       path,
       '{"schemaVersion":1,"providers":{"openai":{"models":{"bad":{"limit":{"context":0}}}}}}'
     );
-    expect(manager.reload({ mode: 'safe', dryRun: false }).status).toBe('failed');
+    expect((await manager.reload({ mode: 'safe', dryRun: false })).status).toBe('failed');
     expect(manager.current()).toBe(active);
   });
   it('creates catalog files through the generic service and rejects malformed writes without changing bytes', () => {
@@ -219,7 +219,7 @@ describe('deployment model extension catalog', () => {
     expect(readFileSync(path, 'utf8')).toBe(before);
   });
 
-  it('keeps unused catalog edits restart-required and rejects strict reload without changing the active snapshot', () => {
+  it('keeps unused catalog edits restart-required and rejects strict reload without changing the active snapshot', async () => {
     const { root, path, catalog } = fixture();
     const manager = createRuntimeConfigManager({ dataRoot: root });
     const active = manager.current();
@@ -230,21 +230,21 @@ describe('deployment model extension catalog', () => {
         providers: { ...catalog.providers, other: { models: { unused: { reasoning: true } } } },
       })
     );
-    const result = manager.reload({ mode: 'strict', dryRun: false });
+    const result = await manager.reload({ mode: 'strict', dryRun: false });
     expect(result.status).toBe('rejected');
     expect(result.plan.requiresRestart.map((change) => change.path)).toEqual(['modelCatalog']);
     expect(manager.current()).toBe(active);
-    manager.reload({ mode: 'safe', dryRun: false });
+    await manager.reload({ mode: 'safe', dryRun: false });
     expect(manager.current().modelCatalog).toEqual(active.modelCatalog);
     expect(manager.current().providerRegistry).toBe(active.providerRegistry);
   });
 
-  it('does not match another vendor or a shortened native ID and rejects removal of required context', () => {
+  it('does not match another vendor or a shortened native ID and rejects removal of required context', async () => {
     const { root, path, profilePath, profile } = fixture();
     const manager = createRuntimeConfigManager({ dataRoot: root });
     const active = manager.current();
     rmSync(path);
-    expect(manager.reload({ mode: 'safe', dryRun: false }).status).toBe('failed');
+    expect((await manager.reload({ mode: 'safe', dryRun: false })).status).toBe('failed');
     expect(manager.current()).toBe(active);
     writeFileSync(
       path,
@@ -554,7 +554,7 @@ it.each([
   );
 });
 
-it('retains active reasoning options on safe reload and invalid edits, activating valid options after restart', () => {
+it('retains active reasoning options on safe reload and invalid edits, activating valid options after restart', async () => {
   const { root, path, catalog } = fixture();
   const initial = {
     ...catalog,
@@ -593,9 +593,9 @@ it('retains active reasoning options on safe reload and invalid edits, activatin
     },
   };
   writeFileSync(path, JSON.stringify(edited));
-  expect(manager.reload({ mode: 'safe', dryRun: false }).plan.requiresRestart).toContainEqual(
-    expect.objectContaining({ path: 'modelCatalog' })
-  );
+  expect(
+    (await manager.reload({ mode: 'safe', dryRun: false })).plan.requiresRestart
+  ).toContainEqual(expect.objectContaining({ path: 'modelCatalog' }));
   expect(resolve()).toHaveProperty('reasoningEffortLevels', ['low', 'high']);
   const restarted = loadRuntimeConfig(root);
   expect(
@@ -613,7 +613,7 @@ it('retains active reasoning options on safe reload and invalid edits, activatin
       },
     })
   );
-  expect(manager.reload({ mode: 'safe', dryRun: false }).status).toBe('failed');
+  expect((await manager.reload({ mode: 'safe', dryRun: false })).status).toBe('failed');
   expect(manager.current()).toBe(active);
   expect(resolve()).toHaveProperty('reasoningEffortLevels', ['low', 'high']);
 });

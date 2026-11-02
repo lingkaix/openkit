@@ -16,8 +16,8 @@ import {
   revokeOpenKitAccessTokenRecord,
   rotateOpenKitAccessTokenRecord,
   setDefaultServerAdminTokenId,
-  verifyOpenKitAccessTokenRecord,
 } from './access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from './access-token-verification.js';
 import type { Actor } from './identity.js';
 import {
   authorizeWorkspace,
@@ -75,7 +75,7 @@ function insertTokenOwnerUser(coreDb: ReturnType<typeof openCoreDb>): void {
 }
 
 describe('OpenKit access token store', () => {
-  it('writes v1 workspace bindings and reads them through native verification', () => {
+  it('writes v1 workspace bindings and reads them through native verification', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-bindings-v1-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const coreDb = openCoreDb(dataRoot);
@@ -98,16 +98,18 @@ describe('OpenKit access token store', () => {
           .get()
       ).toEqual({ schemaVersion: 1, workspace_ids_json: JSON.stringify(workspaceIds) });
       expect(
-        verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
-          now: new Date('2026-07-06T00:01:00.000Z'),
-        })?.workspaceIds
+        (
+          await verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+            now: new Date('2026-07-06T00:01:00.000Z'),
+          })
+        )?.workspaceIds
       ).toEqual(workspaceIds);
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('refuses unknown binding formats before malformed JSON and token metadata effects', () => {
+  it('refuses unknown binding formats before malformed JSON and token metadata effects', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-bindings-version-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const coreDb = openCoreDb(dataRoot);
@@ -128,11 +130,11 @@ describe('OpenKit access token store', () => {
       expect(() => listOpenKitAccessTokenRecords(coreDb)).toThrow(
         'Unsupported retained record format.'
       );
-      expect(() =>
+      await expect(
         verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
           now: new Date('2026-07-06T00:01:00.000Z'),
         })
-      ).toThrow('Unsupported retained record format.');
+      ).rejects.toThrow('Unsupported retained record format.');
       expect(() => revokeOpenKitAccessTokenRecord(coreDb, issued.tokenId)).toThrow(
         'Unsupported retained record format.'
       );
@@ -234,7 +236,7 @@ describe('OpenKit access token store', () => {
     }
   });
 
-  it('stores only a hashed token secret and verifies active server-admin tokens', () => {
+  it('stores only a hashed token secret and verifies active server-admin tokens', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-store-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -252,7 +254,7 @@ describe('OpenKit access token store', () => {
       const rows = coreDb.sqlite.prepare('SELECT * FROM openkit_access_tokens').all() as Array<{
         token_hash: string;
       }>;
-      const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+      const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
         now: new Date('2026-07-06T00:00:00.000Z'),
       });
 
@@ -264,13 +266,13 @@ describe('OpenKit access token store', () => {
         scope: 'server-admin',
         tokenId: issued.tokenId,
       });
-      expect(verifyOpenKitAccessTokenRecord(coreDb, 'okt_wrong')).toBeNull();
+      expect(await verifyOpenKitAccessTokenRecord(coreDb, 'okt_wrong')).toBeNull();
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('updates the redacted last-used summary after successful verification', () => {
+  it('updates the redacted last-used summary after successful verification', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-store-last-used-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -285,7 +287,7 @@ describe('OpenKit access token store', () => {
         expiresAt: '2026-07-07T00:00:00.000Z',
         now: new Date('2026-07-06T00:00:00.000Z'),
       });
-      const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+      const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
         channel: 'mcp',
         now: new Date('2026-07-06T01:02:03.000Z'),
         source: 'desktop-agent',
@@ -303,7 +305,7 @@ describe('OpenKit access token store', () => {
     }
   });
 
-  it('rotates tokens with grace and returns only the new plaintext secret', () => {
+  it('rotates tokens with grace and returns only the new plaintext secret', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-store-rotate-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -339,19 +341,23 @@ describe('OpenKit access token store', () => {
       expect(rotated?.secret).not.toBe(issued.secret);
       expect(JSON.stringify(rotated)).not.toContain(issued.secret);
       expect(
-        verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
-          now: new Date('2026-07-06T01:00:30.000Z'),
-        })?.tokenId
+        (
+          await verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+            now: new Date('2026-07-06T01:00:30.000Z'),
+          })
+        )?.tokenId
       ).toBe(issued.tokenId);
       expect(
-        verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+        await verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
           now: new Date('2026-07-06T01:01:01.000Z'),
         })
       ).toBeNull();
       expect(
-        verifyOpenKitAccessTokenRecord(coreDb, rotated?.secret ?? '', {
-          now: new Date('2026-07-06T01:01:01.000Z'),
-        })?.tokenId
+        (
+          await verifyOpenKitAccessTokenRecord(coreDb, rotated?.secret ?? '', {
+            now: new Date('2026-07-06T01:01:01.000Z'),
+          })
+        )?.tokenId
       ).toBe(rotated?.tokenId);
       expect(
         rotateOpenKitAccessTokenRecord(coreDb, issued.tokenId, {
@@ -385,7 +391,7 @@ describe('OpenKit access token store', () => {
     }
   });
 
-  it('rejects an otherwise usable token when its canonical owner is disabled', () => {
+  it('rejects an otherwise usable token when its canonical owner is disabled', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-store-disabled-owner-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -405,7 +411,7 @@ describe('OpenKit access token store', () => {
         .run('2026-07-19T01:00:00.000Z', 'usr_00000000-0000-7011-88df-c2b1e8466b6f');
 
       expect(
-        verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
+        await verifyOpenKitAccessTokenRecord(coreDb, issued.secret, {
           now: new Date('2026-07-19T02:00:00.000Z'),
         })
       ).toBeNull();
@@ -660,9 +666,9 @@ async function createFixture() {
       workspaceIds: scope === 'workspace' ? [workspace.id] : [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-  const present = (scope: 'server-admin' | 'workspace'): Actor => {
+  const present = async (scope: 'server-admin' | 'workspace'): Promise<Actor> => {
     const issued = issue(scope);
-    const verified = verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
+    const verified = await verifyOpenKitAccessTokenRecord(coreDb, issued.secret);
     if (!verified) throw new Error('Expected owner-issued fixture credential to authenticate.');
     return {
       kind: 'token',
@@ -672,8 +678,8 @@ async function createFixture() {
       tokenWorkspaceIds: verified.workspaceIds,
     };
   };
-  const admin = present('server-admin');
-  const member = present('workspace');
+  const admin = await present('server-admin');
+  const member = await present('workspace');
   const capture = vi.fn<(evaluation: WorkspaceAuthorityEvaluation) => void>();
   const reads = {
     administrator: () => requireCurrentDeploymentAdmin(coreDb, admin),

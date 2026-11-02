@@ -1284,7 +1284,7 @@ describe('OpenAI-compatible agent gateway', () => {
         llmPiAiClient: asPiAiGatewayClientDouble({
           createChatCompletion: async (_provider, request, onUsage) => {
             upstreamCalls += 1;
-            onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
+            await onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
             return {
               choices: [],
               created: 1,
@@ -1544,7 +1544,7 @@ describe('OpenAI-compatible agent gateway', () => {
     );
     const piAiClient: Pick<PiAiGatewayClient, 'createChatCompletion'> = {
       createChatCompletion: async (_provider, request, onUsage) => {
-        onUsage?.({
+        await onUsage?.({
           cacheRead: 0,
           cacheWrite: 0,
           cost: { total: 0.0012 },
@@ -1740,7 +1740,7 @@ describe('OpenAI-compatible agent gateway', () => {
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: asPiAiGatewayClientDouble({
             createChatCompletion: async (_provider, request, onUsage) => {
-              onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
+              await onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
               return {
                 choices: [
                   {
@@ -1835,7 +1835,7 @@ describe('OpenAI-compatible agent gateway', () => {
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: asPiAiGatewayClientDouble({
             createChatCompletion: async (_provider, request, onUsage) => {
-              onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
+              await onUsage?.({ completion_tokens: 1, prompt_tokens: 2, total_tokens: 3 });
               return {
                 choices: [
                   {
@@ -1914,7 +1914,7 @@ describe('OpenAI-compatible agent gateway', () => {
               completion_tokens: 5,
               total_tokens: 12,
             };
-            onUsage?.(usage);
+            await onUsage?.(usage);
 
             return {
               id: 'chatcmpl_openai_usage',
@@ -3892,7 +3892,7 @@ describe('OpenAI-compatible agent gateway', () => {
             output_tokens: 25,
             total_tokens: 125,
           };
-          onUsage?.(usage);
+          await onUsage?.(usage);
 
           return {
             id: 'resp_gateway',

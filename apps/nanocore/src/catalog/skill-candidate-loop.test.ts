@@ -231,7 +231,7 @@ describe('synthetic Skill Artifact/catalog component', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     cleanup.push(() => workspaceDb.sqlite.close());
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-    recordTestNativeRuntimeTarget(coreDb);
+    await recordTestNativeRuntimeTarget(coreDb);
     const producerSkill = importWorkspaceSkill({
       dataRoot,
       workspaceId,

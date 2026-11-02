@@ -500,9 +500,12 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       { policyWrite: true }
     );
     const reload = deps.reload();
-    if (reload.status !== 'applied' || loaded().revision !== revision)
-      throw new Error('Goal-domain Policy was saved but not admitted; inspect and reload.');
-    return revision;
+    const complete = (result: Awaited<ReturnType<typeof deps.reload>>) => {
+      if (result.status !== 'applied' || loaded().revision !== revision)
+        throw new Error('Goal-domain Policy was saved but not admitted; inspect and reload.');
+      return revision;
+    };
+    return reload instanceof Promise ? reload.then(complete) : complete(reload);
   }
 
   return {
@@ -573,7 +576,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
         responsibleUserId: goal.responsibleUserId,
         administration: { proposal, recheck: () => coordinatorAuthority(input) },
       });
-      return { statement: permission, policyRevision };
+      return policyRevision instanceof Promise
+        ? policyRevision.then((revision) => ({ statement: permission, policyRevision: revision }))
+        : { statement: permission, policyRevision };
     },
 
     /** Current native Task facts select only live exceptions; a historical allow is never a new use. */
@@ -662,7 +667,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
         requestId: input.requestId,
         responsibleUserId: approval.goal.responsibleUserId,
       });
-      return { statement, policyRevision };
+      return policyRevision instanceof Promise
+        ? policyRevision.then((revision) => ({ statement, policyRevision: revision }))
+        : { statement, policyRevision };
     },
 
     /** Rechecks the recorded human, exact Plan, saved/loaded revision and lifetime on every use. */
@@ -707,7 +714,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
               ?.responsibleUserId ?? previous.author.id,
         }
       );
-      return { changed: true, policyRevision };
+      return policyRevision instanceof Promise
+        ? policyRevision.then((revision) => ({ changed: true, policyRevision: revision }))
+        : { changed: true, policyRevision };
     },
   };
 

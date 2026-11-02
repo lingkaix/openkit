@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { acquireDataRootLock, DataRootLockError, dataRootLockPath } from '../bootstrap/lock.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { verifyOpenKitAccessTokenRecord } from './access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from './access-token-verification.js';
 import { runOpenKitOperatorCli } from './admin-recovery.js';
 import { createAuthMiddleware } from './middleware.js';
 import { disableCanonicalUser } from './user-lifecycle.js';
@@ -230,7 +230,9 @@ describe('stopped-server administrator recovery', () => {
       expect(statSync(outputPath).mode & 0o777).toBe(0o600);
       expect(tokenRow.token_hash).toMatch(/^sha256:/u);
       expect(JSON.stringify(tokenRow)).not.toContain(envelope.token);
-      expect(verifyOpenKitAccessTokenRecord(coreDb, envelope.token, { now: NOW })).toMatchObject({
+      expect(
+        await verifyOpenKitAccessTokenRecord(coreDb, envelope.token, { now: NOW })
+      ).toMatchObject({
         ownerUserId: 'usr_00000000-0000-7a88-a815-8b9385f27463',
         scope: 'server-admin',
       });
@@ -256,8 +258,8 @@ describe('stopped-server administrator recovery', () => {
       app.use(
         '/api/*',
         createAuthMiddleware('server', undefined, {
-          accessTokenVerifier: (secret) => {
-            const record = verifyOpenKitAccessTokenRecord(coreDb, secret, { now: NOW });
+          accessTokenVerifier: async (secret) => {
+            const record = await verifyOpenKitAccessTokenRecord(coreDb, secret, { now: NOW });
             return record
               ? {
                   actor: { kind: 'token' as const, userId: record.ownerUserId },

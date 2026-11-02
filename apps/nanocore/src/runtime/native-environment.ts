@@ -8,7 +8,7 @@ import { materializeRuntimeImage } from '../worker-environments/worker-environme
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { commandInputHash } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
-import { readAdmittedWorkerImageEnvironment } from './worker-image-settlements.js';
+import { readAdmittedWorkerImageEnvironment } from './worker-image-settlements-records.js';
 
 /**
  * Resolves only exact confirmed image evidence before compatibility or lease admission.

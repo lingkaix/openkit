@@ -18,7 +18,7 @@ import {
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { FsStore } from '../lib/store.js';
 import { resolvePublicNativeEnvironment } from '../runtime/native-environment.js';
-import { readAdmittedWorkerImageEnvironment } from '../runtime/worker-image-settlements.js';
+import { readAdmittedWorkerImageEnvironment } from '../runtime/worker-image-settlements-records.js';
 import type { CoreDb } from '../storage/db.js';
 import type { RuntimeConfigManager } from './runtime-config.js';
 import {
@@ -148,7 +148,7 @@ export function createAgentNativeEnvironmentService(input: {
     },
 
     /** Writes the sole authored map through existing revision CAS, then invokes safe reload. */
-    update(actor: Actor, unsafeRequest: unknown) {
+    async update(actor: Actor, unsafeRequest: unknown) {
       const request = UpdateAgentNativeEnvironmentRequestSchema.parse(unsafeRequest);
       const { source, manifest, desired } = read(actor, request.fileId);
       if (
@@ -179,7 +179,7 @@ export function createAgentNativeEnvironmentService(input: {
         expectedRevision: request.expectedRevision,
         content,
       });
-      const reload = input.manager.reload({ mode: 'safe', dryRun: false });
+      const reload = await input.manager.reload({ mode: 'safe', dryRun: false });
       if (reload.status === 'applied') input.onReloadApplied?.();
       return this.view(actor, request.fileId);
     },

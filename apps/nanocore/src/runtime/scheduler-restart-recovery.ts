@@ -11,7 +11,7 @@ import {
   requireSchedulerExecutionAttempt,
   type SchedulerExecutionAttemptRecord,
   schedulerExecutionCorrelation,
-} from './execution-attempt-records.js';
+} from './execution-attempts.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
 
@@ -47,7 +47,7 @@ export async function runSchedulerRestartRecovery(
     if (attempt.backendId !== input.executionBackend.id)
       throw new Error('Retained attempt names an unavailable backend.');
     if (attempt.operationId !== null) continue;
-    closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+    await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
       attemptId: attempt.attemptId,
       noOutstandingEffects: true,
       cause: 'restart-before-effects',
@@ -79,13 +79,13 @@ export async function runSchedulerRecoveryMaintenance(
       );
       const expired = attempt.deadline !== null && attempt.deadline <= timestamp;
       if (attempt.phase === 'open' && (revoked || expired)) {
-        const closing = markSchedulerExecutionAttemptClosing(coreDb, {
+        const closing = await markSchedulerExecutionAttemptClosing(coreDb, {
           attemptId: attempt.attemptId,
           cause: revoked ? 'authority-revoked' : 'execution-deadline',
           ...(input.now ? { now: input.now } : {}),
         });
         if (!closing.operationId) {
-          closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+          await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
             attemptId: closing.attemptId,
             noOutstandingEffects: true,
             cause: closing.terminalCause!,
@@ -93,13 +93,13 @@ export async function runSchedulerRecoveryMaintenance(
           });
           await input.projectRecoveredTurn({ ...closing, packageSnapshotId: closing.inputRef });
         } else
-          acceptSchedulerExecutionObservation(
+          await acceptSchedulerExecutionObservation(
             coreDb,
             await input.executionBackend.cancel(schedulerExecutionCorrelation(closing))
           );
       }
       if (!attempt.operationId) continue;
-      acceptSchedulerExecutionObservation(
+      await acceptSchedulerExecutionObservation(
         coreDb,
         await input.executionBackend.inspect(schedulerExecutionCorrelation(attempt))
       );

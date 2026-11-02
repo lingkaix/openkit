@@ -130,8 +130,9 @@ const workspaceAuthorityFixtures: Array<{
   ownsRoot: boolean;
 }> = [];
 
+// This helper closes only its entered App fixture; importing it does not own unrelated native peers.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
+  if (fixtureNativeOwner) await shutdownControlStoreWorkerClient();
   fixtureNativeOwner = undefined;
   for (const fixture of workspaceAuthorityFixtures.splice(0)) {
     if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();

@@ -978,7 +978,7 @@ describe('WorkerControlGateway', () => {
           status: 'completed',
           stopReason: 'completed',
         });
-        gateway.recordFinalStatus({
+        await gateway.recordFinalStatus({
           authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
           lineage: fixture.lineage,
           sequence: terminal.sequence,
@@ -2008,7 +2008,7 @@ describe('WorkerControlGateway', () => {
       'lease-binding:final_status_1'
     );
 
-    gateway.recordFinalStatus({
+    await gateway.recordFinalStatus({
       authorization: `Bearer ${registration.token}`,
       lineage,
       sequence: 7,

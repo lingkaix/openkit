@@ -59,6 +59,11 @@ import type {
   WorkerBackendCleanupProjectionResult,
 } from '../runtime/worker-backend-cleanup-projection.js';
 import type { ControlWorkerRejectedEvidence } from '../runtime/worker-control-rejected-evidence-codecs.js';
+import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlements-records.js';
+import {
+  type WorkerStorageBinding,
+  WorkerStorageBindingError,
+} from '../runtime/worker-storage-binding-records.js';
 import {
   type ControlMaterialCommandInput,
   type ControlMaterialCommandResult,
@@ -68,6 +73,10 @@ import type {
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
+import type {
+  ControlAccessTokenVerification,
+  ControlAccessTokenVerificationResult,
+} from './access-token-verification-codecs.js';
 import {
   FileAdmissionError,
   FileStorageAdmission,
@@ -80,6 +89,7 @@ import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
   type ControlCapabilityWireInput,
+  type ControlWorkspaceCapabilityCommandResult,
   controlCapabilityText,
   prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
@@ -128,8 +138,22 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
-import type { WorkspaceDb } from './db.js';
+import type { ControlCoreJournalInput } from './core-journal-codecs.js';
+import type { CoreDb, WorkspaceDb } from './db.js';
 import type { ControlEvaluationCandidate } from './evaluation-candidate-codecs.js';
+import type {
+  ControlExecutionAttemptCommand,
+  ControlExecutionAttemptResult,
+} from './execution-attempt-codecs.js';
+import type {
+  ControlHarnessLifecycleInput,
+  ControlHarnessLifecycleResult,
+} from './harness-lifecycle-codecs.js';
+import type { ControlRemoteMcpAudit } from './remote-mcp-audit-codecs.js';
+import type {
+  ControlRuntimeTargetInput,
+  ControlRuntimeTargetResult,
+} from './runtime-target-codecs.js';
 import {
   type ControlThreadReadMembership,
   THREAD_READ_RECEIPT_INVALID,
@@ -138,6 +162,15 @@ import type {
   ControlWorkObservationCommandInput,
   ControlWorkObservationResult,
 } from './work-observations.js';
+import type {
+  ControlBackendSessionInput,
+  ControlBackendSessionResult,
+} from './worker-backend-session-codecs.js';
+import type { ControlWorkerFinalStatusCommand } from './worker-control-final-status-codecs.js';
+import type { ControlWorkerHeartbeatCommand } from './worker-control-heartbeat-codecs.js';
+import type { ControlWorkerRecordCommand } from './worker-control-record-codecs.js';
+import type { ControlWorkerImageInput } from './worker-image-codecs.js';
+import type { ControlWorkerStorageInput } from './worker-storage-binding-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import type { ControlCoreSharing, ControlCoreSharingResult } from './workspace-sharing-codecs.js';
 
@@ -1698,16 +1731,17 @@ class ControlStoreWorkerClient {
     db: WorkspaceDb,
     input: ControlCapabilityCommandInput,
     options: { readonly immediate?: boolean } = {}
-  ): Promise<ControlCapabilityCommandResult> {
+  ): Promise<ControlWorkspaceCapabilityCommandResult> {
     const scope = nativeProductScope(db.dataRoot, {
       kind: 'workspace',
       workspaceId: db.workspaceId,
     });
     const database = `workspace:${scope.path}`;
     const admitted = this.openings.get(database);
+    let result: ControlCapabilityCommandResult;
     if (!admitted) {
-      // Reserve the request before awaiting this exact cold scope's original opening ACK.
-      return (
+      // Reserve before awaiting the original opening ACK, as for the existing Workspace path.
+      result = (
         await Promise.all([
           this.open({
             database,
@@ -1721,14 +1755,56 @@ class ControlStoreWorkerClient {
           this.capability(database, input, options),
         ])
       )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      result = await this.capability(database, input, options);
     }
+    // The peer already validated the closed reply; only the opened owner distinction is new.
+    if (
+      result !== null &&
+      typeof result === 'object' &&
+      'context' in result &&
+      (!('workspaceId' in result.context) || result.context.workspaceId !== db.workspaceId)
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Uses the existing Core physical owner for the closed Server ledger cases. */
+  async coreCapability(
+    db: CoreDb,
+    input: ControlCapabilityCommandInput
+  ): Promise<ControlCapabilityCommandResult> {
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    if (!admitted)
+      return (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.capability(database, input),
+        ])
+      )[1];
     if (
       admitted.command.path !== scope.path ||
       admitted.command.dataRoot !== db.dataRoot ||
       !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    return this.capability(database, input, options);
+    return this.capability(database, input);
   }
 
   /** Submits prepared family facts through the bounded writer and awaits durable acknowledgement. */
@@ -1761,6 +1837,7 @@ class ControlStoreWorkerClient {
       return (reply as Extract<Success, { operation: 'capability' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'capability') {
+        if (error.domain.kind === 'ledger') throw new Error(error.domain.message);
         if (error.domain.kind === 'pending')
           throw new PendingRequestCommandError(
             error.domain.code,
@@ -1861,6 +1938,218 @@ class ControlStoreWorkerClient {
           throw new IdempotencyKeyConflictError();
         throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
       }
+      throw error;
+    }
+  }
+
+  /** Commits both terminal streams and the attempt close inside one existing native savepoint. */
+  async workerControlFinalStatus(database: string, command: ControlWorkerFinalStatusCommand) {
+    const { payload, ...metadata } = command;
+    const json = JSON.stringify(payload);
+    const reply = await this.request(
+      {
+        operation: 'worker-control-final-status',
+        database,
+        input: { ...metadata, byteLength: Buffer.byteLength(json) },
+      },
+      [json]
+    );
+    return (reply as Extract<Success, { operation: 'worker-control-final-status' }>).result;
+  }
+
+  /** Commits heartbeat fingerprint and attempt liveness inside one existing native savepoint. */
+  async workerControlHeartbeat(database: string, command: ControlWorkerHeartbeatCommand) {
+    const { payload, ...metadata } = command;
+    const json = JSON.stringify(payload);
+    const reply = await this.request(
+      {
+        operation: 'worker-control-heartbeat',
+        database,
+        input: { ...metadata, byteLength: Buffer.byteLength(json) },
+      },
+      [json]
+    );
+    return (reply as Extract<Success, { operation: 'worker-control-heartbeat' }>).result;
+  }
+
+  /** Commits one original nonterminal control stage inside one existing native savepoint. */
+  async workerControlRecord(database: string, command: ControlWorkerRecordCommand) {
+    const { payload, ...metadata } = command;
+    const json = JSON.stringify(payload);
+    const reply = await this.request(
+      {
+        operation: 'worker-control-record',
+        database,
+        input: { ...metadata, byteLength: Buffer.byteLength(json) },
+      },
+      [json]
+    );
+    return (reply as Extract<Success, { operation: 'worker-control-record' }>).result;
+  }
+
+  /** Returns only after the exact Core journal tuple is covered by FULL. */
+  async coreJournal(database: string, input: ControlCoreJournalInput): Promise<string | null> {
+    try {
+      const reply = await this.request({ operation: 'core-journal', database, input });
+      return (reply as Extract<Success, { operation: 'core-journal' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'core-journal') {
+        const failure = new Error(error.domain.message);
+        if (error.domain.reasonCode && input.kind === 'idle-intent')
+          Object.assign(failure, {
+            reasonCode: error.domain.reasonCode,
+            executionRef: {
+              owner: { kind: 'server' },
+              executionId: `idle-cleanup:${JSON.parse(input.intentJson).carriage.requestId}`,
+            },
+          });
+        throw failure;
+      }
+      throw error;
+    }
+  }
+
+  /** Commits one exact image receipt/journal or confirmed-defaults stage on the physical Core owner. */
+  async workerImage(database: string, input: ControlWorkerImageInput): Promise<void> {
+    try {
+      await this.request({ operation: 'worker-image', database, input });
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'worker-image') {
+        if (error.domain.code === 'unsupported_retained_format')
+          throw new TypeError('Unsupported retained record format.');
+        throw new WorkerImageSettlementConflict();
+      }
+      throw error;
+    }
+  }
+
+  /** Returns current redacted token authority only after its last-use FULL acknowledgement. */
+  async accessTokenVerification(
+    database: string,
+    input: ControlAccessTokenVerification
+  ): Promise<ControlAccessTokenVerificationResult> {
+    const reply = await this.request({ operation: 'access-token-verification', database, input });
+    return (reply as Extract<Success, { operation: 'access-token-verification' }>).result;
+  }
+
+  /** Commits the exact separate remote request Audit after the covering FULL fsync. */
+  async remoteMcpAudit(database: string, input: ControlRemoteMcpAudit): Promise<void> {
+    await this.request({ operation: 'remote-mcp-audit', database, input });
+  }
+
+  /** Commits the current RuntimeTarget fact before its caller claims durable completion. */
+  async runtimeTarget(
+    database: string,
+    input: ControlRuntimeTargetInput
+  ): Promise<ControlRuntimeTargetResult> {
+    try {
+      const reply = await this.request({ operation: 'runtime-target', database, input });
+      return (reply as Extract<Success, { operation: 'runtime-target' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'runtime-target')
+        throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Commits one original backend-session tuple before its dependent effect or release. */
+  async backendSession(
+    database: string,
+    input: ControlBackendSessionInput
+  ): Promise<ControlBackendSessionResult> {
+    try {
+      const reply = await this.request({ operation: 'backend-session', database, input });
+      return (reply as Extract<Success, { operation: 'backend-session' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'backend-session'
+      ) {
+        const Constructor =
+          error.domain.errorName === 'TypeError'
+            ? TypeError
+            : error.domain.errorName === 'SyntaxError'
+              ? SyntaxError
+              : Error;
+        throw new Constructor(error.domain.message);
+      }
+      throw error;
+    }
+  }
+
+  /** Commits one exact execution-attempt transition before its dependent effect or release. */
+  async executionAttempt(
+    database: string,
+    input: ControlExecutionAttemptCommand
+  ): Promise<ControlExecutionAttemptResult> {
+    try {
+      const reply =
+        input.kind === 'create'
+          ? await (() => {
+              const { preparationJson, ...metadata } = input;
+              return this.request(
+                {
+                  operation: 'execution-attempt',
+                  database,
+                  input: { ...metadata, byteLength: Buffer.byteLength(preparationJson) },
+                },
+                [preparationJson]
+              );
+            })()
+          : await this.request({ operation: 'execution-attempt', database, input });
+      return (reply as Extract<Success, { operation: 'execution-attempt' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'execution-attempt'
+      )
+        throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Commits one complete Harness lifecycle tuple before returning its original domain result. */
+  async harnessLifecycle(
+    database: string,
+    input: ControlHarnessLifecycleInput
+  ): Promise<ControlHarnessLifecycleResult> {
+    try {
+      const reply = await this.request({ operation: 'harness-lifecycle', database, input });
+      return (reply as Extract<Success, { operation: 'harness-lifecycle' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'harness-lifecycle'
+      ) {
+        const refusal = new Error(error.domain.message);
+        if (error.domain.exhaustedBound)
+          Object.assign(refusal, {
+            reasonCode: 'busy',
+            exhaustedBound: error.domain.exhaustedBound,
+          });
+        throw refusal;
+      }
+      throw error;
+    }
+  }
+
+  /** Commits the existing complete Core binding transition before returning its exact retained result. */
+  async workerStorageBinding(
+    database: string,
+    input: ControlWorkerStorageInput
+  ): Promise<WorkerStorageBinding> {
+    try {
+      const reply = await this.request({ operation: 'worker-storage-binding', database, input });
+      return (reply as Extract<Success, { operation: 'worker-storage-binding' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'worker-storage-binding'
+      )
+        throw new WorkerStorageBindingError(
+          error.domain.code as WorkerStorageBindingError['code'],
+          error.domain.message
+        );
       throw error;
     }
   }
@@ -2275,24 +2564,36 @@ class ControlStoreWorkerClient {
       command.operation === 'observation' ||
       command.operation === 'generative-presentation' ||
       command.operation === 'app-kernel' ||
-      command.operation === 'thread-read-membership'
+      command.operation === 'thread-read-membership' ||
+      command.operation === 'worker-control-final-status' ||
+      command.operation === 'worker-control-heartbeat' ||
+      command.operation === 'worker-control-record' ||
+      (command.operation === 'execution-attempt' && command.input.kind === 'create')
     ) {
       const size =
-        command.operation === 'material'
-          ? controlMaterialTransferSize(command.input)
-          : command.operation === 'generative-presentation' ||
-              command.operation === 'app-kernel' ||
-              command.operation === 'thread-read-membership'
-            ? { byteLength: command.input.byteLength, replyByteLength: 0 }
-            : command.operation === 'observation'
-              ? {
-                  byteLength: controlWorkObservationTransferSize(command.input),
-                  replyByteLength: 0,
-                }
-              : {
-                  byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
-                  replyByteLength: 0,
-                };
+        command.operation === 'execution-attempt'
+          ? {
+              byteLength: command.input.kind === 'create' ? command.input.byteLength : 0,
+              replyByteLength: 0,
+            }
+          : command.operation === 'material'
+            ? controlMaterialTransferSize(command.input)
+            : command.operation === 'generative-presentation' ||
+                command.operation === 'app-kernel' ||
+                command.operation === 'thread-read-membership' ||
+                command.operation === 'worker-control-final-status' ||
+                command.operation === 'worker-control-heartbeat' ||
+                command.operation === 'worker-control-record'
+              ? { byteLength: command.input.byteLength, replyByteLength: 0 }
+              : command.operation === 'observation'
+                ? {
+                    byteLength: controlWorkObservationTransferSize(command.input),
+                    replyByteLength: 0,
+                  }
+                : {
+                    byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
+                    replyByteLength: 0,
+                  };
       if (!size || size.byteLength === undefined)
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       materialBytes = size.byteLength + size.replyByteLength;

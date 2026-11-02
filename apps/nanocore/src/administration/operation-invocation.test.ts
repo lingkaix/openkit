@@ -117,7 +117,7 @@ describe('real administration assembly through invocation', () => {
         identityId: 'integration_primary',
         deploymentId: testEntityId('dep', 'deploy_primary'),
       };
-      allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         ...target,
         targetId: target.identityId,
         observedAt: '2026-10-02T00:00:00.000Z',

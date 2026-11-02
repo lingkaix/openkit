@@ -71,7 +71,7 @@ import {
   createVaultProviderCredentialResolver,
 } from './providers/vault-credential-resolver.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
-import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempt-records.js';
+import { markSchedulerAttemptForTerminalTurn } from './runtime/execution-attempts.js';
 import {
   classifyNanoHostAttemptsAfterRestart,
   type RunNanoHostAttemptRecoveryInput,
@@ -105,7 +105,7 @@ import {
   type ConfiguredWorkerLifecycleRuntime,
   createConfiguredWorkerLifecycleRuntime,
 } from './runtime/turn-executor-factory.js';
-import { getWorkerBackendSession } from './runtime/worker-backend-sessions.js';
+import { getWorkerBackendSession } from './runtime/worker-backend-session-records.js';
 import { listExportableWorkerCheckpoints } from './runtime/worker-checkpoints.js';
 import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -286,7 +286,7 @@ const bootResult = await runBootPhases({
         applyMigrations(coreDb);
         restoreWorkspaceRetirementAdmission({ coreDb, workspaceMutationAdmission });
         restoreWorkspaceRecoveryAdmission(coreDb, workspaceMutationAdmission);
-        recoverRunningCapabilityCalls({ workspaceDb: coreDb });
+        await recoverRunningCapabilityCalls({ workspaceDb: coreDb });
         // Only active server registry facts establish an expected Workspace; deletion may remove roots.
         for (const { workspaceId } of coreDb.sqlite
           .prepare(
@@ -389,7 +389,12 @@ const bootResult = await runBootPhases({
           dataRoot,
           workspaceMutationAdmission,
         });
-        fenceNanoHostRuntimeTargetAfterRestart(recoveryCoreDb, new Date().toISOString());
+        // The instance lock is held and transport admission has not started. No target can
+        // appear during this boot-only read; an empty set has no durable fence to publish.
+        // Existing targets still require the native deciding section and its FULL ACK.
+        if (recoveryCoreDb.sqlite.prepare('SELECT 1 FROM nanohost_runtime_targets LIMIT 1').get()) {
+          await fenceNanoHostRuntimeTargetAfterRestart(recoveryCoreDb, new Date().toISOString());
+        }
         // Startup owns abandoned private staging before dispatch and upload admission open.
         // A later read-only Store construction must not remove another live request's bytes.
         discardAbandonedWorkspaceStaging(dataRoot);
@@ -905,7 +910,7 @@ function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcc
       throw new Error('Accepted worker final status has no durable backend session.');
     }
     const result = await runtime.reconcileAcceptedFinalStatus(session);
-    markSchedulerAttemptForTerminalTurn(database, result.turn);
+    await markSchedulerAttemptForTerminalTurn(database, result.turn);
   })().catch((error) => {
     restartCloseoutPackageSnapshots.add(packageSnapshotId);
     console.warn(
@@ -943,10 +948,14 @@ function shutdown(signal: NodeJS.Signals): void {
           for (const result of results)
             if (result.status === 'rejected')
               console.error('Execution maintenance shutdown failed.', result.reason);
-          return shutdownControlStoreWorkerClient();
+          return closeNanoCoreListeners();
         })
-        .catch((error) => console.error('Control-store shutdown failed.', error))
-        .then(() => closeNanoCoreListeners(onClosed));
+        .then(() => shutdownControlStoreWorkerClient())
+        .then(onClosed)
+        .catch((error) => {
+          console.error('Owned storage/listener shutdown failed.', error);
+          finishShutdown(signal, [...stepsCompleted, 'shutdown.failed'], false, 1);
+        });
     },
     deadlineMs: SHUTDOWN_DEADLINE_MS,
     onClosed: () => finishShutdown(signal, [...stepsCompleted, 'http-server.close'], false, 0),
@@ -955,25 +964,35 @@ function shutdown(signal: NodeJS.Signals): void {
 }
 
 /** Closes both process listeners before completing orderly shutdown. */
-function closeNanoCoreListeners(onClosed: () => void): void {
+async function closeNanoCoreListeners(): Promise<void> {
   void shutdownTelemetry().catch(() => undefined);
-  void Promise.all([workerMcpGateway?.close(), closeRetrievalServices()])
-    .catch(() => undefined)
-    .then(() => {
-      let remaining = Number(appServer !== undefined) + Number(nanoHostServer !== null);
-      if (remaining === 0) {
-        onClosed();
-        return;
-      }
-      const markClosed = () => {
-        remaining -= 1;
-        if (remaining === 0) {
-          onClosed();
-        }
-      };
-      appServer?.close(markClosed);
-      nanoHostServer?.close(markClosed);
-    });
+  await Promise.all([workerMcpGateway?.close(), closeRetrievalServices()]);
+  // Stop accepting connections first; drain both earlier and in-flight bound closes before the writer.
+  const listenersClosed = Promise.allSettled(
+    [appServer, nanoHostServer]
+      .filter((server) => server != null)
+      .map(
+        (server) =>
+          new Promise<void>((resolve, reject) =>
+            server.close((error?: Error) => {
+              if (error) reject(error);
+              else resolve();
+            })
+          )
+      )
+  );
+  await nanohostTransportSessionAuthority.closeAllPhysicalConnections();
+  const closed = await listenersClosed;
+  // A connection admitted while listener closure was in flight is still in the existing authority.
+  await nanohostTransportSessionAuthority.closeAllPhysicalConnections();
+  const failures = closed.filter(
+    (result): result is PromiseRejectedResult => result.status === 'rejected'
+  );
+  if (failures.length)
+    throw new AggregateError(
+      failures.map((result) => result.reason),
+      'NanoCore listener close failed.'
+    );
 }
 
 /**

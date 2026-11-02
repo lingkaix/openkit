@@ -42,7 +42,7 @@ describe('workspace reconciliation records', () => {
     'conflicting',
     'matching',
     'empty',
-  ] as const)('resolves absent-source capture recovery only from an exact receipt (%s)', (receiptKind) => {
+  ] as const)('resolves absent-source capture recovery only from an exact receipt (%s)', async (receiptKind) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-receipt-'));
     const coreDb = openCoreDb(dataRoot);
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -88,13 +88,13 @@ describe('workspace reconciliation records', () => {
         sessionCompatibilityKey: 'fixture',
         now: () => timestamp,
       });
-      const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      const target = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         deploymentId: 'deployment-test',
         identityId: 'nanohost-test',
         targetId: 'runtime-target-test',
         observedAt: timestamp,
       });
-      upsertNanoHostRuntimeTarget(coreDb, {
+      await upsertNanoHostRuntimeTarget(coreDb, {
         ...target,
         freshEmpty: true,
         ready: true,
@@ -102,7 +102,7 @@ describe('workspace reconciliation records', () => {
         physicalEpoch: 'a'.repeat(64),
         observedAt: timestamp,
       });
-      const anchor = recordWorkerBackendSessionMaterializing(coreDb, {
+      const anchor = await recordWorkerBackendSessionMaterializing(coreDb, {
         backendVersion: '0.0.99',
         backendLineage: { kind: 'reference', imageRef: 'worker:test' },
         identity: {

@@ -56,7 +56,9 @@ export interface AdmitNanoHostTransportSessionInput {
   /** Opaque native HTTP/2 physical connection identity. */
   readonly physicalConnection: object;
   /** Persists the exact close result after process-local fencing. */
-  readonly onClose?: (result: NanoHostTransportPhysicalConnectionCloseResult) => void;
+  readonly onClose?: (
+    result: NanoHostTransportPhysicalConnectionCloseResult
+  ) => void | Promise<void>;
 }
 
 /**
@@ -77,9 +79,14 @@ export interface NanoHostTransportSessionAuthority {
    * @param physicalConnection Native connection identity observed closed by the server.
    * @returns Closed and promoted generation facts.
    */
+  /** Fences and joins existing bound sessions before their physical listener and writer close. */
+  closeAllPhysicalConnections(): Promise<void>;
+
   closePhysicalConnection(
     physicalConnection: object
-  ): NanoHostTransportPhysicalConnectionCloseResult;
+  ):
+    | NanoHostTransportPhysicalConnectionCloseResult
+    | Promise<NanoHostTransportPhysicalConnectionCloseResult>;
 
   /**
    * Reads the generation already bound to one physical connection.
@@ -141,10 +148,11 @@ interface SessionRecord {
   readonly predecessorGeneration: number | null;
   readonly physicalConnection: object;
   role: NanoHostTransportSessionRole;
+  onClose?: AdmitNanoHostTransportSessionInput['onClose'];
 }
 
 /** Native HTTP/2 sessions created by the Node server accept path. */
-const nativePhysicalConnections = new WeakSet<object>();
+const nativePhysicalConnections = new WeakMap<object, boolean>();
 
 /**
  * Reads and brands the opaque physical connection from a native H2 request context.
@@ -164,7 +172,7 @@ export function readNanoHostPhysicalConnectionContext(incoming: unknown): object
   if (!session || session.destroyed) {
     return null;
   }
-  nativePhysicalConnections.add(session);
+  if (!nativePhysicalConnections.has(session)) nativePhysicalConnections.set(session, true);
   return session;
 }
 
@@ -176,6 +184,13 @@ export function readNanoHostPhysicalConnectionContext(incoming: unknown): object
  */
 export function isNanoHostPhysicalConnectionContext(physicalConnection: object): boolean {
   return nativePhysicalConnections.has(physicalConnection);
+}
+
+/** Consumes existing native eligibility before the allocation await; an unknown outcome requires a fresh connection. */
+export function consumeNanoHostPhysicalConnectionAdmission(connection: object): boolean {
+  if (nativePhysicalConnections.get(connection) !== true) return false;
+  nativePhysicalConnections.set(connection, false);
+  return true;
 }
 
 /**
@@ -256,6 +271,41 @@ export function createNanoHostTransportSessionAuthority(): NanoHostTransportSess
     };
   };
 
+  /** Joins the bound close publication without retry; physical fencing remains synchronous. */
+  const closeAndPublish = (physicalConnection: object) => {
+    const result = closePhysicalConnection(physicalConnection);
+    const record = sessionsByConnection.get(physicalConnection);
+    const publish = record?.onClose;
+    if (!publish) return result;
+    // The existing bound callback joins the same accepted producer. A failed or unknown
+    // publication remains a failure on later closes; it never becomes an implicit retry.
+    try {
+      const publication = publish(result);
+      if (!(publication instanceof Promise)) {
+        delete record.onClose;
+        return result;
+      }
+      record.onClose = () => publication;
+      return publication.then(
+        () => {
+          delete record.onClose;
+          return result;
+        },
+        (error: unknown) => {
+          record.onClose = () => {
+            throw error;
+          };
+          throw error;
+        }
+      );
+    } catch (error) {
+      record.onClose = () => {
+        throw error;
+      };
+      throw error;
+    }
+  };
+
   return {
     admit(input) {
       const authoritative = authoritativeByIdentity.get(input.identityId);
@@ -293,6 +343,7 @@ export function createNanoHostTransportSessionAuthority(): NanoHostTransportSess
         identityId: input.identityId,
         connectionGeneration: input.connectionGeneration,
         physicalConnection: input.physicalConnection,
+        onClose: input.onClose,
         predecessorGeneration,
         role: authoritative === undefined ? 'authoritative' : 'candidate',
       });
@@ -305,14 +356,37 @@ export function createNanoHostTransportSessionAuthority(): NanoHostTransportSess
       const connection = input.physicalConnection as {
         once(event: 'close', listener: () => void): unknown;
       };
-      connection.once('close', () => {
-        const result = closePhysicalConnection(input.physicalConnection);
-        input.onClose?.(result);
+      connection.once('close', async () => {
+        try {
+          // The EventEmitter cannot join a rejected Promise. Keep the failure in the existing
+          // bound callback for explicit owner joins and report it at this event boundary.
+          await closeAndPublish(input.physicalConnection);
+        } catch (error) {
+          console.error('NanoHost physical close publication failed.', error);
+        }
       });
       return toAdmission(record);
     },
 
-    closePhysicalConnection,
+    closePhysicalConnection: closeAndPublish,
+
+    async closeAllPhysicalConnections() {
+      const outcomes = await Promise.allSettled(
+        [...sessions.values()].map(async (record) => {
+          try {
+            await closeAndPublish(record.physicalConnection);
+          } finally {
+            (record.physicalConnection as { destroy(): void }).destroy();
+          }
+        })
+      );
+      const failures = outcomes.filter((outcome) => outcome.status === 'rejected');
+      if (failures.length)
+        throw new AggregateError(
+          failures.map((outcome) => outcome.reason),
+          'NanoHost physical close publication failed.'
+        );
+    },
 
     connectionGeneration(physicalConnection) {
       return sessionsByConnection.get(physicalConnection)?.connectionGeneration ?? null;

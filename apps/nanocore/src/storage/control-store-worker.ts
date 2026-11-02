@@ -24,6 +24,8 @@ import {
   prepareControlReviewCommand,
   readControlReviewMaterialId,
 } from '../artifact-reviews.js';
+import { recordServerAuditEvent } from '../audit-events.js';
+import { recordVerifiedOpenKitAccessTokenUse } from '../auth/access-token-store.js';
 import { ADMIN_RECOVERY_REQUIRED, AdminRecoveryError } from '../auth/admin-recovery-codecs.js';
 import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
 import { BETTER_AUTH_REFUSALS, BetterAuthNativeError } from '../auth/better-auth-codecs.js';
@@ -83,12 +85,14 @@ import {
   ProjectWorkerBackendCleanupInputSchema,
   projectWorkerBackendCleanupInDb,
 } from '../runtime/worker-backend-cleanup-projection.js';
+import { WorkerImageSettlementConflict } from '../runtime/worker-image-settlements-records.js';
 import { WorkerRawOutputAuthorityError } from '../runtime/worker-raw-output.js';
 import {
   prepareWorkerRuntimeProvenance,
   recordWorkerRuntimeProvenanceMetadata,
   type WorkerRuntimeProvenanceMetadataInput,
 } from '../runtime/worker-runtime-provenance.js';
+import { WorkerStorageBindingError } from '../runtime/worker-storage-binding-records.js';
 import {
   applyControlMaterialCommand,
   type ControlMaterialCommandInput,
@@ -104,7 +108,9 @@ import {
 import { applyControlAdmission } from './control-store-admission.js';
 import {
   applyControlCapabilityCommand,
+  applyControlCoreCapabilityCommand,
   type ControlCapabilityCommandInput,
+  CoreCapabilityRefusal,
   prepareControlCapabilityCommand,
   tryControlCapabilityReuse,
 } from './control-store-capability.js';
@@ -169,13 +175,24 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
+import { CoreJournalRefusal } from './core-journal-codecs.js';
+import { applyControlCoreJournal } from './core-journal-native.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
 import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
 import { EvaluationCandidateCommandError } from './evaluation-candidate-codecs.js';
 import { applyControlEvaluationCandidate } from './evaluation-candidate-native.js';
+import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
+import {
+  applyControlExecutionAttempt,
+  controlExecutionAttemptLanes,
+} from './execution-attempt-native.js';
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
+import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
+import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import { applyAppMigrations, applyNativeScopeMigrations } from './migrate.js';
+import { RuntimeTargetRefusal } from './runtime-target-codecs.js';
+import { applyControlRuntimeTarget } from './runtime-target-native.js';
 import {
   THREAD_READ_RECEIPT_INVALID,
   ThreadReadItemIdsSchema,
@@ -186,6 +203,18 @@ import {
   type ControlWorkObservationInput,
   prepareControlWorkObservationCommand,
 } from './work-observations.js';
+import { BackendSessionRefusal } from './worker-backend-session-codecs.js';
+import {
+  applyControlBackendSession,
+  controlBackendSessionLanes,
+} from './worker-backend-session-native.js';
+import { WorkerFinalStatusRefusal } from './worker-control-final-status-codecs.js';
+import { applyControlWorkerFinalStatus } from './worker-control-final-status-native.js';
+import { WorkerHeartbeatRefusal } from './worker-control-heartbeat-codecs.js';
+import { applyControlWorkerHeartbeat } from './worker-control-heartbeat-native.js';
+import { applyControlWorkerRecord } from './worker-control-record-native.js';
+import { applyControlWorkerImage } from './worker-image-native.js';
+import { applyControlWorkerStorageBinding } from './worker-storage-binding-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { ControlCoreSharingRefusalSchema } from './workspace-sharing-codecs.js';
 import { applyControlCoreSharing } from './workspace-sharing-native.js';
@@ -213,6 +242,18 @@ type WriteCommand = Extract<
       | 'publication'
       | 'project-cleanup'
       | 'app-kernel'
+      | 'worker-storage-binding'
+      | 'harness-lifecycle'
+      | 'execution-attempt'
+      | 'core-journal'
+      | 'worker-image'
+      | 'runtime-target'
+      | 'backend-session'
+      | 'remote-mcp-audit'
+      | 'access-token-verification'
+      | 'worker-control-final-status'
+      | 'worker-control-heartbeat'
+      | 'worker-control-record'
       | 'thread-read-membership'
       | 'admin-recovery'
       | 'better-auth'
@@ -428,6 +469,70 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       error instanceof IdempotencyKeyConflictError)
   )
     return { operation, code: error.code, message: error.message, status: error.status };
+  if (operation === 'worker-control-heartbeat' && error instanceof WorkerHeartbeatRefusal)
+    return { operation, code: error.code, message: error.message, status: error.status };
+  if (operation === 'worker-control-record' && error instanceof WorkerHeartbeatRefusal)
+    return { operation, code: error.code, message: error.message, status: error.status };
+  if (operation === 'worker-control-final-status' && error instanceof WorkerFinalStatusRefusal)
+    return { operation, code: error.code, message: error.message, status: error.status };
+  if (
+    operation === 'backend-session' &&
+    (error instanceof BackendSessionRefusal ||
+      error instanceof SyntaxError ||
+      (error instanceof TypeError && error.message === 'Unsupported retained record format.'))
+  )
+    return {
+      operation,
+      code: 'backend_session_refused',
+      message: error.message,
+      errorName:
+        error.name === 'TypeError'
+          ? 'TypeError'
+          : error.name === 'SyntaxError'
+            ? 'SyntaxError'
+            : 'Error',
+      status: 409,
+    };
+  if (operation === 'core-journal' && error instanceof CoreJournalRefusal)
+    return {
+      operation: 'core-journal',
+      code: 'core_journal_refused',
+      message: error.message,
+      status: 409,
+      ...(error.reasonCode ? { reasonCode: error.reasonCode } : {}),
+    };
+  if (
+    operation === 'worker-image' &&
+    error instanceof TypeError &&
+    error.message === 'Unsupported retained record format.'
+  )
+    return {
+      operation: 'worker-image',
+      code: 'unsupported_retained_format',
+      message: 'Unsupported retained record format.',
+      status: 409,
+    };
+  if (operation === 'worker-image' && error instanceof WorkerImageSettlementConflict)
+    return {
+      operation: 'worker-image',
+      code: 'worker_image_conflict',
+      message: 'Worker image settlement conflicts with its immutable result.',
+      status: 409,
+    };
+  if (operation === 'runtime-target' && error instanceof RuntimeTargetRefusal)
+    return { operation, code: 'runtime_target_refused', message: error.message, status: 409 };
+  if (operation === 'execution-attempt' && error instanceof ExecutionAttemptRefusal)
+    return { operation, code: 'attempt_refused', message: error.message, status: 409 };
+  if (operation === 'harness-lifecycle' && error instanceof HarnessLifecycleRefusal)
+    return {
+      operation,
+      code: 'harness_refused',
+      message: error.message,
+      status: 409,
+      ...(error.exhaustedBound ? { exhaustedBound: error.exhaustedBound } : {}),
+    };
+  if (operation === 'worker-storage-binding' && error instanceof WorkerStorageBindingError)
+    return { operation, code: error.code, message: error.message, status: 409 };
   if (operation === 'core-sharing' && error instanceof ZodError)
     return {
       operation,
@@ -524,6 +629,14 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
   ) {
     domain = { operation, code: error.code, message: error.message, status: error.status };
+  } else if (operation === 'capability' && error instanceof CoreCapabilityRefusal) {
+    domain = {
+      operation,
+      kind: 'ledger',
+      code: 'capability_ledger_refused',
+      message: error.message,
+      status: 409,
+    };
   } else if (operation === 'capability') {
     const projected = projectControlCapabilityFailure(error);
     if (projected) domain = { operation, ...projected };
@@ -748,6 +861,35 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     lanes.add(workId);
   };
   switch (request.operation) {
+    case 'worker-control-record':
+    case 'worker-control-heartbeat':
+    case 'worker-control-final-status':
+      lanes.add(request.input.lineage.turnId);
+      lanes.add(`session:${request.input.lineage.agentSessionId}`);
+      break;
+    case 'core-journal':
+      if (request.input.kind === 'image-abandon') {
+        if (!owner.scopeDb) throw new ControlProductPreconditionError();
+        lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
+      } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);
+      break;
+    case 'worker-image':
+      lanes.add('worker-image');
+      break;
+    case 'runtime-target':
+      lanes.add(
+        'targetId' in request.input ? `runtime-target:${request.input.targetId}` : 'runtime-target'
+      );
+      break;
+    case 'backend-session':
+      if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+      for (const lane of controlBackendSessionLanes(owner.scopeDb, request.input)) lanes.add(lane);
+      break;
+    case 'execution-attempt':
+      if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+      for (const lane of controlExecutionAttemptLanes(owner.scopeDb, request.input))
+        lanes.add(lane);
+      break;
     case 'app-kernel':
       if (
         !owner.physicalScope ||
@@ -815,7 +957,12 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         if (call?.turn_id) lanes.add(call.turn_id);
         if (call?.agent_session_id) lanes.add(`session:${call.agent_session_id}`);
       };
-      if (input.kind === 'finish' || input.kind === 'attribution') {
+      if (
+        input.kind === 'finish' ||
+        input.kind === 'attribution' ||
+        input.kind === 'server-finish' ||
+        input.kind === 'server-attribution'
+      ) {
         addCall(input.callId);
         break;
       }
@@ -828,17 +975,21 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         break;
       }
       const context =
-        input.kind === 'mcp-schema'
-          ? input.environmentPackage.scope
-          : input.kind === 'checkpoint'
-            ? input.input
-            : input.kind === 'admit'
-              ? input.context
-              : input.kind === 'usage-finish'
-                ? input.call.context
-                : input.kind === 'permission'
-                  ? (input.decision.mediation?.subject.process ?? input.decision.contextSummary)
-                  : input;
+        input.kind === 'server-admit'
+          ? input.context
+          : input.kind === 'server-usage'
+            ? input.call.context
+            : input.kind === 'mcp-schema'
+              ? input.environmentPackage.scope
+              : input.kind === 'checkpoint'
+                ? input.input
+                : input.kind === 'admit'
+                  ? input.context
+                  : input.kind === 'usage-finish'
+                    ? input.call.context
+                    : input.kind === 'permission'
+                      ? (input.decision.mediation?.subject.process ?? input.decision.contextSummary)
+                      : input;
       if (typeof context?.turnId === 'string') lanes.add(context.turnId);
       if (context && 'agentSessionId' in context && typeof context.agentSessionId === 'string')
         lanes.add(`session:${context.agentSessionId}`);
@@ -1567,6 +1718,155 @@ function flush(owner: OwnedDatabase): void {
               operation: 'review',
               result,
             };
+          } else if (request.operation === 'worker-control-final-status') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlWorkerFinalStatus(
+              owner.scopeDb,
+              request.input,
+              request.content
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'worker-control-final-status',
+              result,
+            };
+          } else if (request.operation === 'worker-control-heartbeat') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlWorkerHeartbeat(
+              owner.scopeDb,
+              request.input,
+              request.content
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'worker-control-heartbeat',
+              result,
+            };
+          } else if (request.operation === 'worker-control-record') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlWorkerRecord(owner.scopeDb, request.input, request.content);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'worker-control-record',
+              result,
+            };
+          } else if (request.operation === 'core-journal') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlCoreJournal(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'core-journal',
+              result,
+            };
+          } else if (request.operation === 'worker-image') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlWorkerImage(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'worker-image',
+              result,
+            };
+          } else if (request.operation === 'access-token-verification') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = recordVerifiedOpenKitAccessTokenUse(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'access-token-verification',
+              result,
+            };
+          } else if (request.operation === 'remote-mcp-audit') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const {
+              userId,
+              tokenId,
+              authentication,
+              operationId,
+              requestId,
+              outcome: requestOutcome,
+            } = request.input;
+            recordServerAuditEvent({
+              coreDb: owner.scopeDb,
+              actor: { kind: 'user', id: userId },
+              action: 'remote-mcp.request',
+              authentication,
+              resource: operationId ? `operation:${operationId}` : '/mcp',
+              requestId,
+              outcome: requestOutcome,
+              summary: `remote-mcp request using Token ${tokenId}.`,
+            });
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'remote-mcp-audit',
+              result: null,
+            };
+          } else if (request.operation === 'runtime-target') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlRuntimeTarget(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'runtime-target',
+              result,
+            };
+          } else if (request.operation === 'backend-session') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlBackendSession(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'backend-session',
+              result,
+            };
+          } else if (request.operation === 'execution-attempt') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlExecutionAttempt(
+              owner.scopeDb,
+              request.input,
+              request.content
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'execution-attempt',
+              result,
+            };
+          } else if (request.operation === 'harness-lifecycle') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlHarnessLifecycle(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'harness-lifecycle',
+              result,
+            };
+          } else if (request.operation === 'worker-storage-binding') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlWorkerStorageBinding(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'worker-storage-binding',
+              result,
+            };
           } else if (request.operation === 'core-sharing') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlCoreSharing(owner.scopeDb, request.input);
@@ -1600,11 +1900,17 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'capability') {
             const db = owner.scopeDb;
-            if (db?.scope !== 'workspace' || !request.preparedCapability)
-              throw new WorkerRawOutputAuthorityError();
-            const result = applyControlCapabilityCommand(db, request.preparedCapability, (goalId) =>
-              advanceGoalRevision(db, goalId)
-            );
+            if (!db || !request.preparedCapability) throw new WorkerRawOutputAuthorityError();
+            const result =
+              db.scope === 'core'
+                ? applyControlCoreCapabilityCommand(db, request.preparedCapability)
+                : db.scope === 'workspace'
+                  ? applyControlCapabilityCommand(db, request.preparedCapability, (goalId) =>
+                      advanceGoalRevision(db, goalId)
+                    )
+                  : (() => {
+                      throw new WorkerRawOutputAuthorityError();
+                    })();
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -2519,6 +2825,18 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'journal' ||
       value.operation === 'goal' ||
       value.operation === 'maintenance' ||
+      value.operation === 'worker-storage-binding' ||
+      value.operation === 'harness-lifecycle' ||
+      value.operation === 'execution-attempt' ||
+      value.operation === 'core-journal' ||
+      value.operation === 'worker-image' ||
+      value.operation === 'runtime-target' ||
+      value.operation === 'backend-session' ||
+      value.operation === 'remote-mcp-audit' ||
+      value.operation === 'access-token-verification' ||
+      value.operation === 'worker-control-final-status' ||
+      value.operation === 'worker-control-heartbeat' ||
+      value.operation === 'worker-control-record' ||
       value.operation === 'core-sharing' ||
       value.operation === 'evaluation-candidate' ||
       value.operation === 'material' ||
@@ -2790,7 +3108,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedEntries = preparedPending.entries;
             }
             if (value.operation === 'capability') {
-              if (owner.scopeDb?.scope !== 'workspace') throw new WorkerRawOutputAuthorityError();
+              if (!owner.scopeDb || !['core', 'workspace'].includes(owner.scopeDb.scope))
+                throw new WorkerRawOutputAuthorityError();
               preparedCapability = prepareControlCapabilityCommand(value.input, value.content);
             }
             if (value.operation === 'material') {
@@ -2865,7 +3184,13 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedCapability,
               preparedDirectories: [...newDirectories.directories],
               preparedPublications: [...newDirectories.published],
-              ...('content' in value ? { content: undefined } : {}),
+              ...('content' in value &&
+              value.operation !== 'execution-attempt' &&
+              value.operation !== 'worker-control-final-status' &&
+              value.operation !== 'worker-control-heartbeat' &&
+              value.operation !== 'worker-control-record'
+                ? { content: undefined }
+                : {}),
             });
             schedule(owner);
           } catch (error) {

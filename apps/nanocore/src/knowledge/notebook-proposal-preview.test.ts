@@ -149,7 +149,7 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
     threadId: origin.id,
     userId,
   });
-  expect(runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+  expect((await runtimeConfigManager.reload({ mode: 'safe' })).status).toBe('applied');
   for (const input of [request, { ...request, path: 'add.md', offset: 4096 }]) {
     const denied = await call('knowledge.proposal.read', input);
     expect(denied.status, JSON.stringify(denied.body)).toBe(403);
@@ -160,7 +160,7 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
     join(dataRoot, 'workspaces', workspace.id, 'config', 'workspace.jsonc'),
     originalConfig
   );
-  expect(runtimeConfigManager.reload({ mode: 'safe' }).status).toBe('applied');
+  expect((await runtimeConfigManager.reload({ mode: 'safe' })).status).toBe('applied');
   expect((await call('knowledge.proposal.read', request)).status).toBe(200);
   const later = await call('knowledge.notebook.update', {
     requestId: randomUUID(),

@@ -246,7 +246,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         expect(boundary.response.status, boundary.name).toBe(boundary.status);
       }
 
-      const allocated = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      const allocated = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
         targetId: config.identityId,
         identityId: config.identityId,
         deploymentId: config.deploymentId,
@@ -272,7 +272,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         physicalEpoch: null,
         observedAt: '2026-08-15T01:02:02.000Z',
       });
-      upsertNanoHostRuntimeTarget(coreDb, {
+      await upsertNanoHostRuntimeTarget(coreDb, {
         targetId: config.identityId,
         identityId: config.identityId,
         deploymentId: config.deploymentId,
@@ -1835,11 +1835,11 @@ describe('definition-derived deployment administration cutover', () => {
         identityId: f.config.identityId,
         deploymentId: f.config.deploymentId,
       };
-      const first = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+      const first = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
         ...identity,
         observedAt: '2026-10-03T00:00:00.000Z',
       });
-      upsertNanoHostRuntimeTarget(f.coreDb, {
+      await upsertNanoHostRuntimeTarget(f.coreDb, {
         ...identity,
         connectionGeneration: first.connectionGeneration,
         predecessorFenced: true,
@@ -1861,7 +1861,7 @@ describe('definition-derived deployment administration cutover', () => {
       await expectObservation(ready);
 
       // Allocation loses readiness until the existing owner accepts the successor's proof.
-      const successor = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+      const successor = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
         ...identity,
         observedAt: '2026-10-03T00:00:02.000Z',
       });
@@ -1875,13 +1875,13 @@ describe('definition-derived deployment administration cutover', () => {
         physicalEpoch: null,
         observedAt: '2026-10-03T00:00:02.000Z',
       });
-      recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+      await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
         targetId: identity.targetId,
         closedGeneration: first.connectionGeneration,
         authoritativeGeneration: successor.connectionGeneration,
         observedAt: '2026-10-03T00:00:03.000Z',
       });
-      upsertNanoHostRuntimeTarget(f.coreDb, {
+      await upsertNanoHostRuntimeTarget(f.coreDb, {
         ...identity,
         connectionGeneration: successor.connectionGeneration,
         predecessorFenced: true,
@@ -1890,7 +1890,7 @@ describe('definition-derived deployment administration cutover', () => {
         physicalEpoch,
         observedAt: '2026-10-03T00:00:04.000Z',
       });
-      recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+      await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
         targetId: identity.targetId,
         closedGeneration: first.connectionGeneration,
         authoritativeGeneration: successor.connectionGeneration,
@@ -1904,14 +1904,14 @@ describe('definition-derived deployment administration cutover', () => {
 
       let observedAt = '2026-10-03T00:00:06.000Z';
       if (loss === 'close') {
-        recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
+        await recordNanoHostRuntimeTargetConnectionClose(f.coreDb, {
           targetId: identity.targetId,
           closedGeneration: successor.connectionGeneration,
           authoritativeGeneration: null,
           observedAt,
         });
       } else if (loss === 'restart') {
-        fenceNanoHostRuntimeTargetAfterRestart(f.coreDb, observedAt);
+        await fenceNanoHostRuntimeTargetAfterRestart(f.coreDb, observedAt);
       } else {
         await f.client.operations['nanohost.token-revoke']({ tokenId: transport.tokenId });
         const stored = f.coreDb.sqlite
@@ -1944,11 +1944,11 @@ describe('definition-derived deployment administration cutover', () => {
         identityId: f.config.identityId,
         deploymentId: f.config.deploymentId,
       };
-      const target = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+      const target = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
         ...identity,
         observedAt: '2026-10-03T00:00:00.000Z',
       });
-      upsertNanoHostRuntimeTarget(f.coreDb, {
+      await upsertNanoHostRuntimeTarget(f.coreDb, {
         ...identity,
         connectionGeneration: target.connectionGeneration,
         predecessorFenced: true,
@@ -2029,7 +2029,7 @@ describe('definition-derived deployment administration cutover', () => {
     const f = administrationFixture();
     try {
       // The internal Tool is still the fixed RuntimeTarget read; growing the tables never selects enrollment.
-      const generation = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+      const generation = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
         targetId: f.config.identityId,
         identityId: f.config.identityId,
         deploymentId: f.config.deploymentId,

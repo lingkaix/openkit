@@ -150,7 +150,7 @@ async function fixture(
   const requests: OpenAICompatibleResponsesRequest[] = [];
   const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
   const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
-  recordTestNativeRuntimeTarget(coreDb);
+  await recordTestNativeRuntimeTarget(coreDb);
   // Capacity is the external held boundary. Readiness and queued admission use their real owners.
   const preparation = vi
     .spyOn(executor, 'prepareAgentSessionForTurn')

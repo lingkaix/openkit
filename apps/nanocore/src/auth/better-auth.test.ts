@@ -9,10 +9,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import {
-  revokeOpenKitAccessTokenRecord,
-  verifyOpenKitAccessTokenRecord,
-} from './access-token-store.js';
+import { revokeOpenKitAccessTokenRecord } from './access-token-store.js';
+import { verifyOpenKitAccessTokenRecord } from './access-token-verification.js';
 import { createBetterAuth, resolveBetterAuthSecret } from './better-auth.js';
 import {
   consumeServerBootstrapToken,
@@ -220,7 +218,9 @@ describe('createBetterAuth', () => {
       expect(consumed.status).toBe('consumed');
       if (consumed.status !== 'consumed') throw new Error('Bootstrap consumption failed.');
       expect(userCount()).toBe(1);
-      expect(verifyOpenKitAccessTokenRecord(coreDb, consumed.secret, { now }) !== null).toBe(true);
+      expect(
+        (await verifyOpenKitAccessTokenRecord(coreDb, consumed.secret, { now })) !== null
+      ).toBe(true);
 
       const permitted = enabled !== false;
       const after = await signUp();
@@ -231,7 +231,8 @@ describe('createBetterAuth', () => {
       if (tokenState === 'expired') vi.setSystemTime(tokenExpiresAt.getTime() + 1);
       else revokeOpenKitAccessTokenRecord(coreDb, consumed.record.tokenId, now);
       expect(
-        verifyOpenKitAccessTokenRecord(coreDb, consumed.secret, { now: new Date() }) === null
+        (await verifyOpenKitAccessTokenRecord(coreDb, consumed.secret, { now: new Date() })) ===
+          null
       ).toBe(true);
       // Ceremony completion survives credential lifecycle changes on this same auth instance.
       const afterCredentialEnds = await signUp();
