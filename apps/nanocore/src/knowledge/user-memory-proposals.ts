@@ -5,7 +5,7 @@ import {
   KnowledgeManagerDraftedProposalSchema,
   KnowledgeProposalReviewSchema,
 } from '@openkit/app-api-schemas';
-import { type ActorRef, deriveEntityId } from '@openkit/protocol';
+import type { ActorRef } from '@openkit/protocol';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { recordUserAuditEvent } from '../audit-events.js';
@@ -33,6 +33,7 @@ import {
   publishNotebook,
   readNotebookProposalCandidateMaterial,
   retainNotebookProposalCandidate,
+  verifyNotebookProposalReviewEvidence,
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 
@@ -192,25 +193,18 @@ export function readUserMemoryProposal(context: UserMemoryProposalContext, id: s
   if (reviewFile.proposalId !== id || reviewFile.ownerScope.userId !== context.userDb.userId)
     throw new NotebookError('recovery_required');
   const reviews = reviewFile.decisions;
+  const proposalDigest = verifyNotebookProposalReviewEvidence(
+    { kind: 'user', userId: context.userDb.userId },
+    proposal,
+    bytes,
+    reviews
+  );
   if (
-    new Set(reviews.map(({ requestId }) => requestId)).size !== reviews.length ||
     reviews.some(
-      (review, index) =>
-        reviews.slice(0, index).some((prior) => prior.decision !== 'deferred') ||
-        review.reviewId !==
-          deriveEntityId('kr', {
-            ownerScope: { kind: 'user', userId: context.userDb.userId },
-            proposalId: id,
-            requestId: review.requestId,
-          }) ||
-        review.proposalDigest !== digest(bytes) ||
-        review.contentDigest !== proposal.contentDigest ||
+      (review) =>
         review.ownerScope.userId !== context.userDb.userId ||
         review.actor.kind !== 'user' ||
-        review.actor.id !== context.userDb.userId ||
-        review.proposalId !== id ||
-        review.baseRevision !== proposal.baseRevision ||
-        review.candidateRevision !== proposal.candidateRevision
+        review.actor.id !== context.userDb.userId
     )
   )
     throw new NotebookError('recovery_required');
@@ -234,7 +228,7 @@ export function readUserMemoryProposal(context: UserMemoryProposalContext, id: s
   if (validation.errors.length) throw new NotebookError('recovery_required');
   return {
     proposal,
-    proposalDigest: digest(bytes),
+    proposalDigest,
     diff: paths.map((path) => ({
       path,
       before: base.files[path] ?? null,

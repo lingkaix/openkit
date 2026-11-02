@@ -8,6 +8,7 @@ import {
   type KnowledgeOwnerScope,
   parseReferenceScope,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import {
   prepareAuditEvent,
   recordServerAuditEvent,
@@ -294,6 +295,39 @@ export function prepareNotebookProposalReview(
     targetAbsentAtDecision: null,
     decidedAt: new Date().toISOString(),
   };
+}
+
+/** Verifies complete ordered Review evidence against original Proposal text; callers retain scope and actor admission. */
+export function verifyNotebookProposalReviewEvidence(
+  ownerScope: Exclude<KnowledgeOwnerScope, { kind: 'workspace' }>,
+  proposal: Pick<
+    KnowledgeProposalRecord,
+    'id' | 'baseRevision' | 'candidateRevision' | 'contentDigest'
+  >,
+  proposalText: string,
+  reviews: readonly Omit<KnowledgeProposalReviewRecord, 'workspaceId'>[]
+): string {
+  const proposalDigest = `sha256:${sha256Hex(proposalText)}`;
+  if (
+    new Set(reviews.map(({ requestId }) => requestId)).size !== reviews.length ||
+    reviews.some(
+      (review, index) =>
+        (review.decision !== 'deferred' && index !== reviews.length - 1) ||
+        review.reviewId !==
+          deriveEntityId('kr', {
+            ownerScope,
+            proposalId: proposal.id,
+            requestId: review.requestId,
+          }) ||
+        review.proposalDigest !== proposalDigest ||
+        review.contentDigest !== proposal.contentDigest ||
+        review.proposalId !== proposal.id ||
+        review.baseRevision !== proposal.baseRevision ||
+        review.candidateRevision !== proposal.candidateRevision
+    )
+  )
+    throw new NotebookError('recovery_required');
+  return proposalDigest;
 }
 
 /** Derives the exact durable owner from the existing database handle. */

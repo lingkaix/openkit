@@ -5,7 +5,7 @@ import {
   ServerKnowledgeProposalSchema,
   ServerKnowledgeReviewSchema,
 } from '@openkit/app-api-schemas';
-import { type ActorRef, deriveEntityId } from '@openkit/protocol';
+import type { ActorRef } from '@openkit/protocol';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { recordServerAuditEvent } from '../audit-events.js';
@@ -32,6 +32,7 @@ import {
   publishNotebook,
   readNotebookProposalCandidateMaterial,
   retainNotebookProposalCandidate,
+  verifyNotebookProposalReviewEvidence,
 } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 
@@ -164,26 +165,12 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
   const reviewFile = ReviewFileReader.parse(raw);
   if (reviewFile.proposalId !== id) throw new NotebookError('recovery_required');
   const reviews = reviewFile.decisions;
-  const proposalDigest = digest(bytes);
-  if (
-    new Set(reviews.map(({ requestId }) => requestId)).size !== reviews.length ||
-    reviews.some(
-      (review, index) =>
-        (review.decision !== 'deferred' && index !== reviews.length - 1) ||
-        review.reviewId !==
-          deriveEntityId('kr', {
-            ownerScope: { kind: 'server' },
-            proposalId: id,
-            requestId: review.requestId,
-          }) ||
-        review.proposalDigest !== proposalDigest ||
-        review.contentDigest !== proposal.contentDigest ||
-        review.proposalId !== id ||
-        review.baseRevision !== proposal.baseRevision ||
-        review.candidateRevision !== proposal.candidateRevision
-    )
-  )
-    throw new NotebookError('recovery_required');
+  const proposalDigest = verifyNotebookProposalReviewEvidence(
+    { kind: 'server' },
+    proposal,
+    bytes,
+    reviews
+  );
   // Preview discloses both sides; each needs its own exact current Source closure.
   context.revalidate(base.files);
   const validation = validateNotebookCandidate({
