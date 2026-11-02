@@ -13,12 +13,9 @@ import {
   type ResourceCatalogDocument,
 } from '@openkit/config-schema';
 import { compareCodeUnits } from '@openkit/protocol';
+import { ensureCanonicalDirectory, publishCanonicalPath } from '@openkit/storage';
 
-import {
-  ensureCanonicalDirectory,
-  publishCanonicalPath,
-  writeFileAtomic,
-} from '../storage/workspace-file-records.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import {
   loadWorkspaceResourceCatalog,
   readWorkspaceSkillSnapshot,

@@ -16,6 +16,7 @@ import {
   parseReferenceScope,
   type RetrievalTraceReference,
 } from '@openkit/protocol';
+import { assertCanonicalDirectory, readCanonicalTextFile } from '@openkit/storage';
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
@@ -70,11 +71,7 @@ import {
   workspaceDbPath,
 } from './fs-layout.js';
 import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
-import {
-  assertCanonicalDirectory,
-  readAdmittedWorkspaceKnowledgeSelection,
-  readCanonicalTextFile,
-} from './workspace-file-records.js';
+import { readAdmittedWorkspaceKnowledgeSelection } from './workspace-file-records.js';
 
 export type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 

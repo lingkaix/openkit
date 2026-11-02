@@ -8,6 +8,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { UserConfigSchema } from '@openkit/config-schema';
 import { readRetainedV1 } from '@openkit/protocol';
+import { readCanonicalTextFile } from '@openkit/storage';
 import { z } from 'zod';
 import { authorizeWorkspace } from './auth/operation-authorizer.js';
 import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
@@ -68,7 +69,6 @@ import { openUserDb } from './storage/db.js';
 import { userDbPath } from './storage/fs-layout.js';
 import { retrieveUserMemory } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
-import { readCanonicalTextFile } from './storage/workspace-file-records.js';
 
 /** First explicit save retains its default KB before Notebook publication; existing or lost notebooks are never initialized again. */
 function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.create'>) {

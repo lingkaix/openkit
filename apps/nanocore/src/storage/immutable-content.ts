@@ -2,12 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, realpath, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import {
+  ensureCanonicalDirectoryAsync,
   LocalStorage,
   STORAGE_LIMITS,
   type StorageAccess,
   type StorageContent,
 } from '@openkit/storage';
-import { ensureCanonicalDirectoryAsync } from './canonical-filesystem.js';
+
 import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,

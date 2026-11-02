@@ -3,6 +3,7 @@ import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isEntityId, RequestIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
@@ -31,7 +32,7 @@ import {
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
 import { inspectCapture } from './workspace-capture-protection.js';
-import { assertCanonicalDirectory, nativeProductScope } from './workspace-file-records.js';
+import { nativeProductScope } from './workspace-file-records.js';
 import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,

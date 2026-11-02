@@ -6,6 +6,7 @@ import {
   responsibleUserIdForActor,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -31,7 +32,7 @@ import {
 } from '../runtime/pending-requests.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
-import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
+
 import { type MemoryWriter, readMemoryPage, recordMemorySuppression } from './memory-lifecycle.js';
 import { MemorySourceFingerprintSchema, readMemorySuppressions } from './memory-maintenance.js';
 import { NotebookError } from './notebook.js';

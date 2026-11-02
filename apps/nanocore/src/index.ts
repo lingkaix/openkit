@@ -8,6 +8,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import { join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { workspaceIdForOwner } from '@openkit/protocol';
+import { ensureCanonicalDirectory } from '@openkit/storage';
 import {
   createApp,
   createDefaultVaultUnlockState,
@@ -137,10 +138,7 @@ import {
   runWorkspaceSnapshotMaintenance,
   WORKSPACE_BACKUP_POLICY,
 } from './storage/workspace-backup.js';
-import {
-  discardAbandonedWorkspaceStaging,
-  ensureCanonicalDirectory,
-} from './storage/workspace-file-records.js';
+import { discardAbandonedWorkspaceStaging } from './storage/workspace-file-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
 import { shutdownTelemetry, startTelemetry } from './telemetry.js';
 import { closeRevokedCredentialBindings } from './vault/vault-operation-implementations.js';

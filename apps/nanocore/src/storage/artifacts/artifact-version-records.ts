@@ -10,16 +10,18 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { ArtifactAuthorityError } from '../../artifact-authority.js';
 import {
-  ActorRefReaderSchema,
-  ArtifactReaderSchema,
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
   measureCanonicalFile,
   publishCanonicalPath,
   readCanonicalFile,
   readCanonicalTextFile,
+} from '@openkit/storage';
+import { ArtifactAuthorityError } from '../../artifact-authority.js';
+import {
+  ActorRefReaderSchema,
+  ArtifactReaderSchema,
   writeFileAtomic,
 } from '../workspace-file-records.js';
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './file-records.js';

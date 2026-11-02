@@ -18,7 +18,7 @@ Staging uses `beginStage`, repeated bounded `writeStage` calls and `finishStage`
 
 ## Commands
 
-`ensureCanonicalDirectoryAsync` and `syncCanonicalDirectoryAsync` alias the existing internal `ensureTreeDirectory` and `syncTreeDirectory` functions. NanoCore re-exports these canonical names, so all callers share one implementation. Recursive creation commits each parent before creating its child; path and descriptor checks reject final links and non-directories, and descriptors close on success or failure. The caller retains publication authority.
+`ensureCanonicalDirectoryAsync` and `syncCanonicalDirectoryAsync` alias the existing internal `ensureTreeDirectory` and `syncTreeDirectory` functions. Storage exports these canonical names directly, so callers share one implementation. Recursive creation commits each parent before creating its child; path and descriptor checks reject final links and non-directories, and descriptors close on success or failure. The caller retains publication authority.
 
 Internal trusted Node tree helpers in `local.ts` move the existing ZIP physical staging, streamed writes, directory moves/syncs and recursive cleanup into Storage. They are in-repository helpers, outside `StorageService`; the ZIP caller retains exact source identity, caps, capacity accounting, manifest, authorization, publication ordering and in-flight joins. Private member bytes keep close-only completion and inventory-based crash rejection; metadata is synchronized after its accounting callback. Directory move and sync remain separate so the owner preserves its current acknowledgement and uncertain-outcome boundaries. No tree handle registry or publication authority is introduced.
 

@@ -10,6 +10,7 @@ import {
   WorkspaceIdSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import { parseDocument } from 'yaml';
 import type { Actor } from './auth/identity.js';
 import {
@@ -68,7 +69,6 @@ import {
   type WorkspaceDb,
 } from './storage/db.js';
 import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
-import { assertCanonicalDirectory } from './storage/workspace-file-records.js';
 
 /** Current source and destination authority supplied by trusted operation assembly. */
 export interface KnowledgeRetrievalAccess {

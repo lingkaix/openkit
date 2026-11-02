@@ -17,7 +17,14 @@ import { isDeepStrictEqual } from 'node:util';
 import type { RuntimeEvidenceRecord } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { isRecord, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
-import { copyVerifiedFile, createDirectoryExclusive } from '@openkit/storage';
+import {
+  copyVerifiedFile,
+  createDirectoryExclusive,
+  ensureCanonicalDirectoryAsync,
+  publishCanonicalPathAsync,
+  syncCanonicalDirectoryAsync,
+  syncCanonicalTreeAsync,
+} from '@openkit/storage';
 import {
   type WorkerLineage,
   WorkerLineageSchema,
@@ -34,13 +41,7 @@ import { OperationError } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { ControlProvenanceInput } from '../storage/control-store-worker-protocol.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import {
-  ensureCanonicalDirectoryAsync,
-  nativeProductScope,
-  publishCanonicalPathAsync,
-  syncCanonicalDirectoryAsync,
-  syncCanonicalTreeAsync,
-} from '../storage/workspace-file-records.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { snapshotDigest } from './aep-snapshot-ledger.js';
 import {
   createWorkerRuntimeProvenanceEvidenceId,

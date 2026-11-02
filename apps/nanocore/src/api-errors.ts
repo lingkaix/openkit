@@ -1,4 +1,5 @@
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
+import { CanonicalPublicationError } from '@openkit/storage';
 import { z } from 'zod';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
@@ -10,7 +11,6 @@ import {
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
-import { CanonicalPublicationError } from './storage/canonical-publication-error.js';
 
 /**
  * Creates a protocol-stamped API error response.

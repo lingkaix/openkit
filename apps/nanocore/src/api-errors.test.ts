@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CanonicalPublicationError } from '@openkit/storage';
 import { Hono } from 'hono';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
@@ -8,7 +9,7 @@ import { asCommandError, asInvalidRequestError, publishedErrorMessage } from './
 import type { AuthVariables } from './auth/middleware.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
-import { CanonicalPublicationError } from './storage/canonical-publication-error.js';
+
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';

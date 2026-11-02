@@ -4,10 +4,8 @@ import { mkdtemp, open, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { type Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import {
-  ensureCanonicalDirectoryAsync,
-  syncCanonicalDirectoryAsync,
-} from '../workspace-file-records.js';
+import { ensureCanonicalDirectoryAsync, syncCanonicalDirectoryAsync } from '@openkit/storage';
+
 import {
   FileAdmissionError,
   FileByteAdmission,

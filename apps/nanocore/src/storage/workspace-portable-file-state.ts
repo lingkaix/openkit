@@ -10,7 +10,6 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-
 import type { ProductRetrievalTrace } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
@@ -20,6 +19,7 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { assertCanonicalDirectory, readCanonicalTextFile } from '@openkit/storage';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { assertPortableKnowledgeOverview } from '../context/knowledge-overview.js';
 import { readPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
@@ -27,11 +27,7 @@ import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { validateRecurringPortableHistory } from './recurring-portable-history.js';
 import { StoredProductRetrievalTraceV1Schema } from './retrieval-trace-retained-v1.js';
 import { assertRetrievalTraceIdentity, retrievalTraceRelativePath } from './retrieval-traces.js';
-import {
-  assertCanonicalDirectory,
-  readAdmittedWorkspaceKnowledgeSelection,
-  readCanonicalTextFile,
-} from './workspace-file-records.js';
+import { readAdmittedWorkspaceKnowledgeSelection } from './workspace-file-records.js';
 
 const RetrievalTraceReaderSchema = StoredProductRetrievalTraceV1Schema;
 

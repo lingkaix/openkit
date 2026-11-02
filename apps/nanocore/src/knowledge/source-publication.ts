@@ -9,6 +9,7 @@ import {
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import {
+  ensureCanonicalDirectory,
   LocalStorage,
   STORAGE_LIMITS,
   type StorageAccess,
@@ -32,7 +33,7 @@ import {
   type IdempotentCommandReceipt,
 } from '../runtime/idempotent-command.js';
 import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-knowledge.js';
-import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import { deriveManagedSourceAccess, type ManagedSourceAdmission } from './managed-source-access.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { initializeNotebook } from './notebook-initialization.js';

@@ -10,15 +10,18 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import { publishDurableFile, STORAGE_LIMITS, type StorageContent } from '@openkit/storage';
+import {
+  ensureCanonicalDirectoryAsync,
+  publishDurableFile,
+  STORAGE_LIMITS,
+  type StorageContent,
+  syncCanonicalDirectoryAsync,
+} from '@openkit/storage';
 import { z } from 'zod';
 import type { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { parseScopeKnowledgeSchema } from '../knowledge/okf.js';
 import type { KnowledgeProposalRecord } from '../lib/store.js';
-import {
-  ensureCanonicalDirectoryAsync,
-  syncCanonicalDirectoryAsync,
-} from './canonical-filesystem.js';
+
 import {
   type ControlKnowledgeHead,
   type ControlKnowledgeProposal,

@@ -7,11 +7,12 @@ import {
 } from '@openkit/app-api-schemas';
 import { canonicalJsonText, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import { publishDurableFile } from '@openkit/storage';
 import {
   ensureCanonicalDirectoryAsync,
+  publishDurableFile,
   syncCanonicalDirectoryAsync,
-} from '../storage/canonical-filesystem.js';
+} from '@openkit/storage';
+
 import { verifyImmutableWinner } from '../storage/immutable-content-publish.js';
 import { NotebookError } from './notebook-error.js';
 

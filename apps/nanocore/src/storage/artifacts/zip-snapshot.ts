@@ -6,11 +6,12 @@ import {
   createPrivateTree,
   ensureTreeDirectory,
   makePrivateTreeDirectory,
+  measureCanonicalFileDescriptor,
   removePrivateTree,
   writePrivateTreeFile,
 } from '@openkit/storage';
 import { fromFdPromise, type ZipFile } from 'yauzl';
-import { measureCanonicalFileDescriptor } from '../workspace-file-records.js';
+
 import type { FileStorageReservation } from './file-admission.js';
 import { ArtifactPayloadCleanupError } from './file-payload.js';
 

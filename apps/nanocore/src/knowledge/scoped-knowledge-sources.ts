@@ -3,6 +3,7 @@ import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { RegisterKnowledgeSourceRequestSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, KnowledgeSourceIdSchema, RequestIdSchema } from '@openkit/protocol';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
 import {
@@ -10,7 +11,7 @@ import {
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import { userDbPath } from '../storage/fs-layout.js';
-import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
+
 import { admitMemoryContext, type MemoryContext, type MemoryWriter } from './memory-lifecycle.js';
 import { readMemorySuppressions } from './memory-maintenance.js';
 import { NotebookError } from './notebook.js';

@@ -12,14 +12,14 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   assertCanonicalDirectory,
   assertCanonicalRegularFile,
   ensureCanonicalDirectory,
   syncCanonicalDirectory,
   syncCanonicalTree,
-} from './workspace-file-records.js';
+} from '@openkit/storage';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const io = vi.hoisted(() => ({
   paths: new Map<number, string>(),

@@ -1,13 +1,14 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isEntityId } from '@openkit/protocol';
+import { syncCanonicalDirectory } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { configureOwnedSqlite } from '../storage/control-store.js';
 import { workspaceRecoveryCandidateDigest } from '../storage/data-root-backup.js';
 import type { CoreDb } from '../storage/db.js';
 import { bindWorkspaceSqlite } from '../storage/db.js';
 import { abandonCapture, inspectCapture } from '../storage/workspace-capture-protection.js';
-import { syncCanonicalDirectory } from '../storage/workspace-file-records.js';
+
 import { readFinishedDeletedWorkspaceRecovery } from '../storage/workspace-recovery-admissions.js';
 import { listAllWorkspaceDeletionRequests } from '../workspace-deletion-request.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';

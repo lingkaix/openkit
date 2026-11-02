@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdtemp, open, rm } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
+import { ensureCanonicalDirectoryAsync } from '@openkit/storage';
 import {
   getRetrievalService,
   type RetrievalDocument,
@@ -8,7 +9,7 @@ import {
   type RetrievalResult,
 } from '../retrieval-service.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
+
 import { SOURCE_PREVIEW_LIMITS, type SourceViewUnavailable } from './bounded-source-view.js';
 import type {
   WorkerContextPackageSourceFile,

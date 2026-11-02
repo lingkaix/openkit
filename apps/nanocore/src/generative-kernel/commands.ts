@@ -1,5 +1,10 @@
-import { copyVerifiedFile, createDirectoryExclusive, removeDurableFile } from '@openkit/storage';
-import { syncCanonicalDirectoryAsync } from '../storage/canonical-filesystem.js';
+import {
+  copyVerifiedFile,
+  createDirectoryExclusive,
+  removeDurableFile,
+  syncCanonicalDirectoryAsync,
+} from '@openkit/storage';
+
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,

@@ -5,16 +5,14 @@ import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ContentReferenceSchema } from '@openkit/protocol';
 import {
+  ensureCanonicalDirectoryAsync,
   STORAGE_LIMITS,
   type StorageAccess,
   type StorageContent,
   type StorageService,
   type StorageStage,
-} from '@openkit/storage';
-import {
-  ensureCanonicalDirectoryAsync,
   syncCanonicalDirectoryAsync,
-} from './canonical-filesystem.js';
+} from '@openkit/storage';
 
 /** Trusted scope owner and the already-admitted Storage stage to consume. */
 export interface ImmutableContentHandoff {

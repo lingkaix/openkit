@@ -14,14 +14,14 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { OperationError } from '../operation-error.js';
-import { StoredProductRetrievalTraceV1Schema } from './retrieval-trace-retained-v1.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
   readCanonicalTextFile,
-  writeFileAtomic,
-} from './workspace-file-records.js';
+} from '@openkit/storage';
+import { OperationError } from '../operation-error.js';
+import { StoredProductRetrievalTraceV1Schema } from './retrieval-trace-retained-v1.js';
+import { writeFileAtomic } from './workspace-file-records.js';
 
 /** Resolves a validated query-owned trace reference within its Workspace only. */
 export function retrievalTraceRelativePath(reference: RetrievalTraceReference): string {

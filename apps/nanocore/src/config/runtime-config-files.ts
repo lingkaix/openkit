@@ -52,16 +52,16 @@ import {
   WorkspaceDataSourceCatalogSchema,
 } from '@openkit/config-schema';
 import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
-import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
-import { z } from 'zod';
-import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
-import { policyDigest } from '../policy/statements.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
   readCanonicalTextFile,
-  writeFileAtomic,
-} from '../storage/workspace-file-records.js';
+} from '@openkit/storage';
+import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
+import { z } from 'zod';
+import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
+import { policyDigest } from '../policy/statements.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import { VaultBackendError } from '../vault/vault-backend.js';
 import { parseJsoncObject } from './jsonc.js';
 import {

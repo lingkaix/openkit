@@ -17,13 +17,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   measureCanonicalFile,
   measureCanonicalFileDescriptor,
   readCanonicalFile,
   readCanonicalTextFile,
-} from './workspace-file-records.js';
+} from '@openkit/storage';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const io = vi.hoisted(() => ({
   path: undefined as string | undefined,

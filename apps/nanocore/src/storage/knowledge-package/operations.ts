@@ -12,6 +12,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, posix, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { formatReferenceUri, parseReferenceUri } from '@openkit/protocol';
+import {
+  assertCanonicalDirectory,
+  measureCanonicalFile,
+  readCanonicalTextFile,
+} from '@openkit/storage';
 import { applyEdits, modify } from 'jsonc-parser';
 import { parseJsoncObject } from '../../config/jsonc.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../../config/knowledge-base.js';
@@ -49,12 +54,7 @@ import type { InflightIdempotentCommand } from '../../runtime/idempotent-command
 import type { FileStorageAdmission } from '../artifacts/file-admission.js';
 import { withCanonicalFileWriteAdmission } from '../canonical-write-capacity.js';
 import type { WorkspaceDb } from '../db.js';
-import {
-  assertCanonicalDirectory,
-  measureCanonicalFile,
-  readCanonicalTextFile,
-  writeFileAtomic,
-} from '../workspace-file-records.js';
+import { writeFileAtomic } from '../workspace-file-records.js';
 import { KNOWLEDGE_PACKAGE_LIMITS } from './archive.js';
 import {
   type KnowledgePackageFile,

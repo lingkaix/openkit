@@ -1,11 +1,8 @@
 import { closeSync, constants, createReadStream, fstatSync, openSync, readSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Readable } from 'node:stream';
+import { assertCanonicalDirectory, measureCanonicalFileDescriptor } from '@openkit/storage';
 import { resolveDataRootPath } from '../fs-layout.js';
-import {
-  assertCanonicalDirectory,
-  measureCanonicalFileDescriptor,
-} from '../workspace-file-records.js';
 
 /** Resolves one immutable version-owned payload without accepting path syntax as identity. */
 export function artifactFilePayloadPath(

@@ -1,6 +1,7 @@
 import {
   assertCanonicalDirectory,
   assertCanonicalRegularFile,
+  CanonicalPublicationError,
   ensureCanonicalDirectory,
   measureCanonicalFile,
   publishCanonicalPath,
@@ -40,10 +41,7 @@ import {
 } from './knowledge-proposal-codecs.js';
 import { listAppliedNativeMigrationIds } from './migrate.js';
 
-export {
-  ensureCanonicalDirectoryAsync,
-  syncCanonicalDirectoryAsync,
-} from './canonical-filesystem.js';
+export { syncCanonicalDirectoryAsync } from '@openkit/storage';
 export {
   ActorRefReaderSchema,
   KnowledgeProposalRecordSchema,
@@ -138,7 +136,7 @@ import {
   stageArtifactVersionRecord,
 } from './artifacts/artifact-version-records.js';
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
-import { CanonicalPublicationError } from './canonical-publication-error.js';
+
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
   CONTROL_PRODUCT_LIMITS,

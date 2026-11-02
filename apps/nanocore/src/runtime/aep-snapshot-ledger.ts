@@ -1,3 +1,5 @@
+import { syncCanonicalDirectory, syncCanonicalTree } from '@openkit/storage';
+
 export type {
   AgentEnvironmentPackageSnapshotReadRecord,
   AgentEnvironmentPackageSnapshotRecord,
@@ -25,8 +27,6 @@ import {
   assertWorkspaceOwner,
   readSnapshotRecord,
   snapshotDigest,
-  syncCanonicalDirectory,
-  syncCanonicalTree,
   validateSnapshotRecord,
   writeFileAtomic,
 } from '../storage/workspace-file-records.js';

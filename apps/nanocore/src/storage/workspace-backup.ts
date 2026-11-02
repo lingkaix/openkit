@@ -48,7 +48,11 @@ import {
 import {
   copyFileForCut,
   copyVerifiedFile as copyStorageFile,
+  ensureCanonicalDirectory,
+  publishCanonicalPath,
   publishDurableFile,
+  syncCanonicalDirectory,
+  syncCanonicalTree,
 } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import {
@@ -145,13 +149,9 @@ import {
 } from './workspace-backup-bundle.js';
 import { completeCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
 import {
-  ensureCanonicalDirectory,
   loadWorkspaceFileRecords,
   nativeProductScope,
-  publishCanonicalPath,
   readNativeProduct,
-  syncCanonicalDirectory,
-  syncCanonicalTree,
 } from './workspace-file-records.js';
 import {
   prepareRecoveryAdmission,

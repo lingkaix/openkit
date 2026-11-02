@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
+import { ensureCanonicalDirectoryAsync } from '@openkit/storage';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
+
 import { processVisionView, type VisionCrop, type VisionViewResult } from './vision-view.js';
 import type {
   WorkerContextPackageSourceFile,

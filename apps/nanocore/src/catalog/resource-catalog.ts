@@ -30,16 +30,17 @@ import {
   WorkspaceMcpServerSchema,
 } from '@openkit/config-schema';
 import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
-import { directoryContainsFiles, materializeSnapshot } from '@openkit/storage';
+import {
+  assertCanonicalDirectory,
+  directoryContainsFiles,
+  ensureCanonicalDirectory,
+  materializeSnapshot,
+  syncCanonicalDirectory,
+} from '@openkit/storage';
 import { ZodError, z } from 'zod';
 
 import { ensureWorkspaceLayout, resolveDataRootPath } from '../storage/fs-layout.js';
-import {
-  assertCanonicalDirectory,
-  ensureCanonicalDirectory,
-  syncCanonicalDirectory,
-  writeFileAtomic,
-} from '../storage/workspace-file-records.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import {
   CatalogInputError,
   type CatalogTreeFile,

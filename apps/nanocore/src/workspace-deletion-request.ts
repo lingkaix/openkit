@@ -25,12 +25,10 @@ import {
   UserIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import { z } from 'zod';
 import type { CoreDb } from './storage/db.js';
-import {
-  assertCanonicalDirectory,
-  assertSafeWorkspacePathSegment,
-} from './storage/workspace-file-records.js';
+import { assertSafeWorkspacePathSegment } from './storage/workspace-file-records.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
 const WORKSPACE_DELETION_PHASES = [

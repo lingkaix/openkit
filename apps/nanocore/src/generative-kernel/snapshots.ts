@@ -16,11 +16,16 @@ import {
   TimestampSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { publishDurableFile, removeDurableFile, syncVerifiedFile } from '@openkit/storage';
+import {
+  ensureCanonicalDirectoryAsync,
+  publishDurableFile,
+  removeDurableFile,
+  syncVerifiedFile,
+} from '@openkit/storage';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { type AppDb, lightAppRoot } from '../storage/app-db.js';
-import { ensureCanonicalDirectoryAsync } from '../storage/canonical-filesystem.js';
+
 import { KernelCommandError } from './errors.js';
 
 // Recovery metadata versions its own grammar, independently of the API and copied SQLite format.

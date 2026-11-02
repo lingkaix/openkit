@@ -9,6 +9,7 @@ import {
   WorkerCredentialBindingsSchema,
 } from '@openkit/config-schema';
 import { type ActorRef, ActorRefSchema } from '@openkit/protocol';
+import { ensureCanonicalDirectoryAsync } from '@openkit/storage';
 import type { Context as TelemetryContext } from '@opentelemetry/api';
 import type { Context, Hono } from 'hono';
 import { createScanner } from 'jsonc-parser';
@@ -23,7 +24,7 @@ import {
 import { OperationError } from '../operation-error.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb } from '../storage/db.js';
-import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
+
 import {
   captureTelemetryContext,
   injectTelemetryContext,

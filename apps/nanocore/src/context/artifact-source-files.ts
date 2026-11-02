@@ -7,16 +7,14 @@ import {
   ArtifactSchema,
   MAX_ARTIFACT_FILE_BYTES,
 } from '@openkit/protocol';
+import { assertCanonicalDirectory, ensureCanonicalDirectoryAsync } from '@openkit/storage';
 import type { z } from 'zod';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   artifactFilePayloadPath,
   MAX_ARTIFACT_MATERIAL_TEXT_BYTES,
 } from '../storage/artifacts/file-records.js';
-import {
-  assertCanonicalDirectory,
-  ensureCanonicalDirectoryAsync,
-} from '../storage/workspace-file-records.js';
+
 import { type BoundedByteSource, openBoundedSourceView } from './bounded-source-view.js';
 import { type PdfTextLayerDerivative, processPdfTextLayer } from './pdf-text-layer.js';
 import type {

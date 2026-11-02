@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { ActorRef } from '@openkit/protocol';
 import { workspaceIdForOwner } from '@openkit/protocol';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { canDiscloseThreadToAudience } from '../auth/thread-visibility.js';
@@ -11,7 +12,7 @@ import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authorit
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
+
 import type {
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,

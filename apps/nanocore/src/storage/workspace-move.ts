@@ -2,7 +2,12 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isEntityId } from '@openkit/protocol';
-import { publishDurableFile, removeDurableFile } from '@openkit/storage';
+import {
+  assertCanonicalDirectory,
+  publishDurableFile,
+  removeDurableFile,
+  syncCanonicalTree,
+} from '@openkit/storage';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { WorkspaceFrozenAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
@@ -25,12 +30,7 @@ import {
   inspectCapture,
   protectCapture,
 } from './workspace-capture-protection.js';
-import {
-  assertCanonicalDirectory,
-  nativeProductScope,
-  readNativeProduct,
-  syncCanonicalTree,
-} from './workspace-file-records.js';
+import { nativeProductScope, readNativeProduct } from './workspace-file-records.js';
 import {
   bindWorkspaceCaptureNativeOwner,
   endRecoveryAdmission,

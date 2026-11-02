@@ -8,11 +8,9 @@ import {
   type TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import type { z } from 'zod';
-import {
-  assertCanonicalDirectory,
-  turnFilePayloadPath,
-} from '../storage/workspace-file-records.js';
+import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
 import {
   type BoundedByteSource,
   BoundedSourceError,

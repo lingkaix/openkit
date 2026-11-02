@@ -18,6 +18,7 @@ import {
   type WorkspaceDeletionState,
 } from '@openkit/app-api-schemas';
 import { readRetainedV1 } from '@openkit/protocol';
+import { assertCanonicalDirectory, assertCanonicalRegularFile } from '@openkit/storage';
 import {
   listServerAuditEvents,
   listSqliteAuditEvents,
@@ -54,8 +55,6 @@ import {
   withVerifiedWorkspaceSnapshotSource,
 } from './storage/workspace-backup-bundle.js';
 import {
-  assertCanonicalDirectory,
-  assertCanonicalRegularFile,
   readNativeProduct,
   WorkspaceSystemRecordSchema,
 } from './storage/workspace-file-records.js';

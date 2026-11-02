@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-
 import {
   type EvidenceBundleRecord,
   EvidenceBundleRecordSchema,
@@ -9,14 +8,16 @@ import {
   ServerEvidenceBundleRecordSchema,
 } from '@openkit/app-api-schemas';
 import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
-
-import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import {
   assertCanonicalDirectory,
-  assertSafeWorkspacePathSegment,
   ensureCanonicalDirectory,
   readCanonicalFile,
   readCanonicalTextFile,
+} from '@openkit/storage';
+
+import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import {
+  assertSafeWorkspacePathSegment,
   writeFileAtomic,
 } from './storage/workspace-file-records.js';
 

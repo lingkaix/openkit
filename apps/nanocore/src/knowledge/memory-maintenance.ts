@@ -3,10 +3,10 @@ import { lstatSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseRecordEnvelope, RecordEnvelopeSchema } from '@openkit/config-schema';
 import { compareCodeUnits, KnowledgeSourceIdSchema, UserIdSchema } from '@openkit/protocol';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import { z } from 'zod';
 import {
   appendCanonicalTextFile,
-  assertCanonicalDirectory,
   readCanonicalJsonLines,
 } from '../storage/workspace-file-records.js';
 import { NotebookError, validateNotebookFiles } from './notebook.js';

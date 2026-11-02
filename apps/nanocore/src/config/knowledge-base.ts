@@ -15,10 +15,11 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { readCanonicalTextFile } from '@openkit/storage';
 import { applyEdits, modify } from 'jsonc-parser';
 import { NotebookError } from '../knowledge/notebook.js';
 import { serverKnowledgeRoot, userMemoryRoot } from '../storage/fs-layout.js';
-import { readCanonicalTextFile, writeFileAtomic } from '../storage/workspace-file-records.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import { parseJsoncObject } from './jsonc.js';
 import { openKitConfigPath } from './openkit-config.js';
 

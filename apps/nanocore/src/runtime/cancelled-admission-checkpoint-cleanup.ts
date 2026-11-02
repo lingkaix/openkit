@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { readRetainedV1 } from '@openkit/protocol';
+import { assertCanonicalDirectory, assertCanonicalRegularFile } from '@openkit/storage';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import {
   type DurableCommandRequestRead,
@@ -20,8 +21,6 @@ import {
 } from '../storage/db.js';
 import { loadServerThreadRecords } from '../storage/server-thread-records.js';
 import {
-  assertCanonicalDirectory,
-  assertCanonicalRegularFile,
   assertSafeWorkspacePathSegment,
   listDirectoryNames,
   listNativeProducts,

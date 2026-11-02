@@ -6,6 +6,7 @@ import {
   KnowledgeOwnerScopeSchema,
   KnowledgeSourceIdSchema,
 } from '@openkit/protocol';
+import { readCanonicalTextFile } from '@openkit/storage';
 import { stringify } from 'yaml';
 import type { z } from 'zod';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -14,7 +15,7 @@ import {
   userMemoryRoot,
   WorkOwnershipViolationError,
 } from '../storage/fs-layout.js';
-import { readCanonicalTextFile } from '../storage/workspace-file-records.js';
+
 import { KnowledgeNotebook } from './notebook.js';
 import { NotebookError } from './notebook-error.js';
 import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';

@@ -15,10 +15,10 @@ import {
   type UpdateLightAppRecordRequest,
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
-import { publishDurableFile } from '@openkit/storage';
+import { ensureCanonicalDirectoryAsync, publishDurableFile } from '@openkit/storage';
 import { recordAppAuditEvent } from '../audit-events.js';
 import { type AppDb, assertAppAuthority, lightAppRoot } from '../storage/app-db.js';
-import { ensureCanonicalDirectoryAsync } from '../storage/canonical-filesystem.js';
+
 import {
   commandRequestKey,
   getCommandRequestRecordFromDb,

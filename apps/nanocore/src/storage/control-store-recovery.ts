@@ -3,7 +3,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
 import { allocateEntityId, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
-import { copyVerifiedFile, publishDurableFile } from '@openkit/storage';
+import {
+  copyVerifiedFile,
+  ensureCanonicalDirectory,
+  publishCanonicalPathAsync,
+  publishDurableFile,
+} from '@openkit/storage';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
 import {
@@ -45,10 +50,8 @@ import {
 } from './recurring-portable-history.js';
 import { endCaptureInDb, inspectCapture } from './workspace-capture-protection.js';
 import {
-  ensureCanonicalDirectory,
   loadWorkspace,
   nativeProductScope,
-  publishCanonicalPathAsync,
   readNativeTurnHistory,
 } from './workspace-file-records.js';
 

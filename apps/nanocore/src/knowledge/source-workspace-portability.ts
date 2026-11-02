@@ -3,14 +3,11 @@ import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { KnowledgeMountsSchema } from '@openkit/config-schema';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
+import { assertCanonicalDirectory, measureCanonicalFile } from '@openkit/storage';
 import type { z } from 'zod';
 import { assertKnowledgeMountNamespaces } from '../config/knowledge-base.js';
 import { reserveCanonicalFileWrite } from '../storage/canonical-write-capacity.js';
-import {
-  assertCanonicalDirectory,
-  measureCanonicalFile,
-  writeFileAtomic,
-} from '../storage/workspace-file-records.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import { NotebookError } from './notebook.js';
 import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { updateOkfFrontmatter } from './okf.js';

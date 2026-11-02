@@ -1,3 +1,4 @@
+import { assertCanonicalDirectory } from '@openkit/storage';
 /** A contradictory ordinary Context Package projection remains inspect-only. */
 export class WorkerContextProjectionError extends Error {
   public readonly code = 'recovery_required';
@@ -17,7 +18,7 @@ import type { FsStore } from '../lib/store.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
-import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
+
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
   readPortableWorkerContextPackageTrace,

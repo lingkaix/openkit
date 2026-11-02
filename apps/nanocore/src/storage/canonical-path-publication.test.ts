@@ -11,13 +11,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CanonicalPublicationError } from './canonical-publication-error.js';
 import {
+  CanonicalPublicationError,
   publishCanonicalPath,
   publishCanonicalPathAsync,
   syncCanonicalTreeAsync,
-} from './workspace-file-records.js';
+} from '@openkit/storage';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const io = vi.hoisted(() => ({
   descriptors: new Map<number, string>(),

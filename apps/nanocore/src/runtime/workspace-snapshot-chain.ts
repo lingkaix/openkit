@@ -12,10 +12,6 @@ import {
   WorkspaceIdSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { z } from 'zod';
-import { OperationError } from '../operation-error.js';
-import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import type { WorkspaceDb } from '../storage/db.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectoryAsync,
@@ -23,7 +19,12 @@ import {
   readCanonicalFile,
   syncCanonicalDirectoryAsync,
   syncCanonicalTreeAsync,
-} from '../storage/workspace-file-records.js';
+} from '@openkit/storage';
+import { z } from 'zod';
+import { OperationError } from '../operation-error.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import type { WorkspaceDb } from '../storage/db.js';
+
 import {
   sameWorkspaceSnapshot,
   WorkspaceCollectionError,
