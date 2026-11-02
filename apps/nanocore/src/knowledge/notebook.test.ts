@@ -876,3 +876,95 @@ describe('KnowledgeNotebook complete same-deployment graph validation', () => {
     );
   });
 });
+
+describe('KnowledgeNotebook history immutable inspection work', () => {
+  it.each([
+    ['ref', 'default'],
+    ['ref', 'published'],
+    ['ref', 'ancestor'],
+    ['sql', 'default'],
+    ['sql', 'published'],
+    ['sql', 'ancestor'],
+  ] as const)('inspects each required record once for %s selection and %s cursor', async (selection, cursor) => {
+    const { repositoryPath, notebook, revision } = await fixture();
+    const versions = [revision];
+    const facts = [metadata()];
+    for (let index = 1; index <= 3; index += 1) {
+      const baseRevision = versions.at(-1)!;
+      const commitMetadata = metadata(`inspection-${index}`, `History revision ${index}`);
+      const candidateRevision = notebook.prepare({
+        baseRevision,
+        changes: { 'a.md': page('A', `Retained body ${index}`) },
+        metadata: commitMetadata,
+      });
+      notebook.publish({ baseRevision, candidateRevision });
+      versions.push(candidateRevision);
+      facts.push(commitMetadata);
+    }
+    // SQL selection must remain authoritative even when the Git ref names a newer commit.
+    const selectedIndex = selection === 'sql' ? 2 : 3;
+    const selected = new KnowledgeNotebook({
+      repositoryPath,
+      ...(selection === 'sql' ? { selectedRevision: versions[selectedIndex]! } : {}),
+    });
+    const firstIndex = cursor === 'ancestor' ? selectedIndex - 1 : selectedIndex;
+    const limit = cursor === 'ancestor' ? 1 : 2;
+    const expected = {
+      revisions: Array.from({ length: limit }, (_, offset) => {
+        const index = firstIndex - offset;
+        return {
+          revision: versions[index],
+          parentRevision: versions[index - 1] ?? null,
+          metadata: facts[index],
+        };
+      }),
+      nextRevision: versions[firstIndex - limit] ?? null,
+    };
+    const { vi } = await import('vitest');
+    const { default: childProcess } = await import('node:child_process');
+    const { syncBuiltinESMExports } = await import('node:module');
+    // Call through to native Git; no Notebook method or object result is replaced.
+    const reads = vi.spyOn(childProcess, 'execFileSync');
+    syncBuiltinESMExports();
+    try {
+      expect(
+        selected.history({
+          ...(cursor === 'default' ? {} : { revision: versions[firstIndex]! }),
+          limit,
+        })
+      ).toEqual(expected);
+      const repositoryArgument = `--git-dir=${repositoryPath}`;
+      const commands = reads.mock.calls.flatMap(([file, args]) =>
+        file === 'git' && Array.isArray(args) && args.includes(repositoryArgument)
+          ? [args.slice(args.indexOf(repositoryArgument) + 1)]
+          : []
+      );
+      const requiredRevisions = [
+        ...new Set([
+          versions[selectedIndex]!,
+          ...expected.revisions.map((record) => record.revision!),
+        ]),
+      ].sort();
+      // Engineer's performance criterion: validate each required immutable record once per call.
+      // Notebook spec, Content, Revisions And History: exact metadata and tree validation remain required.
+      expect(
+        commands
+          .filter((args) => args[0] === 'cat-file' && args[1] === 'commit')
+          .map((args) => args[2])
+          .sort()
+      ).toEqual(requiredRevisions);
+      expect(
+        commands
+          .filter((args) => args[0] === 'ls-tree')
+          .map((args) => args.at(-1))
+          .sort()
+      ).toEqual(requiredRevisions);
+      expect(commands.filter((args) => args[0] === 'cat-file' && args[1] === 'blob')).toHaveLength(
+        0
+      );
+    } finally {
+      reads.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+});

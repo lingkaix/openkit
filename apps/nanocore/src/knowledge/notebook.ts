@@ -268,11 +268,15 @@ export class KnowledgeNotebook {
 
   /** Pins the complete current revision; missing or invalid initialized content fails closed. */
   publishedRevision(): string {
+    return this.inspectPublishedRevision().revision;
+  }
+
+  /** Shares the validated current record within one operation, never across public calls. */
+  private inspectPublishedRevision() {
     const revision =
       this.selectedRevision ??
       this.git(['rev-parse', '--verify', `${PUBLISHED_REF}^{commit}`]).trim();
-    this.inspectRevision(revision);
-    return revision;
+    return this.inspectRevision(revision);
   }
 
   /** Pins strict metadata and immutable tree identities without loading omitted page bodies. */
@@ -618,17 +622,20 @@ export class KnowledgeNotebook {
     const limit = input.limit ?? 20;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100)
       throw new NotebookError('invalid_request');
-    const published = this.publishedRevision();
+    const publishedRecord = this.inspectPublishedRevision();
+    const published = publishedRecord.revision;
     let revision: string | null = input.revision ?? published;
+    // Validate the cursor before ancestry; its immutable record also supplies the first row.
+    let inspected = revision === published ? publishedRecord : this.inspectRevision(revision);
     // Normal history cannot disclose retained unpublished Proposal candidates through a cursor.
-    this.inspectRevision(revision);
     if (this.git(['merge-base', revision, published]).trim() !== revision)
       throw new NotebookError('invalid_request');
     const revisions: Omit<NotebookRevision, 'files'>[] = [];
     while (revision && revisions.length < limit) {
-      const { entries: _entries, ...record } = this.inspectRevision(revision);
+      const { entries: _entries, ...record } = inspected;
       revisions.push(record);
       revision = record.parentRevision;
+      if (revision && revisions.length < limit) inspected = this.inspectRevision(revision);
     }
     return { revisions, nextRevision: revision };
   }
