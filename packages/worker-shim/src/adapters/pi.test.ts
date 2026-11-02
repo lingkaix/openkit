@@ -1742,11 +1742,7 @@ describe('Pi controlled channel faults', () => {
     expect((await (await session.startTurn(reordered)).settled).status).toBe('completed');
   });
 
-  it.each(
-    ['malformed', 'inspect'].flatMap((kind) =>
-      ['refused', 'no-exit', 'confirmed'].map((stop) => ({ kind, stop }))
-    )
-  )('R5 stop owner $kind $stop', async ({ kind, stop }) => {
+  const stopOwnerCase = async ({ kind, stop }: { kind: string; stop: string }) => {
     const markerDirs = await createDirs();
     stops.push(() => rm(markerDirs.root, { force: true, recursive: true }));
     const marker = join(markerDirs.root, 'late');
@@ -1783,7 +1779,16 @@ describe('Pi controlled channel faults', () => {
     if (inspection) expect(await inspection).toEqual({ state: 'unknown' });
     await new Promise((resolve) => setTimeout(resolve, 350));
     expect(existsSync(marker)).toBe(stop !== 'confirmed');
-  });
+  };
+  for (const row of ['malformed', 'inspect'].flatMap((kind) =>
+    ['refused', 'no-exit', 'confirmed'].map((stop) => ({ kind, stop }))
+  )) {
+    it(
+      `R5 stop owner '${row.kind}' '${row.stop}'`,
+      stopOwnerCase.bind(undefined, row),
+      row.stop === 'no-exit' ? LIFECYCLE_DEFAULTS.nativeStopCleanupTailMs + 3_000 : 5_000
+    );
+  }
 
   it.each(
     ['status', 'failure', 'interruption', 'shape', 'handle'].flatMap((kind) =>
