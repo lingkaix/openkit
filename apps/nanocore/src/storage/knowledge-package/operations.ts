@@ -105,7 +105,7 @@ export async function exportKnowledgePackage(input: {
   const pages = selection.notebook.readRevision(revision).files;
   const schema = selection.scopeSchemaText;
   const pointers = readSourcePointers(owner, revision, selection);
-  const check = () => {
+  const checkAdmission = () => {
     input.revalidate();
     const current = readWorkspaceNotebookSelection({
       workspaceDb: input.workspaceDb,
@@ -118,6 +118,9 @@ export async function exportKnowledgePackage(input: {
       !isDeepStrictEqual(readKnowledgeMounts(scope), mounts)
     )
       throw new NotebookError('conflict');
+  };
+  const check = () => {
+    checkAdmission();
     assertPortableWorkspaceNotebookDisclosure({
       dataRoot: input.dataRoot,
       workspaceId: input.workspaceId,
@@ -222,7 +225,7 @@ export async function exportKnowledgePackage(input: {
     return {
       manifest,
       revalidateDisclosure: () => {
-        check();
+        checkAdmission();
         for (const pointer of pointers.values())
           if (
             !knowledgeSourceLineageReadable(
@@ -235,16 +238,7 @@ export async function exportKnowledgePackage(input: {
               'Knowledge package access denied.',
               403
             );
-        // Pages can also cite governed Work or Artifact evidence outside the registered Source tree.
-        assertPortableWorkspaceNotebookDisclosure({
-          dataRoot: input.dataRoot,
-          workspaceId: input.workspaceId,
-          notebookRevision: revision,
-          pages: new Map(
-            Object.entries(pages).map(([path, content]) => [`knowledge/pages/${path}`, content])
-          ),
-          access: input.access,
-        });
+        check();
       },
     };
   } finally {
