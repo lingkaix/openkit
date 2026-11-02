@@ -170,6 +170,7 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
     workspaceDb: input.workspaceDb,
     workspaceRoot,
     knowledgeBaseId,
+    preparedSelection: input.notebookRead?.selection,
   });
   const notebook = selection.notebook;
   const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);

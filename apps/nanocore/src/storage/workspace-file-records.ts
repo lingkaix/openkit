@@ -1823,7 +1823,9 @@ export function readPreKnowledgeWorkspaceProposalInventory(
 export function readAdmittedWorkspaceKnowledgeSelection(
   workspaceRoot: string,
   workspaceId: string,
-  workspaceDb?: Pick<WorkspaceDb, 'scope' | 'workspaceId' | 'sqlite'>
+  workspaceDb?: Pick<WorkspaceDb, 'scope' | 'workspaceId' | 'sqlite'>,
+  // Immutable content only; the physical handle, default KB and SQL head remain current reads.
+  preparedSelection?: WorkspaceNotebookSelection
 ): WorkspaceNotebookSelection {
   const owner = { kind: 'workspace' as const, workspaceId };
   const sqlite =
@@ -1841,6 +1843,7 @@ export function readAdmittedWorkspaceKnowledgeSelection(
     workspaceRoot,
     workspaceDb: { scope: 'workspace', workspaceId, sqlite },
     knowledgeBaseId,
+    preparedSelection,
   });
 }
 

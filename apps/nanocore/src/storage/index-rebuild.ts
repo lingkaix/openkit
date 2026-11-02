@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { basename, join, relative, resolve, sep } from 'node:path';
 import {
   type KnowledgeRetrievalResponse,
   KnowledgeRetrievalResponseSchema,
@@ -1296,7 +1296,12 @@ function currentKnowledgeReferenceContent(
     throw knowledgeTraceUnavailable();
   admitKnowledgeRetrieval(input);
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
-  const selection = readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, input.workspaceId);
+  const selection = readAdmittedWorkspaceKnowledgeSelection(
+    workspaceRoot,
+    input.workspaceId,
+    undefined,
+    input.notebookRead?.selection
+  );
   const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
   const currentRead =
     prepared && Object.hasOwn(prepared.current.files, `${reference.objectId}.md`)
@@ -1574,17 +1579,22 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
   }
   if (trace.sourceScope !== currentKnowledgePageScope(input, 'workspace'))
     throw knowledgeTraceUnavailable();
-  const selection = readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, input.workspaceId);
+  const selection = readAdmittedWorkspaceKnowledgeSelection(
+    workspaceRoot,
+    input.workspaceId,
+    undefined,
+    input.notebookRead?.selection
+  );
   const candidate = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
   const prepared =
     candidate?.selected.revision === notebookRevision &&
-    Object.keys(candidate.selected.entries).every((path) =>
-      Object.hasOwn(candidate.selected.files, path)
-    )
+    Object.keys(candidate.selected.entries)
+      // Inventory preparation omits unused navigation bodies, not ordinary Page content.
+      .filter((path) => !['index.md', 'log.md'].includes(basename(path)))
+      .every((path) => Object.hasOwn(candidate.selected.files, path))
       ? candidate
       : undefined;
   pinnedInput.notebookRead = prepared;
-  const referenceProofs = currentKnowledgeReferenceProofs(pinnedInput);
   const pinnedPages = readWorkspaceNotebookIndexSource(
     workspaceRoot,
     notebookRevision,
@@ -1592,9 +1602,16 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     prepared,
     selection
   ).pages;
+  // Navigation is not a Knowledge Page or a source-proof subject.
+  const referenceProofs = currentKnowledgeReferenceProofs({
+    ...pinnedInput,
+    pageIds: [...pinnedPages.keys()],
+  });
   const scopeSchemaText = readAdmittedWorkspaceKnowledgeSelection(
     workspaceRoot,
-    input.workspaceId
+    input.workspaceId,
+    undefined,
+    prepared?.selection
   ).scopeSchemaText;
   const registeredSources = prepared?.sources
     ? new Map([...prepared.sources.values()].map(({ source }) => [source.id, source.contentDigest]))

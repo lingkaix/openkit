@@ -690,7 +690,8 @@ interface PinnedNotebookTarget extends Target {
 function selectWorkspaceNotebook(
   dataRoot: string,
   workspaceId: string,
-  knowledgeBaseId: string
+  knowledgeBaseId: string,
+  preparedSelection?: WorkspaceNotebookSelection
 ): WorkspaceNotebookSelection {
   let workspaceDb: WorkspaceDb | undefined;
   try {
@@ -700,6 +701,7 @@ function selectWorkspaceNotebook(
       dataRoot,
       workspaceId,
       expectedKnowledgeBaseId: knowledgeBaseId,
+      preparedSelection,
     });
   } catch (error) {
     if (error instanceof NotebookError || error instanceof OperationError) throw error;
@@ -715,6 +717,8 @@ export function readCurrentWorkspaceNotebookSelection(input: {
   readonly dataRoot: string;
   readonly workspaceId: string;
   readonly expectedKnowledgeBaseId?: string;
+  /** Reusable immutable facts; the physical owner, default KB and SQL head are still read now. */
+  readonly preparedSelection?: WorkspaceNotebookSelection | undefined;
 }): WorkspaceNotebookSelection {
   if (input.workspaceDb.workspaceId !== input.workspaceId)
     throw new NotebookError('recovery_required');
@@ -731,6 +735,7 @@ export function readCurrentWorkspaceNotebookSelection(input: {
     workspaceDb: input.workspaceDb,
     workspaceRoot: join(input.dataRoot, 'workspaces', input.workspaceId),
     knowledgeBaseId,
+    preparedSelection: input.preparedSelection,
   });
 }
 
@@ -756,7 +761,12 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
     scope: { kind: 'workspace', workspaceId: input.workspaceId },
   });
   const workspaceRoot = join(dataRoot, 'workspaces', input.workspaceId);
-  const selection = selectWorkspaceNotebook(dataRoot, input.workspaceId, knowledgeBaseId);
+  const selection = selectWorkspaceNotebook(
+    dataRoot,
+    input.workspaceId,
+    knowledgeBaseId,
+    input.notebookRead?.selection
+  );
   const notebook = selection.notebook;
   const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
   if (prepared !== input.notebookRead) input = { ...input, notebookRead: prepared };
