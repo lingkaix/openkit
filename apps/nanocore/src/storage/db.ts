@@ -102,23 +102,30 @@ export function bindWorkspaceSqlite(
 
 let singleton: CoreDb | undefined;
 
+// Match better-sqlite3's native-owner default while Core still has residual Main writers.
+// Remove with https://github.com/lingkaix/openkit/issues/616; this is lock waiting, never retry.
+const CORE_BUSY_TIMEOUT_MS = 5000;
+
 /**
  * Opens owned authority and reapplies its connection-local read or durability policy.
  *
  * Read-only handles stay query-only and never configure WAL or schema. Writable handles require FULL synchronization on every open because that setting does not persist in the file. Close failed opens locally.
  *
  * @param path Owned database path.
- * @param options Whether the authoritative file must already exist and whether this is a read-only observation.
+ * @param options Existing-file and read-only policy.
+ * @param busyTimeoutMs Scope-owned lock wait, applied before writable configuration.
  * @returns Configured owned SQLite connection.
  * @throws When the file cannot open or its connection policy cannot be applied.
  */
 function openOwnedSqlite(
   path: string,
-  options: { fileMustExist?: boolean; readonly?: boolean } = {}
+  options: { fileMustExist?: boolean; readonly?: boolean } = {},
+  busyTimeoutMs = 5
 ): Database.Database {
-  // Mixed-writer Main handles must bound synchronous lock waiting; the native worker keeps its own policy.
   const sqlite = new Database(path, { ...options, timeout: 5 });
   try {
+    // Apply the scope policy before WAL configuration; keep one physical connection.
+    if (busyTimeoutMs !== 5) sqlite.pragma(`busy_timeout = ${busyTimeoutMs}`);
     if (options.readonly) sqlite.pragma('query_only = ON');
     else configureOwnedSqlite(sqlite);
     return sqlite;
@@ -144,7 +151,7 @@ export function openCoreDb(
     (options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot));
   ensureLayoutDirectories(dataRoot);
 
-  const sqlite = openOwnedSqlite(coreDbPath(dataRoot));
+  const sqlite = openOwnedSqlite(coreDbPath(dataRoot), {}, CORE_BUSY_TIMEOUT_MS);
 
   return bindCoreSqlite(sqlite, dataRoot, canInitializeLocalUser);
 }
@@ -184,7 +191,7 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
   readDataRootLayoutMarker(dataRoot);
   const path = coreDbPath(dataRoot);
   assertSqliteIntegrity(path);
-  const sqlite = openOwnedSqlite(path, { fileMustExist: true });
+  const sqlite = openOwnedSqlite(path, { fileMustExist: true }, CORE_BUSY_TIMEOUT_MS);
 
   return bindCoreSqlite(sqlite, dataRoot);
 }

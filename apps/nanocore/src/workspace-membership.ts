@@ -50,35 +50,38 @@ export interface EnsureUserQuickChatWorkspaceInput {
 export async function ensureUserQuickChatWorkspace(
   input: EnsureUserQuickChatWorkspaceInput
 ): Promise<void> {
+  // Acquire write intent before dependent reads; a deferred WAL upgrade cannot use the busy wait.
   // Reserve a successor before the first await, so concurrent/restarted callers keep one identity.
-  const workspaceId = input.coreDb.sqlite.transaction(() => {
-    if (!isCanonicalUserActive(input.coreDb, input.userId))
-      throw new Error('Personal workspace requires an active canonical user.');
-    const currentId = quickChatWorkspaceIdForUser(input.userId, input.coreDb.dataRoot);
-    const registry = input.coreDb.sqlite
-      .prepare(
-        'SELECT status, owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?'
-      )
-      .get(currentId) as { status: string; ownerUserId: string } | undefined;
-    if (registry && registry.ownerUserId !== input.userId)
-      throw new Error('Personal Workspace ownership is contradictory.');
-    const membership = input.coreDb.sqlite
-      .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-      .get(currentId, input.userId) as { status: string } | undefined;
-    if (membership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
-    if (registry && membership?.status !== 'active')
-      throw new Error('Personal Workspace requires active owner membership.');
-    if (registry?.status === 'retired') {
-      const successor = allocateEntityId('ws');
-      input.coreDb.sqlite
-        .prepare('UPDATE users SET personal_workspace_id = ? WHERE id = ?')
-        .run(successor, input.userId);
-      return successor;
-    }
-    if (registry && registry.status !== 'active')
-      throw new Error('Personal Workspace requires an active registry.');
-    return currentId;
-  })();
+  const workspaceId = input.coreDb.sqlite
+    .transaction(() => {
+      if (!isCanonicalUserActive(input.coreDb, input.userId))
+        throw new Error('Personal workspace requires an active canonical user.');
+      const currentId = quickChatWorkspaceIdForUser(input.userId, input.coreDb.dataRoot);
+      const registry = input.coreDb.sqlite
+        .prepare(
+          'SELECT status, owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?'
+        )
+        .get(currentId) as { status: string; ownerUserId: string } | undefined;
+      if (registry && registry.ownerUserId !== input.userId)
+        throw new Error('Personal Workspace ownership is contradictory.');
+      const membership = input.coreDb.sqlite
+        .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+        .get(currentId, input.userId) as { status: string } | undefined;
+      if (membership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
+      if (registry && membership?.status !== 'active')
+        throw new Error('Personal Workspace requires active owner membership.');
+      if (registry?.status === 'retired') {
+        const successor = allocateEntityId('ws');
+        input.coreDb.sqlite
+          .prepare('UPDATE users SET personal_workspace_id = ? WHERE id = ?')
+          .run(successor, input.userId);
+        return successor;
+      }
+      if (registry && registry.status !== 'active')
+        throw new Error('Personal Workspace requires an active registry.');
+      return currentId;
+    })
+    .immediate();
   const registry = input.coreDb.sqlite
     .prepare('SELECT owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?')
     .get(workspaceId) as { ownerUserId: string } | undefined;
@@ -91,22 +94,25 @@ export async function ensureUserQuickChatWorkspace(
   // An established home with missing storage is recovery, never fresh empty provisioning.
   if (registry) input.store.getWorkspace(workspaceId);
   const workspace = await input.store.ensureQuickChatWorkspace(input.userId);
-  input.coreDb.sqlite.transaction(() => {
-    if (
-      quickChatWorkspaceIdForUser(input.userId, input.coreDb.dataRoot) !== workspace.id ||
-      workspace.id !== workspaceId
-    )
-      throw new Error('Current personal Workspace binding changed.');
-    recordWorkspaceOwnerMembership({
-      coreDb: input.coreDb,
-      ownerUserId: input.userId,
-      workspaceId: workspace.id,
-    });
-  })();
+  input.coreDb.sqlite
+    .transaction(() => {
+      if (
+        quickChatWorkspaceIdForUser(input.userId, input.coreDb.dataRoot) !== workspace.id ||
+        workspace.id !== workspaceId
+      )
+        throw new Error('Current personal Workspace binding changed.');
+      recordWorkspaceOwnerMembership({
+        coreDb: input.coreDb,
+        ownerUserId: input.userId,
+        workspaceId: workspace.id,
+      });
+    })
+    .immediate();
 }
 
 /**
  * Records the initial workspace registry and adds owner membership without reviving removed access.
+ * Write intent precedes current-fact reads so concurrent native writes use the bounded Core wait.
  * Membership removal must retain its row with `status = 'removed'`; deleting the row discards the tombstone.
  *
  * @param input Workspace owner membership input.
@@ -116,24 +122,25 @@ export async function ensureUserQuickChatWorkspace(
 export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMembershipInput): void {
   const now = (input.now ?? new Date()).toISOString();
 
-  input.coreDb.sqlite.transaction(() => {
-    if (!isCanonicalUserActive(input.coreDb, input.ownerUserId)) {
-      throw new Error('Workspace owner requires an active canonical user.');
-    }
+  input.coreDb.sqlite
+    .transaction(() => {
+      if (!isCanonicalUserActive(input.coreDb, input.ownerUserId)) {
+        throw new Error('Workspace owner requires an active canonical user.');
+      }
 
-    const existing = input.coreDb.sqlite
-      .prepare('SELECT owner_user_id, status FROM workspace_registry WHERE workspace_id = ?')
-      .get(input.workspaceId) as { owner_user_id: string; status: string } | undefined;
+      const existing = input.coreDb.sqlite
+        .prepare('SELECT owner_user_id, status FROM workspace_registry WHERE workspace_id = ?')
+        .get(input.workspaceId) as { owner_user_id: string; status: string } | undefined;
 
-    if (existing && existing.owner_user_id !== input.ownerUserId) {
-      throw new Error('Workspace is already owned by another user.');
-    }
-    if (existing && existing.status !== 'active')
-      throw new Error('Workspace owner requires an active registry.');
+      if (existing && existing.owner_user_id !== input.ownerUserId) {
+        throw new Error('Workspace is already owned by another user.');
+      }
+      if (existing && existing.status !== 'active')
+        throw new Error('Workspace owner requires an active registry.');
 
-    input.coreDb.sqlite
-      .prepare(
-        `INSERT INTO workspace_registry (
+      input.coreDb.sqlite
+        .prepare(
+          `INSERT INTO workspace_registry (
           workspace_id,
           owner_user_id,
           status,
@@ -143,12 +150,12 @@ export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMember
         )
          VALUES (?, ?, 'active', 1, ?, ?)
          ON CONFLICT(workspace_id) DO NOTHING`
-      )
-      .run(input.workspaceId, input.ownerUserId, now, now);
+        )
+        .run(input.workspaceId, input.ownerUserId, now, now);
 
-    input.coreDb.sqlite
-      .prepare(
-        `INSERT INTO workspace_members (
+      input.coreDb.sqlite
+        .prepare(
+          `INSERT INTO workspace_members (
           workspace_id,
           user_id,
           status,
@@ -161,21 +168,22 @@ export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMember
         )
          VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)
          ON CONFLICT(workspace_id, user_id) DO NOTHING`
-      )
-      .run(input.workspaceId, input.ownerUserId, now, now, now);
+        )
+        .run(input.workspaceId, input.ownerUserId, now, now, now);
 
-    const ownerMembership = input.coreDb.sqlite
-      .prepare(
-        `SELECT status
+      const ownerMembership = input.coreDb.sqlite
+        .prepare(
+          `SELECT status
          FROM workspace_members
          WHERE workspace_id = ? AND user_id = ?`
-      )
-      .get(input.workspaceId, input.ownerUserId) as { status: string } | undefined;
-    if (ownerMembership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
-    if (ownerMembership?.status !== 'active') {
-      throw new Error('Workspace owner requires an active membership.');
-    }
-  })();
+        )
+        .get(input.workspaceId, input.ownerUserId) as { status: string } | undefined;
+      if (ownerMembership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
+      if (ownerMembership?.status !== 'active') {
+        throw new Error('Workspace owner requires an active membership.');
+      }
+    })
+    .immediate();
 }
 
 /**
