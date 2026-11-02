@@ -21,7 +21,7 @@ import {
   WorkspaceChangeSetSchema,
 } from '@openkit/app-api-schemas';
 import { compareCodeUnits } from '@openkit/protocol';
-import { removePrivateTree } from '@openkit/storage';
+import { removePrivateTree, removePrivateTreeInventory } from '@openkit/storage';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
 import {
@@ -896,37 +896,12 @@ async function cleanupFilesystemRollback(
     }
   }
 
-  const filesRoot = join(rollback.rootPath, 'files');
-  for (const relativePath of backupFiles) {
-    await rm(join(filesRoot, relativePath), { force: true });
-  }
-  backupDirectories.sort((left, right) => right.split('/').length - left.split('/').length);
-  for (const relativePath of backupDirectories) {
-    try {
-      await rmdir(join(filesRoot, relativePath));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw error;
-      }
-    }
-  }
-  if (filesEntry) {
-    try {
-      await rmdir(filesRoot);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw error;
-      }
-    }
-  }
-  await rm(join(rollback.rootPath, 'ready.json'), { force: true });
-  try {
-    await rmdir(rollback.rootPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw error;
-    }
-  }
+  await removePrivateTreeInventory(
+    rollback.rootPath,
+    Boolean(filesEntry),
+    backupFiles,
+    backupDirectories
+  );
 }
 
 /**

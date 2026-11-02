@@ -28,6 +28,7 @@ export {
   readCanonicalTextFile,
   removeDurableFile,
   removePrivateTree,
+  removePrivateTreeInventory,
   removePrivateTreeStrict,
   removePrivateTreeSync,
   stagePrivateFile,

@@ -30,6 +30,7 @@ import {
   readdir,
   rename,
   rm,
+  rmdir,
   stat,
   unlink,
 } from 'node:fs/promises';
@@ -1074,6 +1075,49 @@ export async function movePrivateTree(source: string, destination: string): Prom
 /** @internal Removes only a caller-selected disposable tree, propagating cleanup failure. */
 export async function removePrivateTree(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true });
+}
+
+/**
+ * @internal Removes a caller-validated private inventory without recursively removing unknown bytes.
+ * The caller owns root confinement and inventory selection; only absent directories are ignored.
+ */
+export async function removePrivateTreeInventory(
+  rootPath: string,
+  filesPresent: boolean,
+  backupFiles: string[],
+  backupDirectories: string[]
+): Promise<void> {
+  const filesRoot = join(rootPath, 'files');
+  for (const relativePath of backupFiles) {
+    await rm(join(filesRoot, relativePath), { force: true });
+  }
+  backupDirectories.sort((left, right) => right.split('/').length - left.split('/').length);
+  for (const relativePath of backupDirectories) {
+    try {
+      await rmdir(join(filesRoot, relativePath));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+  if (filesPresent) {
+    try {
+      await rmdir(filesRoot);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+  await rm(join(rootPath, 'ready.json'), { force: true });
+  try {
+    await rmdir(rootPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
 }
 
 /** @internal Streams private member bytes; the caller retains caps, integrity and capacity accounting. */
