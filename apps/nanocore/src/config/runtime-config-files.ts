@@ -4,7 +4,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -54,8 +53,10 @@ import {
 import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import {
   assertCanonicalDirectory,
+  createPrivateTreeSync,
   ensureCanonicalDirectory,
   readCanonicalTextFile,
+  removePrivateTreeSync,
 } from '@openkit/storage';
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
@@ -486,7 +487,7 @@ export class RuntimeConfigFileService {
         plan: rejectedValidationPlan(this.runtimeConfigManager.current().version, error),
       });
     } finally {
-      rmSync(tempRoot, { force: true, recursive: true });
+      removePrivateTreeSync(tempRoot);
     }
   }
 
@@ -892,7 +893,7 @@ export class RuntimeConfigFileService {
    * @returns Temporary data root path.
    */
   private createOverlayDataRoot(input: RuntimeConfigValidationRequest): string {
-    const tempRoot = mkdtempSync(join(tmpdir(), 'openkit-config-overlay-'));
+    const tempRoot = createPrivateTreeSync(tmpdir(), 'openkit-config-overlay-');
     const sourceConfigRoot = this.configRoot();
     const tempConfigRoot = join(tempRoot, CONFIG_ROOT);
 

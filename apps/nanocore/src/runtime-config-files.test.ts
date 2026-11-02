@@ -1,6 +1,7 @@
-import {
+import fs, {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -8,9 +9,10 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -600,59 +602,129 @@ describe('runtime config file API', () => {
   it('validates draft overlays without mutating disk and returns reload plans', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const app = createApp({ dataRoot });
+    const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+    const app = createTestApp({ dataRoot, runtimeConfigManager });
+    const activeSnapshot = runtimeConfigManager.current();
+    const activeProviders = structuredClone(activeSnapshot.providerRegistry.list());
     const providerFileId = 'providers/agent-openrouter.provider.jsonc';
     const providerPath = join(dataRoot, 'config', providerFileId);
     const original = readFileSync(providerPath, 'utf8');
+    const serverPath = join(dataRoot, 'config', 'server.jsonc');
+    const originalServer = readFileSync(serverPath, 'utf8');
+    const overlayRoots: string[] = [];
+    const allocate = fs.mkdtempSync;
+    // Delegate every real allocation; observe only request-owned validation staging.
+    const allocation = vi.spyOn(fs, 'mkdtempSync').mockImplementation((...args) => {
+      const root = allocate(...args);
+      if (String(args[0]) === join(tmpdir(), 'openkit-config-overlay-')) {
+        expect(lstatSync(root).isDirectory()).toBe(true);
+        overlayRoots.push(String(root));
+      }
+      return root;
+    });
+    try {
+      syncBuiltinESMExports();
+      const invalidRes = await app.request(
+        ...operationRequest(
+          'runtime.validate',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              files: [{ id: 'server.jsonc', content: '{' }],
+              mode: 'safe',
+            }),
+          }
+        )
+      );
+      expect(overlayRoots).toHaveLength(0);
+      const changedRes = await app.request(
+        ...operationRequest(
+          'runtime.validate',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              files: [
+                {
+                  id: providerFileId,
+                  content: original.replace('openrouter.ai', 'openrouter.example.com'),
+                },
+              ],
+              mode: 'safe',
+            }),
+          }
+        )
+      );
+      const invalid = (await invalidRes.json()) as {
+        valid: boolean;
+        diagnostics: Array<{ range: { startLine: number } | null }>;
+      };
+      const changed = (await changedRes.json()) as {
+        valid: boolean;
+        plan: { applied: unknown[]; requiresRestart: Array<{ path: string }> };
+      };
 
-    const invalidRes = await app.request(
-      ...operationRequest(
-        'runtime.validate',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            files: [{ id: 'server.jsonc', content: '{' }],
-            mode: 'safe',
-          }),
-        }
-      )
-    );
-    const changedRes = await app.request(
-      ...operationRequest(
-        'runtime.validate',
-        {},
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            files: [
-              {
-                id: providerFileId,
-                content: original.replace('openrouter.ai', 'openrouter.example.com'),
-              },
-            ],
-            mode: 'safe',
-          }),
-        }
-      )
-    );
-    const invalid = (await invalidRes.json()) as {
-      valid: boolean;
-      diagnostics: Array<{ range: { startLine: number } | null }>;
-    };
-    const changed = (await changedRes.json()) as {
-      valid: boolean;
-      plan: { applied: unknown[]; requiresRestart: Array<{ path: string }> };
-    };
-
-    expect(invalid.valid).toBe(false);
-    expect(invalid.diagnostics[0]?.range?.startLine).toBe(1);
-    expect(changed.valid).toBe(true);
-    expect(changed.plan.applied).toEqual([]);
-    expect(changed.plan.requiresRestart).toEqual([expect.objectContaining({ path: 'providers' })]);
-    expect(readFileSync(providerPath, 'utf8')).toBe(original);
+      expect(invalid.valid).toBe(false);
+      expect(invalid.diagnostics[0]?.range?.startLine).toBe(1);
+      expect(changed.valid).toBe(true);
+      expect(changed.plan.applied).toEqual([]);
+      expect(changed.plan.requiresRestart).toEqual([
+        expect.objectContaining({ path: 'providers' }),
+      ]);
+      expect(readFileSync(providerPath, 'utf8')).toBe(original);
+      // Temporary-root hygiene includes removal before either validation result returns.
+      // Owner: File Storage And Knowledge Packages, Control-Store Integration.
+      expect(overlayRoots.length).toBeGreaterThan(0);
+      for (const root of overlayRoots) {
+        expect(() => lstatSync(root)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+      }
+      const successRootCount = overlayRoots.length;
+      const rejectedRes = await app.request(
+        ...operationRequest(
+          'runtime.validate',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              files: [
+                {
+                  id: providerFileId,
+                  content: original.replace('openai/gpt-5.1', 'openkit/no-known-context-fixture'),
+                },
+              ],
+              mode: 'safe',
+            }),
+          }
+        )
+      );
+      const rejected = (await rejectedRes.json()) as {
+        valid: boolean;
+        diagnostics: Array<{ severity: string }>;
+      };
+      // Gateway Provider Model Metadata requires a known positive context limit.
+      expect(rejected.valid).toBe(false);
+      expect(rejected.diagnostics).toContainEqual(expect.objectContaining({ severity: 'error' }));
+      expect(overlayRoots.length).toBeGreaterThan(successRootCount);
+      expect(new Set(overlayRoots).size).toBe(overlayRoots.length);
+      for (const root of overlayRoots) {
+        expect(() => lstatSync(root)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+      }
+      // Config And Identity, Reload And Failure Contract: drafts do not activate a snapshot.
+      expect(runtimeConfigManager.current()).toBe(activeSnapshot);
+      expect(runtimeConfigManager.current().providerRegistry.list()).toEqual(activeProviders);
+      expect(readFileSync(providerPath, 'utf8')).toBe(original);
+      expect(readFileSync(serverPath, 'utf8')).toBe(originalServer);
+    } finally {
+      allocation.mockRestore();
+      syncBuiltinESMExports();
+      await shutdownControlStoreWorkerClient();
+      for (const root of overlayRoots) rmSync(root, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps admin config routes protected in server mode', async () => {

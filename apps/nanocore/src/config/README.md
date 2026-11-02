@@ -75,3 +75,5 @@ Local-mode App binds must remain loopback even when TLS material is configured. 
 Runtime snapshot comparisons and current secret-safe fingerprints use Protocol canonical JSON and its Node-only digest subpath. Optional missing configuration is compared as absence before encoding; it is not converted to null. Retained PermissionDecision snapshot attribution stays opaque and authored configuration bytes are unchanged. Run `runtime-config.test.ts`, `config-tolerance.test.ts` and `delegated-worker-git-read.test.ts` for comparison, redaction and replay coverage.
 
 The runtime config manager exposes only its captured data-root identity for lifecycle dependency checks. Final restored-target admission refuses a manager bound to a different root before any projection reload.
+
+Validation overlay allocation and final cleanup use the existing Storage private-tree helpers. Configuration copying, draft preparation, diagnostics, active snapshot preservation, and the existing caller-owned cleanup and failure order stay in this module.
