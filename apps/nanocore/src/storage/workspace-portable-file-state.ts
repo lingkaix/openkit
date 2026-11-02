@@ -1,4 +1,4 @@
-import { lstatSync, mkdirSync, readdirSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { ProductRetrievalTrace } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
@@ -12,6 +12,7 @@ import {
 import {
   assertCanonicalDirectory,
   readCanonicalTextFile,
+  resolvePortableDirectory,
   writePortableTextFile,
 } from '@openkit/storage';
 import { parseJsoncObject } from '../config/jsonc.js';
@@ -531,19 +532,7 @@ function writeText(root: string, relativePath: string, content: string, replace:
 
 /** Resolves or creates a real directory beneath the verified workspace root. */
 function workspaceDirectory(root: string, relativePath: string, create: boolean): string | null {
-  let current = root;
-  for (const segment of safeRelativeSegments(relativePath)) {
-    current = join(current, segment);
-    const metadata = lstatSync(current, { throwIfNoEntry: false });
-    if (!metadata) {
-      if (!create) {
-        return null;
-      }
-      mkdirSync(current);
-    }
-    assertCanonicalDirectory(current);
-  }
-  return current;
+  return resolvePortableDirectory(root, safeRelativeSegments(relativePath), create);
 }
 
 /** Validates one normalized workspace-relative path and returns its segments. */

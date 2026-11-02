@@ -43,6 +43,7 @@ export {
   removePrivateTreeStrict,
   removePrivateTreeSync,
   removeTelemetrySegment,
+  resolvePortableDirectory,
   stagePrivateFile,
   syncCanonicalDirectory,
   syncCanonicalTree,

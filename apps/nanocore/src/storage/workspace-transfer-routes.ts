@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants, existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
+import { constants, existsSync, readFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -21,6 +21,7 @@ import {
   isEntityId,
   readRetainedV1,
 } from '@openkit/protocol';
+import { resolvePortableDirectory } from '@openkit/storage';
 import type { Context, Hono } from 'hono';
 import { listExportableResolvedAgentSetups } from '../agents/setup-ledger.js';
 import { asApiError } from '../api-errors.js';
@@ -605,12 +606,8 @@ function createVerifiedWorkspaceExportFiles({
   const workspacesRoot = join(exportsRoot, 'workspaces');
   const workspaceExportsRoot = join(workspacesRoot, workspaceId);
   assertCanonicalDirectory(exportsRoot);
-  for (const path of [workspacesRoot, workspaceExportsRoot]) {
-    if (!lstatSync(path, { throwIfNoEntry: false })) {
-      mkdirSync(path);
-    }
-    assertCanonicalDirectory(path);
-  }
+  resolvePortableDirectory(exportsRoot, ['workspaces'], true);
+  resolvePortableDirectory(workspacesRoot, [workspaceId], true);
   const exportRoot = join(workspaceExportsRoot, exportId);
   const turnObservations = new Map<string, string>();
   for (const turn of turns) {

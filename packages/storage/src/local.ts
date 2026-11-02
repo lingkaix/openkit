@@ -2264,3 +2264,24 @@ export function copyMissingBackupDefinitions(
     }
   }
 }
+
+/** @internal Resolves the caller-validated portable directory segments with the original optional creation and canonical-directory checks. */
+export function resolvePortableDirectory(
+  root: string,
+  segments: readonly string[],
+  create: boolean
+): string | null {
+  let current = root;
+  for (const segment of segments) {
+    current = join(current, segment);
+    const metadata = lstatSync(current, { throwIfNoEntry: false });
+    if (!metadata) {
+      if (!create) {
+        return null;
+      }
+      mkdirSync(current);
+    }
+    assertCanonicalDirectory(current);
+  }
+  return current;
+}
