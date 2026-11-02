@@ -92,7 +92,10 @@ import {
   type WorkspaceDb,
 } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
-import { resolveWorkspaceKnowledgeRetrievalPages } from '../storage/index-rebuild.js';
+import {
+  prepareKnowledgeRetrievalTraceRead,
+  resolveWorkspaceKnowledgeRetrievalPages,
+} from '../storage/index-rebuild.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import {
@@ -590,6 +593,7 @@ export async function prepareWorkerTurnContextPackage(
     queuedMaterialSelection = bindingCandidate;
   }
 
+  let notebookRead: Awaited<ReturnType<typeof prepareKnowledgeRetrievalTraceRead>>;
   let knowledgeCandidates: NonNullable<ReturnType<typeof resolveWorkspaceKnowledgeRetrievalPages>> =
     [];
   const knowledgeSelections: WorkerContextPackageKnowledgeSelectionInput[] = [];
@@ -597,7 +601,23 @@ export async function prepareWorkerTurnContextPackage(
   if (knowledgeSelectionInput) {
     let pages: ReturnType<typeof resolveWorkspaceKnowledgeRetrievalPages>;
     try {
+      // Admit the persisted trace before loading its exact immutable revision, including history.
+      notebookRead = await prepareKnowledgeRetrievalTraceRead({
+        dataRoot: workspaceDb.dataRoot,
+        access: {
+          store,
+          coreDb: coreDb ?? undefined,
+          actor: store.getTurnById(input.turnId).triggerActor,
+          requestActor: serverKnowledgeActor,
+          outputThreadId: input.threadId,
+          outputTurnId: input.turnId,
+          resourcePolicyActor,
+        },
+        retrievalTraceRef: knowledgeSelectionInput.retrievalTraceRef,
+        workspaceId: input.workspaceId,
+      });
       pages = resolveWorkspaceKnowledgeRetrievalPages({
+        notebookRead,
         caller: 'task-mode',
         dataRoot: workspaceDb.dataRoot,
         access: {
@@ -813,6 +833,7 @@ export async function prepareWorkerTurnContextPackage(
   const assertCurrentKnowledge = () => {
     if (!knowledgeSelectionInput) return;
     const current = resolveWorkspaceKnowledgeRetrievalPages({
+      notebookRead,
       caller: 'task-mode',
       dataRoot: workspaceDb.dataRoot,
       access: {

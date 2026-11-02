@@ -91,6 +91,7 @@ import { admitModelRequest } from '../context/model-request-admission.js';
 import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   commandRequestExpiresAt,
   commandRequestKey,
@@ -10218,6 +10219,360 @@ describe('WorkerGovernanceTurnExecutor', () => {
       prepareSpy.mockRestore();
       launchSpy.mockRestore();
       coreDb.sqlite.close();
+    }
+  }, 60_000);
+
+  it('prepares eight selected Knowledge pages without synchronous ordinary Notebook body reads', async () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const pages = Array.from({ length: 8 }, (_, index) =>
+      knowledgePageFixture(
+        {
+          id: `prepared-worker-${index}`,
+          title: `Prepare worker context ${index}`,
+          content: `Prepare worker context guidance ${index}.`,
+          createdAt: '2026-07-18T00:00:00.000Z',
+          updatedAt: '2026-07-18T00:00:00.000Z',
+        },
+        { kind: 'workspace', workspaceId }
+      )
+    );
+    const fixture = await createWorkerContextExecutorFixture('eight-prepared-knowledge-pages', {
+      knowledge: pages,
+      skipInitialKnowledgeSelection: true,
+    });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    try {
+      const notebookRevision = fixture.notebook.publishedRevision();
+      const knowledgeBaseId = readDefaultKnowledgeBaseId({
+        dataRoot: fixture.coreDb.dataRoot,
+        scope: { kind: 'workspace', workspaceId },
+      });
+      const retrieval = await retrieveWorkspaceKnowledge({
+        access: {
+          actor: fixture.turn.triggerActor,
+          coreDb: fixture.coreDb,
+          outputThreadId: fixture.turn.threadId,
+          outputTurnId: fixture.turn.id,
+          store: fixture.store,
+        },
+        caller: 'task-mode',
+        dataRoot: fixture.coreDb.dataRoot,
+        limit: 8,
+        pinnedReferences: [],
+        query: 'Prepare worker context',
+        traceId: fixture.retrievalTraceRef.objectId,
+        workspaceId,
+      });
+      expect(retrieval.retrievalTraceRef).toEqual(fixture.retrievalTraceRef);
+      expect(retrieval.notebookRevision).toBe(notebookRevision);
+      expect(retrieval.selected).toHaveLength(8);
+      expect(retrieval.selected.map((entry) => entry.reference.objectId)).toEqual(
+        pages.map((page) => page.id)
+      );
+      for (const [index, page] of pages.entries()) {
+        expect(retrieval.selected[index]).toMatchObject({
+          reference: {
+            objectId: page.id,
+            scopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`,
+          },
+          revision: notebookRevision,
+          contentDigest: turnRuntimeSha256(Buffer.from(page.content)),
+          sourceReferences: [],
+        });
+      }
+      const checkpoint = getWorkerCheckpoint(
+        workspaceDb,
+        workspaceId,
+        fixture.turn.threadId,
+        fixture.turn.id
+      )!;
+      await upsertWorkerCheckpoint(workspaceDb, {
+        diagnosticsSummary: createWorkerCheckpointContextDiagnostics({
+          contextDigest: commandInputHash(fixture.workerRequest),
+          contextRefs: [{ kind: 'item', id: fixture.contextItemId }],
+          knowledgeSelectionInput: { retrievalTraceRef: fixture.retrievalTraceRef },
+          repositoryResourceId: 'repo_default',
+        }),
+        goalId: null,
+        iteration: checkpoint.iteration,
+        requestId: checkpoint.requestId,
+        requestInputHash: checkpoint.requestInputHash,
+        stage: 'preparing',
+        taskId: null,
+        threadId: fixture.turn.threadId,
+        turnId: fixture.turn.id,
+        workspaceId,
+      });
+      // Observe only preparation; setup and retrieval use their own real Notebook readers.
+      const reads = vi.spyOn(KnowledgeNotebook.prototype, 'readRevision');
+      let prepared: Awaited<ReturnType<typeof prepareWorkerTurnContextPackage>>;
+      let bodyReads: unknown[];
+      let navigationReads: number;
+      try {
+        prepared = await prepareWorkerTurnContextPackage(
+          fixture.coreDb,
+          workspaceDb,
+          fixture.store,
+          getWorkerCheckpoint(workspaceDb, workspaceId, fixture.turn.threadId, fixture.turn.id)!,
+          {
+            agentSessionId: fixture.agentSessionId,
+            requestId: fixture.requestId,
+            threadId: fixture.turn.threadId,
+            turnId: fixture.turn.id,
+            workerRequest: fixture.workerRequest,
+            workspaceId,
+          },
+          new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n)
+        );
+        // S39 navigation reads index.md separately; this seam owns ordinary Page bodies.
+        bodyReads = reads.mock.calls.filter(
+          ([, paths]) =>
+            paths === undefined || paths.some((path) => !['index.md', 'log.md'].includes(path))
+        );
+        navigationReads = reads.mock.calls.length - bodyReads.length;
+      } finally {
+        reads.mockRestore();
+      }
+      // S39 Knowledge Handling binds every selected identity, ordered delivery and exact bytes.
+      expect(prepared.knowledgeSelectionInput).toEqual({
+        retrievalTraceRef: fixture.retrievalTraceRef,
+      });
+      expect(prepared.knowledgeExclusions).toEqual([]);
+      expect(prepared.packageFiles.knowledgeSelections).toHaveLength(8);
+      const delivered = prepared.packageFiles.files.filter((file) =>
+        file.path.startsWith('knowledge/pages/')
+      );
+      expect(delivered.map((file) => file.path)).toEqual(
+        pages.map((page) => `knowledge/pages/${page.id}.md`)
+      );
+      for (const [index, page] of pages.entries()) {
+        const bytes = Buffer.from(page.content);
+        const digest = turnRuntimeSha256(bytes);
+        expect(prepared.packageFiles.knowledgeSelections[index]).toEqual({
+          knowledgeBaseId,
+          knowledgePageId: page.id,
+          notebookRevision,
+          contentDigest: digest,
+          packagePath: `knowledge/pages/${page.id}.md`,
+          sourceRefs: [],
+          projection: {
+            kind: 'body',
+            sourceRevision: notebookRevision,
+            representationId: 'original-utf8',
+            representationDigest: digest,
+            representationByteLength: bytes.byteLength,
+            deliveredDigest: digest,
+            ranges: [{ start: 0, end: bytes.byteLength }],
+            byteLength: bytes.byteLength,
+            truncated: false,
+            availability: 'available',
+          },
+        });
+        expect(Buffer.from(delivered[index]!.bytes)).toEqual(bytes);
+        expect(readFileSync(join(fixture.packageRoot, `knowledge/pages/${page.id}.md`))).toEqual(
+          bytes
+        );
+      }
+      expect(
+        bodyReads,
+        `Reserved navigation reads during preparation: ${navigationReads}`
+      ).toHaveLength(0);
+    } finally {
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
+    }
+  }, 60_000);
+
+  it('refuses selected Knowledge restricted during real Material source preparation', async () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const page = knowledgePageFixture(
+      {
+        id: 'prepared-worker-authority',
+        title: 'Prepare worker context',
+        content: 'Prepare worker context with currently authorized Knowledge.',
+        createdAt: '2026-07-18T00:00:00.000Z',
+        updatedAt: '2026-07-18T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId }
+    );
+    const fixture = await createWorkerContextExecutorFixture('prepared-knowledge-restricted', {
+      knowledge: [page],
+    });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    const notebook = fixture.notebook;
+    const originalRevision = notebook.publishedRevision();
+    const originalIndex = notebook.readRevision(originalRevision, ['index.md']).files['index.md'];
+    const app = createApp({
+      coreDb: fixture.coreDb,
+      dataRoot: fixture.coreDb.dataRoot,
+      mode: 'local',
+      store: fixture.store,
+    });
+    const prepareMaterial = materialSourceReader.prepareMaterialSourceInput;
+    let restricted = false;
+    const preparation = vi
+      .spyOn(materialSourceReader, 'prepareMaterialSourceInput')
+      .mockImplementation(async (...args) => {
+        const prepared = await prepareMaterial(...args);
+        // S39 and Knowledge Core require current authority after this await, even for retained bytes.
+        const response = await app.request(
+          ...knowledgeOperationRequest(
+            'knowledge.notebook.update',
+            { workspaceId },
+            {
+              body: JSON.stringify({
+                requestId: randomUUID(),
+                baseRevision: originalRevision,
+                changes: [
+                  {
+                    path: page.path,
+                    content: page.content.replace(
+                      'sensitivity: "normal"',
+                      'sensitivity: "confidential"'
+                    ),
+                  },
+                ],
+                summary: 'Restrict selected Knowledge during Worker preparation.',
+              }),
+            }
+          )
+        );
+        expect(response.status, await response.clone().text()).toBe(200);
+        restricted = true;
+        return prepared;
+      });
+    try {
+      const result = await prepareWorkerTurnContextPackage(
+        fixture.coreDb,
+        workspaceDb,
+        fixture.store,
+        getWorkerCheckpoint(workspaceDb, workspaceId, fixture.turn.threadId, fixture.turn.id)!,
+        {
+          agentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workerRequest: fixture.workerRequest,
+          workspaceId,
+        },
+        new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n)
+      ).then(
+        () => 'prepared',
+        (error: unknown) => error
+      );
+      expect(preparation).toHaveBeenCalledOnce();
+      expect(restricted, String((result as Error).cause ?? result)).toBe(true);
+      expect(result).toMatchObject({
+        code: 'workspace_access_denied',
+        status: 403,
+        message: 'Knowledge trace or source is unavailable.',
+      });
+      const currentRevision = fixture.notebook.publishedRevision();
+      expect(currentRevision).not.toBe(originalRevision);
+      expect(notebook.readRevision(currentRevision, [page.path]).files[page.path]).toContain(
+        'sensitivity: "confidential"'
+      );
+      expect(notebook.readRevision(originalRevision, [page.path]).files[page.path]).toBe(
+        page.content
+      );
+      expect(notebook.readRevision(currentRevision, ['index.md']).files['index.md']).toBe(
+        originalIndex
+      );
+      expect(existsSync(join(fixture.packageRoot, 'package.json'))).toBe(false);
+      expect(existsSync(fixture.tracePath)).toBe(false);
+    } finally {
+      preparation.mockRestore();
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
+    }
+  }, 60_000);
+
+  it('prepares selected historical Knowledge bytes after a readable current publication', async () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const page = knowledgePageFixture(
+      {
+        id: 'historical-worker-guidance',
+        title: 'Prepare worker context',
+        content: 'Prepare worker context with original historical guidance.',
+        createdAt: '2026-07-18T00:00:00.000Z',
+        updatedAt: '2026-07-18T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId }
+    );
+    const fixture = await createWorkerContextExecutorFixture('prepared-historical-knowledge', {
+      knowledge: [page],
+    });
+    const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
+    try {
+      const originalRevision = fixture.notebook.publishedRevision();
+      const currentContent = page.content.replace(
+        'original historical guidance',
+        'new current guidance'
+      );
+      const app = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.coreDb.dataRoot,
+        mode: 'local',
+        store: fixture.store,
+      });
+      const response = await app.request(
+        ...knowledgeOperationRequest(
+          'knowledge.notebook.update',
+          { workspaceId },
+          {
+            body: JSON.stringify({
+              requestId: randomUUID(),
+              baseRevision: originalRevision,
+              changes: [{ path: page.path, content: currentContent }],
+              summary: 'Publish new readable guidance after Task selection.',
+            }),
+          }
+        )
+      );
+      expect(response.status, await response.clone().text()).toBe(200);
+      const currentRevision = fixture.notebook.publishedRevision();
+      expect(currentRevision).not.toBe(originalRevision);
+      expect(fixture.notebook.readRevision(currentRevision, [page.path]).files[page.path]).toBe(
+        currentContent
+      );
+      const prepared = await prepareWorkerTurnContextPackage(
+        fixture.coreDb,
+        workspaceDb,
+        fixture.store,
+        getWorkerCheckpoint(workspaceDb, workspaceId, fixture.turn.threadId, fixture.turn.id)!,
+        {
+          agentSessionId: fixture.agentSessionId,
+          requestId: fixture.requestId,
+          threadId: fixture.turn.threadId,
+          turnId: fixture.turn.id,
+          workerRequest: fixture.workerRequest,
+          workspaceId,
+        },
+        new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n)
+      );
+      // S39 delivers the trace-selected revision; a later readable head cannot replace its bytes.
+      expect(prepared.knowledgeSelectionInput).toEqual({
+        retrievalTraceRef: fixture.retrievalTraceRef,
+      });
+      expect(prepared.knowledgeExclusions).toEqual([]);
+      expect(prepared.packageFiles.knowledgeSelections).toEqual([
+        expect.objectContaining({
+          knowledgePageId: page.id,
+          notebookRevision: originalRevision,
+          contentDigest: page.contentDigest,
+          projection: expect.objectContaining({
+            deliveredDigest: page.contentDigest,
+            kind: 'body',
+            truncated: false,
+          }),
+        }),
+      ]);
+      expect(readFileSync(join(fixture.packageRoot, `knowledge/pages/${page.id}.md`), 'utf8')).toBe(
+        page.content
+      );
+    } finally {
+      workspaceDb.sqlite.close();
+      fixture.coreDb.sqlite.close();
     }
   }, 60_000);
 
