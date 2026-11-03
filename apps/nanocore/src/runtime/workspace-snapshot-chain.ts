@@ -21,7 +21,7 @@ import {
   syncCanonicalTreeAsync,
 } from '@openkit/storage';
 import { z } from 'zod';
-import { OperationError } from '../operation-error.js';
+import { OperationError } from '../operation-error-core.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { WorkspaceDb } from '../storage/db.js';
 

@@ -1,3 +1,7 @@
+import { ControlStoreWorkerError } from './control-store-worker-error.js';
+
+export { ControlStoreWorkerError } from './control-store-worker-error.js';
+
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { lstatSync, realpathSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -130,8 +134,6 @@ import {
   type ControlSqlResult,
   type ControlSqlStatement,
   type ControlWorkerCommand,
-  type ControlWorkerDomainRefusal,
-  type ControlWorkerFailureCode,
   type ControlWorkerReply,
   type ControlWorkerRequest,
   controlMaterialTransferSize,
@@ -194,21 +196,11 @@ import {
   type ControlWorkspaceDeletionResult,
 } from './workspace-deletion-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
-import type { ControlWorkspaceReviewDecision } from './workspace-review-codecs.js';
+import type {
+  ControlWorkspaceReviewDecision,
+  ControlWorkspaceReviewFinish,
+} from './workspace-review-codecs.js';
 import type { ControlCoreSharing, ControlCoreSharingResult } from './workspace-sharing-codecs.js';
-
-/** A refusal or uncertain result, never a substitute for the original SQL command receipt. */
-export class ControlStoreWorkerError extends Error {
-  /** Creates a redacted failure; unknown results require original-request inspection. */
-  constructor(
-    readonly code: ControlWorkerFailureCode,
-    readonly commit: 'not-committed' | 'unknown',
-    readonly domain?: ControlWorkerDomainRefusal
-  ) {
-    super('Control database writer operation failed.');
-    this.name = 'ControlStoreWorkerError';
-  }
-}
 
 /** Definite refusal of new work by this host lifetime; no command was admitted. */
 export class ControlStoreWorkerShutdownError extends ControlStoreWorkerError {
@@ -429,6 +421,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
         'raw-settle',
         'raw-invalidate',
       ].includes(command.input.kind);
+    case 'workspace-review-finish':
     case 'workspace-review-decision':
       return true;
     case 'review':
@@ -2273,6 +2266,48 @@ class ControlStoreWorkerClient {
             throw new OperationError(
               'workspace_sync_review_failed',
               `Workspace synchronization review is already resolved: ${input.reviewId}`,
+              404
+            );
+          case 'unsupported_retained_format':
+            throw new TypeError('Unsupported retained record format.');
+        }
+      }
+      throw error;
+    }
+  }
+
+  /** Commits the exact existing accepted Result/ApplyAudit/Evidence/accepted-base/terminalReview/ReviewAudit tuple before acknowledgement. */
+  async workspaceReviewFinish(
+    database: string,
+    input: ControlWorkspaceReviewFinish,
+    changeSetId: string
+  ): Promise<void> {
+    try {
+      await this.request({ operation: 'workspace-review-finish', database, input });
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'workspace-review-finish'
+      ) {
+        switch (error.domain.code) {
+          case 'review_absent':
+            throw new StoreRecordNotFoundError(
+              `Workspace synchronization review not found: ${input.result.status === 'applied' ? input.reviewId : `${input.workspaceId}/${input.reviewId}`}`
+            );
+          case 'change_set_absent':
+            throw new StoreRecordNotFoundError(
+              `Workspace change set not found: ${input.workspaceId}/${changeSetId}`
+            );
+          case 'resolved':
+            throw new OperationError(
+              'workspace_sync_review_failed',
+              `Workspace synchronization review is already resolved: ${input.reviewId}`,
+              404
+            );
+          case 'base_changed':
+            throw new OperationError(
+              'workspace_sync_review_failed',
+              'Workspace snapshot accepted base changed during apply.',
               404
             );
           case 'unsupported_retained_format':

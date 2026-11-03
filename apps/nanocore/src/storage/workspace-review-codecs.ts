@@ -1,5 +1,6 @@
 import {
   StagedWorkspaceReviewSchema,
+  WorkspaceApplyResultSchema,
   WorkspaceSyncReviewItemSchema,
 } from '@openkit/app-api-schemas';
 import { ActorRefSchema, AuditEventSchema } from '@openkit/protocol';
@@ -26,6 +27,7 @@ export const ControlWorkspaceReviewDecisionResultSchema = WorkspaceSyncReviewIte
 export const WORKSPACE_REVIEW_REFUSALS = {
   review_absent: { message: 'Workspace synchronization review not found.', status: 404 },
   change_set_absent: { message: 'Workspace change set not found.', status: 404 },
+  base_changed: { message: 'Workspace snapshot accepted base changed during apply.', status: 404 },
   resolved: { message: 'Workspace synchronization review is already resolved.', status: 404 },
   unsupported_retained_format: { message: 'Unsupported retained record format.', status: 409 },
 } as const;
@@ -35,3 +37,12 @@ export class WorkspaceReviewDecisionRefusal extends Error {
     super(WORKSPACE_REVIEW_REFUSALS[code].message);
   }
 }
+
+/** Exact existing accepted finish; authorization stays with the current Main effect owner. */
+export const ControlWorkspaceReviewFinishSchema = ControlWorkspaceReviewDecisionSchema.omit({
+  status: true,
+})
+  .extend({ result: WorkspaceApplyResultSchema })
+  .strict();
+/** Original Result/ApplyAudit/Evidence/accepted-base/terminalReview/ReviewAudit tuple. */
+export type ControlWorkspaceReviewFinish = z.infer<typeof ControlWorkspaceReviewFinishSchema>;

@@ -16,29 +16,26 @@ import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { publishWorkspaceReviewDecision } from '../storage/workspace-review-publication.js';
+import {
+  publishWorkspaceReviewDecision,
+  publishWorkspaceReviewFinish,
+} from '../storage/workspace-review-publication.js';
 import {
   applyStagedFilesystemChanges,
   cleanupCommittedFilesystemRollback,
 } from './filesystem-workspace-sync.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { recordWorkspaceApplyPlan } from './workspace-apply-plans.js';
-import {
-  recordWorkspaceApplyResult,
-  requireWorkspaceApplyResult,
-} from './workspace-apply-results.js';
+import { requireWorkspaceApplyResult } from './workspace-apply-results.js';
 import {
   type FilesystemWorkspaceStagingRootRecord,
   getFilesystemWorkspaceStagingRoot,
 } from './workspace-filesystem-staging.js';
-import { acceptAppliedWorkspaceSnapshot } from './workspace-snapshot-chain.js';
 import {
   getWorkspaceSyncReview,
   listWorkspaceSyncReviews,
   parseWorkspaceSyncReviewItem,
-  updateWorkspaceSyncReviewDecision,
 } from './workspace-sync-records.js';
 
 /** Process-local command tails keyed by workspace and review id. */
@@ -314,16 +311,17 @@ async function executeWorkspaceSyncReviewDecision(
   await applyWorkspaceSyncReviewFilesystem({
     appliedAt: plan.createdAt,
     persistResult: async (appliedResult) => {
-      const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-        `workspace:${workspaceDb.sqlite.name}`
-      );
-      try {
-        workspaceDb.sqlite.transaction(() => {
-          recordAcceptedWorkspaceReview(workspaceDb, input, appliedResult);
-        })();
-      } finally {
-        resume();
-      }
+      await publishWorkspaceReviewFinish(workspaceDb, {
+        actor: input.authorityActor,
+        ...(input.requestActor
+          ? { authentication: auditAuthenticationFromActor(input.requestActor) }
+          : {}),
+        requestId: input.requestId,
+        reviewId: input.reviewId,
+        workspaceId: input.workspaceId,
+        updatedAt: input.decidedAt,
+        result: appliedResult,
+      });
     },
     review,
     staging,
@@ -333,51 +331,6 @@ async function executeWorkspaceSyncReviewDecision(
     review: requireWorkspaceReview(workspaceDb, workspaceId, reviewId).review,
     workspaceApplyResult: requireWorkspaceApplyResult(workspaceDb, workspaceId, `war_${reviewId}`),
   };
-}
-
-/**
- * Persists one accepted review result and terminal decision in the same SQLite transaction.
- *
- * @param workspaceDb Open workspace database already inside the final transaction.
- * @param input Application command input carrying request lineage.
- * @param result Strategy-specific apply result.
- */
-function recordAcceptedWorkspaceReview(
-  workspaceDb: WorkspaceDb,
-  input: {
-    readonly authorityActor: ActorRef;
-    readonly requestActor?: Actor;
-    readonly decidedAt: string;
-    readonly requestId: string;
-    readonly reviewId: string;
-    readonly workspaceId: string;
-  },
-  result: WorkspaceApplyResult
-): void {
-  const attribution = {
-    actor: input.authorityActor,
-    ...(input.requestActor
-      ? { authentication: auditAuthenticationFromActor(input.requestActor) }
-      : {}),
-  };
-  recordWorkspaceApplyResult(workspaceDb, { ...attribution, requestId: input.requestId, result });
-  if (result.status === 'applied') {
-    const review = requireWorkspaceReview(workspaceDb, input.workspaceId, input.reviewId);
-    acceptAppliedWorkspaceSnapshot(
-      workspaceDb,
-      input.workspaceId,
-      review.changeSet.id,
-      result.commitIds.at(-1) ?? review.changeSet.head.commit
-    );
-  }
-  updateWorkspaceSyncReviewDecision(workspaceDb, {
-    ...attribution,
-    requestId: input.requestId,
-    reviewId: input.reviewId,
-    status: 'accepted',
-    updatedAt: input.decidedAt,
-    workspaceId: input.workspaceId,
-  });
 }
 
 /**

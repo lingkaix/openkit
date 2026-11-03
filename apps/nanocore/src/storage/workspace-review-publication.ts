@@ -5,6 +5,8 @@ import { nativeProductScope } from './workspace-file-records.js';
 import {
   type ControlWorkspaceReviewDecision,
   ControlWorkspaceReviewDecisionSchema,
+  type ControlWorkspaceReviewFinish,
+  ControlWorkspaceReviewFinishSchema,
 } from './workspace-review-codecs.js';
 
 /**
@@ -39,4 +41,33 @@ export async function publishWorkspaceReviewDecision(
   });
   beforeSubmit();
   return client.workspaceReviewDecision(database, parsed, changeSetId);
+}
+
+/**
+ * Publishes the complete original accepted finish after its separately durable Plan and filesystem effect.
+ * @param workspaceDb Actual admitted Workspace connection; Main remains a reader.
+ * @param input Exact Result, original request and attributable decision facts.
+ * @returns Only after the covering FULL acknowledgement; missing ACK remains unknown.
+ */
+export async function publishWorkspaceReviewFinish(
+  workspaceDb: WorkspaceDb,
+  input: ControlWorkspaceReviewFinish
+): Promise<void> {
+  const parsed = ControlWorkspaceReviewFinishSchema.parse(input);
+  const scope = nativeProductScope(workspaceDb.dataRoot, {
+    kind: 'workspace',
+    workspaceId: workspaceDb.workspaceId,
+  });
+  const client = getControlStoreWorkerClient();
+  const database = `workspace:${scope.path}`;
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: workspaceDb.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  return client.workspaceReviewFinish(database, parsed, parsed.result.changeSetId);
 }

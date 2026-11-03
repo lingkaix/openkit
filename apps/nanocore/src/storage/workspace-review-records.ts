@@ -381,24 +381,32 @@ export function applyWorkspaceReviewDecisionInDb(
       ...(input.authentication === undefined ? {} : { authentication: input.authentication }),
     });
   } catch (error) {
-    if (error instanceof StoreRecordNotFoundError) {
-      if (
-        error.message ===
-        `Workspace synchronization review not found: ${input.workspaceId}/${input.reviewId}`
-      )
-        throw new WorkspaceReviewDecisionRefusal('review_absent');
-      if (error.message.startsWith(`Workspace change set not found: ${input.workspaceId}/`))
-        throw new WorkspaceReviewDecisionRefusal('change_set_absent');
-    }
-    if (
-      error instanceof OperationError &&
-      error.code === 'workspace_sync_review_failed' &&
-      error.status === 404 &&
-      error.message === `Workspace synchronization review is already resolved: ${input.reviewId}`
-    )
-      throw new WorkspaceReviewDecisionRefusal('resolved');
-    if (error instanceof TypeError && error.message === 'Unsupported retained record format.')
-      throw new WorkspaceReviewDecisionRefusal('unsupported_retained_format');
-    throw error;
+    throwWorkspaceReviewRefusal(error, input);
   }
+}
+
+/** Preserves original bounded Review failures across either native publication tuple. */
+export function throwWorkspaceReviewRefusal(
+  error: unknown,
+  input: { readonly workspaceId: string; readonly reviewId: string }
+): never {
+  if (error instanceof StoreRecordNotFoundError) {
+    if (
+      error.message ===
+      `Workspace synchronization review not found: ${input.workspaceId}/${input.reviewId}`
+    )
+      throw new WorkspaceReviewDecisionRefusal('review_absent');
+    if (error.message.startsWith(`Workspace change set not found: ${input.workspaceId}/`))
+      throw new WorkspaceReviewDecisionRefusal('change_set_absent');
+  }
+  if (
+    error instanceof OperationError &&
+    error.code === 'workspace_sync_review_failed' &&
+    error.status === 404 &&
+    error.message === `Workspace synchronization review is already resolved: ${input.reviewId}`
+  )
+    throw new WorkspaceReviewDecisionRefusal('resolved');
+  if (error instanceof TypeError && error.message === 'Unsupported retained record format.')
+    throw new WorkspaceReviewDecisionRefusal('unsupported_retained_format');
+  throw error;
 }

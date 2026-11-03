@@ -249,6 +249,8 @@ import {
   type ControlWorkspaceReviewDecision,
   ControlWorkspaceReviewDecisionResultSchema,
   ControlWorkspaceReviewDecisionSchema,
+  type ControlWorkspaceReviewFinish,
+  ControlWorkspaceReviewFinishSchema,
   WORKSPACE_REVIEW_REFUSALS,
 } from './workspace-review-codecs.js';
 import {
@@ -261,7 +263,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 44;
+export const CONTROL_WORKER_VERSION = 45;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -517,6 +519,10 @@ export type ControlWorkerCommand =
       | { readonly operation: 'backend-session'; readonly input: ControlBackendSessionInput }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | {
+          readonly operation: 'workspace-review-finish';
+          readonly input: ControlWorkspaceReviewFinish;
+        }
+      | {
           readonly operation: 'workspace-review-decision';
           readonly input: ControlWorkspaceReviewDecision;
         }
@@ -681,6 +687,7 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'worker-storage-binding'
     | 'workspace-apply-plan'
     | 'workspace-review-decision'
+    | 'workspace-review-finish'
     | 'vault'
     | 'thread-read-membership'
     | 'generative-presentation'
@@ -797,6 +804,7 @@ export type ControlWorkerReply = {
       readonly operation: 'core-sharing';
       readonly result: ControlCoreSharingResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'workspace-review-finish'; readonly result: null }
   | {
       readonly status: 'ok';
       readonly operation: 'workspace-review-decision';
@@ -989,7 +997,11 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
-  if (isRecord(value) && value.operation === 'workspace-review-decision') {
+  if (
+    isRecord(value) &&
+    (value.operation === 'workspace-review-decision' ||
+      value.operation === 'workspace-review-finish')
+  ) {
     const facts =
       typeof value.code === 'string' && Object.hasOwn(WORKSPACE_REVIEW_REFUSALS, value.code)
         ? WORKSPACE_REVIEW_REFUSALS[value.code as keyof typeof WORKSPACE_REVIEW_REFUSALS]
@@ -1267,6 +1279,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlAccessTokenVerificationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'runtime-target')
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'workspace-review-finish') return reply.result === null;
   if (reply.operation === 'workspace-review-decision')
     return ControlWorkspaceReviewDecisionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-apply-plan')
@@ -1741,6 +1754,11 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(value, [...scoped, 'input']) &&
       ControlRuntimeTargetInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'workspace-review-finish')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceReviewFinishSchema.safeParse(value.input).success
     );
   if (value.operation === 'workspace-review-decision')
     return (

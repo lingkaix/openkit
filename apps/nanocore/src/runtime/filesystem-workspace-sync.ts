@@ -28,6 +28,7 @@ import {
 } from '@openkit/storage';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { publishCanonicalPathAsync } from '../storage/workspace-file-records.js';
 
 const defaultIgnoredPathPrefixes = ['.git', 'node_modules'];
@@ -532,6 +533,9 @@ export async function applyStagedFilesystemChanges(
       });
       await input.persistResult(result);
     } catch (error) {
+      // A missing FULL reply cannot justify undoing a possibly committed filesystem result.
+      // Preserve the existing target and rollback evidence for explicit retained-result replay.
+      if (error instanceof ControlStoreWorkerError && error.commit === 'unknown') throw error;
       try {
         await cleanupFilesystemReplacementRoots(
           targetRoot,
