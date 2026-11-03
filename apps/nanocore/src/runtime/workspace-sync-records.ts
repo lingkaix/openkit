@@ -1,5 +1,8 @@
+export { listWorkerOutputManifests } from '../storage/workspace-handoff-read.js';
+
 import { BackendWorkspaceHandleReaderSchema } from '@openkit/app-api-schemas';
 import { readRetainedV1 } from '@openkit/protocol';
+import { listWorkerOutputManifests } from '../storage/workspace-handoff-read.js';
 
 export {
   listBackendWorkspaceHandles,
@@ -40,7 +43,6 @@ import {
   BackendWorkspaceHandleSchema,
   type StagedWorkspaceReview,
   type WorkerOutputManifest,
-  WorkerOutputManifestReaderSchema,
   type WorkspaceChangeSet,
   WorkspaceChangeSetReaderSchema,
   type WorkspaceInputSnapshot,
@@ -121,25 +123,6 @@ export function listWorkspaceChangeSets(
     'workspace_change_sets',
     workspaceId,
     WorkspaceChangeSetReaderSchema
-  );
-}
-
-/**
- * Lists durable worker output manifests for one workspace.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace id.
- * @returns Stored output manifests in newest-first order.
- */
-export function listWorkerOutputManifests(
-  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
-  workspaceId: string
-): WorkerOutputManifest[] {
-  return listPayloadRows(
-    workspaceDb,
-    'worker_output_manifests',
-    workspaceId,
-    WorkerOutputManifestReaderSchema
   );
 }
 

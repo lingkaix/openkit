@@ -31,6 +31,8 @@ import type { OperationImplementations } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
+import { ControlWorkspaceRecoveryDecisionSchema } from '../storage/workspace-recovery-decision-codecs.js';
 import {
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -45,10 +47,7 @@ import {
   requireWorkspaceApplyResult,
 } from './workspace-apply-results.js';
 import { listWorkspaceQuarantineRecords } from './workspace-quarantine-records.js';
-import {
-  listWorkspaceReconciliationRecords,
-  resolveWorkspaceReconciliationRecord,
-} from './workspace-reconciliation-records.js';
+import { listWorkspaceReconciliationRecords } from './workspace-reconciliation-records.js';
 import {
   decideWorkspaceSyncReview,
   listWorkspaceSyncReviewsForRead,
@@ -413,14 +412,25 @@ export function createWorkspaceSyncOperationImplementations({
           scope: { reconciliationRecordId, workspaceId },
           input,
           responseKind: 'workspace_sync_review',
-          execute: async () => {
+          execute: async (receipt) => {
             const decidedAt = new Date().toISOString();
             const workspaceDb = repositoryWorkspaceDb(workspaceId);
-            let resume: (() => void) | undefined;
             try {
-              resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-                `workspace:${workspaceDb.sqlite.name}`
-              );
+              const scope = nativeProductScope(workspaceDb.dataRoot, {
+                kind: 'workspace',
+                workspaceId,
+              });
+              const client = getControlStoreWorkerClient();
+              const database = `workspace:${scope.path}`;
+              await client.open({
+                database,
+                path: scope.path,
+                dataRoot: workspaceDb.dataRoot,
+                create: false,
+                initialize: 'workspace',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              });
               const currentAuthority =
                 coreDb &&
                 (context.kind === 'worker'
@@ -441,18 +451,29 @@ export function createWorkspaceSyncOperationImplementations({
                   'Workspace access denied.',
                   403
                 );
-              return {
-                reconciliationRecord: resolveWorkspaceReconciliationRecord({
-                  workspaceDb,
+              const reconciliationRecord = await client.workspaceRecoveryDecision(
+                database,
+                ControlWorkspaceRecoveryDecisionSchema.parse({
+                  action: 'decide',
                   workspaceId,
                   reconciliationRecordId,
                   decision: input.decision,
                   decidedAt,
-                  workerOutputManifests: listWorkerOutputManifests(workspaceDb, workspaceId),
-                }),
-              };
+                })
+              );
+              if (!reconciliationRecord) throw new Error('Recovery decision returned no record.');
+              // This was a later independent receipt commit. A refusal must retain the mutation above.
+              await client.workspaceRecoveryDecision(
+                database,
+                ControlWorkspaceRecoveryDecisionSchema.parse({
+                  action: 'receipt',
+                  workspaceId,
+                  reconciliationRecordId,
+                  receipt,
+                })
+              );
+              return { reconciliationRecord };
             } finally {
-              resume?.();
               workspaceDb.sqlite.close();
             }
           },

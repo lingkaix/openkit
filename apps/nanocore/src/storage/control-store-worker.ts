@@ -252,6 +252,8 @@ import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { ControlRecoverySourceReactivationRefusalSchema } from './workspace-reactivation-codecs.js';
 import { applyControlRecoverySourceReactivation } from './workspace-reactivation-native.js';
+import { WorkspaceRecoveryDecisionRefusal } from './workspace-recovery-decision-codecs.js';
+import { applyWorkspaceRecoveryDecisionInDb } from './workspace-recovery-decision-native.js';
 import { ControlRecoveryTargetRegistrationRefusalSchema } from './workspace-recovery-target-codecs.js';
 import {
   applyControlRecoveryTargetPreparation,
@@ -307,6 +309,7 @@ type WriteCommand = Extract<
       | 'workspace-baseline'
       | 'workspace-capture'
       | 'workspace-takeover'
+      | 'workspace-recovery-decision'
       | 'harness-lifecycle'
       | 'execution-attempt'
       | 'core-journal'
@@ -627,6 +630,16 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       recordId: error.recordId,
       message: error.message,
       status: 409,
+    };
+  if (
+    operation === 'workspace-recovery-decision' &&
+    error instanceof WorkspaceRecoveryDecisionRefusal
+  )
+    return {
+      operation,
+      code: error.code,
+      message: 'Workspace recovery decision was refused.',
+      status: error.code === 'capture_source' ? 409 : 404,
     };
   if (operation === 'workspace-takeover' && error instanceof WorkspaceTakeoverRefusal) {
     const value = {
@@ -2094,6 +2107,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'workspace-stage-review',
               result: null,
             };
+          } else if (request.operation === 'workspace-recovery-decision') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            const result = applyWorkspaceRecoveryDecisionInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-recovery-decision',
+              result,
+            };
           } else if (request.operation === 'workspace-takeover') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3325,6 +3352,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-baseline' ||
       value.operation === 'workspace-capture' ||
       value.operation === 'workspace-takeover' ||
+      value.operation === 'workspace-recovery-decision' ||
       value.operation === 'harness-lifecycle' ||
       value.operation === 'execution-attempt' ||
       value.operation === 'core-journal' ||

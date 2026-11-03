@@ -2,6 +2,8 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   type BackendWorkspaceHandle,
   BackendWorkspaceHandleReaderSchema,
+  type WorkerOutputManifest,
+  WorkerOutputManifestReaderSchema,
   type WorkspaceInputSnapshot,
   WorkspaceInputSnapshotReaderSchema,
   type WorkspaceMaterializationRecord,
@@ -276,4 +278,23 @@ export function listPayloadRows<T>(
   )
     .map((row) => schema.parse(readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown))
     .reverse();
+}
+
+/**
+ * Lists durable worker output manifests for one workspace.
+ *
+ * @param workspaceDb Open workspace-scope database handle.
+ * @param workspaceId Workspace id.
+ * @returns Stored output manifests in newest-first order.
+ */
+export function listWorkerOutputManifests(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  workspaceId: string
+): WorkerOutputManifest[] {
+  return listPayloadRows(
+    workspaceDb,
+    'worker_output_manifests',
+    workspaceId,
+    WorkerOutputManifestReaderSchema
+  );
 }

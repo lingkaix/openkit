@@ -1,3 +1,4 @@
+import type { WorkspaceReconciliationRecord } from '@openkit/app-api-schemas';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import {
   PreservedWorkspaceCaptureRefusal,
@@ -21,6 +22,7 @@ import {
   type ControlRecoverySourceReactivationInput,
   ControlRecoverySourceReactivationInputSchema,
 } from './workspace-reactivation-codecs.js';
+import type { ControlWorkspaceRecoveryDecision } from './workspace-recovery-decision-codecs.js';
 import type { ControlWorkspaceStageReview } from './workspace-stage-review-codecs.js';
 import type { ControlWorkspaceTakeover } from './workspace-takeover-codecs.js';
 
@@ -2386,6 +2388,58 @@ class ControlStoreWorkerClient {
         error.domain?.operation === 'workspace-stage-review'
       )
         throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Preserves original operator mutation and receipt stages; only known domain failures are reconstructed. */
+  async workspaceRecoveryDecision(
+    database: string,
+    input: ControlWorkspaceRecoveryDecision
+  ): Promise<WorkspaceReconciliationRecord | null> {
+    try {
+      const reply = await this.request({
+        operation: 'workspace-recovery-decision',
+        database,
+        input,
+      });
+      return (reply as Extract<Success, { operation: 'workspace-recovery-decision' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'workspace-recovery-decision'
+      ) {
+        const id = input.reconciliationRecordId;
+        switch (error.domain.code) {
+          case 'record_invalid':
+            throw new OperationError(
+              'workspace_recovery_decision_failed',
+              'The record could not be processed.',
+              404
+            );
+          case 'missing':
+            throw new StoreRecordNotFoundError(`Workspace reconciliation record not found: ${id}`);
+          case 'terminal':
+            throw new OperationError(
+              'workspace_recovery_decision_failed',
+              `Workspace reconciliation record is already terminal: ${id}`,
+              404
+            );
+          case 'capture_source':
+            throw new OperationError(
+              'workspace_recovery_decision_failed',
+              'Unaccepted capture source supports only abandon with evidence retained.',
+              409
+            );
+          case 'no_manifest':
+            throw new OperationError(
+              'workspace_recovery_decision_failed',
+              `Workspace recovery collection has no durable output manifest: ${id}`,
+              404
+            );
+        }
+      }
       throw error;
     }
   }

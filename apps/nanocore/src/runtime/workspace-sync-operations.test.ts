@@ -31,11 +31,13 @@ import {
   ensureServerBootstrapToken,
 } from '../auth/bootstrap-token.js';
 import { createBootReadinessSnapshot } from '../bootstrap/readiness.js';
+import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { createApp } from '../test-support/app.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, DEMO_THREAD_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -52,13 +54,18 @@ import {
   recordWorkspaceApplyResult,
 } from './workspace-apply-results.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
+import { stageWorkspaceChangeSet } from './workspace-materializer.js';
 import {
   listWorkspaceReconciliationRecords,
   recordWorkspaceReconciliationRecord,
 } from './workspace-reconciliation-records.js';
 import * as workspaceReviewApplication from './workspace-review-application.js';
 import { decideWorkspaceSyncReview } from './workspace-review-application.js';
-import { getWorkspaceSyncReview, recordWorkspaceSyncReview } from './workspace-sync-records.js';
+import {
+  getWorkspaceSyncReview,
+  listWorkerOutputManifests,
+  recordWorkspaceSyncReview,
+} from './workspace-sync-records.js';
 
 const routes = [
   {
@@ -555,6 +562,382 @@ function workspaceOwnership(f: ReturnType<typeof fixture>) {
 
 describe('Workspace synchronization native projections', () => {
   it.each([
+    'acknowledged',
+    'receipt-refusal',
+  ] as const)('preserves native recovery decisions and their separate receipt stage: %s', async (boundary) => {
+    const f = await fixture();
+    const workspaceId = f.db.workspaceId;
+    const dataRoot = f.store.getDataRoot()!;
+    const client = getControlStoreWorkerClient();
+    const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+    const database = `workspace:${scope.path}`;
+    // Join the actual writer before retained-format setup and persisted fault DDL.
+    await client.close(database);
+    const original = listWorkspaceReconciliationRecords(f.db, workspaceId)[0]!;
+    const manifests = listWorkerOutputManifests(f.db, workspaceId);
+    const matching = manifests.filter((manifest) =>
+      original.affectedRecordIds.includes(manifest.materializationRecordId)
+    );
+    expect(matching.length).toBeGreaterThan(0);
+    const extended = {
+      ...original,
+      futureAnnotation: { note: 'retained operator\nannotation' },
+      backendReachability: {
+        ...original.backendReachability,
+        futureAnnotation: ['retained observation'],
+      },
+    };
+    // Add only inert retained annotations to the record already created by the existing owner fixture.
+    f.db.sqlite
+      .prepare(`UPDATE workspace_reconciliation_records SET payload_json = ?
+          WHERE workspace_id = ? AND reconciliation_record_id = ?`)
+      .run(JSON.stringify(extended, null, 2), workspaceId, original.id);
+    if (boundary === 'receipt-refusal') {
+      // Mutation and the generic original receipt were separate commits before this owner move.
+      f.db.sqlite.exec(`CREATE TRIGGER refuse_operator_receipt
+          BEFORE INSERT ON idempotency_requests
+          WHEN NEW.command_name = 'workspace_sync.recovery.decide'
+          BEGIN SELECT RAISE(ABORT, 'operator receipt refused'); END`);
+    }
+    const before = structuredClone(f.observed());
+    const ownership = workspaceOwnership(f);
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    let queryOnlyReads = 0;
+    const repositoryWorkspaceDb = (selectedWorkspaceId: string) => {
+      const db = openWorkspaceDb(dataRoot, selectedWorkspaceId);
+      db.sqlite.pragma('query_only = ON');
+      expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      queryOnlyReads += 1;
+      return db;
+    };
+    const invoke = createOperationInvocation({
+      coreDb: f.coreDb,
+      store: f.store,
+      inflightCommands: new WeakMap(),
+      workspaceMutationAdmission: f.mutationAdmission,
+      repositoryWorkspaceDb,
+    });
+    const actor = {
+      kind: 'token' as const,
+      userId: f.issued.record.ownerUserId,
+      tokenId: f.issued.record.tokenId,
+      tokenScope: 'workspace' as const,
+      tokenWorkspaceIds: [workspaceId],
+    };
+    const context = { kind: 'public' as const, actor };
+    const input = {
+      workspaceId,
+      reconciliationRecordId: original.id,
+      requestId: `native-operator-${boundary}`,
+      decision: 'resume_collection' as const,
+    };
+    const pending = invoke('sync.recovery-decide', input, context);
+    if (boundary === 'receipt-refusal') await expect(pending).rejects.toThrow();
+    const response = boundary === 'acknowledged' ? await pending : undefined;
+    expect(queryOnlyReads).toBeGreaterThan(0);
+    const records = listWorkspaceReconciliationRecords(f.db, workspaceId);
+    expect(records).toHaveLength(1);
+    const decided = records[0]!;
+    expect(decided).toMatchObject({
+      id: original.id,
+      affectedRecordIds: original.affectedRecordIds,
+      backendHandleSummary: original.backendHandleSummary,
+      collectedOutputManifestIds: matching.map((manifest) => manifest.id),
+      evidenceBundleIds: original.evidenceBundleIds,
+      quarantineRefs: original.quarantineRefs,
+      requiredHumanDecision: null,
+      retentionDecision: 'teardown-backend',
+      startedAt: original.startedAt,
+      stateBefore: 'requires-human',
+      stateAfter: 'recovered',
+      triggerReason: original.triggerReason,
+      workspaceId,
+    });
+    expect(decided.finishedAt).not.toBeNull();
+    expect(decided.backendReachability).toMatchObject({
+      checkedAt: decided.finishedAt,
+      status: 'unknown',
+    });
+    if (response) expect(response.reconciliationRecord).toEqual(decided);
+    const rows = f.db.sqlite
+      .prepare('SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id')
+      .all() as Array<{ payload_json: string }>;
+    expect(JSON.parse(rows[0]!.payload_json)).toEqual({
+      ...extended,
+      ...decided,
+      backendReachability: { ...extended.backendReachability, ...decided.backendReachability },
+    });
+    const receipts = f.store
+      .listCommandRequests(workspaceId)
+      .filter((receipt) => receipt.command === 'workspace_sync.recovery.decide');
+    expect(receipts).toHaveLength(boundary === 'acknowledged' ? 1 : 0);
+    if (boundary === 'acknowledged')
+      expect(receipts[0]).toMatchObject({
+        command: 'workspace_sync.recovery.decide',
+        requestId: input.requestId,
+        scope: { workspaceId, reconciliationRecordId: original.id },
+        response: { kind: 'workspace_sync_review', id: original.id },
+      });
+    const receiptRows = f.db.sqlite
+      .prepare(`SELECT * FROM idempotency_requests
+          WHERE command_name = 'workspace_sync.recovery.decide' ORDER BY request_key`)
+      .all();
+    expect(listWorkerOutputManifests(f.db, workspaceId)).toEqual(manifests);
+    const after = f.observed();
+    expect(after.review).toEqual(before.review);
+    expect(after.plans).toEqual(before.plans);
+    expect(after.results).toEqual(before.results);
+    expect(workspaceOwnership(f)).toEqual(ownership);
+    await client.close(database);
+    const cold = openWorkspaceDb(dataRoot, workspaceId);
+    const coldStore = new FsStore({ dataRoot });
+    try {
+      cold.sqlite.pragma('query_only = ON');
+      expect(listWorkspaceReconciliationRecords(cold, workspaceId)).toEqual(records);
+      expect(listWorkerOutputManifests(cold, workspaceId)).toEqual(manifests);
+      if (boundary === 'acknowledged') {
+        const replay = createOperationInvocation({
+          coreDb: f.coreDb,
+          store: coldStore,
+          inflightCommands: new WeakMap(),
+          workspaceMutationAdmission: f.mutationAdmission,
+          repositoryWorkspaceDb,
+        });
+        expect(await replay('sync.recovery-decide', input, context)).toEqual(response);
+      }
+      expect(
+        cold.sqlite
+          .prepare(
+            'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
+          )
+          .all()
+      ).toEqual(rows);
+      expect(
+        cold.sqlite
+          .prepare(`SELECT * FROM idempotency_requests
+              WHERE command_name = 'workspace_sync.recovery.decide' ORDER BY request_key`)
+          .all()
+      ).toEqual(receiptRows);
+      expect(
+        coldStore
+          .listCommandRequests(workspaceId)
+          .filter((receipt) => receipt.command === 'workspace_sync.recovery.decide')
+      ).toEqual(receipts);
+    } finally {
+      cold.sqlite.close();
+    }
+  });
+
+  it('resumes collection from a manifest published ahead of its queued native decision', async () => {
+    const f = await fixture();
+    const workspaceId = f.db.workspaceId;
+    const dataRoot = f.store.getDataRoot()!;
+    const writer = getControlStoreWorkerClient();
+    const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+    const database = `workspace:${scope.path}`;
+    const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-current-target-'));
+    const workerRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-current-worker-'));
+    const stagingRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-current-staging-'));
+    cleanups.push(() => {
+      for (const root of [targetRoot, workerRoot, stagingRoot])
+        rmSync(root, { recursive: true, force: true });
+    });
+    writeFileSync(join(targetRoot, 'current.txt'), 'before\n');
+    writeFileSync(join(workerRoot, 'current.txt'), 'after\n');
+    const common = {
+      createdAt: f.item.review.createdAt,
+      resourceId: 'current_manifest',
+      workspaceId,
+    };
+    const beforeFiles = await createFilesystemSnapshotManifest({ ...common, rootPath: targetRoot });
+    const afterFiles = await createFilesystemSnapshotManifest({ ...common, rootPath: workerRoot });
+    const changeSet = buildFilesystemWorkspaceChangeSet({
+      before: beforeFiles,
+      after: afterFiles,
+      changeSetId: 'wcs_queued_current',
+      createdAt: common.createdAt,
+      inputSnapshotId: 'wis_queued_current',
+      materializationRecordId: 'wmr_queued_current',
+    });
+    await stageFilesystemWorkspaceChanges({ changeSet, sourceRoot: workerRoot, stagingRoot });
+    const review = stageWorkspaceChangeSet(changeSet, {
+      createdAt: common.createdAt,
+      patchPayload: null,
+      reviewId: 'swr_queued_current',
+      stagingRef: 'filesystem-staging://swr_queued_current',
+    });
+    const turn = await f.store.createTurn(
+      workspaceId,
+      DEMO_THREAD_ID,
+      'Retain one candidate for current-manifest recovery.',
+      { kind: 'user', id: f.issued.record.ownerUserId },
+      null
+    );
+    const artifactId = allocateEntityId('ar');
+    const body = JSON.stringify({ changeSet, patchPayload: null, review });
+    const artifact = await f.store.createArtifact({
+      id: artifactId,
+      workspaceId,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      kind: 'diff',
+      title: 'Workspace changes ready for review',
+      status: 'ready',
+      summary: review.riskSummary,
+      version: 1,
+      content: { format: 'json', body },
+      contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
+      lastMutationRequestId: 'queued-current-artifact',
+      origin: {
+        kind: 'turn-output',
+        requestId: 'queued-current-artifact',
+        threadId: turn.threadId,
+        turnId: turn.id,
+      },
+      createdAt: common.createdAt,
+      updatedAt: common.createdAt,
+    });
+    const item = { artifactId: artifact.id, changeSet, patchPayload: null, review };
+    // Shared trusted setup publishes only lineage. The manifest must come from the real StageReview.
+    await writer.close(database);
+    recordTestWorkspaceReviewMaterialization(f.db, item);
+    const original = listWorkspaceReconciliationRecords(f.db, workspaceId)[0]!;
+    recordWorkspaceReconciliationRecord(f.db, {
+      ...original,
+      affectedRecordIds: [...original.affectedRecordIds, changeSet.materializationRecordId],
+    });
+    const before = structuredClone(f.observed());
+    const manifestsBefore = listWorkerOutputManifests(f.db, workspaceId);
+    const ownership = workspaceOwnership(f);
+    expect(
+      manifestsBefore.some(
+        (manifest) => manifest.materializationRecordId === changeSet.materializationRecordId
+      )
+    ).toBe(false);
+    await writer.open({
+      database,
+      path: scope.path,
+      dataRoot,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    const resume = await writer.pauseForDataRootBackup(database);
+    const decide = writer.workspaceRecoveryDecision.bind(writer);
+    const entered = Promise.withResolvers<void>();
+    let publicationCompleted = false;
+    const observation = vi
+      .spyOn(writer, 'workspaceRecoveryDecision')
+      .mockImplementation((requestedDatabase, input) => {
+        if (
+          requestedDatabase === database &&
+          input.action === 'decide' &&
+          input.reconciliationRecordId === original.id
+        ) {
+          // Both real requests enter the same held native FIFO, publication first, without an ACK double.
+          const publication = writer
+            .workspaceStageReview(database, {
+              workspaceId,
+              staging: {
+                before: beforeFiles,
+                changeSetId: changeSet.id,
+                createdAt: common.createdAt,
+                reviewId: review.id,
+                stagingRootPath: stagingRoot,
+                targetRootPath: targetRoot,
+                workspaceId,
+              },
+              review: { item },
+            })
+            .then(() => {
+              publicationCompleted = true;
+            });
+          const decision = decide(requestedDatabase, input);
+          entered.resolve();
+          return Promise.all([publication, decision]).then(([, result]) => result);
+        }
+        return decide(requestedDatabase, input);
+      });
+    let delivered = false;
+    const response = f
+      .http('sync.recovery-decide', {
+        workspaceId,
+        reconciliationRecordId: original.id,
+        requestId: 'queued-current-manifest',
+        decision: 'resume_collection',
+      })
+      .then((result) => {
+        delivered = true;
+        return result;
+      });
+    try {
+      await entered.promise;
+      expect(delivered).toBe(false);
+      expect(publicationCompleted).toBe(false);
+      expect(f.observed()).toEqual(before);
+      expect(listWorkerOutputManifests(f.db, workspaceId)).toEqual(manifestsBefore);
+      resume();
+      const result = await response;
+      expect(result.status).toBe(200);
+      expect(publicationCompleted).toBe(true);
+      const manifestsAfter = listWorkerOutputManifests(f.db, workspaceId);
+      const added = manifestsAfter.filter(
+        (manifest) => manifest.materializationRecordId === changeSet.materializationRecordId
+      );
+      expect(added).toHaveLength(1);
+      expect(added[0]).toMatchObject({
+        changedPaths: changeSet.changedPaths,
+        inputSnapshotId: changeSet.inputSnapshotId,
+        workspaceId,
+      });
+      expect(manifestsAfter).toHaveLength(manifestsBefore.length + 1);
+      const decided = listWorkspaceReconciliationRecords(f.db, workspaceId)[0]!;
+      // Storage SQLite Layers and Sync Recovery require current same-database evidence at decision time.
+      expect([...decided.collectedOutputManifestIds].sort()).toEqual(
+        [...manifestsBefore.map((manifest) => manifest.id), added[0]!.id].sort()
+      );
+      expect(decided).toMatchObject({
+        id: original.id,
+        affectedRecordIds: [...original.affectedRecordIds, changeSet.materializationRecordId],
+        stateBefore: 'requires-human',
+        stateAfter: 'recovered',
+        requiredHumanDecision: null,
+        retentionDecision: 'teardown-backend',
+      });
+      expect(await result.json()).toEqual({ reconciliationRecord: decided });
+      const after = f.observed();
+      expect(after.review).toEqual(before.review);
+      expect(after.plans).toEqual(before.plans);
+      expect(after.results).toEqual(before.results);
+      expect(after.receipts).toHaveLength(before.receipts.length + 1);
+      expect(
+        after.receipts.filter((receipt) => receipt.command === 'workspace_sync.recovery.decide')
+      ).toMatchObject([
+        {
+          requestId: 'queued-current-manifest',
+          scope: { workspaceId, reconciliationRecordId: original.id },
+          response: { kind: 'workspace_sync_review', id: original.id },
+        },
+      ]);
+      expect(workspaceOwnership(f)).toEqual(ownership);
+      expect(readFileSync(join(targetRoot, 'current.txt'), 'utf8')).toBe('before\n');
+    } finally {
+      resume();
+      await Promise.allSettled([response]);
+      observation.mockRestore();
+    }
+  });
+
+  it.each([
     'sync.review-list',
     'sync.review-decide',
     'sync.recovery-decide',
@@ -856,16 +1239,23 @@ describe('Workspace synchronization native projections', () => {
     expect(before.recovery).toMatchObject([{ id: 'wrr_projection', stateAfter: 'requires-human' }]);
     const writer = getControlStoreWorkerClient();
     const database = `workspace:${f.db.sqlite.name}`;
-    const resume = await writer.pauseForDataRootBackup(database);
-    const pause = writer.pauseForDataRootBackup.bind(writer);
+    const opened = writer.open.bind(writer);
     const entered = Promise.withResolvers<void>();
-    const observation = vi
-      .spyOn(writer, 'pauseForDataRootBackup')
-      .mockImplementation((requestedDatabase) => {
-        const pending = pause(requestedDatabase);
-        if (requestedDatabase === database) entered.resolve();
-        return pending;
-      });
+    const released = Promise.withResolvers<void>();
+    const resume = () => released.resolve();
+    const observation = vi.spyOn(writer, 'open').mockImplementation(async (...args) => {
+      // The real Workspace open and ACK finish; only this caller's completion stays pending.
+      await opened(...args);
+      const [command] = args;
+      if (
+        command.database === database &&
+        command.path === f.db.sqlite.name &&
+        command.initialize === 'workspace'
+      ) {
+        entered.resolve();
+        await released.promise;
+      }
+    });
     let delivered = false;
     const response = f
       .http('sync.recovery-decide', {
@@ -1406,4 +1796,57 @@ it.each([
     expect(result.status).toBe(404);
     expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
   } else expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+});
+
+it.each([
+  'HTTP',
+  'MCP',
+] as const)('redacts malformed current manifest decoding through %s without changes', async (projection) => {
+  const f = await fixture();
+  const workspaceId = f.db.workspaceId;
+  const writer = getControlStoreWorkerClient();
+  const database = `workspace:${f.db.sqlite.name}`;
+  await writer.close(database);
+  const manifest = listWorkerOutputManifests(f.db, workspaceId)[0]!;
+  // Deliberate corruption follows valid owner setup and the real writer close; this is no publication path.
+  f.db.sqlite
+    .prepare(`UPDATE worker_output_manifests SET payload_json = ?
+      WHERE workspace_id = ? AND worker_output_manifest_id = ?`)
+    .run('{private manifest decoder sentinel', workspaceId, manifest.id);
+  const observed = () => ({
+    ...f.observed(),
+    manifests: f.db.sqlite
+      .prepare('SELECT * FROM worker_output_manifests ORDER BY worker_output_manifest_id')
+      .all(),
+    ownership: workspaceOwnership(f),
+  });
+  const before = structuredClone(observed());
+  const decision = vi.spyOn(writer, 'workspaceRecoveryDecision');
+  const input = {
+    workspaceId,
+    reconciliationRecordId: 'wrr_projection',
+    decision: 'resume_collection',
+    requestId: 'malformed-current-manifest',
+  };
+  const result =
+    projection === 'HTTP'
+      ? await f.http('sync.recovery-decide', input)
+      : await f.mcp('sync.recovery-decide', input);
+  expect(observed()).toEqual(before);
+  expect(decision).toHaveBeenCalledTimes(1);
+  expect(decision).toHaveBeenCalledWith(
+    database,
+    expect.objectContaining({
+      action: 'decide',
+      reconciliationRecordId: 'wrr_projection',
+    })
+  );
+  const code = 'workspace_recovery_decision_failed';
+  const message = 'The record could not be processed.';
+  if (result instanceof Response) {
+    expect(result.status).toBe(404);
+    expect(await result.json()).toEqual({ protocolVersion: PROTOCOL_VERSION, code, message });
+  } else {
+    expect(result).toEqual({ isError: true, value: { code, message, status: 404 } });
+  }
 });

@@ -279,6 +279,12 @@ import {
 } from './workspace-reactivation-codecs.js';
 import type { WorkspaceRecoveryCliReport } from './workspace-recovery-cli.js';
 import {
+  type ControlWorkspaceRecoveryDecision,
+  ControlWorkspaceRecoveryDecisionRefusalSchema,
+  ControlWorkspaceRecoveryDecisionResultSchema,
+  ControlWorkspaceRecoveryDecisionSchema,
+} from './workspace-recovery-decision-codecs.js';
+import {
   type ControlRecoveryTargetPreparationInput,
   ControlRecoveryTargetPreparationInputSchema,
   type ControlRecoveryTargetRegistrationInput,
@@ -315,7 +321,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 56;
+export const CONTROL_WORKER_VERSION = 57;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -584,6 +590,10 @@ export type ControlWorkerCommand =
       | { readonly operation: 'workspace-baseline'; readonly input: ControlWorkspaceBaseline }
       | { readonly operation: 'workspace-capture'; readonly input: ControlWorkspaceCapture }
       | { readonly operation: 'workspace-takeover'; readonly input: ControlWorkspaceTakeover }
+      | {
+          readonly operation: 'workspace-recovery-decision';
+          readonly input: ControlWorkspaceRecoveryDecision;
+        }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
       | {
@@ -799,6 +809,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlWorkspaceBaselineRefusalSchema>
   | z.infer<typeof ControlWorkspaceCaptureRefusalSchema>
   | z.infer<typeof ControlWorkspaceTakeoverRefusalSchema>
+  | z.infer<typeof ControlWorkspaceRecoveryDecisionRefusalSchema>
   | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
   | z.infer<typeof ControlWorkerFinalStatusRefusalSchema>
@@ -901,6 +912,11 @@ export type ControlWorkerReply = {
       readonly result: ControlWorkspaceCaptureResult;
     }
   | { readonly status: 'ok'; readonly operation: 'workspace-takeover'; readonly result: boolean }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'workspace-recovery-decision';
+      readonly result: z.infer<typeof ControlWorkspaceRecoveryDecisionResultSchema>;
+    }
   | { readonly status: 'ok'; readonly operation: 'workspace-review-finish'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1131,6 +1147,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-stage-review')
     return ControlWorkspaceStageReviewRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'workspace-recovery-decision')
+    return ControlWorkspaceRecoveryDecisionRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-takeover')
     return ControlWorkspaceTakeoverRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-capture')
@@ -1430,6 +1448,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
+  if (reply.operation === 'workspace-recovery-decision')
+    return ControlWorkspaceRecoveryDecisionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-takeover')
     return ControlWorkspaceTakeoverResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-capture')
@@ -1936,6 +1956,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkspaceStageReviewSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'workspace-recovery-decision')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceRecoveryDecisionSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-takeover')
