@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "sites": {
     "apps/nanocore/scripts/generate-openapi.ts\tfs:mkdirSync\tdf43f1da85aac1e22f447e3761ac1b2d6f0ecf489189b0060b427b01fd10d637": 1,
     "apps/nanocore/scripts/generate-openapi.ts\tfs:writeFileSync\t4b617fb17ffd6074d26f712d39a82704046147f0a6ad5b080d649623301b4f48": 1,
@@ -324,5 +324,15 @@
     "packages/worker-shim/src/turn.ts\tfs:writeFile\tf75c8a4b44d063ff96263c7cf54e29b60385dcd6864910cfff36449869dc3c86": 1,
     "packages/worker-shim/src/workspace-git.ts\tfs:mkdir\t9b2e1ea5796d35880b605bed7a801f5f4ddca33d26e21b7e21ed5f8332aaea8a": 2,
     "packages/worker-shim/src/workspace-git.ts\tfs:mkdir\td1d6957c08a9a9c492b6845263164f13ca5f901c315452a5feb4776a21db8d1c": 1
+  },
+  "moduleDomains": {
+    "artifacts": {
+      "exports": 29,
+      "crossDirectoryImports": 60
+    },
+    "artifact-zip-snapshots": {
+      "exports": 10,
+      "crossDirectoryImports": 1
+    }
   }
 }

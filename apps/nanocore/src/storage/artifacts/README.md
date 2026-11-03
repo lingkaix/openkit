@@ -2,6 +2,8 @@
 
 This directory owns admission and exact-byte payload operations for arbitrary-file Artifacts. The existing Artifact record, Item, Review and command receipt retain product authority. A private staged file does not prove acceptance.
 
+The artifacts and artifact-zip-snapshots domains are CLOSED for this migration and deep-module close-out. The landed Artifact physical-owner cut, Pilot 0, Pilot 1 and C0 are complete; the storage-access ratchet enforces their interface ceilings from this commit: Artifacts E29/I60, ZIP E10/I1. External importer counts (F46/F1) are diagnostics. Future work may shrink these ceilings and must preserve the existing admission, exact-byte, authority, capacity, cleanup and publication contracts.
+
 `file-admission.ts` counts actual bytes against one upload submission or one Worker file and reserves staging, extraction, derivative and publication capacity against the current filesystem and server reserve. A reservation remains held until publication or proved cleanup. Existing on-disk staging reduces available capacity after restart.
 
 `file-payload.ts` streams into the existing `workspaces/.staging` namespace without text conversion. It checks actual size and digest, applies backpressure and cancellation, synchronizes the completed payload and removes incomplete request files. The caller retains reservation ownership. Its byte counter and integrity/cleanup error classes remain here; the shared Storage owner executes the same pipeline, descriptor lifetime and durable request cleanup through concrete inputs. Version publication also uses Storage for synchronous private directory creation and removal; Artifact metadata, lineage and handled compensation decisions stay here.
