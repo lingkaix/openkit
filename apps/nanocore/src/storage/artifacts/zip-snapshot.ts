@@ -17,7 +17,7 @@ import { ArtifactPayloadCleanupError } from './file-payload.js';
 
 /** Current accepted cumulative limits, including explicitly requested nested extraction. */
 export const MAX_ZIP_EXPANDED_BYTES = 4_000_000_000;
-export const MAX_ZIP_ENTRIES = 100_000;
+const MAX_ZIP_ENTRIES = 100_000;
 
 /** Actual expansion accounting shared by all explicitly selected archive depths. */
 export class ZipExtractionBudget {
@@ -67,14 +67,14 @@ export class ZipExtractionBudget {
 }
 
 /** One exact extracted regular file, without an independent product identity. */
-export interface ZipSnapshotFile {
+interface ZipSnapshotFile {
   readonly relativePath: string;
   readonly byteLength: number;
   readonly contentDigest: string;
 }
 
 /** Complete private extraction; no file or directory is visible as a product until publication. */
-export interface StagedZipSnapshot {
+interface StagedZipSnapshot {
   readonly root: string;
   readonly files: readonly ZipSnapshotFile[];
   readonly directories: readonly string[];
