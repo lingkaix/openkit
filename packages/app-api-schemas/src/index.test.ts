@@ -1764,22 +1764,21 @@ describe('app api schemas', () => {
       Object.hasOwn(appApiSchemas.OPERATION_DEFINITIONS['vault.unlock'], 'inputSensitivity')
     ).toBe(false);
     expect(
-      VaultAdminBootstrapCodexAuthJsonRequestSchema.parse({
+      VaultAdminBootstrapCodexAuthJsonRequestSchema.safeParse({
         authJsonBase64: Buffer.from('{"tokens":{}}').toString('base64'),
         expiresAt: timestamp,
-      }).expiresAt
-    ).toBe(timestamp);
+      }).success
+    ).toBe(false);
     expect(
       VaultAdminBootstrapCodexAuthJsonResponseSchema.parse({
-        backendKind: 'encrypted-file',
-        grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
-        grantScope: 'agent-session',
         referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
-        secretKind: 'codex-auth-json',
-        targetPath: '/sandbox/.codex/auth.json',
-        expiresAt: null,
-      }).targetPath
-    ).toBe('/sandbox/.codex/auth.json');
+        provider: 'codex',
+        status: 'active',
+        currentVersion: 1,
+        quarantined: false,
+        observations: null,
+      }).referenceId
+    ).toBe('vault_00000000-0000-72d1-b90a-e14fea8ea955');
     expect(SetProviderApiKeyRequestSchema.parse({ apiKey: 'provider-secret' }).apiKey).toBe(
       'provider-secret'
     );
@@ -1846,13 +1845,12 @@ describe('app api schemas', () => {
       ).toBe(false);
       expect(
         VaultAdminBootstrapCodexAuthJsonResponseSchema.safeParse({
-          backendKind: 'encrypted-file',
-          grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
-          grantScope: 'agent-session',
           referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
-          secretKind: 'codex-auth-json',
-          targetPath: '/sandbox/.codex/auth.json',
-          expiresAt: null,
+          provider: 'codex',
+          status: 'active',
+          currentVersion: 1,
+          quarantined: false,
+          observations: null,
           diagnostic: secret,
         }).success
       ).toBe(false);
@@ -1889,13 +1887,13 @@ describe('app api schemas', () => {
     {
       name: 'Codex auth bootstrap',
       payload: {
-        backendKind: 'os-keychain',
-        grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
-        grantScope: 'agent-session',
         referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
-        secretKind: 'codex-auth-json',
-        targetPath: '/sandbox/.codex/auth.json',
-        expiresAt: null,
+        provider: 'codex',
+        status: 'active',
+        currentVersion: 1,
+        quarantined: false,
+        observations: null,
+        backendKind: 'os-keychain',
       },
       schema: VaultAdminBootstrapCodexAuthJsonResponseSchema,
     },

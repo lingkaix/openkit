@@ -460,3 +460,9 @@ Use `openkit ops describe knowledge.server.tell` before supplying explicit Serve
 Use `thread.server.list`, `thread.server.read` and `turn.server.interrupt` to inspect or stop current Server work. Only Knowledge Manager work executes on these general Server Threads now. Inspect the native outcome. A required human Review uses `knowledge.server.proposal.read` and `knowledge.server.proposal.decide` on the exact candidate. Follow every preview cursor before accepting. A model cannot approve its candidate.
 
 The Server daily maintenance switch defaults off and is separate from publication delegation. A scheduled run uses actual current local authority or retains a visible unavailable outcome. A stored administrator credential does not authorize the timer.
+
+### Codex harness Login acquisition
+
+As the actual human, invoke the existing `vault.bootstrap-codex-auth` with `authJsonBase64` through its secret-stdin input. Keep material out of arguments, model context and reports. Core verifies and refreshes the credential, owns it under that User and returns only the redacted Login view. Workspace sharing is a separate reviewed operation; Gateway subscription accounts are unchanged.
+
+Prerelease upgrade: The existing vault.bootstrap-codex-auth operation now acquires a human-owned User Login. Rerun acquisition as the actual human using authJsonBase64 through existing secret stdin. The obsolete optional expiresAt is removed: requests containing it fail existing strict validation. No field is silently ignored, no replacement grant or lifetime field is added, and historical Server material is not promoted or migrated.

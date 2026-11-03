@@ -1897,6 +1897,37 @@ describe('Goal definition projections', () => {
             ],
           ].sort()
         );
+        // The real live Goal/Coordinator Turn above grants no human Login material entry.
+        expect(tools.map((tool) => tool.name)).not.toContain('vault.bootstrap-codex-auth');
+        const acquisition = createOperationInvocation({
+          coreDb: f.coreDb,
+          store: f.store,
+          inflightCommands: new WeakMap(),
+          workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        });
+        const acquisitionHttp = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+          throw new Error('Coordinator acquisition crossed the human-only refusal.');
+        });
+        try {
+          await expect(
+            acquisition(
+              'vault.bootstrap-codex-auth',
+              { authJsonBase64: 'e30=' },
+              {
+                kind: 'coordinator',
+                actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+                workspaceId: goal.workspaceId,
+                threadId: goal.threadId,
+                goalId: goal.goalId,
+                turnId: turn.id,
+                requestId: randomUUID(),
+              }
+            )
+          ).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
+          expect(acquisitionHttp).not.toHaveBeenCalled();
+        } finally {
+          acquisitionHttp.mockRestore();
+        }
         const read = await tools.find((tool) => tool.name === 'goal.read')!.execute({});
         expect(read.isError).not.toBe(true);
         expect(JSON.parse((read.content[0] as { text: string }).text).goal.goalId).toBe(
@@ -2646,4 +2677,48 @@ it('refuses caller-selected mediated decision lineage at the existing issue inpu
       decisionLineage: { requestId: input.approvalRequestId, approvalId: input.approvalRequestId },
     }).success
   ).toBe(false);
+});
+
+/** Actual package HTTP projection, not a fake successful implementation or fabricated retained User state. */
+it('keeps human acquisition absent from the real Worker Tool surface before any provider contact', async () => {
+  const f = await operationFixture();
+  const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+    throw new Error('Human acquisition must not contact an upstream from Worker entry.');
+  });
+  try {
+    const { projections, mcp } = await operationProjections(f);
+    const listed = await mcp.request('/api/worker-capabilities/mcp/openkit-generative', {
+      method: 'POST',
+      headers: {
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer private-test-capability',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/list' }),
+    });
+    expect(listed.status).toBe(200);
+    const listing = await listed.json();
+    expect(listing.error).toBeUndefined();
+    expect(listing.result.tools.length).toBeGreaterThan(0);
+    expect(listing.result.tools.map((tool: { name: string }) => tool.name)).not.toContain(
+      operationToolName('vault.bootstrap-codex-auth')
+    );
+    const beforeReferences = f.coreDb.sqlite.prepare('SELECT * FROM vault_references').all();
+    const beforeGrants = f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all();
+    expect(OPENKIT_GENERATIVE_TOOL_OPERATIONS).not.toHaveProperty(
+      operationToolName('vault.bootstrap-codex-auth')
+    );
+    await expect(
+      projections.worker!('vault.bootstrap-codex-auth', { authJsonBase64: 'e30=' })
+    ).rejects.toBeDefined();
+    expect(http).not.toHaveBeenCalled();
+    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_references').all()).toEqual(
+      beforeReferences
+    );
+    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toEqual(beforeGrants);
+  } finally {
+    http.mockRestore();
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+  }
 });

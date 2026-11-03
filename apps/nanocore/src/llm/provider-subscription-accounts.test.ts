@@ -6587,3 +6587,93 @@ describe('native subscription credential attribution', () => {
     });
   });
 });
+
+/** COORD 07:06Z: personal acquisition cannot select, replace or rewrite a Gateway account. */
+it('preserves the real Gateway account, binding and material through human Login acquisition', async () => {
+  const fixture = createFixture();
+  ensureLocalUser(fixture.coreDb);
+  const pair = accountPair('harness-acquisition-is-separate');
+  const referenceId = testEntityId('vault', 'harness-acquisition-gateway-unchanged');
+  const credential = oauthCredential('gateway-unchanged');
+  const handle = await createStoredPair(fixture, pair, referenceId, credential);
+  const before = authoritySnapshot(fixture);
+  const inputRefresh = 'synthetic-human-acquisition-refresh';
+  const freshRefresh = 'synthetic-human-successor-refresh';
+  const freshAccess = [
+    Buffer.from('{}').toString('base64'),
+    Buffer.from(
+      JSON.stringify({
+        'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-human-trusted-account' },
+      })
+    ).toString('base64'),
+    'synthetic-signature',
+  ].join('.');
+  const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = new Request(input, init);
+    expect(request.url).toBe('https://auth.openai.com/oauth/token');
+    expect(request.method).toBe('POST');
+    const form = new URLSearchParams(await request.text());
+    expect(form.get('grant_type')).toBe('refresh_token');
+    expect(form.get('refresh_token')).toBe(inputRefresh);
+    return Response.json({
+      access_token: freshAccess,
+      refresh_token: freshRefresh,
+      expires_in: 3600,
+    });
+  });
+  const app = createApp({
+    coreDb: fixture.coreDb,
+    dataRoot: fixture.dataRoot,
+    providerSubscriptionAccountManager: fixture.manager,
+    vaultUnlockState: fixture.vaultState,
+  });
+  const authJsonBase64 = Buffer.from(
+    JSON.stringify({
+      tokens: {
+        access_token: freshAccess,
+        refresh_token: inputRefresh,
+        account_id: 'synthetic-human-trusted-account',
+      },
+    })
+  ).toString('base64');
+  const response = await app.request(
+    ...operationRequest(
+      'vault.bootstrap-codex-auth',
+      {},
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ authJsonBase64 }),
+      }
+    )
+  );
+  expect(response.status).toBe(200);
+  const result = await response.json();
+  expect(result).toEqual({
+    referenceId: expect.any(String),
+    provider: 'codex',
+    status: 'active',
+    currentVersion: 1,
+    quarantined: false,
+    observations: null,
+  });
+  expect(result.referenceId).not.toBe(referenceId);
+  expect(http).toHaveBeenCalledOnce();
+  const after = authoritySnapshot(fixture);
+  expect(after.accountTree).toEqual(before.accountTree);
+  expect(after.coreReferences.filter((row) => row.reference_id === referenceId)).toEqual(
+    before.coreReferences
+  );
+  expect(after.vaultInventory.filter((row) => row.referenceId === referenceId)).toEqual(
+    before.vaultInventory
+  );
+  await expect(handle.credentials.read(pair.subscriptionProviderId)).resolves.toEqual(credential);
+  for (const privateValue of [
+    authJsonBase64,
+    inputRefresh,
+    freshRefresh,
+    freshAccess,
+    'synthetic-human-trusted-account',
+  ])
+    expect(JSON.stringify(result)).not.toContain(privateValue);
+});

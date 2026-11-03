@@ -267,7 +267,7 @@ Remaining rollout is owned by this specification together with `docs/specs/20260
 
 No internal compatibility alias remains for `codex-oauth`, and no app-server fallback remains after cutover.
 
-This removal is limited to the Gateway and provider-subscription account paths. It does not remove or rename `vault.bootstrap-codex-auth` and does not alter worker-runtime Codex app-server ownership.
+The Gateway and provider-subscription account cutover preserves the name `vault.bootstrap-codex-auth`; [Vault And Secret Injection](20260703-vault_secret_injection.md#harness-subscription-logins) owns its human-only actual-User Login acquisition and the harness credential-delivery contract. Gateway provider-subscription accounts retain their separate ownership and inference contract.
 
 ## Testing Strategy / Acceptance Criteria
 

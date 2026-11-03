@@ -6,7 +6,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -130,6 +130,27 @@ async function createEnvironmentPackage(): Promise<AgentEnvironmentPackage> {
   return { ...snapshot, snapshotId: 'aepsnap_b6' };
 }
 
+// User Login acquisition requires verified refresh; the former route still must refuse.
+const b6BootstrapAccountId = 'synthetic-trusted-account';
+const b6BootstrapAccess = [
+  Buffer.from('{}').toString('base64'),
+  Buffer.from(
+    JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: b6BootstrapAccountId } })
+  ).toString('base64'),
+  'synthetic-signature',
+].join('.');
+const b6BootstrapRefresh = 'synthetic-acquisition-request-refresh';
+const b6BootstrapFreshRefresh = 'synthetic-acquisition-successor-refresh';
+const b6BootstrapAuthJsonBase64 = Buffer.from(
+  JSON.stringify({
+    tokens: {
+      access_token: b6BootstrapAccess,
+      refresh_token: b6BootstrapRefresh,
+      account_id: b6BootstrapAccountId,
+    },
+  })
+).toString('base64');
+
 /** Concrete successful inputs, including request-only synthetic material. */
 const vaultCases = [
   ['vault.status', '/api/app/vault/status', {}, 'GET'],
@@ -138,7 +159,7 @@ const vaultCases = [
   [
     'vault.bootstrap-codex-auth',
     '/api/app/vault/bootstrap/codex-auth-json',
-    { authJsonBase64: 'e30=' },
+    { authJsonBase64: b6BootstrapAuthJsonBase64 },
     'POST',
   ],
   [
@@ -354,6 +375,23 @@ describe('B6 binding retirement', () => {
       vaultUnlockState,
       ...(runtimeConfigManager ? { runtimeConfigManager } : {}),
     });
+    const bootstrapRefresh =
+      id === 'vault.bootstrap-codex-auth'
+        ? vi.spyOn(globalThis, 'fetch').mockImplementation(async (httpInput, httpInit) => {
+            const request = new Request(httpInput, httpInit);
+            expect(request.url).toBe('https://auth.openai.com/oauth/token');
+            expect(request.method).toBe('POST');
+            const form = new URLSearchParams(await request.text());
+            expect(form.get('grant_type')).toBe('refresh_token');
+            expect(form.get('refresh_token')).toBe(b6BootstrapRefresh);
+            expect(form.has('account_id')).toBe(false);
+            return Response.json({
+              access_token: b6BootstrapAccess,
+              refresh_token: b6BootstrapFreshRefresh,
+              expires_in: 3600,
+            });
+          })
+        : null;
     try {
       const response = await app.request(`/api/app/operations/${id}`, {
         method: 'POST',
@@ -366,6 +404,7 @@ describe('B6 binding retirement', () => {
         true
       );
       expect(JSON.stringify(body)).not.toContain('synthetic-b6-material');
+      if (bootstrapRefresh) expect(bootstrapRefresh).toHaveBeenCalledOnce();
       const before = vaultRows(coreDb);
       const formerBody = Object.fromEntries(
         Object.entries(input).filter(
@@ -387,7 +426,9 @@ describe('B6 binding retirement', () => {
       });
       expect(former.status).toBe(404);
       expect(vaultRows(coreDb)).toEqual(before);
+      if (bootstrapRefresh) expect(bootstrapRefresh).toHaveBeenCalledOnce();
     } finally {
+      bootstrapRefresh?.mockRestore();
       vaultUnlockState.lock();
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();

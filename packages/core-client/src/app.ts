@@ -37,7 +37,7 @@ export type SubmitKnowledgeProposalDecisionInput = SubmitKnowledgeProposalDecisi
 export type ReverseKnowledgeProposalInput = ReverseKnowledgeProposalRequest;
 /** Vault admin unlock input. */
 export type VaultAdminUnlockInput = VaultAdminUnlockRequest;
-/** Vault admin Codex auth JSON bootstrap input. */
+/** Request-only acquisition input for the actual human User's Codex harness Login. */
 export type VaultAdminBootstrapCodexAuthJsonInput = VaultAdminBootstrapCodexAuthJsonRequest;
 
 /**

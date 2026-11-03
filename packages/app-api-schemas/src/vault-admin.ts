@@ -1,7 +1,6 @@
 import {
   AgentIdSchema,
   AgentSessionIdSchema,
-  VaultGrantIdSchema,
   VaultReferenceIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -30,29 +29,10 @@ export const VaultAdminStatusResponseSchema = z
 /** Vault admin unlock request payload. */
 export const VaultAdminUnlockRequestSchema = z.object({}).strict();
 
-/** Vault admin Codex auth JSON bootstrap request payload. */
+/** Request-only Codex material for the actual human's harness Login. */
 export const VaultAdminBootstrapCodexAuthJsonRequestSchema = z
-  .object({
-    authJsonBase64: z.string().min(1),
-    expiresAt: z.string().datetime().optional(),
-  })
+  .object({ authJsonBase64: z.string().min(1) })
   .strict();
-
-/** Vault admin Codex auth JSON bootstrap response payload. */
-export const VaultAdminBootstrapCodexAuthJsonResponseSchema = z
-  .object({
-    backendKind: VaultAdminBackendKindSchema,
-    grantId: VaultGrantIdSchema,
-    grantScope: z.literal('agent-session'),
-    referenceId: VaultReferenceIdSchema,
-    secretKind: z.literal('codex-auth-json'),
-    targetPath: z.literal('/sandbox/.codex/auth.json'),
-    expiresAt: z.string().datetime().nullable(),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
 
 /** Deployment-admin provider API-key input. */
 export const SetProviderApiKeyRequestSchema = z
@@ -273,3 +253,6 @@ export const VaultLoginReferenceRequestSchema = z
   .strict();
 /** Public reference-only Login projection. */
 export type VaultLoginView = z.infer<typeof VaultLoginViewSchema>;
+
+/** Existing redacted User Login result; never a material or grant projection. */
+export const VaultAdminBootstrapCodexAuthJsonResponseSchema = VaultLoginViewSchema;

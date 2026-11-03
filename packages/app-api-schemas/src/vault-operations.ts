@@ -335,18 +335,13 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.bootstrap-codex-auth': {
-    description: 'Store Codex authentication material in the unlocked vault.',
-    binding: 'json',
-    returnsOneTimeSecret: false,
-    successStatus: 200,
-    inputSchema: VaultAdminBootstrapCodexAuthJsonRequestSchema.strict(),
+    ...personalLoginContract,
+    description: 'Acquire a Codex harness Login owned by the actual human User.',
+    inputSchema: VaultAdminBootstrapCodexAuthJsonRequestSchema,
     outputSchema: VaultAdminBootstrapCodexAuthJsonResponseSchema,
-    credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
-    scope: { kind: 'server' },
-    target: { kind: 'server' },
-    policyOperation: 'api.call',
     mutating: true,
     inputSensitivity: 'secret stdin',
+    insertionPoints: { ...personalLoginInterception, crossings: ['admission', 'mutation'] },
   },
   // The native owner validates the profile id with ProviderApiKeyProfileIdSchema so its exact typed refusal and audited no-write outcome stay reachable.
   'vault.provider-api-key-set': {

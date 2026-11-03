@@ -1336,3 +1336,334 @@ it.each([
   expect(f.participant).not.toHaveBeenCalled();
   expect(f.closeRuntime).not.toHaveBeenCalled();
 });
+
+/** Only synthetic request material and an HTTP response double; the real stock refresher runs. */
+function acquisitionMaterial(account = 'synthetic-trusted-account') {
+  const access = (id: string) =>
+    [
+      Buffer.from('{}').toString('base64'),
+      Buffer.from(
+        JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: id } })
+      ).toString('base64'),
+      'synthetic-signature',
+    ].join('.');
+  const submitted = {
+    tokens: {
+      access_token: access(account),
+      refresh_token: 'synthetic-acquisition-request-refresh',
+      account_id: account,
+    },
+  };
+  const authJson = JSON.stringify(submitted);
+  const freshAccess = access('synthetic-trusted-account');
+  const freshRefresh = 'synthetic-acquisition-successor-refresh';
+  return {
+    submitted,
+    authJson,
+    input: { authJsonBase64: Buffer.from(authJson).toString('base64') },
+    freshAccess,
+    freshRefresh,
+  };
+}
+
+/** Refuses every unselected HTTP call; successful account proof must come from the real refresher. */
+function acquisitionHttp(material: ReturnType<typeof acquisitionMaterial>, reply?: () => Response) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = new Request(input, init);
+    expect(request.url).toBe('https://auth.openai.com/oauth/token');
+    expect(request.method).toBe('POST');
+    const form = new URLSearchParams(await request.text());
+    expect(form.get('grant_type')).toBe('refresh_token');
+    expect(form.get('refresh_token')).toBe(material.submitted.tokens.refresh_token);
+    expect(form.has('account_id')).toBe(false);
+    return (
+      reply?.() ??
+      Response.json({
+        access_token: material.freshAccess,
+        refresh_token: material.freshRefresh,
+        expires_in: 3600,
+      })
+    );
+  });
+}
+
+/** COORD 07:06Z: actual public invocation, real backend, User Policy/decision/Audit and native Core publication. */
+describe('actual human Login acquisition owner', () => {
+  it('acquires for the canonical nonadministrator caller and returns only its existing Login projection', async () => {
+    const f = await fixture();
+    f.unlockState.unlock({ masterKey: Buffer.alloc(32, 61) });
+    const material = acquisitionMaterial();
+    const http = acquisitionHttp(material);
+    const backend = f.unlockState.backend();
+    const store = vi.spyOn(backend, 'store');
+    const beforeReferences = listVaultReferences(f.coreDb);
+    const beforeGrants = listVaultGrants(f.coreDb);
+    const result = await f.invoke('vault.bootstrap-codex-auth', material.input, {
+      kind: 'public',
+      actor: f.owner,
+    });
+    expect(result).toEqual({
+      referenceId: expect.any(String),
+      provider: 'codex',
+      status: 'active',
+      currentVersion: 1,
+      quarantined: false,
+      observations: null,
+    });
+    expect(http).toHaveBeenCalledOnce();
+    expect(store).toHaveBeenCalledOnce();
+    const retained = getVaultReference(f.coreDb, result.referenceId)!;
+    expect(retained).toMatchObject({
+      ownerScope: 'user',
+      userId: f.owner.userId,
+      workspaceId: null,
+      currentVersion: 1,
+      status: 'active',
+      login: { provider: 'codex', accountId: 'synthetic-trusted-account', quarantined: false },
+    });
+    expect(
+      listVaultReferences(f.coreDb).filter((row) => row.referenceId !== result.referenceId)
+    ).toEqual(beforeReferences);
+    expect(listVaultGrants(f.coreDb)).toEqual(beforeGrants);
+    expect(backend.listReferences({ referenceId: result.referenceId })).toEqual([
+      expect.objectContaining({
+        referenceId: result.referenceId,
+        ownerScope: 'user',
+        userId: f.owner.userId,
+        currentVersion: 1,
+      }),
+    ]);
+    const privateMaterial = Buffer.from(
+      backend.resolve({ referenceId: result.referenceId })
+    ).toString('utf8');
+    expect(privateMaterial).toContain(material.freshAccess);
+    expect(privateMaterial).toContain(material.freshRefresh);
+    expect(privateMaterial).not.toContain(material.submitted.tokens.refresh_token);
+    const decisions = listUserPermissionDecisions(f.userDb).filter(
+      (row) =>
+        row.mediation?.operation === 'vault.bootstrap-codex-auth' && row.mediation.role === 'final'
+    );
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      ownerScope: 'user',
+      workspaceId: null,
+      result: 'allow',
+      mediation: {
+        kernel: { effect: 'allow' },
+        subject: { actor: { kind: 'user', id: f.owner.userId }, onBehalfOf: null },
+      },
+    });
+    const events = listSqliteAuditEvents(f.userDb.sqlite);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: decisions[0]!.auditEventId,
+          action: 'permission.decision',
+          permissionDecisionId: decisions[0]!.decisionId,
+          actor: { kind: 'user', id: f.owner.userId },
+          workspaceId: null,
+        }),
+        expect.objectContaining({
+          action: 'vault.bootstrap-codex-auth',
+          outcome: 'succeeded',
+          permissionDecisionId: decisions[0]!.decisionId,
+          actor: { kind: 'user', id: f.owner.userId },
+          workspaceId: null,
+        }),
+      ])
+    );
+    expect(f.participant).not.toHaveBeenCalled();
+    for (const raw of [
+      material.authJson,
+      material.input.authJsonBase64,
+      material.submitted.tokens.refresh_token,
+      material.freshAccess,
+      material.freshRefresh,
+    ]) {
+      expect(
+        JSON.stringify([
+          result,
+          retained,
+          decisions,
+          events,
+          listSqliteAuditEvents(f.coreDb.sqlite),
+        ])
+      ).not.toContain(raw);
+      expect(JSON.stringify(f.participant.mock.calls)).not.toContain(raw);
+    }
+    expect(JSON.stringify(result)).not.toContain(retained.login!.accountId);
+    await expect(
+      f.invoke('vault.login-list', {}, { kind: 'public', actor: f.owner })
+    ).resolves.toEqual({ items: [result] });
+    await expect(
+      f.invoke('vault.login-list', {}, { kind: 'public', actor: f.other })
+    ).resolves.toEqual({ items: [] });
+  });
+
+  it('refuses model delivery on behalf of a current human before refresh or backend material', async () => {
+    const f = await fixture();
+    f.unlockState.unlock({ masterKey: Buffer.alloc(32, 63) });
+    const material = acquisitionMaterial();
+    const http = acquisitionHttp(material);
+    const backend = f.unlockState.backend();
+    const store = vi.spyOn(backend, 'store');
+    const resolve = vi.spyOn(backend, 'resolve');
+    const before = listVaultReferences(f.coreDb);
+    await expect(
+      f.invoke('vault.bootstrap-codex-auth', material.input, {
+        kind: 'public',
+        actor: f.local,
+        delivery: 'model',
+      })
+    ).rejects.toMatchObject({ status: 403 });
+    expect(http).not.toHaveBeenCalled();
+    expect(store).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(listVaultReferences(f.coreDb)).toEqual(before);
+  });
+
+  it.each([
+    'ownerUserId',
+    'accountId',
+  ] as const)('rejects a caller %s selector before refresh or backend material', async (selector) => {
+    const f = await fixture();
+    f.unlockState.unlock({ masterKey: Buffer.alloc(32, 64) });
+    const material = acquisitionMaterial();
+    const http = acquisitionHttp(material);
+    const store = vi.spyOn(f.unlockState.backend(), 'store');
+    const before = listVaultReferences(f.coreDb);
+    await expect(
+      f.invoke(
+        'vault.bootstrap-codex-auth',
+        { ...material.input, [selector]: f.other.userId },
+        { kind: 'public', actor: f.local }
+      )
+    ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    expect(http).not.toHaveBeenCalled();
+    expect(store).not.toHaveBeenCalled();
+    expect(listVaultReferences(f.coreDb)).toEqual(before);
+  });
+
+  it('does not promote or block on historical Server material and creates no replacement runtime-file grant', async () => {
+    const f = await fixture();
+    f.unlockState.unlock({ masterKey: Buffer.alloc(32, 65) });
+    const backend = f.unlockState.backend();
+    const historicalId = allocateEntityId('vault');
+    backend.store({
+      referenceId: historicalId,
+      material: 'synthetic-historical-server-material',
+      metadata: { ownerScope: 'server' },
+    });
+    const historical = await createVaultReference(f.coreDb, {
+      referenceId: historicalId,
+      ownerScope: 'server',
+      displayName: 'Historical bootstrap',
+      secretKind: 'codex-auth-json',
+      backendKind: 'encrypted-file',
+      backendLocator: 'synthetic-historical-private-locator',
+    });
+    const historicalInventory = backend.listReferences({ referenceId: historicalId });
+    const beforeGrants = listVaultGrants(f.coreDb);
+    const material = acquisitionMaterial();
+    const http = acquisitionHttp(material);
+    const resolve = vi.spyOn(backend, 'resolve');
+    const result = await f.invoke('vault.bootstrap-codex-auth', material.input, {
+      kind: 'public',
+      actor: f.local,
+    });
+    expect(result).toEqual({
+      referenceId: expect.any(String),
+      provider: 'codex',
+      status: 'active',
+      currentVersion: 1,
+      quarantined: false,
+      observations: null,
+    });
+    expect(result.referenceId).not.toBe(historicalId);
+    expect(getVaultReference(f.coreDb, result.referenceId)).toMatchObject({
+      ownerScope: 'user',
+      userId: f.local.userId,
+      login: { provider: 'codex', accountId: 'synthetic-trusted-account' },
+    });
+    expect(getVaultReference(f.coreDb, historicalId)).toEqual(historical);
+    expect(backend.listReferences({ referenceId: historicalId })).toEqual(historicalInventory);
+    expect(listVaultGrants(f.coreDb)).toEqual(beforeGrants);
+    expect(resolve).not.toHaveBeenCalled();
+    expect(http).toHaveBeenCalledOnce();
+    await expect(
+      f.invoke('vault.login-list', {}, { kind: 'public', actor: f.local })
+    ).resolves.toEqual({ items: [result] });
+  });
+});
+
+/** Current human authority must survive the real provider await before any material write. */
+describe('User acquisition authority after stock refresh', () => {
+  it.each([
+    'disabled-owner',
+    'revoked-administrator',
+  ] as const)('refuses %s during the awaited refresh before storing any material', async (change) => {
+    const f = await fixture();
+    f.unlockState.unlock({ masterKey: Buffer.alloc(32, 65) });
+    const material = acquisitionMaterial();
+    let actor: Actor = f.owner;
+    let tokenId: string | undefined;
+    if (change === 'revoked-administrator') {
+      const { record } = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: f.owner.userId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      tokenId = record.tokenId;
+      actor = { kind: 'token', userId: f.owner.userId, tokenId, tokenScope: 'server-admin' };
+    }
+    const backend = f.unlockState.backend();
+    const store = vi.spyOn(backend, 'store');
+    const resolve = vi.spyOn(backend, 'resolve');
+    const beforeInventory = backend.listReferences();
+    const beforeReferences = listVaultReferences(f.coreDb);
+    const beforeGrants = listVaultGrants(f.coreDb);
+    const http = acquisitionHttp(material, () => {
+      expect(store).not.toHaveBeenCalled();
+      // This callback is inside the real SDK's awaited HTTP refresh, after valid admission.
+      if (change === 'disabled-owner')
+        expect(
+          f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, actor.userId))()
+        ).not.toBeNull();
+      else
+        expect(revokeOpenKitAccessTokenRecord(f.coreDb, tokenId!)).toMatchObject({
+          status: 'revoked',
+        });
+      return Response.json({
+        access_token: material.freshAccess,
+        refresh_token: material.freshRefresh,
+        expires_in: 3600,
+      });
+    });
+    const error = await f
+      .invoke('vault.bootstrap-codex-auth', material.input, {
+        kind: 'public',
+        actor,
+        delivery: 'human',
+      })
+      .catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ status: 403 });
+    expect(http).toHaveBeenCalledOnce();
+    expect(store).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(backend.listReferences()).toEqual(beforeInventory);
+    expect(listVaultReferences(f.coreDb)).toEqual(beforeReferences);
+    expect(listVaultGrants(f.coreDb)).toEqual(beforeGrants);
+    const decisions = listUserPermissionDecisions(f.userDb).filter(
+      (row) =>
+        row.mediation?.operation === 'vault.bootstrap-codex-auth' && row.mediation.role === 'final'
+    );
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ result: 'allow' });
+    expect(
+      listSqliteAuditEvents(f.userDb.sqlite).filter(
+        (event) => event.action === 'vault.bootstrap-codex-auth' && event.outcome === 'succeeded'
+      )
+    ).toEqual([]);
+  });
+});

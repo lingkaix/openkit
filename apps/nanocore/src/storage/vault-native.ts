@@ -1046,6 +1046,24 @@ function assertPublicMutationAuthority(db: CoreDb, input: ControlVaultInput): vo
   if (!('publicMutation' in input.record) || !input.record.publicMutation) return;
   const authority = input.record.publicMutation;
   const actor = definedFields(authority.actor);
+  if (input.kind === 'reference-create' && input.record.login) {
+    const login = input.record.login;
+    const record = input.record;
+    if (
+      record.ownerScope !== 'user' ||
+      record.userId !== actor.userId ||
+      !record.userId ||
+      record.workspaceId != null ||
+      record.secretKind !== 'codex-auth-json' ||
+      login.provider !== 'codex' ||
+      !login.accountId ||
+      authority.workspaceId !== undefined ||
+      authority.reference !== undefined ||
+      evaluateOwnedUserOperation(db, actor, record.userId, 'vault.admin', true).effect !== 'allow'
+    )
+      throw new ControlProductPreconditionError();
+    return;
+  }
   if (input.kind === 'reference-login-state') {
     const reference = getVaultReference(db, input.record.referenceId);
     if (
