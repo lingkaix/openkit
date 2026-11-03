@@ -22,6 +22,7 @@ import {
   ControlRecoverySourceReactivationInputSchema,
 } from './workspace-reactivation-codecs.js';
 import type { ControlWorkspaceStageReview } from './workspace-stage-review-codecs.js';
+import type { ControlWorkspaceTakeover } from './workspace-takeover-codecs.js';
 
 export { ControlStoreWorkerError } from './control-store-worker-error.js';
 
@@ -2383,6 +2384,22 @@ class ControlStoreWorkerClient {
       if (
         error instanceof ControlStoreWorkerError &&
         error.domain?.operation === 'workspace-stage-review'
+      )
+        throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Preserves each original handle commit and returns only current cleanup disposition. */
+  async workspaceTakeover(database: string, input: ControlWorkspaceTakeover): Promise<boolean> {
+    try {
+      const reply = await this.request({ operation: 'workspace-takeover', database, input });
+      return (reply as Extract<Success, { operation: 'workspace-takeover' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'workspace-takeover'
       )
         throw new Error(error.domain.message);
       throw error;

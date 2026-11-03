@@ -307,9 +307,15 @@ import {
   ControlWorkspaceStageReviewRefusalSchema,
   ControlWorkspaceStageReviewSchema,
 } from './workspace-stage-review-codecs.js';
+import {
+  type ControlWorkspaceTakeover,
+  ControlWorkspaceTakeoverRefusalSchema,
+  ControlWorkspaceTakeoverResultSchema,
+  ControlWorkspaceTakeoverSchema,
+} from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 55;
+export const CONTROL_WORKER_VERSION = 56;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -577,6 +583,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'workspace-baseline'; readonly input: ControlWorkspaceBaseline }
       | { readonly operation: 'workspace-capture'; readonly input: ControlWorkspaceCapture }
+      | { readonly operation: 'workspace-takeover'; readonly input: ControlWorkspaceTakeover }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
       | {
@@ -791,6 +798,7 @@ export type ControlWorkerDomainRefusal =
   | OrdinaryControlWorkerDomainRefusal
   | z.infer<typeof ControlWorkspaceBaselineRefusalSchema>
   | z.infer<typeof ControlWorkspaceCaptureRefusalSchema>
+  | z.infer<typeof ControlWorkspaceTakeoverRefusalSchema>
   | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
   | z.infer<typeof ControlWorkerFinalStatusRefusalSchema>
@@ -892,6 +900,7 @@ export type ControlWorkerReply = {
       readonly operation: 'workspace-capture';
       readonly result: ControlWorkspaceCaptureResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'workspace-takeover'; readonly result: boolean }
   | { readonly status: 'ok'; readonly operation: 'workspace-review-finish'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1122,6 +1131,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-stage-review')
     return ControlWorkspaceStageReviewRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'workspace-takeover')
+    return ControlWorkspaceTakeoverRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-capture')
     return ControlWorkspaceCaptureRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-baseline')
@@ -1419,6 +1430,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
+  if (reply.operation === 'workspace-takeover')
+    return ControlWorkspaceTakeoverResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-capture')
     return ControlWorkspaceCaptureResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-backend-handoff')
@@ -1923,6 +1936,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkspaceStageReviewSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'workspace-takeover')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceTakeoverSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-capture')

@@ -21,6 +21,7 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
+import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -42,6 +43,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
+import * as dbOwner from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { publishImmutableProductJson } from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -3747,6 +3749,185 @@ describe('scheduler restart recovery', () => {
         )?.phase
       ).toBe('closed');
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'retain',
+    'second-handle-fault',
+  ] as const)('preserves takeover recovery stages with query-only Main: %s', async (boundary) => {
+    const coreDb = await createMigratedCoreDb();
+    // Finish Demo publication before the existing stopped scalar admission/image fixtures.
+    await shutdownControlStoreWorkerClient();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
+    const suffix = `native_takeover_${boundary}`;
+    const attemptId = testEntityId('attempt', `lease_${suffix}`);
+    const client = getControlStoreWorkerClient();
+    const scope = nativeProductScope(coreDb.dataRoot, { kind: 'workspace', workspaceId });
+    const database = `workspace:${scope.path}`;
+    const cleanup = vi.fn(async () => undefined);
+    const project = vi.fn(async () => ({ status: 'failed' as const }));
+    const actualOpen = dbOwner.openWorkspaceDb;
+    const queryOnlyReaders: ReturnType<typeof openWorkspaceDb>[] = [];
+    let opening: { mockRestore: () => void } | undefined;
+    try {
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      dispatchLease(coreDb, suffix);
+      const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
+        suffix,
+        workspaceInputIds: ['repo', 'docs'],
+      });
+      await recordBackendSession(coreDb, suffix, 'launching');
+      // The Workspace writer remains closed from setup through handoff publication and fault DDL.
+      recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage, '2026-07-05T00:00:10.000Z');
+      const handles = listBackendWorkspaceHandles(workspaceDb, workspaceId);
+      const materializations = listWorkspaceMaterializationRecords(workspaceDb, workspaceId);
+      const evidence = listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId);
+      const runtimeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceId);
+      const before = requireNanoHostExecutionAttempt(coreDb, attemptId);
+      expect(handles).toHaveLength(2);
+      expect(handles.every((handle) => handle.cleanupStatus === 'pending')).toBe(true);
+      expect(listWorkspaceReconciliationRecords(workspaceDb, workspaceId)).toEqual([]);
+      if (boundary === 'second-handle-fault') {
+        // Core Storage preserves these separate autocommit stages: only the later INSERT fails.
+        workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_second_takeover_stage
+            BEFORE INSERT ON workspace_reconciliation_records
+            WHEN NEW.trigger_reason = 'backend_takeover' AND EXISTS (
+              SELECT 1 FROM workspace_reconciliation_records
+              WHERE workspace_id = NEW.workspace_id AND trigger_reason = 'backend_takeover'
+            ) BEGIN SELECT RAISE(ABORT, 'second takeover stage refused'); END`);
+      }
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: coreDb.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      // Call through to every actual recovery reader. Native SQL is in the real Worker.
+      opening = vi.spyOn(dbOwner, 'openWorkspaceDb').mockImplementation((...args) => {
+        const db = actualOpen(...args);
+        if (args[0] === coreDb.dataRoot && args[1] === workspaceId) {
+          db.sqlite.pragma('query_only = ON');
+          expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+          queryOnlyReaders.push(db);
+        }
+        return db;
+      });
+      workspaceDb.sqlite.pragma('query_only = ON');
+      const timestamp = new Date(Date.parse(before.startupDeadline) + 1_000).toISOString();
+      expect(Date.parse(timestamp)).toBeGreaterThan(Date.parse(before.startupDeadline));
+      const input = testRecoveryInput(coreDb, {
+        cleanupBackendSession: cleanup,
+        now: () => timestamp,
+        projectRecoveredTurn: project,
+      });
+      const recovery = runNanoHostAttemptRecoveryMaintenance(coreDb, input);
+      if (boundary === 'second-handle-fault') {
+        await expect(recovery).rejects.toMatchObject({
+          errors: [expect.objectContaining({ code: 'constraint', commit: 'not-committed' })],
+        });
+      } else {
+        await recovery;
+      }
+      expect(queryOnlyReaders.length).toBeGreaterThan(0);
+      const records = listWorkspaceReconciliationRecords(workspaceDb, workspaceId);
+      expect(records).toHaveLength(boundary === 'retain' ? 2 : 1);
+      expect(new Set(records.map((record) => record.id)).size).toBe(records.length);
+      const retainedHandles = boundary === 'retain' ? handles : handles.slice(0, 1);
+      for (const handle of retainedHandles) {
+        const record = records.find((row) => row.affectedRecordIds.includes(handle.id));
+        expect(record).toMatchObject({
+          affectedRecordIds: [handle.materializationRecordId, handle.id],
+          backendHandleSummary: {
+            backendKind: handle.backendKind,
+            cleanupStatus: handle.cleanupStatus,
+            handleId: handle.id,
+            workerSessionId: handle.workerSessionId,
+          },
+          backendReachability: {
+            checkedAt: timestamp,
+            detail: before.terminalCause,
+            status: 'unavailable',
+          },
+          collectedOutputManifestIds: [],
+          finishedAt: null,
+          quarantineRefs: [],
+          retentionDecision: 'retain-backend',
+          startedAt: timestamp,
+          stateAfter: 'requires-human',
+          stateBefore: before.phase,
+          triggerReason: 'backend_takeover',
+          workspaceId,
+        });
+        expect(record!.requiredHumanDecision).toBeTruthy();
+        expect(record!.evidenceBundleIds.length).toBeGreaterThan(0);
+        for (const id of record!.evidenceBundleIds)
+          expect(evidence.find((bundle) => bundle.id === id)).toMatchObject({
+            workspaceId,
+            sourceKind: 'workspace-materialization',
+            importStatus: 'promoted',
+          });
+      }
+      const rows = workspaceDb.sqlite
+        .prepare('SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id')
+        .all();
+      if (boundary === 'retain') {
+        // A deliberate maintenance replay sees current pending evidence and preserves original bytes/time.
+        await runNanoHostAttemptRecoveryMaintenance(coreDb, {
+          ...input,
+          now: () => new Date(Date.parse(timestamp) + 60_000).toISOString(),
+        });
+        expect(listWorkspaceReconciliationRecords(workspaceDb, workspaceId)).toEqual(records);
+        expect(
+          workspaceDb.sqlite
+            .prepare(
+              'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
+            )
+            .all()
+        ).toEqual(rows);
+      }
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(project).not.toHaveBeenCalled();
+      expect(getWorkerBackendSession(coreDb, attemptId)).toMatchObject({
+        physicalCleanedAt: null,
+      });
+      expect(requireNanoHostExecutionAttempt(coreDb, attemptId)).toMatchObject({
+        phase: 'closing',
+      });
+      expect(listBackendWorkspaceHandles(workspaceDb, workspaceId)).toEqual(handles);
+      expect(listWorkspaceMaterializationRecords(workspaceDb, workspaceId)).toEqual(
+        materializations
+      );
+      expect(listStoredWorkspaceEvidenceBundles(workspaceDb, workspaceId)).toEqual(evidence);
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, workspaceId)).toEqual(runtimeEvidence);
+      // Join the actual writer close, then inspect the committed prefix through a new Main connection.
+      await client.close(database);
+      const cold = actualOpen(coreDb.dataRoot, workspaceId);
+      try {
+        cold.sqlite.pragma('query_only = ON');
+        expect(listWorkspaceReconciliationRecords(cold, workspaceId)).toEqual(records);
+        expect(
+          cold.sqlite
+            .prepare(
+              'SELECT * FROM workspace_reconciliation_records ORDER BY reconciliation_record_id'
+            )
+            .all()
+        ).toEqual(rows);
+        expect(listBackendWorkspaceHandles(cold, workspaceId)).toEqual(handles);
+        expect(listWorkspaceMaterializationRecords(cold, workspaceId)).toEqual(materializations);
+        expect(listStoredWorkspaceEvidenceBundles(cold, workspaceId)).toEqual(evidence);
+        expect(listWorkspaceRuntimeEvidence(cold, workspaceId)).toEqual(runtimeEvidence);
+      } finally {
+        cold.sqlite.close();
+      }
+    } finally {
+      opening?.mockRestore();
+      workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
   });

@@ -59,16 +59,13 @@ import {
 } from './worker-control-records.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
-import {
-  hasPendingWorkspaceCapture,
-  listWorkspaceReconciliationRecords,
-  recordWorkspaceReconciliationRecord,
-} from './workspace-reconciliation-records.js';
+import { hasPendingWorkspaceCapture } from './workspace-reconciliation-records.js';
 import {
   listBackendWorkspaceHandles,
   listWorkspaceMaterializationRecords,
   requireCompleteBackendWorkspaceHandleHandoff,
 } from './workspace-sync-records.js';
+import { publishWorkspaceTakeoverEvaluation } from './workspace-takeover-publication.js';
 
 /** NanoHost-only recovery uses the existing physical cleanup and full accepted-final closeout owners. */
 export interface RunNanoHostAttemptRecoveryInput extends RunSchedulerRestartRecoveryInput {
@@ -257,23 +254,16 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           continue;
         }
         if (!materializationNotPublished) {
-          const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-            `workspace:${workspace.db.sqlite.name}`
-          );
-          try {
-            if (
-              recordWorkspaceRecoveryEvaluation(
-                workspace.db,
-                native,
-                workspace.environmentPackage,
-                timestamp,
-                ['physical-cleaned', 'cleaned'].includes(session.state)
-              )
+          if (
+            await publishWorkspaceTakeoverEvaluation(
+              workspace.db,
+              native,
+              workspace.environmentPackage,
+              timestamp,
+              ['physical-cleaned', 'cleaned'].includes(session.state)
             )
-              continue;
-          } finally {
-            resume();
-          }
+          )
+            continue;
         }
         session = await cleanupPhysicalSession(coreDb, session, now, input.cleanupBackendSession);
         const projection = await projectCleanup(
@@ -1224,57 +1214,4 @@ function isInitialImagePreparation(
     timeLimitSeconds: image.timeLimitSeconds,
   });
   return attempt.operationId === request.requestId;
-}
-
-/** Evaluates stale Workspace ownership before teardown, preserving the existing synchronization decision ledger. */
-function recordWorkspaceRecoveryEvaluation(
-  db: WorkspaceDb,
-  attempt: NanoHostExecutionAttemptRecord,
-  environmentPackage: AgentEnvironmentPackage,
-  timestamp: string,
-  physicallyCleaned: boolean
-): boolean {
-  const handles = requireCompleteBackendWorkspaceHandleHandoff(db, environmentPackage);
-  const existing = new Set(
-    listWorkspaceReconciliationRecords(db, attempt.workspaceId).map((record) => record.id)
-  );
-  for (const handle of handles) {
-    const id = `wrr_${attempt.attemptId}_${handle.id}`;
-    if (handle.cleanupStatus !== 'pending' || existing.has(id)) continue;
-    recordWorkspaceReconciliationRecord(db, {
-      affectedRecordIds: [handle.materializationRecordId, handle.id],
-      backendHandleSummary: {
-        backendKind: handle.backendKind,
-        cleanupStatus: handle.cleanupStatus,
-        handleId: handle.id,
-        workerSessionId: handle.workerSessionId,
-      },
-      backendReachability: {
-        checkedAt: timestamp,
-        detail: attempt.terminalCause,
-        status: 'unavailable',
-      },
-      collectedOutputManifestIds: [],
-      evidenceBundleIds: [`evb_workspace_materialization_${handle.materializationRecordId}`],
-      finishedAt: null,
-      id,
-      quarantineRefs: [],
-      requiredHumanDecision: 'inspect_recovery',
-      retentionDecision: physicallyCleaned ? 'teardown-backend' : 'retain-backend',
-      startedAt: timestamp,
-      stateAfter: 'requires-human',
-      stateBefore: attempt.phase,
-      triggerReason: 'backend_takeover',
-      workspaceId: attempt.workspaceId,
-    });
-  }
-  return (
-    !physicallyCleaned &&
-    listWorkspaceReconciliationRecords(db, attempt.workspaceId).some(
-      (record) =>
-        record.stateAfter === 'requires-human' &&
-        record.retentionDecision === 'retain-backend' &&
-        handles.some((handle) => record.affectedRecordIds.includes(handle.id))
-    )
-  );
 }

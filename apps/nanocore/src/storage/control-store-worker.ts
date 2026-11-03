@@ -268,6 +268,11 @@ import { ControlCoreSharingRefusalSchema } from './workspace-sharing-codecs.js';
 import { applyControlCoreSharing } from './workspace-sharing-native.js';
 import { WorkspaceStageReviewRefusal } from './workspace-stage-review-codecs.js';
 import { applyWorkspaceStageReviewInDb } from './workspace-stage-review-native.js';
+import {
+  ControlWorkspaceTakeoverRefusalSchema,
+  WorkspaceTakeoverRefusal,
+} from './workspace-takeover-codecs.js';
+import { applyWorkspaceTakeoverInDb } from './workspace-takeover-native.js';
 
 if (isMainThread || parentPort === null) {
   throw new Error('The database writer entrypoint requires a dedicated worker thread.');
@@ -301,6 +306,7 @@ type WriteCommand = Extract<
       | 'workspace-backend-handoff'
       | 'workspace-baseline'
       | 'workspace-capture'
+      | 'workspace-takeover'
       | 'harness-lifecycle'
       | 'execution-attempt'
       | 'core-journal'
@@ -622,6 +628,17 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       message: error.message,
       status: 409,
     };
+  if (operation === 'workspace-takeover' && error instanceof WorkspaceTakeoverRefusal) {
+    const value = {
+      operation,
+      code: 'incomplete_handoff',
+      snapshotId: error.snapshotId,
+      message: error.message,
+      status: 409,
+    };
+    const parsed = ControlWorkspaceTakeoverRefusalSchema.safeParse(value);
+    if (parsed.success) return parsed.data;
+  }
   if (operation === 'workspace-capture') {
     let value: unknown;
     if (error instanceof TypeError && error.message === 'Unsupported retained record format.')
@@ -2077,6 +2094,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'workspace-stage-review',
               result: null,
             };
+          } else if (request.operation === 'workspace-takeover') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.attempt.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            const result = applyWorkspaceTakeoverInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-takeover',
+              result,
+            };
           } else if (request.operation === 'workspace-capture') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3293,6 +3324,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-backend-handoff' ||
       value.operation === 'workspace-baseline' ||
       value.operation === 'workspace-capture' ||
+      value.operation === 'workspace-takeover' ||
       value.operation === 'harness-lifecycle' ||
       value.operation === 'execution-attempt' ||
       value.operation === 'core-journal' ||
