@@ -310,6 +310,8 @@ Under Vitest, source clients load the same native Worker from the invocation-pri
 
 Offline Workspace restore and MOVE share Core `workspace_recovery_admissions` ownership for exact restart, terminal abandonment and next-boot refusal of partial authority.
 
+Stopped source reactivation commits the original Core publication revocation before durable seal retirement, the complete Workspace revision and Audit after retirement, and its final Core report after the Workspace commit, through the existing native owners while retaining the offline root lock.
+
 The native client's existing accepted-producer collection may retain an optional exact physical data root, Workspace and initial Turn identity. A duplicate observes only that still-live original acknowledgement; absent or failed producers grant no replay or repair. Shutdown drains the same collection and permits only its active accepted contexts to continue publication. Run `control-store-producer-lifetime.test.ts` and `../runtime/external-trigger-service.test.ts` for this boundary.
 
 Native product-byte preparation awaits exact scoped reads and file/directory synchronization through the existing bounded preparation lifetime before SQL. It leaves no SQLite read cursor open across I/O. Archive preparation retains its queue-head position and joins earlier admitted producers; ordered close, maintenance and shutdown also drain preparation started by an archive during that drain. Deciding SQL still rechecks current revisions and dependency descriptors, and success follows the outer FULL commit.

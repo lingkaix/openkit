@@ -8,11 +8,14 @@ import {
   removeDurableFile,
   syncCanonicalTree,
 } from '@openkit/storage';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import type { WorkspaceFrozenAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { commandInputHash } from './control-store-input.js';
 import { applyControlRecoveryMoveOut } from './control-store-recovery.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { bindWorkspaceSqlite, type CoreDb, openWorkspaceReadDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import {
@@ -21,6 +24,7 @@ import {
   readWorkspaceBackupManifest,
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
+  WorkspaceRecoveryError,
   type workspaceSnapshotOperationPolicy,
 } from './workspace-backup.js';
 import { readWorkspaceSnapshotMetadata } from './workspace-backup-bundle.js';
@@ -31,6 +35,8 @@ import {
   protectCapture,
 } from './workspace-capture-protection.js';
 import { nativeProductScope, readNativeProduct } from './workspace-file-records.js';
+import type { ControlRecoverySourceReactivationInput } from './workspace-reactivation-codecs.js';
+import { readWorkspaceReactivationSource } from './workspace-reactivation-native.js';
 import {
   bindWorkspaceCaptureNativeOwner,
   endRecoveryAdmission,
@@ -340,61 +346,115 @@ export async function reactivateWorkspace(
   return withRecoveryRoot(input.dataRoot, async (core) => {
     const owned = readRecoveryAdmission(core, input.backupId);
     if (!owned || owned.workspace_id !== input.workspaceId) refuseRecovery('recovery-required');
-    const current = source(input.dataRoot, input.workspaceId);
-    try {
-      if (
-        owned.state === 'abandoned' &&
-        !current.record.movedOut &&
-        current.row.revision === owned.proof.manifest.capturedRevision + 2 &&
-        input.expectedRevision === current.row.revision - 1
-      ) {
-        const report: WorkspaceRecoveryCliReport = {
-          ...owned.proof.result,
-          command: 'reactivate',
-          disposition: 'reactivated',
-          currentRevision: current.row.revision,
-          nextAction: 'none',
-        };
-        endRecoveryAdmission(core, input.backupId, 'abandoned', report);
-        return report;
-      }
-      if (current.row.revision !== input.expectedRevision) refuseRecovery('request-conflict');
-      if (current.record.movedOut?.backupId !== input.backupId) refuseRecovery('recovery-required');
-      core.sqlite
-        .prepare(
-          "UPDATE workspace_recovery_admissions SET state='abandoned', revision=revision+1, updated_at=? WHERE admission_id=?"
-        )
-        .run(new Date().toISOString(), input.backupId);
-      await removeDurableFile({ destinationPath: join(owned.candidate_ref, 'seal.json') });
-      current.db
-        .transaction(() => {
-          current.db
-            .prepare(
-              "UPDATE control_workspaces SET revision=revision+1, record_json=json_remove(record_json, '$.movedOut') WHERE id=?"
-            )
-            .run(input.workspaceId);
-          recordWorkspaceAuditEvent({
-            workspaceDb: bindWorkspaceSqlite(current.db, input.dataRoot, input.workspaceId),
-            workspaceId: input.workspaceId,
-            action: 'workspace.reactivate',
-            resource: `workspace:${input.workspaceId}`,
-            outcome: 'succeeded',
-            summary: `Reactivated after retiring ${input.backupId}.`,
-          });
-        })
-        .immediate();
-      const report: WorkspaceRecoveryCliReport = {
-        ...owned.proof.result,
-        command: 'reactivate',
-        disposition: 'reactivated',
-        currentRevision: current.row.revision + 1,
-        nextAction: 'none',
-      };
-      endRecoveryAdmission(core, input.backupId, 'abandoned', report);
-      return report;
-    } finally {
-      current.db.close();
+    const current = readWorkspaceReactivationSource(input.dataRoot, input.workspaceId);
+    const replay =
+      owned.state === 'abandoned' &&
+      !current.movedOut &&
+      current.revision === owned.proof.manifest.capturedRevision + 2 &&
+      input.expectedRevision === current.revision - 1;
+    if (!replay) {
+      if (current.revision !== input.expectedRevision) refuseRecovery('request-conflict');
+      if (current.movedOut?.backupId !== input.backupId) refuseRecovery('recovery-required');
     }
+    const client = getControlStoreWorkerClient();
+    const dataRoot = resolve(core.dataRoot);
+    const scope = nativeProductScope(dataRoot, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    const opened: string[] = [];
+    const proofHash = commandInputHash(owned.proof);
+    let expectedCoreRevision = owned.revision;
+    const selected = () => {
+      const latest = readRecoveryAdmission(core, input.backupId);
+      if (
+        !latest ||
+        latest.workspace_id !== input.workspaceId ||
+        latest.revision !== expectedCoreRevision ||
+        commandInputHash(latest.proof) !== proofHash
+      )
+        refuseRecovery('recovery-required');
+      return latest;
+    };
+    const stage = (value: ControlRecoverySourceReactivationInput['stage']) => ({
+      stage: value,
+      workspaceId: input.workspaceId,
+      backupId: input.backupId,
+      expectedRevision: input.expectedRevision,
+      expectedCoreRevision,
+      proofHash,
+    });
+    let result: { ok: true; report: WorkspaceRecoveryCliReport } | { ok: false; error: unknown };
+    try {
+      opened.push(database);
+      await client.open({
+        database,
+        path: scope.path,
+        create: false,
+        initialize: 'core',
+        dataRoot,
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      selected();
+      if (!replay) {
+        await client.recoverySourceReactivation(database, stage('revoke'));
+        expectedCoreRevision += 1;
+        if (selected().state !== 'abandoned') refuseRecovery('recovery-required');
+        await removeDurableFile({ destinationPath: join(owned.candidate_ref, 'seal.json') });
+        if (selected().state !== 'abandoned') refuseRecovery('recovery-required');
+        const workspace = nativeProductScope(dataRoot, {
+          kind: 'workspace',
+          workspaceId: input.workspaceId,
+        });
+        const workspaceDatabase = `workspace:${workspace.path}`;
+        opened.push(workspaceDatabase);
+        await client.open({
+          database: workspaceDatabase,
+          path: workspace.path,
+          create: false,
+          initialize: 'workspace',
+          dataRoot,
+          productOwner: workspace.owner,
+          contentMount: workspace.contentMount,
+        });
+        selected();
+        await client.recoverySourceReactivation(workspaceDatabase, stage('workspace'));
+      }
+      selected();
+      await client.recoverySourceReactivation(database, stage('report'));
+      const finished = readRecoveryAdmission(core, input.backupId);
+      if (!finished || finished.state !== 'abandoned' || finished.revision !== expectedCoreRevision)
+        refuseRecovery('recovery-required');
+      result = { ok: true, report: finished.proof.result };
+    } catch (error) {
+      result = {
+        ok: false,
+        error:
+          error instanceof ControlStoreWorkerError &&
+          error.domain?.operation === 'recovery-source-reactivation'
+            ? new WorkspaceRecoveryError(error.domain.code, error.domain.message)
+            : error,
+      };
+    }
+    // Close or terminate both real native owners before the original stopped root lock can release.
+    // Cleanup failure never replaces the earlier deciding failure.
+    let closeFailed = false;
+    for (const name of opened.reverse()) {
+      try {
+        await client.close(name);
+      } catch (error) {
+        closeFailed = true;
+        if (result.ok) result = { ok: false, error };
+      }
+    }
+    if (closeFailed) {
+      try {
+        await client.shutdown();
+      } catch {
+        // The existing shutdown always joins termination; retain the original failure.
+      }
+    }
+    if (!result.ok) throw result.error;
+    return result.report;
   });
 }
 /** Ends prepared source protection; retained content and holds are never deleted. */
