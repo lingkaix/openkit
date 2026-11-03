@@ -1,5 +1,15 @@
 // openkit-test-platform: posix
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { EMPTY_RESOURCE_CATALOG } from '@openkit/config-schema';
@@ -9,7 +19,14 @@ import {
   reconstructImportedWorkspaceCatalog,
   writeImportedWorkspaceCatalog,
 } from './catalog-portability.js';
-import { importWorkspaceSkill, publishWorkspaceResourceCatalog } from './resource-catalog.js';
+import {
+  createMcpConfig,
+  importWorkspaceSkill,
+  loadWorkspaceResourceCatalog,
+  publishWorkspaceResourceCatalog,
+  replaceWorkspaceEffectiveMcpCatalog,
+  updateMcpBinding,
+} from './resource-catalog.js';
 
 const durability = vi.hoisted(() => ({
   paths: new Map<number, string>(),
@@ -157,6 +174,18 @@ describe('resource catalog durable publication', () => {
       (event) => event.op === 'rename' && event.path === path
     );
     expect(renameAt).toBeGreaterThan(0);
+    // Core Storage, Source of Truth: acknowledge newly created parent entries before publication.
+    for (const parent of [dataRoot, join(dataRoot, 'workspaces'), dirname(dirname(path))]) {
+      expect(
+        durability.events
+          .slice(0, renameAt)
+          .some((event) => event.op === 'sync' && event.directory && event.path === parent)
+      ).toBe(true);
+    }
+    // Preserve Node's default directory creation permissions, subject to the process umask.
+    for (const directory of [join(dataRoot, 'workspaces'), dirname(dirname(path)), dirname(path)]) {
+      expect(statSync(directory).mode & 0o777).toBe(0o777 & ~process.umask());
+    }
     expect(
       durability.events
         .slice(0, renameAt)
@@ -172,6 +201,160 @@ describe('resource catalog durable publication', () => {
         .slice(renameAt + 1)
         .some((event) => event.op === 'sync' && event.directory && event.path === dirname(path))
     ).toBe(true);
+  });
+
+  it('acknowledges MCP data before catalog publication and preserves its key and bytes on binding updates', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-mcp-directory-'));
+    const outside = mkdtempSync(join(tmpdir(), 'openkit-catalog-mcp-outside-'));
+    roots.push(dataRoot, outside);
+    const workspaceId = 'ws_00000000-0000-7ca8-a881-c3c5386365fe';
+    const owner = { kind: 'workspace' as const, workspaceId };
+    durability.events.length = 0;
+    const previousUmask = process.umask(0o027);
+    let created: ReturnType<typeof createMcpConfig>;
+    try {
+      created = createMcpConfig({
+        dataRoot,
+        owner,
+        id: 'echo',
+        displayName: 'Echo',
+        createdAt: '2026-09-08T00:00:00.000Z',
+        expectedRevision: 0,
+        allowedTools: ['echo'],
+        selectCurrent: true,
+        declaration: { kind: 'http', endpoint: 'https://mcp.example.test/mcp' },
+      });
+    } finally {
+      process.umask(previousUmask);
+    }
+    const binding = created.catalog.mcp.bindings[0]!;
+    const catalogPath = join(dataRoot, 'workspaces', workspaceId, 'catalog', 'catalog.json');
+    const directory = join(dirname(catalogPath), 'mcp-data', binding.packageDataKey);
+    const metadata = statSync(directory);
+    expect(metadata.isDirectory()).toBe(true);
+    expect(metadata.mode & 0o777).toBe(0o750);
+    const publicationAt = durability.events.findIndex(
+      (event) => event.op === 'rename' && event.path === catalogPath
+    );
+    // Fault Tolerance, Acknowledge only what is durable: the binding cannot precede its data entry.
+    expect(publicationAt).toBeGreaterThan(0);
+    expect(
+      durability.events
+        .slice(0, publicationAt)
+        .some(
+          (event) => event.op === 'sync' && event.directory && event.path === dirname(directory)
+        )
+    ).toBe(true);
+    writeFileSync(join(directory, 'retained'), 'MCP process bytes');
+    let current = created.catalog;
+    const update = () =>
+      updateMcpBinding({
+        dataRoot,
+        owner,
+        entryId: 'echo',
+        expectedRevision: current.revision,
+        binding: current.mcp.bindings[0]!,
+      });
+    current = update();
+    expect(current.revision).toBe(created.catalog.revision + 1);
+    expect(current.mcp.bindings[0]!.packageDataKey).toBe(binding.packageDataKey);
+    expect(statSync(directory).ino).toBe(metadata.ino);
+    expect(statSync(directory).mode).toBe(metadata.mode);
+    expect(readFileSync(join(directory, 'retained'), 'utf8')).toBe('MCP process bytes');
+
+    const catalogBytes = readFileSync(catalogPath);
+    durability.events.length = 0;
+    durability.fail = (path, directoryEntry) => directoryEntry && path === dirname(directory);
+    expect(update).toThrow('Injected publication sync failure');
+    durability.fail = undefined;
+    expect(durability.events.some((event) => event.op === 'rename')).toBe(false);
+    expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(current.revision);
+    expect(readFileSync(catalogPath)).toEqual(catalogBytes);
+
+    // Core Storage path safety: an existing data key cannot redirect the binding to other bytes.
+    rmSync(directory, { recursive: true });
+    writeFileSync(join(outside, 'retained'), 'Outside bytes');
+    symlinkSync(outside, directory, 'dir');
+    expect(update).toThrow();
+    expect(lstatSync(directory).isSymbolicLink()).toBe(true);
+    expect(readdirSync(outside)).toEqual(['retained']);
+    expect(readFileSync(join(outside, 'retained'), 'utf8')).toBe('Outside bytes');
+    expect(readFileSync(catalogPath)).toEqual(catalogBytes);
+  });
+
+  it('preserves seeded MCP data across replacement and refuses a linked data directory before publication', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-catalog-seeded-directory-'));
+    const outside = mkdtempSync(join(tmpdir(), 'openkit-catalog-seeded-outside-'));
+    roots.push(dataRoot, outside);
+    const workspaceId = 'ws_00000000-0000-7ca8-a881-c3c5386365fe';
+    const replace = () =>
+      replaceWorkspaceEffectiveMcpCatalog({
+        dataRoot,
+        workspaceId,
+        createdAt: '2026-09-08T00:00:00.000Z',
+        catalog: {
+          schemaVersion: 1,
+          servers: [
+            {
+              id: 'echo',
+              enabled: false,
+              allowedTools: ['echo'],
+              credentialBindings: [],
+              pinnedSchemaSnapshotId: null,
+              schemaPolicy: 'tracking',
+              timeoutMs: 1000,
+              transport: { kind: 'http', endpoint: 'https://mcp.example.test/mcp', headers: {} },
+            },
+          ],
+        },
+      });
+    durability.events.length = 0;
+    const previousUmask = process.umask(0o027);
+    let first: ReturnType<typeof replaceWorkspaceEffectiveMcpCatalog>;
+    try {
+      first = replace();
+    } finally {
+      process.umask(previousUmask);
+    }
+    const catalogPath = join(dataRoot, 'workspaces', workspaceId, 'catalog', 'catalog.json');
+    const key = first.mcp.bindings[0]!.packageDataKey;
+    const directory = join(dirname(catalogPath), 'mcp-data', key);
+    const metadata = statSync(directory);
+    expect(metadata.isDirectory()).toBe(true);
+    expect(metadata.mode & 0o777).toBe(0o750);
+    const publicationAt = durability.events.findIndex(
+      (event) => event.op === 'rename' && event.path === catalogPath
+    );
+    // Fault Tolerance, Acknowledge only what is durable: seeded bindings use the same boundary.
+    expect(publicationAt).toBeGreaterThan(0);
+    expect(
+      durability.events
+        .slice(0, publicationAt)
+        .some(
+          (event) => event.op === 'sync' && event.directory && event.path === dirname(directory)
+        )
+    ).toBe(true);
+    writeFileSync(join(directory, 'retained'), 'Seeded process bytes');
+    const second = replace();
+    expect(second.revision).toBe(first.revision + 1);
+    expect(second.mcp.bindings[0]!.packageDataKey).toBe(key);
+    expect(statSync(directory).ino).toBe(metadata.ino);
+    expect(statSync(directory).mode).toBe(metadata.mode);
+    expect(readFileSync(join(directory, 'retained'), 'utf8')).toBe('Seeded process bytes');
+
+    const catalogBytes = readFileSync(catalogPath);
+    rmSync(directory, { recursive: true });
+    writeFileSync(join(outside, 'retained'), 'Outside seeded bytes');
+    symlinkSync(outside, directory, 'dir');
+    durability.events.length = 0;
+    // Core Storage path safety: seeding cannot admit a data directory that redirects outside its tree.
+    expect(replace).toThrow();
+    expect(durability.events.some((event) => event.op === 'rename')).toBe(false);
+    expect(lstatSync(directory).isSymbolicLink()).toBe(true);
+    expect(readdirSync(outside)).toEqual(['retained']);
+    expect(readFileSync(join(outside, 'retained'), 'utf8')).toBe('Outside seeded bytes');
+    expect(readFileSync(catalogPath)).toEqual(catalogBytes);
+    expect(loadWorkspaceResourceCatalog(dataRoot, workspaceId).revision).toBe(second.revision);
   });
 
   it.each([

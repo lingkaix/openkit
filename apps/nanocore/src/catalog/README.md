@@ -65,3 +65,5 @@ Snapshot materialization and non-staging file observation use the shared physica
 Plugin upload scratch allocation and removal use the existing Storage private-tree helpers. Catalog publication, Audit storage lifetime, and close-before-cleanup ordering stay in this catalog owner.
 
 Upload tree conversion, hashing and limits precede the Storage private-tree materializer. Storage performs the complete physical root reset and member writes; the catalog retains the prepared entries, publication decision and cleanup lifetime, while immutable snapshot publication keeps its separate durable acknowledgement.
+
+Catalog parent and mutable MCP data directories use the existing Storage canonical-directory publication primitive with the original umask-adjusted creation mode. New directory entries are synchronized before catalog publication; existing data keys, directory modes and retained bytes remain unchanged, and symbolic-link components are refused.

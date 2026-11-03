@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import {
@@ -260,7 +260,7 @@ function publishResourceCatalog(input: {
   });
   validateLightAppDefinitionCatalog(current);
   validateLightAppDefinitionCatalog(next);
-  mkdirSync(dirname(path), { recursive: true });
+  ensureCanonicalDirectory(dirname(path), 0o777);
   writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`);
   return ResourceCatalogDocumentViewSchema.parse(next);
 }
@@ -1366,9 +1366,10 @@ function mcpDataKey(
 /** Mutable MCP data is never created under the Server catalog. */
 function prepareMcpData(dataRoot: string, owner: ResourceCatalogOwner, key: string): void {
   if (owner.kind === 'workspace') {
-    mkdirSync(join(ensureWorkspaceLayout(dataRoot, owner.workspaceId).catalogMcpData, key), {
-      recursive: true,
-    });
+    ensureCanonicalDirectory(
+      join(ensureWorkspaceLayout(dataRoot, owner.workspaceId).catalogMcpData, key),
+      0o777
+    );
   }
 }
 
@@ -1510,7 +1511,7 @@ export function replaceWorkspaceEffectiveMcpCatalog(input: {
     const packageRootDigest = server.packageRootDigest ?? null;
     const digest = digestMcpConfig(declaration, packageRootDigest);
     const packageDataKey = `mcp_${server.id}`;
-    mkdirSync(join(layout.catalogMcpData, packageDataKey), { recursive: true });
+    ensureCanonicalDirectory(join(layout.catalogMcpData, packageDataKey), 0o777);
     entries.push({
       availability: 'available',
       currentVersionDigest: digest,
