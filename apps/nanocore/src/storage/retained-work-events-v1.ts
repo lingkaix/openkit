@@ -73,7 +73,7 @@ export const StoredTurnSnapshotV1Schema = StoredTurnWithItemsV1Schema.omit({
 }).superRefine(refineStoredTurnItemsV1);
 
 /** Preserves the fixed responsible User relationship for both Workspace and Server Turn snapshots. */
-export function refineStoredTurnItemsV1(
+function refineStoredTurnItemsV1(
   turn: {
     triggerActor: z.infer<typeof StoredTurnPayloadV1Shape.triggerActor>;
     owner: z.infer<typeof StoredWorkOwnerV1Schema>;

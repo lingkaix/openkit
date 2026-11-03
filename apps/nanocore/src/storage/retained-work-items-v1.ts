@@ -166,7 +166,7 @@ const ApprovalRequestItemSchema = BaseItemSchema.extend({
 /**
  * Product-visible approval decision item. The only system actor is the repository-push policy grant.
  */
-export const StoredApprovalDecisionItemV1Schema = BaseItemSchema.extend({
+const StoredApprovalDecisionItemV1Schema = BaseItemSchema.extend({
   type: z.literal('approval-decision'),
   actor: z.union([
     UserActorRefSchema.strip(),
@@ -187,7 +187,7 @@ export const StoredApprovalDecisionItemV1Schema = BaseItemSchema.extend({
 });
 
 /** Retained system approval attribution can only describe the existing repository-push policy grant. */
-export function isPermittedStoredApprovalDecisionV1(item: {
+function isPermittedStoredApprovalDecisionV1(item: {
   actor: { kind: string; id: string };
   decision: string;
 }): boolean {

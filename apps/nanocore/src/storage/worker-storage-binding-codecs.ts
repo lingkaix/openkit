@@ -148,7 +148,7 @@ export const ControlWorkerStorageInputSchema = z.discriminatedUnion('kind', [
 /** Domain-only peer input; no SQL, callbacks or physical effects. */
 export type ControlWorkerStorageInput = z.infer<typeof ControlWorkerStorageInputSchema>;
 /** Closed original domain refusal codes; SQL diagnostics stay private. */
-export const WorkerStorageRefusalCodeSchema = z.enum([
+const WorkerStorageRefusalCodeSchema = z.enum([
   'authorization_denied',
   'cross_workspace_forbidden',
   'independent_review_conflict',
