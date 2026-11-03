@@ -13,6 +13,7 @@ import {
 } from './artifact-folder-cache.js';
 import { FileStorageAdmission } from './file-admission.js';
 import { artifactFilePayloadPath } from './file-records.js';
+import { MAX_ZIP_EXPANDED_BYTES } from './zip-snapshot.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
@@ -105,6 +106,47 @@ describe('source-version ZIP folder cache', () => {
     ]);
     expect(first.representationDigest).toBe(second.representationDigest);
     expect(parser).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares one extraction between concurrent callers that fit one capacity forecast', async () => {
+    const state = await original('valid-file');
+    // One build reserves staging 0 + extraction (the expanded-byte bound)
+    // + derivative (the 32 MiB inventory bound plus 1 GiB of filesystem
+    // overhead) + publication 0. This admission admits exactly one such
+    // forecast, so a second concurrent extraction is refused by capacity.
+    const oneForecastBytes =
+      BigInt(MAX_ZIP_EXPANDED_BYTES) + 32n * 1024n * 1024n + 1024n * 1024n * 1024n;
+    state.admission = new FileStorageAdmission(
+      state.source.workspaceRoot,
+      () => 0n,
+      () => oneForecastBytes
+    );
+    const [first, second] = await Promise.all([
+      ensureArtifactFolderSnapshot(state),
+      ensureArtifactFolderSnapshot(state),
+    ]);
+    expect(second.files).toEqual(first.files);
+    expect(second.directories).toEqual(first.directories);
+    expect(second.representationDigest).toBe(first.representationDigest);
+    const firstBytes = await Promise.all(
+      first.files.map((entry) => readFile(join(first.root, entry.relativePath)))
+    );
+    const secondBytes = await Promise.all(
+      second.files.map((entry) => readFile(join(second.root, entry.relativePath)))
+    );
+    expect(secondBytes).toEqual(firstBytes);
+    expect(await readFile(state.path)).toEqual(state.bytes);
+    expect(await readdir(join(dirname(state.source.workspaceRoot), '.staging'))).toEqual([]);
+    expect(() => {
+      state.admission
+        .reserve({
+          stagingBytes: 1n,
+          extractionBytes: 0n,
+          derivativeBytes: 0n,
+          publicationBytes: 0n,
+        })
+        .release();
+    }).not.toThrow();
   });
 
   it('keeps reserved capacity when failed extraction cleanup is unproved', async () => {
