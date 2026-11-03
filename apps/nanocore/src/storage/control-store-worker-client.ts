@@ -200,6 +200,8 @@ import {
 import { nativeProductScope } from './workspace-file-records.js';
 import type { WorkspaceRecoveryCliReport } from './workspace-recovery-cli.js';
 import {
+  type ControlRecoveryTargetPreparationInput,
+  ControlRecoveryTargetPreparationInputSchema,
   type ControlRecoveryTargetRegistrationInput,
   ControlRecoveryTargetRegistrationInputSchema,
 } from './workspace-recovery-target-codecs.js';
@@ -273,8 +275,15 @@ interface ControlRecoveryTargetRegistrationCall {
   readonly path: string;
   readonly identity: string;
 }
+/** Preparation uses the same Core/freeze binding with its distinct finite stage input. */
+interface ControlRecoveryTargetPreparationCall
+  extends Omit<ControlRecoveryTargetRegistrationCall, 'kind' | 'input'> {
+  readonly kind: 'recovery-target-preparation';
+  readonly input: ControlRecoveryTargetPreparationInput;
+}
 type ControlFrozenNativeCall =
   | ControlRecoveryTargetRegistrationCall
+  | ControlRecoveryTargetPreparationCall
   | ControlRecoveryNativeCall
   | ControlWorkspaceSchemaApplicationCall
   | ControlWorkspaceDeletionCall;
@@ -390,6 +399,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'recovery-safety':
       return true;
     case 'recovery-target-registration':
+    case 'recovery-target-preparation':
       return true;
     case 'workspace-deletion':
       return command.input.stage === 'complete';
@@ -986,7 +996,11 @@ class ControlStoreWorkerClient {
         });
       return;
     }
-    if ('kind' in recovery && recovery.kind === 'recovery-target-registration') {
+    if (
+      'kind' in recovery &&
+      (recovery.kind === 'recovery-target-registration' ||
+        recovery.kind === 'recovery-target-preparation')
+    ) {
       try {
         const physical =
           opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
@@ -1010,7 +1024,7 @@ class ControlStoreWorkerClient {
           physical.path !== recovery.path ||
           physical.identity !== recovery.identity ||
           !isDeepStrictEqual(physical.command, recovery.command) ||
-          command.operation !== 'recovery-target-registration' ||
+          command.operation !== recovery.kind ||
           command.database !== recovery.command.database ||
           !isDeepStrictEqual(command.input, recovery.input)
         )
@@ -2531,6 +2545,35 @@ class ControlStoreWorkerClient {
       }
       throw error;
     }
+  }
+
+  /** Publishes one original prepare/proof/abandon stage under its current Core lifecycle binding. */
+  async recoveryTargetPreparation(
+    database: string,
+    value: ControlRecoveryTargetPreparationInput,
+    freeze?: WorkspaceFrozenAdmission
+  ): Promise<void> {
+    const input = ControlRecoveryTargetPreparationInputSchema.parse(value);
+    this.assertAccepting();
+    const opening = this.openings.get(database);
+    if (!opening || opening.identity === undefined)
+      throw new ControlStoreWorkerError('not-open', 'not-committed');
+    const call: ControlRecoveryTargetPreparationCall = {
+      kind: 'recovery-target-preparation',
+      [recoveryTargetRegistrationCall]: true,
+      freeze,
+      input,
+      command: opening.command,
+      path: opening.path,
+      identity: opening.identity,
+    };
+    await this.request(
+      { operation: 'recovery-target-preparation', database, input },
+      undefined,
+      undefined,
+      false,
+      call
+    );
   }
 
   /** Commits the original complete target registration and admission result after physical placement. */

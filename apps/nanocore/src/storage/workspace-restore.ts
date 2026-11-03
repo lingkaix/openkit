@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -7,6 +7,7 @@ import {
   WorkspaceSnapshotReportSchema,
 } from '@openkit/app-api-schemas';
 import { compareCodeUnits } from '@openkit/protocol';
+import { publishDurableFile, removeDurableFile } from '@openkit/storage';
 import type { Actor } from '../auth/identity.js';
 import {
   isScopeAdmitted,
@@ -51,6 +52,8 @@ import {
 } from './workspace-backup.js';
 import {
   WORKSPACE_BACKUP_MANIFEST_FILE,
+  WORKSPACE_BACKUP_MAX_FILE_BYTES,
+  WorkspaceBackupBundleError,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
 import {
@@ -70,10 +73,9 @@ import {
 } from './workspace-move.js';
 import {
   bindWorkspaceRecoveryNativeOwner,
-  endRecoveryAdmission,
   openRecoveryDatabase,
-  prepareRecoveryAdmission,
   type RecoveryAdmission,
+  type RecoveryProof,
   readRecoveryAdmission,
   readWorkspaceRecoveryReadmission,
   recoveryReport,
@@ -87,6 +89,10 @@ import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
 } from './workspace-recovery-cli.js';
+import type {
+  ControlRecoveryTargetPreparationInput,
+  ControlRecoveryTargetRegistrationInput,
+} from './workspace-recovery-target-codecs.js';
 import { validateRecoveryTargetMapping as mapping } from './workspace-recovery-target-native.js';
 
 type TargetArgs = Extract<WorkspaceRecoveryCliArgs, { command: 'restore' | 'move-in' }>;
@@ -113,6 +119,13 @@ interface TargetRecoveryOwner {
   };
 }
 
+/** Existing target lifecycle facts; selected decisions may use the stopped file policy. */
+type TargetCoreOwner = Pick<
+  TargetRecoveryOwner,
+  'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
+> &
+  Partial<Pick<TargetRecoveryOwner, 'fileAdmission'>>;
+
 /** A live entry always supplies its current freeze; only offline root-lock wrappers omit it. */
 export interface WorkspaceRecoveryTargetOwner extends TargetRecoveryOwner {
   readonly native: NonNullable<TargetRecoveryOwner['native']>;
@@ -121,10 +134,7 @@ export interface WorkspaceRecoveryTargetOwner extends TargetRecoveryOwner {
 
 /** Binds all target effects to the supplied Core and, online, the same live target freeze. */
 function assertTargetRecoveryOwner(
-  owner: Pick<
-    TargetRecoveryOwner,
-    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
-  >,
+  owner: TargetCoreOwner,
   dataRoot: string,
   workspaceId?: string
 ): void {
@@ -154,10 +164,7 @@ function requestIdentity(input: TargetArgs) {
 }
 /** Publishes a proved candidate before one Core registration/result transaction; failure retains ownership. */
 async function finishTarget(
-  owner: Pick<
-    TargetRecoveryOwner,
-    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
-  >,
+  owner: TargetCoreOwner,
   owned: RecoveryAdmission,
   deps: WorkspaceRecoveryDependencies,
   expectedRelease?: WorkspaceBackupManifest['release']
@@ -210,12 +217,34 @@ async function finishTarget(
   assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
   if (owner.native)
     refuseScope(core.dataRoot, { scope: 'workspace', id: workspaceId, check: 'recovery' });
+  return withTargetCore(owner, workspaceId, async (client, database) => {
+    const report = await client.recoveryTargetRegistration(
+      database,
+      {
+        ...targetCoreAuthority(owner, owned.admission_id, workspaceId),
+        expectedRevision: owned.revision,
+        proofHash: commandInputHash(owned.proof),
+      },
+      owner.native?.freeze
+    );
+    deps.atBoundary?.('after-registration-commit');
+    return report;
+  });
+}
+
+/** Keeps every stopped native Core effect joined or terminated before the original root lock releases. */
+async function withTargetCore<T>(
+  owner: TargetCoreOwner,
+  workspaceId: string,
+  body: (client: ReturnType<typeof getControlStoreWorkerClient>, database: string) => Promise<T>
+): Promise<T> {
   const client = getControlStoreWorkerClient(owner.native?.gate);
+  const core = owner.core;
   const dataRoot = resolve(core.dataRoot);
   const scope = nativeProductScope(dataRoot, { kind: 'server' });
   const path = scope.path;
   const database = `core:${path}`;
-  let result: { ok: true; report: WorkspaceRecoveryCliReport } | { ok: false; error: unknown };
+  let result: { ok: true; report: T } | { ok: false; error: unknown };
   try {
     await client.open({
       database,
@@ -228,38 +257,13 @@ async function finishTarget(
     });
     assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
     if (owner.native && !owner.actor) refuseRecovery('recovery-required');
-    const report = await client.recoveryTargetRegistration(
-      database,
-      {
-        admissionId: owned.admission_id,
-        workspaceId,
-        expectedRevision: owned.revision,
-        proofHash: commandInputHash(owned.proof),
-        authority: owner.native ? { mode: 'live', actor: owner.actor! } : { mode: 'stopped' },
-        ...(owner.deletedRecovery
-          ? {
-              deletedRecovery: {
-                actorId: owner.deletedRecovery.actorId,
-                deletion: {
-                  workspaceId: owner.deletedRecovery.deletion.workspaceId,
-                  recoveryBackupId: owner.deletedRecovery.deletion.recoveryBackupId,
-                  recoveryBackupManifestDigest:
-                    owner.deletedRecovery.deletion.recoveryBackupManifestDigest,
-                  originalOwnerUserId: owner.deletedRecovery.deletion.originalOwnerUserId,
-                  expectedRegistryRevision: owner.deletedRecovery.deletion.expectedRegistryRevision,
-                },
-              },
-            }
-          : {}),
-      },
-      owner.native?.freeze
-    );
-    deps.atBoundary?.('after-registration-commit');
-    result = { ok: true, report };
+    const value = await body(client, database);
+    result = { ok: true, report: value };
   } catch (error) {
     if (
       error instanceof ControlStoreWorkerError &&
-      error.domain?.operation === 'recovery-target-registration'
+      (error.domain?.operation === 'recovery-target-registration' ||
+        error.domain?.operation === 'recovery-target-preparation')
     ) {
       const { code, message, status } = error.domain;
       result = {
@@ -280,6 +284,99 @@ async function finishTarget(
   }
   if (!result.ok) throw result.error;
   return result.report;
+}
+
+/** Projects only the actual current caller and original deleted-recovery SQL facts. */
+function targetCoreAuthority(
+  owner: TargetCoreOwner,
+  admissionId: string,
+  workspaceId: string
+): Pick<
+  ControlRecoveryTargetRegistrationInput,
+  'admissionId' | 'workspaceId' | 'authority' | 'deletedRecovery'
+> {
+  if (owner.native && !owner.actor) refuseRecovery('recovery-required');
+  return {
+    admissionId,
+    workspaceId,
+    authority: owner.native ? { mode: 'live', actor: owner.actor! } : { mode: 'stopped' },
+    ...(owner.deletedRecovery
+      ? {
+          deletedRecovery: {
+            actorId: owner.deletedRecovery.actorId,
+            deletion: {
+              workspaceId: owner.deletedRecovery.deletion.workspaceId,
+              recoveryBackupId: owner.deletedRecovery.deletion.recoveryBackupId,
+              recoveryBackupManifestDigest:
+                owner.deletedRecovery.deletion.recoveryBackupManifestDigest,
+              originalOwnerUserId: owner.deletedRecovery.deletion.originalOwnerUserId,
+              expectedRegistryRevision: owner.deletedRecovery.deletion.expectedRegistryRevision,
+            },
+          },
+        }
+      : {}),
+  };
+}
+
+type TargetProofStage =
+  | Omit<Extract<ControlRecoveryTargetPreparationInput, { kind: 'prepare' }>, 'file'>
+  | Omit<Extract<ControlRecoveryTargetPreparationInput, { kind: 'proof' }>, 'file'>
+  | Omit<Extract<ControlRecoveryTargetPreparationInput, { kind: 'abandon-result' }>, 'file'>;
+
+/** The original restore owner publishes and retires one exact request-local proof, never a retained descriptor. */
+async function publishTargetProofStage(
+  owner: TargetCoreOwner,
+  input: TargetProofStage,
+  proof: RecoveryProof
+): Promise<void> {
+  assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
+  const root = `${resolve(owner.core.dataRoot)}.workspace-recovery-${input.admissionId}`;
+  ensureCanonicalDirectory(root);
+  const bytes = Buffer.from(JSON.stringify(proof), 'utf8');
+  if (bytes.length > WORKSPACE_BACKUP_MAX_FILE_BYTES)
+    throw new WorkspaceBackupBundleError('invalid-bundle');
+  const name = `.proof-${randomUUID()}.json`;
+  const destinationPath = join(root, name);
+  const admission =
+    owner.fileAdmission ?? new FileStorageAdmission(owner.core.dataRoot, () => 1_000_000_000n);
+  const reservation = admission.forPath(root).reserve({
+    stagingBytes: BigInt(bytes.length),
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+    publicationBytes: 0n,
+  });
+  let published = false;
+  let result: { ok: true } | { ok: false; error: unknown };
+  try {
+    assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
+    reservation.assertAvailable();
+    const file = await publishDurableFile({ destinationPath, bytes });
+    published = true;
+    reservation.recordWritten(file.bytes);
+    assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
+    await withTargetCore(owner, input.workspaceId, (client, database) =>
+      client.recoveryTargetPreparation(
+        database,
+        {
+          ...input,
+          file: { name, byteLength: file.bytes, digest: file.sha256 },
+        },
+        owner.native?.freeze
+      )
+    );
+    result = { ok: true };
+  } catch (error) {
+    result = { ok: false, error };
+  }
+  try {
+    if (published) await removeDurableFile({ destinationPath });
+  } catch (error) {
+    if (result.ok) result = { ok: false, error };
+  } finally {
+    reservation.release();
+  }
+  if (!result.ok) throw result.error;
+  assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
 }
 
 /** Restores one existing same-deployment Workspace, or admits one identity-preserving MOVE privately. */
@@ -522,20 +619,35 @@ async function admitTarget(
   assertTargetRecoveryOwner(owner, input.dataRoot, workspaceId);
   const result = recoveryReport(input.command, 'quarantined', staged.report);
   const { snapshotSource: _snapshotSource, ...retainedInput } = input;
-  prepareRecoveryAdmission(core, input.requestId, candidate, {
-    input: retainedInput,
-    manifest: staged.manifest,
-    capture: staged.report,
-    result,
-  });
+  await publishTargetProofStage(
+    owner,
+    {
+      ...targetCoreAuthority(owner, input.requestId, workspaceId),
+      kind: 'prepare',
+    },
+    {
+      input: retainedInput,
+      manifest: staged.manifest,
+      capture: staged.report,
+      result,
+    }
+  );
   const owned = readRecoveryAdmission(core, input.requestId)!;
   const map = mapping(core, input, owned.proof.manifest, owned.proof.capture.manifestDigest);
+  const previousProofHash = commandInputHash(owned.proof);
   const digest = await bindTargetCandidate(core, owned, map, owner);
   assertTargetRecoveryOwner(owner, input.dataRoot, workspaceId);
   const proof = { ...owned.proof, candidateDigest: digest };
-  core.sqlite
-    .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-    .run(JSON.stringify(proof), input.requestId);
+  await publishTargetProofStage(
+    owner,
+    {
+      ...targetCoreAuthority(owner, input.requestId, workspaceId),
+      kind: 'proof',
+      expectedRevision: owned.revision,
+      proofHash: previousProofHash,
+    },
+    proof
+  );
   return finishTarget(owner, { ...owned, proof }, deps);
 }
 /** Finishes only the retained owned target; no bundle, account, or final directory discovers ownership. */
@@ -548,10 +660,7 @@ export async function finishWorkspaceRecovery(
 
 /** Finishes the original selected target under an already-owned Core and lifecycle exclusion. */
 export async function finishWorkspaceRecoveryAtCore(
-  owner: Pick<
-    WorkspaceRecoveryTargetOwner,
-    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
-  >,
+  owner: TargetCoreOwner,
   input: WorkspaceRecoverySelectedInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
@@ -561,10 +670,7 @@ export async function finishWorkspaceRecoveryAtCore(
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
 async function finishSelectedTarget(
-  owner: Pick<
-    TargetRecoveryOwner,
-    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
-  >,
+  owner: TargetCoreOwner,
   input: WorkspaceRecoverySelectedInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
@@ -587,10 +693,7 @@ export async function abandonWorkspaceRecovery(
 
 /** Closes original finish rights and retires only its owned target under the supplied Core. */
 export async function abandonWorkspaceRecoveryAtCore(
-  owner: Pick<
-    WorkspaceRecoveryTargetOwner,
-    'core' | 'native' | 'currentAuthority' | 'deletedRecovery'
-  >,
+  owner: TargetCoreOwner,
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
   if (!owner.native) refuseRecovery('recovery-required');
@@ -599,10 +702,7 @@ export async function abandonWorkspaceRecoveryAtCore(
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
 async function abandonSelectedTarget(
-  owner: Pick<
-    TargetRecoveryOwner,
-    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
-  >,
+  owner: TargetCoreOwner,
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
   const core = owner.core;
@@ -632,7 +732,20 @@ async function abandonSelectedTarget(
     if (!isDeepStrictEqual(readRecoveryAdmission(core, owned.admission_id), owned))
       refuseRecovery('recovery-required');
   }
-  endRecoveryAdmission(core, owned.admission_id, 'abandoned');
+  await withTargetCore(owner, input.workspaceId, (client, database) =>
+    client.recoveryTargetPreparation(
+      database,
+      {
+        ...targetCoreAuthority(owner, owned.admission_id, input.workspaceId),
+        kind: 'abandon',
+        expectedRevision: owned.revision,
+        proofHash: commandInputHash(owned.proof),
+      },
+      owner.native?.freeze
+    )
+  );
+  assertTargetRecoveryOwner(owner, core.dataRoot, input.workspaceId);
+  const closed = readRecoveryAdmission(core, owned.admission_id)!;
   const final = join(input.dataRoot, 'workspaces', input.workspaceId);
   const retired = join(dirname(owned.candidate_ref), 'abandoned');
   const candidate =
@@ -658,7 +771,16 @@ async function abandonSelectedTarget(
     nextAction: 'none',
   };
   // Boot stays fenced until the owned retirement and predecessor restoration are durable.
-  endRecoveryAdmission(core, owned.admission_id, 'abandoned', report);
+  await publishTargetProofStage(
+    owner,
+    {
+      ...targetCoreAuthority(owner, owned.admission_id, input.workspaceId),
+      kind: 'abandon-result',
+      expectedRevision: closed.revision,
+      proofHash: commandInputHash(closed.proof),
+    },
+    { ...closed.proof, result: report }
+  );
   return report;
 }
 

@@ -1356,10 +1356,13 @@ export function readCanonicalTextFile(path: string): string {
  * Reads one canonical file buffer through a no-follow regular-file descriptor.
  *
  * @param path Canonical file path.
+ * @param expectedBytes Optional exact size of immutable caller-owned input.
  * @returns Complete file bytes.
  * @throws Error when the path is a symbolic link or not a regular file.
  */
-export function readCanonicalFile(path: string): Buffer {
+export function readCanonicalFile(path: string, expectedBytes?: number): Buffer {
+  if (expectedBytes !== undefined && (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0))
+    throw new Error('Canonical input size must be a nonnegative safe integer.');
   assertCanonicalRegularFile(path);
   let descriptor: number;
 
@@ -1373,7 +1376,29 @@ export function readCanonicalFile(path: string): Buffer {
     if (!fstatSync(descriptor).isFile()) {
       throw new Error(`Canonical path must be a regular file: ${path}.`);
     }
-    return readFileSync(descriptor);
+    if (expectedBytes === undefined) return readFileSync(descriptor);
+    const before = fstatSync(descriptor, { bigint: true });
+    if (before.size !== BigInt(expectedBytes))
+      throw new Error('Canonical input size does not match its immutable selection.');
+    const bytes = Buffer.allocUnsafe(expectedBytes);
+    let offset = 0;
+    while (offset < expectedBytes) {
+      const count = readSync(descriptor, bytes, offset, expectedBytes - offset, offset);
+      if (count === 0) throw new Error('Canonical input ended before its selected size.');
+      offset += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    const selected = lstatSync(path, { bigint: true });
+    if (
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs ||
+      !selected.isFile() ||
+      selected.dev !== before.dev ||
+      selected.ino !== before.ino
+    )
+      throw new Error('Canonical input changed while its selected bytes were read.');
+    return bytes;
   } finally {
     closeSync(descriptor);
   }
