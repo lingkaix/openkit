@@ -92,6 +92,7 @@ import {
   type WorkerRuntimeProvenanceMetadataInput,
 } from '../runtime/worker-runtime-provenance.js';
 import { WorkerStorageBindingError } from '../runtime/worker-storage-binding-records.js';
+import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import {
   applyControlMaterialCommand,
   type ControlMaterialCommandInput,
@@ -235,6 +236,7 @@ import { recordWorkspaceApplyPlanInDb } from './workspace-apply-plan-records.js'
 import { WorkspaceBackendHandoffRefusal } from './workspace-backend-handoff-codecs.js';
 import { applyWorkspaceBackendHandoffInDb } from './workspace-backend-handoff-native.js';
 import { WorkspaceRecoveryError } from './workspace-backup.js';
+import { applyWorkspaceBaselineInDb } from './workspace-baseline-native.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { ControlRecoverySourceReactivationRefusalSchema } from './workspace-reactivation-codecs.js';
@@ -285,6 +287,7 @@ type WriteCommand = Extract<
       | 'workspace-review-finish'
       | 'workspace-stage-review'
       | 'workspace-backend-handoff'
+      | 'workspace-baseline'
       | 'harness-lifecycle'
       | 'execution-attempt'
       | 'core-journal'
@@ -599,6 +602,34 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       message: error.message,
       status: 409,
     };
+  if (operation === 'workspace-baseline') {
+    if (
+      error instanceof WorkspaceCollectionError &&
+      error.outcome === 'recovery_required' &&
+      (error.cause === 'accepted_base_unknown' ||
+        error.cause === 'baseline_source_unavailable' ||
+        error.cause === 'baseline_mismatch')
+    )
+      return {
+        operation,
+        code: 'collection_refused',
+        cause: error.cause,
+        message: error.message,
+        status: 409,
+      };
+    if (error instanceof TypeError && error.message === 'Unsupported retained record format.')
+      return {
+        operation,
+        code: 'unsupported_retained_format',
+        message: error.message,
+        status: 409,
+      };
+    if (
+      error instanceof Error &&
+      error.message === 'Workspace baseline identity conflicts with the retained cursor.'
+    )
+      return { operation, code: 'cursor_conflict', message: error.message, status: 409 };
+  }
   if (operation === 'workspace-backend-handoff' && error instanceof WorkspaceBackendHandoffRefusal)
     return {
       operation,
@@ -1983,6 +2014,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'workspace-stage-review',
               result: null,
             };
+          } else if (request.operation === 'workspace-baseline') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.identity.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            applyWorkspaceBaselineInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-baseline',
+              result: null,
+            };
           } else if (request.operation === 'workspace-backend-handoff') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3154,6 +3199,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-review-finish' ||
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||
+      value.operation === 'workspace-baseline' ||
       value.operation === 'harness-lifecycle' ||
       value.operation === 'execution-attempt' ||
       value.operation === 'core-journal' ||

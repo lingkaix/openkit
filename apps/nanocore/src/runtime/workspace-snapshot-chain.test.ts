@@ -2,8 +2,17 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { openWorkspaceDb } from '../storage/db.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { openWorkspaceDb, openWorkspaceReadDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
+import {
+  acceptWorkspaceBaseline as publishAcceptedBaseline,
+  authorizeWorkspaceBaselineInitialization as publishBaselineInitialization,
+} from './workspace-baseline-publication.js';
 import {
   acceptAppliedWorkspaceSnapshot,
   acceptWorkspaceBaseline,
@@ -547,5 +556,168 @@ describe('retained Workspace snapshot SQL formats', () => {
       )
     ).toThrow('Unsupported retained record format');
     expect(db.sqlite.prepare(`SELECT * FROM ${table}`).get()).toEqual(before);
+  });
+});
+
+/** Uses the existing owner fixture; only the real native writer can change its query-only Main handle. */
+async function nativeBaselineFixture(initialize = false) {
+  const db = fixture();
+  if (initialize) await publishBaselineInitialization(db, identity);
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    if (db.sqlite.open) db.sqlite.close();
+    rmSync(db.dataRoot, { recursive: true, force: true });
+  });
+  return {
+    db,
+    async open() {
+      const scope = nativeProductScope(db.dataRoot, {
+        kind: 'workspace',
+        workspaceId: identity.workspaceId,
+      });
+      await getControlStoreWorkerClient().open({
+        database: `workspace:${scope.path}`,
+        path: scope.path,
+        dataRoot: db.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      db.sqlite.pragma('query_only = ON');
+      expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    },
+    async cold() {
+      await shutdownControlStoreWorkerClient();
+      db.sqlite.close();
+      const cold = openWorkspaceReadDb(db.dataRoot, identity.workspaceId);
+      onTestFinished(() => cold.sqlite.close());
+      return cold;
+    },
+  };
+}
+
+/** Observes exact existing baseline rows, without creating durable setup records. */
+function baselineRows(db: ReturnType<typeof fixture>) {
+  return db.sqlite
+    .prepare(
+      'SELECT * FROM workspace_snapshot_cursors ORDER BY workspace_id, storage_ref, work_slot'
+    )
+    .all();
+}
+
+describe('native baseline owner deciding cases', () => {
+  it('keeps initialization separate and accepts exact source evidence with Main query-only, replay and cold reads', async () => {
+    const f = await nativeBaselineFixture();
+    await f.open();
+    // Storage SQLite Layers: expected pre-move RED is Main SQLITE_READONLY at the first initialization INSERT.
+    await publishBaselineInitialization(f.db, identity);
+    expect(readWorkspaceBaselineIdentity(f.db, identity)).toEqual(identity);
+    expect(readWorkspaceSnapshotCursor(f.db, identity)).toBeNull();
+    expect(readWorkspaceCollection(f.db, identity)).toBeNull();
+    const initialized = baselineRows(f.db);
+    const unrelated = { ...identity, turnId: 'tu_01890f3e-0000-7000-8000-000000000002' };
+    // Initialization does not replace retained authority, including an unfinished original initialization.
+    await publishBaselineInitialization(f.db, unrelated);
+    expect(baselineRows(f.db)).toEqual(initialized);
+    for (const changed of [
+      unrelated,
+      { ...identity, agentSessionId: 'as_01890f3e-0000-7000-8000-000000000002' },
+      { ...identity, threadId: 'th_01890f3e-0000-7000-8000-000000000002' },
+      { ...identity, storageRef: 'wst_01890f3e-0000-7000-8000-000000000002' },
+      { ...identity, scopeDigest: `sha256:${'f'.repeat(64)}` },
+      { ...identity, attachmentGeneration: 2 },
+      { ...identity, sandboxId: 'other-sandbox' },
+      { ...identity, workSlot: 'other-slot' },
+      { ...identity, collectionId: 'other-collection' },
+      { ...identity, packageSnapshotId: 'other-package' },
+    ]) {
+      await expect(async () =>
+        publishAcceptedBaseline(f.db, changed, base, base.tree)
+      ).rejects.toThrow('accepted_base_unknown');
+    }
+    await expect(async () =>
+      publishAcceptedBaseline(f.db, identity, base, next.tree)
+    ).rejects.toThrow('baseline_mismatch');
+    await expect(async () => publishAcceptedBaseline(f.db, identity, base, null)).rejects.toThrow(
+      'baseline_source_unavailable'
+    );
+    await expect(async () =>
+      publishBaselineInitialization(f.db, {
+        ...identity,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000002',
+      })
+    ).rejects.toThrow();
+    expect(baselineRows(f.db)).toEqual(initialized);
+    await publishAcceptedBaseline(f.db, identity, base, base.tree);
+    expect(readWorkspaceSnapshotCursor(f.db, identity)).toEqual({
+      acceptedBase: base,
+      head: base,
+      acceptedCommit: null,
+    });
+    const committed = baselineRows(f.db);
+    await publishBaselineInitialization(f.db, identity);
+    await publishAcceptedBaseline(f.db, identity, base, base.tree);
+    // Original replay is pair-based; it does not rewrite the already accepted commit field.
+    await publishAcceptedBaseline(f.db, identity, base, base.tree, 'c'.repeat(64));
+    expect(baselineRows(f.db)).toEqual(committed);
+    await expect(async () =>
+      publishAcceptedBaseline(f.db, identity, next, next.tree)
+    ).rejects.toThrow('baseline identity conflicts');
+    expect(baselineRows(f.db)).toEqual(committed);
+    // Workspace Synchronization / Snapshot Chain: Git pin format can differ from the private SHA-1 pair.
+    const gitIdentity = { ...identity, workSlot: 'git-slot' };
+    const pin = 'a'.repeat(64);
+    await publishBaselineInitialization(f.db, gitIdentity);
+    await publishAcceptedBaseline(f.db, gitIdentity, next, null, pin);
+    expect(readWorkspaceSnapshotCursor(f.db, gitIdentity)).toEqual({
+      acceptedBase: next,
+      head: next,
+      acceptedCommit: pin,
+    });
+    expect(readWorkspaceCollection(f.db, gitIdentity)).toBeNull();
+    const final = baselineRows(f.db);
+    const cold = await f.cold();
+    expect(baselineRows(cold)).toEqual(final);
+    expect(readWorkspaceBaselineIdentity(cold, identity)).toEqual(identity);
+    expect(readWorkspaceSnapshotCursor(cold, identity)).toEqual({
+      acceptedBase: base,
+      head: base,
+      acceptedCommit: null,
+    });
+    expect(readWorkspaceSnapshotCursor(cold, gitIdentity)).toEqual({
+      acceptedBase: next,
+      head: next,
+      acceptedCommit: pin,
+    });
+  });
+
+  it('preserves the separately committed initialization after definite acceptance failure and a cold read', async () => {
+    // Valid prior-stage setup uses the public owner before this stage's injected fault and writer switch.
+    const f = await nativeBaselineFixture(true);
+    await shutdownControlStoreWorkerClient();
+    const initialized = baselineRows(f.db);
+    f.db.sqlite.exec(`CREATE TRIGGER reject_baseline_accept BEFORE UPDATE ON workspace_snapshot_cursors
+      WHEN NEW.accepted_base_json IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'baseline acceptance fault'); END`);
+    await f.open();
+    // Control Store / Physical Commit: native savepoint refusal is definite, redacted, and leaves no accepted pair.
+    // Expected pre-move RED is SQLITE_READONLY instead of this real native constraint refusal.
+    await expect(async () =>
+      publishAcceptedBaseline(f.db, identity, base, base.tree)
+    ).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+      message: 'Control database writer operation failed.',
+    });
+    expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    expect(baselineRows(f.db)).toEqual(initialized);
+    expect(readWorkspaceBaselineIdentity(f.db, identity)).toEqual(identity);
+    expect(readWorkspaceSnapshotCursor(f.db, identity)).toBeNull();
+    expect(readWorkspaceCollection(f.db, identity)).toBeNull();
+    const cold = await f.cold();
+    expect(baselineRows(cold)).toEqual(initialized);
+    expect(readWorkspaceBaselineIdentity(cold, identity)).toEqual(identity);
+    expect(readWorkspaceSnapshotCursor(cold, identity)).toBeNull();
   });
 });

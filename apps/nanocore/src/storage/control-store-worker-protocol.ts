@@ -249,6 +249,11 @@ import {
   ControlWorkspaceBackendHandoffSchema,
 } from './workspace-backend-handoff-codecs.js';
 import {
+  type ControlWorkspaceBaseline,
+  ControlWorkspaceBaselineRefusalSchema,
+  ControlWorkspaceBaselineSchema,
+} from './workspace-baseline-codecs.js';
+import {
   type ControlWorkspaceDeletionInput,
   ControlWorkspaceDeletionInputSchema,
   type ControlWorkspaceDeletionResult,
@@ -291,7 +296,7 @@ import {
 } from './workspace-stage-review-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 51;
+export const CONTROL_WORKER_VERSION = 52;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -557,6 +562,7 @@ export type ControlWorkerCommand =
           readonly operation: 'workspace-stage-review';
           readonly input: ControlWorkspaceStageReview;
         }
+      | { readonly operation: 'workspace-baseline'; readonly input: ControlWorkspaceBaseline }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | {
           readonly operation: 'workspace-review-finish';
@@ -767,6 +773,7 @@ interface OrdinaryControlWorkerDomainRefusal {
 /** Existing native refusals plus the sharing family's exact current-record projection. */
 export type ControlWorkerDomainRefusal =
   | OrdinaryControlWorkerDomainRefusal
+  | z.infer<typeof ControlWorkspaceBaselineRefusalSchema>
   | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
   | z.infer<typeof ControlWorkerFinalStatusRefusalSchema>
@@ -862,6 +869,7 @@ export type ControlWorkerReply = {
       readonly result: ControlWorkspaceBackendHandoffResult;
     }
   | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
+  | { readonly status: 'ok'; readonly operation: 'workspace-baseline'; readonly result: null }
   | { readonly status: 'ok'; readonly operation: 'workspace-review-finish'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1080,6 +1088,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-stage-review')
     return ControlWorkspaceStageReviewRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'workspace-baseline')
+    return ControlWorkspaceBaselineRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-backend-handoff')
     return ControlWorkspaceBackendHandoffRefusalSchema.safeParse(value).success;
   if (
@@ -1372,6 +1382,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'runtime-target')
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
+  if (reply.operation === 'workspace-baseline') return reply.result === null;
   if (reply.operation === 'workspace-backend-handoff')
     return ControlWorkspaceBackendHandoffResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-review-finish') return reply.result === null;
@@ -1872,6 +1883,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkspaceStageReviewSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'workspace-baseline')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceBaselineSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-backend-handoff')

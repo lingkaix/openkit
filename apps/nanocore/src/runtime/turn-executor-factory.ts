@@ -251,6 +251,10 @@ import type {
   WorkerTranscriptPayload,
 } from './worker-transcript.js';
 import {
+  acceptWorkspaceBaseline,
+  authorizeWorkspaceBaselineInitialization,
+} from './workspace-baseline-publication.js';
+import {
   WorkspaceCollectCommandSchema,
   WorkspaceCollectionError,
 } from './workspace-collect-wire.js';
@@ -261,9 +265,7 @@ import {
   recordWorkspaceCaptureRecovery,
 } from './workspace-reconciliation-records.js';
 import {
-  acceptWorkspaceBaseline,
   acceptWorkspaceCapture,
-  authorizeWorkspaceBaselineInitialization,
   preserveRawWorkspaceCapture,
   type RawWorkspaceCapture,
   readWorkspaceBaselineIdentity,
@@ -4044,20 +4046,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
       try {
         applyScopedMigrations(initializationDb);
-        const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-          `workspace:${initializationDb.sqlite.name}`
+        await authorizeWorkspaceBaselineInitialization(
+          initializationDb,
+          this.workspaceCollectionIdentity(
+            this.requireSession(environmentPackage.snapshotId),
+            'baseline'
+          )
         );
-        try {
-          authorizeWorkspaceBaselineInitialization(
-            initializationDb,
-            this.workspaceCollectionIdentity(
-              this.requireSession(environmentPackage.snapshotId),
-              'baseline'
-            )
-          );
-        } finally {
-          resume();
-        }
       } finally {
         initializationDb.sqlite.close();
       }
@@ -5777,20 +5772,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               : 'effect_failed',
           cause: result.cause,
         });
-      const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-        `workspace:${db.sqlite.name}`
+      await acceptWorkspaceBaseline(
+        db,
+        identity,
+        result.head as { tree: string; manifest: string },
+        expected,
+        sources[0]?.source.kind === 'git' ? (sources[0].source.commit ?? null) : null
       );
-      try {
-        acceptWorkspaceBaseline(
-          db,
-          identity,
-          result.head as { tree: string; manifest: string },
-          expected,
-          sources[0]?.source.kind === 'git' ? (sources[0].source.commit ?? null) : null
-        );
-      } finally {
-        resume();
-      }
     } finally {
       db.sqlite.close();
     }

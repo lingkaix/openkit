@@ -1,8 +1,10 @@
+import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type {
   ControlWorkspaceBackendHandoff,
   ControlWorkspaceBackendHandoffResult,
 } from './workspace-backend-handoff-codecs.js';
+import type { ControlWorkspaceBaseline } from './workspace-baseline-codecs.js';
 import {
   type ControlRecoverySourceReactivationInput,
   ControlRecoverySourceReactivationInputSchema,
@@ -2371,6 +2373,28 @@ class ControlStoreWorkerClient {
         error.domain?.operation === 'workspace-stage-review'
       )
         throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Publishes one original baseline stage and preserves its closed recovery distinctions. */
+  async workspaceBaseline(database: string, input: ControlWorkspaceBaseline): Promise<void> {
+    try {
+      await this.request({ operation: 'workspace-baseline', database, input });
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'workspace-baseline'
+      ) {
+        if (error.domain.code === 'collection_refused')
+          throw new WorkspaceCollectionError({
+            outcome: 'recovery_required',
+            cause: error.domain.cause,
+          });
+        if (error.domain.code === 'unsupported_retained_format')
+          throw new TypeError(error.domain.message);
+        throw new Error(error.domain.message);
+      }
       throw error;
     }
   }
