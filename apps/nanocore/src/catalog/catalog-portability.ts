@@ -4,7 +4,6 @@ import {
   type PortableCatalogTreeFile,
   type PortableSkillPayload,
   parsePortableAgentResourceCatalog,
-  parsePortableSkillPayload,
 } from '@openkit/config-schema';
 
 import { loadWorkspaceResourceCatalog, readWorkspaceSkillSnapshot } from './resource-catalog.js';
@@ -120,11 +119,6 @@ export function emptyPortableAgentResourceCatalog(): PortableAgentResourceCatalo
 /** Reads one portable catalog document from export bytes. */
 export function readPortableAgentResourceCatalog(text: string): PortableAgentResourceCatalog {
   return parsePortableAgentResourceCatalog(JSON.parse(text));
-}
-
-/** Reads one Skill payload from export bytes. */
-export function readPortableSkillPayload(text: string): PortableSkillPayload {
-  return parsePortableSkillPayload(JSON.parse(text));
 }
 
 /** Export-relative path for one retained Skill tree. */
