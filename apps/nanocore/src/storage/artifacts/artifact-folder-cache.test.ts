@@ -97,17 +97,6 @@ describe('source-version ZIP folder cache', () => {
     expect(await readFile(state.path)).toEqual(state.bytes);
   });
 
-  it('shares one extraction between concurrent exact-source callers', async () => {
-    const state = await original('valid-file');
-    const parser = vi.spyOn(ZipFile.prototype, 'openReadStreamPromise');
-    const [first, second] = await Promise.all([
-      ensureArtifactFolderSnapshot(state),
-      ensureArtifactFolderSnapshot(state),
-    ]);
-    expect(first.representationDigest).toBe(second.representationDigest);
-    expect(parser).toHaveBeenCalledTimes(1);
-  });
-
   it('shares one extraction between concurrent callers that fit one capacity forecast', async () => {
     const state = await original('valid-file');
     // One build reserves staging 0 + extraction (the expanded-byte bound)
