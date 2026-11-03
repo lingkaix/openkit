@@ -7,7 +7,7 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { createApp as createNanoCoreApp } from './app.js';
 import type { FsStore } from './lib/store.js';
 import type { RuntimeCapabilities, RuntimeEventFamily, TurnExecutor } from './runtime/types.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';

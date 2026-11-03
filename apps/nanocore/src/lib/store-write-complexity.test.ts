@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { allocateEntityId, ItemSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { nativeProductScope, readNativeProductEntries } from '../storage/workspace-file-records.js';
 import {

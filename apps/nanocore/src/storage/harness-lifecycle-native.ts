@@ -7,10 +7,8 @@ import { nanoHostSandboxIdFromBackendSessionId } from '../runtime/nanohost-effec
 import * as records from '../runtime/nanohost-harness-records.js';
 import { listWorkspaceReconciliationRecords } from '../runtime/workspace-reconciliation-read.js';
 import { presentControlFacts } from './control-store-input.js';
-import {
-  assertControlProductWriter,
-  openControlStoreProductReadHandle,
-} from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
+import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
 import {

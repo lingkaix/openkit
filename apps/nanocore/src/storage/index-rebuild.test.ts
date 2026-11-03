@@ -42,7 +42,7 @@ import {
   readWorkspaceSourceFixture,
 } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './db.js';
 import {

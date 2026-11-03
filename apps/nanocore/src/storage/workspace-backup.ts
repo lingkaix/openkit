@@ -115,7 +115,7 @@ import {
   closeWorkspaceProductReadHandles,
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
-} from './control-store-products.js';
+} from './control-store-product-records.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   DATA_ROOT_BACKUP_MANIFEST_FILE,

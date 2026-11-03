@@ -13,16 +13,18 @@ import {
   normalizeCommandRequestResponse,
 } from './command-request-records.js';
 import {
-  applyControlProducts,
-  assertControlProductWriter,
   CONTROL_PRODUCT_LIMITS,
   ControlProductEntrySchema,
-  ControlProductMutationSchema,
   type ControlProductOwner,
   ControlProductPreconditionError,
   decode as decodeControlProduct,
-  type PreparedControlEntry,
   readProduct,
+} from './control-store-product-records.js';
+import {
+  applyControlProducts,
+  assertControlProductWriter,
+  ControlProductMutationSchema,
+  type PreparedControlEntry,
 } from './control-store-products.js';
 
 /** Exact prepared operation families; B2 must exclude these from legacy receipt insert/prune paths before activation. */

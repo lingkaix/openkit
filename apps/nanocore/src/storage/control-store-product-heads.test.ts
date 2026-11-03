@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

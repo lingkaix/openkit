@@ -121,21 +121,24 @@ import {
   prepareControlPendingArchive,
   prepareControlPendingCommands,
 } from './control-store-pending.js';
+import {
+  CONTROL_PRODUCT_LIMITS,
+  type ControlProductContentMount,
+  type ControlProductOwner,
+  ControlProductPreconditionError,
+  closeWorkspaceProductReadHandles,
+  decode as decodeControlProduct,
+  readProduct,
+} from './control-store-product-records.js';
 import type { ControlContentPreparation } from './control-store-products.js';
 import {
   applyControlProducts,
   applyControlPublication,
   applyControlTerminal,
-  CONTROL_PRODUCT_LIMITS,
   ControlItemAppendError,
-  type ControlProductContentMount,
-  type ControlProductOwner,
-  ControlProductPreconditionError,
   type ControlProductTransition,
   type ControlPublicationInput,
   type ControlTerminalTransition,
-  closeWorkspaceProductReadHandles,
-  decode as decodeControlProduct,
   nativeUserDatabasePath,
   type PreparedControlEntry,
   type PreparedControlPublication,
@@ -145,7 +148,6 @@ import {
   prepareControlItemAppend,
   prepareControlPublication,
   prepareControlTerminal,
-  readProduct,
 } from './control-store-products.js';
 import {
   applyControlRecoveryCapture,

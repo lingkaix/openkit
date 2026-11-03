@@ -32,10 +32,8 @@ import {
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { commandInputHash, presentControlFacts } from './control-store-input.js';
-import {
-  assertControlProductWriter,
-  ControlProductPreconditionError,
-} from './control-store-products.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
+import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import {
   type ControlCoreSharing,

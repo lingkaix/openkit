@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { RequestIdSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';

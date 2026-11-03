@@ -63,7 +63,7 @@ import {
   type UserMemoryRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   resolveDataRootPath,
   serverKnowledgeRoot,

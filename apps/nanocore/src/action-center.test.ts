@@ -20,7 +20,7 @@ import {
   updateWorkspaceSyncReviewDecision,
 } from './runtime/workspace-sync-records.js';
 import { createSchedulerAdmissionEntry, denySchedulerAdmissionEntry } from './scheduler-records.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';

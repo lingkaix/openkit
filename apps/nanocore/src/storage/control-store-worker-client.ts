@@ -100,16 +100,18 @@ import {
 } from './control-store-knowledge-heads.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
 import {
+  type ControlProductEntry,
+  closeWorkspaceProductReadHandles,
+} from './control-store-product-records.js';
+import {
   type ControlEventAppend,
   type ControlEventAppendResult,
   ControlEventAppendSchema,
   type ControlItemAppend,
-  type ControlProductEntry,
   type ControlProductTransition,
   type ControlPublicationInput,
   type ControlTerminalResult,
   type ControlTerminalTransition,
-  closeWorkspaceProductReadHandles,
   nativeUserDatabasePath,
 } from './control-store-products.js';
 import type {

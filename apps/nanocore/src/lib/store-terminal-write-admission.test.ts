@@ -6,7 +6,7 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
-import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';

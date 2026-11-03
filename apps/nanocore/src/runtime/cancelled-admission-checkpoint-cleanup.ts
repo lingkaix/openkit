@@ -12,7 +12,7 @@ import { clearWorkerCheckpointIfUnchanged } from '../storage/control-store-check
 import {
   type ControlProductOwner,
   openControlStoreProductReadHandle,
-} from '../storage/control-store-products.js';
+} from '../storage/control-store-product-records.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,

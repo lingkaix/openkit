@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ControlProductOwner } from './control-store-products.js';
+import type { ControlProductOwner } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

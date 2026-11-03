@@ -17,7 +17,7 @@ import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
 import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { getRegisteredAppApiOperationIds } from './openapi.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

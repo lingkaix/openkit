@@ -60,7 +60,8 @@ import {
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
 } from './storage/command-request-records.js';
-import { assertControlProductWriter, readProduct } from './storage/control-store-products.js';
+import { readProduct } from './storage/control-store-product-records.js';
+import { assertControlProductWriter } from './storage/control-store-products.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { WorkspaceDb } from './storage/db.js';
 import { nativeProductScope } from './storage/workspace-file-records.js';

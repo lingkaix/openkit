@@ -500,6 +500,7 @@ class Upgrade:
                         pass
                 raise
         else:
+            checkout = self.input["previousCheckout"] if revision == "previous" else self.input["checkout"]
             value["appRoot"] = "/app/nanocore"
             path = self.output / "reader-input.json"
             path.write_text(json.dumps(value))
@@ -510,7 +511,7 @@ class Upgrade:
                 binds.append(self.input["previousCheckout"] + ":" + self.input["previousCheckout"] + ":ro")
             spec = {
                 "Image": self.images[(revision, "appImage")], "Entrypoint": ["node"],
-                "Cmd": [str(Path(self.input["checkout"]) / "scripts/upgrade-from-previous.mjs"), phase, str(path)],
+                "Cmd": [str(Path(checkout) / "scripts/upgrade-from-previous.mjs"), phase, str(path)],
                 "WorkingDir": "/app/nanocore",
                 "HostConfig": {"NetworkMode": "none", "Binds": binds},
             }

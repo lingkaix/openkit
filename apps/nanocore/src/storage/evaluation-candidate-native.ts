@@ -10,10 +10,8 @@ import {
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
-import {
-  assertControlProductWriter,
-  ControlProductPreconditionError,
-} from './control-store-products.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
+import { assertControlProductWriter } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
 import {
   type ControlEvaluationCandidate,

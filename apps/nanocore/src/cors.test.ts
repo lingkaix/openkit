@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { BetterAuthServer } from './auth/middleware.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import {
   createAppWithWorkspaceAuthority as createApp,

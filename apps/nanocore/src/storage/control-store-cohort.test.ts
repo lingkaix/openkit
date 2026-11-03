@@ -10,10 +10,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createTestStore } from '../test-support/store.js';
 import {
   type ControlProductEntry,
-  type ControlProductTransition,
   type ControlStoreProductReadHandle,
   openControlStoreProductReadHandle,
-} from './control-store-products.js';
+} from './control-store-product-records.js';
+import type { ControlProductTransition } from './control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

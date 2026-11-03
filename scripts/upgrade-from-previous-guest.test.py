@@ -238,6 +238,7 @@ class LifecycleTests(unittest.TestCase):
             "candidate": {"commit": "2" * 40, "appImage": "sha256:" + "3" * 64,
                           "workerImage": "sha256:" + "4" * 64, "nanoHost": sha(candidate)},
             "checkout": str(Path(__file__).resolve().parents[1]), "appRoot": "/app/nanocore",
+            "previousCheckout": str(Path(__file__).resolve().parents[1]),
             "dataRoot": str(root / "data"), "retainedRoot": str(root / "result"),
             "externalRoot": str(root), "externalSelections": {
                 "Host storage identity": ["guest/var/lib/openkit"],
@@ -277,6 +278,111 @@ class LifecycleTests(unittest.TestCase):
         patch.object(DRIVER, "PRIVATE_BASE", base).start()
         patch.dict(os.environ, {"OPENKIT_UPGRADE_ADMIN_TOKEN": "synthetic-token",
                                "OPENKIT_UPGRADE_LOGIN_PASSWORD": "synthetic-password"}).start()
+
+    def test_offline_phases_execute_the_selected_revision_corpus_harness(self):
+        """Selected checkout code resolves its own owner in the selected image layout."""
+        fixture = Path(self.input["preparedLayout"]["privateRoot"]) / "harness-selection"
+        checkouts = {name: fixture / "checkouts" / name for name in ("previous", "candidate")}
+        images = {name: fixture / "images" / name for name in ("previous", "candidate")}
+        entry = (
+            "import { readFileSync } from 'node:fs';\n"
+            "import { readSelectedOwner } from './upgrade-from-previous-corpus.mjs';\n"
+            "const input = JSON.parse(readFileSync(process.argv[3], 'utf8'));\n"
+            "console.log(JSON.stringify({passed: true, selectedOwner: "
+            "await readSelectedOwner(input.appRoot)}));\n"
+        )
+        for name in ("previous", "candidate"):
+            scripts = checkouts[name] / "scripts"
+            scripts.mkdir(parents=True)
+            (scripts / "upgrade-from-previous.mjs").write_text(entry)
+            # These two owner paths are the actual 1966bec73/current module-map difference.
+            owner = "control-store-products.js" if name == "previous" else "control-store-product-records.js"
+            (scripts / "upgrade-from-previous-corpus.mjs").write_text(
+                "import { join } from 'node:path';\n"
+                "import { pathToFileURL } from 'node:url';\n"
+                "export async function readSelectedOwner(root) {\n"
+                "  const module = await import(pathToFileURL(join(root, 'dist/storage/" + owner + "')).href);\n"
+                "  return module.selectedOwner;\n"
+                "}\n"
+            )
+            storage = images[name] / "dist/storage"
+            storage.mkdir(parents=True)
+            (storage / "control-store-products.js").write_text(
+                'export const selectedOwner = "' + name + '-products";\n'
+            )
+            (images[name] / "package.json").write_text('{"type":"module"}\n')
+            if name == "candidate":
+                (storage / "control-store-product-records.js").write_text(
+                    'export const selectedOwner = "candidate-records";\n'
+                )
+        self.assertTrue((images["previous"] / "dist/storage/control-store-products.js").is_file())
+        self.assertFalse((images["previous"] / "dist/storage/control-store-product-records.js").exists())
+        self.input["previousCheckout"] = str(checkouts["previous"])
+        self.input["checkout"] = str(checkouts["candidate"])
+        output = Path(self.input["retainedRoot"])
+        output.mkdir(parents=True)
+        upgrade = DRIVER.Upgrade(self.input, self.boundary, [])
+        upgrade.stopped = True
+        self.boundary.host_active = False
+        self.boundary.running = False
+        image_roots = {}
+        for name in ("previous", "candidate"):
+            image_id = self.boundary.image_id(name, "appImage")
+            upgrade.images[(name, "appImage")] = image_id
+            image_roots[image_id] = images[name]
+        observations = []
+
+        def execute_reader(args, *, env=None, timeout=60):
+            """Replace only Engine execution and translate its fixed image root to local fixture bytes."""
+            self.assertEqual(args, ["docker", "start", "--attach", "owned-reader"])
+            self.assertIsNone(env)
+            self.assertEqual(timeout, 660)
+            spec = self.boundary.reader
+            self.assertEqual(spec["WorkingDir"], "/app/nanocore")
+            self.assertEqual(spec["HostConfig"]["NetworkMode"], "none")
+            reader_input = json.loads(Path(spec["Cmd"][-1]).read_text())
+            self.assertEqual(reader_input["appRoot"], "/app/nanocore")
+            # Only the Engine's /app/nanocore mount is translated. Execute the actual selected Cmd.
+            reader_input["appRoot"] = str(image_roots[spec["Image"]])
+            local_input = output / ("layout-reader-" + str(len(observations)) + ".json")
+            local_input.write_text(json.dumps(reader_input))
+            process = subprocess.run(
+                [*spec["Entrypoint"], *spec["Cmd"][:-1], str(local_input)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout,
+            )
+            observations.append((spec["Cmd"][-2], json.loads(process.stdout)["selectedOwner"]))
+            return process.stdout.strip()
+
+        cases = (("seed", "previous", "previous-products"),
+                 ("snapshot", "previous", "previous-products"),
+                 ("compare", "candidate", "candidate-records"),
+                 ("retirement", "candidate", "candidate-records"))
+        with patch.object(self.boundary, "run", side_effect=execute_reader):
+            for phase, revision, expected in cases:
+                with self.subTest(phase=phase, revision=revision):
+                    self.boundary.current = revision
+                    upgrade.phase(phase, revision)
+                    self.assertEqual(observations[-1], (phase, expected))
+                    selected = str(checkouts[revision])
+                    self.assertIn(selected + ":" + selected + ":ro",
+                                  self.boundary.reader["HostConfig"]["Binds"])
+
+    def test_previous_offline_phase_requires_the_existing_previous_checkout_fact(self):
+        """Missing historical checkout refuses before any reader Engine or process effect."""
+        del self.input["previousCheckout"]
+        output = Path(self.input["retainedRoot"])
+        output.mkdir(parents=True)
+        upgrade = DRIVER.Upgrade(self.input, self.boundary, [])
+        upgrade.stopped = True
+        self.boundary.host_active = False
+        self.boundary.running = False
+        upgrade.images[("previous", "appImage")] = self.boundary.image_id("previous", "appImage")
+
+        with self.assertRaises((KeyError, RuntimeError)):
+            upgrade.phase("seed", "previous")
+
+        self.assertIsNone(self.boundary.reader)
+        self.assertNotIn("seed", self.boundary.events)
 
     def test_previous_seed_selects_historical_corpus_producer(self):
         """The previous image receives the explicit historical producer selection."""

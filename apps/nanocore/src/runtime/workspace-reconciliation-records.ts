@@ -19,7 +19,7 @@ import {
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
-import { readProduct } from '../storage/control-store-products.js';
+import { readProduct } from '../storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { AgentSessionRecordSchema } from '../storage/workspace-file-records.js';

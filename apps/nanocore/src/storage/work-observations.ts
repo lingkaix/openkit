@@ -26,7 +26,7 @@ import {
   workObservationBodyBundleId,
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
-import type { ControlProductOwner } from './control-store-products.js';
+import type { ControlProductOwner } from './control-store-product-records.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import {
   StoredThreadSnapshotV1Schema,

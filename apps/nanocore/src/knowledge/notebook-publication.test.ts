@@ -6,7 +6,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';

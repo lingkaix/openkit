@@ -35,7 +35,7 @@ import {
   prepareWorkspaceKnowledgeProposal,
   prepareWorkspaceKnowledgeSelection,
 } from './control-store-knowledge.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   assertBackupMatchesPredecessor,
   assertExternalColdBackupDestination as assertExternalBackupDestination,

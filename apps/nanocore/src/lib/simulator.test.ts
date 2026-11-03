@@ -42,7 +42,7 @@ import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import * as filePayload from '../storage/artifacts/file-payload.js';
-import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,

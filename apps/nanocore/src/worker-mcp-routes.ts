@@ -141,7 +141,7 @@ import {
   type ControlCapabilityAdmissionFailure,
   ControlCapabilityCommandInputSchema,
 } from './storage/control-store-capability.js';
-import { getWorkspaceProductReadHandle } from './storage/control-store-products.js';
+import { getWorkspaceProductReadHandle } from './storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,

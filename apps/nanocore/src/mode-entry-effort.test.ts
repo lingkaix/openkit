@@ -11,7 +11,7 @@ import type { TurnStartRuntimeContext } from './runtime/types.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import * as loopOwners from './runtime/worker-turn-loop.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';

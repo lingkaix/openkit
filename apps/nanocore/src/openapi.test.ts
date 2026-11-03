@@ -37,7 +37,7 @@ import {
   registerAppApiRoute,
 } from './openapi.js';
 import { validateAppOpenApiDocument } from './openapi-validation.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';

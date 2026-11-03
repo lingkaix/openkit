@@ -43,7 +43,7 @@ import type {
   TurnStartRuntimeContext,
 } from './runtime/types.js';
 import * as schedulerOwners from './scheduler-records.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';

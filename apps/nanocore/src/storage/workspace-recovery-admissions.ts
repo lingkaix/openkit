@@ -15,7 +15,7 @@ import type {
   WorkspaceRecoveryFreezeOrigin,
 } from '../workspace-mutation-admission.js';
 import { configureOwnedSqlite } from './control-store.js';
-import { closeWorkspaceProductReadHandles } from './control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import type {
   ControlRecoveryNativeBinding,
   ControlRecoveryNativeCall,

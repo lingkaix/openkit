@@ -17,7 +17,7 @@ import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
-import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   openBootVerifiedWorkspaceDb,

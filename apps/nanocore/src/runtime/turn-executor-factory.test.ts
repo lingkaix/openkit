@@ -20879,7 +20879,7 @@ describe('retired Workspace resident isolation', () => {
   ] as const)('preserves native proof and retained storage during same-epoch retirement: %s', async (proof) => {
     const { refuseScope, isScopeAdmitted } = await import('../bootstrap/readiness.js');
     const { openControlStoreProductReadHandle } = await import(
-      '../storage/control-store-products.js'
+      '../storage/control-store-product-records.js'
     );
     const { getWorkspaceRegistryLifecycleFact, retireQuarantinedWorkspaceRegistry } = await import(
       '../workspace-sharing.js'

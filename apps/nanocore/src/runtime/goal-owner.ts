@@ -54,18 +54,20 @@ import {
   recordControlCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
 import { prepareControlPendingCommands } from '../storage/control-store-pending.js';
+import {
+  type ControlProductContentMount,
+  ControlProductEntrySchema,
+  openControlStoreProductReadHandle,
+  readProduct,
+} from '../storage/control-store-product-records.js';
 import type { ControlContentPreparation } from '../storage/control-store-products.js';
 import {
   applyControlProducts,
   assertControlProductWriter,
-  type ControlProductContentMount,
-  ControlProductEntrySchema,
-  openControlStoreProductReadHandle,
   type PreparedControlEntry,
   prepareControlEntries,
   prepareRetainedControlEntries,
   readPreparedControlEntry,
-  readProduct,
 } from '../storage/control-store-products.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';

@@ -28,10 +28,8 @@ import {
   isControlNativeReceiptCommand,
   pruneControlAdmissionReceipts,
 } from './control-store-admission.js';
-import {
-  assertControlProductWriter,
-  openControlStoreProductReadHandle,
-} from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
+import { assertControlProductWriter } from './control-store-products.js';
 import {
   bindCoreSqlite,
   bindWorkspaceSqlite,

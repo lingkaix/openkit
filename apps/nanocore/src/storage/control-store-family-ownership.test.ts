@@ -20,7 +20,7 @@ import {
 import {
   type ControlProductOwner,
   openControlStoreProductReadHandle,
-} from './control-store-products.js';
+} from './control-store-product-records.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';

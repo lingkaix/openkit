@@ -7,7 +7,7 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-source-authority.js';
-import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';

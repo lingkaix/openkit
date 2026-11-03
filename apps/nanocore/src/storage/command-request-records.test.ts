@@ -25,7 +25,7 @@ import { ControlAdmissionSchema } from './control-store-admission.js';
 import {
   closeWorkspaceProductReadHandles,
   openControlStoreProductReadHandle,
-} from './control-store-products.js';
+} from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { bindWorkspaceSqlite, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';

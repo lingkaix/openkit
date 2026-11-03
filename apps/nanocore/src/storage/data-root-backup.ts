@@ -23,7 +23,7 @@ import { compareCodeUnits, DataRootBackupIdSchema, DeploymentIdSchema } from '@o
 import { sha256Hex } from '@openkit/protocol/digest';
 import { copyBackupTree, copyMissingBackupDefinitions } from '@openkit/storage';
 import Database from 'better-sqlite3';
-import { closeWorkspaceProductReadHandles } from './control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import { writeFileAtomic } from './workspace-file-records.js';
 
 /** File name for the data-root backup manifest. */
