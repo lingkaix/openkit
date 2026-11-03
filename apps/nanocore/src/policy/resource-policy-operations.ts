@@ -26,7 +26,7 @@ import {
 } from './resource-policy-requests.js';
 
 /** Existing config and Pending Request services for one Workspace database lifetime. */
-export function resourcePolicyDependencies(
+function resourcePolicyDependencies(
   dependencies: Pick<
     OperationInvocationDependencies,
     'coreDb' | 'store' | 'runtimeConfigOperations'

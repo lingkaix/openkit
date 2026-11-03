@@ -43,7 +43,7 @@ import { EMPTY_POLICY_DOCUMENT } from './statements.js';
 import { parseWorkspacePolicy, workspacePolicySubject } from './workspace-resource-access.js';
 
 /** Captured non-secret credential or Worker lineage, rechecked by its existing current authority owners. */
-export const ResourcePolicyRequestOriginSchema = z.discriminatedUnion('kind', [
+const ResourcePolicyRequestOriginSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('public'),
