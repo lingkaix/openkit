@@ -83,7 +83,10 @@ import { StoredAgentSessionV1Schema } from '../storage/retained-work-metadata-v1
 import type { ControlSchedulerAdmission } from '../storage/scheduler-admission-codecs.js';
 import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { readWorkObservations } from '../storage/work-observations.js';
-import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
+import {
+  isCurrentAgentSessionStatus,
+  nativeProductScope,
+} from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -15970,6 +15973,8 @@ describe('createConfiguredTurnExecutor', () => {
           },
         ]),
       });
+    const nativeWork = observeOriginalFactoryNativeWork(coreDb);
+    onTestFinished(nativeWork.restore);
     const native = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
     const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
     const joins: Array<() => Promise<void>> = [];
@@ -16309,10 +16314,310 @@ describe('createConfiguredTurnExecutor', () => {
       acknowledgement.mockRestore();
       commands.mockRestore();
       await native.restore();
+      nativeWork.markPeerJoined();
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
     }
+    nativeWork.assertCompleteAndStopped();
+  });
+
+  it('retains a committed native wake across a cold final-null drain and old restore', async () => {
+    type Native = Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>;
+    type Command = harnessRecords.NanoHostHarnessCommand;
+    let coreDb = createFactoryCoreDb();
+    const dataRoot = coreDb.dataRoot;
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const ownerUserId = ensureLocalUser(coreDb);
+    let store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+    const setup = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const readRuntimeConfig = () =>
+      createInMemoryRuntimeConfigSnapshot({
+        ...loadRuntimeConfig(coreDb.dataRoot),
+        agentManifests: [setup.manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Shared choice fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      });
+    const threadId = (
+      await store.createThread(
+        workspaceId,
+        'Native readiness continuation',
+        testEntityId('th', 'readiness_cold')
+      )
+    ).id;
+    const nullReturned = Promise.withResolvers<void>();
+    const releaseNull = Promise.withResolvers<void>();
+    const firstBQueueAck = Promise.withResolvers<void>();
+    const queued: Array<{ command: Command; ack: number }> = [];
+    const dispatched: Array<{ controller: 'A' | 'B'; command: Command; returned: number }> = [];
+    const settled: string[] = [];
+    const consumed: string[] = [];
+    const entries: Array<{ controller: 'A' | 'B'; kind: string }> = [];
+    const probes: Array<() => void> = [];
+    let tick = 0;
+    let held = false;
+    let nullReleased = false;
+    let bQueueAcks = 0;
+    let phase = 'setup-a';
+    let a: Native | undefined;
+    let b: Native | undefined;
+    let bJoinedAt: number | undefined;
+    const failures: unknown[] = [];
+    const key = (c: { harnessInstanceId: string; operationId: string; sequence: number }) =>
+      JSON.stringify([c.harnessInstanceId, c.sequence, c.operationId]);
+    const bytes = (c: Command) => ({
+      length: Buffer.byteLength(JSON.stringify(c)),
+      digest: commandInputHash(c),
+    });
+    onTestFinished(() => {
+      console.error(
+        JSON.stringify({
+          event: 'native-readiness-phase',
+          phase,
+          heldNull: held,
+          releasedNull: nullReleased,
+          committedBQueues: bQueueAcks,
+          deliveredBCommands: dispatched.filter((d) => d.controller === 'B').length,
+        })
+      );
+      releaseNull.resolve(); // A timed-out body must not retain the test's response hold.
+    });
+
+    // Observe the actual client's original native response; do NOT spy on the
+    // queue/consumption module properties that the fixture itself owns.
+    const observeClient = (controller: 'A' | 'B') => {
+      const database = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
+      const client = getControlStoreWorkerClient();
+      const original = client.harnessLifecycle.bind(client);
+      const probe = vi.spyOn(client, 'harnessLifecycle').mockImplementation(async (db, input) => {
+        if (db !== database) return await original(db, input);
+        const snapshot = structuredClone(input);
+        entries.push({ controller, kind: snapshot.kind });
+        const result = await original(db, input); // Real Worker/SQLite, unchanged rejection.
+        const returned = ++tick;
+        if (snapshot.kind === 'operation.queue') {
+          expect(result).toBe(snapshot.prepared.command.sequence);
+          queued.push({ command: snapshot.prepared.command, ack: returned });
+          if (controller === 'B') {
+            bQueueAcks++;
+            firstBQueueAck.resolve();
+          }
+        } else if (snapshot.kind === 'operation.dispatch') {
+          if (result !== null) {
+            dispatched.push({ controller, command: structuredClone(result) as Command, returned });
+          } else if (controller === 'B' && !held) {
+            held = true;
+            nullReturned.resolve();
+            // Hold THIS ORIGINAL real native null response, not a substituted result.
+            await releaseNull.promise;
+          }
+        } else if (snapshot.kind === 'operation.settle') {
+          settled.push(key(snapshot.result));
+        } else if (snapshot.kind === 'result.acknowledge') {
+          consumed.push(key(snapshot.result));
+        }
+        return result;
+      });
+      let restored = false;
+      const restore = () => {
+        if (restored) return;
+        restored = true;
+        probe.mockRestore();
+      };
+      probes.push(restore);
+      return restore;
+    };
+
+    const enter = async (native: Native, label: string, expectedSessionId?: string) => {
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:readiness-${label}`,
+        requestId: testEntityId('tu', `request_readiness_${label}`).slice(3),
+        requestedAgentId: setup.manifest.id,
+        workspaceId,
+        threadId,
+        turnId: testEntityId('tu', `readiness_${label}`),
+        turnInput: `Native readiness ${label}`,
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      const candidate = testEntityId('as', `readiness_${label}`);
+      const admitted = await native.admitTurn(entry, {
+        attemptId: testEntityId('attempt', `readiness_${label}`),
+        agentSessionId: expectedSessionId ?? candidate,
+        candidateAgentSessionId: candidate,
+      });
+      return { entry, admitted };
+    };
+    type Admission = Awaited<ReturnType<typeof enter>>;
+    const entered: Array<Promise<Admission>> = [];
+    const start = (native: Native, label: string, expectedSessionId?: string) => {
+      const work = enter(native, label, expectedSessionId);
+      // Observe immediately, retain the ORIGINAL promise, and report every rejection below.
+      void work.then(
+        () => undefined,
+        (error) => {
+          failures.push(error);
+        }
+      );
+      entered.push(work);
+      return work;
+    };
+    const finish = async ({ entry, admitted }: Admission) => {
+      expect((await admitted.complete()).startedTurns).toHaveLength(1);
+      const session = store.getAgentSession(admitted.pkg.scope.agentSessionId);
+      expect(session).toMatchObject({ status: 'idle', nativeHandleDigest: 'a'.repeat(64) });
+      expect(store.getTurnById(entry.turnId)).toMatchObject({
+        status: 'completed',
+        agentSessionId: session.id,
+      });
+      expect(
+        attempts.requireSchedulerExecutionAttempt(coreDb, admitted.attempt.attemptId)
+      ).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
+      return session;
+    };
+
+    try {
+      const restoreAProbe = observeClient('A');
+      a = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
+      const first = await start(a, 'a');
+      const predecessor = await finish(first);
+      expect(predecessor.retainedStorage).toBeTruthy();
+      const retained = structuredClone(predecessor.retainedStorage);
+      const outside = a.outside;
+      expect(outside.integrationBindingRef).toEqual(expect.any(String));
+      expect(outside.integrationBindingRef).not.toBe('');
+      await first.admitted.cleanup();
+      await a.restore();
+      restoreAProbe();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+
+      // Same root, retained outside facts, unchanged Epoch: no synthesized readiness.
+      coreDb = openCoreDb(dataRoot);
+      store = await createDemoStore({ dataRoot });
+      observeClient('B'); // Installed before B's actual bootstrap dispatch.
+      b = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig }, outside);
+      phase = 'await-real-bootstrap-null';
+      await nullReturned.promise;
+
+      // Crucial extra old-restore call: B has no previous publication/receipt wake
+      // that could mask erased B observers while this bootstrap response is held.
+      await a.restore();
+      phase = 'await-b-first-queue-ack-with-real-null-held';
+      const enteringB = start(b, 'b', predecessor.id);
+      await Promise.race([
+        firstBQueueAck.promise,
+        enteringB.then(() => {
+          throw new Error('B admitted while its only peer was held.');
+        }),
+      ]);
+      await nextTurn(); // Drain already-resolved ACK promise continuations, not elapsed time.
+      expect(dispatched.filter((d) => d.controller === 'B')).toEqual([]);
+      phase = 'await-b-admission-after-acked-enqueue-and-released-null';
+      nullReleased = true;
+      releaseNull.resolve();
+      const continued = await finish(await enteringB);
+      expect(continued.id).toBe(predecessor.id);
+      expect(continued.retainedStorage).toEqual(retained);
+
+      // Retain the requested second old cleanup while B is live, then real work.
+      await a.restore();
+      phase = 'await-b-next-turn-after-old-restore';
+      const next = await finish(await start(b, 'c', predecessor.id));
+      expect(next.id).toBe(predecessor.id);
+      expect(next.retainedStorage).toEqual(retained);
+      phase = 'body-complete';
+    } catch (error) {
+      failures.push(error);
+    } finally {
+      nullReleased = true;
+      releaseNull.resolve();
+      // Never close a root under entered work. A deliberately stalled mutant may
+      // remain RED at existing bounds here; do not claim it drained or add a cap.
+      const admissions = await Promise.allSettled(entered);
+      for (const admission of admissions) {
+        if (admission.status === 'fulfilled') {
+          try {
+            await admission.value.admitted.cleanup();
+          } catch (error) {
+            failures.push(error);
+          }
+        }
+        // Rejected original admission promises were already retained in failures.
+      }
+      if (b) {
+        try {
+          await b.restore();
+          bJoinedAt = entries.length;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (a) {
+        try {
+          await a.restore();
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      const writer = getControlStoreWorkerClient();
+      try {
+        await shutdownControlStoreWorkerClient();
+      } catch (error) {
+        failures.push(error);
+      }
+      if (writer.isClosed && coreDb.sqlite.open) coreDb.sqlite.close();
+      if (!writer.isClosed)
+        failures.push(new Error('Native writer did not close; retain its root.'));
+      try {
+        expect(bJoinedAt).toBeDefined();
+        expect(
+          entries
+            .slice(bJoinedAt!)
+            .filter((e) => e.controller === 'B' && e.kind === 'operation.dispatch')
+        ).toEqual([]);
+        const publications = new Map(queued.map((q) => [key(q.command), q]));
+        const deliveries = dispatched.map((d) => key(d.command));
+        expect(publications.size).toBe(queued.length);
+        expect(new Set(deliveries).size).toBe(dispatched.length);
+        expect([...deliveries].sort()).toEqual([...publications.keys()].sort());
+        for (const d of dispatched) {
+          const q = publications.get(key(d.command))!;
+          expect(d.returned).toBeGreaterThan(q.ack); // Return correspondence, NOT pre-ACK entry proof.
+          expect(d.command).toEqual(q.command);
+          expect(bytes(d.command)).toEqual(bytes(q.command));
+        }
+        for (const harness of new Set(queued.map((q) => q.command.harnessInstanceId))) {
+          expect(
+            dispatched
+              .filter((d) => d.command.harnessInstanceId === harness)
+              .map((d) => key(d.command))
+          ).toEqual(
+            queued.filter((q) => q.command.harnessInstanceId === harness).map((q) => key(q.command))
+          );
+        }
+        expect([...settled].sort()).toEqual([...deliveries].sort());
+        expect([...consumed].sort()).toEqual([...deliveries].sort());
+      } catch (error) {
+        failures.push(error);
+      } finally {
+        for (const restore of probes.reverse()) restore();
+      }
+    }
+    if (failures.length) throw new AggregateError(failures, 'Real native readiness guard failed.');
+    phase = 'complete';
   });
 
   // Real resident setup shares gate CPU; the assertions still check fencing and no replay.
@@ -21356,3 +21661,100 @@ describe('retired Workspace resident isolation', () => {
     }
   }, 60_000);
 });
+
+/** Observes the complete original native work without supplying a command or acknowledgement. */
+function observeOriginalFactoryNativeWork(coreDb: ReturnType<typeof openCoreDb>) {
+  const database = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
+  const client = getControlStoreWorkerClient();
+  const original = client.harnessLifecycle.bind(client);
+  const queued: Array<{ command: harnessRecords.NanoHostHarnessCommand; ack: number }> = [];
+  const dispatched: Array<{ command: harnessRecords.NanoHostHarnessCommand; returned: number }> =
+    [];
+  const settled: string[] = [];
+  const consumed: string[] = [];
+  const entered: string[] = [];
+  let tick = 0;
+  let nullReplies = 0;
+  let inFlight = 0;
+  let joinedAt: number | undefined;
+  let restored = false;
+  const key = (
+    command: Pick<
+      harnessRecords.NanoHostHarnessCommand,
+      'harnessInstanceId' | 'sequence' | 'operationId'
+    >
+  ) => JSON.stringify([command.harnessInstanceId, command.sequence, command.operationId]);
+  const signature = (command: harnessRecords.NanoHostHarnessCommand) => ({
+    bytes: Buffer.byteLength(JSON.stringify(command)),
+    digest: commandInputHash(command),
+  });
+  const observation = vi.spyOn(client, 'harnessLifecycle').mockImplementation(async (db, input) => {
+    if (db !== database) return await original(db, input);
+    const snapshot = structuredClone(input);
+    entered.push(snapshot.kind);
+    inFlight++;
+    try {
+      const result = await original(db, input);
+      const returned = ++tick;
+      if (snapshot.kind === 'operation.queue') {
+        expect(result).toBe(snapshot.prepared.command.sequence);
+        queued.push({ command: snapshot.prepared.command, ack: returned });
+      } else if (snapshot.kind === 'operation.dispatch') {
+        if (result === null) nullReplies++;
+        else
+          dispatched.push({
+            command: structuredClone(result) as harnessRecords.NanoHostHarnessCommand,
+            returned,
+          });
+      } else if (snapshot.kind === 'operation.settle') {
+        settled.push(key(snapshot.result));
+      } else if (snapshot.kind === 'result.acknowledge') {
+        consumed.push(key(snapshot.result));
+      }
+      return result;
+    } finally {
+      inFlight--;
+    }
+  });
+  return {
+    markPeerJoined() {
+      joinedAt = entered.length;
+    },
+    assertCompleteAndStopped() {
+      expect(joinedAt, 'original peer restore must have fulfilled').toBeDefined();
+      expect(inFlight).toBe(0);
+      expect(entered.slice(joinedAt!).filter((kind) => kind === 'operation.dispatch')).toEqual([]);
+      expect(queued.length, 'real work must not disappear').toBeGreaterThan(0);
+      const publications = new Map(queued.map((queued) => [key(queued.command), queued]));
+      const deliveries = dispatched.map((delivery) => key(delivery.command));
+      expect(publications.size).toBe(queued.length);
+      expect(new Set(deliveries).size).toBe(dispatched.length);
+      expect([...deliveries].sort()).toEqual([...publications.keys()].sort());
+      for (const delivery of dispatched) {
+        const publication = publications.get(key(delivery.command))!;
+        expect(delivery.returned).toBeGreaterThan(publication.ack);
+        expect(delivery.command).toEqual(publication.command);
+        expect(signature(delivery.command)).toEqual(signature(publication.command));
+      }
+      for (const harness of new Set(queued.map((queued) => queued.command.harnessInstanceId)))
+        expect(
+          dispatched
+            .filter((delivery) => delivery.command.harnessInstanceId === harness)
+            .map((delivery) => key(delivery.command))
+        ).toEqual(
+          queued
+            .filter((publication) => publication.command.harnessInstanceId === harness)
+            .map((publication) => key(publication.command))
+        );
+      expect([...settled].sort()).toEqual([...deliveries].sort());
+      expect([...consumed].sort()).toEqual([...deliveries].sort());
+      // One bootstrap scan and at most one terminal empty scan per real owner ACK wake.
+      expect(nullReplies).toBeLessThanOrEqual(queued.length + consumed.length + 1);
+    },
+    restore() {
+      if (restored) return;
+      restored = true;
+      observation.mockRestore();
+    },
+  };
+}
