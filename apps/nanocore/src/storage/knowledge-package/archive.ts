@@ -7,8 +7,11 @@ import { MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
 import { createPrivateTree, makePrivateTreeDirectory, removePrivateTree } from '@openkit/storage';
 import { extract, pack } from 'tar-stream';
 import type { FileStorageAdmission } from '../artifacts/file-admission.js';
-import type { KnowledgePackageLimits } from './format.js';
-import { isKnowledgePackagePath, type KnowledgePackageManifest } from './manifest.js';
+import {
+  isKnowledgePackagePath,
+  type KnowledgePackageLimits,
+  type KnowledgePackageManifest,
+} from './format.js';
 
 /** One bounded uncompressed carrier; the directory manifest remains its sole retained format. */
 export const KNOWLEDGE_PACKAGE_MEDIA_TYPE = 'application/x-tar';

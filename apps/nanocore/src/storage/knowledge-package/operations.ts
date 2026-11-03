@@ -58,10 +58,10 @@ import { writeFileAtomic } from '../workspace-file-records.js';
 import { KNOWLEDGE_PACKAGE_LIMITS } from './archive.js';
 import {
   type KnowledgePackageFile,
+  type KnowledgePackageManifest,
   verifyKnowledgePackageFormat,
   writeKnowledgePackageFormat,
 } from './format.js';
-import type { KnowledgePackageManifest } from './manifest.js';
 import { remintKnowledgeMarkdown } from './markdown.js';
 
 /** SHA-256 names original UTF-8 bytes, not Git objects or current page labels. */
