@@ -15981,7 +15981,9 @@ describe('createConfiguredTurnExecutor', () => {
     // Fixed, value-free progress identifies a reached old bound without extending it.
     let fixturePhase = 'setup';
     let fixtureStep = 'initial';
-    onTestFinished(() => {
+    const proceed = Promise.withResolvers<void>();
+    const fixtureFinished = Promise.withResolvers<void>();
+    onTestFinished(async () => {
       console.error(
         JSON.stringify({
           event: 'shared-storage-fixture-phase',
@@ -15989,8 +15991,10 @@ describe('createConfiguredTurnExecutor', () => {
           step: fixtureStep,
         })
       );
+      // Release this fixture's barrier and join its original finally before the global writer hook.
+      proceed.resolve();
+      await fixtureFinished.promise;
     });
-    const proceed = Promise.withResolvers<void>();
     const released = Promise.withResolvers<void>();
     const release = vi.mocked(native.executor.executionBackend!.release).getMockImplementation()!;
     let heldAttempt: string | undefined;
@@ -16309,15 +16313,20 @@ describe('createConfiguredTurnExecutor', () => {
         expect(command.body).not.toHaveProperty('workSlotRef');
       }
     } finally {
-      proceed.resolve();
-      for (const join of joins) await join();
-      acknowledgement.mockRestore();
-      commands.mockRestore();
-      await native.restore();
-      nativeWork.markPeerJoined();
-      await shutdownControlStoreWorkerClient();
-      workspaceDb.sqlite.close();
-      coreDb.sqlite.close();
+      try {
+        proceed.resolve();
+        for (const join of joins) await join();
+        acknowledgement.mockRestore();
+        commands.mockRestore();
+        await native.restore();
+        nativeWork.markPeerJoined();
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        coreDb.sqlite.close();
+      } finally {
+        // Settlement only; the original test Promise keeps its original success or error.
+        fixtureFinished.resolve();
+      }
     }
     nativeWork.assertCompleteAndStopped();
   });
