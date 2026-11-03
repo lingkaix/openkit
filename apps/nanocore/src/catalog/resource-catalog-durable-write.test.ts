@@ -15,10 +15,10 @@ import { dirname, join } from 'node:path';
 import { EMPTY_RESOURCE_CATALOG } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  projectWorkspaceCatalogExport,
   reconstructImportedWorkspaceCatalog,
   writeImportedWorkspaceCatalog,
-} from './catalog-portability.js';
+} from '../test-support/catalog-portability-fixture.js';
+import { projectWorkspaceCatalogExport } from './catalog-portability.js';
 import {
   createMcpConfig,
   importWorkspaceSkill,

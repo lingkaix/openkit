@@ -11,10 +11,12 @@ import {
   writeWorkspaceExportTree,
 } from '../storage/workspace-export.js';
 import {
-  projectWorkspaceCatalogExport,
-  readPortableAgentResourceCatalog,
   reconstructImportedWorkspaceCatalog,
   writeImportedWorkspaceCatalog,
+} from '../test-support/catalog-portability-fixture.js';
+import {
+  projectWorkspaceCatalogExport,
+  readPortableAgentResourceCatalog,
 } from './catalog-portability.js';
 import {
   exportWorkspaceLightAppDefinition,

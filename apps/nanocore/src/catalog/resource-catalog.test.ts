@@ -13,11 +13,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { describe, expect, it, vi } from 'vitest';
+import { reconstructImportedWorkspaceCatalog } from '../test-support/catalog-portability-fixture.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import {
-  projectWorkspaceCatalogExport,
-  reconstructImportedWorkspaceCatalog,
-} from './catalog-portability.js';
+import { projectWorkspaceCatalogExport } from './catalog-portability.js';
 import {
   CatalogConflictError,
   CatalogForbiddenError,

@@ -13,12 +13,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { digestOpenKitTree, hashOpenKitTreeEntries } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
-import { testEntityId } from '../test-support/entity-ids.js';
 import {
-  projectWorkspaceCatalogExport,
   reconstructImportedWorkspaceCatalog,
   writeImportedWorkspaceCatalog,
-} from './catalog-portability.js';
+} from '../test-support/catalog-portability-fixture.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { projectWorkspaceCatalogExport } from './catalog-portability.js';
 import {
   CatalogConflictError,
   CatalogContentUnavailableError,
