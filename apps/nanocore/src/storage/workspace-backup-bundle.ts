@@ -38,7 +38,8 @@ export const WORKSPACE_BACKUP_SEAL_FILE = 'seal.json';
 
 // Match the existing archive's file, expanded-byte and entry ceilings. Metadata has
 // a separate finite parsing budget; content is copied and read in bounded chunks.
-const MAX_FILE_BYTES = 2_147_483_648;
+/** Existing file ceiling shared by verified bundle members and their recovery staging bytes. */
+export const WORKSPACE_BACKUP_MAX_FILE_BYTES = 2_147_483_648;
 const MAX_TOTAL_BYTES = 34_359_738_368;
 const MAX_ENTRIES = 200_000;
 const MAX_METADATA_BYTES = 16_777_216;
@@ -67,7 +68,7 @@ function isBundlePath(path: string): boolean {
 const pathSchema = textSchema.refine(isBundlePath);
 const inventoryEntrySchema = z.strictObject({
   path: pathSchema.refine((path) => !METADATA_FILES.has(path)),
-  bytes: integerSchema.max(MAX_FILE_BYTES),
+  bytes: integerSchema.max(WORKSPACE_BACKUP_MAX_FILE_BYTES),
   sha256: digestSchema,
   mode: integerSchema.max(0o777),
 });
@@ -449,7 +450,11 @@ async function inspectTree(root: FileHandle): Promise<SourceTree> {
           await child.close();
         }
       } else {
-        if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(MAX_FILE_BYTES)) {
+        if (
+          !stat.isFile() ||
+          stat.nlink !== 1n ||
+          stat.size > BigInt(WORKSPACE_BACKUP_MAX_FILE_BYTES)
+        ) {
           throw new Error('Workspace backup contains an invalid file.');
         }
         bytes += stat.size;
@@ -906,7 +911,7 @@ export async function withVerifiedWorkspaceSnapshotSource<T>(
         expectedBytes: entry.bytes,
         expectedSha256: entry.sha256,
         mode: entry.mode,
-        maxBytes: MAX_FILE_BYTES,
+        maxBytes: WORKSPACE_BACKUP_MAX_FILE_BYTES,
       });
     }
     await publishDurableFile({

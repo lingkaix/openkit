@@ -530,7 +530,7 @@ const retainedRecoveryIntent = z.discriminatedUnion('command', [
 ]);
 
 /** Validates original authority-bearing intent without treating current accounts as historical facts. */
-function validateRecoveryProof(id: string, candidate: string, proof: RecoveryProof) {
+export function validateRecoveryProof(id: string, candidate: string, proof: RecoveryProof) {
   const parsed = retainedRecoveryIntent.safeParse(proof.input);
   if (!parsed.success) refuseRecovery('recovery-required');
   const input = parsed.data;

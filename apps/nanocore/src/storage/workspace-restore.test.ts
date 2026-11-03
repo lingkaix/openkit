@@ -82,7 +82,6 @@ import {
 import { protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 import { inspectWorkspaceRecoveryAtCore } from './workspace-move.js';
-import * as recoveryAdmissions from './workspace-recovery-admissions.js';
 import {
   bindWorkspaceRecoveryNativeOwner,
   readRecoveryAdmission,
@@ -929,43 +928,120 @@ describe('D0-2 same-deployment restore', () => {
     'descriptive-extensions',
     'unknown-core',
   ] as const)('selected registration preserves retained report compatibility for %s before committing its result', async (shape) => {
-    const prepare = recoveryAdmissions.prepareRecoveryAdmission;
-    const creation = vi
-      .spyOn(recoveryAdmissions, 'prepareRecoveryAdmission')
-      .mockImplementation((core, id, candidate, proof) => {
-        const parent = verifyDataRootBackupManifest({
-          backupRoot: join(dirname(core.dataRoot), 'parent'),
-        }).manifest;
-        const capture = {
-          ...proof.capture,
-          futureCaptureDescription: { label: 'Original retained capture description' },
-          coverage: {
-            ...proof.capture.coverage,
-            futureCoverageDescription: { label: 'Original retained coverage description' },
-          },
-          source: {
-            kind: 'data-root-backup' as const,
-            dataRootBackupId: parent.id,
-            consistency: parent.consistency,
-            futureSourceDescription: { label: 'Original verified parent description' },
-          },
-        };
-        // The original owner creates the real prepared admission. The negative
-        // variant injects unsupported retained core content, not new authority.
-        const result = {
-          ...proof.result,
-          capture,
-          command: shape === 'unknown-core' ? 'unsupported-future-command' : proof.result.command,
-          futureReportDescription: { label: 'Original retained report description' },
-        } as typeof proof.result;
-        return prepare(core, id, candidate, { ...proof, capture, result });
+    const f = await readmissionFixture(false, 'after-target-rename');
+    const retained = readRecoveryAdmission(f.owner.core, f.requestId)!;
+    expect(retained.state).toBe('prepared');
+    expect(retained.proof.candidateDigest).toBeTypeOf('string');
+    const rawProof = f.owner.core.sqlite
+      .prepare('SELECT proof_json FROM workspace_recovery_admissions WHERE admission_id=?')
+      .pluck()
+      .get(f.requestId) as string;
+    const parent = verifyDataRootBackupManifest({
+      backupRoot: join(dirname(f.dataRoot), 'parent'),
+    }).manifest;
+    const capture = {
+      ...retained.proof.capture,
+      futureCaptureDescription: { label: 'Original retained capture description' },
+      coverage: {
+        ...retained.proof.capture.coverage,
+        futureCoverageDescription: { label: 'Original retained coverage description' },
+      },
+      source: {
+        kind: 'data-root-backup' as const,
+        dataRootBackupId: parent.id,
+        consistency: parent.consistency,
+        futureSourceDescription: { label: 'Original verified parent description' },
+      },
+    };
+    const result = {
+      ...retained.proof.result,
+      capture,
+      command:
+        shape === 'unknown-core' ? 'unsupported-future-command' : retained.proof.result.command,
+      futureReportDescription: { label: 'Original retained report description' },
+    } as typeof retained.proof.result;
+    const injected = { ...retained.proof, capture, result };
+    // Retained-content fault/format specimen after genuine placement, following
+    // the existing recovery-admission owner's corruption fixture. No authority changes.
+    const changed = f.owner.core.sqlite
+      .prepare(`UPDATE workspace_recovery_admissions
+      SET proof_json=? WHERE admission_id=? AND workspace_id=? AND state='prepared'
+      AND revision=? AND candidate_ref=? AND proof_json=?`)
+      .run(
+        JSON.stringify(injected),
+        f.requestId,
+        retained.workspace_id,
+        retained.revision,
+        retained.candidate_ref,
+        rawProof
+      );
+    expect(changed.changes).toBe(1);
+    const installed = readRecoveryAdmission(f.owner.core, f.requestId)!;
+    expect(installed.state).toBe(retained.state);
+    expect(installed.revision).toBe(retained.revision);
+    expect(installed.candidate_ref).toBe(retained.candidate_ref);
+    // Setup guards read real retained content, independent of the later expected snapshot.
+    expect(installed.proof.result.command).toBe(
+      shape === 'unknown-core' ? 'unsupported-future-command' : retained.proof.result.command
+    );
+    const descriptions = {
+      futureCaptureDescription: { label: 'Original retained capture description' },
+      coverage: {
+        futureCoverageDescription: { label: 'Original retained coverage description' },
+      },
+      source: {
+        kind: 'data-root-backup',
+        dataRootBackupId: parent.id,
+        consistency: parent.consistency,
+        futureSourceDescription: { label: 'Original verified parent description' },
+      },
+    };
+    expect(installed.proof.capture).toMatchObject(descriptions);
+    expect(installed.proof.result).toMatchObject({
+      capture: descriptions,
+      futureReportDescription: { label: 'Original retained report description' },
+    });
+    expect(installed.proof).toEqual(injected);
+    const client = getControlStoreWorkerClient(f.owner.native.gate);
+    const publish = client.recoveryTargetRegistration.bind(client);
+    let selectedCalls = 0;
+    let nativeRefusal: unknown;
+    const publication = vi
+      .spyOn(client, 'recoveryTargetRegistration')
+      .mockImplementation(async (...args) => {
+        if (
+          args[0] === `core:${coreDbPath(f.dataRoot)}` &&
+          args[1].admissionId === f.requestId &&
+          args[1].workspaceId === workspaceId
+        ) {
+          selectedCalls++;
+          try {
+            return await publish(...args);
+          } catch (error) {
+            nativeRefusal = error;
+            throw error;
+          }
+        }
+        return publish(...args);
       });
-    let f: Awaited<ReturnType<typeof readmissionFixture>>;
-    try {
-      f = await readmissionFixture(false, 'after-target-rename');
-    } finally {
-      creation.mockRestore();
-    }
+    onTestFinished(() => {
+      try {
+        expect(selectedCalls, 'Selected registration must reach its real native method once.').toBe(
+          1
+        );
+        if (shape === 'unknown-core')
+          expect(nativeRefusal).toMatchObject({
+            commit: 'not-committed',
+            domain: {
+              operation: 'recovery-target-registration',
+              code: 'recovery-required',
+              status: 409,
+            },
+          });
+      } finally {
+        publication.mockRestore();
+      }
+    });
     const before = readRecoveryAdmission(f.owner.core, f.requestId)!;
     const tuple = () =>
       Object.fromEntries(

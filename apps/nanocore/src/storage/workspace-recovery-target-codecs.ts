@@ -30,6 +30,48 @@ export const ControlRecoveryTargetRegistrationInputSchema = z.strictObject({
 export type ControlRecoveryTargetRegistrationInput = z.infer<
   typeof ControlRecoveryTargetRegistrationInputSchema
 >;
+/** Exact immutable bytes inside the original restore operation's derived staging scope. */
+export const ControlRecoveryTargetProofFileSchema = z.strictObject({
+  name: z
+    .string()
+    .regex(/^\.proof-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/),
+  byteLength: z.number().int().nonnegative().safe(),
+  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
+const targetAuthority = {
+  admissionId: ControlRecoveryTargetRegistrationInputSchema.shape.admissionId,
+  workspaceId: ControlRecoveryTargetRegistrationInputSchema.shape.workspaceId,
+  authority: ControlRecoveryTargetRegistrationInputSchema.shape.authority,
+  deletedRecovery: ControlRecoveryTargetRegistrationInputSchema.shape.deletedRecovery,
+};
+const targetSelection = {
+  ...targetAuthority,
+  expectedRevision: ControlRecoveryTargetRegistrationInputSchema.shape.expectedRevision,
+  proofHash: ControlRecoveryTargetRegistrationInputSchema.shape.proofHash,
+};
+/** Original Core effects remain separate around candidate preparation and durable retirement. */
+export const ControlRecoveryTargetPreparationInputSchema = z.discriminatedUnion('kind', [
+  z.strictObject({
+    ...targetAuthority,
+    kind: z.literal('prepare'),
+    file: ControlRecoveryTargetProofFileSchema,
+  }),
+  z.strictObject({
+    ...targetSelection,
+    kind: z.literal('proof'),
+    file: ControlRecoveryTargetProofFileSchema,
+  }),
+  z.strictObject({ ...targetSelection, kind: z.literal('abandon') }),
+  z.strictObject({
+    ...targetSelection,
+    kind: z.literal('abandon-result'),
+    file: ControlRecoveryTargetProofFileSchema,
+  }),
+]);
+/** Closed lifecycle input; the file selection never grants a caller-selected root. */
+export type ControlRecoveryTargetPreparationInput = z.infer<
+  typeof ControlRecoveryTargetPreparationInputSchema
+>;
 // Descriptive retained additions survive the native handoff; closed core values still refuse.
 const capture = WorkspaceSnapshotReportSchema.shape.capture.unwrap();
 const coverage = capture.shape.coverage;
@@ -66,11 +108,13 @@ const recoveryCodes = [
   'request-conflict',
   'mapping-refused',
   'identity-collision',
+  'workspace-unavailable',
+  'deployment-mismatch',
 ] as const;
 /** Only existing bounded owner refusals cross the native channel; SQL diagnostics never do. */
 export const ControlRecoveryTargetRegistrationRefusalSchema = z
   .strictObject({
-    operation: z.literal('recovery-target-registration'),
+    operation: z.enum(['recovery-target-registration', 'recovery-target-preparation']),
     code: z.enum([...recoveryCodes, 'deployment_admin_required', 'workspace_access_denied']),
     message: z.string(),
     status: z.union([z.literal(403), z.literal(409)]),

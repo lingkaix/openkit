@@ -236,7 +236,11 @@ import { WorkspaceRecoveryError } from './workspace-backup.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { ControlRecoveryTargetRegistrationRefusalSchema } from './workspace-recovery-target-codecs.js';
-import { applyControlRecoveryTargetRegistration } from './workspace-recovery-target-native.js';
+import {
+  applyControlRecoveryTargetPreparation,
+  applyControlRecoveryTargetRegistration,
+  prepareControlRecoveryTargetPreparation,
+} from './workspace-recovery-target-native.js';
 import {
   WORKSPACE_REVIEW_REFUSALS,
   WorkspaceReviewDecisionRefusal,
@@ -295,6 +299,7 @@ type WriteCommand = Extract<
       | 'evaluation-candidate'
       | 'scheduler-admission'
       | 'recovery-target-registration'
+      | 'recovery-target-preparation'
       | 'workspace-deletion'
       | 'core-sharing'
       | 'provenance'
@@ -343,6 +348,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedTerminal?: PreparedControlTerminal | undefined;
   readonly preparedRecoveryHistory?: PreparedControlRecoveryHistory | undefined;
   readonly preparedRecoverySafety?: PreparedControlRecoverySafety | undefined;
+  readonly preparedTargetProof?: ReturnType<typeof prepareControlRecoveryTargetPreparation>;
   readonly preparedProvenance?: WorkerRuntimeProvenanceMetadataInput | undefined;
   readonly preparedObservation?: ControlWorkObservationInput | undefined;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
@@ -469,7 +475,7 @@ function failure(
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
   if (
-    operation === 'recovery-target-registration' &&
+    (operation === 'recovery-target-registration' || operation === 'recovery-target-preparation') &&
     (error instanceof WorkspaceRecoveryError || error instanceof OperationError)
   ) {
     const parsed = ControlRecoveryTargetRegistrationRefusalSchema.safeParse({
@@ -1402,6 +1408,9 @@ async function prepareAfterPredecessors(
 /** Removes one admitted slot only after its ordered response and wakes its dependent preparation. */
 function complete(owner: OwnedDatabase, request: WriteRequest, result: ControlWorkerReply): void {
   owner.pending.splice(owner.pending.indexOf(request), 1);
+  // Later barriers retain predecessor metadata until settlement, never this consumed file body.
+  if (request.operation === 'recovery-target-preparation')
+    Object.assign(request, { preparedTargetProof: undefined });
   try {
     reply(result);
   } finally {
@@ -2025,6 +2034,20 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'scheduler-admission',
               result,
+            };
+          } else if (request.operation === 'recovery-target-preparation') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            applyControlRecoveryTargetPreparation(
+              owner.scopeDb,
+              request.input,
+              request.preparedTargetProof
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'recovery-target-preparation',
+              result: null,
             };
           } else if (request.operation === 'recovery-target-registration') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
@@ -3070,6 +3093,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'worker-control-record' ||
       value.operation === 'scheduler-admission' ||
       value.operation === 'recovery-target-registration' ||
+      value.operation === 'recovery-target-preparation' ||
       value.operation === 'workspace-deletion' ||
       value.operation === 'core-sharing' ||
       value.operation === 'evaluation-candidate' ||
@@ -3105,6 +3129,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           cohort,
           barrier:
             value.operation === 'recovery-target-registration' ||
+            value.operation === 'recovery-target-preparation' ||
             value.operation === 'app-kernel' ||
             value.operation === 'recovery-cleanup' ||
             value.operation === 'recovery-capture' ||
@@ -3144,6 +3169,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedTerminal: PreparedControlTerminal | undefined;
           let preparedRecoveryHistory: PreparedControlRecoveryHistory | undefined;
           let preparedRecoverySafety: PreparedControlRecoverySafety | undefined;
+          let preparedTargetProof: ReturnType<typeof prepareControlRecoveryTargetPreparation>;
           let preparedProvenance: WorkerRuntimeProvenanceMetadataInput | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
           try {
@@ -3226,6 +3252,14 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 owner.scopeDb,
                 value.input,
                 value.content
+              );
+            }
+            if (value.operation === 'recovery-target-preparation') {
+              await prepareAfterPredecessors(owner, queued, earlier);
+              if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+              preparedTargetProof = prepareControlRecoveryTargetPreparation(
+                owner.scopeDb,
+                value.input
               );
             }
             if (value.operation === 'recovery-history') {
@@ -3428,6 +3462,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               itemPublication,
               preparedTerminal,
               preparedRecoverySafety,
+              preparedTargetProof,
               preparedRecoveryHistory,
               preparedObservation,
               preparedProvenance,

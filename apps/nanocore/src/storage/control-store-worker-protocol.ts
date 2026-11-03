@@ -249,6 +249,8 @@ import {
 } from './workspace-deletion-codecs.js';
 import type { WorkspaceRecoveryCliReport } from './workspace-recovery-cli.js';
 import {
+  type ControlRecoveryTargetPreparationInput,
+  ControlRecoveryTargetPreparationInputSchema,
   type ControlRecoveryTargetRegistrationInput,
   ControlRecoveryTargetRegistrationInputSchema,
   ControlRecoveryTargetRegistrationRefusalSchema,
@@ -567,6 +569,10 @@ export type ControlWorkerCommand =
           readonly content?: ArrayBuffer;
         }
       | {
+          readonly operation: 'recovery-target-preparation';
+          readonly input: ControlRecoveryTargetPreparationInput;
+        }
+      | {
           readonly operation: 'recovery-target-registration';
           readonly input: ControlRecoveryTargetRegistrationInput;
         }
@@ -846,6 +852,11 @@ export type ControlWorkerReply = {
     }
   | {
       readonly status: 'ok';
+      readonly operation: 'recovery-target-preparation';
+      readonly result: null;
+    }
+  | {
+      readonly status: 'ok';
       readonly operation: 'recovery-target-registration';
       readonly result: WorkspaceRecoveryCliReport;
     }
@@ -1016,7 +1027,11 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
-  if (isRecord(value) && value.operation === 'recovery-target-registration')
+  if (
+    isRecord(value) &&
+    (value.operation === 'recovery-target-registration' ||
+      value.operation === 'recovery-target-preparation')
+  )
     return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
   if (
     isRecord(value) &&
@@ -1290,6 +1305,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlWorkerHeartbeatResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'worker-control-final-status')
     return ControlWorkerFinalStatusResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'recovery-target-preparation') return reply.result === null;
   if (reply.operation === 'recovery-target-registration')
     return ControlRecoveryTargetRegistrationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-deletion')
@@ -1488,6 +1504,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'shutdown') return exactFields(value, header);
   if (typeof value.database !== 'string' || value.database.length === 0) return false;
   const scoped = [...header, 'database'];
+  if (value.operation === 'recovery-target-preparation')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlRecoveryTargetPreparationInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'recovery-target-registration')
     return (
       exactFields(value, [...scoped, 'input']) &&
