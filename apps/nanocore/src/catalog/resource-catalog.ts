@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import { LightAppSchemaInputSchema } from '@openkit/app-api-schemas';
 import {
@@ -36,7 +36,7 @@ import {
   ensureCanonicalDirectory,
   materializePrivateTreeSync,
   materializeSnapshot,
-  syncCanonicalDirectory,
+  removeCanonicalTreeSync,
 } from '@openkit/storage';
 import { ZodError, z } from 'zod';
 
@@ -791,9 +791,7 @@ export function purgeWorkspaceSkillVersion(input: {
   input.admitDeletion?.();
   const path = skillSnapshotPath(input.dataRoot, input.workspaceId, input.entryId, input.digest);
   try {
-    ensureCanonicalDirectory(dirname(path), 0o777);
-    rmSync(path, { force: true, recursive: true });
-    syncCanonicalDirectory(dirname(path));
+    removeCanonicalTreeSync(path);
     return publishWorkspaceResourceCatalog({
       catalog: {
         ...current,

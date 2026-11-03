@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   openSync,
@@ -36,6 +37,7 @@ import {
   publishCanonicalPathAsync,
   readCanonicalFile,
   readCanonicalTextFile,
+  removeCanonicalTreeSync,
   removePrivateTree,
   removePrivateTreeSync,
   syncCanonicalTree,
@@ -282,4 +284,72 @@ it('owns private ZIP tree bytes, metadata accounting, moves and recursive cleanu
   removePrivateTreeSync(synchronous);
   removePrivateTreeSync(synchronous);
   expect(await readdir(root)).toEqual([]);
+});
+
+it('removes only the selected canonical tree and preserves linked bytes, siblings and directory modes', () => {
+  const root = fixture();
+  const parent = join(root, 'catalog');
+  const target = join(parent, 'selected');
+  const outside = join(root, 'outside');
+  mkdirSync(join(target, 'nested'), { recursive: true });
+  mkdirSync(outside);
+  writeFileSync(join(target, 'nested', 'bytes'), original);
+  writeFileSync(join(outside, 'retained'), original);
+  writeFileSync(join(parent, 'sibling'), original);
+  symlinkSync(outside, join(target, 'linked'), 'dir');
+  const parentBefore = statSync(parent);
+
+  removeCanonicalTreeSync(target);
+
+  expect(existsSync(target)).toBe(false);
+  expect(readFileSync(join(outside, 'retained'))).toEqual(original);
+  expect(readFileSync(join(parent, 'sibling'))).toEqual(original);
+  // The original recursive/force removal unlinks a selected link without following it.
+  symlinkSync(outside, target, 'dir');
+  removeCanonicalTreeSync(target);
+  expect(() => lstatSync(target)).toThrowError(expect.objectContaining({ code: 'ENOENT' }));
+  expect(readFileSync(join(outside, 'retained'))).toEqual(original);
+  expect(statSync(parent).ino).toBe(parentBefore.ino);
+  expect(statSync(parent).mode).toBe(parentBefore.mode);
+
+  const missing = join(root, 'new', 'entry', 'absent');
+  const previousUmask = process.umask(0o027);
+  try {
+    removeCanonicalTreeSync(missing);
+  } finally {
+    process.umask(previousUmask);
+  }
+  expect(existsSync(missing)).toBe(false);
+  for (const path of [join(root, 'new'), join(root, 'new', 'entry')])
+    expect(statSync(path).mode & 0o777).toBe(0o750);
+});
+
+it.each([
+  'before',
+  'after',
+] as const)('preserves the exact deletion boundary when parent acknowledgement fails %s removal', (boundary) => {
+  const root = fixture();
+  const parent = join(root, 'catalog');
+  const target = join(parent, 'selected');
+  mkdirSync(target, { recursive: true });
+  writeFileSync(join(target, 'bytes'), original);
+  writeFileSync(join(parent, 'sibling'), original);
+  const parentBefore = statSync(parent);
+  const refused = new Error('Selected deletion acknowledgement failed.');
+  // Parent admission commits its containing entry; retirement then commits the selected parent.
+  fault.directory = boundary === 'before' ? root : parent;
+  fault.error = refused;
+  try {
+    removeCanonicalTreeSync(target);
+    expect.unreachable('Deletion must not acknowledge failed parent synchronization.');
+  } catch (error) {
+    expect(error).toBe(refused);
+  }
+  expect(existsSync(target)).toBe(boundary === 'before');
+  if (boundary === 'before') expect(readFileSync(join(target, 'bytes'))).toEqual(original);
+  expect(readFileSync(join(parent, 'sibling'))).toEqual(original);
+  expect(statSync(parent).ino).toBe(parentBefore.ino);
+  expect(statSync(parent).mode).toBe(parentBefore.mode);
+  // An absent-entry retry still acknowledges the parent and must preserve its failure.
+  if (boundary === 'after') expect(() => removeCanonicalTreeSync(target)).toThrow(refused);
 });

@@ -47,6 +47,7 @@ export {
   readCanonicalFile,
   readCanonicalTextFile,
   readLayoutDirectory,
+  removeCanonicalTreeSync,
   removeDurableFile,
   removePrivateTree,
   removePrivateTreeInventory,

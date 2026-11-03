@@ -1258,6 +1258,16 @@ export function syncCanonicalDirectory(path: string): void {
   }
 }
 
+/**
+ * @internal Removes a caller-admitted retained path and acknowledges its canonical parent.
+ * Retention authority stays with the caller; failed synchronization preserves the native error and removal residue.
+ */
+export function removeCanonicalTreeSync(path: string): void {
+  ensureCanonicalDirectory(dirname(path), 0o777);
+  rmSync(path, { force: true, recursive: true });
+  syncCanonicalDirectory(dirname(path));
+}
+
 /** Synchronizes complete staged bytes and child entries before their containing tree is published. */
 export function syncCanonicalTree(path: string): void {
   const metadata = lstatSync(path);
