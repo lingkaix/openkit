@@ -14,7 +14,6 @@ import {
 import type { CoreDb } from './db.js';
 import {
   StoredRecurringAttemptCodeV1Schema,
-  StoredRecurringDefinitionSnapshotV1Schema,
   StoredRecurringExpiredRangeV1Schema,
   StoredRecurringOccurrenceV1Schema,
   StoredRecurringScheduleV1Schema,
@@ -26,10 +25,9 @@ export const RECURRING_DEADLINE_MS = 600_000;
 export { RecurringAdmissionPayloadSchema } from './scheduler-admission-codecs.js';
 
 import type { RecurringAdmissionPayloadSchema } from './scheduler-admission-codecs.js';
+
 /** Closed native v1 attempt outcomes, independent of current operation projections. */
-export const RecurringAttemptCodeSchema = StoredRecurringAttemptCodeV1Schema;
-/** Fixed native snapshot shared by occurrence and expired-range history. */
-export const RecurringDefinitionSnapshotSchema = StoredRecurringDefinitionSnapshotV1Schema;
+const RecurringAttemptCodeSchema = StoredRecurringAttemptCodeV1Schema;
 /** Fixed native occurrence payload before exact identity and attempt-sequence checks. */
 export const RecurringOccurrenceSchema = StoredRecurringOccurrenceV1Schema;
 /** Fixed native range plus its unchanged exact coverage predicates. */

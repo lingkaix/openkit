@@ -73,7 +73,7 @@ const storageChoice = z.discriminatedUnion('kind', [
     .strict(),
 ]);
 /** Exact queue facts; the retained domain parser still owns identity and input hashing. */
-export const SchedulerCreateSchema = z
+const SchedulerCreateSchema = z
   .object({
     backendId: z.string().min(1),
     queueEntryId: z.string().min(1),
@@ -132,7 +132,7 @@ export const ExternalSourceSchema = z
   })
   .strict();
 /** Only the exact existing definition mutation crosses the private family boundary. */
-export const AutomationDefinitionMutationSchema = z.discriminatedUnion('action', [
+const AutomationDefinitionMutationSchema = z.discriminatedUnion('action', [
   z
     .object({
       action: z.literal('create'),

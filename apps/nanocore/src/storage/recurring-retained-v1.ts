@@ -56,7 +56,7 @@ const StoredRecurringWorkspaceRootV1Schema = z.discriminatedUnion('sourceKind', 
   }),
 ]);
 /** Exact retained payload; current preparation continues to use its separate admission schema. */
-export const StoredRecurringAdmissionPayloadV1Schema = z.object({
+const StoredRecurringAdmissionPayloadV1Schema = z.object({
   backendId: z.string().min(1),
   requestedAgentId: z.string().min(1),
   profileRef: z.string().min(1).nullable(),
@@ -82,7 +82,7 @@ export const StoredRecurringAttemptCodeV1Schema = z.enum([
   'admission_failed',
 ]);
 /** Immutable authored request shared by individual occurrences and expired ranges. */
-export const StoredRecurringDefinitionSnapshotV1Schema = z.object({
+const StoredRecurringDefinitionSnapshotV1Schema = z.object({
   threadId: ThreadIdSchema,
   actor: StoredRecurringActorV1Schema,
   prompt: z.string().min(1),
