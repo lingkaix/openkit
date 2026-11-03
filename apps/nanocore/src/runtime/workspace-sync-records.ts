@@ -1,4 +1,8 @@
 import {
+  recordWorkspaceInputSnapshot,
+  recordWorkspaceMaterializationRecord,
+} from '../storage/workspace-materialization-records.js';
+import {
   getWorkspaceSyncReview,
   listWorkspaceSyncReviews,
   parseWorkspaceSyncReviewItem,
@@ -28,10 +32,8 @@ import {
   WorkspaceChangeSetSchema,
   type WorkspaceInputSnapshot,
   WorkspaceInputSnapshotReaderSchema,
-  WorkspaceInputSnapshotSchema,
   type WorkspaceMaterializationRecord,
   WorkspaceMaterializationRecordReaderSchema,
-  WorkspaceMaterializationRecordSchema,
   WorkspaceSynchronizationBackendKindSchema,
   type WorkspaceSyncReviewItem,
   type WorkspaceSyncReviewPatchPayload,
@@ -42,7 +44,6 @@ import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { recordWorkspaceEvidenceBundle } from '../evidence-bundles.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { recordMaterializationRuntimeEvidence } from './runtime-evidence.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -84,10 +85,6 @@ export interface ExportableWorkspaceSyncRecords {
   readonly changeSets: readonly WorkspaceChangeSet[];
   /** Durable staged review rows. */
   readonly stagedReviews: readonly ExportedStagedWorkspaceReview[];
-}
-
-interface RecordWorkspaceMaterializationRecordOptions {
-  readonly promoteEvidence?: boolean;
 }
 
 /**
@@ -270,32 +267,6 @@ export function recordWorkspaceMaterializationRecords(
 }
 
 /**
- * Atomically publishes the exact input-snapshot and backend-handle handoff for one package.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param inputSnapshots Package input snapshots built before materialization.
- * @param materializationRecords Exact backend materialization records built after creation.
- * @returns Stored snapshots and materialization records.
- */
-export function recordWorkspaceBackendHandoff(
-  workspaceDb: WorkspaceDb,
-  inputSnapshots: readonly WorkspaceInputSnapshot[],
-  materializationRecords: readonly WorkspaceMaterializationRecord[]
-): {
-  readonly inputSnapshots: WorkspaceInputSnapshot[];
-  readonly materializationRecords: WorkspaceMaterializationRecord[];
-} {
-  return workspaceDb.sqlite.transaction(() => ({
-    inputSnapshots: inputSnapshots.map((snapshot) =>
-      recordWorkspaceInputSnapshot(workspaceDb, snapshot)
-    ),
-    materializationRecords: materializationRecords.map((record) =>
-      recordWorkspaceMaterializationRecord(workspaceDb, record)
-    ),
-  }))();
-}
-
-/**
  * Lists durable workspace input snapshots for one workspace.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -398,149 +369,6 @@ export function listExportableWorkspaceSyncRecords(
         review: item.review,
       })),
   };
-}
-
-/**
- * Persists one workspace input snapshot.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param snapshot Input snapshot to persist.
- */
-function recordWorkspaceInputSnapshot(
-  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
-  snapshot: WorkspaceInputSnapshot
-): WorkspaceInputSnapshot {
-  const parsed = WorkspaceInputSnapshotSchema.parse(snapshot);
-  const existing = workspaceDb.sqlite
-    .prepare(
-      `SELECT schema_version AS schemaVersion, payload_json
-       FROM workspace_input_snapshots
-       WHERE workspace_id = ? AND input_snapshot_id = ?`
-    )
-    .get(parsed.workspaceId, parsed.id) as
-    | { schemaVersion: unknown; payload_json: string }
-    | undefined;
-  if (existing) {
-    const stored = WorkspaceInputSnapshotReaderSchema.parse(
-      readRetainedV1(existing, () => JSON.parse(existing.payload_json)) as unknown
-    );
-    if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
-      throw new Error(`Workspace input snapshot replay conflict: ${parsed.id}`);
-    }
-    return stored;
-  }
-  workspaceDb.sqlite
-    .prepare(
-      `INSERT INTO workspace_input_snapshots (
-        schema_version,
-        input_snapshot_id,
-        workspace_id,
-        resource_id,
-        strategy,
-        payload_json,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      writeRetainedV1({}).schemaVersion,
-      parsed.id,
-      parsed.workspaceId,
-      parsed.resourceId,
-      parsed.strategy,
-      JSON.stringify(parsed),
-      parsed.createdAt,
-      parsed.createdAt
-    );
-  return parsed;
-}
-
-/**
- * Persists one workspace materialization record.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param record Materialization record to persist.
- */
-function recordWorkspaceMaterializationRecord(
-  workspaceDb: WorkspaceDb,
-  record: WorkspaceMaterializationRecord,
-  options: RecordWorkspaceMaterializationRecordOptions = {}
-): WorkspaceMaterializationRecord {
-  const parsed = WorkspaceMaterializationRecordSchema.parse(record);
-  const existing = workspaceDb.sqlite
-    .prepare(
-      `SELECT schema_version AS schemaVersion, payload_json
-       FROM workspace_materialization_records
-       WHERE workspace_id = ? AND materialization_record_id = ?`
-    )
-    .get(parsed.workspaceId, parsed.id) as
-    | { schemaVersion: unknown; payload_json: string }
-    | undefined;
-  if (existing) {
-    const stored = WorkspaceMaterializationRecordReaderSchema.parse(
-      readRetainedV1(existing, () => JSON.parse(existing.payload_json)) as unknown
-    );
-    if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
-      throw new Error(`Workspace materialization replay conflict: ${parsed.id}`);
-    }
-  } else {
-    const inserted = workspaceDb.sqlite
-      .prepare(
-        `INSERT INTO workspace_materialization_records (
-        schema_version,
-          materialization_record_id,
-          workspace_id,
-          input_snapshot_id,
-          package_snapshot_id,
-          worker_session_id,
-          strategy,
-          payload_json,
-          created_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        writeRetainedV1({}).schemaVersion,
-        parsed.id,
-        parsed.workspaceId,
-        parsed.inputSnapshotId,
-        parsed.packageSnapshotId,
-        parsed.workerSessionId,
-        parsed.strategy,
-        JSON.stringify(parsed),
-        parsed.createdAt,
-        parsed.createdAt
-      );
-    if (inserted.changes === 0) {
-      throw new Error(`Workspace materialization was not recorded: ${parsed.id}`);
-    }
-  }
-  if (options.promoteEvidence === false) {
-    return parsed;
-  }
-
-  recordBackendWorkspaceHandle(workspaceDb, inferBackendWorkspaceHandle(parsed), true);
-  recordWorkspaceEvidenceBundle(workspaceDb, {
-    id: `evb_workspace_materialization_${parsed.id}`,
-    workspaceId: parsed.workspaceId,
-    threadId: null,
-    goalId: null,
-    turnId: null,
-    agentSessionId: null,
-    backendType: parsed.backendKind,
-    sourceKind: 'workspace-materialization',
-    summary: `Workspace materialization recorded: strategy ${parsed.strategy}, backend ${parsed.backendKind}`,
-    rawEvidenceRefs: [],
-    redactedEvidenceRefs: parsed.readinessEvidence,
-    contentDigests: [parsed.policyDigest],
-    retentionClass: 'workspace-audit',
-    sensitivityClass: 'product-safe',
-    importStatus: 'promoted',
-    requiredFeatures: ['evidence.bundle.v1'],
-    createdAt: parsed.createdAt,
-  });
-  recordMaterializationRuntimeEvidence(workspaceDb, parsed);
-  return parsed;
 }
 
 /**
@@ -807,69 +635,6 @@ export function updateBackendWorkspaceHandleCleanupStatus(
 }
 
 /**
- * Persists one redacted backend workspace handle.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param handle Backend handle to persist.
- * @param preserveCleanupProgress Whether an exact materialization replay may retain mutable cleanup state.
- */
-function recordBackendWorkspaceHandle(
-  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
-  handle: BackendWorkspaceHandle,
-  preserveCleanupProgress = false
-): void {
-  const parsed = BackendWorkspaceHandleSchema.parse(handle);
-  const existing = workspaceDb.sqlite
-    .prepare(
-      `SELECT schema_version AS schemaVersion, payload_json
-       FROM backend_workspace_handles
-       WHERE workspace_id = ? AND backend_workspace_handle_id = ?`
-    )
-    .get(parsed.workspaceId, parsed.id) as
-    | { schemaVersion: unknown; payload_json: string }
-    | undefined;
-  if (existing) {
-    const stored = BackendWorkspaceHandleReaderSchema.parse(
-      readRetainedV1(existing, () => JSON.parse(existing.payload_json)) as unknown
-    );
-    const replayed = preserveCleanupProgress
-      ? { ...parsed, cleanupStatus: stored.cleanupStatus, updatedAt: stored.updatedAt }
-      : parsed;
-    if (JSON.stringify(stored) !== JSON.stringify(replayed)) {
-      throw new Error(`Backend workspace handle replay conflict: ${parsed.id}`);
-    }
-    return;
-  }
-  workspaceDb.sqlite
-    .prepare(
-      `INSERT INTO backend_workspace_handles (
-        schema_version,
-        backend_workspace_handle_id,
-        workspace_id,
-        materialization_record_id,
-        backend_kind,
-        package_snapshot_id,
-        worker_session_id,
-        payload_json,
-        created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      writeRetainedV1({}).schemaVersion,
-      parsed.id,
-      parsed.workspaceId,
-      parsed.materializationRecordId,
-      parsed.backendKind,
-      parsed.packageSnapshotId,
-      parsed.workerSessionId,
-      JSON.stringify(parsed),
-      parsed.createdAt,
-      parsed.updatedAt
-    );
-}
-
-/**
  * Persists one worker output manifest.
  *
  * @param workspaceDb Open workspace-scope database handle.
@@ -927,30 +692,6 @@ export function recordWorkerOutputManifest(
       parsed.collectedAt,
       parsed.collectedAt
     );
-}
-
-/**
- * Derives the first recovery handle from a materialization record without exposing backend internals.
- *
- * @param record Durable workspace materialization record.
- * @returns Redacted backend workspace handle.
- */
-function inferBackendWorkspaceHandle(
-  record: WorkspaceMaterializationRecord
-): BackendWorkspaceHandle {
-  return BackendWorkspaceHandleSchema.parse({
-    backendKind: record.backendKind,
-    cleanupStatus: 'pending',
-    createdAt: record.createdAt,
-    id: `bwh_${record.id}`,
-    materializationRecordId: record.id,
-    packageSnapshotId: record.packageSnapshotId,
-    retention: 'until-reconciliation',
-    transportRefs: [{ kind: 'materialized-root', ref: record.materializedRootRef }],
-    updatedAt: record.createdAt,
-    workerSessionId: record.workerSessionId,
-    workspaceId: record.workspaceId,
-  });
 }
 
 /**

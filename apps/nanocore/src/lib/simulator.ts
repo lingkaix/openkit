@@ -90,11 +90,11 @@ import {
 import { preflightArtifactTuple, prepareWorkerArtifact } from '../runtime/worker-transcript.js';
 import { workerTurnTerminalPublication } from '../runtime/worker-turn-failure.js';
 import { bindWorkerCheckpointToPreparedSession } from '../runtime/worker-turn-loop.js';
+import { recordWorkspaceBackendHandoff } from '../runtime/workspace-backend-handoff.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
 } from '../runtime/workspace-materializer.js';
-import { recordWorkspaceBackendHandoff } from '../runtime/workspace-sync-records.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import {
   FileAdmissionError,
@@ -104,7 +104,6 @@ import {
   ArtifactPayloadCleanupError,
   stageArtifactPayload,
 } from '../storage/artifacts/file-payload.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -967,14 +966,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           now: () => timestamp,
           toState: 'materialized',
         });
-        const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-          `workspace:${workspaceDb.sqlite.name}`
-        );
-        try {
-          recordWorkspaceBackendHandoff(workspaceDb, inputSnapshots, materializationRecords);
-        } finally {
-          resume();
-        }
+        await recordWorkspaceBackendHandoff(workspaceDb, inputSnapshots, materializationRecords);
         await markWorkerBackendWorkspaceHandoffComplete(this.coreDb, {
           attemptId: backendSession.attemptId,
           now: () => timestamp,

@@ -235,6 +235,7 @@ import {
   workerTurnTerminalPublication,
 } from './worker-turn-failure.js';
 import { bindWorkerCheckpointToPreparedSession } from './worker-turn-loop.js';
+import { recordWorkspaceBackendHandoff } from './workspace-backend-handoff.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -248,7 +249,6 @@ import {
 import {
   listWorkspaceInputSnapshots,
   listWorkspaceMaterializationRecords,
-  recordWorkspaceBackendHandoff,
   recordWorkspaceSyncReview,
 } from './workspace-sync-records.js';
 
@@ -3184,18 +3184,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         : [];
       let handoff = { inputSnapshots, materializationRecords: builtMaterializationRecords };
       if (workspaceDb) {
-        const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-          `workspace:${workspaceDb.sqlite.name}`
+        handoff = await recordWorkspaceBackendHandoff(
+          workspaceDb,
+          inputSnapshots,
+          builtMaterializationRecords
         );
-        try {
-          handoff = recordWorkspaceBackendHandoff(
-            workspaceDb,
-            inputSnapshots,
-            builtMaterializationRecords
-          );
-        } finally {
-          resume();
-        }
       }
       const materializationRecords = handoff.materializationRecords;
       backendLifecycle.workspaceHandoffState = workspaceDb ? 'complete' : 'pending';

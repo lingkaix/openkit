@@ -172,6 +172,7 @@ import {
   listWorkspaceApplyResults,
   recordWorkspaceApplyResult,
 } from './runtime/workspace-apply-results.js';
+import { recordWorkspaceBackendHandoff } from './runtime/workspace-backend-handoff.js';
 import { recordFilesystemWorkspaceStagingRoot } from './runtime/workspace-filesystem-staging.js';
 import {
   buildWorkspaceInputSnapshots,
@@ -184,7 +185,6 @@ import {
 } from './runtime/workspace-reconciliation-records.js';
 import {
   getWorkspaceSyncReview,
-  recordWorkspaceBackendHandoff,
   recordWorkspaceSyncReview,
   updateWorkspaceSyncReviewDecision,
 } from './runtime/workspace-sync-records.js';
@@ -1239,7 +1239,7 @@ class FakeTurnExecutor implements TurnExecutor {
           })),
         },
       });
-      recordWorkspaceBackendHandoff(db, inputSnapshots, materializationRecords);
+      await recordWorkspaceBackendHandoff(db, inputSnapshots, materializationRecords);
       await markWorkerBackendWorkspaceHandoffComplete(coreDb, {
         attemptId: backendSession.attemptId,
       });

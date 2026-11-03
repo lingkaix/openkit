@@ -232,6 +232,8 @@ import { applyControlWorkerImage } from './worker-image-native.js';
 import { applyControlWorkerStorageBinding } from './worker-storage-binding-native.js';
 import { WorkspaceApplyPlanConflictError } from './workspace-apply-plan-codecs.js';
 import { recordWorkspaceApplyPlanInDb } from './workspace-apply-plan-records.js';
+import { WorkspaceBackendHandoffRefusal } from './workspace-backend-handoff-codecs.js';
+import { applyWorkspaceBackendHandoffInDb } from './workspace-backend-handoff-native.js';
 import { WorkspaceRecoveryError } from './workspace-backup.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
@@ -277,6 +279,7 @@ type WriteCommand = Extract<
       | 'workspace-apply-plan'
       | 'workspace-review-decision'
       | 'workspace-review-finish'
+      | 'workspace-backend-handoff'
       | 'harness-lifecycle'
       | 'execution-attempt'
       | 'core-journal'
@@ -571,6 +574,14 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       operation: 'worker-image',
       code: 'worker_image_conflict',
       message: 'Worker image settlement conflicts with its immutable result.',
+      status: 409,
+    };
+  if (operation === 'workspace-backend-handoff' && error instanceof WorkspaceBackendHandoffRefusal)
+    return {
+      operation,
+      code: error.code,
+      recordId: error.recordId,
+      message: error.message,
       status: 409,
     };
   if (operation === 'runtime-target' && error instanceof RuntimeTargetRefusal)
@@ -1935,6 +1946,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'runtime-target',
               result,
             };
+          } else if (request.operation === 'workspace-backend-handoff') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            const result = applyWorkspaceBackendHandoffInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-backend-handoff',
+              result,
+            };
           } else if (request.operation === 'workspace-review-finish') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3080,6 +3105,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-apply-plan' ||
       value.operation === 'workspace-review-decision' ||
       value.operation === 'workspace-review-finish' ||
+      value.operation === 'workspace-backend-handoff' ||
       value.operation === 'harness-lifecycle' ||
       value.operation === 'execution-attempt' ||
       value.operation === 'core-journal' ||

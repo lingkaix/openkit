@@ -1,4 +1,8 @@
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
+import type {
+  ControlWorkspaceBackendHandoff,
+  ControlWorkspaceBackendHandoffResult,
+} from './workspace-backend-handoff-codecs.js';
 
 export { ControlStoreWorkerError } from './control-store-worker-error.js';
 
@@ -2303,6 +2307,24 @@ class ControlStoreWorkerClient {
       return (reply as Extract<Success, { operation: 'runtime-target' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'runtime-target')
+        throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Publishes the whole original Workspace handoff under its existing physical owner and FULL acknowledgement. */
+  async workspaceBackendHandoff(
+    database: string,
+    input: ControlWorkspaceBackendHandoff
+  ): Promise<ControlWorkspaceBackendHandoffResult> {
+    try {
+      const reply = await this.request({ operation: 'workspace-backend-handoff', database, input });
+      return (reply as Extract<Success, { operation: 'workspace-backend-handoff' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'workspace-backend-handoff'
+      )
         throw new Error(error.domain.message);
       throw error;
     }

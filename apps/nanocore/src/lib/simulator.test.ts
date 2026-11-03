@@ -390,6 +390,118 @@ describe('SimulatedTurnExecutor', () => {
     }
   });
 
+  it('anchors an environment-aware build result through the simulator self-check route', async () => {
+    const coreDb = await createCoreDb(false);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const setup = createTestAgentSetup();
+    const dockerfile = 'FROM scratch\n';
+    setup.manifest.runtime.image = {
+      kind: 'build',
+      contextRef: 'build-context://empty/v1',
+      contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+      input: {
+        kind: 'dockerfile',
+        content: dockerfile,
+        digest: `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`,
+      },
+      arguments: {},
+      egress: [{ host: 'registry.npmjs.org', port: 443 }],
+      timeLimitSeconds: 60,
+      outputLimitBytes: 1024 * 1024,
+      layerLimit: 1,
+    };
+    const executor = new SimulatedTurnExecutor({ coreDb });
+    const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+    const app = createApp({
+      agentManifests: [setup.manifest],
+      coreDb,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+      providerRegistry: new ProviderRegistry([
+        {
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Simulator build inference',
+          id: 'agent-openrouter',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      store,
+      turnExecutor: executor,
+    });
+    let repositoryPath: string | undefined;
+    try {
+      repositoryPath = await linkRepository(app);
+      const response = await app.request(
+        ...operationRequest(
+          'turn.start',
+          {},
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              requestId: '0190f4c8-0000-7000-8000-000000000614',
+              input: 'Verify the simulator build image anchor',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
+      const turn = (await response.json()) as { id: string };
+      expect(response.status, JSON.stringify(turn)).toBe(202);
+      expect(closeouts).toHaveBeenCalledOnce();
+      await closeouts.mock.results[0]!.value.closeout;
+      const anchors = listWorkerBackendSessions(coreDb).filter(
+        (record) => record.turnId === turn.id
+      );
+      expect(anchors).toHaveLength(1);
+      const anchor = anchors[0]!;
+      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, anchor.workspaceId);
+      try {
+        const record = listExportableAgentEnvironmentPackageSnapshots(
+          workspaceDb,
+          anchor.workspaceId
+        ).find((candidate) => candidate.snapshotId === anchor.packageSnapshotId);
+        expect(record).toBeDefined();
+        // AEP / Digest binding: the fixture's verified result is distinct from every build-input digest.
+        const expectedImageDigest = `sha256:${'a'.repeat(64)}`;
+        expect(record!.snapshot.runtime.environment?.imageDigest).toBe(expectedImageDigest);
+        expect(record!.snapshot.runtime.image).toMatchObject({
+          kind: 'build',
+          argumentsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+          contextDigest: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+          input: {
+            content: dockerfile,
+            digest: `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`,
+          },
+        });
+        expect(anchor.backendLineage).toEqual({
+          buildArgumentsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
+          buildContextDigest:
+            'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+          buildInputDigest: `sha256:${createHash('sha256').update(dockerfile).digest('hex')}`,
+          resultingImageDigest: expectedImageDigest,
+        });
+        expect(store.getTurnById(turn.id).status).toBe('completed');
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    } finally {
+      closeouts.mockRestore();
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles();
+      coreDb.sqlite.close();
+      if (repositoryPath) rmSync(repositoryPath, { recursive: true, force: true });
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rejects a mismatched scheduler lease key before any simulator backend effect', async () => {
     const coreDb = await createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });

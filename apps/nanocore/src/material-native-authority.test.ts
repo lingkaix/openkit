@@ -31,11 +31,11 @@ import {
   acceptPreparedWorkerTurnContextPackage,
   prepareWorkerTurnContextPackage,
 } from './runtime/worker-governance-turn-executor.js';
+import { recordWorkspaceBackendHandoff } from './runtime/workspace-backend-handoff.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
 } from './runtime/workspace-materializer.js';
-import { recordWorkspaceBackendHandoff } from './runtime/workspace-sync-records.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -587,7 +587,7 @@ async function preparedMaterial() {
       sandbox: { name: backendSessionId, state: 'created' },
     },
   });
-  recordWorkspaceBackendHandoff(f.db, snapshots, materializations);
+  await recordWorkspaceBackendHandoff(f.db, snapshots, materializations);
   await markWorkerBackendWorkspaceHandoffComplete(f.coreDb, { attemptId, now });
   return {
     f,
