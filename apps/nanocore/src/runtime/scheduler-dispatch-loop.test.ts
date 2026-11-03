@@ -843,7 +843,7 @@ describe('scheduler dispatch loop', () => {
       status: 'active',
       scheduledAt: '2026-10-16T00:00:00.000Z',
     });
-    const occurrence = schedules.collectScanCandidates('2026-10-16T00:00:00.000Z')[0]!;
+    const occurrence = (await schedules.collectScanCandidates('2026-10-16T00:00:00.000Z'))[0]!;
     await schedules.commitAttempt(occurrence.id, 2, {
       kind: 'ready',
       payload: {
@@ -1112,7 +1112,7 @@ describe('scheduler dispatch loop', () => {
         expect(executor.calls).toEqual([]);
         expect(executor.prepareCalls).toEqual([]);
         instant = '2026-10-16T00:00:05.000Z';
-        const held = restored.collectScanCandidates(instant)[0]!;
+        const held = (await restored.collectScanCandidates(instant))[0]!;
         expect(await restored.commitAttempt(held.id, 2, await prepare())).toMatchObject({
           state: 'pending',
           attempts: [{ code: 'queue_backlog_full' }],

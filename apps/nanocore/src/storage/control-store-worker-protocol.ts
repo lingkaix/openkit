@@ -85,6 +85,12 @@ import {
   ControlAccessTokenVerificationSchema,
 } from './access-token-verification-codecs.js';
 import {
+  type ControlAutomationScanner,
+  type ControlAutomationScannerResult,
+  ControlAutomationScannerResultSchema,
+  ControlAutomationScannerSchema,
+} from './automation-scanner-codecs.js';
+import {
   type ControlAdmission,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
@@ -296,7 +302,7 @@ import {
 } from './workspace-stage-review-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 53;
+export const CONTROL_WORKER_VERSION = 54;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -564,6 +570,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'workspace-baseline'; readonly input: ControlWorkspaceBaseline }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
+      | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
       | {
           readonly operation: 'workspace-review-finish';
           readonly input: ControlWorkspaceReviewFinish;
@@ -740,6 +747,7 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'nanohost-transport'
     | 'worker-storage-binding'
     | 'workspace-apply-plan'
+    | 'automation-scanner'
     | 'workspace-review-decision'
     | 'workspace-review-finish'
     | 'vault'
@@ -880,6 +888,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'workspace-apply-plan';
       readonly result: ControlWorkspaceApplyPlan;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'automation-scanner';
+      readonly result: ControlAutomationScannerResult;
     }
   | {
       readonly status: 'ok';
@@ -1078,6 +1091,13 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'automation-scanner')
+    return (
+      value.code === 'unsupported_retained_format' &&
+      value.message === 'Unsupported retained record format.' &&
+      value.status === 409 &&
+      exactFields(value, ['operation', 'code', 'message', 'status'])
+    );
   if (isRecord(value) && value.operation === 'recovery-source-reactivation')
     return ControlRecoverySourceReactivationRefusalSchema.safeParse(value).success;
   if (
@@ -1388,6 +1408,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'workspace-review-finish') return reply.result === null;
   if (reply.operation === 'workspace-review-decision')
     return ControlWorkspaceReviewDecisionResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'automation-scanner')
+    return ControlAutomationScannerResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-apply-plan')
     return ControlWorkspaceApplyPlanSchema.safeParse(reply.result).success;
   if (reply.operation === 'backend-session')
@@ -1906,6 +1928,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkspaceReviewDecisionSchema.safeParse(value.input).success
+    );
+  if (value.operation === 'automation-scanner')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlAutomationScannerSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-apply-plan')
     return (

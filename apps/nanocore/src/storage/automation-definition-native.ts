@@ -1,3 +1,7 @@
+import { nextRecurringNominal } from '../lib/recurring-cadence.js';
+
+export { nextRecurringNominal } from '../lib/recurring-cadence.js';
+
 import {
   type AutomationRecord,
   type CreateAutomationRequest,
@@ -13,7 +17,7 @@ import {
 } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import {
-  advanceRecurringNominal,
+  type advanceRecurringNominal,
   RecurringCadenceExhaustedError,
   recurringNominalMatches,
   recurringPrefixThrough,
@@ -262,21 +266,6 @@ function requireRecurringSuccessor(
 ): void {
   if (nextRecurringNominal(cadence, at) === null)
     throw new AutomationMutationError('Recurring cadence has no representable UTC successor.');
-}
-
-/** Exhaustion ends only this cadence; invalid core values still fail closed. */
-export function nextRecurringNominal(
-  cadence: Parameters<typeof advanceRecurringNominal>[0],
-  at: number,
-  onError?: (error: unknown) => void
-): number | null {
-  try {
-    return advanceRecurringNominal(cadence, at);
-  } catch (error) {
-    if (!(error instanceof RecurringCadenceExhaustedError)) throw error;
-    onError?.(error);
-    return null;
-  }
 }
 
 /** Advances the exact nominal cadence, retaining its final instant when the calendar ends. */

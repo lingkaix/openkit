@@ -571,7 +571,7 @@ async function recurringFixture(queued: boolean) {
     status: 'active',
     scheduledAt: instant,
   });
-  const occurrence = schedules.collectScanCandidates(instant)[0]!;
+  const occurrence = (await schedules.collectScanCandidates(instant))[0]!;
   let turnId: string | undefined;
   let queueEntryId: string | undefined;
   try {
@@ -607,7 +607,7 @@ async function recurringFixture(queued: boolean) {
       );
     }
     instant = '2026-10-16T01:00:00.000Z';
-    schedules.collectScanCandidates(instant);
+    await schedules.collectScanCandidates(instant);
     for (const table of [
       'recurring_schedules',
       'recurring_occurrences',
@@ -1067,7 +1067,7 @@ describe('D0 12:49Z recurring-history ruling / WM 182–188, 382, 431–432', ()
     const core = openCoreDb(targetRoot);
     try {
       const schedules = new AutomationStore(core, new WorkspaceMutationAdmission());
-      expect(schedules.collectScanCandidates(new Date().toISOString())).toEqual([]);
+      expect(await schedules.collectScanCandidates(new Date().toISOString())).toEqual([]);
     } finally {
       core.sqlite.close();
     }

@@ -51,7 +51,7 @@ async function fixture() {
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const occurrence = schedules.collectScanCandidates('2026-10-16T00:00:00.000Z')[0]!;
+  const occurrence = (await schedules.collectScanCandidates('2026-10-16T00:00:00.000Z'))[0]!;
   const manifest = createTestAgentSetup().manifest;
   const snapshot = createInMemoryRuntimeConfigSnapshot({
     dataRoot: root,

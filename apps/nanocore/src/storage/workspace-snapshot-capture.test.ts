@@ -767,7 +767,7 @@ describe('C-a snapshot authoritative blockers', () => {
         status: 'active',
         scheduledAt: now,
       });
-      const occurrences = schedules.collectScanCandidates(now);
+      const occurrences = await schedules.collectScanCandidates(now);
       expect(occurrences).toHaveLength(1);
       f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
       try {
@@ -1205,7 +1205,7 @@ describe('C-a manual recovery closure after restart', () => {
         status: 'paused',
       })
     ).rejects.toThrow(/fenced/);
-    const candidates = restartedSchedules.collectScanCandidates(due);
+    const candidates = await restartedSchedules.collectScanCandidates(due);
     expect(candidates.map((candidate) => candidate.scheduleId)).toEqual([healthy.id]);
     expect(targetCoreRows()).toEqual(beforeRows);
     expect(tree(f.workspaceRoot)).toEqual(beforeSource);
@@ -1246,7 +1246,7 @@ describe('C-a additional owner families', () => {
       scheduledAt: '2026-10-28T01:00:00.000Z',
     });
     expect(readBlockers({ ...f, workspaceId })).toEqual([]);
-    expect(schedules.collectScanCandidates(now)).toEqual([]);
+    expect(await schedules.collectScanCandidates(now)).toEqual([]);
     const due = await schedules.createAutomation(f.ownerId, {
       workspaceId,
       threadId: DEMO_THREAD_ID,
@@ -1259,7 +1259,7 @@ describe('C-a additional owner families', () => {
       status: 'active',
       scheduledAt: now,
     });
-    expect(schedules.collectScanCandidates(now)).toHaveLength(1);
+    expect(await schedules.collectScanCandidates(now)).toHaveLength(1);
     expect(readBlockers({ ...f, workspaceId })).toEqual([]);
 
     const release = f.mutationAdmission.enter(workspaceId)!;

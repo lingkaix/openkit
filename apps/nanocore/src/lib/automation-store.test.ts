@@ -79,7 +79,7 @@ describe('durable fixed-interval recurrence', () => {
     await expect
       .soft(store.createAutomation(userId, { ...definition, intervalSeconds: 300_000_000_000 }))
       .rejects.toThrow(AutomationMutationError);
-    expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([
+    expect(await store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([
       expect.objectContaining({ scheduleId: healthy.id }),
     ]);
   });
@@ -116,7 +116,7 @@ describe('durable fixed-interval recurrence', () => {
       scheduledAt: '2026-10-16T00:00:00.000Z',
     });
     expect(active.intervalSeconds).toBe(250_000_000_000);
-    const candidates = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    const candidates = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
     expect(candidates).toHaveLength(1);
     expect(store.getAutomation(created.id).nextScheduledAt).toBe('9948-12-22T12:26:40.000Z');
   });
@@ -138,7 +138,7 @@ describe('durable fixed-interval recurrence', () => {
     db.sqlite
       .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
       .run(JSON.stringify({ ...unsafe, intervalSeconds: 300_000_000_000 }), unsafe!.id);
-    const candidates = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    const candidates = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
     expect(candidates.map((candidate) => candidate.scheduleId).sort()).toEqual(
       active.map((entry) => entry.id).sort()
     );
@@ -151,8 +151,8 @@ describe('durable fixed-interval recurrence', () => {
       nextScheduledAt: null,
       greatestAccountedScheduledAt: '2026-10-16T00:00:00.000Z',
     });
-    expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
-    expect(store.collectScanCandidates('2026-10-16T00:00:05.000Z')).toEqual([
+    expect(await store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
+    expect(await store.collectScanCandidates('2026-10-16T00:00:05.000Z')).toEqual([
       expect.objectContaining({ scheduleId: healthy!.id, scheduledAt: '2026-10-16T00:00:05.000Z' }),
     ]);
     expect(store.listHistory(unsafe!.id).items).toHaveLength(1);
@@ -180,7 +180,7 @@ describe('durable fixed-interval recurrence', () => {
       scheduledAt: '2026-10-16T00:20:00.000Z',
     });
     setTime('2026-10-16T00:20:00.000Z');
-    expect(store.collectScanCandidates('2026-10-16T00:20:00.000Z')).toEqual([
+    expect(await store.collectScanCandidates('2026-10-16T00:20:00.000Z')).toEqual([
       expect.objectContaining({ scheduleId: healthy.id }),
     ]);
     expect(store.listHistory(unsafe.id).items).toEqual([
@@ -230,7 +230,7 @@ describe('durable fixed-interval recurrence', () => {
         }),
       }),
     ]);
-    expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
+    expect(await store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
   });
 
   it('writes v1 paused schedules and preserves identity across a database reopen', async () => {
@@ -278,7 +278,7 @@ describe('durable fixed-interval recurrence', () => {
       status: 'active',
       scheduledAt: '2026-10-16T00:00:00.000Z',
     });
-    const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
     const accepted = await store.commitAttempt(occurrence!.id, active.revision, {
       kind: 'ready',
       payload,
@@ -301,7 +301,7 @@ describe('durable fixed-interval recurrence', () => {
     expect(
       db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
     ).toEqual({ n: 1 });
-    expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
+    expect(await store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
     await store.commitAttempt(occurrence!.id, active.revision, { kind: 'ready', payload });
     expect(
       db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
@@ -327,10 +327,11 @@ it.each([
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  if (table === 'recurring_occurrences') store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  if (table === 'recurring_occurrences')
+    await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   if (table === 'recurring_expired_ranges') {
     setTime('2026-10-16T01:00:00.000Z');
-    store.collectScanCandidates('2026-10-16T01:00:00.000Z');
+    await store.collectScanCandidates('2026-10-16T01:00:00.000Z');
   }
   const row = db.sqlite.prepare(`SELECT id FROM ${table} LIMIT 1`).get() as { id: string };
   db.sqlite
@@ -347,7 +348,7 @@ it.each([
         status: 'paused',
       })
     ).rejects.toThrow('Unsupported retained record format.');
-    expect(() => store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toThrow(
+    await expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).rejects.toThrow(
       'Unsupported retained record format.'
     );
   } else if (table === 'recurring_occurrences') {
@@ -355,7 +356,7 @@ it.each([
     await expect(
       store.commitAttempt(row.id, active.revision, { kind: 'ready', payload })
     ).rejects.toThrow('Unsupported retained record format.');
-    expect(() => store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toThrow(
+    await expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).rejects.toThrow(
       'Unsupported retained record format.'
     );
   } else {
@@ -384,7 +385,7 @@ it('limits committed outcomes to three and keeps admission-failed terminal at ex
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [first] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [first] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   for (let attempt = 1; attempt <= 3; attempt++) {
     const result = await store.commitAttempt(first!.id, 2, {
       kind: 'failure',
@@ -394,7 +395,7 @@ it('limits committed outcomes to three and keeps admission-failed terminal at ex
     expect(result?.state).toBe(attempt === 3 ? 'admission-failed' : 'pending');
   }
   setTime('2026-10-16T00:10:00.000Z');
-  store.collectScanCandidates('2026-10-16T00:10:00.000Z');
+  await store.collectScanCandidates('2026-10-16T00:10:00.000Z');
   expect(store.getOccurrence(first!.id).state).toBe('admission-failed');
 });
 
@@ -406,7 +407,7 @@ it('expires at the exact deadline and leaves a backward-clock candidate pending 
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   setTime('2026-10-15T23:59:59.000Z');
   expect(
     (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))?.attempts
@@ -430,7 +431,7 @@ it('rolls back the queue, attempt, frozen payload and acceptance together', asyn
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   db.sqlite.exec(`CREATE TRIGGER reject_occurrence_acceptance BEFORE UPDATE ON recurring_occurrences
     WHEN NEW.state = 'admission-accepted' BEGIN SELECT RAISE(ABORT, 'injected rollback'); END;`);
   await expect(
@@ -462,10 +463,10 @@ it('bounds each schedule to one queued occurrence while allowing a running prede
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [first] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [first] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   const accepted = (await store.commitAttempt(first!.id, 2, { kind: 'ready', payload }))!;
   setTime('2026-10-16T00:00:05.000Z');
-  const [second] = store.collectScanCandidates('2026-10-16T00:00:05.000Z');
+  const [second] = await store.collectScanCandidates('2026-10-16T00:00:05.000Z');
   expect(await store.commitAttempt(second!.id, 2, { kind: 'ready', payload })).toMatchObject({
     state: 'pending',
     attempts: [{ code: 'queue_backlog_full' }],
@@ -488,7 +489,7 @@ it('freezes the complete first resolved payload on failure and fences substituti
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   expect(
     (
       await store.commitAttempt(occurrence!.id, 2, {
@@ -525,7 +526,7 @@ it.each([
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
   db.sqlite
     .prepare('UPDATE scheduler_admission_entries SET status = ? WHERE queue_entry_id = ?')
@@ -555,7 +556,7 @@ it('fences a conflicting deterministic queue row without overwriting it', async 
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
   db.sqlite
     .prepare(
@@ -581,7 +582,7 @@ it('seals pause history with the old snapshot, cancels pending work, and rejects
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [pending] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [pending] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   setTime('2026-10-16T01:00:00.000Z');
   const paused = await store.updateAutomation(testEntityId('usr', 'user_other'), schedule.id, {
     expectedRevision: 2,
@@ -637,7 +638,7 @@ it('writes v1 lossless ranges and serves huge-outage live work without unbounded
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   setTime('2036-10-16T00:00:00.000Z');
-  const candidates = store.collectScanCandidates('2036-10-16T00:00:00.000Z');
+  const candidates = await store.collectScanCandidates('2036-10-16T00:00:00.000Z');
   expect(candidates).toHaveLength(120);
   expect(candidates[0]!.scheduledAt).toBe('2036-10-15T23:50:05.000Z');
   const history = store.listHistory(schedule.id, 128);
@@ -675,7 +676,7 @@ it('retains accepted admissions on delete and cannot resume the identity tombsto
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   const accepted = await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload });
   await store.deleteAutomation(testEntityId('usr', 'user_other'), schedule.id);
   expect(store.getAutomation(schedule.id)).toMatchObject({
@@ -686,7 +687,7 @@ it('retains accepted admissions on delete and cannot resume the identity tombsto
   expect(store.listAuthorizedAutomations([definition.workspaceId])).toEqual([
     store.getAutomation(schedule.id),
   ]);
-  expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
+  expect(await store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toEqual([]);
   await expect(
     store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
       expectedRevision: 3,
@@ -711,7 +712,7 @@ it('commits every definition and terminal transition with its Workspace AuditEve
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   db.sqlite.exec(`CREATE TRIGGER reject_recurrence_audit BEFORE INSERT ON audit_events
     WHEN NEW.action LIKE 'recurring.occurrence.%' BEGIN SELECT RAISE(ABORT, 'audit rejected'); END;`);
   await expect(
@@ -750,9 +751,12 @@ it('does not advance the definition cursor when materialization rolls back', asy
   });
   db.sqlite.exec(`CREATE TRIGGER reject_materialization BEFORE INSERT ON recurring_occurrences
     BEGIN SELECT RAISE(ABORT, 'materialization rejected'); END;`);
-  expect(() => store.collectScanCandidates('2026-10-16T00:00:00.000Z')).toThrow(
-    'materialization rejected'
-  );
+  await expect(store.collectScanCandidates('2026-10-16T00:00:00.000Z')).rejects.toMatchObject({
+    name: 'ControlStoreWorkerError',
+    code: 'constraint',
+    commit: 'not-committed',
+    message: 'Control database writer operation failed.',
+  });
   expect(store.getAutomation(schedule.id)).toEqual(active);
 });
 
@@ -764,7 +768,7 @@ it('uses the shared Workspace fence for definition changes and admission', async
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   await gate.close(definition.workspaceId);
   await expect(store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })).rejects.toThrow(
     'fenced'
@@ -789,7 +793,7 @@ it('reopens pending work with its attempt count, immutable payload, and original
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   await store.commitAttempt(occurrence!.id, 2, {
     kind: 'failure',
     code: 'preparation_failed',
@@ -799,7 +803,7 @@ it('reopens pending work with its attempt count, immutable payload, and original
   const reopened = openCoreDb(root);
   fixtures.push({ root, db: reopened });
   const restarted = new AutomationStore(reopened, new WorkspaceMutationAdmission(), clock);
-  const [pending] = restarted.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [pending] = await restarted.collectScanCandidates('2026-10-16T00:00:00.000Z');
   expect(pending).toMatchObject({
     id: occurrence!.id,
     attempts: [{ number: 1, code: 'preparation_failed' }],
@@ -828,7 +832,7 @@ it('caps live selection at 128 globally in nominal deadline order', async () => 
     schedules.push(schedule);
   }
   setTime('2026-10-16T00:02:20.000Z');
-  const candidates = store.collectScanCandidates('2026-10-16T00:02:20.000Z');
+  const candidates = await store.collectScanCandidates('2026-10-16T00:02:20.000Z');
   expect(candidates).toHaveLength(128);
   expect(candidates.map((occurrence) => occurrence.scheduleId)).toEqual(
     schedules.slice(0, 128).map((schedule) => schedule.id)
@@ -844,7 +848,7 @@ it('verifies the retained queue bytes as well as its stored hash before publishi
     status: 'active',
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
-  const [occurrence] = store.collectScanCandidates('2026-10-16T00:00:00.000Z');
+  const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
   const accepted = (await store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload }))!;
   expect(findAcceptedRecurringOccurrenceForQueue(db, accepted.queueEntryId!)).toEqual(accepted);
   db.sqlite
@@ -880,13 +884,13 @@ describe('monthly UTC recurrence lifecycle', () => {
       monthlyDefinition
     );
     expect(paused.status).toBe('paused');
-    expect(store.collectScanCandidates(clock())).toEqual([]);
+    expect(await store.collectScanCandidates(clock())).toEqual([]);
     const active = await store.updateAutomation(testEntityId('usr', 'user_creator'), paused.id, {
       expectedRevision: 1,
       status: 'active',
       scheduledAt: clock(),
     });
-    const candidates = store.collectScanCandidates(clock());
+    const candidates = await store.collectScanCandidates(clock());
     expect(candidates).toHaveLength(1);
     expect(candidates[0]).toMatchObject({
       scheduledAt: clock(),
@@ -898,7 +902,7 @@ describe('monthly UTC recurrence lifecycle', () => {
       greatestAccountedScheduledAt: clock(),
     });
     const secondStore = new AutomationStore(db, gate, clock);
-    expect(secondStore.collectScanCandidates(clock()).map((record) => record.id)).toEqual(
+    expect((await secondStore.collectScanCandidates(clock())).map((record) => record.id)).toEqual(
       candidates.map((record) => record.id)
     );
   });
@@ -1028,7 +1032,7 @@ it('orders actual fixed and monthly live frontiers before the shared 128 schedul
     return created;
   })();
   setTime('2027-01-28T09:00:00.000Z');
-  const selected = store.collectScanCandidates('2027-01-28T09:00:00.000Z');
+  const selected = await store.collectScanCandidates('2027-01-28T09:00:00.000Z');
   expect(selected).toHaveLength(128);
   expect(selected[0]).toMatchObject({
     scheduleId: fixed.id,
@@ -1037,7 +1041,7 @@ it('orders actual fixed and monthly live frontiers before the shared 128 schedul
   expect(
     selected.slice(1).every((record) => record.scheduledAt === '2027-01-28T09:00:00.000Z')
   ).toBe(true);
-  expect(store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toHaveLength(128);
+  expect(await store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toHaveLength(128);
 });
 
 it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Core restart', async () => {
@@ -1223,13 +1227,16 @@ it('rolls back monthly range, cursor and Audit together before retrying the same
   setTime('2027-01-28T09:00:00.000Z');
   db.sqlite.exec(`CREATE TRIGGER reject_monthly_range_audit BEFORE INSERT ON audit_events
     WHEN NEW.action = 'recurring.expired-range.record' BEGIN SELECT RAISE(ABORT, 'range audit rejected'); END;`);
-  expect(() => store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toThrow(
-    'range audit rejected'
-  );
+  await expect(store.collectScanCandidates('2027-01-28T09:00:00.000Z')).rejects.toMatchObject({
+    name: 'ControlStoreWorkerError',
+    code: 'constraint',
+    commit: 'not-committed',
+    message: 'Control database writer operation failed.',
+  });
   expect(store.getAutomation(created.id)).toEqual(active);
   expect(store.listHistory(created.id).items).toEqual([]);
   db.sqlite.exec('DROP TRIGGER reject_monthly_range_audit');
-  expect(store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toHaveLength(1);
+  expect(await store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toHaveLength(1);
   expect(store.listHistory(created.id).items).toHaveLength(2);
   const row = store.listHistory(created.id).items.find((item) => item.kind === 'expired-range');
   expect(row).toMatchObject({ record: { count: 84, lastScheduledAt: '2026-12-28T09:00:00.000Z' } });
@@ -1250,7 +1257,7 @@ it('fails the SQL frontier closed on contradictory retained core timing', async 
   db.sqlite
     .prepare('UPDATE recurring_schedules SET record_json = ? WHERE id = ?')
     .run(JSON.stringify({ ...active, intervalSeconds: 5 }), created.id);
-  expect(() => store.collectScanCandidates('2027-01-28T09:00:00.000Z')).toThrow();
+  await expect(store.collectScanCandidates('2027-01-28T09:00:00.000Z')).rejects.toThrow();
   expect(db.sqlite.prepare('SELECT count(*) AS n FROM recurring_occurrences').get()).toEqual({
     n: 0,
   });
@@ -1282,7 +1289,7 @@ it('selects a live monthly instant ahead of more than 128 expired-only fixed pre
     scheduledAt: '2027-01-28T09:00:00.000Z',
   });
   setTime('2027-01-28T09:00:00.000Z');
-  const selected = store.collectScanCandidates('2027-01-28T09:00:00.000Z');
+  const selected = await store.collectScanCandidates('2027-01-28T09:00:00.000Z');
   expect(selected).toHaveLength(1);
   expect(selected[0]).toMatchObject({
     scheduleId: monthly.id,
@@ -1302,7 +1309,9 @@ it('preserves one series waiting slot during explicit retry, including after res
     scheduledAt: clock(),
   });
   const first = (await store.commitAttempt(
-    store.collectScanCandidates(clock())[0]!.id,
+    (
+      await store.collectScanCandidates(clock())
+    )[0]!.id,
     active.revision,
     {
       kind: 'ready',
@@ -1315,7 +1324,9 @@ it('preserves one series waiting slot during explicit retry, including after res
   });
   setTime('2026-10-16T00:00:05.000Z');
   const later = (await store.commitAttempt(
-    store.collectScanCandidates(clock())[0]!.id,
+    (
+      await store.collectScanCandidates(clock())
+    )[0]!.id,
     active.revision,
     {
       kind: 'ready',
@@ -1331,9 +1342,9 @@ it('preserves one series waiting slot during explicit retry, including after res
     status: 'active',
     scheduledAt: clock(),
   });
-  const otherDue = store
-    .collectScanCandidates(clock())
-    .find((occurrence) => occurrence.scheduleId === other.id)!;
+  const otherDue = (await store.collectScanCandidates(clock())).find(
+    (occurrence) => occurrence.scheduleId === other.id
+  )!;
   const otherAccepted = (await store.commitAttempt(otherDue.id, otherActive.revision, {
     kind: 'ready',
     payload,

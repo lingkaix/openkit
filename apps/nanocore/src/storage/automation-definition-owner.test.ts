@@ -360,7 +360,7 @@ it('refuses a public definition mutation when its real bearer is revoked after p
     status: 'active',
     scheduledAt: start,
   });
-  const [pending] = f.store.collectScanCandidates(start);
+  const [pending] = await f.store.collectScanCandidates(start);
   expect(pending?.scheduleId).toBe(target.id);
   const scanned = f.store.getAutomation(target.id);
   expect(scanned).toEqual({
@@ -489,7 +489,7 @@ it('preserves every Core row on frozen, stale-revision and audit-failed definiti
     scheduledAt: start,
   });
   expect(active.status).toBe('active');
-  const [pending] = f.store.collectScanCandidates(start);
+  const [pending] = await f.store.collectScanCandidates(start);
   expect(pending?.state).toBe('pending');
   // Reject the final definition Audit after old-cadence rows have been prepared.
   f.db.sqlite.exec(

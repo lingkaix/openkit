@@ -191,14 +191,14 @@ async function fixture(lostAck = false) {
     status: 'active',
     scheduledAt: instant,
   });
-  const occurrence = schedules.collectScanCandidates(instant)[0]!;
+  const occurrence = (await schedules.collectScanCandidates(instant))[0]!;
   for (let attempt = 0; attempt < 3; attempt++)
     await schedules.commitAttempt(occurrence.id, 2, {
       kind: 'failure',
       code: 'selection_unavailable',
     });
   instant = '2026-10-16T03:10:00.000Z';
-  schedules.collectScanCandidates(instant);
+  await schedules.collectScanCandidates(instant);
   coreDb.sqlite.transaction(() => {
     const entry = createSchedulerAdmissionEntry(coreDb, {
       queueEntryId: `external-${randomUUID()}`,

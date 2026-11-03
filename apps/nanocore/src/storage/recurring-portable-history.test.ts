@@ -61,7 +61,7 @@ describe('recurring portable history', () => {
       status: 'active',
       scheduledAt: instant,
     });
-    const occurrence = store.collectScanCandidates(instant)[0]!;
+    const occurrence = (await store.collectScanCandidates(instant))[0]!;
     await store.commitAttempt(occurrence.id, 2, {
       kind: 'ready',
       payload: {
@@ -207,7 +207,7 @@ describe('recurring portable history', () => {
   it('rejects duplicate tuples, contradictory range arithmetic, overlapping coverage and attempt violations', async () => {
     await acceptedHistory();
     instant = '2026-10-16T02:00:00.000Z';
-    store.collectScanCandidates(instant);
+    await store.collectScanCandidates(instant);
     const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
     expect(graph.expiredRanges.length).toBeGreaterThan(0);
     const invalid = structuredClone(graph);
@@ -275,7 +275,7 @@ describe('recurring portable history', () => {
   it('rejects exact range coverage of an already materialized individual instant', async () => {
     await acceptedHistory();
     instant = '2026-10-16T02:00:00.000Z';
-    store.collectScanCandidates(instant);
+    await store.collectScanCandidates(instant);
     const source = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
     const range = source.expiredRanges[0]!;
     range.firstScheduledAt = '2026-10-16T00:00:00.000Z';
@@ -301,7 +301,7 @@ describe('recurring portable history', () => {
       scheduledAt: '2026-01-28T09:30:00.000Z',
     });
     instant = '2026-05-28T09:30:00.000Z';
-    store.collectScanCandidates(instant);
+    await store.collectScanCandidates(instant);
     const graph = exportRecurringPortableHistory(coreDb, workspace.id, null, retainedTurns());
     expect(graph.schedules[0]).toMatchObject({ monthlyUtc });
     expect(graph.schedules[0]).not.toHaveProperty('intervalSeconds');

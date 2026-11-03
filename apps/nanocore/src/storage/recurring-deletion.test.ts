@@ -51,14 +51,14 @@ it('seals the complete recurring graph before deletion removes its Core rows and
       status: 'active',
       scheduledAt: instant,
     });
-    const occurrence = automationStore.collectScanCandidates(instant)[0]!;
+    const occurrence = (await automationStore.collectScanCandidates(instant))[0]!;
     for (let attempt = 0; attempt < 3; attempt++)
       await automationStore.commitAttempt(occurrence.id, 2, {
         kind: 'failure',
         code: 'selection_unavailable',
       });
     instant = '2026-10-16T03:10:00.000Z';
-    automationStore.collectScanCandidates(instant);
+    await automationStore.collectScanCandidates(instant);
     const before = ['recurring_schedules', 'recurring_occurrences', 'recurring_expired_ranges'].map(
       (table) =>
         (

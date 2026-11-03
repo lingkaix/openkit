@@ -116,7 +116,7 @@ it('retains the immutable external admission join in deletion evidence before it
       status: 'active',
       scheduledAt: instant,
     });
-    const occurrence = schedules.collectScanCandidates(instant)[0]!;
+    const occurrence = (await schedules.collectScanCandidates(instant))[0]!;
     const accepted = (await schedules.commitAttempt(occurrence.id, 2, {
       kind: 'ready',
       payload: {

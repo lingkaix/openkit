@@ -132,7 +132,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     ]),
   });
   async function poll() {
-    const occurrence = schedules.collectScanCandidates(instant)[0]!;
+    const occurrence = (await schedules.collectScanCandidates(instant))[0]!;
     const accepted = (await schedules.commitAttempt(occurrence.id, occurrence.definitionRevision, {
       kind: 'ready',
       payload: {

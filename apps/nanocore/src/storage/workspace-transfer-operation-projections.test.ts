@@ -207,7 +207,7 @@ describe('Workspace JSON transfer cutover', () => {
       status: 'active',
       scheduledAt: instant,
     });
-    const occurrence = schedules.collectScanCandidates(instant)[0]!;
+    const occurrence = (await schedules.collectScanCandidates(instant))[0]!;
     await schedules.commitAttempt(occurrence.id, 2, {
       kind: 'ready',
       payload: {

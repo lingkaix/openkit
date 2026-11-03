@@ -195,7 +195,7 @@ describe('serialized recurring scanner', () => {
       status: 'active',
       scheduledAt: '2026-10-16T00:00:00.000Z',
     });
-    const [initial] = schedules.collectScanCandidates('2026-10-16T00:00:00.000Z');
+    const [initial] = await schedules.collectScanCandidates('2026-10-16T00:00:00.000Z');
     expect(initial?.scheduleId).toBe(active.id);
     await schedules.commitAttempt(initial!.id, initial!.definitionRevision, structuredClone(ready));
     // This state is produced by admission and scan owners, without fabricating retained rows.
@@ -241,16 +241,24 @@ describe('serialized recurring scanner', () => {
 
   it('coalesces overlapping callbacks and retries a failure only on a later scan', async () => {
     const { schedules, schedule, start } = await fixture();
+    const preparationEntered = [
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+      Promise.withResolvers<void>(),
+    ];
+    let preparationIndex = 0;
     let release!: (value: RecurringPreparation) => void;
     const prepare = vi.fn(
       () =>
         new Promise<RecurringPreparation>((resolve) => {
           release = resolve;
+          preparationEntered[preparationIndex++]!.resolve();
         })
     );
     const { service } = start(prepare);
     const first = service.runOnce();
     expect(service.runOnce()).toBe(first);
+    await preparationEntered[0]!.promise;
     expect(prepare).toHaveBeenCalledTimes(1);
     release({ kind: 'failure', code: 'selection_unavailable' });
     await first;
@@ -259,10 +267,12 @@ describe('serialized recurring scanner', () => {
       attempts: [{ code: 'selection_unavailable' }],
     });
     const second = service.runOnce();
+    await preparationEntered[1]!.promise;
     expect(prepare).toHaveBeenCalledTimes(2);
     release({ kind: 'failure', code: 'selection_unavailable' });
     await second;
     const third = service.runOnce();
+    await preparationEntered[2]!.promise;
     release({ kind: 'failure', code: 'selection_unavailable' });
     await third;
     expect(schedules.listHistory(schedule.id).items[0]!.record).toMatchObject({
@@ -275,15 +285,18 @@ describe('serialized recurring scanner', () => {
 
   it('rechecks the exact responsible membership after slow preparation without actor substitution', async () => {
     const { db, schedules, schedule, workspace, start } = await fixture();
+    const preparationEntered = Promise.withResolvers<void>();
     let release!: (value: RecurringPreparation) => void;
     const prepare = vi.fn(
       () =>
         new Promise<RecurringPreparation>((resolve) => {
           release = resolve;
+          preparationEntered.resolve();
         })
     );
     const { service } = start(prepare);
     const scan = service.runOnce();
+    await preparationEntered.promise;
     db.sqlite.transaction(() => {
       const timestamp = '2026-10-16T00:00:00.000Z';
       db.sqlite
@@ -327,14 +340,17 @@ describe('serialized recurring scanner', () => {
 
   it('expires when preparation crosses the original deadline without counting an outcome', async () => {
     const { db, schedules, schedule, setTime, start } = await fixture();
+    const preparationEntered = Promise.withResolvers<void>();
     let release!: (value: RecurringPreparation) => void;
     const { service } = start(
       () =>
         new Promise<RecurringPreparation>((resolve) => {
           release = resolve;
+          preparationEntered.resolve();
         })
     );
     const scan = service.runOnce();
+    await preparationEntered.promise;
     setTime('2026-10-16T00:10:00.000Z');
     release(structuredClone(ready));
     await scan;
@@ -350,14 +366,17 @@ describe('serialized recurring scanner', () => {
 
   it('lets pause win against a scanner awaiting preparation', async () => {
     const { db, schedules, schedule, start } = await fixture();
+    const preparationEntered = Promise.withResolvers<void>();
     let release!: (value: RecurringPreparation) => void;
     const { service } = start(
       () =>
         new Promise<RecurringPreparation>((resolve) => {
           release = resolve;
+          preparationEntered.resolve();
         })
     );
     const scan = service.runOnce();
+    await preparationEntered.promise;
     await schedules.updateAutomation(schedule.responsibleUserId, schedule.id, {
       expectedRevision: schedule.revision,
       status: 'paused',
@@ -388,15 +407,18 @@ describe('serialized recurring scanner', () => {
 
   it('keeps unknown preparation fenced after current user authority is lost', async () => {
     const { db, schedules, schedule, start } = await fixture();
+    const preparationEntered = Promise.withResolvers<void>();
     let rejectPreparation!: (error: Error) => void;
     const prepare = vi.fn(
       () =>
         new Promise<RecurringPreparation>((_resolve, reject) => {
           rejectPreparation = reject;
+          preparationEntered.resolve();
         })
     );
     const { service, onError } = start(prepare);
     const scan = service.runOnce();
+    await preparationEntered.promise;
     db.sqlite
       .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
       .run(schedule.actor.responsibleUserId);
@@ -480,14 +502,17 @@ it('does not accept into a private Thread owned by another responsible user', as
 
 it('holds mutation admission through bounded preparation so backup waits for the scanner to leave', async () => {
   const { db, gate, workspace, start } = await fixture();
+  const preparationEntered = Promise.withResolvers<void>();
   let release!: (value: RecurringPreparation) => void;
   const { service } = start(
     () =>
       new Promise<RecurringPreparation>((resolve) => {
         release = resolve;
+        preparationEntered.resolve();
       })
   );
   const scan = service.runOnce();
+  await preparationEntered.promise;
   let closed = false;
   const closing = gate.close(workspace.id).then(() => {
     closed = true;
@@ -528,7 +553,7 @@ it('owns one scanner across distinct Core handles for the same data root', async
 
 it('reconciles an already accepted queue without attempting initial file publication again', async () => {
   const { db, schedules, schedule, store, clock, start } = await fixture();
-  const occurrence = schedules.collectScanCandidates(clock())[0]!;
+  const occurrence = (await schedules.collectScanCandidates(clock()))[0]!;
   const accepted = (await schedules.commitAttempt(occurrence.id, 2, structuredClone(ready)))!;
   // Reuse the owner's exact-replay fixture: accepted attempt evidence stays intact.
   db.sqlite

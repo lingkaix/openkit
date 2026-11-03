@@ -100,6 +100,7 @@ import {
   WorkspaceMaterialError,
 } from '../workspace-materials.js';
 import { type AppDb, assertAppAuthority, lightAppDbPath } from './app-db.js';
+import { applyAutomationScannerInDb } from './automation-scanner-native.js';
 import {
   ControlStoreBusyError,
   ControlStoreNoSpaceError,
@@ -283,6 +284,7 @@ type WriteCommand = Extract<
       | 'app-kernel'
       | 'worker-storage-binding'
       | 'workspace-apply-plan'
+      | 'automation-scanner'
       | 'workspace-review-decision'
       | 'workspace-review-finish'
       | 'workspace-stage-review'
@@ -587,6 +589,12 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       message: 'Unsupported retained record format.',
       status: 409,
     };
+  if (
+    operation === 'automation-scanner' &&
+    error instanceof TypeError &&
+    error.message === 'Unsupported retained record format.'
+  )
+    return { operation, code: 'unsupported_retained_format', message: error.message, status: 409 };
   if (operation === 'worker-image' && error instanceof WorkerImageSettlementConflict)
     return {
       operation: 'worker-image',
@@ -2076,6 +2084,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'workspace-review-decision',
               result,
             };
+          } else if (request.operation === 'automation-scanner') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyAutomationScannerInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'automation-scanner',
+              result,
+            };
           } else if (request.operation === 'workspace-apply-plan') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3201,6 +3219,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'maintenance' ||
       value.operation === 'worker-storage-binding' ||
       value.operation === 'workspace-apply-plan' ||
+      value.operation === 'automation-scanner' ||
       value.operation === 'workspace-review-decision' ||
       value.operation === 'workspace-review-finish' ||
       value.operation === 'workspace-stage-review' ||

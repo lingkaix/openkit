@@ -5,17 +5,12 @@ import {
   type UpdateAutomationRequest,
   UpdateAutomationRequestSchema,
 } from '@openkit/app-api-schemas';
-import { allocateEntityId, compareCodeUnits, readRetainedV1 } from '@openkit/protocol';
+import { allocateEntityId, readRetainedV1 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
-import {
-  accountRecurringExpiredPrefix,
-  advanceRecurringSchedule,
-  newRecurringOccurrence,
-  nextRecurringNominal,
-} from '../storage/automation-definition-native.js';
+import { selectAutomationScan } from '../storage/automation-scanner-selection.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import {
-  RECURRING_DEADLINE_MS as DEADLINE_MS,
   type ExpiredOccurrenceRange,
   ExpiredOccurrenceRangeSchema,
   type RecurringOccurrence,
@@ -23,9 +18,8 @@ import {
   readRecurringOccurrence,
   readRecurringSchedule,
 } from '../storage/recurring-records.js';
-import { StoredAutomationCadenceV1Schema } from '../storage/recurring-retained-v1.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { recurringPrefixThrough } from './recurring-cadence.js';
 
 const SCAN_LIMIT = 128;
 
@@ -36,9 +30,7 @@ export {
 
 import {
   findRecurringAutomationFromDb,
-  finishRecurringOccurrenceInDb,
   readRecurringOccurrenceFromDb,
-  writeRecurringOccurrenceInDb,
 } from '../storage/recurring-attempt-native.js';
 import {
   type AutomationDefinitionMutation,
@@ -53,26 +45,7 @@ export class AutomationStore {
     public readonly coreDb: CoreDb,
     public readonly mutationAdmission: WorkspaceMutationAdmission,
     private readonly now: () => string = () => new Date().toISOString()
-  ) {
-    // Each actual connection needs this deterministic function before its first scan. Re-registering
-    // the same pure callback when another Store uses that connection does not add persistent state.
-    coreDb.sqlite.function(
-      'recurring_live_frontier',
-      { deterministic: true },
-      (schemaVersion: unknown, recordJson: unknown, first: unknown, through: unknown) =>
-        readRetainedV1({ schemaVersion }, () => {
-          if (
-            typeof recordJson !== 'string' ||
-            typeof first !== 'number' ||
-            typeof through !== 'number'
-          )
-            throw new Error('Recurring scan has invalid required timing values.');
-          const cadence = StoredAutomationCadenceV1Schema.parse(JSON.parse(recordJson));
-          const coverage = recurringPrefixThrough(cadence, first, through);
-          return coverage ? coverage.next : first;
-        })
-    );
-  }
+  ) {}
 
   /** Resolves immutable lineage before current Workspace admission; ownership grants no extra privilege. */
   public getAutomationLineage(
@@ -149,101 +122,43 @@ export class AutomationStore {
     );
   }
 
-  /** Selects at most 128 live candidates before recording bounded expired backlog; no worker runs here. */
-  public collectScanCandidates(
+  /** Holds actual Workspace guards and original callbacks outside the exact native scan publication. */
+  public async collectScanCandidates(
     timestamp: string,
     onError?: (error: unknown) => void
-  ): RecurringOccurrence[] {
-    const now = Date.parse(timestamp);
+  ): Promise<RecurringOccurrence[]> {
+    const scope = nativeProductScope(this.coreDb.dataRoot, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    const client = getControlStoreWorkerClient();
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: this.coreDb.dataRoot,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    const result = await client.automationScanner(database, { action: 'plan', timestamp });
+    if (result.kind !== 'plan') throw new Error('Native scan returned no plan.');
+    const plan = result.plan;
     const releases = new Map<string, () => void>();
-    const admit = (workspaceId: string) => {
-      if (releases.has(workspaceId)) return true;
-      const release = this.mutationAdmission.enter(workspaceId);
-      if (!release) return false;
-      releases.set(workspaceId, release);
-      return true;
-    };
     try {
-      return this.coreDb.sqlite
-        .transaction(() => {
-          const candidates: {
-            schedule: AutomationRecord;
-            at: number;
-            occurrence?: RecurringOccurrence;
-          }[] = [];
-          const pending = this.coreDb.sqlite
-            .prepare(`SELECT occurrence.schema_version AS schemaVersion, occurrence.record_json FROM recurring_occurrences occurrence
-        JOIN recurring_schedules schedule ON schedule.id = occurrence.schedule_id
-        WHERE occurrence.state = 'pending' AND occurrence.deadline > ? AND occurrence.scheduled_at <= ?
-          AND schedule.status = 'active' ORDER BY occurrence.deadline, occurrence.id LIMIT ?`)
-            .all(now, now, SCAN_LIMIT) as JsonRow[];
-          for (const row of pending) {
-            const occurrence = readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
-            if (!admit(occurrence.workspaceId)) continue;
-            candidates.push({
-              schedule: this.getAutomation(occurrence.scheduleId),
-              at: Date.parse(occurrence.scheduledAt),
-              occurrence,
-            });
-          }
-          // Compute the live frontier directly from the one durable cursor. An arbitrarily old
-          // prefix becomes one range in the same transaction that materializes its live successor.
-          const schedules = this.coreDb.sqlite
-            .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_schedules
-        WHERE status = 'active' AND next_scheduled_at <= ?
-        ORDER BY recurring_live_frontier(schema_version, record_json, next_scheduled_at, ?), id LIMIT ?`)
-            .all(now, now - DEADLINE_MS, SCAN_LIMIT) as JsonRow[];
-          for (const row of schedules) {
-            const schedule = readRetainedV1(row, () => readRecurringSchedule(row.record_json));
-            if (!admit(schedule.workspaceId)) continue;
-            const next = Date.parse(schedule.nextScheduledAt!);
-            const coverage = recurringPrefixThrough(schedule, next, now - DEADLINE_MS);
-            const first = coverage ? coverage.next : next;
-            for (
-              let at = first, count = 0;
-              at !== null && at <= now && count < SCAN_LIMIT;
-              at = nextRecurringNominal(schedule, at), count++
-            )
-              candidates.push({ schedule, at });
-          }
-          candidates.sort((a, b) => a.at - b.at || compareCodeUnits(a.schedule.id, b.schedule.id));
-          let expiredRangeCount = 0;
-          const selected = candidates.slice(0, SCAN_LIMIT).map((candidate) => {
-            if (candidate.occurrence) return candidate.occurrence;
-            let schedule = this.getAutomation(candidate.schedule.id);
-            if (Date.parse(schedule.nextScheduledAt!) <= now - DEADLINE_MS) expiredRangeCount++;
-            schedule = accountRecurringExpiredPrefix(
-              this.coreDb,
-              schedule,
-              now,
-              timestamp,
-              onError
-            );
-            const occurrence = newRecurringOccurrence(schedule, candidate.at, timestamp);
-            this.writeOccurrence(occurrence, true);
-            advanceRecurringSchedule(this.coreDb, schedule, candidate.at, onError);
-            return occurrence;
-          });
-          // Expiring pending history and expired-only schedules also have a fixed per-scan bound.
-          const stale = this.coreDb.sqlite
-            .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_occurrences
-        WHERE state = 'pending' AND deadline <= ? ORDER BY deadline, id LIMIT ?`)
-            .all(now, SCAN_LIMIT) as JsonRow[];
-          for (const row of stale) {
-            const occurrence = readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
-            if (admit(occurrence.workspaceId)) this.finish(occurrence, 'expired', timestamp);
-          }
-          for (const row of this.coreDb.sqlite
-            .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_schedules
-        WHERE status = 'active' AND next_scheduled_at <= ? ORDER BY next_scheduled_at, id LIMIT ?`)
-            .all(now - DEADLINE_MS, SCAN_LIMIT - expiredRangeCount) as JsonRow[]) {
-            const schedule = readRetainedV1(row, () => readRecurringSchedule(row.record_json));
-            if (admit(schedule.workspaceId))
-              accountRecurringExpiredPrefix(this.coreDb, schedule, now, timestamp, onError);
-          }
-          return selected;
-        })
-        .immediate();
+      for (const record of [...plan.pending, ...plan.due, ...plan.stale, ...plan.expired]) {
+        if (releases.has(record.workspaceId)) continue;
+        const release = this.mutationAdmission.enter(record.workspaceId);
+        if (release) releases.set(record.workspaceId, release);
+      }
+      const workspaceIds = [...releases.keys()];
+      selectAutomationScan(plan, timestamp, workspaceIds, onError);
+      const published = await client.automationScanner(database, {
+        action: 'publish',
+        timestamp,
+        expected: plan,
+        workspaceIds,
+      });
+      if (published.kind !== 'published') throw new Error('Native scan returned no publication.');
+      return published.occurrences;
     } finally {
       for (const release of releases.values()) release();
     }
@@ -337,16 +252,6 @@ export class AutomationStore {
     };
   }
 
-  /** Commits a terminal trigger outcome without rewriting prior terminal history. */
-  private finish(
-    occurrence: RecurringOccurrence,
-    state: RecurringOccurrence['state'],
-    timestamp: string,
-    insert = false
-  ): RecurringOccurrence {
-    return finishRecurringOccurrenceInDb(this.coreDb, occurrence, state, timestamp, insert);
-  }
-
   /** Holds the existing Workspace admission through FULL acknowledgement, with current public admission rechecked after open. */
   private async publishDefinition(
     userId: string,
@@ -377,11 +282,6 @@ export class AutomationStore {
     } finally {
       release();
     }
-  }
-
-  /** Writes both indexed selectors and the validated known-core payload in one owner mutation. */
-  private writeOccurrence(record: RecurringOccurrence, insert = false): void {
-    writeRecurringOccurrenceInDb(this.coreDb, record, insert);
   }
 
   /** Reads the one definition authority without private content enumeration. */

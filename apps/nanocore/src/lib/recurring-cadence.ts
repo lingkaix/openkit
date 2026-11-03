@@ -151,3 +151,18 @@ function monthlyInstant(index: number, monthly: MonthlyUtcSchedule): number {
   date.setUTCHours(monthly.hour, monthly.minute, monthly.second, 0);
   return checkedDate(date.getTime()).getTime();
 }
+
+/** Exhaustion ends only this cadence; invalid core values still fail closed. */
+export function nextRecurringNominal(
+  cadence: Parameters<typeof advanceRecurringNominal>[0],
+  at: number,
+  onError?: (error: unknown) => void
+): number | null {
+  try {
+    return advanceRecurringNominal(cadence, at);
+  } catch (error) {
+    if (!(error instanceof RecurringCadenceExhaustedError)) throw error;
+    onError?.(error);
+    return null;
+  }
+}

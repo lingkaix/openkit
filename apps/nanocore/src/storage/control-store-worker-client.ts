@@ -1,4 +1,8 @@
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
+import type {
+  ControlAutomationScanner,
+  ControlAutomationScannerResult,
+} from './automation-scanner-codecs.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type {
   ControlWorkspaceBackendHandoff,
@@ -2492,6 +2496,26 @@ class ControlStoreWorkerClient {
             throw new TypeError('Unsupported retained record format.');
         }
       }
+      throw error;
+    }
+  }
+
+  /** Keeps original cadence decoding errors closed and all unknown accepted outcomes unknown. */
+  async automationScanner(
+    database: string,
+    input: ControlAutomationScanner
+  ): Promise<ControlAutomationScannerResult> {
+    try {
+      const reply = await this.request({ operation: 'automation-scanner', database, input });
+      return (reply as Extract<Success, { operation: 'automation-scanner' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'automation-scanner' &&
+        error.domain.code === 'unsupported_retained_format'
+      )
+        throw new TypeError('Unsupported retained record format.');
       throw error;
     }
   }
