@@ -362,6 +362,9 @@ class LifecycleTests(unittest.TestCase):
                 with self.subTest(phase=phase, revision=revision):
                     self.boundary.current = revision
                     upgrade.phase(phase, revision)
+                    reader_input = json.loads(Path(self.boundary.reader["Cmd"][-1]).read_text())
+                    expected_role = "historical" if revision == "previous" else "current"
+                    self.assertEqual(reader_input["corpusProducer"], expected_role)
                     self.assertEqual(observations[-1], (phase, expected))
                     selected = str(checkouts[revision])
                     self.assertIn(selected + ":" + selected + ":ro",

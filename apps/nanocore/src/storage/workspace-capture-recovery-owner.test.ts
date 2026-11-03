@@ -35,10 +35,8 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import {
-  recordWorkspaceOwnerMembership,
-  resolveWorkspaceMembershipRelation,
-} from '../workspace-membership.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,

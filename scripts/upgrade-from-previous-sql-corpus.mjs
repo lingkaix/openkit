@@ -437,6 +437,8 @@ export async function seedSqlCorpus({
     'Corpus producer must be historical or current.'
   );
   const o = await owners(appRoot);
+  const membershipReader =
+    corpusProducer === 'historical' ? o.membership : await o.load('workspace-sharing');
   const { workspaceId, threadId, turnId } = selectors;
   let core = o.db.openCoreDb(dataRoot);
   let user = o.db.openUserDb(dataRoot, userId);
@@ -452,7 +454,9 @@ export async function seedSqlCorpus({
     o.migrate.applyScopedMigrations(workspace);
     const store = new o.store.FsStore({ dataRoot });
     required(store.getTurn(workspaceId, threadId, turnId), 'B01 Turn');
-    if (o.membership.resolveWorkspaceMembershipRelation(core, workspaceId, userId) !== 'owner') {
+    if (
+      membershipReader.resolveWorkspaceMembershipRelation(core, workspaceId, userId) !== 'owner'
+    ) {
       throw new Error('B01 synthetic User must own its Workspace.');
     }
     const token = o.tokens.createOpenKitAccessTokenRecord(core, {
@@ -2524,8 +2528,14 @@ async function readLinkedEvidence(o, core, workspace, store, sql) {
 }
 
 /** Reads every selected SQL record with the selected revision's product reader. */
-export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
+export async function readSqlCorpus({ appRoot, dataRoot, selectors, corpusProducer }) {
+  assert(
+    corpusProducer === 'historical' || corpusProducer === 'current',
+    'Corpus runtime must be historical or current.'
+  );
   const o = await owners(appRoot);
+  const membershipReader =
+    corpusProducer === 'historical' ? o.membership : await o.load('workspace-sharing');
   const { workspaceId, threadId, turnId, sql } = selectors;
   const core = o.db.openCoreDb(dataRoot);
   const user = o.db.openUserDb(dataRoot, sql.userId);
@@ -2628,7 +2638,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
         { tokenHashDigest: digest(tokenHash) },
         {
           relation: required(
-            o.membership.resolveWorkspaceMembershipRelation(core, workspaceId, sql.userId),
+            membershipReader.resolveWorkspaceMembershipRelation(core, workspaceId, sql.userId),
             SQL_CORPUS_FAMILIES[0]
           ),
         },
