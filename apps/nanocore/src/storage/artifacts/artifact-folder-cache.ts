@@ -14,7 +14,12 @@ import { z } from 'zod';
 import type { FileStorageAdmission } from './file-admission.js';
 import { ArtifactPayloadCleanupError } from './file-payload.js';
 import { artifactFilePayloadPath, verifyArtifactFilePayload } from './file-records.js';
-import { MAX_ZIP_EXPANDED_BYTES, stageZipSnapshot, ZipExtractionBudget } from './zip-snapshot.js';
+import {
+  MAX_ZIP_EXPANDED_BYTES,
+  stageZipSnapshot,
+  ZipExtractionBudget,
+  type ZipSnapshotFile,
+} from './zip-snapshot.js';
 
 /** Versioned output-changing processor identity; nested archives remain ordinary files. */
 export const ZIP_FOLDER_PROCESSOR = 'openkit.zip.v1';
@@ -54,7 +59,7 @@ interface ArtifactFolderSource {
 /** Verified disposable tree for existing Worker slot materialization, never an editable mount. */
 interface ArtifactFolderSnapshot {
   readonly root: string;
-  readonly files: Awaited<ReturnType<typeof stageZipSnapshot>>['files'];
+  readonly files: readonly ZipSnapshotFile[];
   readonly directories: readonly string[];
   readonly expandedBytes: number;
   readonly representationDigest: string;

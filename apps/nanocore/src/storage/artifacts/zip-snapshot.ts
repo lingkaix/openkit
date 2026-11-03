@@ -67,7 +67,7 @@ export class ZipExtractionBudget {
 }
 
 /** One exact extracted regular file, without an independent product identity. */
-interface ZipSnapshotFile {
+export interface ZipSnapshotFile {
   readonly relativePath: string;
   readonly byteLength: number;
   readonly contentDigest: string;
