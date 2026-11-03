@@ -42,7 +42,6 @@ const STORAGE_TEST_GRANDFATHERED_PATHS = new Set([
   'apps/nanocore/src/artifact-operation-projections.test.ts',
   'apps/nanocore/src/artifact-reviews.test.ts',
   'apps/nanocore/src/artifact-routes.test.ts',
-  'apps/nanocore/src/artifact-versions.test.ts',
   'apps/nanocore/src/assistant-context-portability.test.ts',
   'apps/nanocore/src/assistant-history-integration.test.ts',
   'apps/nanocore/src/assistant-semantic-handoff.test.ts',
