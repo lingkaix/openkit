@@ -1,14 +1,27 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { cp, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  link,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { testEntityId } from '../../test-support/entity-ids.js';
 import { verifyKnowledgePackageFormat, writeKnowledgePackageFormat } from './format.js';
-import type { KnowledgePackageManifest, KnowledgePackageMetadata } from './manifest.js';
+
+// Derive the package shapes from the public operations so this test follows the file that owns them.
+type KnowledgePackageManifest = Awaited<ReturnType<typeof verifyKnowledgePackageFormat>>;
+type KnowledgePackageMetadata = Parameters<typeof writeKnowledgePackageFormat>[0]['metadata'];
 
 const fixtures = fileURLToPath(new URL('./fixtures/', import.meta.url));
 const knowledgeBaseId = testEntityId('kb', 'knowledge-package-format');
@@ -26,6 +39,26 @@ async function temporaryRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'openkit-knowledge-package-format-'));
   temporaryRoots.push(root);
   return root;
+}
+
+/** Computes the canonical content digest for independently measured bytes. */
+function contentDigest(bytes: Buffer): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+/** Returns the same well-formed digest with one hexadecimal character changed. */
+function flipDigest(digest: string): string {
+  return `${digest.slice(0, -1)}${digest.endsWith('0') ? '1' : '0'}`;
+}
+
+/** Builds inert additional mount declarations whose roots carry an exact padding length. */
+function paddedMounts(count: number, rootLength: number, longerPrefix = 0) {
+  return Array.from({ length: count }, (_, index) => ({
+    name: `pad-${index}`,
+    backend: 'local',
+    root: 'p'.repeat(rootLength + (index < longerPrefix ? 1 : 0)),
+    default: false,
+  }));
 }
 
 /** Loads the independent canonical fixture, substituting only its allocated identity. */
@@ -351,5 +384,337 @@ describe('Knowledge package v1 format', () => {
       ],
     }));
     await expect(verifyKnowledgePackageFormat({ directory, limits })).rejects.toThrow();
+  });
+
+  it('checks the shared retained marker before decoding any family field', async () => {
+    const directory = await writeFixture();
+    const manifest: KnowledgePackageManifest = JSON.parse(await expectedManifestBytes());
+    for (const schemaVersion of [undefined, 2, '1', null]) {
+      await writeFile(
+        join(directory, 'manifest.json'),
+        JSON.stringify({
+          ...manifest,
+          schemaVersion,
+          format: 'other.package',
+          mounts: 'not a mount declaration',
+        })
+      );
+      await expect(verifyKnowledgePackageFormat({ directory, limits })).rejects.toThrow(
+        'Unsupported retained record format.'
+      );
+    }
+    await writeFile(
+      join(directory, 'manifest.json'),
+      JSON.stringify({
+        ...manifest,
+        format: 'other.package',
+        mounts: 'not a mount declaration',
+      })
+    );
+    const failure = await verifyKnowledgePackageFormat({ directory, limits }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure?.message).not.toBe('Unsupported retained record format.');
+  });
+
+  it('refuses unsupported and duplicated required feature declarations', async () => {
+    const supported = ['openkit.knowledge-git-notebook.v1'];
+    const directory = await writeFixture({ requiredFeatures: supported });
+    expect((await verifyKnowledgePackageFormat({ directory, limits })).requiredFeatures).toEqual(
+      supported
+    );
+    for (const requiredFeatures of [
+      ['openkit.unknown-required-semantics.v1'],
+      ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-owner-scope.v1'],
+      [...supported, ...supported],
+    ]) {
+      const invalid = await writeFixture();
+      await rewriteManifest(invalid, (current) => ({ ...current, requiredFeatures }));
+      await expect(verifyKnowledgePackageFormat({ directory: invalid, limits })).rejects.toThrow(
+        'Unsupported semantics or duplicate Knowledge package member.'
+      );
+      const input = await packageInput(join(await temporaryRoot(), 'package'));
+      await expect(
+        writeKnowledgePackageFormat({
+          ...input,
+          metadata: { ...input.metadata, requiredFeatures },
+        })
+      ).rejects.toThrow('Unsupported semantics or duplicate Knowledge package member.');
+      expect(existsSync(input.directory)).toBe(false);
+    }
+  });
+
+  it('reproduces independently hand-written canonical manifest bytes exactly', async () => {
+    const guide = await readFile(join(fixtures, 'pages/guide.md'));
+    const original = await readFile(join(fixtures, 'raw/original.bin'));
+    const schema = await readFile(join(fixtures, 'schema/scope-schema.yaml'));
+    const canonical = `{
+  "contentInventory": [
+    {
+      "byteLength": ${guide.byteLength},
+      "contentDigest": "${contentDigest(guide)}",
+      "path": "pages/guide.md"
+    },
+    {
+      "byteLength": ${original.byteLength},
+      "contentDigest": "${contentDigest(original)}",
+      "path": "raw/original.bin"
+    },
+    {
+      "byteLength": ${schema.byteLength},
+      "contentDigest": "${contentDigest(schema)}",
+      "path": "schema/scope-schema.yaml"
+    }
+  ],
+  "format": "openkit.knowledge-package",
+  "knowledgeBaseId": "${knowledgeBaseId}",
+  "mounts": [
+    {
+      "backend": "local",
+      "default": true,
+      "name": "local",
+      "root": "raw/"
+    }
+  ],
+  "notebookRevision": "0123456789abcdef0123456789abcdef01234567",
+  "ownerScope": {
+    "kind": "server"
+  },
+  "requiredFeatures": [],
+  "schemaVersion": 1
+}
+`;
+    expect(canonical.endsWith('\n')).toBe(true);
+    const directory = await writeFixture();
+    expect(await readFile(join(directory, 'manifest.json'), 'utf8')).toBe(canonical);
+    await writeFile(join(directory, 'manifest.json'), canonical);
+    expect(await verifyKnowledgePackageFormat({ directory, limits })).toEqual(
+      JSON.parse(canonical)
+    );
+  });
+
+  it('accounts for exact manifest, member and digest byte identities', async () => {
+    const directory = await writeFixture();
+    const manifestBytes = await readFile(join(directory, 'manifest.json'));
+    const manifest: KnowledgePackageManifest = JSON.parse(manifestBytes.toString('utf8'));
+    for (const entry of manifest.contentInventory) {
+      const bytes = await readFile(join(fixtures, entry.path));
+      expect(entry.byteLength).toBe(bytes.byteLength);
+      expect(entry.contentDigest).toBe(contentDigest(bytes));
+    }
+    const totalBytes =
+      manifestBytes.byteLength +
+      manifest.contentInventory.reduce((sum, entry) => sum + entry.byteLength, 0);
+    const exactInput = await packageInput(join(await temporaryRoot(), 'package'));
+    await expect(
+      writeKnowledgePackageFormat({
+        ...exactInput,
+        limits: { maxEntries: 7, maxBytes: totalBytes },
+      })
+    ).resolves.toBeDefined();
+    const overInput = await packageInput(join(await temporaryRoot(), 'package'));
+    await expect(
+      writeKnowledgePackageFormat({
+        ...overInput,
+        limits: { maxEntries: 7, maxBytes: totalBytes - 1 },
+      })
+    ).rejects.toThrow('Knowledge package resource limit exceeded.');
+    expect(existsSync(overInput.directory)).toBe(false);
+
+    await rewriteManifest(directory, (current) => ({
+      ...current,
+      contentInventory: current.contentInventory.map((entry, index) =>
+        index === 0 ? { ...entry, contentDigest: flipDigest(entry.contentDigest) } : entry
+      ),
+    }));
+    await expect(verifyKnowledgePackageFormat({ directory, limits })).rejects.toThrow(
+      'Knowledge package member bytes do not match their captured identity.'
+    );
+    for (const byteLength of [1, -1]) {
+      const sized = await writeFixture();
+      await rewriteManifest(sized, (current) => ({
+        ...current,
+        contentInventory: current.contentInventory.map((entry, index) =>
+          index === 0 ? { ...entry, byteLength: entry.byteLength + byteLength } : entry
+        ),
+      }));
+      await expect(verifyKnowledgePackageFormat({ directory: sized, limits })).rejects.toThrow(
+        'Knowledge package member length does not match.'
+      );
+    }
+    const writeInput = await packageInput(join(await temporaryRoot(), 'package'));
+    const member = writeInput.files.find((file) => file.path === 'raw/original.bin')!;
+    await expect(
+      writeKnowledgePackageFormat({
+        ...writeInput,
+        files: writeInput.files.map((file) =>
+          file.path === member.path
+            ? { ...file, contentDigest: flipDigest(file.contentDigest) }
+            : file
+        ),
+      })
+    ).rejects.toThrow('Knowledge package member bytes do not match their captured identity.');
+    expect(existsSync(writeInput.directory)).toBe(false);
+  });
+
+  it('refuses duplicate and path-prefix inventory collisions', async () => {
+    const input = await packageInput(join(await temporaryRoot(), 'package'));
+    const member = input.files.find((file) => file.path === 'raw/original.bin')!;
+    const colliding = [
+      { ...member, path: 'raw/folder' },
+      { ...member, path: 'raw/folder/nested.bin' },
+    ];
+    await expect(writeKnowledgePackageFormat({ ...input, files: colliding })).rejects.toThrow(
+      'Knowledge package file and directory paths collide.'
+    );
+    expect(existsSync(input.directory)).toBe(false);
+    const duplicateInput = await packageInput(join(await temporaryRoot(), 'package'));
+    await expect(
+      writeKnowledgePackageFormat({
+        ...duplicateInput,
+        files: [duplicateInput.files[0]!, duplicateInput.files[0]!],
+      })
+    ).rejects.toThrow('Unsupported semantics or duplicate Knowledge package member.');
+    expect(existsSync(duplicateInput.directory)).toBe(false);
+
+    const directory = await writeFixture();
+    await rewriteManifest(directory, (current) => ({
+      ...current,
+      contentInventory: [...current.contentInventory, ...colliding],
+    }));
+    await expect(verifyKnowledgePackageFormat({ directory, limits })).rejects.toThrow(
+      'Knowledge package file and directory paths collide.'
+    );
+    const duplicate = await writeFixture();
+    await rewriteManifest(duplicate, (current) => ({
+      ...current,
+      contentInventory: [...current.contentInventory, current.contentInventory[0]!],
+    }));
+    await expect(verifyKnowledgePackageFormat({ directory: duplicate, limits })).rejects.toThrow(
+      'Unsupported semantics or duplicate Knowledge package member.'
+    );
+  });
+
+  it('refuses bytes and directories reserved by an additional mount namespace', async () => {
+    const externalRoot = join(await temporaryRoot(), 'not-present');
+    const input = await packageInput(join(await temporaryRoot(), 'package'));
+    const mounts = [
+      ...input.metadata.mounts,
+      { name: 'archive', backend: 'local', root: externalRoot, default: false },
+    ];
+    const directory = await writeFixture({ mounts });
+    expect(
+      (await verifyKnowledgePackageFormat({ directory, limits })).mounts.map((mount) => mount.name)
+    ).toEqual(['archive', 'local']);
+    expect(existsSync(externalRoot)).toBe(false);
+    await mkdir(join(directory, 'raw/archive'));
+    await expect(verifyKnowledgePackageFormat({ directory, limits })).rejects.toThrow(
+      'Knowledge package directory is outside its declared layout.'
+    );
+    const member = input.files.find((file) => file.path === 'raw/original.bin')!;
+    await expect(
+      writeKnowledgePackageFormat({
+        ...input,
+        metadata: { ...input.metadata, mounts },
+        files: [{ ...member, path: 'raw/archive/file.bin' }],
+      })
+    ).rejects.toThrow('Additional mount bytes cannot travel in a Knowledge package.');
+    expect(existsSync(input.directory)).toBe(false);
+  });
+
+  it('enforces the original 1 MiB manifest cap at read and write boundaries', async () => {
+    const cap = 1_048_576;
+    const directory = await writeFixture();
+    const manifest: KnowledgePackageManifest = JSON.parse(await expectedManifestBytes());
+    const textOfSize = (size: number) => {
+      const empty = JSON.stringify({ ...manifest, description: '' });
+      return JSON.stringify({
+        ...manifest,
+        description: 'a'.repeat(size - Buffer.byteLength(empty)),
+      });
+    };
+    const capLimits = { maxEntries: 32, maxBytes: 2_097_152 };
+    await writeFile(join(directory, 'manifest.json'), textOfSize(cap));
+    expect(Buffer.byteLength(textOfSize(cap))).toBe(cap);
+    expect(await verifyKnowledgePackageFormat({ directory, limits: capLimits })).toEqual(manifest);
+    await writeFile(join(directory, 'manifest.json'), textOfSize(cap + 1));
+    await expect(verifyKnowledgePackageFormat({ directory, limits: capLimits })).rejects.toThrow(
+      'Knowledge package manifest must be a bounded regular file.'
+    );
+
+    const root = await temporaryRoot();
+    const input = await packageInput(join(root, 'probe'));
+    const paddingCount = 300;
+    await writeKnowledgePackageFormat({
+      ...input,
+      metadata: {
+        ...input.metadata,
+        mounts: [...input.metadata.mounts, ...paddedMounts(paddingCount, 2500)],
+      },
+      limits: capLimits,
+    });
+    const probeBytes = Buffer.byteLength(
+      await readFile(join(input.directory, 'manifest.json'), 'utf8')
+    );
+    expect(probeBytes).toBeLessThan(cap);
+    const growth = Math.floor((cap - probeBytes) / paddingCount);
+    const longer = cap - probeBytes - growth * paddingCount;
+    const exactMounts = [
+      ...input.metadata.mounts,
+      ...paddedMounts(paddingCount, 2500 + growth, longer),
+    ];
+    const exactDirectory = join(root, 'exact');
+    await writeKnowledgePackageFormat({
+      directory: exactDirectory,
+      metadata: { ...input.metadata, mounts: exactMounts },
+      files: input.files,
+      limits: capLimits,
+    });
+    const exactBytes = await readFile(join(exactDirectory, 'manifest.json'), 'utf8');
+    expect(Buffer.byteLength(exactBytes)).toBe(cap);
+    expect(
+      await verifyKnowledgePackageFormat({ directory: exactDirectory, limits: capLimits })
+    ).toEqual(JSON.parse(exactBytes));
+    const overMounts = exactMounts.map((mount, index) =>
+      index === 1 ? { ...mount, root: `${mount.root}p` } : mount
+    );
+    const overDirectory = join(root, 'over');
+    await expect(
+      writeKnowledgePackageFormat({
+        directory: overDirectory,
+        metadata: { ...input.metadata, mounts: overMounts },
+        files: input.files,
+        limits: capLimits,
+      })
+    ).rejects.toThrow('Knowledge package manifest is too large.');
+    expect(existsSync(overDirectory)).toBe(false);
+  });
+
+  it('removes every partially written path when a fresh write fails', async () => {
+    const parent = await temporaryRoot();
+    const directory = join(parent, 'package');
+    const input = await packageInput(directory);
+    const member = input.files.find((file) => file.path === 'raw/original.bin')!;
+    await expect(
+      writeKnowledgePackageFormat({
+        ...input,
+        files: input.files.map((file) =>
+          file.path === member.path
+            ? {
+                ...file,
+                path: 'raw/deep/member.bin',
+                contentDigest: flipDigest(file.contentDigest),
+              }
+            : file
+        ),
+      })
+    ).rejects.toThrow('Knowledge package member bytes do not match their captured identity.');
+    expect(existsSync(directory)).toBe(false);
+    expect(await readdir(parent)).toEqual([]);
+    await writeKnowledgePackageFormat(input);
+    await expect(verifyKnowledgePackageFormat({ directory, limits })).resolves.toBeDefined();
+    expect(await readdir(parent)).toEqual(['package']);
   });
 });
