@@ -2518,3 +2518,78 @@ export function removeUnkeptCanonicalDirectories(
     }
   }
 }
+
+/** Creates the admitted retained tree with the original exclusive root and parent acknowledgements. */
+export function createPrivateRetainedTreeRoot(
+  exportsRoot: string,
+  closuresRoot: string,
+  workspaceClosuresRoot: string,
+  closureRoot: string
+): void {
+  assertCanonicalDirectory(exportsRoot);
+  prepareRetainedPrivateDirectory(closuresRoot);
+  syncRetainedDirectory(exportsRoot);
+  prepareRetainedPrivateDirectory(workspaceClosuresRoot);
+  syncRetainedDirectory(closuresRoot);
+  mkdirSync(closureRoot, { mode: 0o700 });
+  chmodSync(closureRoot, 0o700);
+  syncRetainedDirectory(workspaceClosuresRoot);
+}
+
+/** Copies the complete retained evidence tree with private modes, exclusive files and original refusals. */
+export function copyRetainedEvidenceTree(sourceRoot: string, targetRoot: string): void {
+  if (!existsSync(sourceRoot)) {
+    throw new Error('Retained evidence bytes are missing.');
+  }
+  assertCanonicalDirectory(sourceRoot);
+  prepareRetainedPrivateDirectory(targetRoot);
+  for (const entry of readdirSync(sourceRoot, { withFileTypes: true })) {
+    const source = join(sourceRoot, entry.name);
+    const target = join(targetRoot, entry.name);
+    const stat = lstatSync(source);
+    if (stat.isSymbolicLink()) {
+      throw new Error('Retained evidence cannot contain symbolic links.');
+    }
+    if (stat.isDirectory()) {
+      copyRetainedEvidenceTree(source, target);
+    } else if (stat.isFile()) {
+      writeRetainedPrivateFile(target, readFileSync(source));
+    } else {
+      throw new Error('Retained evidence must contain only regular files and directories.');
+    }
+  }
+  syncRetainedDirectory(targetRoot);
+}
+
+/** Publishes caller-serialized retained bytes before acknowledging the containing directory. */
+export function writeRetainedPrivateFile(path: string, value: string | Buffer): void {
+  prepareRetainedPrivateDirectory(dirname(path));
+  const descriptor = openSync(path, 'wx', 0o600);
+  try {
+    writeFileSync(descriptor, value);
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+  chmodSync(path, 0o600);
+  syncRetainedDirectory(dirname(path));
+}
+
+/** Prepares a private retained directory without adding a publication acknowledgement. */
+export function prepareRetainedPrivateDirectory(path: string): void {
+  if (!existsSync(path)) {
+    mkdirSync(path, { mode: 0o700, recursive: true });
+  }
+  assertCanonicalDirectory(path);
+  chmodSync(path, 0o700);
+}
+
+/** Preserves the retained owner's original synchronous directory descriptor and failure order. */
+export function syncRetainedDirectory(path: string): void {
+  const descriptor = openSync(path, 'r');
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+}
