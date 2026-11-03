@@ -156,7 +156,7 @@ export async function assertCapturedOutcome(
       },
     ],
   });
-  const lifecyclePolicy = admitTestMcpApproval({
+  const lifecyclePolicy = await admitTestMcpApproval({
     coreDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     serverId: 'echo',
