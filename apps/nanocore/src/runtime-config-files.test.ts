@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { RuntimeConfigFileService } from './config/runtime-config-files.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -722,6 +723,84 @@ describe('runtime config file API', () => {
       allocation.mockRestore();
       syncBuiltinESMExports();
       await shutdownControlStoreWorkerClient();
+      for (const root of overlayRoots) rmSync(root, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves preparation failure and partial overlay bytes before validation cleanup', () => {
+    const dataRoot = createDataRoot();
+    writeServerConfig(dataRoot);
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const snapshot = manager.current();
+    const first = join(dataRoot, 'workspaces', 'ws_overlay_first', 'config');
+    const second = join(dataRoot, 'workspaces', 'ws_overlay_second', 'config');
+    const user = join(dataRoot, 'users', 'user_overlay', 'config');
+    for (const path of [first, second, user]) mkdirSync(path, { recursive: true });
+    const workspaceBytes = '{ "schemaVersion": 1 }\n';
+    const catalogBytes = '{ "schemaVersion": 1, "sources": [] }\n';
+    writeFileSync(join(first, 'workspace.jsonc'), workspaceBytes);
+    writeFileSync(join(first, 'data-sources.jsonc'), catalogBytes);
+    writeFileSync(join(second, 'workspace.jsonc'), workspaceBytes);
+    writeFileSync(join(user, 'user.jsonc'), workspaceBytes);
+    const sourceProvider = join(dataRoot, 'config/providers/agent-openrouter.provider.jsonc');
+    const originalProvider = readFileSync(sourceProvider, 'utf8');
+    const failure = new Error('Injected overlay catalog copy failure');
+    const overlayRoots: string[] = [];
+    const allocate = fs.mkdtempSync;
+    const copy = fs.cpSync;
+    const allocation = vi.spyOn(fs, 'mkdtempSync').mockImplementation((...args) => {
+      const root = allocate(...args);
+      if (String(args[0]) === join(tmpdir(), 'openkit-config-overlay-'))
+        overlayRoots.push(String(root));
+      return root;
+    });
+    const copying = vi.spyOn(fs, 'cpSync').mockImplementation((...args) => {
+      if (String(args[0]) === join(first, 'data-sources.jsonc')) throw failure;
+      return copy(...args);
+    });
+    try {
+      syncBuiltinESMExports();
+      const service = new RuntimeConfigFileService({
+        dataRoot,
+        workspaceIds: ['ws_overlay_first', 'ws_overlay_second'],
+        userId: 'user_overlay',
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      });
+      let caught: unknown;
+      try {
+        service.validate({
+          files: [
+            { id: 'providers/agent-openrouter.provider.jsonc', content: originalProvider + '\n' },
+          ],
+          mode: 'safe',
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBe(failure);
+      expect(overlayRoots).toHaveLength(1);
+      const root = overlayRoots[0]!;
+      expect(lstatSync(root).isDirectory()).toBe(true);
+      expect(
+        readFileSync(join(root, 'config/providers/agent-openrouter.provider.jsonc'), 'utf8')
+      ).toBe(originalProvider);
+      expect(
+        readFileSync(join(root, 'workspaces/ws_overlay_first/config/workspace.jsonc'), 'utf8')
+      ).toBe(workspaceBytes);
+      expect(existsSync(join(root, 'workspaces/ws_overlay_first/config/data-sources.jsonc'))).toBe(
+        false
+      );
+      expect(existsSync(join(root, 'workspaces/ws_overlay_second'))).toBe(false);
+      expect(existsSync(join(root, 'users/user_overlay'))).toBe(false);
+      expect(readFileSync(join(first, 'data-sources.jsonc'), 'utf8')).toBe(catalogBytes);
+      expect(readFileSync(sourceProvider, 'utf8')).toBe(originalProvider);
+      expect(manager.current()).toBe(snapshot);
+    } finally {
+      copying.mockRestore();
+      allocation.mockRestore();
+      syncBuiltinESMExports();
       for (const root of overlayRoots) rmSync(root, { recursive: true, force: true });
       rmSync(dataRoot, { recursive: true, force: true });
     }

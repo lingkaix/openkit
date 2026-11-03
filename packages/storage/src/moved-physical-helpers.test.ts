@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   existsSync,
   lstatSync,
@@ -33,6 +34,7 @@ import {
   measureCanonicalFile,
   measureCanonicalFileDescriptor,
   movePrivateTree,
+  populatePrivateOverlayContentsSync,
   publishCanonicalPath,
   publishCanonicalPathAsync,
   readCanonicalFile,
@@ -352,4 +354,118 @@ it.each([
   expect(statSync(parent).mode).toBe(parentBefore.mode);
   // An absent-entry retry still acknowledges the parent and must preserve its failure.
   if (boundary === 'after') expect(() => removeCanonicalTreeSync(target)).toThrow(refused);
+});
+
+it('populates private overlays in caller order with exact bytes, modes and draft overwrites', () => {
+  const root = fixture();
+  const source = join(root, 'source');
+  mkdirSync(join(source, 'nested'), { recursive: true });
+  writeFileSync(join(source, 'nested/raw'), original);
+  const scoped = join(root, 'scoped');
+  writeFileSync(scoped, original);
+  chmodSync(scoped, 0o640);
+  const target = createPrivateTreeSync(root, 'overlay-');
+  const config = join(target, 'config');
+  const copied = join(target, 'workspace/config.jsonc');
+  const empty = join(target, 'draft/empty');
+  populatePrivateOverlayContentsSync(
+    source,
+    config,
+    [
+      { sourcePath: join(root, 'missing'), targetPath: join(target, 'missing/ignored') },
+      { sourcePath: scoped, targetPath: copied },
+    ],
+    [
+      { targetPath: copied, content: 'first' },
+      { targetPath: copied, content: 'last \u03bb\n' },
+      { targetPath: empty, content: '' },
+    ]
+  );
+  expect(readFileSync(join(config, 'nested/raw'))).toEqual(original);
+  expect(readFileSync(copied)).toEqual(Buffer.from('last \u03bb\n'));
+  expect(statSync(copied).mode & 0o777).toBe(0o640);
+  expect(readFileSync(empty)).toEqual(Buffer.alloc(0));
+  expect(statSync(empty).mode & 0o777).toBe(0o666 & ~process.umask());
+  expect(statSync(join(target, 'draft')).mode & 0o777).toBe(0o777 & ~process.umask());
+  expect(statSync(target).mode & 0o777).toBe(0o700);
+  expect(existsSync(join(target, 'missing'))).toBe(false);
+  expect(readFileSync(scoped)).toEqual(original);
+  expect(readFileSync(join(source, 'nested/raw'))).toEqual(original);
+});
+
+it('creates an absent overlay base without a source and keeps its original default mode', () => {
+  const root = fixture();
+  const target = createPrivateTreeSync(root, 'overlay-');
+  const config = join(target, 'config');
+  populatePrivateOverlayContentsSync(
+    join(root, 'absent'),
+    config,
+    [{ sourcePath: join(root, 'optional-absent'), targetPath: join(target, 'optional/ignored') }],
+    [{ targetPath: join(config, 'draft'), content: 'draft-only\n' }]
+  );
+  expect(readFileSync(join(config, 'draft'), 'utf8')).toBe('draft-only\n');
+  expect(existsSync(join(target, 'optional'))).toBe(false);
+  expect(existsSync(join(root, 'optional-absent'))).toBe(false);
+  expect(lstatSync(config).isDirectory()).toBe(true);
+  expect(statSync(config).mode & 0o777).toBe(0o777 & ~process.umask());
+  expect(existsSync(join(root, 'absent'))).toBe(false);
+});
+
+it('preserves the copied prefix and private root when a later file copy refuses a directory', () => {
+  const root = fixture();
+  const source = join(root, 'source');
+  mkdirSync(source);
+  writeFileSync(join(source, 'base'), original);
+  const first = join(root, 'first');
+  writeFileSync(first, original);
+  const directory = join(root, 'not-a-file');
+  mkdirSync(directory);
+  writeFileSync(join(directory, 'untouched'), original);
+  const target = createPrivateTreeSync(root, 'overlay-');
+  expect(() =>
+    populatePrivateOverlayContentsSync(
+      source,
+      join(target, 'config'),
+      [
+        { sourcePath: first, targetPath: join(target, 'copies/first') },
+        { sourcePath: directory, targetPath: join(target, 'copies/refused') },
+        { sourcePath: first, targetPath: join(target, 'later/absent') },
+      ],
+      [{ targetPath: join(target, 'draft/absent'), content: 'not written' }]
+    )
+  ).toThrow();
+  expect(readFileSync(join(target, 'config/base'))).toEqual(original);
+  expect(readFileSync(join(target, 'copies/first'))).toEqual(original);
+  expect(existsSync(join(target, 'later'))).toBe(false);
+  expect(existsSync(join(target, 'draft'))).toBe(false);
+  expect(readFileSync(join(directory, 'untouched'))).toEqual(original);
+  expect(readFileSync(first)).toEqual(original);
+  expect(lstatSync(target).isDirectory()).toBe(true);
+});
+
+it('retains earlier overlay drafts and copied bytes when a later draft refuses a directory', () => {
+  const root = fixture();
+  const source = join(root, 'source');
+  mkdirSync(join(source, 'directory'), { recursive: true });
+  writeFileSync(join(source, 'base'), original);
+  const target = createPrivateTreeSync(root, 'overlay-');
+  const config = join(target, 'config');
+  expect(() =>
+    populatePrivateOverlayContentsSync(
+      source,
+      config,
+      [],
+      [
+        { targetPath: join(target, 'draft/first'), content: 'retained' },
+        { targetPath: join(config, 'directory'), content: 'refused' },
+        { targetPath: join(target, 'later/absent'), content: 'not written' },
+      ]
+    )
+  ).toThrow();
+  expect(readFileSync(join(target, 'draft/first'), 'utf8')).toBe('retained');
+  expect(readFileSync(join(config, 'base'))).toEqual(original);
+  expect(lstatSync(join(config, 'directory')).isDirectory()).toBe(true);
+  expect(existsSync(join(target, 'later'))).toBe(false);
+  expect(readFileSync(join(source, 'base'))).toEqual(original);
+  expect(lstatSync(target).isDirectory()).toBe(true);
 });

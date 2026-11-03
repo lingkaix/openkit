@@ -1268,6 +1268,29 @@ export function removeCanonicalTreeSync(path: string): void {
   syncCanonicalDirectory(dirname(path));
 }
 
+/**
+ * @internal Populates caller-owned private staging with ordered copies and draft bytes.
+ * Keeps native copy defaults and partial preparation residue; acknowledgement and cleanup stay with the caller.
+ */
+export function populatePrivateOverlayContentsSync(
+  sourceRoot: string,
+  targetRoot: string,
+  copies: readonly { sourcePath: string; targetPath: string }[],
+  drafts: readonly { targetPath: string; content: string }[]
+): void {
+  if (existsSync(sourceRoot)) cpSync(sourceRoot, targetRoot, { recursive: true });
+  else mkdirSync(targetRoot, { recursive: true });
+  for (const copy of copies) {
+    if (!existsSync(copy.sourcePath)) continue;
+    mkdirSync(dirname(copy.targetPath), { recursive: true });
+    cpSync(copy.sourcePath, copy.targetPath);
+  }
+  for (const draft of drafts) {
+    mkdirSync(dirname(draft.targetPath), { recursive: true });
+    writeFileSync(draft.targetPath, draft.content);
+  }
+}
+
 /** Synchronizes complete staged bytes and child entries before their containing tree is published. */
 export function syncCanonicalTree(path: string): void {
   const metadata = lstatSync(path);

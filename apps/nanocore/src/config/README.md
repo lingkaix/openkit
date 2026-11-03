@@ -76,4 +76,6 @@ Runtime snapshot comparisons and current secret-safe fingerprints use Protocol c
 
 The runtime config manager exposes only its captured data-root identity for lifecycle dependency checks. Final restored-target admission refuses a manager bound to a different root before any projection reload.
 
-Validation overlay allocation and final cleanup use the existing Storage private-tree helpers. Configuration copying, draft preparation, diagnostics, active snapshot preservation, and the existing caller-owned cleanup and failure order stay in this module.
+Validation overlay allocation and final cleanup use the existing Storage private-tree helpers. Configuration scope/path selection, draft-text preparation, diagnostics, active snapshot preservation, and the existing caller-owned cleanup and failure order stay in this module.
+
+Validation overlay contents use the existing Storage physical owner for ordered base copies, optional scoped-file copies and draft writes. Configuration retains scope/path selection, validation and snapshot authority. Preparation still precedes the validation cleanup region: a preparation failure propagates with its original partial private output, while completed validation removes its overlay.

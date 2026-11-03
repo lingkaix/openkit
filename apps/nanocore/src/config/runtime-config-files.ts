@@ -1,15 +1,12 @@
 import { createHash } from 'node:crypto';
 import {
-  cpSync,
   existsSync,
   lstatSync,
-  mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
@@ -55,6 +52,7 @@ import {
   assertCanonicalDirectory,
   createPrivateTreeSync,
   ensureCanonicalDirectory,
+  populatePrivateOverlayContentsSync,
   readCanonicalTextFile,
   removePrivateTreeSync,
 } from '@openkit/storage';
@@ -897,44 +895,21 @@ export class RuntimeConfigFileService {
     const sourceConfigRoot = this.configRoot();
     const tempConfigRoot = join(tempRoot, CONFIG_ROOT);
 
-    if (existsSync(sourceConfigRoot)) {
-      cpSync(sourceConfigRoot, tempConfigRoot, { recursive: true });
-    } else {
-      mkdirSync(tempConfigRoot, { recursive: true });
-    }
-
-    for (const workspaceId of this.workspaceIds) {
-      const sourcePath = this.workspaceConfigPath(workspaceId, 'workspace');
-
-      if (existsSync(sourcePath)) {
-        const targetPath = join(tempRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
-        mkdirSync(dirname(targetPath), { recursive: true });
-        cpSync(sourcePath, targetPath);
-      }
-
-      const catalogSourcePath = this.workspaceConfigPath(workspaceId, 'data-source');
-
-      if (existsSync(catalogSourcePath)) {
-        const targetPath = join(
-          tempRoot,
-          'workspaces',
-          workspaceId,
-          'config',
-          'data-sources.jsonc'
-        );
-        mkdirSync(dirname(targetPath), { recursive: true });
-        cpSync(catalogSourcePath, targetPath);
-      }
-    }
-
-    const sourceUserConfigPath = this.userConfigPath(this.userId);
-    if (existsSync(sourceUserConfigPath)) {
-      const targetPath = join(tempRoot, 'users', this.userId, 'config', 'user.jsonc');
-      mkdirSync(dirname(targetPath), { recursive: true });
-      cpSync(sourceUserConfigPath, targetPath);
-    }
-
-    for (const file of input.files) {
+    const copies = this.workspaceIds.flatMap((workspaceId) => [
+      {
+        sourcePath: this.workspaceConfigPath(workspaceId, 'workspace'),
+        targetPath: join(tempRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc'),
+      },
+      {
+        sourcePath: this.workspaceConfigPath(workspaceId, 'data-source'),
+        targetPath: join(tempRoot, 'workspaces', workspaceId, 'config', 'data-sources.jsonc'),
+      },
+    ]);
+    copies.push({
+      sourcePath: this.userConfigPath(this.userId),
+      targetPath: join(tempRoot, 'users', this.userId, 'config', 'user.jsonc'),
+    });
+    const drafts = input.files.map((file) => {
       const spec = parseFileId(file.id);
       const targetPath = isWorkspaceScopedKind(spec.kind)
         ? join(
@@ -947,9 +922,9 @@ export class RuntimeConfigFileService {
         : spec.kind === 'user'
           ? join(tempRoot, 'users', spec.userId ?? '', 'config', 'user.jsonc')
           : join(tempConfigRoot, spec.relativePath);
-      mkdirSync(dirname(targetPath), { recursive: true });
-      writeFileSync(targetPath, file.content);
-    }
+      return { targetPath, content: file.content };
+    });
+    populatePrivateOverlayContentsSync(sourceConfigRoot, tempConfigRoot, copies, drafts);
 
     return tempRoot;
   }

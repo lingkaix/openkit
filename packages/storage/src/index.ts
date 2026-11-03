@@ -37,6 +37,7 @@ export {
   measureCanonicalFileDescriptor,
   measureDerivedTreeBytes,
   movePrivateTree,
+  populatePrivateOverlayContentsSync,
   prepareFilesystemParent,
   prepareRetainedPrivateDirectory,
   publishCanonicalPath,
