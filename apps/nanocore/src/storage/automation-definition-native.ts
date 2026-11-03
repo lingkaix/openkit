@@ -1,7 +1,3 @@
-import { nextRecurringNominal } from '../lib/recurring-cadence.js';
-
-export { nextRecurringNominal } from '../lib/recurring-cadence.js';
-
 import {
   type AutomationRecord,
   type CreateAutomationRequest,
@@ -18,7 +14,7 @@ import {
 import { recordServerAuditEvent } from '../audit-events.js';
 import {
   type advanceRecurringNominal,
-  RecurringCadenceExhaustedError,
+  nextRecurringNominal,
   recurringNominalMatches,
   recurringPrefixThrough,
 } from '../lib/recurring-cadence.js';
@@ -26,7 +22,6 @@ import type { CoreDb } from './db.js';
 import {
   findRecurringAutomationFromDb,
   finishRecurringOccurrenceInDb,
-  writeRecurringOccurrenceInDb,
 } from './recurring-attempt-native.js';
 import {
   RECURRING_DEADLINE_MS as DEADLINE_MS,
