@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
-  type ActorRef,
   type AuditEvent,
   allocateEntityId,
   deriveEntityId,
@@ -11,8 +10,6 @@ import {
   type PolicyInvocationV1,
   PolicyInvocationV1Schema,
   PolicyStatementReferenceV1Schema,
-  RequestIdSchema,
-  TimestampSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -253,28 +250,6 @@ export interface PolicyApprovalSourceDecision {
   readonly subjectSummary: unknown;
 }
 
-/** Complete terminal policy Approval winner and its authoritative Audit projection. */
-export interface PolicyApprovalTerminalWinner {
-  /** Product action decided by the winner. */
-  readonly action: string;
-  /** Human actor stored by the winning AuditEvent. */
-  readonly actor: Extract<ActorRef, { kind: 'user' }>;
-  /** Audit-owned decision time. */
-  readonly decidedAt: string;
-  /** Durable terminal permission decision id. */
-  readonly decisionId: string;
-  /** Required Approval kind copied from the source decision. */
-  readonly requiredApprovalKind: string;
-  /** Winning command request id. */
-  readonly requestId: string;
-  /** Redacted resource summary copied from the source decision. */
-  readonly resourceSummary: unknown;
-  /** Terminal result. */
-  readonly result: 'allow' | 'deny';
-  /** Redacted subject summary copied from the source decision. */
-  readonly subjectSummary: unknown;
-}
-
 /**
  * Lists every source decision that claims to open one policy Approval.
  *
@@ -304,76 +279,6 @@ export function listPolicyApprovalSourceDecisions(
       subjectSummary: decision.subjectSummary,
     };
   });
-}
-
-/**
- * Reads and validates the sole terminal winner for one policy Approval.
- *
- * @param workspaceDb Open workspace-scope database handle.
- * @param workspaceId Workspace that owns the Approval.
- * @param approvalId Approval request id.
- * @param threadId Thread lineage required on the winning AuditEvent.
- * @param turnId Turn lineage required on the winning AuditEvent.
- * @returns Complete terminal winner, or null when no terminal row exists.
- * @throws Error when a terminal row or its linked AuditEvent is incomplete or contradictory.
- */
-export function readPolicyApprovalTerminalWinner(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  approvalId: string,
-  threadId: string,
-  turnId: string
-): PolicyApprovalTerminalWinner | null {
-  const rows = workspaceDb.sqlite
-    .prepare(`SELECT * FROM permission_decisions
-      WHERE owner_scope = 'workspace' AND workspace_id = ?
-        AND approval_id = ? AND result IN ('allow', 'deny')`)
-    .all(workspaceId, approvalId) as PermissionDecisionRow[];
-
-  if (rows.length === 0) {
-    return null;
-  }
-  if (rows.length !== 1) {
-    throw new Error('Policy Approval has multiple terminal permission decisions.');
-  }
-
-  const decision = readPermissionDecisionRowV1(rows[0]);
-  const auditRow = workspaceDb.sqlite
-    .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
-    .get(decision.auditEventId);
-  const audit = auditRow ? readAuditEventRowV1(auditRow) : null;
-  if (
-    !decision.auditEventId ||
-    !audit ||
-    audit.id !== decision.auditEventId ||
-    audit.permissionDecisionId !== decision.decisionId ||
-    audit.workspaceId !== workspaceId ||
-    audit.threadId !== threadId ||
-    audit.turnId !== turnId ||
-    audit.action !== 'permission.decision' ||
-    audit.resource !== `permission:${decision.action}` ||
-    audit.outcome !== (decision.result === 'allow' ? 'succeeded' : 'denied') ||
-    !decision.requiredApprovalKind ||
-    !audit.actor ||
-    !audit.requestId ||
-    !audit.occurredAt
-  ) {
-    throw new Error('Policy Approval terminal decision has incomplete Audit linkage.');
-  }
-  if (audit.actor.kind !== 'user') {
-    throw new Error('Policy Approval terminal Audit actor must be a user.');
-  }
-  return {
-    action: decision.action,
-    actor: audit.actor,
-    decidedAt: TimestampSchema.parse(audit.occurredAt),
-    decisionId: decision.decisionId,
-    requiredApprovalKind: decision.requiredApprovalKind,
-    requestId: RequestIdSchema.parse(audit.requestId),
-    resourceSummary: decision.resourceSummary,
-    result: decision.result as 'allow' | 'deny',
-    subjectSummary: decision.subjectSummary,
-  };
 }
 
 /** Input for recording one LLM gateway policy decision. */

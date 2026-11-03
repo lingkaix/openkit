@@ -15,7 +15,7 @@ import Database from 'better-sqlite3';
 import { ArtifactAuthorityError } from './artifact-authority.js';
 import type { CommandRequestRecord, FsStore } from './lib/store.js';
 import type { AdmittedOperationContext } from './operation-contract.js';
-import { OperationError } from './operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from './operation-error.js';
 import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -47,7 +47,11 @@ export async function importArtifactFile(input: {
   const { store, workspaceDb, metadata, context } = input;
   const actorId = responsibleUserIdForActor(context.actorRef);
   if (!actorId || workspaceDb.workspaceId !== metadata.workspaceId) {
-    throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+    throw new OperationError(
+      WORKSPACE_ACCESS_DENIED.code,
+      WORKSPACE_ACCESS_DENIED.message,
+      WORKSPACE_ACCESS_DENIED.status
+    );
   }
   input.assertAuthorized();
   store.getWorkspace(metadata.workspaceId);
@@ -265,7 +269,11 @@ export async function commitArtifactVersionCommand(
   const { store, metadata, context, workspaceDb } = input;
   const actorId = responsibleUserIdForActor(context.actorRef);
   if (!actorId || metadata.workspaceId !== workspaceDb.workspaceId)
-    throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+    throw new OperationError(
+      WORKSPACE_ACCESS_DENIED.code,
+      WORKSPACE_ACCESS_DENIED.message,
+      WORKSPACE_ACCESS_DENIED.status
+    );
   const turnId = deriveEntityId('tu', [
     context.actorRef,
     metadata.workspaceId,

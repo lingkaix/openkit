@@ -77,7 +77,7 @@ const notebookAdmissionV1 = z.object({
   sourceReferences: z.array(z.string().min(1)),
 });
 /** Frozen version-one Audit core for native and portable retained readers. */
-export const AuditEventRetainedV1Schema = z.object({
+const AuditEventRetainedV1Schema = z.object({
   id: AuditEventIdSchema,
   workspaceId: WorkspaceIdSchema.nullable(),
   protocolVersion: z.string().min(1).optional(),
@@ -266,7 +266,7 @@ export function readPermissionDecisionRowV1(
 }
 
 /** Subject summaries are a read projection of the retained decision subject. */
-export function projectPolicySubject(mediation: z.infer<typeof PolicyDecisionV1Schema>) {
+function projectPolicySubject(mediation: z.infer<typeof PolicyDecisionV1Schema>) {
   return {
     principal: mediation.subject.principal,
     actor: mediation.subject.actor,
