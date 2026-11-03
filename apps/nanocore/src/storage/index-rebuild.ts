@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import {
   type KnowledgeRetrievalResponse,
@@ -16,7 +16,12 @@ import {
   parseReferenceScope,
   type RetrievalTraceReference,
 } from '@openkit/protocol';
-import { assertCanonicalDirectory, readCanonicalTextFile } from '@openkit/storage';
+import {
+  assertCanonicalDirectory,
+  clearDerivedIndexDirectory,
+  readCanonicalTextFile,
+  writeDerivedIndexFile,
+} from '@openkit/storage';
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
@@ -329,17 +334,17 @@ export function rebuildWorkspaceDerivedIndexes(
     rebuiltAt,
     references: projected.references,
   };
-  const removedEntries = clearIndexDirectory(indexesRoot);
+  const removedEntries = clearDerivedIndexDirectory(indexesRoot, 'retrieval');
 
-  writeFileSync(
+  writeDerivedIndexFile(
     join(indexesRoot, 'knowledge-links.json'),
     `${JSON.stringify(linkGraph, null, 2)}\n`
   );
-  writeFileSync(
+  writeDerivedIndexFile(
     join(indexesRoot, 'knowledge-validation.json'),
     `${JSON.stringify(validationIndex, null, 2)}\n`
   );
-  writeFileSync(
+  writeDerivedIndexFile(
     join(indexesRoot, 'knowledge-source-refs.json'),
     `${JSON.stringify(sourceReferenceIndex, null, 2)}\n`
   );
@@ -1805,39 +1810,6 @@ function readRegisteredSources(
       ).values(),
     ].map(({ source }) => [source.id, source.contentDigest])
   );
-}
-
-/**
- * Removes existing derived-index files before rebuild.
- *
- * @param indexesRoot Derived index directory.
- * @returns Removed direct child names.
- */
-function clearIndexDirectory(indexesRoot: string): string[] {
-  if (!lstatSync(indexesRoot, { throwIfNoEntry: false })) {
-    mkdirSync(indexesRoot);
-  }
-  assertCanonicalDirectory(indexesRoot);
-
-  const entries = readdirSync(indexesRoot, { withFileTypes: true });
-  const linkedEntry = entries.find((entry) => entry.isSymbolicLink());
-
-  if (linkedEntry) {
-    throw new Error(
-      `Canonical directory must not contain a symbolic link: ${join(indexesRoot, linkedEntry.name)}.`
-    );
-  }
-
-  const removedEntries = entries
-    .filter((entry) => entry.name !== 'retrieval')
-    .map((entry) => entry.name)
-    .sort();
-
-  for (const entry of removedEntries) {
-    rmSync(join(indexesRoot, entry), { recursive: true, force: true });
-  }
-
-  return removedEntries;
 }
 
 /**

@@ -2593,3 +2593,48 @@ export function syncRetainedDirectory(path: string): void {
     closeSync(descriptor);
   }
 }
+
+/**
+ * Removes existing derived-index files before rebuild.
+ *
+ * @param indexesRoot Derived index directory.
+ * @param preservedEntry Caller-selected direct child retained by the derived-index owner.
+ * @returns Removed direct child names.
+ */
+export function clearDerivedIndexDirectory(indexesRoot: string, preservedEntry: string): string[] {
+  if (!lstatSync(indexesRoot, { throwIfNoEntry: false })) {
+    mkdirSync(indexesRoot);
+  }
+  assertCanonicalDirectory(indexesRoot);
+
+  const entries = readdirSync(indexesRoot, { withFileTypes: true });
+  const linkedEntry = entries.find((entry) => entry.isSymbolicLink());
+
+  if (linkedEntry) {
+    throw new Error(
+      `Canonical directory must not contain a symbolic link: ${join(indexesRoot, linkedEntry.name)}.`
+    );
+  }
+
+  const removedEntries = entries
+    .filter((entry) => entry.name !== preservedEntry)
+    .map((entry) => entry.name)
+    .sort();
+
+  for (const entry of removedEntries) {
+    rmSync(join(indexesRoot, entry), { recursive: true, force: true });
+  }
+
+  return removedEntries;
+}
+
+/**
+ * Writes the caller-serialized derived-index text through the original native path write.
+ *
+ * @internal Keeps native creation, truncation and partial-failure residue without added synchronization or cleanup.
+ * @param path Caller-selected derived file path.
+ * @param content Exact serialized text, including its caller-owned newline.
+ */
+export function writeDerivedIndexFile(path: string, content: string): void {
+  writeFileSync(path, content);
+}
