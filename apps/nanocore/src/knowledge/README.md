@@ -143,3 +143,5 @@ User and Server Proposal creation share exact candidate metadata preparation and
 User and Server Proposal decisions share fresh immutable Review fact construction in the Notebook publisher; each caller retains replay selection, scope validation, current admission and durable recording.
 
 User and Server Proposal readers share immutable candidate/base selection, ordered changes and raw Proposal facts in the Notebook publisher. Each scope retains frontmatter parsing, its own schema, candidate and Review proofs, current admission and Source disclosure.
+
+Schema history publication completes synchronously through Storage before its SQL reference. It retains the exact previous schema, candidate and reviewed/actual report pair, verifies and synchronizes existing digest winners, and returns the original result only after file and directory synchronization. This preparation grants no schema activation or current authority.

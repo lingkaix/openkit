@@ -144,8 +144,8 @@ it('checks the complete schema closure once per synchronous preview and apply in
     return result;
   });
   const originalHistory = schemaHistory.prepareSchemaApplicationHistory;
-  vi.spyOn(schemaHistory, 'prepareSchemaApplicationHistory').mockImplementation(async (...args) => {
-    const result = await originalHistory(...args);
+  vi.spyOn(schemaHistory, 'prepareSchemaApplicationHistory').mockImplementation((...args) => {
+    const result = originalHistory(...args);
     events.push('history');
     return result;
   });

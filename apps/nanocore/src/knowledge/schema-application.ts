@@ -8,12 +8,13 @@ import {
 import { canonicalJsonText, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import {
-  ensureCanonicalDirectoryAsync,
-  publishDurableFile,
-  syncCanonicalDirectoryAsync,
+  ensureCanonicalDirectory,
+  measureCanonicalFile,
+  syncCanonicalDirectory,
+  syncCanonicalTree,
 } from '@openkit/storage';
 
-import { verifyImmutableWinner } from '../storage/immutable-content-publish.js';
+import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import { NotebookError } from './notebook-error.js';
 
 /** Retains exact reviewed and applied snapshots independently of the original receipt's expiry. */
@@ -45,14 +46,14 @@ export function schemaApplicationResult(
   };
 }
 
-/** Preserves both schema versions and both exact report snapshots before the native SQL reference. */
-export async function prepareSchemaApplicationHistory(input: {
+/** Publishes both schema versions and exact report snapshots synchronously before their native SQL reference. */
+export function prepareSchemaApplicationHistory(input: {
   readonly workspaceRoot: string;
   readonly previousSchemaText: string;
   readonly candidateSchemaText: string;
   readonly report: PreviewKnowledgeSchemaResponse;
   readonly actualReport: PreviewKnowledgeSchemaResponse;
-}): Promise<ApplyKnowledgeSchemaResponse> {
+}): ApplyKnowledgeSchemaResponse {
   const result = schemaApplicationResult(input.report, input.actualReport);
   if (
     `sha256:${sha256Hex(input.previousSchemaText)}` !== result.baseSchemaDigest ||
@@ -60,7 +61,7 @@ export async function prepareSchemaApplicationHistory(input: {
   )
     throw new NotebookError('conflict');
   const directory = join(input.workspaceRoot, 'knowledge', 'schema', 'history');
-  await ensureCanonicalDirectoryAsync(directory);
+  ensureCanonicalDirectory(directory);
   for (const [digest, extension, text] of [
     [result.baseSchemaDigest, 'yaml', input.previousSchemaText],
     [result.candidateSchemaDigest, 'yaml', input.candidateSchemaText],
@@ -70,11 +71,14 @@ export async function prepareSchemaApplicationHistory(input: {
     if (bytes.toString('utf8') !== text) throw new NotebookError('invalid_request');
     const destinationPath = join(directory, `${digest!.slice(7)}.${extension}`);
     try {
-      await publishDurableFile({ destinationPath, bytes, mode: 0o444 });
+      writeFileAtomic(destinationPath, bytes, 0o444, 'create');
     } catch (error) {
       if (!(error instanceof Error) || !('code' in error) || error.code !== 'EEXIST') throw error;
-      await verifyImmutableWinner(destinationPath, digest!, bytes.length);
-      await syncCanonicalDirectoryAsync(directory);
+      const winner = measureCanonicalFile(destinationPath);
+      if (winner.byteLength !== bytes.length || winner.contentDigest !== digest)
+        throw new Error('Immutable content winner does not match its exact bytes.');
+      syncCanonicalTree(destinationPath);
+      syncCanonicalDirectory(directory);
     }
   }
   return result;

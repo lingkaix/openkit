@@ -6,12 +6,13 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PreviewKnowledgeSchemaResponse } from '@openkit/app-api-schemas';
-import { canonicalJsonText } from '@openkit/protocol';
+import { canonicalJsonText, compareCodeUnits } from '@openkit/protocol';
 import { expect, it, onTestFinished } from 'vitest';
 import { NotebookError } from './notebook-error.js';
 import {
@@ -74,6 +75,101 @@ const expectedResult = {
   reportDigest,
 };
 
+it('returns the original result with all three exact history members already published', async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'schema-history-sync-'));
+  onTestFinished(() => rmSync(workspaceRoot, { recursive: true, force: true }));
+  const historyRoot = join(workspaceRoot, 'knowledge', 'schema', 'history');
+  const preparation = prepareSchemaApplicationHistory({
+    workspaceRoot,
+    previousSchemaText,
+    candidateSchemaText,
+    report: reviewedReport,
+    actualReport,
+  });
+  // S60 requires durable schema/report preparation before the immediate native SQL reference.
+  // Snapshot before any await, then join the old asynchronous owner before assertions or cleanup.
+  let membersAtReturn: Array<{ name: string; text: string; mode: number }> = [];
+  try {
+    membersAtReturn = existsSync(historyRoot)
+      ? readdirSync(historyRoot).map((name) => ({
+          name,
+          text: readFileSync(join(historyRoot, name), 'utf8'),
+          mode: statSync(join(historyRoot, name)).mode & 0o777,
+        }))
+      : [];
+  } finally {
+    await preparation;
+  }
+  expect(membersAtReturn.sort((a, b) => compareCodeUnits(a.name, b.name))).toEqual(
+    [
+      { name: `${baseSchemaDigest.slice(7)}.yaml`, text: previousSchemaText, mode: 0o444 },
+      { name: `${candidateSchemaDigest.slice(7)}.yaml`, text: candidateSchemaText, mode: 0o444 },
+      { name: `${reportDigest.slice(7)}.json`, text: expectedBytes, mode: 0o444 },
+    ].sort((a, b) => compareCodeUnits(a.name, b.name))
+  );
+  expect(preparation).toEqual(expectedResult);
+  expect(readSchemaApplicationHistory(workspaceRoot, reportDigest)).toEqual(expectedResult);
+});
+
+it('preserves exact existing winners and their original result on repeated preparation', async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'schema-history-existing-'));
+  onTestFinished(() => rmSync(workspaceRoot, { recursive: true, force: true }));
+  const input = {
+    workspaceRoot,
+    previousSchemaText,
+    candidateSchemaText,
+    report: reviewedReport,
+    actualReport,
+  };
+  const original = await prepareSchemaApplicationHistory(input);
+  const historyRoot = join(workspaceRoot, 'knowledge', 'schema', 'history');
+  const originalMembers = readdirSync(historyRoot).sort();
+  const originalBytes = originalMembers.map((name) => readFileSync(join(historyRoot, name)));
+  expect(await prepareSchemaApplicationHistory(input)).toEqual(expectedResult);
+  expect(original).toEqual(expectedResult);
+  expect(readdirSync(historyRoot).sort()).toEqual(originalMembers);
+  expect(originalMembers.map((name) => readFileSync(join(historyRoot, name)))).toEqual(
+    originalBytes
+  );
+  expect(readSchemaApplicationHistory(workspaceRoot, reportDigest)).toEqual(original);
+});
+
+it.each([
+  { name: 'previous schema', digest: baseSchemaDigest, extension: 'yaml' },
+  { name: 'candidate schema', digest: candidateSchemaDigest, extension: 'yaml' },
+  { name: 'report pair', digest: reportDigest, extension: 'json' },
+])('refuses a corrupt existing $name without overwriting retained bytes', async ({
+  digest,
+  extension,
+}) => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), 'schema-history-winner-corruption-'));
+  onTestFinished(() => rmSync(workspaceRoot, { recursive: true, force: true }));
+  const input = {
+    workspaceRoot,
+    previousSchemaText,
+    candidateSchemaText,
+    report: reviewedReport,
+    actualReport,
+  };
+  await prepareSchemaApplicationHistory(input);
+  const historyRoot = join(workspaceRoot, 'knowledge', 'schema', 'history');
+  const corruptedPath = join(historyRoot, `${digest.slice(7)}.${extension}`);
+  // Corrupt an owner-published winner at the same byte length, so existence and size are insufficient.
+  const corruptedBytes = Buffer.from(readFileSync(corruptedPath));
+  corruptedBytes[0] = corruptedBytes[0]! ^ 1;
+  chmodSync(corruptedPath, 0o644);
+  writeFileSync(corruptedPath, corruptedBytes);
+  const originalMembers = readdirSync(historyRoot).sort();
+  const retainedBytes = originalMembers.map((name) => readFileSync(join(historyRoot, name)));
+  await expect(
+    Promise.resolve().then(() => prepareSchemaApplicationHistory(input))
+  ).rejects.toThrow();
+  expect(readdirSync(historyRoot).sort()).toEqual(originalMembers);
+  expect(originalMembers.map((name) => readFileSync(join(historyRoot, name)))).toEqual(
+    retainedBytes
+  );
+});
+
 it('retains both exact reports and replays the applied Notebook revision', async () => {
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'schema-history-pair-'));
   onTestFinished(() => rmSync(workspaceRoot, { recursive: true, force: true }));
@@ -125,13 +221,15 @@ it.each([
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'schema-history-mismatch-'));
   onTestFinished(() => rmSync(workspaceRoot, { recursive: true, force: true }));
   await expect(
-    prepareSchemaApplicationHistory({
-      workspaceRoot,
-      previousSchemaText,
-      candidateSchemaText,
-      report: reviewedReport,
-      actualReport: actual,
-    })
+    Promise.resolve().then(() =>
+      prepareSchemaApplicationHistory({
+        workspaceRoot,
+        previousSchemaText,
+        candidateSchemaText,
+        report: reviewedReport,
+        actualReport: actual,
+      })
+    )
   ).rejects.toBeInstanceOf(NotebookError);
   const historyRoot = join(workspaceRoot, 'knowledge', 'schema', 'history');
   expect(existsSync(historyRoot) ? readdirSync(historyRoot) : []).toEqual([]);
