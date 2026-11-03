@@ -19,6 +19,7 @@ import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { ArtifactAuthorityError } from './artifact-authority.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
+import { commitArtifactVersionCommand } from './artifact-file-commands.js';
 import { serializeArtifactReviewFollowUpRequest } from './artifact-review-follow-up.js';
 import {
   ArtifactReviewError,
@@ -31,7 +32,6 @@ import {
   replayArtifactReviewDecision,
   selectArtifactReviewCandidate,
 } from './artifact-reviews.js';
-import { commitArtifactVersionCommand } from './artifact-versions.js';
 import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,

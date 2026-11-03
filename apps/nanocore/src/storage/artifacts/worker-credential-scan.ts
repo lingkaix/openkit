@@ -1,5 +1,5 @@
 /** Generic digest comparisons over a confined source range. No value or product proof identity is accepted. */
-export interface FileDigestWindowPattern {
+interface FileDigestWindowPattern {
   readonly window_bytes: number;
   readonly encoding: 'bytes' | 'base64url-text' | 'base64url-decoded';
   readonly digests: readonly string[];
@@ -25,7 +25,3 @@ export interface FileDigestWindowScanResult {
   readonly range_digest: string;
   readonly matches: readonly { readonly start: number; readonly end: number }[];
 }
-/** Strong source scan seam. Resource exhaustion, cancellation and incomplete coverage must reject. */
-export type FileDigestWindowScanner = (
-  input: FileDigestWindowScanInput
-) => Promise<FileDigestWindowScanResult>;

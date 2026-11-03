@@ -1,10 +1,10 @@
 import { Readable } from 'node:stream';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
 import { apiErrorPayload } from './api-errors.js';
 import { ArtifactAuthorityError } from './artifact-authority.js';
-import { importArtifactFile } from './artifact-file-commands.js';
-import { commitArtifactVersionCommand } from './artifact-versions.js';
+import { commitArtifactVersionCommand, importArtifactFile } from './artifact-file-commands.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   isCurrentDeploymentAdministrator,
@@ -22,7 +22,6 @@ import {
 import {
   FileAdmissionError,
   type FileStorageAdmission,
-  MAX_ARTIFACT_FILE_BYTES,
 } from './storage/artifacts/file-admission.js';
 import { ArtifactPayloadIntegrityError } from './storage/artifacts/file-payload.js';
 import { readArtifactFilePayload } from './storage/artifacts/file-records.js';

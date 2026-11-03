@@ -1,12 +1,12 @@
 import { dirname, join } from 'node:path';
 import type { Readable } from 'node:stream';
+import { MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
 import { stagePrivateFile } from '@openkit/storage';
 
 import {
   FileAdmissionError,
   FileByteAdmission,
   type FileStorageReservation,
-  MAX_ARTIFACT_FILE_BYTES,
 } from './file-admission.js';
 
 /** Immutable bytes verified in private same-filesystem staging, without product acceptance. */

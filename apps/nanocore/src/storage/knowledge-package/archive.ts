@@ -3,10 +3,10 @@ import { open, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
 import { createPrivateTree, makePrivateTreeDirectory, removePrivateTree } from '@openkit/storage';
 import { extract, pack } from 'tar-stream';
 import type { FileStorageAdmission } from '../artifacts/file-admission.js';
-import { MAX_ARTIFACT_FILE_BYTES } from '../artifacts/file-admission.js';
 import type { KnowledgePackageLimits } from './format.js';
 import { isKnowledgePackagePath, type KnowledgePackageManifest } from './manifest.js';
 

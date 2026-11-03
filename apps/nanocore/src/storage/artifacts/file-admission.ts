@@ -2,8 +2,6 @@ import { statfsSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
 
-export { MAX_ARTIFACT_FILE_BYTES } from '@openkit/protocol';
-
 /** A bounded, non-content-bearing refusal from the file admission owner. */
 export class FileAdmissionError extends Error {
   /** Creates a refusal without including source paths, names, or file content. */
