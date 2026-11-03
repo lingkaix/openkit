@@ -35,6 +35,12 @@ export const vaultReferences = sqliteTable(
     status: text('status').$type<VaultReferenceStatus>().notNull(),
     /** Current secret material version known to metadata. */
     currentVersion: integer('current_version').notNull(),
+    /** Explicit harness provider; all three Login fields are null for ordinary references. */
+    loginProvider: text('login_provider').$type<'codex'>(),
+    /** Trusted non-secret provider account equality key, never a public account selector. */
+    loginAccountId: text('login_account_id'),
+    /** Selection restriction on this User-owned refresh family; not revocation or health. */
+    loginQuarantined: integer('login_quarantined', { mode: 'boolean' }),
     /** ISO timestamp for reference creation. */
     createdAt: text('created_at').notNull(),
     /** ISO timestamp for latest metadata update. */

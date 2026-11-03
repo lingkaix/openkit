@@ -5,6 +5,7 @@ import type { OperationDefinition } from './operation-contract.js';
 import {
   CreateWorkspaceVaultGrantRequestSchema,
   CreateWorkspaceVaultSecretRequestSchema,
+  ListVaultLoginsResponseSchema,
   NarrowWorkspaceVaultGrantRequestSchema,
   NarrowWorkspaceVaultGrantResponseSchema,
   RotateWorkspaceVaultSecretRequestSchema,
@@ -20,6 +21,8 @@ import {
   VaultAdminUnlockRequestSchema,
   VaultAdminUnlockResponseSchema,
   VaultAdminWorkspaceReferenceSchema,
+  VaultLoginReferenceRequestSchema,
+  VaultLoginViewSchema,
 } from './vault-admin.js';
 import {
   IssueRequestedVaultGrantSchema,
@@ -41,8 +44,52 @@ import {
   ListWorkspaceVaultUseRecordsResponseSchema,
 } from './vault-use.js';
 
+/** One fixed-User human metadata projection; operation definitions retain read/write posture. */
+const personalLoginContract = {
+  binding: 'json',
+  returnsOneTimeSecret: false,
+  successStatus: 200,
+  credentials: ['local-user', 'user-session', 'user-bearer', 'deployment-administrator'],
+  scope: { kind: 'user' },
+  target: { kind: 'user' },
+  policyOperation: 'vault.admin',
+} as const;
+const personalLoginInterception = {
+  stages: ['propose', 'decide', 'commit', 'completed'],
+  modes: ['gate', 'observe'],
+  participantKinds: ['deterministic'],
+  gateResults: ['allow', 'deny'],
+  gateFailures: ['error'],
+} as const;
+
 /** Complete Vault contracts expose redacted metadata and request-only sensitive material. */
 export const VAULT_OPERATION_DEFINITIONS = {
+  'vault.login-list': {
+    ...personalLoginContract,
+    description:
+      'Inspect your own explicit harness subscription Logins; observations remain unknown until acquired.',
+    inputSchema: z.object({}).strict(),
+    outputSchema: ListVaultLoginsResponseSchema,
+    mutating: false,
+    insertionPoints: { ...personalLoginInterception, crossings: ['admission', 'disclosure'] },
+  },
+  'vault.login-quarantine': {
+    ...personalLoginContract,
+    description: 'Restrict an owned active harness Login without revoking its material or grants.',
+    inputSchema: VaultLoginReferenceRequestSchema,
+    outputSchema: VaultLoginViewSchema,
+    mutating: true,
+    insertionPoints: { ...personalLoginInterception, crossings: ['admission', 'mutation'] },
+  },
+  'vault.login-release': {
+    ...personalLoginContract,
+    description:
+      'Clear Login quarantine only; this does not prove health, repair refresh, grant use or activate it.',
+    inputSchema: VaultLoginReferenceRequestSchema,
+    outputSchema: VaultLoginViewSchema,
+    mutating: true,
+    insertionPoints: { ...personalLoginInterception, crossings: ['admission', 'mutation'] },
+  },
   'vault.binding-deliver': {
     description:
       'Deliver one already admitted credential file binding and inspect its realized protection.',

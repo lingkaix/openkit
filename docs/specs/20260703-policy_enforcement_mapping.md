@@ -689,3 +689,5 @@ Routing all remaining producers, impact simulation, adaptive or cached review, e
 - `docs/specs/20260703-vault_secret_injection.md`
 - `docs/specs/20260703-audit_usage_evidence_records.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`
+
+Personal Login inventory, quarantine and release (`vault.login-list`, `vault.login-quarantine`, `vault.login-release`) reuse the same fixed-User `vault.admin` interception, PermissionDecision and Audit owner as consent withdrawal. Evidence homes in the actual caller's User database, including Administrator Eligibility. List is read-only; quarantine/release are mutations. Exact active Login ownership and selected reference currentness are effect-owner predicates repeated at native publication, not new rights. These operations add no Worker/Coordinator User admission. The [private Login metadata contract](20260703-vault_secret_injection.md#private-login-metadata-operations) owns redaction, unknown observations and incomplete outcomes.

@@ -975,3 +975,419 @@ describe('native User reference owner withdrawal', () => {
     }
   });
 });
+
+/** Reuses the physical SQLite/FULL/reply instrument with a real fixed-User operation composition. */
+async function nativeLoginFixture() {
+  const f = await fixture();
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { FsStore } = await import('../lib/store.js');
+  const { createRuntimeConfigManager } = await import('../config/runtime-config.js');
+  const { PolicyInterception } = await import('../policy/interception.js');
+  const { createOperationInvocation } = await import('../operation-composition.js');
+  const { WorkspaceMutationAdmission } = await import('../workspace-mutation-admission.js');
+  const { createVaultUnlockState } = await import('../vault/vault-unlock-state.js');
+  const { openUserDb, openWorkspaceDb } = await import('./db.js');
+  const { applyScopedMigrations } = await import('./migrate.js');
+  const localUserId = ensureLocalUser(f.db);
+  const { user } = await createBetterAuth(f.db, { env: {} }).api.signUpEmail({
+    body: {
+      name: 'Native Login owner',
+      email: `${randomUUID()}@example.invalid`,
+      password: randomUUID(),
+    },
+  });
+  const actor: Actor = { kind: 'session', userId: user.id };
+  const input = {
+    ...createInput(),
+    backendKind: 'encrypted-file' as const,
+    ownerScope: 'user' as const,
+    userId: user.id,
+    login: {
+      provider: 'codex' as const,
+      accountId: 'synthetic-native-account',
+      quarantined: false,
+    },
+  };
+  const login = await createVaultReference(f.db, input);
+  expect(
+    login,
+    'O1 prerequisite: real native owner must retain explicit Login metadata'
+  ).toMatchObject({ login: input.login });
+  const userDb = openUserDb(f.db.dataRoot, user.id);
+  applyScopedMigrations(userDb);
+  userDb.sqlite.close();
+  mkdirSync(join(f.db.dataRoot, 'config'), { recursive: true });
+  writeFileSync(join(f.db.dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
+  const invoke = createOperationInvocation({
+    coreDb: f.db,
+    dataRoot: f.db.dataRoot,
+    store: new FsStore({ dataRoot: f.db.dataRoot }),
+    repositoryUserDb: (id) => openUserDb(f.db.dataRoot, id),
+    repositoryWorkspaceDb: (id) => openWorkspaceDb(f.db.dataRoot, id),
+    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    inflightCommands: new WeakMap(),
+    runtimeConfigManager: createRuntimeConfigManager({ dataRoot: f.db.dataRoot }),
+    policyInterception: new PolicyInterception({
+      id: 'native-login-test',
+      version: `sha256:${'2'.repeat(64)}`,
+      invoke: async () => ({ decision: 'allow' }),
+    }),
+    vaultUnlockState: createVaultUnlockState({
+      backendKind: 'encrypted-file' as const,
+      storeDir: join(f.db.dataRoot, 'vault'),
+    }),
+  });
+  const call = (operation = 'vault.login-quarantine', caller: Actor = actor) =>
+    invoke(operation as never, { referenceId: login.referenceId } as never, {
+      kind: 'public',
+      actor: caller,
+    });
+  // User Policy can use another pool member. Kill the exact Worker sent the Vault request.
+  const { Worker } = await import('node:worker_threads');
+  const postMessage = Worker.prototype.postMessage;
+  let vaultWorker: NativeWorker | undefined;
+  vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+    this: NativeWorker,
+    ...args: Parameters<NativeWorker['postMessage']>
+  ) {
+    if ((args[0] as { operation?: string } | undefined)?.operation === 'vault') vaultWorker = this;
+    return Reflect.apply(postMessage, this, args);
+  });
+  return { ...f, actor, localUserId, login, call, vaultWorker: () => vaultWorker };
+}
+
+/** Arms only on the real Vault-family submission, after all awaited User Policy work. No private arm name is selected. */
+function interceptLoginVault(f: Fixture, point: 1 | 2 | 3, holdReply = false) {
+  const client = getControlStoreWorkerClient();
+  const original = client.vault;
+  let calls = 0;
+  let beforeCommit = -1;
+  let beforeSubmissions = -1;
+  vi.spyOn(client, 'vault').mockImplementation((async (
+    ...args: Parameters<typeof client.vault>
+  ) => {
+    calls++;
+    if (calls === 1) {
+      beforeCommit = f.commits();
+      beforeSubmissions = f.submissions();
+      arm(f, point, holdReply);
+    }
+    return Reflect.apply(original, client, args);
+  }) as typeof client.vault);
+  return {
+    calls: () => calls,
+    beforeCommit: () => beforeCommit,
+    beforeSubmissions: () => beforeSubmissions,
+  };
+}
+
+/** The public result cannot reveal physical timing; this gray-box check observes the actual native owner. */
+describe('Login metadata native acknowledgement and currentness', () => {
+  it('withholds operation success before FULL COMMIT and before its covering reply, then survives cold reopen', async () => {
+    const f = await nativeLoginFixture();
+    const boundary = interceptLoginVault(f, 2, true);
+    f.db.sqlite.pragma('query_only = ON');
+    const pending = f.start(() => f.call());
+    try {
+      await reached(f, pending);
+      expect(Atomics.load(f.gate, 4)).toBe(2);
+      expect(f.commits()).toBe(boundary.beforeCommit());
+      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(f.login);
+      releaseNative(f.gate);
+      await reached(f, pending, 'reply');
+      const committed = getVaultReference(f.db, f.login.referenceId)!;
+      expect(committed).toMatchObject({
+        login: { quarantined: true },
+        currentVersion: 1,
+        status: 'active',
+      });
+      expect(f.commits()).toBe(boundary.beforeCommit() + 1);
+      expect(pending.settled()).toBe(false);
+      deliverReplies();
+      expect(await pending.result).toEqual({
+        ok: true,
+        value: {
+          referenceId: f.login.referenceId,
+          provider: 'codex',
+          status: 'active',
+          currentVersion: 1,
+          quarantined: true,
+          observations: null,
+        },
+      });
+      expect(boundary.calls()).toBe(1);
+      expect(f.submissions() - boundary.beforeSubmissions()).toBe(1);
+      await shutdownControlStoreWorkerClient();
+      const cold = openCoreDb(f.db.dataRoot);
+      try {
+        expect(getVaultReference(cold, f.login.referenceId)).toEqual(committed);
+      } finally {
+        cold.sqlite.close();
+      }
+    } catch (failure) {
+      // Failure-only evidence separates an early public success from an early refusal.
+      // Capture the boundary before inspecting the already-settled real operation result.
+      const settled = pending.settled();
+      const diagnostic = {
+        settled,
+        gate: Array.from({ length: f.gate.length }, (_, index) => Atomics.load(f.gate, index)),
+        vaultCalls: boundary.calls(),
+        commits: { beforeVault: boundary.beforeCommit(), observed: f.commits() },
+        submissions: { beforeVault: boundary.beforeSubmissions(), observed: f.submissions() },
+        retainedQuarantined:
+          getVaultReference(f.db, f.login.referenceId)?.login?.quarantined ?? null,
+      };
+      let outcome: unknown = { state: 'pending' };
+      if (settled) {
+        const actual = await pending.result;
+        if (actual.ok) {
+          const view = actual.value as unknown as Record<string, unknown> | null;
+          outcome = {
+            ok: true,
+            view: {
+              referenceId:
+                view?.referenceId === f.login.referenceId ? f.login.referenceId : 'unexpected',
+              provider: view?.provider === 'codex' ? 'codex' : 'unexpected',
+              status:
+                typeof view?.status === 'string' &&
+                ['active', 'revoked', 'unbound'].includes(view.status)
+                  ? view.status
+                  : 'unexpected',
+              currentVersion: Number.isSafeInteger(view?.currentVersion)
+                ? view?.currentVersion
+                : 'unexpected',
+              quarantined: typeof view?.quarantined === 'boolean' ? view.quarantined : 'unexpected',
+              observations: view?.observations === null ? null : 'unexpected',
+            },
+          };
+        } else {
+          const error = actual.error as { code?: unknown; status?: unknown } | null;
+          outcome = {
+            ok: false,
+            error: {
+              code:
+                typeof error?.code === 'string' && /^[a-z][a-z0-9_-]{0,63}$/.test(error.code)
+                  ? error.code
+                  : 'unavailable',
+              status:
+                typeof error?.status === 'number' &&
+                Number.isInteger(error.status) &&
+                error.status >= 100 &&
+                error.status <= 599
+                  ? error.status
+                  : null,
+            },
+          };
+        }
+      }
+      console.error(
+        'Login acknowledgement failure diagnostic',
+        JSON.stringify({ ...diagnostic, outcome })
+      );
+      throw failure;
+    } finally {
+      releaseNative(f.gate);
+      deliverReplies();
+      await pending.result;
+    }
+  });
+
+  it('reports incomplete after physical commit with lost acknowledgement and never replays the mutation', async () => {
+    const f = await nativeLoginFixture();
+    const boundary = interceptLoginVault(f, 3);
+    const pending = f.start(() => f.call());
+    try {
+      await reached(f, pending);
+      const committed = getVaultReference(f.db, f.login.referenceId);
+      expect(committed).toMatchObject({ login: { quarantined: true }, currentVersion: 1 });
+      expect(Atomics.load(f.gate, 4)).toBe(2);
+      expect(f.commits()).toBe(boundary.beforeCommit() + 1);
+      const worker = f.vaultWorker();
+      expect(worker).toBeDefined();
+      await worker!.terminate();
+      const outcome = await pending.result;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Lost Login acknowledgement returned success.');
+      expect(outcome.error).toMatchObject({ status: 409 });
+      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(committed);
+      expect(boundary.calls()).toBe(1);
+      expect(f.submissions() - boundary.beforeSubmissions()).toBe(1);
+    } finally {
+      releaseNative(f.gate);
+      deliverReplies();
+      await pending.result;
+    }
+  });
+
+  it.each([
+    'requester-disabled',
+    'token-revoked',
+    'owner-changed',
+    'version-changed',
+    'reference-revoked',
+    'reference-unbound',
+  ] as const)('rechecks exact captured authority after native FIFO admission (%s)', async (change) => {
+    const f = await nativeLoginFixture();
+    let actor: Actor = f.actor;
+    let tokenId: string | undefined;
+    if (change === 'token-revoked') {
+      const token = createOpenKitAccessTokenRecord(f.db, {
+        ownerUserId: f.actor.userId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      tokenId = token.record.tokenId;
+      actor = { kind: 'token', userId: f.actor.userId, tokenId, tokenScope: 'server-admin' };
+    }
+    const boundary = interceptLoginVault(f, 1);
+    const pending = f.start(() => f.call('vault.login-quarantine', actor));
+    try {
+      await reached(f, pending);
+      if (change === 'requester-disabled')
+        f.db.sqlite.transaction(() => disableCanonicalUser(f.db, f.actor.userId))();
+      else if (change === 'token-revoked') revokeOpenKitAccessTokenRecord(f.db, tokenId!);
+      else if (change === 'owner-changed')
+        f.fixtureSql('UPDATE vault_references SET user_id = ? WHERE reference_id = ?').run(
+          f.localUserId,
+          f.login.referenceId
+        );
+      else if (change === 'version-changed')
+        f.fixtureSql('UPDATE vault_references SET current_version = 2 WHERE reference_id = ?').run(
+          f.login.referenceId
+        );
+      else if (change === 'reference-unbound')
+        f.fixtureSql(
+          "UPDATE vault_references SET status = 'unbound', current_version = 0 WHERE reference_id = ?"
+        ).run(f.login.referenceId);
+      else
+        f.fixtureSql("UPDATE vault_references SET status = 'revoked' WHERE reference_id = ?").run(
+          f.login.referenceId
+        );
+      const current = getVaultReference(f.db, f.login.referenceId);
+      f.db.sqlite.pragma('query_only = ON');
+      releaseNative(f.gate);
+      const outcome = await pending.result;
+      expect(outcome.ok).toBe(false);
+      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(current);
+      expect(boundary.calls()).toBe(1);
+      expect(f.submissions() - boundary.beforeSubmissions()).toBe(1);
+    } finally {
+      releaseNative(f.gate);
+      deliverReplies();
+      await pending.result;
+    }
+  });
+});
+
+/** Additional metadata facts must remain current at the same real public-to-native crossing. */
+describe('Login release retained lifecycle and metadata currentness', () => {
+  it('refuses actual public release of a previously unbound Login without promoting or changing it', async () => {
+    const f = await nativeLoginFixture();
+    await f.call('vault.login-quarantine');
+    const quarantined = getVaultReference(f.db, f.login.referenceId)!;
+    expect(quarantined).toMatchObject({ status: 'active', login: { quarantined: true } });
+    // There is no User Login import producer in this cut. Only this owner fixture injects unbound state after valid publication.
+    f.fixtureSql(
+      "UPDATE vault_references SET status = 'unbound', current_version = 0, backend_locator = NULL WHERE reference_id = ?"
+    ).run(f.login.referenceId);
+    const retained = getVaultReference(f.db, f.login.referenceId)!;
+    expect(retained).toMatchObject({
+      status: 'unbound',
+      currentVersion: 0,
+      backendLocator: null,
+      login: { quarantined: true },
+    });
+    f.db.sqlite.pragma('query_only = ON');
+    await expect(f.call('vault.login-release')).rejects.toHaveProperty('status');
+    expect(getVaultReference(f.db, f.login.referenceId)).toEqual(retained);
+  });
+
+  it('refuses a captured release after another real public release changes quarantine first', async () => {
+    const f = await nativeLoginFixture();
+    await f.call('vault.login-quarantine');
+    const client = getControlStoreWorkerClient();
+    const original = client.vault;
+    let captured = false;
+    let calls = 0;
+    let resume!: () => void;
+    const held = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    vi.spyOn(client, 'vault').mockImplementation((async (
+      ...args: Parameters<typeof client.vault>
+    ) => {
+      calls++;
+      if (calls === 1) {
+        captured = true;
+        await held;
+      }
+      return Reflect.apply(original, client, args);
+    }) as typeof client.vault);
+    const stale = f.start(() => f.call('vault.login-release'));
+    try {
+      // Hold the real crossing after selection; a second real owner request becomes the predecessor.
+      // The original test deadline bounds this wait, as in the existing native instrument.
+      while (!captured && !stale.settled()) await nextTurn();
+      expect(captured).toBe(true);
+      expect(stale.settled()).toBe(false);
+      await expect(f.call('vault.login-release')).resolves.toMatchObject({ quarantined: false });
+      const current = getVaultReference(f.db, f.login.referenceId);
+      expect(current).toMatchObject({ login: { quarantined: false } });
+      f.db.sqlite.pragma('query_only = ON');
+      resume();
+      expect((await stale.result).ok).toBe(false);
+      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(current);
+      expect(calls).toBe(2);
+    } finally {
+      resume();
+      await stale.result;
+    }
+  });
+
+  it.each([
+    'account-equality-changed',
+    'subtype-removed',
+  ] as const)('refuses stale public release after native FIFO admission (%s)', async (change) => {
+    const f = await nativeLoginFixture();
+    await f.call('vault.login-quarantine');
+    expect(getVaultReference(f.db, f.login.referenceId)).toMatchObject({
+      login: { quarantined: true },
+    });
+    const boundary = interceptLoginVault(f, 1);
+    const pending = f.start(() => f.call('vault.login-release'));
+    try {
+      await reached(f, pending);
+      // Faults change only the newly selected metadata. Existing status/version/owner/credential tests remain primary.
+      if (change === 'account-equality-changed')
+        f.fixtureSql('UPDATE vault_references SET login_account_id = ? WHERE reference_id = ?').run(
+          'synthetic-successor-equality',
+          f.login.referenceId
+        );
+      else
+        f.fixtureSql(
+          'UPDATE vault_references SET login_provider = NULL, login_account_id = NULL, login_quarantined = NULL WHERE reference_id = ?'
+        ).run(f.login.referenceId);
+      const current = getVaultReference(f.db, f.login.referenceId);
+      const retained = f.db.sqlite
+        .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
+        .get(f.login.referenceId);
+      f.db.sqlite.pragma('query_only = ON');
+      releaseNative(f.gate);
+      const outcome = await pending.result;
+      expect(outcome.ok).toBe(false);
+      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(current);
+      expect(
+        f.db.sqlite
+          .prepare('SELECT * FROM vault_references WHERE reference_id = ?')
+          .get(f.login.referenceId)
+      ).toEqual(retained);
+      expect(boundary.calls()).toBe(1);
+      expect(f.submissions() - boundary.beforeSubmissions()).toBe(1);
+    } finally {
+      releaseNative(f.gate);
+      deliverReplies();
+      await pending.result;
+    }
+  });
+});

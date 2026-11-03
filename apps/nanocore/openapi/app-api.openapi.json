@@ -1554,6 +1554,153 @@
         }
       }
     },
+    "/api/app/operations/vault.login-list": {
+      "post": {
+        "operationId": "vault.login-list",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Inspect your own explicit harness subscription Logins; observations remain unknown until acquired.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.login-list.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Inspect your own explicit harness subscription Logins; observations remain unknown until acquired.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.login-list.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.login-quarantine": {
+      "post": {
+        "operationId": "vault.login-quarantine",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Restrict an owned active harness Login without revoking its material or grants.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.login-quarantine.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restrict an owned active harness Login without revoking its material or grants.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.login-quarantine.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/vault.login-release": {
+      "post": {
+        "operationId": "vault.login-release",
+        "tags": [
+          "vault"
+        ],
+        "summary": "Clear Login quarantine only; this does not prove health, repair refresh, grant use or activate it.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/vault.login-release.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Clear Login quarantine only; this does not prove health, repair refresh, grant use or activate it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/vault.login-release.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/vault.binding-deliver": {
       "post": {
         "operationId": "vault.binding-deliver",
@@ -27171,6 +27318,178 @@
             "additionalProperties": false
           }
         ]
+      },
+      "vault.login-list.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "vault.login-list.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "referenceId": {
+                  "type": "string",
+                  "pattern": "^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                },
+                "provider": {
+                  "type": "string",
+                  "const": "codex"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "revoked",
+                    "unbound"
+                  ]
+                },
+                "currentVersion": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "quarantined": {
+                  "type": "boolean"
+                },
+                "observations": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "referenceId",
+                "provider",
+                "status",
+                "currentVersion",
+                "quarantined",
+                "observations"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      },
+      "vault.login-quarantine.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "referenceId": {
+            "type": "string",
+            "pattern": "^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "referenceId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.login-quarantine.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "referenceId": {
+            "type": "string",
+            "pattern": "^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "provider": {
+            "type": "string",
+            "const": "codex"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked",
+              "unbound"
+            ]
+          },
+          "currentVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "quarantined": {
+            "type": "boolean"
+          },
+          "observations": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "referenceId",
+          "provider",
+          "status",
+          "currentVersion",
+          "quarantined",
+          "observations"
+        ],
+        "additionalProperties": false
+      },
+      "vault.login-release.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "referenceId": {
+            "type": "string",
+            "pattern": "^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          }
+        },
+        "required": [
+          "referenceId"
+        ],
+        "additionalProperties": false
+      },
+      "vault.login-release.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "referenceId": {
+            "type": "string",
+            "pattern": "^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "provider": {
+            "type": "string",
+            "const": "codex"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "revoked",
+              "unbound"
+            ]
+          },
+          "currentVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "quarantined": {
+            "type": "boolean"
+          },
+          "observations": {
+            "type": "null"
+          }
+        },
+        "required": [
+          "referenceId",
+          "provider",
+          "status",
+          "currentVersion",
+          "quarantined",
+          "observations"
+        ],
+        "additionalProperties": false
       },
       "vault.binding-deliver.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -154855,5 +155174,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:331a9ed0d5ee9a66db285b51cc6e75ebc69edcec60cdf05f34e7c7314c49815a"
+  "x-openkit-source-digest": "sha256:708dab29800d2c553a783057a253c81b2c08ef72e9819edf375c8058004bef52"
 }

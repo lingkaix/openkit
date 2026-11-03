@@ -94,9 +94,12 @@ function createVaultReferenceWithInsertEvidence(
         backend_locator,
         status,
         current_version,
+        login_provider,
+        login_account_id,
+        login_quarantined,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.referenceId,
@@ -109,6 +112,9 @@ function createVaultReferenceWithInsertEvidence(
       input.backendLocator ?? null,
       'active',
       1,
+      input.login?.provider ?? null,
+      input.login?.accountId ?? null,
+      input.login ? Number(input.login.quarantined) : null,
       timestamp,
       timestamp
     );
@@ -843,6 +849,21 @@ export function applyControlVault(
       case 'reference-revoke':
         result = { kind: request.kind, value: revokeVaultReference(db, withClock(request.record)) };
         break;
+      case 'reference-login-state': {
+        const reference = requireVaultReference(db, request.record.referenceId);
+        if (reference.login!.quarantined !== request.record.quarantined)
+          db.sqlite
+            .prepare(
+              'UPDATE vault_references SET login_quarantined = ?, updated_at = ? WHERE reference_id = ?'
+            )
+            .run(
+              Number(request.record.quarantined),
+              request.record.now ?? new Date().toISOString(),
+              reference.referenceId
+            );
+        result = { kind: request.kind, value: requireVaultReference(db, reference.referenceId) };
+        break;
+      }
       case 'reference-rebind':
         result = {
           kind: request.kind,
@@ -987,6 +1008,20 @@ function assertPublicMutationAuthority(db: CoreDb, input: ControlVaultInput): vo
   if (!('publicMutation' in input.record) || !input.record.publicMutation) return;
   const authority = input.record.publicMutation;
   const actor = definedFields(authority.actor);
+  if (input.kind === 'reference-login-state') {
+    const reference = getVaultReference(db, input.record.referenceId);
+    if (
+      !reference?.login ||
+      reference.ownerScope !== 'user' ||
+      !reference.userId ||
+      reference.status !== 'active' ||
+      !isDeepStrictEqual(reference, authority.reference) ||
+      evaluateOwnedUserOperation(db, actor, reference.userId, 'vault.admin', true).effect !==
+        'allow'
+    )
+      throw new ControlProductPreconditionError();
+    return;
+  }
   // Personal consent withdrawal has User authority, independently of destination membership.
   // All other public Vault administration keeps the existing administrator/Workspace predicates.
   if (input.kind === 'grant-revoke') {

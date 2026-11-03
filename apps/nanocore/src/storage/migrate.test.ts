@@ -378,6 +378,7 @@ describe('database setup', () => {
         '0018_usage_provider_model.sql',
         '0019_idle_cleanup_resident_lookup.sql',
         '0020_scheduler_lineage_lookup.sql',
+        '0021_harness_login_metadata.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -407,6 +408,7 @@ describe('database setup', () => {
         'core_0018_usage_provider_model',
         'core_0019_idle_cleanup_resident_lookup',
         'core_0020_scheduler_lineage_lookup',
+        'core_0021_harness_login_metadata',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -2049,6 +2051,176 @@ describe('Assistant handoff descriptor migration', () => {
       expect(db.prepare('SELECT * FROM pending_requests').get()).toEqual(current);
     } finally {
       db.close();
+    }
+  });
+});
+
+/** Retained ordinary references cross the one-way Login migration without acquiring a subtype. */
+describe('retained VaultReference Login metadata migration', () => {
+  it('adds only the Core subtype slots, preserves all ordinary reference facts, and reapplies without effects', async () => {
+    const { getVaultReference } = await import('../vault/vault-references.js');
+    const journal = JSON.parse(
+      readFileSync(new URL('../../drizzle/core/meta/_journal.json', import.meta.url), 'utf8')
+    ) as { entries: Array<{ idx: number; tag: string; when: number }> };
+    // O14 fixes the predecessor independently: the accepted cut adds Core0021 after Core0020.
+    // Current creation would migrate before setup, so only the migration owner's historical fixture writes these rows.
+    const predecessor = createNativeJournalFolder(
+      journal.entries
+        .filter((entry) => entry.idx < 21)
+        .map((entry) => ({
+          tag: entry.tag,
+          when: entry.when,
+          sql: readFileSync(
+            new URL(`../../drizzle/core/${entry.tag}.sql`, import.meta.url),
+            'utf8'
+          ),
+        }))
+    );
+    const dataRoot = createDataRoot();
+    const coreDb = openCoreDb(dataRoot);
+    const userId = testEntityId('usr', 'login-migration-scoped-user');
+    const workspaceId = testEntityId('ws', 'login-migration-scoped-workspace');
+    const userDb = openUserDb(dataRoot, userId);
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      applyNativeScopeMigrations(coreDb.sqlite, 'core', predecessor);
+      const canonicalUserId = ensureFixtureLocalUser(coreDb);
+      applyScopedMigrations(userDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      const insert = coreDb.sqlite.prepare(`INSERT INTO vault_references (
+        reference_id, owner_scope, workspace_id, user_id, display_name, secret_kind,
+        backend_kind, backend_locator, status, current_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const historical = [
+        [
+          testEntityId('vault', 'retained-login-migration-user'),
+          'user',
+          null,
+          canonicalUserId,
+          'Retained User reference',
+          'opaque',
+          'encrypted-file',
+          'encrypted-file:retained-user',
+          'active',
+          4,
+          '2026-10-01T00:00:00.000Z',
+          '2026-10-02T00:00:00.000Z',
+        ],
+        [
+          testEntityId('vault', 'retained-login-migration-workspace'),
+          'workspace',
+          workspaceId,
+          null,
+          'Retained unbound Workspace reference',
+          'opaque',
+          'encrypted-file',
+          null,
+          'unbound',
+          0,
+          '2026-10-03T00:00:00.000Z',
+          '2026-10-04T00:00:00.000Z',
+        ],
+        [
+          testEntityId('vault', 'retained-login-migration-server'),
+          'server',
+          null,
+          null,
+          'Retained Gateway subscription canary',
+          'provider-subscription-oauth',
+          'encrypted-file',
+          'encrypted-file:retained-server',
+          'revoked',
+          3,
+          '2026-10-05T00:00:00.000Z',
+          '2026-10-06T00:00:00.000Z',
+        ],
+      ];
+      for (const row of historical) insert.run(...row);
+      const retained = coreDb.sqlite
+        .prepare('SELECT * FROM vault_references ORDER BY reference_id')
+        .all() as Array<Record<string, unknown> & { reference_id: string }>;
+      const beforeTables = listTableNames(coreDb);
+      const beforeColumns = listColumnNames(coreDb, 'vault_references');
+      const beforeIds = listMigrationIds(coreDb, 'core', predecessor);
+      const beforeLedger = coreDb.sqlite
+        .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
+        .all();
+      const userBytes = userDb.sqlite.serialize();
+      const workspaceBytes = workspaceDb.sqlite.serialize();
+      const userIds = listMigrationIds(userDb, 'user');
+      const workspaceIds = listMigrationIds(workspaceDb, 'workspace');
+      expect(beforeColumns).not.toContain('login_provider');
+      expect(beforeColumns).not.toContain('login_account_id');
+      expect(beforeColumns).not.toContain('login_quarantined');
+
+      applyNativeScopeMigrations(coreDb.sqlite, 'core');
+
+      // Private Login Metadata Operations owns three nullable scalar slots on this same reference row.
+      expect(listTableNames(coreDb)).toEqual(beforeTables);
+      const added = (
+        coreDb.sqlite.prepare('PRAGMA table_info(vault_references)').all() as Array<{
+          name: string;
+          type: string;
+          notnull: number;
+          dflt_value: unknown;
+          pk: number;
+        }>
+      ).filter((column) => !beforeColumns.includes(column.name));
+      expect(added.map((column) => column.name).sort()).toEqual([
+        'login_account_id',
+        'login_provider',
+        'login_quarantined',
+      ]);
+      for (const column of added) {
+        expect(column).toMatchObject({ notnull: 0, dflt_value: null, pk: 0 });
+        expect(['TEXT', 'INTEGER']).toContain(column.type.toUpperCase());
+      }
+      const migrated = retained.map((row) => ({
+        ...row,
+        login_provider: null,
+        login_account_id: null,
+        login_quarantined: null,
+      }));
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM vault_references ORDER BY reference_id').all()
+      ).toEqual(migrated);
+      for (const row of retained) {
+        const reference = getVaultReference(coreDb, row.reference_id);
+        expect(reference).not.toBeNull();
+        expect(reference).not.toHaveProperty('login');
+      }
+      expect(listMigrationIds(coreDb, 'core')).toEqual([
+        ...beforeIds,
+        'core_0021_harness_login_metadata',
+      ]);
+      const migratedLedger = coreDb.sqlite
+        .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
+        .all();
+      expect(migratedLedger).toHaveLength(beforeLedger.length + 1);
+      expect(migratedLedger.slice(0, -1)).toEqual(beforeLedger);
+      expect(listMigrationIds(userDb, 'user')).toEqual(userIds);
+      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual(workspaceIds);
+      expect(userDb.sqlite.serialize().equals(userBytes)).toBe(true);
+      expect(workspaceDb.sqlite.serialize().equals(workspaceBytes)).toBe(true);
+      expect(coreDb.sqlite.pragma('foreign_key_check')).toEqual([]);
+
+      const migratedBytes = coreDb.sqlite.serialize();
+      applyNativeScopeMigrations(coreDb.sqlite, 'core');
+      expect(coreDb.sqlite.serialize().equals(migratedBytes)).toBe(true);
+      expect(coreDb.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+        migratedLedger
+      );
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM vault_references ORDER BY reference_id').all()
+      ).toEqual(migrated);
+      expect(userDb.sqlite.serialize().equals(userBytes)).toBe(true);
+      expect(workspaceDb.sqlite.serialize().equals(workspaceBytes)).toBe(true);
+    } finally {
+      workspaceDb.sqlite.close();
+      userDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(predecessor, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });

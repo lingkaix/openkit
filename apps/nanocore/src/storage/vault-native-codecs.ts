@@ -28,6 +28,16 @@ import type {
   VaultUseResolvingPath,
 } from './schema/index.js';
 
+/** Explicit metadata on one User-owned harness refresh family; no material or use authority. */
+export interface HarnessLoginMetadata {
+  /** Harness-own subscription provider; Gateway accounts retain their separate contract. */
+  readonly provider: 'codex';
+  /** Trusted provider-scoped non-secret equality identity, never a public account hint. */
+  readonly accountId: string;
+  /** Selection restriction only, independent of lifecycle status and material version. */
+  readonly quarantined: boolean;
+}
+
 /** Durable non-secret vault reference record. */
 export interface VaultReferenceRecord {
   /** Stable vault reference id. */
@@ -50,6 +60,8 @@ export interface VaultReferenceRecord {
   readonly status: VaultReferenceStatus;
   /** Current material version known to metadata. */
   readonly currentVersion: number;
+  /** Explicit harness Login subtype; ordinary references omit it. */
+  readonly login?: HarnessLoginMetadata | undefined;
   /** ISO timestamp for reference creation. */
   readonly createdAt: string;
   /** ISO timestamp for latest metadata update. */
@@ -68,6 +80,9 @@ export interface VaultReferenceRow {
   readonly backend_locator: string | null;
   readonly status: VaultReferenceStatus;
   readonly current_version: number;
+  readonly login_provider: string | null;
+  readonly login_account_id: string | null;
+  readonly login_quarantined: number | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -90,6 +105,8 @@ export interface CreateVaultReferenceInput {
   readonly backendKind: VaultReferenceBackendKind;
   /** Redacted backend locator. */
   readonly backendLocator?: string | null;
+  /** Trusted explicit User harness subtype; no public metadata setter initializes it. */
+  readonly login?: HarnessLoginMetadata;
   /** Optional deterministic clock. */
   readonly now?: () => string;
 }
@@ -207,6 +224,22 @@ export function listWorkspaceVaultReferences(
 }
 
 /**
+ * Lists only the named User's references in the existing deterministic inventory order.
+ *
+ * @param coreDb Open Core database handle.
+ * @param userId Exact canonical User owner.
+ * @returns That User's non-secret reference metadata.
+ */
+export function listUserVaultReferences(coreDb: CoreDb, userId: string): VaultReferenceRecord[] {
+  return (
+    coreDb.sqlite
+      .prepare(`${vaultReferenceSelectSql()}
+    WHERE owner_scope = 'user' AND user_id = ? ORDER BY created_at ASC, reference_id ASC`)
+      .all(userId) as VaultReferenceRow[]
+  ).map(mapVaultReferenceRow);
+}
+
+/**
  * Reads one vault reference or throws a readable error.
  *
  * @param coreDb Open Core database handle.
@@ -252,6 +285,11 @@ export function assertVaultReferenceScope(input: CreateVaultReferenceInput): voi
   if (input.ownerScope === 'user' && input.workspaceId) {
     throw new Error('User-scoped vault references cannot include workspaceId.');
   }
+  if (input.login) {
+    HarnessLoginMetadataSchema.parse(input.login);
+    if (input.ownerScope !== 'user' || !isEntityId('usr', input.userId))
+      throw new Error('Harness Logins require a canonical User-owned reference.');
+  }
 }
 
 /**
@@ -271,6 +309,9 @@ export function vaultReferenceSelectSql(): string {
     backend_locator,
     status,
     current_version,
+    login_provider,
+    login_account_id,
+    login_quarantined,
     created_at,
     updated_at
     FROM vault_references`;
@@ -285,7 +326,24 @@ export function vaultReferenceSelectSql(): string {
 export function mapVaultReferenceRow(row: VaultReferenceRow): VaultReferenceRecord {
   if (!isEntityId('vault', row.reference_id))
     throw new Error('Invalid canonical Vault reference identity.');
+  const ordinary =
+    row.login_provider === null && row.login_account_id === null && row.login_quarantined === null;
+  if (!ordinary && row.login_quarantined !== 0 && row.login_quarantined !== 1)
+    throw new Error('Invalid retained harness Login metadata.');
+  const login = ordinary
+    ? undefined
+    : HarnessLoginMetadataSchema.parse({
+        provider: row.login_provider,
+        accountId: row.login_account_id,
+        quarantined: row.login_quarantined === 1,
+      });
+  if (
+    login &&
+    (row.owner_scope !== 'user' || row.workspace_id !== null || !isEntityId('usr', row.user_id))
+  )
+    throw new Error('Harness Logins require a canonical User-owned reference.');
   return {
+    ...(login ? { login } : {}),
     backendKind: row.backend_kind,
     backendLocator: row.backend_locator,
     createdAt: row.created_at,
@@ -1339,6 +1397,14 @@ export const nullableString = z.string().nullable();
 export const optionalString = nullableString.optional();
 export const clock = z.string().optional();
 export const ownerScope = z.enum(['server', 'workspace', 'user']);
+/** Strict non-material harness subtype, shared by the retained and private-wire projections. */
+export const HarnessLoginMetadataSchema = z
+  .object({
+    provider: z.literal('codex'),
+    accountId: z.string().min(1),
+    quarantined: z.boolean(),
+  })
+  .strict();
 export const referenceFields = {
   referenceId: z.string(),
   ownerScope,
@@ -1348,6 +1414,7 @@ export const referenceFields = {
   secretKind: z.string(),
   backendKind: z.literal('encrypted-file'),
   backendLocator: optionalString,
+  login: HarnessLoginMetadataSchema.optional(),
   now: clock,
 };
 export const grantFields = {
@@ -1438,7 +1505,19 @@ export const VaultReferenceRecordSchema = z
     createdAt: z.string(),
     updatedAt: z.string(),
   })
-  .omit({ now: true }) satisfies z.ZodType<VaultReferenceRecord>;
+  .omit({ now: true })
+  .superRefine((value, ctx) => {
+    if (
+      value.login &&
+      (value.ownerScope !== 'user' ||
+        value.workspaceId !== null ||
+        !isEntityId('usr', value.userId))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Harness Logins require a canonical User-owned reference.',
+      });
+  }) satisfies z.ZodType<VaultReferenceRecord>;
 /** Complete retained grant facts; imported history remains descriptive only. */
 export const VaultGrantRecordSchema = z
   .object({
@@ -1795,6 +1874,22 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('reference-login-state'),
+      record: z
+        .object({
+          referenceId: z.string(),
+          quarantined: z.boolean(),
+          now: clock,
+          publicMutation: publicMutationAuthority.extend({
+            reference: VaultReferenceRecordSchema,
+            workspaceId: z.never().optional(),
+          }),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('reference-rebind'),
       record: z
         .object({
@@ -1897,6 +1992,9 @@ export const ControlVaultResultSchema = z.discriminatedUnion('kind', [
     .strict(),
   z.object({ kind: z.literal('reference-advance'), value: VaultReferenceRecordSchema }).strict(),
   z.object({ kind: z.literal('reference-revoke'), value: VaultReferenceRecordSchema }).strict(),
+  z
+    .object({ kind: z.literal('reference-login-state'), value: VaultReferenceRecordSchema })
+    .strict(),
   z.object({ kind: z.literal('reference-rebind'), value: VaultReferenceRecordSchema }).strict(),
   z.object({ kind: z.literal('grant-create'), value: VaultGrantRecordSchema }).strict(),
   z.object({ kind: z.literal('grant-revoke'), value: VaultGrantRecordSchema }).strict(),
@@ -1933,6 +2031,7 @@ export interface ControlVaultResultMap {
   'reference-create': CreateVaultReferenceResult;
   'reference-advance': VaultReferenceRecord;
   'reference-revoke': VaultReferenceRecord;
+  'reference-login-state': VaultReferenceRecord;
   'reference-rebind': VaultReferenceRecord;
   'grant-create': VaultGrantRecord;
   'grant-revoke': VaultGrantRecord;
@@ -1986,6 +2085,10 @@ export interface ControlVaultMainInputMap {
   'reference-revoke': RevokeVaultReferenceInput &
     ServerMcpAuthorityInput &
     PublicMutationAuthorityInput;
+  'reference-login-state': Omit<
+    Extract<ControlVaultInput, { kind: 'reference-login-state' }>['record'],
+    'now'
+  > & { readonly now?: () => string };
   'reference-rebind': RebindWorkspaceVaultReferenceInput & PublicMutationAuthorityInput;
   'grant-create': CreateVaultGrantInput & ServerMcpAuthorityInput & PublicMutationAuthorityInput;
   'grant-revoke': RevokeVaultGrantInput & ServerMcpAuthorityInput & PublicMutationAuthorityInput;
@@ -2014,6 +2117,8 @@ const vaultRecordRefusals = new Set([
   'User-scoped vault references require userId.',
   'User-scoped vault references cannot include workspaceId.',
   'Invalid canonical Vault reference identity.',
+  'Harness Logins require a canonical User-owned reference.',
+  'Invalid retained harness Login metadata.',
   'Server-scoped vault grants cannot include workspaceId or userId.',
   'Workspace-scoped vault grants require workspaceId.',
   'Workspace-scoped vault grants cannot include userId.',

@@ -167,6 +167,7 @@ OpenKit remains in internal developer preview with a small number of known users
 - [ ] R032 — A Policy or permission change takes effect safely during ongoing work by updating future checks, marking stale execution, or interrupting and replacing unsafe execution.
 - [ ] R033 — Users and agents can request, review, grant, narrow, and revoke exact access to a named Workspace resource for a target member or Agent through the existing Policy Kernel.
 - [ ] R034 — Audit, Usage, Evidence, and permission records cover every governed effect supported at this baseline with attributable actors, resources, outcomes, and redaction.
+- [ ] R115 — User-owned harness-subscription Logins for Worker credential delivery (Codex in v0.1.0): personal Login inventory, quarantine/release, Workspace sharing, selection/affinity and harness activation. Project these operations on the Web Account surface when the capability is release-ready; the callable metadata foundation remains unpublished until then. [Vault Secret Injection](specs/20260703-vault_secret_injection.md#harness-subscription-logins) owns this capability separately from Gateway provider-subscription accounts.
 
 ## Phase 4 — Move routine setup and management into NanoCore agents
 

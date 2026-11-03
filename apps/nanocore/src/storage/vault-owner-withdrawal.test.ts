@@ -115,6 +115,10 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
     version: `sha256:${'1'.repeat(64)}`,
     invoke: participant,
   });
+  const unlockState = createVaultUnlockState({
+    backendKind: 'encrypted-file',
+    storeDir: join(root, 'vault'),
+  });
   const invoke = createOperationInvocation({
     coreDb,
     dataRoot: root,
@@ -126,10 +130,7 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
     runtimeConfigManager: manager,
     policyInterception: interception,
     closeMcpCredentialGrants: closeRuntime,
-    vaultUnlockState: createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(root, 'vault'),
-    }),
+    vaultUnlockState: unlockState,
   });
   // Real public producers establish that this ordinary User joined and then left the Workspace.
   const invitation = await invoke(
@@ -214,6 +215,7 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
     closeRuntime,
     invoke,
     withdraw,
+    unlockState,
     reference,
     grant,
     untouchedGrant,
@@ -226,7 +228,8 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
 async function installPolicy(
   f: Awaited<ReturnType<typeof fixture>>,
   mode: 'gate' | 'observe',
-  uses?: number
+  uses?: number,
+  operation = 'vault.grant-withdraw'
 ) {
   const personal = await f.store.ensureQuickChatWorkspace(f.local.userId);
   recordWorkspaceOwnerMembership({
@@ -273,7 +276,7 @@ async function installPolicy(
           anchor: resource.container,
           ...(uses === undefined ? {} : { uses }),
         },
-        operation: 'vault.grant-withdraw',
+        operation,
         stage: mode === 'gate' ? 'decide' : 'completed',
         mode,
         participant: {
@@ -766,4 +769,570 @@ describe('departed User owner withdrawal', () => {
     expect(listVaultReferences(f.coreDb)).toEqual(beforeReferences);
     expect(f.closeRuntime).toHaveBeenCalledExactlyOnceWith([f.grant.grantId]);
   });
+});
+
+/** Owner-created synthetic metadata only; absence here is O1 RED, never a public-operation RED. */
+async function loginFixture(options: { coldUserHome?: boolean } = {}) {
+  const f = await fixture(options);
+  const create = async (userId = f.owner.userId) => {
+    const input = {
+      referenceId: allocateEntityId('vault'),
+      ownerScope: 'user' as const,
+      userId,
+      displayName: 'Private Login label canary',
+      secretKind: 'opaque',
+      backendKind: 'encrypted-file' as const,
+      backendLocator: 'synthetic-private-locator',
+      login: {
+        provider: 'codex' as const,
+        accountId: 'synthetic-account-equality',
+        quarantined: false,
+      },
+    };
+    const reference = await createVaultReference(f.coreDb, input);
+    expect(
+      reference,
+      'O1 prerequisite: native creation must retain the explicit subtype'
+    ).toMatchObject({ login: input.login });
+    return reference;
+  };
+  const login = await create();
+  const call = (operation: string, input: unknown = {}, actor: Actor = f.owner) =>
+    f.invoke(operation as JsonOperationId, input, { kind: 'public', actor });
+  return { ...f, login, createLogin: create, loginCall: call };
+}
+
+/** The public owner deliberately excludes account identity, backend details and health guesses. */
+function loginView(
+  reference: { referenceId: string; status: string; currentVersion: number },
+  quarantined = false
+) {
+  return {
+    referenceId: reference.referenceId,
+    provider: 'codex',
+    status: reference.status,
+    currentVersion: reference.currentVersion,
+    quarantined,
+    observations: null,
+  };
+}
+
+/** Fixed-User Login operations compose the real reference, Policy and native evidence owners. */
+describe('personal Login metadata operations', () => {
+  it('lists only the actual caller explicit Logins with unknown observations, even for an administrator', async () => {
+    const f = await loginFixture();
+    const foreign = await f.createLogin(f.other.userId);
+    const local = await f.createLogin(f.local.userId);
+    const legacyInput = {
+      referenceId: allocateEntityId('vault'),
+      ownerScope: 'server' as const,
+      displayName: 'Gateway subscription canary',
+      secretKind: 'provider-subscription-oauth',
+      backendKind: 'encrypted-file' as const,
+    };
+    await createVaultReference(f.coreDb, legacyInput);
+    const before = listVaultReferences(f.coreDb);
+    expect(
+      Object.hasOwn(OPERATION_DEFINITIONS, 'vault.login-list'),
+      'O2 expected initial public RED: missing operation'
+    ).toBe(true);
+    await expect(f.loginCall('vault.login-list')).resolves.toEqual({ items: [loginView(f.login)] });
+    await expect(f.loginCall('vault.login-list', {}, f.other)).resolves.toEqual({
+      items: [loginView(foreign)],
+    });
+    await expect(f.loginCall('vault.login-list', {}, f.local)).resolves.toEqual({
+      items: [loginView(local)],
+    });
+    expect(listVaultReferences(f.coreDb)).toEqual(before);
+  });
+
+  it('quarantines and releases while locked without material, runtime, grant or version effects', async () => {
+    const f = await loginFixture();
+    const grant = await createVaultGrant(f.coreDb, {
+      ...f.grant,
+      grantId: allocateEntityId('grant'),
+      vaultReferenceId: f.login.referenceId,
+    });
+    const beforeGrants = listVaultGrants(f.coreDb);
+    const backend = f.unlockState.backend();
+    expect(backend.health().state).toBe('locked');
+    const material = [
+      vi.spyOn(backend, 'resolve'),
+      vi.spyOn(backend, 'assertResolutionCurrent'),
+      vi.spyOn(backend, 'store'),
+      vi.spyOn(backend, 'rotate'),
+      vi.spyOn(backend, 'revoke'),
+      vi.spyOn(backend, 'listReferences'),
+    ];
+    f.coreDb.sqlite.pragma('query_only = ON');
+    await expect(
+      f.loginCall('vault.login-quarantine', { referenceId: f.login.referenceId })
+    ).resolves.toEqual(loginView(f.login, true));
+    const quarantined = getVaultReference(f.coreDb, f.login.referenceId)!;
+    expect(quarantined).toEqual({
+      ...f.login,
+      updatedAt: quarantined.updatedAt,
+      login: { provider: 'codex', accountId: 'synthetic-account-equality', quarantined: true },
+    });
+    await expect(
+      f.loginCall('vault.login-quarantine', { referenceId: f.login.referenceId })
+    ).resolves.toEqual(loginView(f.login, true));
+    expect(getVaultReference(f.coreDb, f.login.referenceId)).toEqual(quarantined);
+    await expect(
+      f.loginCall('vault.login-release', { referenceId: f.login.referenceId })
+    ).resolves.toEqual(loginView(f.login));
+    const released = getVaultReference(f.coreDb, f.login.referenceId)!;
+    expect(released).toEqual({ ...f.login, updatedAt: released.updatedAt });
+    await expect(
+      f.loginCall('vault.login-release', { referenceId: f.login.referenceId })
+    ).resolves.toEqual(loginView(f.login));
+    expect(getVaultReference(f.coreDb, f.login.referenceId)).toEqual(released);
+    expect(listVaultGrants(f.coreDb)).toEqual(beforeGrants);
+    expect(getVaultGrant(f.coreDb, grant.grantId)).toEqual(grant);
+    expect(f.closeRuntime).not.toHaveBeenCalled();
+    for (const effect of material) expect(effect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'foreign',
+    'disabled',
+    'revoked-admin',
+    'readonly',
+    'unpresented-admin',
+  ] as const)('refuses %s authority without mutation or protected metadata', async (scenario) => {
+    const f = await loginFixture();
+    let actor: Actor =
+      scenario === 'foreign' || scenario === 'unpresented-admin' ? f.other : f.owner;
+    if (scenario === 'disabled')
+      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.owner.userId))();
+    if (['revoked-admin', 'readonly', 'unpresented-admin'].includes(scenario)) {
+      const token = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: f.other.userId,
+        scope: scenario === 'readonly' ? 'workspace-readonly' : 'server-admin',
+        workspaceIds: scenario === 'readonly' ? [f.workspace.id] : [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      if (scenario === 'revoked-admin')
+        revokeOpenKitAccessTokenRecord(f.coreDb, token.record.tokenId);
+      if (scenario !== 'unpresented-admin')
+        actor = {
+          kind: 'token',
+          userId: f.other.userId,
+          tokenId: token.record.tokenId,
+          tokenScope: token.record.scope,
+          tokenWorkspaceIds: token.record.workspaceIds,
+        };
+    }
+    const before = listVaultReferences(f.coreDb);
+    const error = await f
+      .loginCall('vault.login-quarantine', { referenceId: f.login.referenceId }, actor)
+      .catch((cause: unknown) => cause);
+    expect(error).toHaveProperty('status');
+    expect([403, 404]).toContain((error as { status: number }).status);
+    expect(listVaultReferences(f.coreDb)).toEqual(before);
+    expect(JSON.stringify(error)).not.toContain('Private Login label canary');
+    expect(JSON.stringify(error)).not.toContain('synthetic-account-equality');
+    expect(JSON.stringify(error)).not.toContain('synthetic-private-locator');
+  });
+
+  it('uses current Administrator Eligibility and the actual administrator User evidence home', async () => {
+    const f = await loginFixture();
+    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: f.other.userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const actor: Actor = {
+      kind: 'token',
+      userId: f.other.userId,
+      tokenId: token.record.tokenId,
+      tokenScope: 'server-admin',
+    };
+    const actualDb = openUserDb(f.root, actor.userId);
+    applyScopedMigrations(actualDb);
+    try {
+      await expect(
+        f.loginCall('vault.login-quarantine', { referenceId: f.login.referenceId }, actor)
+      ).resolves.toEqual(loginView(f.login, true));
+      expect(listUserPermissionDecisions(actualDb)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            ownerScope: 'user',
+            workspaceId: null,
+            result: 'allow',
+            mediation: expect.objectContaining({
+              operation: 'vault.login-quarantine',
+              role: 'final',
+              subject: expect.objectContaining({
+                actor: { kind: 'user', id: actor.userId },
+                credentialKind: 'token',
+              }),
+            }),
+          }),
+        ])
+      );
+      const final = listUserPermissionDecisions(actualDb).find(
+        (row) =>
+          row.mediation?.operation === 'vault.login-quarantine' && row.mediation.role === 'final'
+      )!;
+      expect(listSqliteAuditEvents(actualDb.sqlite)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'vault.login-quarantine',
+            outcome: 'succeeded',
+            actor: { kind: 'user', id: actor.userId },
+            workspaceId: null,
+            resource: expect.stringContaining(f.login.referenceId),
+            permissionDecisionId: final.decisionId,
+          }),
+        ])
+      );
+      expect(listUserPermissionDecisions(f.userDb)).toEqual([]);
+      await expect(f.loginCall('vault.login-list', {}, actor)).resolves.toEqual({ items: [] });
+    } finally {
+      actualDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    'deny',
+    'error',
+    'observe',
+  ] as const)('runs actual User Policy %s and keeps completion observation non-decisive', async (mode) => {
+    const f = await loginFixture();
+    await installPolicy(
+      f,
+      mode === 'observe' ? 'observe' : 'gate',
+      undefined,
+      'vault.login-quarantine'
+    );
+    if (mode === 'error')
+      f.participant.mockRejectedValue(new Error('Synthetic deterministic gate error.'));
+    else f.participant.mockResolvedValue({ decision: 'deny' });
+    f.userDb.sqlite.pragma('query_only = ON');
+    const openActual = databases.openUserDb;
+    vi.spyOn(databases, 'openUserDb').mockImplementation((...args) => {
+      const db = openActual(...args);
+      db.sqlite.pragma('query_only = ON');
+      return db;
+    });
+    const operation = f.loginCall('vault.login-quarantine', { referenceId: f.login.referenceId });
+    if (mode === 'observe') await expect(operation).resolves.toEqual(loginView(f.login, true));
+    else {
+      await expect(operation).rejects.toHaveProperty('status');
+      expect(getVaultReference(f.coreDb, f.login.referenceId)).toEqual(f.login);
+    }
+    expect(f.participant).toHaveBeenCalledOnce();
+    expect(f.participant.mock.calls[0]![0].proposal).toMatchObject({
+      operation: 'vault.login-quarantine',
+      workspaceId: null,
+      inputReferences: { referenceId: f.login.referenceId },
+      subject: { actor: { kind: 'user', id: f.owner.userId }, process: null },
+    });
+    const decisions = listUserPermissionDecisions(f.userDb).filter(
+      (row) => row.mediation?.operation === 'vault.login-quarantine'
+    );
+    expect(decisions.length).toBeGreaterThan(0);
+    expect(decisions.every((row) => row.ownerScope === 'user' && row.workspaceId === null)).toBe(
+      true
+    );
+    const events = listSqliteAuditEvents(f.userDb.sqlite);
+    for (const decision of decisions)
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: decision.auditEventId,
+            action: 'permission.decision',
+            permissionDecisionId: decision.decisionId,
+            actor: { kind: 'user', id: f.owner.userId },
+          }),
+        ])
+      );
+    if (mode === 'deny')
+      expect(decisions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ result: 'deny' })])
+      );
+    if (mode === 'observe')
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'policy.participant',
+            policyInvocation: expect.objectContaining({
+              operation: 'vault.login-quarantine',
+              stage: 'completed',
+            }),
+          }),
+        ])
+      );
+    expect(
+      listSqliteAuditEvents(f.coreDb.sqlite).filter(
+        (event) =>
+          event.action === 'vault.login-quarantine' ||
+          event.policyInvocation?.operation === 'vault.login-quarantine'
+      )
+    ).toEqual([]);
+  });
+
+  it.each([
+    'disabled',
+    'version',
+    'revoked',
+  ] as const)('refuses selected reference facts changed during awaited Policy (%s)', async (change) => {
+    const f = await loginFixture();
+    await installPolicy(f, 'gate', undefined, 'vault.login-quarantine');
+    const { advanceActiveVaultReferenceVersion, revokeVaultReference } = await import(
+      '../vault/vault-references.js'
+    );
+    f.participant.mockImplementation(async () => {
+      if (change === 'disabled')
+        f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.owner.userId))();
+      else if (change === 'version')
+        await advanceActiveVaultReferenceVersion(f.coreDb, {
+          referenceId: f.login.referenceId,
+          currentVersion: 2,
+        });
+      else await revokeVaultReference(f.coreDb, { referenceId: f.login.referenceId });
+      return { decision: 'allow' as const };
+    });
+    await expect(
+      f.loginCall('vault.login-quarantine', { referenceId: f.login.referenceId })
+    ).rejects.toHaveProperty('status');
+    expect(f.participant).toHaveBeenCalledOnce();
+    expect(getVaultReference(f.coreDb, f.login.referenceId)).toMatchObject({
+      login: { quarantined: false },
+      status: change === 'revoked' ? 'revoked' : 'active',
+      currentVersion: change === 'version' ? 2 : 1,
+    });
+    expect(
+      listSqliteAuditEvents(f.userDb.sqlite).filter(
+        (event) => event.action === 'vault.login-quarantine' && event.outcome === 'succeeded'
+      )
+    ).toEqual([]);
+  });
+
+  it('initializes the cold actual User evidence home on its first Login request', async () => {
+    const f = await loginFixture({ coldUserHome: true });
+    await installPolicy(f, 'gate', 1, 'vault.login-quarantine');
+    expect(
+      f.userDb.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('permission_decisions','audit_events')"
+        )
+        .all()
+    ).toEqual([]);
+    f.coreDb.sqlite.pragma('query_only = ON');
+    f.userDb.sqlite.pragma('query_only = ON');
+    const openActual = databases.openUserDb;
+    vi.spyOn(databases, 'openUserDb').mockImplementation((...args) => {
+      const db = openActual(...args);
+      db.sqlite.pragma('query_only = ON');
+      return db;
+    });
+    await expect(
+      f.loginCall('vault.login-quarantine', { referenceId: f.login.referenceId })
+    ).resolves.toEqual(loginView(f.login, true));
+    const decisions = listUserPermissionDecisions(f.userDb).filter(
+      (row) =>
+        row.mediation?.operation === 'vault.login-quarantine' && row.mediation.role === 'final'
+    );
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ result: 'allow', ownerScope: 'user', workspaceId: null });
+    const binding = readAdmittedPolicyDocument(
+      f.coreDb,
+      f.manager.current().openKitConfig.policy?.mediation
+    ).statements.find((row) => row.id === 'withdrawal-policy')!;
+    expect(
+      readPolicyStatementUseCount(f.userDb, { id: binding.id, digest: policyDigest(binding) })
+    ).toBe(1);
+    expect(listSqliteAuditEvents(f.userDb.sqlite)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: decisions[0]!.auditEventId,
+          permissionDecisionId: decisions[0]!.decisionId,
+        }),
+      ])
+    );
+    expect(f.userDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+  });
+
+  it('reports incomplete after later User Audit failure without compensating the Core effect', async () => {
+    const f = await loginFixture();
+    // Deliberate fault in the admitted User storage owner; Policy and native Audit stay real.
+    f.userDb.sqlite.exec(`CREATE TRIGGER reject_login_completion_audit
+      BEFORE INSERT ON audit_events
+      WHEN NEW.action = 'vault.login-quarantine'
+      BEGIN SELECT RAISE(ABORT, 'Synthetic later User Audit failure.'); END`);
+    const result = await f
+      .loginCall('vault.login-quarantine', { referenceId: f.login.referenceId })
+      .catch((error: unknown) => error);
+    expect(result).toMatchObject({ status: 409 });
+    expect(getVaultReference(f.coreDb, f.login.referenceId)).toMatchObject({
+      login: { quarantined: true },
+      currentVersion: 1,
+      status: 'active',
+    });
+    expect(
+      listSqliteAuditEvents(f.userDb.sqlite).filter(
+        (event) => event.action === 'vault.login-quarantine' && event.outcome === 'succeeded'
+      )
+    ).toEqual([]);
+    expect(f.closeRuntime).not.toHaveBeenCalled();
+  });
+});
+
+it.each([
+  'ordinary',
+  'revoked',
+  'workspace',
+  'server',
+] as const)('cannot release a %s reference into a Login', async (kind) => {
+  const f = await loginFixture();
+  let reference = f.login;
+  if (kind === 'ordinary') reference = f.reference;
+  else if (kind === 'revoked') {
+    const { revokeVaultReference } = await import('../vault/vault-references.js');
+    reference = await revokeVaultReference(f.coreDb, { referenceId: f.login.referenceId });
+  } else {
+    reference = await createVaultReference(f.coreDb, {
+      referenceId: allocateEntityId('vault'),
+      ownerScope: kind,
+      ...(kind === 'workspace' ? { workspaceId: f.workspace.id } : {}),
+      displayName: 'Non-Login scope canary',
+      secretKind: 'opaque',
+      backendKind: 'encrypted-file' as const,
+    });
+  }
+  const before = listVaultReferences(f.coreDb);
+  const error = await f
+    .loginCall('vault.login-release', { referenceId: reference.referenceId })
+    .catch((cause: unknown) => cause);
+  expect(error).toHaveProperty('status');
+  expect([400, 403, 404, 409]).toContain((error as { status: number }).status);
+  expect(listVaultReferences(f.coreDb)).toEqual(before);
+});
+
+it.each([
+  ['vault.login-list', 'gate'],
+  ['vault.login-list', 'observe'],
+  ['vault.login-release', 'gate'],
+  ['vault.login-release', 'observe'],
+] as const)('governs %s through actual User %s Policy and linked evidence', async (operation, mode) => {
+  const f = await loginFixture();
+  if (operation === 'vault.login-release')
+    await f.loginCall('vault.login-quarantine', { referenceId: f.login.referenceId });
+  await installPolicy(f, mode, undefined, operation);
+  f.participant.mockResolvedValue({ decision: 'deny' });
+  const before = getVaultReference(f.coreDb, f.login.referenceId);
+  const input = operation === 'vault.login-list' ? {} : { referenceId: f.login.referenceId };
+  const pending = f.loginCall(operation, input);
+  if (mode === 'gate') {
+    await expect(pending).rejects.toHaveProperty('status');
+    expect(getVaultReference(f.coreDb, f.login.referenceId)).toEqual(before);
+  } else
+    await expect(pending).resolves.toEqual(
+      operation === 'vault.login-list' ? { items: [loginView(f.login)] } : loginView(f.login)
+    );
+  expect(f.participant).toHaveBeenCalledOnce();
+  const decisions = listUserPermissionDecisions(f.userDb).filter(
+    (row) => row.mediation?.operation === operation && row.mediation.role === 'final'
+  );
+  expect(decisions).toHaveLength(1);
+  expect(decisions[0]).toMatchObject({
+    result: mode === 'gate' ? 'deny' : 'allow',
+    ownerScope: 'user',
+    workspaceId: null,
+  });
+  const events = listSqliteAuditEvents(f.userDb.sqlite);
+  expect(events).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        id: decisions[0]!.auditEventId,
+        permissionDecisionId: decisions[0]!.decisionId,
+        actor: { kind: 'user', id: f.owner.userId },
+        workspaceId: null,
+      }),
+    ])
+  );
+  if (mode === 'observe')
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: operation,
+          outcome: 'succeeded',
+          permissionDecisionId: decisions[0]!.decisionId,
+          actor: { kind: 'user', id: f.owner.userId },
+          workspaceId: null,
+        }),
+      ])
+    );
+});
+
+/**
+ * Policy Enforcement Mapping: Primary User, Server And Workspace Admission; review finding E1.
+ * Same-owner workspace bearers do not enter fixed User scope. This boundary cannot prove a
+ * deeper readonly mutation check because both credential scopes must stop before the handler.
+ */
+it.each([
+  'workspace',
+  'workspace-readonly',
+] as const)('refuses a current same-owner %s bearer at User admission for every Login metadata operation', async (scope) => {
+  const f = await loginFixture();
+  expect(f.login).toMatchObject({ ownerScope: 'user', userId: f.owner.userId });
+  const { record } = createOpenKitAccessTokenRecord(f.coreDb, {
+    ownerUserId: f.owner.userId,
+    scope,
+    workspaceIds: [f.workspace.id],
+    expiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  expect(record).toMatchObject({
+    ownerUserId: f.login.userId,
+    scope,
+    workspaceIds: [f.workspace.id],
+    status: 'active',
+    revokedAt: null,
+  });
+  expect(new Date(record.expiresAt).getTime()).toBeGreaterThan(Date.now());
+  const actor: Actor = {
+    kind: 'token',
+    userId: record.ownerUserId,
+    tokenId: record.tokenId,
+    tokenScope: record.scope,
+    tokenWorkspaceIds: record.workspaceIds,
+  };
+  for (const operation of [
+    'vault.login-list',
+    'vault.login-quarantine',
+    'vault.login-release',
+  ] as const) {
+    // Release must address a real quarantined Login, not an already released no-op.
+    if (operation === 'vault.login-release')
+      await expect(
+        f.loginCall('vault.login-quarantine', { referenceId: f.login.referenceId })
+      ).resolves.toEqual(loginView(f.login, true));
+    const beforeReferences = listVaultReferences(f.coreDb);
+    const beforeGrants = listVaultGrants(f.coreDb);
+    const beforeDecisions = listUserPermissionDecisions(f.userDb);
+    const beforeAudit = listSqliteAuditEvents(f.userDb.sqlite);
+    const input = operation === 'vault.login-list' ? {} : { referenceId: f.login.referenceId };
+    const error = await f.loginCall(operation, input, actor).catch((cause: unknown) => cause);
+    expect(error, `${scope} ${operation} must stop at fixed User admission`).toMatchObject({
+      code: 'workspace_access_denied',
+      status: 403,
+    });
+    expect(listVaultReferences(f.coreDb)).toEqual(beforeReferences);
+    expect(listVaultGrants(f.coreDb)).toEqual(beforeGrants);
+    expect(listUserPermissionDecisions(f.userDb)).toEqual(beforeDecisions);
+    expect(listSqliteAuditEvents(f.userDb.sqlite)).toEqual(beforeAudit);
+    const failure = JSON.stringify({ message: String(error), error });
+    for (const protectedValue of [
+      f.login.referenceId,
+      'Private Login label canary',
+      'synthetic-account-equality',
+      'synthetic-private-locator',
+    ])
+      expect(failure).not.toContain(protectedValue);
+  }
+  expect(f.participant).not.toHaveBeenCalled();
+  expect(f.closeRuntime).not.toHaveBeenCalled();
 });

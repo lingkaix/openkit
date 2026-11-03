@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import type {
   OperationOutput,
   VaultAdminWorkspaceReference,
+  VaultLoginView,
   WorkspaceVaultGrant,
 } from '@openkit/app-api-schemas';
 import {
@@ -17,7 +18,7 @@ import {
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { isDeploymentAdminActor } from '../auth/identity.js';
+import { type Actor, isDeploymentAdminActor } from '../auth/identity.js';
 import {
   currentWorkspaceAuthority,
   evaluateOwnedUserOperation,
@@ -78,6 +79,7 @@ import {
 import { loadEncryptedFileVaultKeyFile } from './vault-key-file.js';
 import {
   getVaultReference,
+  listUserVaultReferences,
   listVaultReferences,
   listWorkspaceVaultReferences,
 } from './vault-references.js';
@@ -891,11 +893,22 @@ export function createVaultOperationImplementations(
     return vaultFailure(message, errorCode, status);
   }
 
-  /** Withdraws personal reference consent without manufacturing Workspace membership. */
-  async function withdrawOwnedGrant(
-    input: { workspaceId: string; grantId: string },
-    context: AdmittedOperationContext
-  ): Promise<WorkspaceVaultGrant> {
+  /** Same actual-caller User Policy/decision/Audit owner for personal Vault lifecycle actions. */
+  async function governedUserVaultOperation<
+    F extends { kernel: ReturnType<typeof evaluateOwnedUserOperation> },
+    T,
+  >(
+    operation:
+      | 'vault.grant-withdraw'
+      | 'vault.login-list'
+      | 'vault.login-quarantine'
+      | 'vault.login-release',
+    context: AdmittedOperationContext,
+    readFacts: (actor: Actor) => F,
+    references: (selected: F) => Record<string, string>,
+    effect: (selected: F, actor: Actor, beforeSubmit: () => Promise<void>) => Promise<T>
+  ): Promise<T> {
+    const withdrawal = operation === 'vault.grant-withdraw';
     if (
       context.kind !== 'public' ||
       !coreDb ||
@@ -905,26 +918,20 @@ export function createVaultOperationImplementations(
       (!dependencies.readRuntimePolicy && !dependencies.runtimeConfigManager)
     )
       throw new OperationError(
-        'vault_withdrawal_unavailable',
-        'Vault withdrawal is unavailable.',
+        withdrawal ? 'vault_withdrawal_unavailable' : 'vault_login_unavailable',
+        withdrawal ? 'Vault withdrawal is unavailable.' : 'Login metadata is unavailable.',
         503
       );
     const actor = publicOperationActor(context);
-    const currentGrant = () => {
-      const target = getWithdrawableUserVaultGrant(coreDb, input.workspaceId, input.grantId);
-      if (!target) vaultWorkspaceAccessDenied();
-      const { grant, reference } = target;
-      const kernel = evaluateOwnedUserOperation(
-        coreDb,
-        actor,
-        reference.userId,
-        'vault.admin',
-        true
-      );
-      if (kernel.effect !== 'allow') vaultWorkspaceAccessDenied();
-      return { grant, reference, kernel };
-    };
-    const selected = currentGrant();
+    const currentFacts = () => readFacts(actor);
+    const selected = currentFacts();
+    const inputReferences = references(selected);
+    const resource = inputReferences.grantId
+      ? `vault-grant:${inputReferences.grantId}`
+      : inputReferences.referenceId
+        ? `vault-reference:${inputReferences.referenceId}`
+        : `user:${actor.userId}:vault-logins`;
+    const auditGrant = inputReferences.grantId ? { vaultGrantId: inputReferences.grantId } : {};
     const userId = actor.userId;
     const userDb = dependencies.repositoryUserDb(userId);
     try {
@@ -946,7 +953,7 @@ export function createVaultOperationImplementations(
       const authorCurrent = (id: string) =>
         userCurrent(id) && (id === userId || isCurrentServerPolicyAuthor(coreDb, id));
       const proposal: PolicyProposal = {
-        operation: 'vault.grant-withdraw',
+        operation,
         workspaceId: null,
         capabilityCallId: null,
         resource: {
@@ -961,11 +968,7 @@ export function createVaultOperationImplementations(
           credentialKind: actor.kind,
           responsibleHumanId: actor.userId,
         }),
-        inputReferences: {
-          grantId: input.grantId,
-          referenceId: selected.reference.referenceId,
-          workspaceId: input.workspaceId,
-        },
+        inputReferences,
         inputAttributes: { contract: POLICY_OPERATION_REFERENCE_INPUT_V1 },
       };
       const policyInput: InterceptionInput = {
@@ -973,7 +976,9 @@ export function createVaultOperationImplementations(
         document,
         proposal,
         authorizationRevision: authorityRevision,
-        resourceSummary: { grantId: input.grantId, referenceId: selected.reference.referenceId },
+        resourceSummary: withdrawal
+          ? { grantId: inputReferences.grantId!, referenceId: inputReferences.referenceId! }
+          : inputReferences,
         authorCurrent,
         anchorCurrent: (anchor) =>
           anchor.owner.kind === 'user' &&
@@ -988,35 +993,29 @@ export function createVaultOperationImplementations(
         stillCurrent: () =>
           !context.signal?.aborted &&
           policyDigest(readAdmittedPolicyDocument(coreDb, readPolicy())) === policyRevision &&
-          policyDigest(currentGrant()) === authorityRevision,
-        finalKernel: () => currentGrant().kernel,
+          policyDigest(currentFacts()) === authorityRevision,
+        finalKernel: () => currentFacts().kernel,
       };
       const decision = await dependencies.policyInterception.decide(policyInput);
       if (decision.result !== 'allow') vaultWorkspaceAccessDenied();
       await context.recheckAdmission();
       if (!policyInput.stillCurrent()) vaultWorkspaceAccessDenied();
-      const result = await getControlStoreWorkerClient().vault(
-        coreDb,
-        'grant-revoke',
-        {
-          grantId: input.grantId,
-          publicMutation: { actor, workspaceId: input.workspaceId, reference: selected.reference },
-        },
-        async () => {
-          await context.recheckAdmission!();
-          if (!policyInput.stillCurrent()) vaultWorkspaceAccessDenied();
-        }
-      );
-      await closeRevokedCredentialBindings(dependencies, { grantId: input.grantId });
+      const beforeSubmit = async () => {
+        await context.recheckAdmission!();
+        if (!policyInput.stillCurrent()) vaultWorkspaceAccessDenied();
+      };
+      const result = await effect(selected, actor, beforeSubmit);
       await recordVaultAuditEvent({
         userDb,
         actor: context.actorRef,
-        action: 'vault.grant-withdraw',
+        action: operation,
         outcome: 'succeeded',
-        resource: `vault-grant:${input.grantId}`,
-        vaultGrantId: input.grantId,
+        resource,
+        ...auditGrant,
         permissionDecisionId: decision.decisionId,
-        summary: 'Personal credential grant withdrawal completed.',
+        summary: withdrawal
+          ? 'Personal credential grant withdrawal completed.'
+          : 'Personal Login metadata operation completed.',
       });
       await dependencies.policyInterception
         .observe({
@@ -1027,36 +1026,152 @@ export function createVaultOperationImplementations(
             userCurrent(userId),
         })
         .catch(() => undefined);
-      return result as WorkspaceVaultGrant;
+      return result;
     } catch (cause) {
       try {
         await recordVaultAuditEvent({
           userDb,
           actor: context.actorRef,
-          action: 'vault.grant-withdraw',
+          action: operation,
           outcome: 'failed',
-          resource: `vault-grant:${input.grantId}`,
-          vaultGrantId: input.grantId,
-          summary: 'Personal credential grant withdrawal did not complete.',
+          resource,
+          ...auditGrant,
+          summary: withdrawal
+            ? 'Personal credential grant withdrawal did not complete.'
+            : 'Personal Login metadata operation did not complete.',
         });
       } catch (auditFailure) {
         throw new OperationError(
-          'vault_withdrawal_incomplete',
-          'Credential withdrawal did not complete. Inspect its current state before another request.',
+          withdrawal ? 'vault_withdrawal_incomplete' : 'vault_login_incomplete',
+          withdrawal
+            ? 'Credential withdrawal did not complete. Inspect its current state before another request.'
+            : 'Login metadata operation did not complete. Inspect its current state before another request.',
           409,
           { cause: new AggregateError([cause, auditFailure]) }
         );
       }
       if (cause instanceof OperationError) throw cause;
       throw new OperationError(
-        'vault_withdrawal_incomplete',
-        'Credential withdrawal did not complete. Inspect its current state before another request.',
+        withdrawal ? 'vault_withdrawal_incomplete' : 'vault_login_incomplete',
+        withdrawal
+          ? 'Credential withdrawal did not complete. Inspect its current state before another request.'
+          : 'Login metadata operation did not complete. Inspect its current state before another request.',
         409,
         { cause }
       );
     } finally {
       userDb.sqlite.close();
     }
+  }
+
+  /** Withdraws personal reference consent without manufacturing Workspace membership. */
+  async function withdrawOwnedGrant(
+    input: { workspaceId: string; grantId: string },
+    context: AdmittedOperationContext
+  ): Promise<WorkspaceVaultGrant> {
+    return governedUserVaultOperation(
+      'vault.grant-withdraw',
+      context,
+      (actor) => {
+        const target =
+          coreDb && getWithdrawableUserVaultGrant(coreDb, input.workspaceId, input.grantId);
+        if (!target) vaultWorkspaceAccessDenied();
+        const kernel = evaluateOwnedUserOperation(
+          coreDb!,
+          actor,
+          target.reference.userId,
+          'vault.admin',
+          true
+        );
+        if (kernel.effect !== 'allow') vaultWorkspaceAccessDenied();
+        return { ...target, kernel };
+      },
+      (selected) => ({
+        grantId: input.grantId,
+        referenceId: selected.reference.referenceId,
+        workspaceId: input.workspaceId,
+      }),
+      async (selected, actor, beforeSubmit) => {
+        const result = await getControlStoreWorkerClient().vault(
+          coreDb!,
+          'grant-revoke',
+          {
+            grantId: input.grantId,
+            publicMutation: {
+              actor,
+              workspaceId: input.workspaceId,
+              reference: selected.reference,
+            },
+          },
+          beforeSubmit
+        );
+        await closeRevokedCredentialBindings(dependencies, { grantId: input.grantId });
+        return result as WorkspaceVaultGrant;
+      }
+    );
+  }
+
+  /** Uses the same User governance for own-only inventory and exact owner/admin Login restrictions. */
+  async function personalLoginOperation(
+    operation: 'vault.login-list' | 'vault.login-quarantine' | 'vault.login-release',
+    input: { referenceId?: string },
+    context: AdmittedOperationContext
+  ) {
+    return governedUserVaultOperation(
+      operation,
+      context,
+      (actor) => {
+        if (operation === 'vault.login-list') {
+          const kernel = evaluateOwnedUserOperation(
+            coreDb!,
+            actor,
+            actor.userId,
+            'vault.admin',
+            VAULT_OPERATION_DEFINITIONS[operation].mutating
+          );
+          if (kernel.effect !== 'allow') vaultWorkspaceAccessDenied();
+          return {
+            kernel,
+            items: listUserVaultReferences(coreDb!, actor.userId).filter(
+              (reference) => reference.login
+            ),
+            reference: null,
+          };
+        }
+        const reference = getVaultReference(coreDb!, input.referenceId!);
+        if (
+          !reference?.login ||
+          reference.status !== 'active' ||
+          reference.ownerScope !== 'user' ||
+          !reference.userId
+        )
+          vaultWorkspaceAccessDenied();
+        const kernel = evaluateOwnedUserOperation(
+          coreDb!,
+          actor,
+          reference.userId,
+          'vault.admin',
+          VAULT_OPERATION_DEFINITIONS[operation].mutating
+        );
+        if (kernel.effect !== 'allow') vaultWorkspaceAccessDenied();
+        return { kernel, items: null, reference };
+      },
+      (): Record<string, string> => (input.referenceId ? { referenceId: input.referenceId } : {}),
+      async (selected, actor, beforeSubmit) => {
+        if (operation === 'vault.login-list') return { items: selected.items!.map(projectLogin) };
+        const reference = await getControlStoreWorkerClient().vault(
+          coreDb!,
+          'reference-login-state',
+          {
+            referenceId: input.referenceId!,
+            quarantined: operation === 'vault.login-quarantine',
+            publicMutation: { actor, reference: selected.reference! },
+          },
+          beforeSubmit
+        );
+        return projectLogin(reference);
+      }
+    );
   }
 
   /** Executes the existing Vault lifecycle and awaits required runtime revocation outside SQL. */
@@ -1974,6 +2089,18 @@ export function createVaultOperationImplementations(
     'vault.secret-revoke': (input, c) => mutate(input, c, 'revoke'),
     'vault.grant-create': (input, c) => mutate(input, c, 'grant'),
     'vault.grant-withdraw': (input, c) => withdrawOwnedGrant(input, c),
+    'vault.login-list': (input, c) =>
+      personalLoginOperation('vault.login-list', input, c) as Promise<
+        OperationOutput<'vault.login-list'>
+      >,
+    'vault.login-quarantine': (input, c) =>
+      personalLoginOperation('vault.login-quarantine', input, c) as Promise<
+        OperationOutput<'vault.login-quarantine'>
+      >,
+    'vault.login-release': (input, c) =>
+      personalLoginOperation('vault.login-release', input, c) as Promise<
+        OperationOutput<'vault.login-release'>
+      >,
     'vault.grant-narrow': async (input, c) => {
       const actor = publicOperationActor(c);
       if (!isDeploymentAdminActor(actor))
@@ -2054,6 +2181,19 @@ export function createVaultOperationImplementations(
     'vault.grant-revoke': (input, c) => mutate(input, c, 'revoke-grant'),
   } satisfies FamilyImplementations<typeof VAULT_OPERATION_DEFINITIONS>;
 }
+/** Public Login projection deliberately omits account equality, backend metadata and material. */
+function projectLogin(reference: VaultReferenceRecord): VaultLoginView {
+  if (!reference.login) vaultWorkspaceAccessDenied();
+  return {
+    referenceId: reference.referenceId,
+    provider: reference.login.provider,
+    status: reference.status,
+    currentVersion: reference.currentVersion,
+    quarantined: reference.login.quarantined,
+    observations: null,
+  };
+}
+
 /** Select public metadata explicitly, excluding backend locators and display content; native Workspace creation and ownership checks establish the narrower type, and shared framing validates it. */
 function projectReference(reference: NonNullable<ReturnType<typeof getVaultReference>>) {
   const { backendKind, currentVersion, ownerScope, referenceId, secretKind, status, workspaceId } =

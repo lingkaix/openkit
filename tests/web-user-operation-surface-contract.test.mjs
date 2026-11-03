@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 348;
+const EXPECTED_CATALOG_SIZE = 351;
 const EXPECTED_SERVER_SIZE = 93;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 252;
+const EXPECTED_INCLUDED_SIZE = 255;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -29,6 +29,9 @@ const SERVER_WEB_OPERATIONS = {
 
 /** Operations whose current Web projection is explicitly deferred to a Roadmap owner. */
 const NON_RELEASE_READY_ROADMAP = new Map([
+  ['vault.login-list', 'R115'],
+  ['vault.login-quarantine', 'R115'],
+  ['vault.login-release', 'R115'],
   ['workspace.backup-capture', 'R048'],
   ['workspace.backup-verify', 'R048'],
   ['workspace.backup-download', 'R048'],
@@ -311,6 +314,9 @@ const WEB_OPERATION_GROUPS = {
     'vault.grant-create': { disposition: 'live', surface: 'Vault backend' },
     'vault.grant-narrow': { disposition: 'live', surface: 'Vault backend' },
     'vault.grant-withdraw': { disposition: 'workflow', surface: 'Vault' },
+    'vault.login-list': { disposition: 'roadmap', roadmap: 'R115' },
+    'vault.login-quarantine': { disposition: 'roadmap', roadmap: 'R115' },
+    'vault.login-release': { disposition: 'roadmap', roadmap: 'R115' },
     'vault.secret-create': { disposition: 'live', surface: 'Vault backend' },
     'vault.grant-list': { disposition: 'live', surface: 'Vault' },
     'vault.injection-plan-list': { disposition: 'live', surface: 'Vault' },

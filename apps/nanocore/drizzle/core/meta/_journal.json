@@ -148,6 +148,13 @@
       "when": 1793013041557,
       "tag": "0020_scheduler_lineage_lookup",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1793013041558,
+      "tag": "0021_harness_login_metadata",
+      "breakpoints": true
     }
   ]
 }

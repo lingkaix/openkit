@@ -15,6 +15,7 @@ export {
   type CreateVaultReferenceResult,
   getVaultReference,
   type ImportUnboundWorkspaceVaultReferenceInput,
+  listUserVaultReferences,
   listVaultReferences,
   listWorkspaceVaultReferences,
   type RebindWorkspaceVaultReferenceInput,

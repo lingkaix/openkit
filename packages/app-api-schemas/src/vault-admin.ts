@@ -251,3 +251,25 @@ export type RotateWorkspaceVaultSecretRequest = z.infer<
 export type CreateWorkspaceVaultGrantRequest = z.infer<
   typeof CreateWorkspaceVaultGrantRequestSchema
 >;
+
+/** Redacted personal harness Login metadata; null observations mean unknown. */
+export const VaultLoginViewSchema = z
+  .object({
+    referenceId: VaultReferenceIdSchema,
+    provider: z.literal('codex'),
+    status: z.enum(['active', 'revoked', 'unbound']),
+    currentVersion: z.number().int().nonnegative(),
+    quarantined: z.boolean(),
+    observations: z.null(),
+  })
+  .strict();
+/** The actual caller's own explicit Logins, without upstream account identity. */
+export const ListVaultLoginsResponseSchema = z
+  .object({ items: z.array(VaultLoginViewSchema) })
+  .strict();
+/** Address one existing Login; neither caller authority nor lifecycle metadata is authored here. */
+export const VaultLoginReferenceRequestSchema = z
+  .object({ referenceId: VaultReferenceIdSchema })
+  .strict();
+/** Public reference-only Login projection. */
+export type VaultLoginView = z.infer<typeof VaultLoginViewSchema>;

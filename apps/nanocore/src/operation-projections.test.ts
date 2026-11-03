@@ -2427,3 +2427,183 @@ describe('#144 private native invocation and public exclusion', () => {
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
 });
+
+/** The fixed-User definitions drive every public framing while Worker User entry remains unavailable. */
+describe('personal Login operation projections', () => {
+  it.each([
+    'vault.login-list',
+    'vault.login-quarantine',
+    'vault.login-release',
+  ])('projects %s through OpenAPI and the uniform Skill without advertising Worker admission', async (id) => {
+    const definition = Reflect.get(OPERATION_DEFINITIONS, id);
+    expect(
+      definition,
+      'O13 expected baseline RED: missing Login operation definition'
+    ).toBeDefined();
+    expect(definition).toMatchObject({
+      binding: 'json',
+      returnsOneTimeSecret: false,
+      scope: { kind: 'user' },
+      target: { kind: 'user' },
+      policyOperation: 'vault.admin',
+      mutating: id !== 'vault.login-list',
+    });
+    expect(definition.credentials).not.toContain('worker-package');
+    expect(definition.credentials).not.toContain('coordinator');
+    expect(createAppOpenApiDocument().paths).toHaveProperty(`/api/app/operations/${id}`);
+    const { operationCatalog } = await import(
+      new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
+    );
+    const operation = operationCatalog.find((entry: { id: string }) => entry.id === id);
+    expect(operation).toBeDefined();
+    expect(operation.appOperationId).toBe(id);
+    expect(operation.mutating).toBe(id !== 'vault.login-list');
+    const input =
+      id === 'vault.login-list' ? {} : { referenceId: testEntityId('vault', 'login-projection') };
+    expect(operation.inputSchema.parse(input)).toEqual(input);
+    for (const field of [
+      'material',
+      'backendLocator',
+      'accountId',
+      'userId',
+      'actor',
+      'quarantined',
+    ])
+      expect(operation.inputSchema.safeParse({ ...input, [field]: 'synthetic' }).success).toBe(
+        false
+      );
+    const output =
+      id === 'vault.login-list'
+        ? { items: [] }
+        : {
+            referenceId: input.referenceId,
+            provider: 'codex',
+            currentVersion: 1,
+            status: 'active',
+            quarantined: id === 'vault.login-quarantine',
+            observations: null,
+          };
+    const forward = vi.fn(async () => output);
+    expect(await operation.handler({ client: { operations: { [id]: forward } } }, input)).toBe(
+      output
+    );
+    expect(forward).toHaveBeenCalledExactlyOnceWith(input);
+    expect(OPENKIT_GENERATIVE_TOOL_OPERATIONS).not.toHaveProperty(
+      operationToolName(id as JsonOperationId)
+    );
+  });
+
+  it('preserves reference-only unknown observations through real HTTP, Core Client, CLI and remote MCP calls', async () => {
+    for (const id of ['vault.login-list', 'vault.login-quarantine', 'vault.login-release'])
+      expect(Object.hasOwn(OPERATION_DEFINITIONS, id)).toBe(true);
+    const f = await operationFixture();
+    try {
+      const { createVaultReference } = await import('./vault/vault-references.js');
+      const input = {
+        referenceId: testEntityId('vault', 'login-uniform-journey'),
+        ownerScope: 'user' as const,
+        userId: ensureLocalUser(f.coreDb),
+        displayName: 'Private uniform Login label',
+        secretKind: 'opaque',
+        backendKind: 'encrypted-file' as const,
+        backendLocator: 'synthetic-private-uniform-locator',
+        login: {
+          provider: 'codex' as const,
+          accountId: 'synthetic-private-uniform-account',
+          quarantined: false,
+        },
+      };
+      const reference = await createVaultReference(f.coreDb, input);
+      expect(
+        reference,
+        'O1 prerequisite must succeed before this can decide public behavior'
+      ).toMatchObject({ login: input.login });
+      const projections = await publicJourneyProjections(f);
+      const issued = createOpenKitAccessTokenRecord(f.coreDb, {
+        ownerUserId: input.userId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const remote = async (operation: string, value: Record<string, unknown>) => {
+        const response = await f.app.request('/mcp', {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${issued.secret}`,
+            accept: 'application/json, text/event-stream',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: randomUUID(),
+            method: 'tools/call',
+            params: { name: 'openkit_call', arguments: { operation, input: value } },
+          }),
+        });
+        expect(response.status).toBe(200);
+        const envelope = (await response.json()) as {
+          result: { isError?: boolean; content: Array<{ text: string }> };
+        };
+        expect(envelope.result.isError).not.toBe(true);
+        return JSON.parse(envelope.result.content[0]!.text) as unknown;
+      };
+      for (const call of [...Object.values(projections), remote]) {
+        const view = {
+          referenceId: reference.referenceId,
+          provider: 'codex',
+          status: 'active',
+          currentVersion: 1,
+          quarantined: false,
+          observations: null,
+        };
+        await expect(call('vault.login-list', {})).resolves.toEqual({ items: [view] });
+        await expect(
+          call('vault.login-quarantine', { referenceId: reference.referenceId })
+        ).resolves.toEqual({ ...view, quarantined: true });
+        await expect(
+          call('vault.login-release', { referenceId: reference.referenceId })
+        ).resolves.toEqual(view);
+      }
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+});
+
+it('refuses fixed-User Login operations on the existing real Worker package projection without metadata effects', async () => {
+  for (const id of ['vault.login-list', 'vault.login-quarantine', 'vault.login-release'])
+    expect(Object.hasOwn(OPERATION_DEFINITIONS, id)).toBe(true);
+  const f = await operationFixture();
+  try {
+    const { createVaultReference, getVaultReference } = await import('./vault/vault-references.js');
+    const input = {
+      referenceId: testEntityId('vault', 'login-worker-refusal'),
+      ownerScope: 'user' as const,
+      userId: ensureLocalUser(f.coreDb),
+      displayName: 'Worker refusal Login',
+      secretKind: 'opaque',
+      backendKind: 'encrypted-file' as const,
+      login: {
+        provider: 'codex' as const,
+        accountId: 'synthetic-worker-refusal-account',
+        quarantined: false,
+      },
+    };
+    const login = await createVaultReference(f.coreDb, input);
+    expect(login, 'O1 prerequisite before Worker projection checks').toMatchObject({
+      login: input.login,
+    });
+    const { projections } = await operationProjections(f);
+    for (const id of ['vault.login-list', 'vault.login-quarantine', 'vault.login-release']) {
+      await expect(
+        projections.worker!(
+          id as KernelOperationId,
+          id === 'vault.login-list' ? {} : { referenceId: login.referenceId }
+        )
+      ).rejects.toBeDefined();
+      expect(getVaultReference(f.coreDb, login.referenceId)).toEqual(login);
+    }
+  } finally {
+    f.coreDb.sqlite.close();
+  }
+});
