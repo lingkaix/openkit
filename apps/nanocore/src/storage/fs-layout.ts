@@ -1,7 +1,6 @@
 import {
   copyFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -25,6 +24,7 @@ import {
   readRetainedV1,
   WorkOwnerSchema,
 } from '@openkit/protocol';
+import { ensureLayoutDirectory, readLayoutDirectory } from '@openkit/storage';
 
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
@@ -747,61 +747,6 @@ function isRecordEnvelopeCandidate(value: unknown): value is Record<string, unkn
  */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Creates one layout directory without following an existing link.
- *
- * @param path Directory path to create or verify.
- * @param recursive Whether missing ancestors may be created for the boundary root.
- * @throws Error when the existing path is a symbolic link or non-directory.
- */
-function ensureLayoutDirectory(path: string, recursive: boolean = false): void {
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-
-  if (!metadata) {
-    mkdirSync(path, { recursive });
-    assertLayoutDirectory(path);
-    return;
-  }
-
-  assertLayoutDirectory(path);
-}
-
-/**
- * Verifies one existing layout directory without following links.
- *
- * @param path Directory path to verify.
- * @throws Error when the path is missing, a symbolic link, or a non-directory.
- */
-function assertLayoutDirectory(path: string): void {
-  const metadata = lstatSync(path, { throwIfNoEntry: false });
-
-  if (!metadata) {
-    throw new Error(`DATA_ROOT layout directory is missing: ${path}`);
-  }
-  if (metadata.isSymbolicLink()) {
-    throw new Error(`DATA_ROOT layout directory must not be a symbolic link: ${path}`);
-  }
-  if (!metadata.isDirectory()) {
-    throw new Error(`DATA_ROOT layout path must be a directory: ${path}`);
-  }
-}
-
-/**
- * Reads one layout directory without following a linked parent.
- *
- * @param path Directory path to read.
- * @returns Direct child entries, or an empty list when the path is absent.
- * @throws Error when the existing path is a symbolic link or non-directory.
- */
-function readLayoutDirectory(path: string) {
-  if (!lstatSync(path, { throwIfNoEntry: false })) {
-    return [];
-  }
-
-  assertLayoutDirectory(path);
-  return readdirSync(path, { withFileTypes: true });
 }
 
 /**
