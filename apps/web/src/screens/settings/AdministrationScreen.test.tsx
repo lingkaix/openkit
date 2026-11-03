@@ -4,7 +4,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -342,12 +342,13 @@ function LocationProbe() {
 
 function renderScreen(
   client: CoreClient,
-  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  initialEntry = '/'
 ) {
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <LocationProbe />
           <AdministrationScreen />
         </MemoryRouter>
@@ -355,6 +356,33 @@ function renderScreen(
     </QueryClientProvider>
   );
   return { queryClient, ...view };
+}
+
+function administrationThread(id: string, updatedAt: string, entryPath = 'administration') {
+  return { ...ADMIN_THREAD, entryPath, id, updatedAt };
+}
+
+/** The screen reads exactly one administration destination. */
+async function expectAdministrationDestination(
+  items: ReturnType<typeof administrationThread>[],
+  threadId: string,
+  initialEntry = '/'
+) {
+  const client = makeClient({}, { 'thread.list': vi.fn().mockResolvedValue({ items }) });
+  renderScreen(client, undefined, initialEntry);
+  await waitFor(() =>
+    expect(client.operations['thread.read']).toHaveBeenCalledWith({
+      workspaceId: QUICK_CHAT.id,
+      threadId,
+    })
+  );
+  expect(
+    vi
+      .mocked(client.operations['thread.read'])
+      .mock.calls.every(
+        ([input]) => input.workspaceId === QUICK_CHAT.id && input.threadId === threadId
+      )
+  ).toBe(true);
 }
 
 beforeEach(() => {
@@ -561,6 +589,44 @@ describe('Administration', () => {
       input: 'Check its status.',
       threadId: 'th_00000000-0000-79b7-9009-e76cfeceddee',
     });
+  });
+
+  it('continues the newest administration Thread by code-unit timestamp order', async () => {
+    const older = administrationThread(
+      'th_00000000-0000-7000-8000-000000000011',
+      '2026-09-09T00:00:00.000Z'
+    );
+    const newer = administrationThread(
+      'th_00000000-0000-7000-8000-000000000022',
+      '2026-09-11T00:00:00.000Z'
+    );
+    const conversation = administrationThread(
+      'th_00000000-0000-7000-8000-000000000033',
+      '2026-09-12T00:00:00.000Z',
+      'conversation'
+    );
+    await expectAdministrationDestination([older, conversation, newer], newer.id);
+  });
+
+  it('selects the same administration Thread when updatedAt values are equal', async () => {
+    const updatedAt = '2026-09-10T00:00:00.000Z';
+    const low = administrationThread('th_00000000-0000-7000-8000-000000000041', updatedAt);
+    const high = administrationThread('th_00000000-0000-7000-8000-000000000042', updatedAt);
+    await expectAdministrationDestination([high, low], low.id);
+    cleanup();
+    await expectAdministrationDestination([low, high], low.id);
+  });
+
+  it('keeps an explicit threadId ahead of the newest administration Thread', async () => {
+    const older = administrationThread(
+      'th_00000000-0000-7000-8000-000000000051',
+      '2026-09-09T00:00:00.000Z'
+    );
+    const newer = administrationThread(
+      'th_00000000-0000-7000-8000-000000000052',
+      '2026-09-11T00:00:00.000Z'
+    );
+    await expectAdministrationDestination([newer, older], older.id, `/?threadId=${older.id}`);
   });
 
   it('fails closed when the signed-in session has no usable administrator authority', async () => {

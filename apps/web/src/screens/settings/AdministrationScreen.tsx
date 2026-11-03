@@ -18,7 +18,7 @@ import {
   workerEnvironmentPurgeConfirmation,
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
-import { isRecord } from '@openkit/protocol';
+import { compareCodeUnits, isRecord } from '@openkit/protocol';
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type ParseError, parse } from 'jsonc-parser';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
@@ -152,11 +152,16 @@ export function AdministrationScreen() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedThreadId = searchParams.get('threadId')?.trim() || null;
   const privateThreads = useThreads(quickChat?.id ?? null);
+  // Newest updatedAt wins. Equal timestamps select the smaller Thread id by UTF-16
+  // code units, so the destination does not follow the host locale or list order.
   const threadId =
     requestedThreadId ??
     privateThreads.data
       ?.filter((thread) => thread.entryPath === 'administration')
-      .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0]?.id ??
+      .toSorted(
+        (left, right) =>
+          compareCodeUnits(right.updatedAt, left.updatedAt) || compareCodeUnits(left.id, right.id)
+      )[0]?.id ??
     null;
   const [input, setInput] = useState('');
 
