@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
+import { allocateEntityId } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -1705,5 +1706,115 @@ describe('User Login share native publication', () => {
       await pending.result;
       f.unlock.lock();
     }
+  });
+});
+
+/** Acquisition publication repeats current initiating authority in the actual native writer. */
+describe('User Login reference creation authority fences', () => {
+  it.each([
+    'disabled-owner',
+    'revoked-administrator',
+  ] as const)('refuses %s after native admission and before reference creation', async (change) => {
+    const f = await nativeLoginFixture();
+    let actor: Actor = f.actor;
+    let tokenId: string | undefined;
+    if (change === 'revoked-administrator') {
+      const { record } = createOpenKitAccessTokenRecord(f.db, {
+        ownerUserId: f.actor.userId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      tokenId = record.tokenId;
+      actor = { kind: 'token', userId: f.actor.userId, tokenId, tokenScope: 'server-admin' };
+    }
+    const nextReferenceId = allocateEntityId('vault');
+    const input = {
+      ...createInput(),
+      referenceId: nextReferenceId,
+      ownerScope: 'user' as const,
+      backendKind: f.login.backendKind,
+      userId: actor.userId,
+      secretKind: 'codex-auth-json',
+      login: f.login.login!,
+      publicMutation: { actor },
+    };
+    const beforeCommits = f.commits();
+    const beforeSubmissions = f.submissions();
+    arm(f, 1);
+    const pending = f.start(() => createVaultReference(f.db, input));
+    try {
+      await reached(f, pending);
+      if (change === 'disabled-owner')
+        expect(
+          f.db.sqlite.transaction(() => disableCanonicalUser(f.db, actor.userId))()
+        ).not.toBeNull();
+      else
+        expect(revokeOpenKitAccessTokenRecord(f.db, tokenId!)).toMatchObject({
+          status: 'revoked',
+        });
+      f.db.sqlite.pragma('query_only = ON');
+      releaseNative(f.gate);
+      const outcome = await pending.result;
+      expect(outcome.ok).toBe(false);
+      if (outcome.ok) throw new Error('Current authority was lost before native publication.');
+      expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
+      expect(outcome.error).toMatchObject({ commit: 'not-committed' });
+      expect(getVaultReference(f.db, nextReferenceId)).toBeNull();
+      expect(getVaultReference(f.db, f.login.referenceId)).toEqual(f.login);
+      // The request rolls back its savepoint; the enclosing FULL batch still commits.
+      expect(Atomics.load(f.gate, 4)).toBe(2);
+      expect(f.commits()).toBe(beforeCommits + 1);
+      expect(f.submissions() - beforeSubmissions).toBe(1);
+    } finally {
+      releaseNative(f.gate);
+      deliverReplies();
+      await pending.result;
+    }
+  });
+
+  it('refuses a privileged initiating actor creating a Login for a different User', async () => {
+    const f = await nativeLoginFixture();
+    const actor: Actor = { kind: 'local', userId: f.localUserId };
+    const input = {
+      ...createInput(),
+      referenceId: allocateEntityId('vault'),
+      ownerScope: 'user' as const,
+      backendKind: f.login.backendKind,
+      userId: actor.userId,
+      secretKind: 'codex-auth-json',
+      login: f.login.login!,
+      publicMutation: { actor },
+    };
+    f.db.sqlite.pragma('query_only = ON');
+    const control = await createVaultReference(f.db, input);
+    expect(control).toMatchObject({
+      ownerScope: 'user',
+      userId: actor.userId,
+      login: f.login.login,
+    });
+    const foreignReferenceId = allocateEntityId('vault');
+    expect(f.actor.userId).not.toBe(actor.userId);
+    const beforeCommits = f.commits();
+    const beforeSubmissions = f.submissions();
+    const pending = f.start(() =>
+      createVaultReference(f.db, {
+        ...input,
+        referenceId: foreignReferenceId,
+        userId: f.actor.userId,
+      })
+    );
+    const outcome = await pending.result;
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Acquisition changed the initiating User owner.');
+    expect(outcome.error).toBeInstanceOf(ControlStoreWorkerError);
+    expect(outcome.error).toMatchObject({ commit: 'not-committed' });
+    expect(getVaultReference(f.db, foreignReferenceId)).toBeNull();
+    expect(getVaultReference(f.db, control.referenceId)).toEqual(control);
+    expect(getVaultReference(f.db, f.login.referenceId)).toEqual(f.login);
+    // The request rolls back its savepoint; the enclosing FULL batch still commits.
+    expect(Atomics.load(f.gate, 4)).toBe(2);
+    expect(f.commits()).toBe(beforeCommits + 1);
+    expect(f.submissions() - beforeSubmissions).toBe(1);
   });
 });

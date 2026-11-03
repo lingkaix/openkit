@@ -547,7 +547,7 @@ The rollout below has landed, as the Current Implementation Projection records; 
 
 Cutover is same-release and clean-target. Existing Codex slots require re-login, old route and config names have no compatibility aliases, and legacy credential homes are not imported into Vault.
 
-The cutover does not remove or rename `vault.bootstrap-codex-auth` and does not alter worker-runtime Codex app-server ownership; only the active provider-subscription account and Gateway dependency is removed.
+The Gateway and provider-subscription account cutover preserves the name `vault.bootstrap-codex-auth`; [Vault And Secret Injection](20260703-vault_secret_injection.md#harness-subscription-logins) owns its human-only actual-User Login acquisition and the harness credential-delivery contract. Gateway provider-subscription accounts retain their separate ownership and inference contract.
 
 ## Testing Strategy / Acceptance Criteria
 

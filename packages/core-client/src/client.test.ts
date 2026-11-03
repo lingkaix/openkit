@@ -4031,13 +4031,12 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/vault.lock': { body: vaultAdminStatus('locked') },
       'POST /api/app/operations/vault.bootstrap-codex-auth': {
         body: {
-          backendKind: 'encrypted-file',
-          expiresAt: null,
-          grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
-          grantScope: 'agent-session',
           referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
-          secretKind: 'codex-auth-json',
-          targetPath: '/sandbox/.codex/auth.json',
+          provider: 'codex',
+          status: 'active',
+          currentVersion: 1,
+          quarantined: false,
+          observations: null,
         },
       },
       'POST /api/app/operations/vault.provider-api-key-set': {
@@ -4058,8 +4057,12 @@ describe('createCoreClient', () => {
     await expect(
       client.operations['vault.bootstrap-codex-auth']({ ...{ authJsonBase64 } })
     ).resolves.toMatchObject({
-      grantId: 'grant_00000000-0000-79cb-b598-745f38b7a39a',
       referenceId: 'vault_00000000-0000-72d1-b90a-e14fea8ea955',
+      provider: 'codex',
+      status: 'active',
+      currentVersion: 1,
+      quarantined: false,
+      observations: null,
     });
     await expect(
       client.operations['vault.provider-api-key-set']({

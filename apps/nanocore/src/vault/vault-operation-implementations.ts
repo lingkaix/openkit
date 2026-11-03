@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import type {
   OperationOutput,
   VaultAdminWorkspaceReference,
@@ -83,7 +84,6 @@ import { loadEncryptedFileVaultKeyFile } from './vault-key-file.js';
 import {
   getVaultReference,
   listUserVaultReferences,
-  listVaultReferences,
   listWorkspaceVaultReferences,
 } from './vault-references.js';
 import type { VaultUnlockState } from './vault-unlock-state.js';
@@ -94,7 +94,6 @@ import {
 
 const VAULT_UNLOCK_FAILURE_LIMIT = 5;
 const VAULT_UNLOCK_FAILURE_WINDOW_MS = 60_000;
-const CODEX_AUTH_JSON_TARGET_PATH = '/sandbox/.codex/auth.json';
 const SAFE_PROVIDER_API_KEY_REFERENCE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** Shared invocation constructs families per request; retain the existing process-local counters and write fence with the app's unique unlock-state owner across HTTP and MCP entries. */
@@ -907,6 +906,7 @@ export function createVaultOperationImplementations(
     T,
   >(
     operation:
+      | 'vault.bootstrap-codex-auth'
       | 'vault.grant-withdraw'
       | 'vault.login-list'
       | 'vault.login-quarantine'
@@ -1869,119 +1869,119 @@ export function createVaultOperationImplementations(
       }
     },
     'vault.bootstrap-codex-auth': async (input, c) => {
-      const unlockState = vaultUnlockState;
+      if (c.delivery !== 'human') vaultWorkspaceAccessDenied();
+      const referenceId = allocateEntityId('vault');
+      return governedUserVaultOperation(
+        'vault.bootstrap-codex-auth',
+        c,
+        (actor) => {
+          const kernel = evaluateOwnedUserOperation(
+            coreDb!,
+            actor,
+            actor.userId,
+            'vault.admin',
+            true
+          );
+          if (kernel.effect !== 'allow') vaultWorkspaceAccessDenied();
+          return { kernel };
+        },
+        () => ({ referenceId }),
+        async (_selected, actor, beforeSubmit) => {
+          const backend = vaultUnlockState?.backend();
+          if (!backend || backend.health().state !== 'available')
+            return vaultFailure(
+              'Vault backend is not available.',
+              'vault_backend_not_available',
+              423
+            );
 
-      if (!unlockState) {
-        return vaultAdminUnavailableError();
-      }
-      if (!coreDb) {
-        return vaultFailure('Vault storage is not configured.', 'vault_storage_unavailable', 503);
-      }
+          // Only the stock provider refresh is trusted to establish account equality.
+          // Submitted account metadata is checked against that result, never used as authority.
+          let material: string;
+          let accountId: string;
+          try {
+            const decoded = z
+              .object({
+                tokens: z
+                  .object({
+                    access_token: z.string().min(1),
+                    refresh_token: z.string().min(1),
+                    account_id: z.string().min(1),
+                  })
+                  .passthrough(),
+              })
+              .passthrough()
+              .parse(JSON.parse(Buffer.from(input.authJsonBase64, 'base64').toString('utf8')));
+            const refreshed = await openaiCodexProvider().auth.oauth!.refresh(
+              {
+                type: 'oauth',
+                access: decoded.tokens.access_token,
+                refresh: decoded.tokens.refresh_token,
+                expires: 0,
+                accountId: decoded.tokens.account_id,
+              },
+              c.signal ?? new AbortController().signal
+            );
+            if (
+              typeof refreshed.accountId !== 'string' ||
+              !refreshed.accountId ||
+              refreshed.accountId !== decoded.tokens.account_id ||
+              !refreshed.access ||
+              !refreshed.refresh
+            )
+              throw new Error('Codex account verification failed.');
+            accountId = refreshed.accountId;
+            material = JSON.stringify({
+              ...decoded,
+              tokens: {
+                ...decoded.tokens,
+                access_token: refreshed.access,
+                refresh_token: refreshed.refresh,
+                account_id: accountId,
+              },
+              last_refresh: new Date().toISOString(),
+            });
+          } catch {
+            return vaultFailure(
+              'Codex auth JSON bootstrap failed.',
+              'vault_codex_auth_json_bootstrap_failed',
+              400
+            );
+          }
 
-      const backend = unlockState.backend();
-      const health = backend.health();
-
-      if (health.state !== 'available') {
-        await recordVaultAdminAudit(c, {
-          action: 'vault.bootstrap_codex_auth_json',
-          errorCode: 'vault_backend_not_available',
-          outcome: 'failed',
-          summary: 'Codex auth JSON bootstrap failed because the vault backend is not available.',
-        });
-
-        return vaultFailure('Vault backend is not available.', 'vault_backend_not_available', 423);
-      }
-      if (
-        listVaultReferences(coreDb).some(
-          (reference) =>
-            reference.ownerScope === 'server' && reference.secretKind === 'codex-auth-json'
-        )
-      ) {
-        await recordVaultAdminAudit(c, {
-          action: 'vault.bootstrap_codex_auth_json',
-          errorCode: 'vault_codex_auth_json_exists',
-          outcome: 'failed',
-          summary: 'Codex auth JSON bootstrap failed because the vault reference already exists.',
-        });
-
-        return vaultFailure(
-          'Codex auth JSON vault reference already exists.',
-          'vault_codex_auth_json_exists',
-          409
-        );
-      }
-
-      try {
-        const authJson = Buffer.from(input.authJsonBase64, 'base64').toString('utf8');
-        const decoded = JSON.parse(authJson) as unknown;
-
-        if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
-          throw new Error('Codex auth JSON must decode to a JSON object.');
+          // Refresh, private material storage and native metadata publication remain separate effects.
+          // Recheck the same accepted decision at both existing effect boundaries.
+          await beforeSubmit();
+          if (vaultUnlockState?.backend() !== backend || backend.health().state !== 'available')
+            return vaultFailure(
+              'Vault backend is not available.',
+              'vault_backend_not_available',
+              423
+            );
+          backend.store({
+            material,
+            referenceId,
+            metadata: { ownerScope: 'user', userId: actor.userId },
+          });
+          const result = await getControlStoreWorkerClient().vault(
+            coreDb!,
+            'reference-create',
+            {
+              referenceId,
+              ownerScope: 'user',
+              userId: actor.userId,
+              displayName: 'Codex harness Login',
+              secretKind: 'codex-auth-json',
+              backendKind: backend.kind,
+              backendLocator: `${backend.kind}://server/vault/${referenceId}`,
+              login: { provider: 'codex', accountId, quarantined: false },
+              publicMutation: { actor },
+            },
+            beforeSubmit
+          );
+          return projectLogin(result.reference);
         }
-
-        const referenceId = allocateEntityId('vault');
-        const grantId = allocateEntityId('grant');
-        backend.store({
-          material: authJson,
-          metadata: { ownerScope: 'server' },
-          referenceId: referenceId,
-        });
-        await publicMutation(
-          'reference-create',
-          {
-            backendKind: backend.kind,
-            backendLocator: `${backend.kind}://server/vault/${referenceId}`,
-            displayName: 'Codex auth JSON',
-            ownerScope: 'server',
-            referenceId: referenceId,
-            secretKind: 'codex-auth-json',
-          },
-          c
-        );
-        await publicMutation(
-          'grant-create',
-          {
-            allowedInjectionPaths: ['runtime-file'],
-            expiresAt: input.expiresAt ?? null,
-            grantId: grantId,
-            lifetime: 'agent-session',
-            ownerScope: 'server',
-            subjectSummary: 'Codex auth JSON runtime-file injection',
-            vaultReferenceId: referenceId,
-          },
-          c,
-          getVaultReference(coreDb, referenceId) ?? undefined
-        );
-        await recordVaultAdminAudit(c, {
-          action: 'vault.bootstrap_codex_auth_json',
-          outcome: 'succeeded',
-          summary: 'Codex auth JSON bootstrap succeeded.',
-        });
-
-        return {
-          backendKind: backend.kind,
-          expiresAt: input.expiresAt ?? null,
-          grantId: grantId,
-          grantScope: 'agent-session',
-          referenceId: referenceId,
-          secretKind: 'codex-auth-json',
-          targetPath: CODEX_AUTH_JSON_TARGET_PATH,
-        } as OperationOutput<'vault.bootstrap-codex-auth'>;
-      } catch (error) {
-        if (error instanceof OperationError) throw error;
-        await recordVaultAdminAudit(c, {
-          action: 'vault.bootstrap_codex_auth_json',
-          errorCode: 'vault_codex_auth_json_bootstrap_failed',
-          outcome: 'failed',
-          summary: 'Codex auth JSON bootstrap failed.',
-        });
-
-        return vaultFailure(
-          'Codex auth JSON bootstrap failed.',
-          'vault_codex_auth_json_bootstrap_failed',
-          400
-        );
-      }
+      );
     },
     'vault.reference-rebind': async (input, c) => {
       const unlockState = vaultUnlockState;

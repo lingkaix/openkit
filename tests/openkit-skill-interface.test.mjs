@@ -1077,7 +1077,6 @@ test('one catalog covers the checked App API and public Core projection', async 
       'token.revoke',
       'turn.server.interrupt',
       'user.disable',
-      'vault.bootstrap-codex-auth',
       'vault.lock',
       'vault.provider-api-key-set',
       'vault.server-mcp-grant-create',
@@ -1107,6 +1106,10 @@ test('one catalog covers the checked App API and public Core projection', async 
       'workspace.recovery-inspect',
       'workspace.retire-quarantined',
     ]
+  );
+  assert.equal(
+    operationCatalog.find((entry) => entry.id === 'vault.bootstrap-codex-auth')?.requiredAccess,
+    'canonical user: implicit local actor or server-admin bearer token'
   );
   assert.deepEqual(idsWithAccess('server-admin bearer token in server mode'), []);
   assert.deepEqual(idsWithAccess('local credential-store access; no NanoCore actor'), [
@@ -1182,7 +1185,7 @@ test('the catalog projects the bearer-reachable Workspace sharing subset', async
     operationCatalog.find((entry) => entry.id === 'vault.provider-api-key-set')?.inputSensitivity,
     'secret stdin'
   );
-  for (const id of ['vault.secret-create', 'vault.secret-rotate']) {
+  for (const id of ['vault.secret-create', 'vault.secret-rotate', 'vault.bootstrap-codex-auth']) {
     assert.equal(
       operationCatalog.find((entry) => entry.id === id)?.inputSensitivity,
       'secret stdin'

@@ -32,7 +32,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { closeTestCoreDb, initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { getVaultGrant } from './vault-grants.js';
-import { getVaultReference, revokeVaultReference } from './vault-references.js';
+import { getVaultReference } from './vault-references.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
 /**
@@ -1315,108 +1315,6 @@ describe('vault admin app API', () => {
     }
   });
 
-  it('bootstraps Codex auth JSON into the unlocked vault without echoing secret material', async () => {
-    const { app, coreDb, vaultUnlockState } = createVaultAdminApp();
-    const authJson = '{"tokens":{"openai":"codex_bootstrap_secret"}}';
-    const authJsonBase64 = Buffer.from(authJson, 'utf8').toString('base64');
-
-    try {
-      const unlock = await app.request(
-        ...operationRequest(
-          'vault.unlock',
-          {},
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({}),
-          }
-        )
-      );
-      expect(unlock.status).toBe(200);
-      const storeSecret = vi.spyOn(vaultUnlockState.backend(), 'store');
-
-      const response = await app.request(
-        ...operationRequest(
-          'vault.bootstrap-codex-auth',
-          {},
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ authJsonBase64 }),
-          }
-        )
-      );
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      const row = latestVaultAdminAuditEvent(coreDb);
-
-      expect(body).toMatchObject({
-        backendKind: 'encrypted-file',
-        grantId: expect.stringMatching(
-          /^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-        ),
-        grantScope: 'agent-session',
-        referenceId: expect.stringMatching(
-          /^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-        ),
-        secretKind: 'codex-auth-json',
-        targetPath: '/sandbox/.codex/auth.json',
-      });
-      expect(getVaultReference(coreDb, body.referenceId)).toMatchObject({
-        backendKind: 'encrypted-file',
-        referenceId: expect.stringMatching(
-          /^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-        ),
-        secretKind: 'codex-auth-json',
-      });
-      expect(getVaultGrant(coreDb, body.grantId)).toMatchObject({
-        allowedInjectionPaths: ['runtime-file'],
-        grantId: expect.stringMatching(
-          /^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-        ),
-        lifetime: 'agent-session',
-        vaultReferenceId: body.referenceId,
-      });
-      expect(
-        Buffer.from(vaultUnlockState.backend().resolve({ referenceId: body.referenceId })).toString(
-          'utf8'
-        )
-      ).toBe(authJson);
-      expect(row).toMatchObject({
-        action: 'vault.bootstrap_codex_auth_json',
-        outcome: 'succeeded',
-      });
-      expect(JSON.stringify(body)).not.toContain('codex_bootstrap_secret');
-      expect(JSON.stringify(body)).not.toContain(authJsonBase64);
-      expect(JSON.stringify(row)).not.toContain('codex_bootstrap_secret');
-      expect(JSON.stringify(row)).not.toContain(authJsonBase64);
-      expect(storeSecret).toHaveBeenCalledTimes(1);
-      await revokeVaultReference(coreDb, { referenceId: body.referenceId });
-      const retainedReference = getVaultReference(coreDb, body.referenceId);
-      const retainedGrant = getVaultGrant(coreDb, body.grantId);
-      const duplicate = await app.request(
-        ...operationRequest(
-          'vault.bootstrap-codex-auth',
-          {},
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ authJsonBase64 }),
-          }
-        )
-      );
-      expect(duplicate.status).toBe(409);
-      expect(await duplicate.json()).toMatchObject({ code: 'vault_codex_auth_json_exists' });
-      expect(storeSecret).toHaveBeenCalledTimes(1);
-      expect(getVaultReference(coreDb, body.referenceId)).toEqual(retainedReference);
-      expect(getVaultGrant(coreDb, body.grantId)).toEqual(retainedGrant);
-    } finally {
-      vi.restoreAllMocks();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-    }
-  });
-
   it('rebinds imported workspace vault references without echoing secret material', async () => {
     const { app, coreDb, vaultUnlockState } = createVaultAdminApp();
     const material = 'workspace-rebound-secret';
@@ -1643,13 +1541,6 @@ describe('vault admin app API', () => {
         app.request(...operationRequest('vault.lock', {}, { method: 'POST' })),
         app.request(
           ...operationRequest(
-            'vault.bootstrap-codex-auth',
-            {},
-            { method: 'POST', body: JSON.stringify({ authJsonBase64: 'e30=' }) }
-          )
-        ),
-        app.request(
-          ...operationRequest(
             'vault.provider-api-key-set',
             { providerId: 'provider-demo' },
             { method: 'PUT', body: JSON.stringify({ apiKey: 'synthetic-rejected-key' }) }
@@ -1852,3 +1743,104 @@ function serverAuditEvent(coreDb: CoreDb, auditEventId: string): Record<string, 
     .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
     .get(auditEventId) as Record<string, unknown>;
 }
+
+/** The existing local HTTP route carries fixed failures; only upstream HTTP is doubled. */
+describe('human acquisition trusted refresh refusal', () => {
+  it.each([
+    'refresh-refused',
+    'missing-trusted-account',
+    'account-mismatch',
+  ] as const)('refuses %s with no material/metadata publication or raw error response', async (fault) => {
+    const { app, coreDb, vaultUnlockState, masterKey } = createVaultAdminApp();
+    vaultUnlockState.unlock({ masterKey });
+    const backend = vaultUnlockState.backend();
+    const access = (account?: string) =>
+      [
+        Buffer.from('{}').toString('base64'),
+        Buffer.from(
+          JSON.stringify({
+            'https://api.openai.com/auth':
+              account === undefined ? {} : { chatgpt_account_id: account },
+          })
+        ).toString('base64'),
+        'synthetic-signature',
+      ].join('.');
+    const inputRefresh = 'synthetic-acquisition-refused-input-refresh';
+    const freshRefresh = 'synthetic-acquisition-refused-successor-refresh';
+    const inputAccess = access('synthetic-original-account');
+    const freshAccess = access(
+      fault === 'missing-trusted-account' ? undefined : 'synthetic-different-account'
+    );
+    const authJsonBase64 = Buffer.from(
+      JSON.stringify({
+        tokens: {
+          access_token: inputAccess,
+          refresh_token: inputRefresh,
+          account_id: 'synthetic-original-account',
+        },
+      })
+    ).toString('base64');
+    const http = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe('https://auth.openai.com/oauth/token');
+      expect(request.method).toBe('POST');
+      const form = new URLSearchParams(await request.text());
+      expect(form.get('grant_type')).toBe('refresh_token');
+      expect(form.get('refresh_token')).toBe(inputRefresh);
+      expect(form.has('account_id')).toBe(false);
+      return fault === 'refresh-refused'
+        ? new Response('synthetic-private-upstream-refusal', { status: 401 })
+        : Response.json({
+            access_token: freshAccess,
+            refresh_token: freshRefresh,
+            expires_in: 3600,
+          });
+    });
+    const store = vi.spyOn(backend, 'store');
+    const beforeReferences = coreDb.sqlite.prepare('SELECT * FROM vault_references').all();
+    const beforeGrants = coreDb.sqlite.prepare('SELECT * FROM vault_grants').all();
+    const beforeInventory = backend.listReferences();
+    try {
+      const response = await app.request(
+        ...operationRequest(
+          'vault.bootstrap-codex-auth',
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ authJsonBase64 }),
+          }
+        )
+      );
+      // Old valid-local entry returns the historical Server success: this is a result RED, not setup failure.
+      expect(response.status).toBe(400);
+      const body = await response.json();
+      expect(body).toMatchObject({ code: 'vault_codex_auth_json_bootstrap_failed' });
+      expect(http).toHaveBeenCalledOnce();
+      expect(store).not.toHaveBeenCalled();
+      expect(coreDb.sqlite.prepare('SELECT * FROM vault_references').all()).toEqual(
+        beforeReferences
+      );
+      expect(coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toEqual(beforeGrants);
+      expect(backend.listReferences()).toEqual(beforeInventory);
+      const evidence = JSON.stringify([
+        body,
+        coreDb.sqlite.prepare('SELECT * FROM vault_admin_audit_events').all(),
+        coreDb.sqlite.prepare('SELECT * FROM audit_events').all(),
+      ]);
+      for (const raw of [
+        authJsonBase64,
+        inputAccess,
+        inputRefresh,
+        freshAccess,
+        freshRefresh,
+        'synthetic-private-upstream-refusal',
+      ])
+        expect(evidence).not.toContain(raw);
+    } finally {
+      vi.restoreAllMocks();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+    }
+  });
+});

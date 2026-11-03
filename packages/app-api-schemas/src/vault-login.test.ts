@@ -118,3 +118,60 @@ describe('personal Codex Login App API contracts', () => {
     if (parsed.success) expect(parsed.data).toEqual(wrap(dto));
   });
 });
+
+/** COORD 07:06Z: reuse the existing name and secret-stdin request for actual-human User acquisition. */
+describe('human User Login acquisition contract', () => {
+  it('retains the operation and request while replacing the historical Server result', () => {
+    const value = VAULT_OPERATION_DEFINITIONS['vault.bootstrap-codex-auth'];
+    expect(value).toMatchObject({
+      binding: 'json',
+      inputSensitivity: 'secret stdin',
+      returnsOneTimeSecret: false,
+      successStatus: 200,
+      scope: { kind: 'user' },
+      target: { kind: 'user' },
+      policyOperation: 'vault.admin',
+      mutating: true,
+    });
+    expect(value.credentials).not.toContain('worker-package');
+    expect(value.credentials).not.toContain('coordinator');
+    const input = { authJsonBase64: 'e30=' };
+    expect(value.inputSchema.parse(input)).toEqual(input);
+    for (const field of [
+      'ownerUserId',
+      'userId',
+      'accountId',
+      'provider',
+      'login',
+      'workspaceId',
+      'actor',
+    ])
+      expect(value.inputSchema.safeParse({ ...input, [field]: 'synthetic-selector' }).success).toBe(
+        false
+      );
+    expect(value.outputSchema.parse(dto)).toEqual(dto);
+    const historical = {
+      backendKind: 'encrypted-file',
+      referenceId,
+      grantId: 'grant_00000000-0000-7000-8000-000000000502',
+      grantScope: 'agent-session',
+      secretKind: 'codex-auth-json',
+      targetPath: '/sandbox/.codex/auth.json',
+      expiresAt: null,
+    };
+    expect(value.outputSchema.safeParse(historical).success).toBe(false);
+  });
+
+  it('strictly refuses retired expiresAt on the existing acquisition request', () => {
+    const value = VAULT_OPERATION_DEFINITIONS['vault.bootstrap-codex-auth'];
+    const input = { authJsonBase64: 'e30=' };
+    expect(value.inputSchema.parse(input)).toEqual(input);
+    const result = value.inputSchema.safeParse({ ...input, expiresAt: '2099-01-01T00:00:00.000Z' });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toEqual([
+        expect.objectContaining({ code: 'unrecognized_keys', keys: ['expiresAt'] }),
+      ]);
+    }
+  });
+});

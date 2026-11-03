@@ -2290,7 +2290,7 @@
         "tags": [
           "vault"
         ],
-        "summary": "Store Codex authentication material in the unlocked vault.",
+        "summary": "Acquire a Codex harness Login owned by the actual human User.",
         "security": [
           {
             "bearerAuth": []
@@ -2311,7 +2311,7 @@
         },
         "responses": {
           "200": {
-            "description": "Store Codex authentication material in the unlocked vault.",
+            "description": "Acquire a Codex harness Login owned by the actual human User.",
             "content": {
               "application/json": {
                 "schema": {
@@ -29182,11 +29182,6 @@
           "authJsonBase64": {
             "type": "string",
             "minLength": 1
-          },
-          "expiresAt": {
-            "type": "string",
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
           }
         },
         "required": [
@@ -29198,53 +29193,41 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "backendKind": {
-            "type": "string",
-            "enum": [
-              "encrypted-file"
-            ]
-          },
-          "grantId": {
-            "type": "string",
-            "pattern": "^grant_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          },
-          "grantScope": {
-            "type": "string",
-            "const": "agent-session"
-          },
           "referenceId": {
             "type": "string",
             "pattern": "^vault_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
           },
-          "secretKind": {
+          "provider": {
             "type": "string",
-            "const": "codex-auth-json"
+            "const": "codex"
           },
-          "targetPath": {
+          "status": {
             "type": "string",
-            "const": "/sandbox/.codex/auth.json"
-          },
-          "expiresAt": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time",
-                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "active",
+              "revoked",
+              "unbound"
             ]
+          },
+          "currentVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "quarantined": {
+            "type": "boolean"
+          },
+          "observations": {
+            "type": "null"
           }
         },
         "required": [
-          "backendKind",
-          "grantId",
-          "grantScope",
           "referenceId",
-          "secretKind",
-          "targetPath",
-          "expiresAt"
+          "provider",
+          "status",
+          "currentVersion",
+          "quarantined",
+          "observations"
         ],
         "additionalProperties": false
       },
@@ -155139,11 +155122,6 @@
           "authJsonBase64": {
             "type": "string",
             "minLength": 1
-          },
-          "expiresAt": {
-            "type": "string",
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
           }
         },
         "required": [
@@ -155178,5 +155156,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:faa31957c380ff2e5636240b3b5b95e8bde7b5b88135a6783f3b052c4cf89b07"
+  "x-openkit-source-digest": "sha256:f140d08b1f40443ca8746dbdb27198d0ca017b7c8eb35dfbb61750a8100e4376"
 }

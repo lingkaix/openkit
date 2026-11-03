@@ -262,13 +262,24 @@ describe('app api openapi projection', () => {
       'vault.status.output',
       'vault.unlock.output',
       'vault.lock.output',
-      'vault.bootstrap-codex-auth.output',
       'vault.reference-rebind.output',
     ] as const) {
       expect(schemas[name]).toMatchObject({
         properties: { backendKind: { enum: ['encrypted-file'] } },
       });
     }
+    const acquisitionOutput = schemas['vault.bootstrap-codex-auth.output'];
+    expect(acquisitionOutput).toMatchObject({ additionalProperties: false });
+    expect(
+      Object.keys((acquisitionOutput as { properties: Record<string, unknown> }).properties).sort()
+    ).toEqual([
+      'currentVersion',
+      'observations',
+      'provider',
+      'quarantined',
+      'referenceId',
+      'status',
+    ]);
     expect(schemas['vault.reference-list.output']).toMatchObject({
       properties: {
         items: {
