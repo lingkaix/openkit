@@ -497,21 +497,42 @@ export function listSchedulerAdmissionEntriesForWorkspace(
   coreDb: CoreDb,
   input: ListSchedulerAdmissionEntriesForWorkspaceInput
 ): SchedulerAdmissionEntryRecord[] {
-  if (input.statuses.length === 0) {
-    return [];
-  }
+  const result: SchedulerAdmissionEntryRecord[] = [];
+  for (const page of readSchedulerAdmissionPagesForWorkspace(coreDb, input)) result.push(...page);
+  return result;
+}
 
+/**
+ * Reads every matching admission through bounded enqueue/id keyset pages and the original decoder.
+ * Each SELECT and page decode ends before yielding. Cooperative callers must not hold an enclosing
+ * transaction; the supplied Core connection keeps its original owner and lifetime.
+ */
+export function* readSchedulerAdmissionPagesForWorkspace(
+  coreDb: CoreDb,
+  input: ListSchedulerAdmissionEntriesForWorkspaceInput
+): Generator<readonly SchedulerAdmissionEntryRecord[], void, void> {
+  if (input.statuses.length === 0) return;
   const placeholders = input.statuses.map(() => '?').join(', ');
-
-  return (
-    coreDb.sqlite
+  let after: { enqueuedAt: string; queueEntryId: string } | undefined;
+  for (;;) {
+    const rows = coreDb.sqlite
       .prepare(
         `${schedulerAdmissionSelectSql()}
         WHERE workspace_id = ? AND status IN (${placeholders})
-        ORDER BY enqueued_at ASC, queue_entry_id ASC`
+          ${after ? 'AND (enqueued_at > ? OR (enqueued_at = ? AND queue_entry_id > ?))' : ''}
+        ORDER BY enqueued_at ASC, queue_entry_id ASC LIMIT 128`
       )
-      .all(input.workspaceId, ...input.statuses) as SchedulerAdmissionEntryRow[]
-  ).map(mapSchedulerAdmissionEntryRow);
+      .all(
+        input.workspaceId,
+        ...input.statuses,
+        ...(after ? [after.enqueuedAt, after.enqueuedAt, after.queueEntryId] : [])
+      ) as SchedulerAdmissionEntryRow[];
+    if (!rows.length) return;
+    const page = rows.map(mapSchedulerAdmissionEntryRow);
+    const last = rows.at(-1)!;
+    after = { enqueuedAt: last.enqueued_at, queueEntryId: last.queue_entry_id };
+    yield page;
+  }
 }
 
 /**

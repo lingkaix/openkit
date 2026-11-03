@@ -6,16 +6,19 @@ import { Worker } from 'node:worker_threads';
 import { allocateEntityId, ItemSchema, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { FsStore } from '../lib/store.js';
+import { FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
 import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
+import { openWorkspaceDb } from './db.js';
 import { prepareImmutableProductJson, readImmutableProductJson } from './immutable-content.js';
 import {
+  listNativeProducts,
   nativeProductScope,
+  readNativeProduct,
   readNativeProductEntries,
   readNativeTurnWriteHead,
 } from './workspace-file-records.js';
@@ -173,6 +176,111 @@ describe('addressed retained Item required semantics', () => {
     expect.soft(outcome!.status).toBe('rejected');
     // Durable Execution, Commit Rule: refusal creates no Item/event reference or Turn revision.
     expect(committedCut(f)).toEqual(before);
+  });
+});
+
+/** Reads only connection state; a borrowed wrapper has no ownership of these settings or SQL. */
+function connectionState(sqlite: Database.Database) {
+  return {
+    open: sqlite.open,
+    inTransaction: sqlite.inTransaction,
+    queryOnly: sqlite.pragma('query_only', { simple: true }),
+    busyTimeout: sqlite.pragma('busy_timeout', { simple: true }),
+    schemaVersion: sqlite.pragma('schema_version', { simple: true }),
+    changes: sqlite.prepare('SELECT total_changes() AS count').get(),
+  };
+}
+
+describe('borrowed native product reader binding', () => {
+  it('preserves the supplied Workspace connection, current retained rows and owner lifetime', async () => {
+    const f = await fixture();
+    const retained = {
+      ...writeRetainedV1(f.item),
+      operatorNote: { purpose: 'preserve the original retained bytes' },
+      requiredFeatures: [],
+    };
+    await appendRetainedItem(f, retained);
+    const cut = committedCut(f);
+    // This is an actual existing Workspace owner connection, not the private Worker connection.
+    // The complete native producer above acknowledged before this synchronous read section.
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    const sqlite = db.sqlite;
+    let borrowed: ReturnType<typeof openControlStoreProductReadHandle> | undefined;
+    try {
+      expect(sqlite.readonly).toBe(false);
+      expect(sqlite.pragma('query_only', { simple: true })).toBe(0);
+      sqlite.exec('BEGIN');
+      const state = connectionState(sqlite);
+      borrowed = openControlStoreProductReadHandle(f.scope.path, f.scope.owner, sqlite);
+      // Storage: the physical owner retains the actual connection and transaction lifecycle.
+      expect.soft(borrowed.sqlite).toBe(sqlite);
+      expect.soft(connectionState(sqlite)).toEqual(state);
+      expect(borrowed.get('turn', f.turn.id)).toEqual(cut.turn);
+      expect(borrowed.list('turn')).toContainEqual(cut.turn);
+      expect(borrowed.entries(f.turn.id, 'item')).toEqual(cut.items);
+      const scope = { ...f.scope, sqlite: borrowed.sqlite };
+      // Consume the existing reader and scope through real metadata and retained-byte readers.
+      expect(readNativeProduct(scope, 'turn', f.turn.id, borrowed)).toEqual(cut.turn);
+      expect(listNativeProducts(scope, 'turn')).toContainEqual(cut.turn);
+      expect(readNativeProductEntries(scope, f.turn.id, 'item').at(-1)!.value).toEqual(retained);
+      expect(connectionState(sqlite)).toEqual(state);
+      const released = borrowed;
+      borrowed.close();
+      borrowed = undefined;
+      expect(() => released.get('turn', f.turn.id)).toThrow();
+      expect.soft(connectionState(sqlite)).toEqual(state);
+      expect(readNativeProduct({ ...f.scope, sqlite }, 'turn', f.turn.id)).toEqual(cut.turn);
+      sqlite.exec('ROLLBACK');
+      expect(sqlite.open).toBe(true);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(committedCut(f)).toEqual(cut);
+      // A missing Turn keeps its error class; a wrong-Thread hint keeps opaque fallback.
+      expect(() =>
+        f.store.getTurnMetadata(f.workspace.id, f.thread.id, allocateEntityId('tu'))
+      ).toThrow(StoreRecordNotFoundError);
+      expect(f.store.getTurnMetadata(f.workspace.id, allocateEntityId('th'), f.turn.id)).toEqual(
+        f.store.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id)
+      );
+    } finally {
+      borrowed?.close();
+      if (sqlite.open && sqlite.inTransaction) sqlite.exec('ROLLBACK');
+      if (sqlite.open) sqlite.close();
+    }
+  });
+
+  it.each([
+    'path',
+    'owner',
+    'closed connection',
+  ] as const)('refuses a mismatched %s without acquiring another connection or touching the supplied owner', async (mismatch) => {
+    const f = await fixture();
+    const sibling = await f.store.createWorkspace('Another actual Workspace owner');
+    const siblingScope = nativeProductScope(f.root, {
+      kind: 'workspace',
+      workspaceId: sibling.id,
+    });
+    const sqlite = openWorkspaceDb(f.root, f.workspace.id).sqlite;
+    const cut = committedCut(f);
+    const state = connectionState(sqlite);
+    const path = mismatch === 'path' ? siblingScope.path : f.scope.path;
+    const owner = mismatch === 'owner' ? siblingScope.owner : f.scope.owner;
+    if (mismatch === 'closed connection') sqlite.close();
+    const readers = observation.readers.length;
+    try {
+      // A returning constructor must not leak a newly opened reader in the baseline case.
+      expect
+        .soft(() => {
+          const unexpected = openControlStoreProductReadHandle(path, owner, sqlite);
+          unexpected.close();
+        })
+        .toThrow();
+      expect(observation.readers).toHaveLength(readers);
+      if (mismatch === 'closed connection') expect(sqlite.open).toBe(false);
+      else expect(connectionState(sqlite)).toEqual(state);
+      expect(committedCut(f)).toEqual(cut);
+    } finally {
+      if (sqlite.open) sqlite.close();
+    }
   });
 });
 

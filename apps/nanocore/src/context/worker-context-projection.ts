@@ -15,13 +15,24 @@ import type { ThreadMaterialActiveDelivery, ThreadTaskInput } from '@openkit/app
 import { compareCodeUnits, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
-import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
+import {
+  type listSchedulerAdmissionEntriesForWorkspace,
+  readSchedulerAdmissionPagesForWorkspace,
+} from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
-
-import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
+import { StoredTurnV1Schema } from '../storage/retained-work-metadata-v1.js';
 import {
-  readPortableWorkerContextPackageTrace,
+  nativeProductMetadataScope,
+  readNativeProductPages,
+} from '../storage/workspace-file-records.js';
+
+import {
+  createWorkerContextPackageAuthorityReader,
+  createWorkerContextPackageAuthorityStepReader,
+} from './worker-context-authorities.js';
+import {
+  readPortableWorkerContextPackageTraceSteps,
   readWorkerContextPackageTrace,
   type WorkerContextPackageTrace,
 } from './worker-context-package.js';
@@ -176,18 +187,60 @@ export function projectVerifiedThreadMaterialTraces(input: {
 export function readVerifiedThreadWorkerContextTraces(
   input: WorkerContextProjectionInput
 ): VerifiedWorkerContextTrace[] {
+  const steps = readVerifiedThreadWorkerContextTraceSteps(input);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * Discovers trace candidates through admitted native metadata pages, then uses the original S39 verifier.
+ * Each metadata page and selected trace ends before yielding, with no SQL transaction held by this
+ * reader. Scheduler admission selection and internal S39 callbacks retain their existing lifetimes
+ * and collection costs; one complete Thread or trace is not a bounded-step guarantee.
+ */
+export function* readVerifiedThreadWorkerContextTraceSteps(
+  input: WorkerContextProjectionInput
+): Generator<void, VerifiedWorkerContextTrace[], void> {
   const workspaceId = input.workspaceDb.workspaceId;
   const workspaceRoot = resolveDataRootPath(input.workspaceDb.dataRoot, 'workspaces', workspaceId);
-  const turns = input.store.listThreadTurns(workspaceId, input.threadId);
-  const turnsWithTrace = turns.filter((turn) =>
-    existsSync(
-      join(workspaceRoot, 'threads', input.threadId, 'turns', turn.id, 'context-package.json')
-    )
-  );
-  const admitted = listSchedulerAdmissionEntriesForWorkspace(input.coreDb, {
+  input.store.getThread(workspaceId, input.threadId);
+  const scope = {
+    ...nativeProductMetadataScope(
+      input.workspaceDb.dataRoot,
+      { kind: 'workspace', workspaceId },
+      workspaceRoot
+    ),
+    sqlite: input.workspaceDb.sqlite,
+  };
+  const turns: ReturnType<typeof StoredTurnV1Schema.parse>[] = [];
+  const turnsWithTrace: typeof turns = [];
+  for (const page of readNativeProductPages(scope, 'turn')) {
+    for (const row of page) {
+      if (row.record.threadId !== input.threadId) continue;
+      const turn = StoredTurnV1Schema.parse(row.record);
+      turns.push(turn);
+      if (
+        existsSync(
+          join(workspaceRoot, 'threads', input.threadId, 'turns', turn.id, 'context-package.json')
+        )
+      ) {
+        turnsWithTrace.push(turn);
+      }
+    }
+    yield;
+  }
+  // Preserve Store's trace order, including native id order for equal timestamps.
+  turnsWithTrace.sort((a, b) => compareCodeUnits(a.startedAt ?? '', b.startedAt ?? ''));
+  const admitted: ReturnType<typeof listSchedulerAdmissionEntriesForWorkspace> = [];
+  for (const page of readSchedulerAdmissionPagesForWorkspace(input.coreDb, {
     workspaceId,
     statuses: ['admitted'],
-  }).filter((entry) => entry.threadId === input.threadId);
+  })) {
+    admitted.push(...page.filter((entry) => entry.threadId === input.threadId));
+    yield;
+  }
   if (
     turns.some(
       (turn) =>
@@ -210,8 +263,9 @@ export function readVerifiedThreadWorkerContextTraces(
     | 'readPortableWorkerContextPackageTrace'
     | 'turn.startedAt' = 'createWorkerContextPackageAuthorityReader';
   try {
-    const authorities = createWorkerContextPackageAuthorityReader(input);
-    return turnsWithTrace.map((turn) => {
+    const authorities = createWorkerContextPackageAuthorityStepReader(input);
+    const traces: VerifiedWorkerContextTrace[] = [];
+    for (const turn of turnsWithTrace) {
       failedCheck = 'assertCanonicalDirectory';
       for (const directory of [
         workspaceRoot,
@@ -223,7 +277,7 @@ export function readVerifiedThreadWorkerContextTraces(
         assertCanonicalDirectory(directory);
       }
       failedCheck = 'readPortableWorkerContextPackageTrace';
-      const verified = readPortableWorkerContextPackageTrace({
+      const verified = yield* readPortableWorkerContextPackageTraceSteps({
         authorities,
         workspaceId,
         threadId: input.threadId,
@@ -234,8 +288,10 @@ export function readVerifiedThreadWorkerContextTraces(
       if (!turn.startedAt) {
         throw new Error('Worker Context Package Turn lacks its start time.');
       }
-      return { startedAt: turn.startedAt, ...verified };
-    });
+      traces.push({ startedAt: turn.startedAt, ...verified });
+      yield;
+    }
+    return traces;
   } catch {
     throw recoveryRequired(
       `Worker Context Package verification failed: owner=worker-context-projection; check=${failedCheck}; stage=thread-material-read.`

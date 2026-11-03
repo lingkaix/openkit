@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -14,7 +17,9 @@ import {
   createSchedulerExecutionAttempt,
   finalizeSchedulerExecutionAttemptInput,
   listOpenSchedulerExecutionAttempts,
+  listSchedulerExecutionAttemptsForTurn,
   markSchedulerExecutionAttemptClosing,
+  readSchedulerExecutionAttemptPagesForTurn,
   recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
@@ -119,4 +124,77 @@ it('refuses unknown attempt versions before recovery reads or lifecycle mutation
     })
   ).toThrow('Unsupported retained record format.');
   expect(db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts').get()).toEqual(before);
+});
+
+it('reads exact signed 64-bit attempt rowids across a page boundary without changing owner records', () => {
+  const { db, attempt: first } = fixture();
+  const entry = requireSchedulerAdmissionEntry(db, first.queueEntryId);
+  // Every attempt is created and closed by its actual owner, with no Session, operation,
+  // submitted command or possible backend effect. Requeue retains the original admission.
+  const close = (attemptId: string) =>
+    closeSchedulerExecutionAttemptWithoutEffects(db, {
+      attemptId,
+      noOutstandingEffects: true,
+      cause: 'test-no-effects',
+      requeue: true,
+    });
+  const expected = [close(first.attemptId)];
+  for (let index = 1; index < 257; index += 1) {
+    const attempt = createSchedulerExecutionAttempt(db, {
+      entry,
+      preparationInput: { admission: entry, index },
+    });
+    expected.push(close(attempt.attemptId));
+  }
+  const retained = db.sqlite
+    .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
+    .all();
+  // This exact record-owner suite changes only physical SQLite rowids after valid setup.
+  // Retained identities, payload bytes, lifecycle fields and authority proofs stay unchanged.
+  const relocate = db.sqlite.prepare(
+    'UPDATE scheduler_execution_attempts SET rowid=CAST(? AS INTEGER) WHERE attempt_id=?'
+  );
+  expected.forEach((attempt, index) => {
+    const rowid =
+      index === 0
+        ? '-9223372036854775808'
+        : index === 1
+          ? '0'
+          : index === 256
+            ? '9223372036854775807'
+            : (9007199254740990n + BigInt(index - 2)).toString();
+    relocate.run(rowid, attempt.attemptId);
+  });
+  expect(
+    db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid').all()
+  ).toEqual(retained);
+  const input = { workspaceId: entry.workspaceId, threadId: entry.threadId, turnId: entry.turnId };
+  const pages: Array<typeof expected> = [];
+  for (const page of readSchedulerExecutionAttemptPagesForTurn(db, input)) {
+    expect(db.sqlite.inTransaction).toBe(false);
+    pages.push([...page]);
+  }
+  expect(pages.map((page) => page.length)).toEqual([128, 128, 1]);
+  expect(pages.flat()).toEqual(expected);
+  expect(listSchedulerExecutionAttemptsForTurn(db, input)).toEqual(expected);
+  expect([
+    ...readSchedulerExecutionAttemptPagesForTurn(db, {
+      ...input,
+      turnId: 'tu_00000000-0000-7000-8000-000000000002',
+    }),
+  ]).toEqual([]);
+  const closing = readSchedulerExecutionAttemptPagesForTurn(db, input);
+  expect(closing.next().done).toBe(false);
+  expect(db.sqlite.inTransaction).toBe(false);
+  expect(db.sqlite.pragma('wal_checkpoint(TRUNCATE)')).toEqual([
+    expect.objectContaining({ busy: 0 }),
+  ]);
+  closing.return(undefined);
+  expect(db.sqlite.inTransaction).toBe(false);
+  expect(db.sqlite.pragma('wal_checkpoint(TRUNCATE)')).toEqual([
+    expect.objectContaining({ busy: 0 }),
+  ]);
+  expect(
+    db.sqlite.prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid').all()
+  ).toEqual(retained);
 });

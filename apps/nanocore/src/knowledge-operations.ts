@@ -23,7 +23,7 @@ import {
 import {
   type ActorRef,
   allocateEntityId,
-  canonicalJsonText,
+  compareCodeUnits,
   deriveEntityId,
   parseReferenceScope,
   parseReferenceUri,
@@ -32,6 +32,7 @@ import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { listWorkspaceAuditEvents, prepareAuditEvent } from './audit-events.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
+import { scopeAdmissionFailures } from './bootstrap/readiness.js';
 import {
   finishCapabilityCall,
   normalizeCapabilityRequestId,
@@ -39,6 +40,7 @@ import {
   startCapabilityCall,
 } from './capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
+import { findWorkspaceConfig } from './config/runtime-config.js';
 import { createKnowledgeAgentOperations } from './knowledge/knowledge-agent-operations.js';
 import { NotebookError } from './knowledge/notebook.js';
 import { createNotebookHistoryOperations } from './knowledge/notebook-history.js';
@@ -54,10 +56,7 @@ import {
   parseOkfDocument,
   stringFrontmatterField,
 } from './knowledge/okf.js';
-import {
-  prepareSchemaApplicationHistory,
-  readSchemaApplicationHistory,
-} from './knowledge/schema-application.js';
+import { readSchemaApplicationHistory } from './knowledge/schema-application.js';
 import { previewWorkspaceSchema } from './knowledge/schema-dependency-preview.js';
 import { publishCapturedSource } from './knowledge/source-publication.js';
 import {
@@ -82,7 +81,7 @@ import {
   type OperationImplementations,
   publicOperationActor,
 } from './operation-contract.js';
-import { OperationError } from './operation-error.js';
+import { OperationError, projectOperationError } from './operation-error.js';
 import { admitOperation } from './operation-resolvers.js';
 import {
   admitKnowledgeRetrieval,
@@ -109,8 +108,6 @@ import {
 } from './storage/index-rebuild.js';
 import { knowledgeProposalDocumentDigest } from './storage/knowledge-proposal-codecs.js';
 import { applyScopedMigrations } from './storage/migrate.js';
-import { readBlockers } from './storage/workspace-backup.js';
-import type { WorkspaceFrozenAdmission } from './workspace-mutation-admission.js';
 
 /** Projects known Knowledge command, record and decoder refusals; arbitrary exceptions escape. */
 function commandFailure(error: unknown, code: string, status = 404): OperationError {
@@ -143,6 +140,8 @@ function notebookCommandFailure(error: unknown): never {
         ...(error.currentRevision ? { details: { currentRevision: error.currentRevision } } : {}),
       }
     );
+  // Keep the existing transport projector's typed storage refusal through this owner.
+  if (projectOperationError(error)?.code === 'operation_storage_unavailable') throw error;
   throw new OperationError(
     'recovery_required',
     'Notebook publication evidence is unavailable.',
@@ -376,8 +375,7 @@ export function createKnowledgeOperationImplementations(
   const withGovernedNotebook = async <T>(
     request: NotebookUpdate,
     context: AdmittedOperationContext,
-    run: (dependencies: NotebookPublicationDependencies) => T | Promise<T>,
-    schemaFreeze?: () => WorkspaceFrozenAdmission | undefined
+    run: (dependencies: NotebookPublicationDependencies) => T | Promise<T>
   ): Promise<T> => {
     const dataRoot = store.getDataRoot();
     const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;
@@ -425,7 +423,6 @@ export function createKnowledgeOperationImplementations(
             actor,
             runtimeConfigManager,
             workspaceMutationAdmission,
-            ...(schemaFreeze?.() ? { schemaFreeze: schemaFreeze()! } : {}),
           }),
       });
     } catch (error) {
@@ -482,8 +479,7 @@ export function createKnowledgeOperationImplementations(
   const inspectSchema = (
     input: PreviewKnowledgeSchemaRequest,
     context: AdmittedOperationContext,
-    owner: NotebookPublicationDependencies,
-    schemaFreeze?: WorkspaceFrozenAdmission
+    owner: NotebookPublicationDependencies
   ) => {
     const access = sourceReadInput(input.workspaceId, context);
     admitKnowledgeRetrieval(access);
@@ -543,7 +539,6 @@ export function createKnowledgeOperationImplementations(
             requestActor: publicOperationActor(context),
             runtimeConfigManager: dependencies.runtimeConfigManager!,
             workspaceMutationAdmission: dependencies.workspaceMutationAdmission!,
-            ...(schemaFreeze ? { schemaFreeze } : {}),
             request: {
               workspaceId: input.workspaceId,
               requestId: candidate.metadata.changeRequest.requestId,
@@ -589,7 +584,6 @@ export function createKnowledgeOperationImplementations(
             ],
           },
         });
-      let freeze: WorkspaceFrozenAdmission | undefined;
       return withGovernedNotebook(
         { ...input, changes: [], summary: 'Apply the exact reviewed Scope Schema' },
         context,
@@ -617,155 +611,59 @@ export function createKnowledgeOperationImplementations(
             },
             responseId: (result) => result.reportDigest,
             execute: async (receipt) => {
-              const admission = dependencies.workspaceMutationAdmission!;
-              const client = getControlStoreWorkerClient(admission);
-              let drained: Promise<() => void> | null = null;
-              const wasClosed = admission.isClosed(input.workspaceId);
-              const candidate = admission.tryFreeze(input.workspaceId, () => {
-                const blockers = readBlockers({
-                  coreDb: coreDb!,
-                  store,
-                  workspaceId: input.workspaceId,
-                  operation: 'capture',
-                  canReadThread: (threadId) =>
-                    threadReadable(sourceReadInput(input.workspaceId, context), threadId),
-                });
-                if (blockers.length) return blockers;
-                drained = client.tryPauseForWorkspaceCapture(
-                  `workspace:${owner.workspaceDb.sqlite.name}`,
-                  admission
-                );
-                return drained
-                  ? []
-                  : [
-                      {
-                        kind: 'publication',
-                        reason: 'pending-publication',
-                        reference: { workspaceId: input.workspaceId },
-                        actions: [],
-                      },
-                    ];
+              const selected = readWorkspaceNotebookSelection({
+                workspaceDb: owner.workspaceDb,
+                workspaceRoot,
+                knowledgeBaseId: readDefaultKnowledgeBaseId({
+                  dataRoot: owner.workspaceDb.dataRoot,
+                  scope: { kind: 'workspace', workspaceId: input.workspaceId },
+                }),
               });
-              if (candidate.status !== 'frozen')
-                throw new OperationError(
-                  wasClosed ? 'workspace_frozen' : 'workspace_blocked',
-                  'Workspace schema application is not admitted.',
-                  409,
-                  {
-                    details: {
-                      workspaceId: input.workspaceId,
-                      operation: 'capture',
-                      retryable: wasClosed,
-                      blockers:
-                        candidate.status === 'blocked'
-                          ? candidate.blockers
-                          : [
-                              {
-                                kind: 'publication',
-                                reason: wasClosed ? 'frozen' : 'pending-publication',
-                                reference: { workspaceId: input.workspaceId },
-                                actions: [],
-                              },
-                            ],
-                    },
-                  }
-                );
-              freeze = candidate;
-              try {
-                // Drain only previously posted ACKs, then keep the lifecycle freeze as the sole exclusion.
-                const resume = await drained!;
-                resume();
-                owner.revalidate();
-                const reviewed = input.reviewedReport;
-                if (
-                  !reviewed.inventoryComplete ||
-                  reviewed.schemaDiagnostics.length ||
-                  reviewed.records.some(
-                    (row) => row.status !== 'valid' || row.diagnostics.length
-                  ) ||
-                  reviewed.dependencyInventory.some(
-                    (row) =>
-                      !row.complete ||
-                      !row.inventoryDigest ||
-                      row.diagnostics.length ||
-                      row.records.some(
-                        (record) => record.status !== 'valid' || record.diagnostics.length
-                      )
-                  )
-                )
-                  throw new NotebookError('invalid_request');
-                const report = inspectSchema(input, context, owner, freeze);
-                if (canonicalJsonText(report) !== canonicalJsonText(reviewed))
-                  throw new NotebookError('conflict');
-                const selected = readWorkspaceNotebookSelection({
-                  workspaceDb: owner.workspaceDb,
-                  workspaceRoot,
-                  knowledgeBaseId: readDefaultKnowledgeBaseId({
-                    dataRoot: owner.workspaceDb.dataRoot,
-                    scope: { kind: 'workspace', workspaceId: input.workspaceId },
-                  }),
-                });
-                const result = await prepareSchemaApplicationHistory({
-                  workspaceRoot,
-                  previousSchemaText: selected.scopeSchemaText,
-                  candidateSchemaText: input.schemaText,
-                  report: reviewed,
-                  actualReport: report,
-                });
-                owner.revalidate();
-                const nextHead = await prepareWorkspaceKnowledgeSelection({
-                  db: owner.workspaceDb,
-                  workspaceRoot,
-                  notebook: owner.notebook,
-                  knowledgeBaseId: selected.head.knowledgeBaseId,
-                  notebookCommit: input.baseRevision,
-                  schemaText: input.schemaText,
-                });
-                const revalidatePublication = () => {
-                  owner.revalidate();
-                  if (
-                    canonicalJsonText(inspectSchema(input, context, owner, freeze)) !==
-                    canonicalJsonText(report)
-                  )
-                    throw new NotebookError('conflict');
-                };
-                const { responseKind, ...original } = receipt;
-                await store.commitWorkspaceKnowledge({
-                  workspaceDb: owner.workspaceDb,
-                  expectedHead: selected.head,
-                  nextHead,
-                  audits: [
-                    prepareAuditEvent({
-                      workspaceId: input.workspaceId,
-                      requestId: input.requestId,
-                      actor: owner.producer,
-                      category: 'knowledge',
-                      action: 'knowledge.schema.apply',
-                      outcome: 'succeeded',
-                      resource: `knowledge-schema-report:${result.reportDigest}`,
-                      summary: 'Reviewed Workspace schema applied.',
-                    }),
-                  ],
-                  receipt: {
-                    ...original,
-                    response: { kind: responseKind, id: result.reportDigest },
-                  },
-                  schemaApplication: {
-                    schemaFreeze: freeze,
-                    requestId: input.requestId,
-                    reportDigest: result.reportDigest,
-                  },
-                  revalidatePublication,
-                });
-                return result;
-              } finally {
-                freeze.release();
-                freeze = undefined;
-              }
+              // Immutable candidate bytes have no selection authority. Native selects the actual current tree.
+              const candidateHead = await prepareWorkspaceKnowledgeSelection({
+                db: owner.workspaceDb,
+                workspaceRoot,
+                notebook: selected.notebook,
+                knowledgeBaseId: selected.head.knowledgeBaseId,
+                notebookCommit: selected.head.notebookCommit,
+                schemaText: input.schemaText,
+              });
+              owner.revalidate();
+              if (owner.producer.kind !== 'user') throw new NotebookError('recovery_required');
+              const requestActor = publicOperationActor(context);
+              const captureFacts = () => ({
+                presentedActor: publicOperationActor(context),
+                effectivePolicy: store.getWorkspaceResourceAccess(input.workspaceId),
+                reviewRequiredPageIds:
+                  findWorkspaceConfig(
+                    dependencies.runtimeConfigManager!.current(),
+                    input.workspaceId
+                  )?.config.workspace.knowledgeMaintenance?.reviewRequiredPageIds ?? [],
+                // Opaque retained-work selectors search all admitted Workspace containers.
+                scopeRefusals: scopeAdmissionFailures(owner.workspaceDb.dataRoot)
+                  .filter((failure) => failure.scope === 'workspace' && failure.check !== 'index')
+                  .map((failure) => ({ ...failure }))
+                  .sort((left, right) =>
+                    compareCodeUnits(
+                      `${left.scope}:${left.id}:${left.check}`,
+                      `${right.scope}:${right.id}:${right.check}`
+                    )
+                  ),
+              });
+              return getControlStoreWorkerClient(
+                dependencies.workspaceMutationAdmission!
+              ).applyWorkspaceSchema({
+                workspaceDb: owner.workspaceDb,
+                request: input,
+                requestActor,
+                producer: owner.producer,
+                receipt,
+                candidateHead,
+                captureFacts,
+              });
             },
           });
-        },
-        () => freeze
+        }
       );
     },
     'knowledge.notebook.update': async (input, context) => {

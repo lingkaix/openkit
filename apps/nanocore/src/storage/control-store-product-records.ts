@@ -334,7 +334,7 @@ export interface ControlProductEntryView {
   readonly content: ControlProductEntry['content'];
 }
 
-/** Native synchronous product reader; its actual connection is read-only and query-only for its entire lifetime. */
+/** Synchronous product reads through an owned query-only connection or the caller's admitted connection. */
 export interface ControlStoreProductReadHandle {
   readonly sqlite: Database.Database;
   get(kind: ControlProductKind, id: string): ControlProductSnapshot | undefined;
@@ -360,8 +360,10 @@ const workspaceProductReaders = new Map<
 /** Reuses a Workspace metadata connection and statements, never rows or a SQL snapshot. */
 export function getWorkspaceProductReadHandle(
   path: string,
-  owner: Extract<ControlProductOwner, { kind: 'workspace' }>
+  owner: Extract<ControlProductOwner, { kind: 'workspace' }>,
+  borrowed?: Database.Database
 ): ControlStoreProductReadHandle {
+  if (borrowed) return openControlStoreProductReadHandle(path, owner, borrowed);
   path = resolve(path);
   const cached = workspaceProductReaders.get(path);
   try {
@@ -394,33 +396,50 @@ export function closeWorkspaceProductReadHandles(root?: string): void {
   }
 }
 
-/** Production-owned read handle; construction never opens writable authority or runs migrations. */
+/** Reads through an admitted native connection or opens its own query-only connection; never acquires write authority. */
 export function openControlStoreProductReadHandle(
   path: string,
-  owner: ControlProductOwner
+  owner: ControlProductOwner,
+  borrowed?: Database.Database
 ): ControlStoreProductReadHandle {
   StoredWorkOwnerV1Schema.parse(owner);
   if (!lstatSync(path).isFile() || realpathSync(dirname(path)) !== resolve(dirname(path)))
     throw new ControlProductPreconditionError();
-  const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+  if (borrowed && (!borrowed.open || resolve(borrowed.name) !== resolve(path)))
+    throw new ControlProductPreconditionError();
+  if (
+    borrowed &&
+    owner.kind === 'workspace' &&
+    !readProduct(borrowed, owner, 'workspace', owner.workspaceId)
+  )
+    throw new ControlProductPreconditionError();
+  const sqlite = borrowed ?? new Database(path, { readonly: true, fileMustExist: true });
   // Only known metadata and entry queries are prepared; no canonical row survives a read.
   const prepared: ProductReadStatements = new Map();
-  try {
-    sqlite.pragma('busy_timeout = 5');
-    sqlite.pragma('query_only = ON');
-  } catch (error) {
-    sqlite.close();
-    throw error;
+  let closed = false;
+  const assertReaderOpen = () => {
+    if (borrowed && closed) throw new ControlProductPreconditionError();
+  };
+  if (!borrowed) {
+    try {
+      sqlite.pragma('busy_timeout = 5');
+      sqlite.pragma('query_only = ON');
+    } catch (error) {
+      sqlite.close();
+      throw error;
+    }
   }
   return {
     sqlite,
     /** Reads one known metadata view and its native revision without pruning or publication. */
     get(kind: ControlProductKind, id: string) {
+      assertReaderOpen();
       ControlProductKindSchema.parse(kind);
       return readProduct(sqlite, owner, kind, id, prepared);
     },
     /** Materializes at most one bounded page; no cursor or transaction escapes. */
     list(kind: ControlProductKind, afterId = '', limit = CONTROL_PRODUCT_LIMITS.pageRows) {
+      assertReaderOpen();
       return listProducts(sqlite, owner, kind, afterId, limit, prepared);
     },
     /** Reads ordered immutable descriptors, not mutable transcript files or a repair authority. */
@@ -430,11 +449,14 @@ export function openControlStoreProductReadHandle(
       after = 0,
       limit = CONTROL_PRODUCT_LIMITS.pageRows
     ) {
+      assertReaderOpen();
       return readProductEntries(sqlite, owner, turnId, kind, after, limit, prepared);
     },
-    /** Releases only this native reader, never a live writer or retained bytes. */
+    /** Releases owned read resources; the admitted native connection keeps its original lifetime. */
     close() {
-      sqlite.close();
+      closed = true;
+      prepared.clear();
+      if (!borrowed) sqlite.close();
     },
   };
 }

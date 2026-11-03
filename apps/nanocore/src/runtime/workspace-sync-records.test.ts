@@ -8,6 +8,11 @@ import { FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import {
+  readBackendWorkspaceHandlesSteps,
+  readWorkspaceInputSnapshotsSteps,
+  readWorkspaceMaterializationRecordsSteps,
+} from '../storage/workspace-handoff-read.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
@@ -1330,4 +1335,136 @@ function productionWorkspaceMaterializationRecord(
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+});
+
+it('collects all synchronization payload pages across timestamp ties with unchanged bytes and borrowed connection lifetime', () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'sync-complete-pages-'));
+  const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  try {
+    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    const snapshots: ReturnType<typeof listWorkspaceInputSnapshots> = [];
+    const materializations: ReturnType<typeof listWorkspaceMaterializationRecords> = [];
+    const { sourceId: _sourceId, ...snapshotInput } = workspaceInputSnapshot();
+    for (let index = 0; index < 257; index += 1) {
+      const createdAt =
+        index === 0
+          ? '2026-07-05T00:00:00.000Z'
+          : index === 256
+            ? '2026-07-05T00:00:02.000Z'
+            : '2026-07-05T00:00:01.000Z';
+      // A plain unavailable filesystem base is valid metadata, not accepted snapshot proof.
+      const snapshot = {
+        ...snapshotInput,
+        id: `wis_page_${index}`,
+        createdAt,
+        strategy: 'filesystem' as const,
+        resourceKind: 'filesystem' as const,
+        base: { commit: null, contentDigest: null },
+      };
+      snapshots.push(...recordWorkspaceInputSnapshots(db, [snapshot]));
+      const records = buildWorkspaceMaterializationRecords({
+        createdAt,
+        inputSnapshots: [snapshot],
+        materialization: {
+          backendKind: 'openshell',
+          backendStatus: { health: 'ready', version: '0.0.80' },
+          packageSnapshotId: `aepsnap_page_${index}`,
+          requiredCapabilities: ['container', 'workspace-sync'],
+          sandbox: { name: `page-sandbox-${index}`, state: 'created' },
+          workspaceInputs: [{ id: snapshot.resourceId, target: '/workspace/openkit' }],
+        },
+      });
+      materializations.push(...recordWorkspaceMaterializationRecords(db, records));
+    }
+    const tables = [
+      'workspace_input_snapshots',
+      'workspace_materialization_records',
+      'backend_workspace_handles',
+    ] as const;
+    const retained = () =>
+      tables.map((table) => db.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    const before = retained();
+    const collect = <T>(steps: Generator<void, T[], void>): T[] => {
+      let contributions = 0;
+      for (;;) {
+        const step = steps.next();
+        expect(db.sqlite.inTransaction).toBe(false);
+        if (step.done) {
+          expect(contributions).toBeGreaterThanOrEqual(3);
+          return step.value;
+        }
+        expect(step.value).toBeUndefined();
+        contributions += 1;
+      }
+    };
+    const actualSnapshots = collect(readWorkspaceInputSnapshotsSteps(db, db.workspaceId));
+    const actualMaterializations = collect(
+      readWorkspaceMaterializationRecordsSteps(db, db.workspaceId)
+    );
+    const handles = collect(readBackendWorkspaceHandlesSteps(db, db.workspaceId));
+    const byId = <T extends { id: string }>(records: readonly T[]) =>
+      [...records].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    // Complete independently produced multisets decide membership. Equal-time array order is
+    // an implementation tie; it is not inferred from one predecessor SQLite planner run.
+    expect(byId(actualSnapshots)).toEqual(byId(snapshots));
+    expect(byId(actualMaterializations)).toEqual(byId(materializations));
+    expect(
+      byId(handles).map(({ id, materializationRecordId, createdAt }) => ({
+        id,
+        materializationRecordId,
+        createdAt,
+      }))
+    ).toEqual(
+      byId(
+        materializations.map((record) => ({
+          id: `bwh_${record.id}`,
+          materializationRecordId: record.id,
+          createdAt: record.createdAt,
+        }))
+      )
+    );
+    for (const records of [actualSnapshots, actualMaterializations, handles]) {
+      expect(records).toHaveLength(257);
+      expect(new Set(records.map((record) => record.id)).size).toBe(257);
+      const times = records.map((record) => record.createdAt);
+      expect(times).toEqual([...times].sort().reverse());
+    }
+    expect(listWorkspaceInputSnapshots(db, db.workspaceId)).toEqual(actualSnapshots);
+    expect(listWorkspaceMaterializationRecords(db, db.workspaceId)).toEqual(actualMaterializations);
+    expect(listBackendWorkspaceHandles(db, db.workspaceId)).toEqual(handles);
+    const closing = readWorkspaceInputSnapshotsSteps(db, db.workspaceId);
+    expect(closing.next().done).toBe(false);
+    expect(db.sqlite.inTransaction).toBe(false);
+    expect(db.sqlite.pragma('wal_checkpoint(TRUNCATE)')).toEqual([
+      expect.objectContaining({ busy: 0 }),
+    ]);
+    closing.return([]);
+    expect(db.sqlite.open).toBe(true);
+    expect(db.sqlite.inTransaction).toBe(false);
+    expect(db.sqlite.pragma('wal_checkpoint(TRUNCATE)')).toEqual([
+      expect.objectContaining({ busy: 0 }),
+    ]);
+    expect(retained()).toEqual(before);
+
+    // Corrupt only the real last-page payload after the complete valid owner setup. The
+    // retained header must refuse before malformed JSON, with no partial successful result.
+    db.sqlite
+      .prepare(
+        'UPDATE workspace_input_snapshots SET schema_version=2, payload_json=? WHERE input_snapshot_id=?'
+      )
+      .run('{', 'wis_page_256');
+    const damaged = retained();
+    const failed = readWorkspaceInputSnapshotsSteps(db, db.workspaceId);
+    expect(failed.next().done).toBe(false);
+    expect(failed.next().done).toBe(false);
+    expect(() => failed.next()).toThrow('Unsupported retained record format');
+    expect(() => listWorkspaceInputSnapshots(db, db.workspaceId)).toThrow(
+      'Unsupported retained record format'
+    );
+    expect(db.sqlite.inTransaction).toBe(false);
+    expect(retained()).toEqual(damaged);
+  } finally {
+    db.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 });

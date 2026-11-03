@@ -45,12 +45,14 @@ import {
   parseWorkerContextPackageTrace,
   projectWorkerContextRequest,
   readPortableWorkerContextPackageTrace,
+  readPortableWorkerContextPackageTraceSteps,
   readWorkerContextPackageTrace,
   serializeWorkerContextPackageTrace,
   verifyImportedWorkerContextPackageTrace,
   verifyPortableWorkerContextPackageTrace,
   verifyWorkerContextPackageTrace,
   type WorkerContextPackageAuthorityReader,
+  type WorkerContextPackageAuthorityStepReader,
   type WorkerContextPackageFiles,
   WorkerContextPackageManifestSchema,
   type WorkerContextPackageProjection,
@@ -2891,5 +2893,302 @@ describe('S39 complete derived representation admission', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('portable Context owner steps', () => {
+  /** Observes the supplied callback receiver and delegates only to the existing owner-unit fixture. */
+  function observe(source: WorkerContextPackageAuthorityReader) {
+    const calls: { name: string; args: unknown[] }[] = [];
+    let active: string | undefined;
+    const authorities = new Proxy(source, {
+      get(target, key, receiver) {
+        const method = Reflect.get(target, key, receiver);
+        if (typeof method !== 'function') return method;
+        return function (this: WorkerContextPackageAuthorityReader, ...args: unknown[]) {
+          expect(this).toBe(authorities);
+          calls.push({ name: String(key), args });
+          return Reflect.apply(method, target, args);
+        };
+      },
+    });
+    const steps = new Proxy({} as WorkerContextPackageAuthorityStepReader, {
+      get(_target, key) {
+        const method = Reflect.get(authorities, key);
+        if (typeof method !== 'function') return method;
+        return function* (this: WorkerContextPackageAuthorityStepReader, ...args: unknown[]) {
+          expect(this).toBe(steps);
+          active = String(key);
+          try {
+            yield;
+            return Reflect.apply(method, authorities, args);
+          } finally {
+            active = undefined;
+          }
+        };
+      },
+    });
+    return { authorities, steps, calls, active: () => active };
+  }
+
+  /** Drives the public step entry and closes delegated work if a deciding assertion throws. */
+  function finish<T>(steps: Generator<void, T, void>, onYield: () => void = () => {}): T {
+    let complete = false;
+    try {
+      for (;;) {
+        const next = steps.next();
+        if (next.done) {
+          complete = true;
+          return next.value;
+        }
+        expect(next.value).toBeUndefined();
+        onYield();
+      }
+    } finally {
+      if (!complete) steps.return(undefined as never);
+    }
+  }
+
+  /** Returns the actual thrown value so owner exceptions cannot be replaced by semantic refusals. */
+  function failure(read: () => unknown): unknown {
+    try {
+      read();
+      return undefined;
+    } catch (error) {
+      return error;
+    }
+  }
+
+  it('preserves strict callback receivers, order, delegated yields and optional Assistant refusal', async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'context-owner-steps-strict-'));
+    const fixture = await createLiveNullKnowledgeFixture(workspaceRoot, {
+      turnId: deriveEntityId('tu', { confirmedOutcomeFixture: 'portable-owner-steps' }),
+    });
+    // This is the same controlled Assistant proof boundary used by the existing owner-unit
+    // case. It makes no claim about native Pending, receipts, Session or S39 integration.
+    const source: WorkerContextPackageAuthorityReader = {
+      ...fixture.authorities,
+      readAssistantTaskHandoffSource: () => ({
+        sourceTurnId: 'confirmed-source-turn',
+        sourceInputHash: sha256('frozen-source'),
+      }),
+    };
+    writeWorkerContextPackageTrace({ ...fixture, authorities: source, workspaceRoot });
+    const { trace } = fixture;
+    const selectors = {
+      workspaceRoot,
+      workspaceId: trace.workspaceId,
+      threadId: trace.threadId,
+      turnId: trace.turnId,
+    };
+    const turnArgs = [trace.workspaceId, trace.threadId, trace.turnId];
+    const expected: { name: string; args: unknown[] }[] = [
+      { name: 'readTurn', args: turnArgs },
+      { name: 'readAdmission', args: turnArgs },
+      { name: 'readAgentSession', args: [trace.workspaceId, trace.agentSessionId] },
+      { name: 'readThreadItems', args: [trace.workspaceId, trace.threadId] },
+      { name: 'readThreadParent', args: [trace.workspaceId, trace.threadId] },
+      {
+        name: 'readAssistantTaskHandoffSource',
+        args: [
+          {
+            workspaceId: trace.workspaceId,
+            threadId: trace.threadId,
+            turnId: trace.turnId,
+            requestId: trace.requestId,
+            workerRequest: WORKER_REQUEST_BYTES,
+          },
+        ],
+      },
+    ];
+    expected.push(
+      { name: 'readAgentEnvironmentPackage', args: [trace.workspaceId, trace.packageSnapshotId] },
+      {
+        name: 'readWorkspaceInputSnapshot',
+        args: [trace.workspaceId, trace.workspaceInputSnapshotId],
+      },
+      { name: 'readBackendHandoff', args: [trace.workspaceId, trace.packageSnapshotId] },
+      {
+        name: 'readWorkspaceMaterializationRecord',
+        args: [trace.workspaceId, trace.workspaceMaterializationRecordId],
+      },
+      ...[...trace.materialSelections, ...trace.materialExclusions].map((entry) => ({
+        name: 'readMaterialRevision',
+        args: [trace.workspaceId, entry.materialId, entry.revisionId],
+      }))
+    );
+    const sync = observe(source);
+    expect(
+      readPortableWorkerContextPackageTrace({ ...selectors, authorities: sync.authorities })
+    ).toEqual({ trace, verification: 'strict' });
+    expect(sync.calls).toEqual(expected);
+    const staged = observe(source);
+    const iterator = readPortableWorkerContextPackageTraceSteps({
+      ...selectors,
+      authorities: staged.steps,
+    });
+    expect(staged.calls).toEqual([]);
+    const suspended: string[] = [];
+    expect(
+      finish(iterator, () => {
+        const active = staged.active();
+        if (active !== undefined) suspended.push(active);
+      })
+    ).toEqual({ trace, verification: 'strict' });
+    expect(staged.calls).toEqual(expected);
+    expect(suspended).toEqual(expected.map((call) => call.name));
+    expect(staged.active()).toBeUndefined();
+
+    // Remove the optional callback only after valid first publication. Both public paths
+    // must keep the original semantic refusal before AEP/backend/file-proof work.
+    const { readAssistantTaskHandoffSource: _assistant, ...absent } = source;
+    const missingSync = observe(absent);
+    const missingSteps = observe(absent);
+    const syncError = failure(() =>
+      readPortableWorkerContextPackageTrace({ ...selectors, authorities: missingSync.authorities })
+    );
+    const stepError = failure(() =>
+      finish(
+        readPortableWorkerContextPackageTraceSteps({
+          ...selectors,
+          authorities: missingSteps.steps,
+        })
+      )
+    );
+    expect(syncError).toBeInstanceOf(Error);
+    expect(stepError).toBeInstanceOf(Error);
+    expect(syncError).toMatchObject({
+      name: 'Error',
+      message: 'Worker Context Package Task Knowledge selection authority is contradictory.',
+    });
+    expect(stepError).toEqual(syncError);
+    expect(missingSync.calls).toEqual(expected.slice(0, 5));
+    expect(missingSteps.calls).toEqual(expected.slice(0, 5));
+    expect(missingSteps.active()).toBeUndefined();
+
+    const ownerError = new Error('Declared admission-owner refusal.');
+    const unavailable = {
+      ...source,
+      readAdmission: () => {
+        throw ownerError;
+      },
+    };
+    const brokenSync = observe(unavailable);
+    const brokenSteps = observe(unavailable);
+    expect(
+      failure(() =>
+        readPortableWorkerContextPackageTrace({ ...selectors, authorities: brokenSync.authorities })
+      )
+    ).toBe(ownerError);
+    expect(
+      failure(() =>
+        finish(
+          readPortableWorkerContextPackageTraceSteps({
+            ...selectors,
+            authorities: brokenSteps.steps,
+          })
+        )
+      )
+    ).toBe(ownerError);
+    expect(brokenSync.calls).toEqual(expected.slice(0, 2));
+    expect(brokenSteps.calls).toEqual(expected.slice(0, 2));
+    expect(brokenSteps.active()).toBeUndefined();
+  });
+
+  it('reads imported history without strict-only owners and keeps delivered-byte failure order', async () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'context-owner-steps-imported-'));
+    const fixture = await createImportedHistoryFixture(workspaceRoot, true);
+    const { trace } = fixture;
+    const turnRoot = join(workspaceRoot, 'threads', trace.threadId, 'turns', trace.turnId);
+    const tracePath = join(turnRoot, 'context-package.json');
+    // Reuse the existing reminted-history fixture and canonical serializer, with its exact
+    // real delivered files and manifest. This remains a controlled portable-owner unit case.
+    writeFileSync(tracePath, serializeWorkerContextPackageTrace(trace));
+    const unavailable = () => {
+      throw new Error('Unused strict-only owner was consulted.');
+    };
+    const source: WorkerContextPackageAuthorityReader = {
+      ...fixture.authorities,
+      readAdmission: unavailable,
+      readBackendHandoff: unavailable,
+      readThreadParent: unavailable,
+      readAssistantTaskHandoffSource: unavailable,
+      readSourceFile: unavailable,
+    };
+    const selectors = {
+      workspaceRoot,
+      workspaceId: trace.workspaceId,
+      threadId: trace.threadId,
+      turnId: trace.turnId,
+    };
+    const expected: { name: string; args: unknown[] }[] = [
+      { name: 'readWorkspaceImportedFrom', args: [trace.workspaceId] },
+      { name: 'readTurn', args: [trace.workspaceId, trace.threadId, trace.turnId] },
+      { name: 'readAgentSession', args: [trace.workspaceId, trace.agentSessionId] },
+      { name: 'readThreadItems', args: [trace.workspaceId, trace.threadId] },
+      { name: 'readAgentEnvironmentPackage', args: [trace.workspaceId, trace.packageSnapshotId] },
+      {
+        name: 'readWorkspaceInputSnapshot',
+        args: [trace.workspaceId, trace.workspaceInputSnapshotId],
+      },
+      {
+        name: 'readWorkspaceMaterializationRecord',
+        args: [trace.workspaceId, trace.workspaceMaterializationRecordId],
+      },
+      ...[...trace.materialSelections, ...trace.materialExclusions].map((entry) => ({
+        name: 'readMaterialRevision',
+        args: [trace.workspaceId, entry.materialId, entry.revisionId],
+      })),
+    ];
+    const sync = observe(source);
+    const staged = observe(source);
+    expect(
+      readPortableWorkerContextPackageTrace({ ...selectors, authorities: sync.authorities })
+    ).toEqual({ trace, verification: 'imported-history' });
+    const iterator = readPortableWorkerContextPackageTraceSteps({
+      ...selectors,
+      authorities: staged.steps,
+    });
+    expect(staged.calls).toEqual([]);
+    expect(finish(iterator)).toEqual({ trace, verification: 'imported-history' });
+    expect(sync.calls).toEqual(expected);
+    expect(staged.calls).toEqual(expected);
+    expect(fixture.runtimeAuthorityReads()).toBe(0);
+    const retainedTrace = readFileSync(tracePath);
+    const manifestPath = join(turnRoot, 'context-package/package.json');
+    const retainedManifest = readFileSync(manifestPath);
+
+    // Fault only the delivered instructions after successful historical reads. There is no
+    // current Artifact/version fixture or live-original repair prerequisite for this refusal.
+    const deliveredPath = join(turnRoot, 'context-package/instructions.md');
+    const original = readFileSync(deliveredPath);
+    const corrupt = Buffer.from(original);
+    corrupt[0] = corrupt[0]! ^ 1;
+    chmodSync(deliveredPath, 0o600);
+    writeFileSync(deliveredPath, corrupt);
+    const damagedSync = observe(source);
+    const damagedSteps = observe(source);
+    const syncError = failure(() =>
+      readPortableWorkerContextPackageTrace({ ...selectors, authorities: damagedSync.authorities })
+    );
+    const stepError = failure(() =>
+      finish(
+        readPortableWorkerContextPackageTraceSteps({
+          ...selectors,
+          authorities: damagedSteps.steps,
+        })
+      )
+    );
+    expect(syncError).toBeInstanceOf(Error);
+    expect(stepError).toBeInstanceOf(Error);
+    expect(syncError).toMatchObject({ message: 'Worker Context Package file digest mismatch.' });
+    expect(stepError).toEqual(syncError);
+    expect(damagedSync.calls).toEqual(expected.slice(0, 5));
+    expect(damagedSteps.calls).toEqual(expected.slice(0, 5));
+    expect(damagedSteps.active()).toBeUndefined();
+    expect(readFileSync(deliveredPath)).toEqual(corrupt);
+    expect(readFileSync(tracePath)).toEqual(retainedTrace);
+    expect(readFileSync(manifestPath)).toEqual(retainedManifest);
+    expect(fixture.runtimeAuthorityReads()).toBe(0);
   });
 });

@@ -205,6 +205,25 @@ export function findNamedAgentEnvironmentPackageSnapshot(
   return readSnapshotRecord(workspaceDb, path, agentSessionId, snapshotId);
 }
 
+/** Captures a retained Session's exact named snapshot selection, including definite directory absence. */
+export function readAgentEnvironmentPackageSnapshotInventory(
+  workspaceDb: WorkspaceDb,
+  agentSessionId: string
+): readonly string[] | null {
+  assertPathSegment(agentSessionId, 'AgentSession id');
+  const root = agentSessionsRoot(workspaceDb);
+  const directory = join(root, agentSessionId, 'aep-snapshots');
+  for (const parent of [dirname(root), root, join(root, agentSessionId), directory]) {
+    const entry = lstatSync(parent, { throwIfNoEntry: false });
+    if (!entry) return null;
+    if (!entry.isDirectory())
+      throw new Error('Agent environment snapshot parent is not canonical.');
+  }
+  return readdirSync(directory)
+    .filter((name) => name.endsWith('.json'))
+    .sort();
+}
+
 /**
  * Replays exported redacted AEP snapshots into an imported workspace.
  *

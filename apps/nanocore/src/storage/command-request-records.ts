@@ -367,9 +367,27 @@ export function getCommandRequestRecordFromDb(
 export function readCommandRequestRecordsFromSqlite(
   sqlite: Database.Database
 ): CommandRequestRecord[] {
-  return (sqlite.prepare(COMMAND_REQUEST_SELECT).all() as CommandRequestRow[]).map(
-    mapCommandRequestRow
-  );
+  const records: CommandRequestRecord[] = [];
+  for (const page of readCommandRequestRecordPagesFromSqlite(sqlite)) records.push(...page);
+  return records;
+}
+
+/** Decodes the complete original scoped receipt census in released native pages, without pruning. */
+export function* readCommandRequestRecordPagesFromSqlite(
+  sqlite: Database.Database
+): Generator<readonly CommandRequestRecord[], void, void> {
+  let afterKey: string | undefined;
+  for (;;) {
+    const rows = sqlite
+      .prepare(
+        `${COMMAND_REQUEST_SELECT}${afterKey === undefined ? '' : ' WHERE request_key > ?'} ORDER BY request_key ASC LIMIT 128`
+      )
+      .all(...(afterKey === undefined ? [] : [afterKey])) as CommandRequestRow[];
+    if (rows.length === 0) return;
+    yield rows.map(mapCommandRequestRow);
+    if (rows.length < 128) return;
+    afterKey = rows.at(-1)!.key;
+  }
 }
 
 /** Read-only inventory of command receipts, including expired rows. */

@@ -81,8 +81,13 @@ export function settleWorkspaceRecoveryScope(input: {
 export function isScopeAdmitted(
   dataRoot: string,
   scope: ScopeAdmissionFailure['scope'],
-  id: string
+  id: string,
+  captured?: readonly ScopeAdmissionFailure[]
 ): boolean {
+  if (captured)
+    return !captured.some(
+      (failure) => failure.scope === scope && failure.id === id && failure.check !== 'index'
+    );
   return !scopeFailures.get(resolve(dataRoot))?.has(`${scope}:${id}:authority`);
 }
 
@@ -90,10 +95,15 @@ export function isScopeAdmitted(
 export function assertScopeAdmitted(
   dataRoot: string,
   scope: ScopeAdmissionFailure['scope'],
-  id: string
+  id: string,
+  captured?: readonly ScopeAdmissionFailure[]
 ): void {
-  if (!isScopeAdmitted(dataRoot, scope, id)) {
-    const failure = scopeFailures.get(resolve(dataRoot))!.get(`${scope}:${id}:authority`)!;
+  if (!isScopeAdmitted(dataRoot, scope, id, captured)) {
+    const failure = captured
+      ? captured.find(
+          (failure) => failure.scope === scope && failure.id === id && failure.check !== 'index'
+        )!
+      : scopeFailures.get(resolve(dataRoot))!.get(`${scope}:${id}:authority`)!;
     throw new OperationError(
       'recovery_required',
       `storage: ${scope} ${id} quarantined; check=${failure.check}; stage=scope-admission.`,

@@ -24,7 +24,10 @@ import type { Actor } from '../auth/identity.js';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import type { CommandRequestRecord } from '../lib/store.js';
-import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
+import {
+  readCommandRequestRecordPagesFromSqlite,
+  readCommandRequestRecordsFromSqlite,
+} from '../storage/command-request-records.js';
 import { commandInputHash } from './idempotent-command.js';
 
 type ApprovalRequest = import('zod').infer<typeof ApprovalRequestSchema>;
@@ -625,20 +628,40 @@ export function listThreadPendingRequests(
   workspaceId: string,
   threadId: string
 ): PendingRequestRecord[] {
-  const rows = sqlite
-    .prepare(
-      `SELECT ${SELECT_COLUMNS} FROM pending_requests
-       WHERE workspace_id = ? AND thread_id = ?
-       ORDER BY created_at ASC, request_id ASC`
-    )
-    .all(workspaceId, threadId) as PendingRequestRow[];
-  return rows.flatMap((row) => {
-    try {
-      return [parsePendingRequestRow(row)];
-    } catch {
-      return [];
-    }
-  });
+  const records: PendingRequestRecord[] = [];
+  for (const page of readThreadPendingRequestPages(sqlite, workspaceId, threadId))
+    records.push(...page);
+  return records;
+}
+
+/** Preserves the complete original Thread selection, ordering and inspect-only malformed-row treatment. */
+export function* readThreadPendingRequestPages(
+  sqlite: Database.Database,
+  workspaceId: string,
+  threadId: string
+): Generator<readonly PendingRequestRecord[], void, void> {
+  let after: { created_at: string; request_id: string } | undefined;
+  for (;;) {
+    const rows = sqlite
+      .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests
+       WHERE workspace_id = ? AND thread_id = ? ${after ? 'AND (created_at > ? OR (created_at = ? AND request_id > ?))' : ''}
+       ORDER BY created_at ASC, request_id ASC LIMIT 128`)
+      .all(
+        workspaceId,
+        threadId,
+        ...(after ? [after.created_at, after.created_at, after.request_id] : [])
+      ) as PendingRequestRow[];
+    if (rows.length === 0) return;
+    yield rows.flatMap((row) => {
+      try {
+        return [parsePendingRequestRow(row)];
+      } catch {
+        return [];
+      }
+    });
+    if (rows.length < 128) return;
+    after = rows.at(-1)!;
+  }
 }
 
 /**
@@ -1484,6 +1507,30 @@ export function requireUsablePendingRequest(
   threadId: string,
   readWorkspaceTurns: () => readonly Turn[]
 ): PendingRequestRecord {
+  const steps = requireUsablePendingRequestSteps(
+    sqlite,
+    requestId,
+    workspaceId,
+    threadId,
+    // biome-ignore lint/correctness/useYield: The synchronous adapter calls its original owner without scheduling.
+    function* () {
+      return readWorkspaceTurns();
+    }
+  );
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Shares the original Pending provenance check with released Workspace-history and receipt contributions. */
+export function* requireUsablePendingRequestSteps(
+  sqlite: Database.Database,
+  requestId: string,
+  workspaceId: string,
+  threadId: string,
+  readWorkspaceTurns: () => Generator<void, readonly Turn[], void>
+): Generator<void, PendingRequestRecord, void> {
   let record: PendingRequestRecord | null;
   try {
     record = readPendingRequest(sqlite, requestId);
@@ -1502,11 +1549,13 @@ export function requireUsablePendingRequest(
       409
     );
   }
-  const failure = validateCanonicalLoad(
-    record,
-    readWorkspaceTurns(),
-    readCommandRequestRecordsFromSqlite(sqlite)
-  );
+  const turns = yield* readWorkspaceTurns();
+  const receipts: CommandRequestRecord[] = [];
+  for (const page of readCommandRequestRecordPagesFromSqlite(sqlite)) {
+    receipts.push(...page);
+    yield;
+  }
+  const failure = validateCanonicalLoad(record, turns, receipts);
   if (failure) {
     throw new PendingRequestCommandError(
       'recovery_required',

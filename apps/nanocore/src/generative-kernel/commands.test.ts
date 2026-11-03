@@ -35,6 +35,9 @@ import { allocateAppId } from './uuid.js';
 
 const commitBoundary = vi.hoisted(() => ({
   gate: new SharedArrayBuffer(4 * Int32Array.BYTES_PER_ELEMENT),
+  forecastPath: undefined as string | undefined,
+  forecastCount: 0,
+  forecastDecisions: [] as string[],
   failForecastDecision: false,
   forecastDecisionFailed: false,
   holdTermination: false,
@@ -79,9 +82,34 @@ vi.mock('node:worker_threads', async (load) => {
             appCommitGate: commitBoundary.gate,
           },
         });
+        // Corrupt only the real producer's transient forecast at the client boundary.
+        // Native SQL, immutable publication and acknowledgements stay genuine.
+        this.on('message', (value: unknown) => {
+          if (
+            value !== null &&
+            typeof value === 'object' &&
+            'status' in value &&
+            value.status === 'physical-forecast' &&
+            'files' in value &&
+            Array.isArray(value.files) &&
+            commitBoundary.forecastPath !== undefined
+          ) {
+            commitBoundary.forecastCount += 1;
+            value.files[0].path = commitBoundary.forecastPath;
+          }
+        });
         const postMessage = this.postMessage.bind(this);
         this.postMessage = ((...args: Parameters<native.Worker['postMessage']>) => {
           const value = args[0];
+          if (
+            value !== null &&
+            typeof value === 'object' &&
+            'operation' in value &&
+            value.operation === 'physical-forecast' &&
+            'decision' in value &&
+            typeof value.decision === 'string'
+          )
+            commitBoundary.forecastDecisions.push(value.decision);
           if (
             commitBoundary.failForecastDecision &&
             value !== null &&
@@ -121,6 +149,9 @@ afterEach(async () => {
   commitBoundary.releaseTermination?.();
   await shutdownControlStoreWorkerClient();
   gate.fill(0);
+  commitBoundary.forecastPath = undefined;
+  commitBoundary.forecastCount = 0;
+  commitBoundary.forecastDecisions = [];
   commitBoundary.failForecastDecision = false;
   commitBoundary.forecastDecisionFailed = false;
   commitBoundary.holdTermination = false;
@@ -633,6 +664,85 @@ describe('Generative Kernel commands', () => {
         }
       )
     ).resolves.toMatchObject({ data: { membership_id: 'mem_sibling' } });
+  });
+
+  it.each([
+    'data-root',
+    'other-workspace-history',
+  ] as const)('refuses a real native forecast redirected to %s before any App publication', async (destination) => {
+    const context = await createContext();
+    const app = await createLightApp(context, MAPPING_SCHEMA);
+    const peer = await context.store.createWorkspace('Unrelated schema history owner');
+    const before = listLightAppSnapshots(context.dataRoot, context.workspaceId, app.appId);
+    const requestId = randomUUID();
+    const target =
+      destination === 'data-root'
+        ? join(context.dataRoot, 'outside-both-roots.yaml')
+        : join(
+            context.dataRoot,
+            'workspaces',
+            peer.id,
+            'knowledge',
+            'schema',
+            'history',
+            'foreign.yaml'
+          );
+    const admission = new FileStorageAdmission(
+      context.dataRoot,
+      () => 0n,
+      () => 1_000_000_000n
+    );
+    const selected: string[] = [];
+    const forPath = admission.forPath.bind(admission);
+    const observe = vi.spyOn(admission, 'forPath').mockImplementation((path) => {
+      selected.push(path);
+      return forPath(path);
+    });
+    getControlStoreWorkerClient().setFileStorageAdmission(context.dataRoot, admission);
+    const {
+      appId: _appId,
+      schemaRevision: _schemaRevision,
+      ...schema
+    } = structuredClone(app.schema!);
+    schema.collections[0]!.fields.push({
+      name: 'scope_forecast_note',
+      type: 'text',
+      required: false,
+      description: 'Published only with an admitted physical forecast.',
+    });
+    commitBoundary.forecastDecisions = [];
+    commitBoundary.forecastPath = target;
+    try {
+      await expect(
+        updateLightAppSchema(
+          { ...context, requestId },
+          app.appId,
+          app.appRevision,
+          app.schemaRevision,
+          schema
+        )
+      ).rejects.toMatchObject({ code: 'precondition', commit: 'not-committed' });
+      expect(commitBoundary.forecastCount).toBe(1);
+      expect(commitBoundary.forecastDecisions).toEqual(['unavailable']);
+      expect(selected).not.toContain(target);
+      expect(existsSync(target)).toBe(false);
+      expect(getLightApp(context.dataRoot, context.workspaceId, app.appId)).toEqual(app);
+      expect(listLightAppSnapshots(context.dataRoot, context.workspaceId, app.appId)).toEqual(
+        before
+      );
+      const scope = { workspaceId: context.workspaceId, appId: app.appId };
+      expect(
+        getCommandRequestRecord(
+          context.dataRoot,
+          scope,
+          commandRequestKey('kernel.schema.update', requestId, scope),
+          new Date().toISOString()
+        )
+      ).toBeNull();
+    } finally {
+      commitBoundary.forecastPath = undefined;
+      observe.mockRestore();
+    }
   });
 
   it('retains exact snapshot reservations until a failed native channel exits', async () => {

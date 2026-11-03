@@ -5,20 +5,27 @@ import {
   compareCodeUnits,
   formatReferenceUri,
   type RetrievalTraceReference,
+  ThreadSchema,
+  TurnSchema,
 } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import { readVerifiedThreadWorkerContextTraces } from '../context/worker-context-projection.js';
-import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-source-authority.js';
+import { readVerifiedThreadWorkerContextTraceSteps } from '../context/worker-context-projection.js';
+import { resolveWorkspaceKnowledgeReferenceProofsSteps } from '../knowledge-source-authority.js';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { type KnowledgeRetrievalAccess, threadReadable } from '../retrieval-knowledge-adapter.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { assertKnowledgeRetrievalTraceReadable } from '../storage/index-rebuild.js';
-import { readThreadRetrievalTraces, readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
-import { readWorkObservations } from '../storage/work-observations.js';
+import { assertKnowledgeRetrievalTraceReadableSteps } from '../storage/index-rebuild.js';
+import { readRetrievalTraceSteps } from '../storage/retrieval-traces.js';
+import { readControlWorkObservations } from '../storage/work-observations.js';
 import {
-  readWorkspaceKnowledgeProposalInventory,
+  nativeProductScope,
+  readNativeProductPages,
+  readNativeTurnHistorySteps,
+  type readWorkspaceKnowledgeProposalInventory,
+  readWorkspaceKnowledgeProposalInventorySteps,
   serializeKnowledgeProposalRecord,
+  TurnReaderSchema,
 } from '../storage/workspace-file-records.js';
 import { NotebookError } from './notebook-error.js';
 import { parseScopeKnowledgeSchema } from './okf.js';
@@ -35,14 +42,16 @@ type Proposal = ReturnType<
 >['knowledgeProposals'][number];
 
 /** Current caller and existing native readers; this composition has no publication authority. */
-interface WorkspaceSchemaPreviewInput extends ParametersShape {
+interface WorkspaceSchemaPreviewInput extends Omit<ParametersShape, 'revalidate'> {
+  /** Native callers delegate released authority contributions; sync callers return directly. */
+  readonly revalidate: () => void | Generator<void, void, void>;
   readonly dataRoot: string;
   readonly coreDb: CoreDb;
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
   readonly access: KnowledgeRetrievalAccess;
   /** Admit both complete retained Proposal trees through the existing Notebook publication owner. */
-  readonly admitProposal: (proposal: Proposal) => void;
+  readonly admitProposal: (proposal: Proposal) => void | Generator<void, void, void>;
 }
 type ParametersShape = Parameters<typeof previewNotebookSchema>[0];
 
@@ -53,6 +62,17 @@ type ParametersShape = Parameters<typeof previewNotebookSchema>[0];
 export function previewWorkspaceSchema(
   input: WorkspaceSchemaPreviewInput
 ): PreviewKnowledgeSchemaResponse {
+  const steps = previewWorkspaceSchemaSteps(input);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Shares complete owner contributions with native preparation, with no SQL cut across a yield. */
+export function* previewWorkspaceSchemaSteps(
+  input: WorkspaceSchemaPreviewInput
+): Generator<void, PreviewKnowledgeSchemaResponse, void> {
   const revision = input.notebook.publishedRevision();
   const currentFiles = input.notebook.readContent(revision);
   const notebook = previewNotebookSchemaContent({
@@ -78,7 +98,7 @@ export function previewWorkspaceSchema(
   );
   const digest = (value: unknown) => `sha256:${sha256Hex(canonicalJsonText(value))}`;
 
-  const inspect = () => {
+  function* inspect() {
     const rows: Inventory[] = ['maintenance', 'proposals', 'indexes', 'trace-references'].map(
       (family) => ({
         family: family as Inventory['family'],
@@ -99,9 +119,12 @@ export function previewWorkspaceSchema(
       row.complete = false;
       if (!row.diagnostics.length) row.diagnostics.push({ code: 'schema.inventory_unavailable' });
     };
-    const discloseTrace = (reference: RetrievalTraceReference, fact: unknown): boolean => {
+    const discloseTrace = function* (
+      reference: RetrievalTraceReference,
+      fact: unknown
+    ): Generator<void, boolean, void> {
       try {
-        assertKnowledgeRetrievalTraceReadable({
+        yield* assertKnowledgeRetrievalTraceReadableSteps({
           dataRoot: input.dataRoot,
           workspaceId: input.workspaceId,
           access: input.access,
@@ -128,14 +151,22 @@ export function previewWorkspaceSchema(
       });
       facts.get(row.family)!.push(fact);
     };
-    for (const { id, needsReview, before, after } of indexImpact)
+    for (const { id, needsReview, before, after } of indexImpact) {
       record(indexes, id, needsReview, { id, before, after });
+      yield;
+    }
 
     try {
-      const inventory = readWorkspaceKnowledgeProposalInventory(workspaceRoot, input.workspaceId);
+      const inventory = yield* readWorkspaceKnowledgeProposalInventorySteps(
+        workspaceRoot,
+        input.workspaceId,
+        input.workspaceDb
+      );
       for (const proposal of inventory.knowledgeProposals) {
+        yield;
         try {
-          input.admitProposal(proposal);
+          const admission = input.admitProposal(proposal);
+          if (admission) yield* admission;
           const files = input.notebook.readContent(proposal.candidateRevision);
           const affected = schemaCandidateTreeNeedsReview({
             workspaceId: input.workspaceId,
@@ -156,17 +187,55 @@ export function previewWorkspaceSchema(
     }
 
     try {
-      const threads = input.store.listThreads(input.workspaceId);
+      const scope = {
+        ...nativeProductScope(input.dataRoot, {
+          kind: 'workspace',
+          workspaceId: input.workspaceId,
+        }),
+        sqlite: input.workspaceDb.sqlite,
+      };
+      const threads: ReturnType<typeof ThreadSchema.parse>[] = [];
+      for (const page of readNativeProductPages(scope, 'thread')) {
+        threads.push(...page.map((row) => ThreadSchema.parse(row.record)));
+        yield;
+      }
+      function* readTurn(threadId: string, turnId: string) {
+        const history = yield* readNativeTurnHistorySteps(scope, turnId);
+        if (
+          !history ||
+          history.turn.owner.kind !== 'workspace' ||
+          history.turn.owner.workspaceId !== input.workspaceId ||
+          history.turn.threadId !== threadId
+        )
+          throw new Error('Unavailable source Turn.');
+        return TurnSchema.parse(TurnReaderSchema.parse(history.turn));
+      }
       // An unreadable container prevents a complete census without disclosing its identity or size.
       for (const thread of threads) {
+        yield;
         if (!threadReadable({ workspaceId: input.workspaceId, access: input.access }, thread.id)) {
           unavailable(maintenance);
           unavailable(traces);
           continue;
         }
         try {
-          const turns = input.store.listThreadTurns(input.workspaceId, thread.id);
+          // Metadata discovers maintenance and trace candidates without loading unrelated Item histories.
+          input.store.getThread(input.workspaceId, thread.id);
+          const turns: ReturnType<FsStore['getTurnMetadata']>[] = [];
+          for (const page of readNativeProductPages(scope, 'turn')) {
+            for (const row of page) {
+              if (row.record.threadId !== thread.id) continue;
+              const { items: _items, ...metadata } = TurnReaderSchema.parse({
+                ...row.record,
+                items: [],
+              });
+              turns.push(metadata);
+            }
+            yield;
+          }
+          turns.sort((a, b) => compareCodeUnits(a.startedAt ?? '', b.startedAt ?? ''));
           for (const turn of turns) {
+            yield;
             const knowledge = turn.internalExecution?.knowledge;
             const isMaintenance =
               (knowledge?.purpose === 'maintenance' &&
@@ -179,6 +248,7 @@ export function previewWorkspaceSchema(
                     turn.triggerSource.summary === 'Knowledge maintenance.')));
             if (!isMaintenance) continue;
             try {
+              const completeTurn = yield* readTurn(thread.id, turn.id);
               for (const range of knowledge?.sourceRange ?? []) {
                 if (
                   !threadReadable(
@@ -187,7 +257,7 @@ export function previewWorkspaceSchema(
                   )
                 )
                   throw new Error('Unavailable source owner.');
-                const source = input.store.getTurn(input.workspaceId, range.threadId, range.turnId);
+                const source = yield* readTurn(range.threadId, range.turnId);
                 const first = source.items.findIndex((item) => item.id === range.firstItemId);
                 const last = source.items.findIndex((item) => item.id === range.lastItemId);
                 if (first < 0 || last < first) throw new Error('Unavailable source range.');
@@ -202,29 +272,41 @@ export function previewWorkspaceSchema(
                   throw new Error('Unavailable asking owner.');
                 input.store.getThread(input.workspaceId, knowledge.askingThreadId);
                 if (knowledge.askingTurnId)
-                  input.store.getTurn(
-                    input.workspaceId,
-                    knowledge.askingThreadId,
-                    knowledge.askingTurnId
-                  );
+                  yield* readTurn(knowledge.askingThreadId, knowledge.askingTurnId);
               }
-              const observations = readWorkObservations(input.workspaceDb, {
-                threadId: thread.id,
-                turnId: turn.id,
-              });
+              const observations: Array<ReturnType<typeof readControlWorkObservations>[number]> =
+                [];
+              let afterSequence = 0;
+              for (;;) {
+                const page = readControlWorkObservations(
+                  input.workspaceDb.sqlite,
+                  { kind: 'workspace', workspaceId: input.workspaceId },
+                  { threadId: thread.id, turnId: turn.id, afterSequence }
+                );
+                observations.push(...page);
+                yield;
+                if (page.length < 128) break;
+                afterSequence = page.at(-1)!.seq;
+              }
               // Maintenance and observation payloads retain their fixed native schemas; they are not OKF Pages.
-              record(maintenance, turn.id, false, { turn, observations });
+              record(maintenance, turn.id, false, { turn: completeTurn, observations });
             } catch {
               unavailable(maintenance);
             }
           }
-          const retained = [
-            ...readThreadRetrievalTraces(workspaceRoot, input.workspaceId, thread.id),
-            ...turns.flatMap((turn) =>
-              readTurnRetrievalTraces(workspaceRoot, input.workspaceId, thread.id, turn.id)
-            ),
-          ];
+          const retained = yield* readRetrievalTraceSteps(
+            workspaceRoot,
+            `retrieval-trace/thread/${input.workspaceId}/${thread.id}`
+          );
+          for (const turn of turns)
+            retained.push(
+              ...(yield* readRetrievalTraceSteps(
+                workspaceRoot,
+                `retrieval-trace/turn/${input.workspaceId}/${thread.id}/${turn.id}`
+              ))
+            );
           for (const { reference, trace } of retained) {
+            yield;
             if (
               'sourceKind' in trace ||
               trace.sourceScope !== input.pageScopeId ||
@@ -233,10 +315,10 @@ export function previewWorkspaceSchema(
               continue;
             try {
               // Current containing/Source admission precedes any Page or work-history dereference.
-              if (!discloseTrace(reference, trace)) continue;
+              if (!(yield* discloseTrace(reference, trace))) continue;
               if (trace.notebookRevision === null) throw new Error('Missing native revision.');
               const entries = [...trace.selected, ...trace.excluded];
-              const proofs = resolveWorkspaceKnowledgeReferenceProofs({
+              const proofs = yield* resolveWorkspaceKnowledgeReferenceProofsSteps({
                 coreDb: input.coreDb,
                 store: input.store,
                 workspaceDb: input.workspaceDb,
@@ -271,12 +353,14 @@ export function previewWorkspaceSchema(
             }
           }
           try {
-            for (const { trace } of readVerifiedThreadWorkerContextTraces({
+            const verified = yield* readVerifiedThreadWorkerContextTraceSteps({
               coreDb: input.coreDb,
               store: input.store,
               workspaceDb: input.workspaceDb,
               threadId: thread.id,
-            })) {
+            });
+            for (const { trace } of verified) {
+              yield;
               const relevant = [...trace.knowledgeSelections, ...trace.knowledgeExclusions].filter(
                 (entry) =>
                   input.pageScopeId ===
@@ -301,10 +385,10 @@ export function previewWorkspaceSchema(
                 continue;
               }
               if (
-                !discloseTrace(retrieval, {
+                !(yield* discloseTrace(retrieval, {
                   turnId: trace.turnId,
                   contextPackageDigest: trace.contextPackageDigest,
-                })
+                }))
               )
                 continue;
               // S39 exclusions are S61-selected Pages omitted by the package budget, not
@@ -354,11 +438,11 @@ export function previewWorkspaceSchema(
       rows,
       fingerprints: new Map(rows.map((row) => [row.family, digest(facts.get(row.family))])),
     };
-  };
+  }
 
-  const first = inspect();
+  const first = yield* inspect();
   const dependencyInventory = first.rows;
-  const later = inspect();
+  const later = yield* inspect();
   for (const row of dependencyInventory) {
     const current = later.rows.find((entry) => entry.family === row.family)!;
     if (
@@ -372,8 +456,9 @@ export function previewWorkspaceSchema(
       row.diagnostics = [{ code: 'schema.inventory_changed' }];
     }
   }
-  // The complete inspection is synchronous; current authority is checked at its return boundary.
-  input.revalidate();
+  // Both drivers recheck current authority at the complete inspection return boundary.
+  const revalidation = input.revalidate();
+  if (revalidation) yield* revalidation;
   if (input.notebook.publishedRevision() !== revision) throw new NotebookError('conflict');
   return {
     ...notebook,

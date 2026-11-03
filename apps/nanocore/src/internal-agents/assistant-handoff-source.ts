@@ -6,8 +6,9 @@ import {
   assistantPendingHandoffResultItemId,
   assistantPendingOutcomeSource,
   assistantPendingOutcomeSourceHash,
-  listThreadPendingRequests,
-  requireUsablePendingRequest,
+  type listThreadPendingRequests,
+  readThreadPendingRequestPages,
+  requireUsablePendingRequestSteps,
 } from '../runtime/pending-requests.js';
 import { openWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 
@@ -26,11 +27,37 @@ export function readAssistantTaskHandoffSource(
     readonly turnInput?: string;
   }
 ) {
+  const steps = readAssistantTaskHandoffSourceSteps(store, workspaceDb, receiving);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Shares the exact original live Assistant proof, yielding only after released owner contributions. */
+export function* readAssistantTaskHandoffSourceSteps(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  receiving: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly turnId: string;
+    readonly requestId: string | null;
+    readonly requestInputHash?: string;
+    readonly modelId?: string | null;
+    readonly triggerActor?: ActorRef;
+    readonly turnInput?: string;
+  }
+): Generator<
+  void,
+  { readonly sourceInputHash: string; readonly sourceTurnId: string } | null,
+  void
+> {
   let sourceDb: WorkspaceDb | undefined;
   try {
     if (!receiving.requestId) return null;
     const thread = store.getThread(receiving.workspaceId, receiving.threadId);
-    const worker = store.getTurnById(receiving.turnId);
+    const worker = yield* store.getTurnByIdSteps(receiving.turnId);
     const userId = responsibleUserIdForActor(worker.triggerActor);
     if (
       !userId ||
@@ -43,21 +70,28 @@ export function readAssistantTaskHandoffSource(
         commandInputHash(receiving.triggerActor) !== commandInputHash(worker.triggerActor))
     )
       return null;
-    const sourceWorkspace = store
-      .listWorkspaces()
-      .find((workspace) =>
-        store.listThreads(workspace.id).some((candidate) => candidate.id === thread.parentThreadId)
-      );
+    let sourceWorkspace: ReturnType<FsStore['listWorkspaces']>[number] | undefined;
+    for (const workspace of yield* store.listWorkspacesSteps()) {
+      const threads = yield* store.listThreadsSteps(workspace.id);
+      if (threads.some((candidate) => candidate.id === thread.parentThreadId)) {
+        sourceWorkspace = workspace;
+        break;
+      }
+    }
     if (!sourceWorkspace) return null;
     sourceDb =
       sourceWorkspace.id === receiving.workspaceId
         ? workspaceDb
         : openWorkspaceReadDb(workspaceDb.dataRoot, sourceWorkspace.id);
-    const records = listThreadPendingRequests(
+    const records: ReturnType<typeof listThreadPendingRequests> = [];
+    for (const page of readThreadPendingRequestPages(
       sourceDb.sqlite,
       sourceWorkspace.id,
       thread.parentThreadId
-    );
+    )) {
+      records.push(...page);
+      yield;
+    }
     for (const record of records) {
       const proposed = record.assistantHandoff;
       if (
@@ -72,7 +106,7 @@ export function readAssistantTaskHandoffSource(
         record.responsibleUserId !== userId
       )
         continue;
-      const source = store.getTurn(
+      const source = yield* store.getTurnSteps(
         sourceWorkspace.id,
         thread.parentThreadId,
         record.deliveryTurnId
@@ -99,15 +133,17 @@ export function readAssistantTaskHandoffSource(
           candidate.deliveryTurnId === source.id && candidate.requesterKind === 'assistant'
       );
       for (const candidate of associated)
-        requireUsablePendingRequest(
+        yield* requireUsablePendingRequestSteps(
           sourceDb.sqlite,
           candidate.requestId,
           sourceWorkspace.id,
           thread.parentThreadId,
-          () =>
-            store
-              .listThreads(sourceWorkspace.id)
-              .flatMap((thread) => store.listThreadTurns(sourceWorkspace.id, thread.id))
+          function* () {
+            const turns: ReturnType<FsStore['listThreadTurns']> = [];
+            for (const thread of yield* store.listThreadsSteps(sourceWorkspace!.id))
+              turns.push(...(yield* store.listThreadTurnsSteps(sourceWorkspace!.id, thread.id)));
+            return turns;
+          }
         );
       const sourceInputHash = assistantPendingOutcomeSourceHash(source, associated, userId);
       const ids = assistantPendingHandoffIds(
