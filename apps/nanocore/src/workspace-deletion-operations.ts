@@ -433,6 +433,7 @@ async function recoverOriginalDeletedWorkspace(
       core,
       fileAdmission,
       currentAuthority,
+      actor,
       native: { gate, freeze },
       deletedRecovery: { deletion, actorId: actor.userId },
     };

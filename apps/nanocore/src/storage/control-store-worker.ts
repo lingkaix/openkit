@@ -230,8 +230,11 @@ import { applyControlWorkerImage } from './worker-image-native.js';
 import { applyControlWorkerStorageBinding } from './worker-storage-binding-native.js';
 import { WorkspaceApplyPlanConflictError } from './workspace-apply-plan-codecs.js';
 import { recordWorkspaceApplyPlanInDb } from './workspace-apply-plan-records.js';
+import { WorkspaceRecoveryError } from './workspace-backup.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
+import { ControlRecoveryTargetRegistrationRefusalSchema } from './workspace-recovery-target-codecs.js';
+import { applyControlRecoveryTargetRegistration } from './workspace-recovery-target-native.js';
 import {
   WORKSPACE_REVIEW_REFUSALS,
   WorkspaceReviewDecisionRefusal,
@@ -289,6 +292,7 @@ type WriteCommand = Extract<
       | 'generative-presentation'
       | 'evaluation-candidate'
       | 'scheduler-admission'
+      | 'recovery-target-registration'
       | 'workspace-deletion'
       | 'core-sharing'
       | 'provenance'
@@ -462,6 +466,18 @@ function failure(
 
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
+  if (
+    operation === 'recovery-target-registration' &&
+    (error instanceof WorkspaceRecoveryError || error instanceof OperationError)
+  ) {
+    const parsed = ControlRecoveryTargetRegistrationRefusalSchema.safeParse({
+      operation,
+      code: error.code,
+      message: error.message,
+      status: error instanceof WorkspaceRecoveryError ? 409 : error.status,
+    });
+    if (parsed.success) return parsed.data;
+  }
   if (operation === 'app-kernel') {
     const mapped = mapAppSqliteError(error);
     if (mapped instanceof KernelCommandError) {
@@ -2008,6 +2024,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'scheduler-admission',
               result,
             };
+          } else if (request.operation === 'recovery-target-registration') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlRecoveryTargetRegistration(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'recovery-target-registration',
+              result,
+            };
           } else if (request.operation === 'workspace-deletion') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlWorkspaceDeletion(owner.scopeDb, request.input);
@@ -3041,6 +3067,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'worker-control-heartbeat' ||
       value.operation === 'worker-control-record' ||
       value.operation === 'scheduler-admission' ||
+      value.operation === 'recovery-target-registration' ||
       value.operation === 'workspace-deletion' ||
       value.operation === 'core-sharing' ||
       value.operation === 'evaluation-candidate' ||
@@ -3075,6 +3102,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           finish,
           cohort,
           barrier:
+            value.operation === 'recovery-target-registration' ||
             value.operation === 'app-kernel' ||
             value.operation === 'recovery-cleanup' ||
             value.operation === 'recovery-capture' ||

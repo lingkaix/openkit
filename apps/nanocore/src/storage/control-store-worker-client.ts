@@ -196,6 +196,11 @@ import {
   type ControlWorkspaceDeletionResult,
 } from './workspace-deletion-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
+import type { WorkspaceRecoveryCliReport } from './workspace-recovery-cli.js';
+import {
+  type ControlRecoveryTargetRegistrationInput,
+  ControlRecoveryTargetRegistrationInputSchema,
+} from './workspace-recovery-target-codecs.js';
 import type {
   ControlWorkspaceReviewDecision,
   ControlWorkspaceReviewFinish,
@@ -255,7 +260,19 @@ interface ControlWorkspaceDeletionCall {
   readonly path: string;
   readonly identity: string;
 }
+const recoveryTargetRegistrationCall = Symbol('recovery-target-registration-call');
+/** The current live freeze, or the original stopped root-lock lifetime, bound to one exact Core selection. */
+interface ControlRecoveryTargetRegistrationCall {
+  readonly kind: 'recovery-target-registration';
+  readonly [recoveryTargetRegistrationCall]: true;
+  readonly freeze: WorkspaceFrozenAdmission | undefined;
+  readonly input: ControlRecoveryTargetRegistrationInput;
+  readonly command: Omit<OpenCommand, 'operation'>;
+  readonly path: string;
+  readonly identity: string;
+}
 type ControlFrozenNativeCall =
+  | ControlRecoveryTargetRegistrationCall
   | ControlRecoveryNativeCall
   | ControlWorkspaceSchemaApplicationCall
   | ControlWorkspaceDeletionCall;
@@ -369,6 +386,8 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'recovery-history':
     case 'recovery-seal':
     case 'recovery-safety':
+      return true;
+    case 'recovery-target-registration':
       return true;
     case 'workspace-deletion':
       return command.input.stage === 'complete';
@@ -964,6 +983,40 @@ class ControlStoreWorkerClient {
           },
         });
       return;
+    }
+    if ('kind' in recovery && recovery.kind === 'recovery-target-registration') {
+      try {
+        const physical =
+          opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
+        const current = statSync(recovery.path);
+        if (
+          recovery[recoveryTargetRegistrationCall] !== true ||
+          (recovery.input.authority.mode === 'live'
+            ? !recovery.freeze ||
+              !this.workspaceMutationAdmission?.ownsFreeze(
+                recovery.input.workspaceId,
+                recovery.freeze
+              )
+            : recovery.freeze !== undefined) ||
+          recovery.command.productOwner?.kind !== 'server' ||
+          recovery.command.initialize !== 'core' ||
+          recovery.command.create !== false ||
+          recovery.command.database !== `core:${resolve(recovery.command.path)}` ||
+          realpathSync(recovery.command.path) !== recovery.path ||
+          `${current.dev}:${current.ino}` !== recovery.identity ||
+          !physical ||
+          physical.path !== recovery.path ||
+          physical.identity !== recovery.identity ||
+          !isDeepStrictEqual(physical.command, recovery.command) ||
+          command.operation !== 'recovery-target-registration' ||
+          command.database !== recovery.command.database ||
+          !isDeepStrictEqual(command.input, recovery.input)
+        )
+          throw new Error('Target registration lifecycle binding is not current.');
+        return;
+      } catch {
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      }
     }
     if ('kind' in recovery && recovery.kind === 'workspace-deletion') {
       try {
@@ -2478,6 +2531,37 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Commits the original complete target registration and admission result after physical placement. */
+  async recoveryTargetRegistration(
+    database: string,
+    value: ControlRecoveryTargetRegistrationInput,
+    freeze?: WorkspaceFrozenAdmission
+  ): Promise<WorkspaceRecoveryCliReport> {
+    const input = ControlRecoveryTargetRegistrationInputSchema.parse(value);
+    if ((input.authority.mode === 'live') !== (freeze !== undefined))
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const opening = this.openings.get(database);
+    if (!opening || opening.identity === undefined)
+      throw new ControlStoreWorkerError('not-open', 'not-committed');
+    const call: ControlRecoveryTargetRegistrationCall = {
+      kind: 'recovery-target-registration',
+      [recoveryTargetRegistrationCall]: true,
+      freeze,
+      input,
+      command: opening.command,
+      path: opening.path,
+      identity: opening.identity,
+    };
+    const reply = await this.request(
+      { operation: 'recovery-target-registration', database, input },
+      undefined,
+      undefined,
+      false,
+      call
+    );
+    return (reply as Extract<Success, { operation: 'recovery-target-registration' }>).result;
+  }
+
   /** Publishes one whole original Core deletion stage under its existing lifecycle freeze. */
   async workspaceDeletion(
     database: string,
@@ -2631,6 +2715,12 @@ class ControlStoreWorkerClient {
       if (opening) closeWorkspaceProductReadHandles(opening.path);
       await this.request({ operation: 'close', database }, undefined, undefined, false, recovery);
       if (this.openings.get(database) === opening) this.openings.delete(database);
+    } catch (error) {
+      if (opening?.command.initialize === 'core') {
+        this.fail(opening.host);
+        await opening.host.worker?.terminate();
+      }
+      throw error;
     } finally {
       if (opening) closeWorkspaceProductReadHandles(opening.path);
     }

@@ -1149,8 +1149,49 @@ const targetCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
 /** Crashes the real admission call without running its catch/finally or an injected storage double. */
 async function crashTargetAdmission(
   input: WorkspaceTargetRecoveryInput,
+  workspaceId: string,
   point: WorkspaceRecoveryBoundary
 ) {
+  // Observe the real transaction before and after its outer COMMIT. The process,
+  // not a rejected publication promise, is lost while that native host is held.
+  const nativePrelude = `
+    const { workerData } = require('node:worker_threads');
+    const Database = require(workerData.databaseModule);
+    const execute = Database.prototype.exec;
+    const gate = workerData.registrationGate;
+    Database.prototype.exec = function(sql) {
+      if (!/^COMMIT$/i.test(sql) || this.name !== workerData.corePath ||
+          Atomics.load(gate, 0) !== 1 || Atomics.load(gate, 1) !== 0)
+        return execute.call(this, sql);
+      const admission = this.prepare(
+        'SELECT workspace_id, state, proof_json FROM workspace_recovery_admissions WHERE admission_id=?'
+      ).get(workerData.admissionId);
+      // A posted request can wait behind another transaction. Only the actual
+      // terminal tuple on this connection can identify its covering COMMIT.
+      if (!admission || admission.state !== 'finished' ||
+          admission.workspace_id !== workerData.workspaceId)
+        return execute.call(this, sql);
+      const result = JSON.parse(admission.proof_json).result;
+      const registry = this.prepare(
+        'SELECT owner_user_id, status FROM workspace_registry WHERE workspace_id=?'
+      ).get(workerData.workspaceId);
+      const members = this.prepare(
+        "SELECT user_id FROM workspace_members WHERE workspace_id=? AND status='active' ORDER BY user_id"
+      ).all(workerData.workspaceId).map(row => row.user_id);
+      if (!this.inTransaction || this.pragma('synchronous', { simple: true }) !== 2 ||
+          result.disposition !== 'imported' || result.workspaceId !== workerData.workspaceId ||
+          registry?.owner_user_id !== workerData.ownerId || registry.status !== 'active' ||
+          JSON.stringify(members) !== JSON.stringify(workerData.memberIds))
+        throw new Error('Native registration COMMIT did not contain the complete MOVE tuple.');
+      Atomics.store(gate, 1, 1);
+      Atomics.wait(gate, 2, 0);
+      const committed = execute.call(this, sql);
+      if (this.inTransaction) throw new Error('Native registration COMMIT did not finish.');
+      Atomics.store(gate, 3, 1);
+      Atomics.wait(gate, 4, 0);
+      return committed;
+    };
+  `;
   const child = spawn(
     process.execPath,
     [
@@ -1160,22 +1201,110 @@ async function crashTargetAdmission(
       '-e',
       `
     import { writeSync } from 'node:fs';
-    import { admitWorkspaceBackup } from ${JSON.stringify(new URL('../storage/workspace-restore.ts', import.meta.url).href)};
+    import { createRequire, syncBuiltinESMExports } from 'node:module';
+    import { setImmediate as nextTurn } from 'node:timers/promises';
+    const require = createRequire(import.meta.url);
+    const threads = require('node:worker_threads');
+    const RealWorker = threads.Worker;
+    const input = ${JSON.stringify(input)};
+    const workspaceId = ${JSON.stringify(workspaceId)};
+    const corePath = ${JSON.stringify(coreDbPath(input.dataRoot))};
+    const database = 'core:' + corePath;
+    const point = ${JSON.stringify(point)};
     const visited = [];
+    const workerErrors = [];
+    const observeWorkerError = error => workerErrors.push({
+      name: error.name, message: error.message, stack: error.stack,
+    });
+    let selectedWorker;
+    let selectedId;
+    let replied = false;
+    threads.Worker = class extends RealWorker {
+      constructor(filename, options) {
+        const gate = new Int32Array(new SharedArrayBuffer(20));
+        const entry = options?.eval ? String(filename) : 'import(' + JSON.stringify(String(filename)) + ');';
+        // The source child passes --input-type=module to its real eval Worker.
+        // A lexical require keeps this prelude valid with either entry mode.
+        const wrapped = 'import("node:module").then(({ createRequire }) => { const require = createRequire(' +
+          JSON.stringify(${JSON.stringify(import.meta.url)}) + ');' + ${JSON.stringify(nativePrelude)} + entry + '});';
+        try {
+          super(wrapped, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            databaseModule: require.resolve('better-sqlite3'),
+            registrationGate: gate,
+            corePath,
+            admissionId: input.requestId,
+            workspaceId,
+            ownerId: input.targetOwnerId,
+            memberIds: [...new Set([input.targetOwnerId,
+              ...(input.memberMappings ?? []).map(pair => pair.targetAccountId)])].sort(),
+          },
+          });
+        } catch (error) {
+          observeWorkerError(error);
+          throw error;
+        }
+        this.registrationGate = gate;
+        this.unanswered = new Map();
+        this.on('error', observeWorkerError);
+        this.on('message', reply => {
+          this.unanswered.delete(reply.id);
+          if (this === selectedWorker && reply.id === selectedId) replied = true;
+        });
+      }
+      postMessage(message, ...args) {
+        if (message.operation === 'recovery-target-registration' &&
+            message.database === database && message.input?.admissionId === input.requestId &&
+            message.input?.workspaceId === workspaceId) {
+          if (selectedWorker || [...this.unanswered.values()].some(value => value.database === database))
+            throw new Error('Ambiguous native target registration request.');
+          selectedWorker = this;
+          selectedId = message.id;
+          Atomics.store(this.registrationGate, 0, 1);
+        }
+        this.unanswered.set(message.id, message);
+        return super.postMessage(message, ...args);
+      }
+    };
+    syncBuiltinESMExports();
+    const crash = boundary => {
+      visited.push(boundary);
+      if (boundary === point) {
+        writeSync(1, JSON.stringify({ point, visited }));
+        process.exit(73);
+      }
+    };
     try {
-      await admitWorkspaceBackup(${JSON.stringify(input)}, {
-        atBoundary(point) {
-          visited.push(point);
-          if (point === ${JSON.stringify(point)}) {
-            writeSync(1, JSON.stringify({ point, visited }));
-            process.exit(73);
-          }
+      const { admitWorkspaceBackup } = await import(${JSON.stringify(new URL('../storage/workspace-restore.ts', import.meta.url).href)});
+      let outcome;
+      const admission = admitWorkspaceBackup(input, {
+        atBoundary(boundary) {
+          if (boundary === 'before-target-rename' || boundary === 'after-target-rename') crash(boundary);
         },
-      });
-      writeSync(1, JSON.stringify({ returnedWithoutCrash: true, visited }));
-      process.exit(74);
+      }).then(() => { outcome = { returnedWithoutCrash: true }; },
+        error => { outcome = { code: error.code }; });
+      let beforeObserved = false;
+      while (!outcome) {
+        const gate = selectedWorker?.registrationGate;
+        if (replied) throw new Error('Native registration replied before its crash boundary.');
+        if (gate && Atomics.load(gate, 1) === 1 && !beforeObserved) {
+          beforeObserved = true;
+          crash('before-registration-commit');
+          Atomics.store(gate, 2, 1);
+          Atomics.notify(gate, 2);
+        }
+        if (gate && Atomics.load(gate, 3) === 1) crash('after-registration-commit');
+        await nextTurn();
+      }
+      await admission;
+      writeSync(1, JSON.stringify({ ...outcome, visited, nativeRegistrationReached: beforeObserved, workerErrors }));
+      process.exit(outcome.returnedWithoutCrash ? 74 : 75);
     } catch (error) {
-      writeSync(1, JSON.stringify({ code: error.code, visited }));
+      writeSync(1, JSON.stringify({ code: error.code, visited, workerErrors,
+        instrumentError: { name: error.name, message: error.message, stack: error.stack } }));
       process.exit(75);
     }
   `,
@@ -1312,7 +1441,7 @@ describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
       memberMappings: [{ sourceAccountId: source.ownerId, targetAccountId: memberId }],
       expectedRelease,
     };
-    await crashTargetAdmission(input, point);
+    await crashTargetAdmission(input, workspaceId, point);
     const placed = point !== 'before-target-rename';
     const committed = point === 'after-registration-commit';
     const cold = crashTargetState(targetRoot, workspaceId, requestId);

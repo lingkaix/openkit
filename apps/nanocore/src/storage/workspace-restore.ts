@@ -7,7 +7,7 @@ import {
   WorkspaceSnapshotReportSchema,
 } from '@openkit/app-api-schemas';
 import { compareCodeUnits } from '@openkit/protocol';
-import { recordServerAuditEvent } from '../audit-events.js';
+import type { Actor } from '../auth/identity.js';
 import {
   isScopeAdmitted,
   refuseScope,
@@ -18,21 +18,20 @@ import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
+import { publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { WorkspaceDeletionRequestRecord } from '../workspace-deletion-request.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type {
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
 } from '../workspace-mutation-admission.js';
-import {
-  getWorkspaceRegistryLifecycleFact,
-  recoverDeletedWorkspaceRegistry,
-} from '../workspace-sharing.js';
+import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { applyAutomationDefinitionInDb } from './automation-definition-native.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import { commandInputHash } from './control-store-input.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest as candidateDigest } from './data-root-backup.js';
 import type { CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
@@ -46,6 +45,8 @@ import {
   stageWorkspaceBackup,
   WORKSPACE_BACKUP_POLICY,
   type WorkspaceBackupStageInput,
+  WorkspaceRecoveryError,
+  type WorkspaceRecoveryErrorCode,
   workspaceSnapshotOperationPolicy,
 } from './workspace-backup.js';
 import {
@@ -67,7 +68,6 @@ import {
   type WorkspaceRecoveryDependencies,
   type WorkspaceRecoverySelectedInput,
 } from './workspace-move.js';
-import { validateWorkspaceMoveMapping } from './workspace-move-mapping.js';
 import {
   bindWorkspaceRecoveryNativeOwner,
   endRecoveryAdmission,
@@ -87,6 +87,7 @@ import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
 } from './workspace-recovery-cli.js';
+import { validateRecoveryTargetMapping as mapping } from './workspace-recovery-target-native.js';
 
 type TargetArgs = Extract<WorkspaceRecoveryCliArgs, { command: 'restore' | 'move-in' }>;
 export type WorkspaceTargetRecoveryInput = TargetArgs & {
@@ -99,6 +100,8 @@ interface TargetRecoveryOwner {
   readonly core: CoreDb;
   readonly fileAdmission: FileStorageAdmission;
   readonly currentAuthority?: () => void;
+  /** Actual authenticated actor for a live native Core effect; stopped wrappers retain the root lock. */
+  readonly actor?: Actor;
   /** Exact final-cut proof, revalidated by the deletion owner at each awaited boundary. */
   readonly deletedRecovery?: {
     readonly deletion: WorkspaceDeletionRequestRecord;
@@ -113,11 +116,15 @@ interface TargetRecoveryOwner {
 /** A live entry always supplies its current freeze; only offline root-lock wrappers omit it. */
 export interface WorkspaceRecoveryTargetOwner extends TargetRecoveryOwner {
   readonly native: NonNullable<TargetRecoveryOwner['native']>;
+  readonly actor: Actor;
 }
 
 /** Binds all target effects to the supplied Core and, online, the same live target freeze. */
 function assertTargetRecoveryOwner(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority' | 'deletedRecovery'>,
+  owner: Pick<
+    TargetRecoveryOwner,
+    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
+  >,
   dataRoot: string,
   workspaceId?: string
 ): void {
@@ -145,31 +152,12 @@ function requestIdentity(input: TargetArgs) {
         ),
       ];
 }
-/** Rechecks current mapping before any unpublished target effect; no source account implies a grant. */
-function mapping(
-  core: CoreDb,
-  input: TargetArgs,
-  manifest: WorkspaceBackupManifest,
-  manifestDigest: string
-) {
-  if (input.command === 'restore') return undefined;
-  const report = validateWorkspaceMoveMapping({
-    manifest,
-    manifestDigest,
-    importingAdministratorId: input.targetOwnerId,
-    targetOwnerId: input.targetOwnerId,
-    memberMappings: input.memberMappings,
-    targetAccounts: core.sqlite.prepare('SELECT id AS accountId, status FROM users').all() as {
-      accountId: string;
-      status: 'active' | 'disabled';
-    }[],
-  });
-  if (report.disposition !== 'ready') refuseRecovery('mapping-refused');
-  return report;
-}
 /** Publishes a proved candidate before one Core registration/result transaction; failure retains ownership. */
 async function finishTarget(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority' | 'deletedRecovery'>,
+  owner: Pick<
+    TargetRecoveryOwner,
+    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
+  >,
   owned: RecoveryAdmission,
   deps: WorkspaceRecoveryDependencies,
   expectedRelease?: WorkspaceBackupManifest['release']
@@ -187,7 +175,7 @@ async function finishTarget(
   if (owned.state === 'finished') return owned.proof.result;
   if (expectedRelease && !isDeepStrictEqual(expectedRelease, owned.proof.manifest.release))
     refuseRecovery('release-mismatch');
-  const map = mapping(core, input, owned.proof.manifest, owned.proof.capture.manifestDigest);
+  mapping(core, input, owned.proof.manifest, owned.proof.capture.manifestDigest);
   const workspaceId = owned.workspace_id;
   const final = join(core.dataRoot, 'workspaces', workspaceId);
   const predecessor = workspaceRecoveryPredecessorRoot(owned);
@@ -219,105 +207,79 @@ async function finishTarget(
     syncCanonicalDirectory(dirname(owned.candidate_ref));
     deps.atBoundary?.('after-target-rename');
   }
-  let report: WorkspaceRecoveryCliReport = {
-    ...owned.proof.result,
-    disposition: input.command === 'restore' ? 'restored' : 'imported',
-    droppedSourceMemberIds: map?.droppedSourceMemberIds ?? [],
-    nextAction: 'none',
-  };
   assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
   if (owner.native)
     refuseScope(core.dataRoot, { scope: 'workspace', id: workspaceId, check: 'recovery' });
-  core.sqlite
-    .transaction(() => {
-      if (input.command === 'move-in') {
-        if (
-          core.sqlite
-            .prepare('SELECT 1 FROM workspace_registry WHERE workspace_id=?')
-            .get(workspaceId)
-        )
-          refuseRecovery('identity-collision');
-        recordWorkspaceOwnerMembership({
-          coreDb: core,
-          workspaceId,
-          ownerUserId: input.targetOwnerId,
-        });
-        const now = new Date().toISOString();
-        for (const userId of new Set(
-          map!.accountMap.memberMappings.map((pair) => pair.targetAccountId)
-        )) {
-          if (userId === input.targetOwnerId) continue;
-          core.sqlite
-            .prepare(
-              "INSERT INTO workspace_members (workspace_id,user_id,status,invitation_id,joined_at,removed_at,revision,created_at,updated_at) VALUES (?,?,'active',NULL,?,NULL,1,?,?)"
-            )
-            .run(workspaceId, userId, now, now, now);
-        }
-      } else {
-        const rows = core.sqlite
-          .prepare(
-            "SELECT id, revision FROM recurring_schedules WHERE workspace_id=? AND status='active'"
-          )
-          .all(workspaceId) as { id: string; revision: number }[];
-        for (const row of rows)
-          applyAutomationDefinitionInDb(
-            core,
-            owned.proof.manifest.accounts.ownerId,
-            {
-              action: 'update',
-              id: row.id,
-              input: { expectedRevision: row.revision, status: 'paused' },
-            },
-            new Date().toISOString()
-          );
-        const queued = core.sqlite
-          .prepare(
-            "SELECT queue_entry_id FROM scheduler_admission_entries WHERE workspace_id=? AND status IN ('queued','denied')"
-          )
-          .all(workspaceId) as { queue_entry_id: string }[];
-        for (const row of queued)
-          cancelSchedulerAdmissionEntry(core, { workspaceId, queueEntryId: row.queue_entry_id });
-      }
-      if (owner.deletedRecovery) {
-        const { deletion, actorId } = owner.deletedRecovery;
-        if (
-          input.command !== 'restore' ||
-          deletion.workspaceId !== workspaceId ||
-          deletion.recoveryBackupId !== owned.backup_id ||
-          deletion.recoveryBackupManifestDigest !== owned.proof.capture.manifestDigest ||
-          deletion.originalOwnerUserId !== owned.proof.manifest.accounts.ownerId
-        )
-          refuseRecovery('request-conflict');
-        const registry = recoverDeletedWorkspaceRegistry({
-          coreDb: core,
-          workspaceId,
-          originalOwnerUserId: deletion.originalOwnerUserId,
-          expectedRegistryRevision: deletion.expectedRegistryRevision + 2,
-        });
-        report = {
-          ...report,
-          currentRevision: registry.registryRevision,
-          selection: { kind: 'admission', requestId: owned.admission_id },
-        };
-        recordServerAuditEvent({
-          action: 'workspace.deleted-recover',
-          actor: { kind: 'user', id: actorId },
-          category: 'command',
-          coreDb: core,
-          outcome: 'succeeded',
-          requestId: owned.admission_id,
-          resource: `workspace:${workspaceId}`,
-          resourceRevision: registry.registryRevision,
-          summary: 'Original deleted Workspace restored from its final fenced backup.',
-          workspaceId,
-        });
-      }
-      endRecoveryAdmission(core, owned.admission_id, 'finished', report);
-      deps.atBoundary?.('before-registration-commit');
-    })
-    .immediate();
-  deps.atBoundary?.('after-registration-commit');
-  return report;
+  const client = getControlStoreWorkerClient(owner.native?.gate);
+  const dataRoot = resolve(core.dataRoot);
+  const scope = nativeProductScope(dataRoot, { kind: 'server' });
+  const path = scope.path;
+  const database = `core:${path}`;
+  let result: { ok: true; report: WorkspaceRecoveryCliReport } | { ok: false; error: unknown };
+  try {
+    await client.open({
+      database,
+      path,
+      create: false,
+      initialize: 'core',
+      dataRoot,
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
+    if (owner.native && !owner.actor) refuseRecovery('recovery-required');
+    const report = await client.recoveryTargetRegistration(
+      database,
+      {
+        admissionId: owned.admission_id,
+        workspaceId,
+        expectedRevision: owned.revision,
+        proofHash: commandInputHash(owned.proof),
+        authority: owner.native ? { mode: 'live', actor: owner.actor! } : { mode: 'stopped' },
+        ...(owner.deletedRecovery
+          ? {
+              deletedRecovery: {
+                actorId: owner.deletedRecovery.actorId,
+                deletion: {
+                  workspaceId: owner.deletedRecovery.deletion.workspaceId,
+                  recoveryBackupId: owner.deletedRecovery.deletion.recoveryBackupId,
+                  recoveryBackupManifestDigest:
+                    owner.deletedRecovery.deletion.recoveryBackupManifestDigest,
+                  originalOwnerUserId: owner.deletedRecovery.deletion.originalOwnerUserId,
+                  expectedRegistryRevision: owner.deletedRecovery.deletion.expectedRegistryRevision,
+                },
+              },
+            }
+          : {}),
+      },
+      owner.native?.freeze
+    );
+    deps.atBoundary?.('after-registration-commit');
+    result = { ok: true, report };
+  } catch (error) {
+    if (
+      error instanceof ControlStoreWorkerError &&
+      error.domain?.operation === 'recovery-target-registration'
+    ) {
+      const { code, message, status } = error.domain;
+      result = {
+        ok: false,
+        error:
+          status === 409
+            ? new WorkspaceRecoveryError(code as WorkspaceRecoveryErrorCode, message)
+            : new OperationError(code, message, status),
+      };
+    } else result = { ok: false, error };
+  }
+  if (!owner.native) {
+    try {
+      await client.close(database);
+    } catch (error) {
+      if (result.ok) result = { ok: false, error };
+    }
+  }
+  if (!result.ok) throw result.error;
+  return result.report;
 }
 
 /** Restores one existing same-deployment Workspace, or admits one identity-preserving MOVE privately. */
@@ -586,7 +548,10 @@ export async function finishWorkspaceRecovery(
 
 /** Finishes the original selected target under an already-owned Core and lifecycle exclusion. */
 export async function finishWorkspaceRecoveryAtCore(
-  owner: Pick<WorkspaceRecoveryTargetOwner, 'core' | 'native'>,
+  owner: Pick<
+    WorkspaceRecoveryTargetOwner,
+    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
+  >,
   input: WorkspaceRecoverySelectedInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
@@ -596,7 +561,10 @@ export async function finishWorkspaceRecoveryAtCore(
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
 async function finishSelectedTarget(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority' | 'deletedRecovery'>,
+  owner: Pick<
+    TargetRecoveryOwner,
+    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
+  >,
   input: WorkspaceRecoverySelectedInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
@@ -631,7 +599,10 @@ export async function abandonWorkspaceRecoveryAtCore(
 
 /** Shared body for the existing offline root lock and the admitted live lifecycle. */
 async function abandonSelectedTarget(
-  owner: Pick<TargetRecoveryOwner, 'core' | 'native' | 'currentAuthority' | 'deletedRecovery'>,
+  owner: Pick<
+    TargetRecoveryOwner,
+    'core' | 'native' | 'currentAuthority' | 'deletedRecovery' | 'actor'
+  >,
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
   const core = owner.core;
@@ -1065,6 +1036,7 @@ async function decideWorkspaceRecovery(
         fileAdmission: owned.verification.admission,
         native: { gate: owned.mutationAdmission, freeze },
         currentAuthority: owned.currentAuthority,
+        actor: publicOperationActor(context),
       };
       let report: WorkspaceRecoveryCliReport;
       if (target) {
@@ -1318,6 +1290,7 @@ export function createWorkspaceRestoreOperationImplementations(
             fileAdmission: owned.verification.admission,
             native: { gate: owned.mutationAdmission, freeze },
             currentAuthority: owned.currentAuthority,
+            actor: publicOperationActor(context),
           };
           await admitWorkspaceBackupAtCore(owner, target);
           owned.currentAuthority();

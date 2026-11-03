@@ -15,9 +15,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -26,8 +28,11 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { writeHotDataRootBackup } from './data-root-backup.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
+import { inventoryRegularFiles, writeHotDataRootBackup } from './data-root-backup.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -35,11 +40,13 @@ import {
   parseWorkspaceBackupManifest,
   withVerifiedWorkspaceBackupBundle,
 } from './workspace-backup-bundle.js';
+import { nativeProductScope } from './workspace-file-records.js';
 import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
   WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
+import { admitWorkspaceBackup } from './workspace-restore.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) };
@@ -262,6 +269,34 @@ async function fixture() {
   };
 }
 
+/** Retains a real prepared MOVE after placement, before its registration transaction. */
+async function placedMoveFixture() {
+  const f = await fixture();
+  let placed = false;
+  await expect(
+    admitWorkspaceBackup(
+      {
+        command: 'move-in',
+        dataRoot: f.dataRoot,
+        bundleRoot: f.bundleRoot,
+        requestId: f.requestId,
+        targetOwnerId: f.targetOwner,
+        memberMappings: [{ sourceAccountId: f.sourceMember, targetAccountId: f.targetMember }],
+        expectedRelease: f.manifest.release,
+      },
+      {
+        atBoundary(boundary) {
+          if (boundary !== 'after-target-rename') return;
+          placed = true;
+          throw new Error('Retain the real placed MOVE for selected registration.');
+        },
+      }
+    )
+  ).rejects.toMatchObject({ code: 'recovery-required' });
+  expect(placed).toBe(true);
+  return f;
+}
+
 /** Exact public refusal, with no untrusted text or success line. */
 async function refuses(f: Awaited<ReturnType<typeof fixture>>, code: string, argv = f.argv) {
   const output: string[] = [];
@@ -470,6 +505,205 @@ describe('D0-2 identity-preserving MOVE target admission', () => {
     expect(rows(coreDbPath(f.dataRoot), 'workspace_members')).toHaveLength(2);
     await expect(runCli(f.argv, () => {}, f)).resolves.toMatchObject({ disposition: 'imported' });
     expect(rows(coreDbPath(f.dataRoot), 'workspace_members')).toHaveLength(2);
+  }, 120_000);
+
+  it('rolls the complete placed MOVE registration and result back after a late admission failure, then explicitly finishes once', async () => {
+    const f = await placedMoveFixture();
+    const corePath = coreDbPath(f.dataRoot);
+    const tuple = () =>
+      Object.fromEntries(
+        [
+          'workspace_recovery_admissions',
+          'workspace_registry',
+          'workspace_members',
+          'audit_events',
+        ].map((table) => [table, rows(corePath, table)])
+      );
+    const before = tuple();
+    const placedBytes = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+    const sealedBytes = inventoryRegularFiles(f.bundleRoot);
+    expect(before.workspace_registry).toEqual([]);
+    expect(before.workspace_members).toEqual([]);
+    const fault = new Database(corePath, { fileMustExist: true });
+    try {
+      // Fail after the new registry, both memberships and the terminal result
+      // have run, at the final admission state change in their same transaction.
+      fault.exec(`CREATE TRIGGER d0_refuse_target_terminal
+        BEFORE UPDATE OF state ON workspace_recovery_admissions
+        WHEN NEW.state='finished'
+        BEGIN SELECT RAISE(ABORT, 'TARGET_TERMINAL_FAULT'); END`);
+    } finally {
+      fault.close();
+    }
+    const select = [
+      '--data-root',
+      f.dataRoot,
+      '--workspace-id',
+      workspaceId,
+      '--request-id',
+      f.requestId,
+    ];
+    await refuses(f, 'recovery-required', ['finish', ...select]);
+    expect(tuple()).toEqual(before);
+    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placedBytes);
+    expect(inventoryRegularFiles(f.bundleRoot)).toEqual(sealedBytes);
+    await expect(runCli(['inspect', ...select], () => {}, f)).resolves.toMatchObject({
+      disposition: 'quarantined',
+      selection: { kind: 'admission', requestId: f.requestId },
+    });
+    const repair = new Database(corePath, { fileMustExist: true });
+    try {
+      repair.exec('DROP TRIGGER d0_refuse_target_terminal');
+    } finally {
+      repair.close();
+    }
+    await expect(runCli(['finish', ...select], () => {}, f)).resolves.toMatchObject({
+      command: 'finish',
+      disposition: 'imported',
+      workspaceId,
+    });
+    const committed = tuple();
+    expect(committed.workspace_registry).toEqual([
+      expect.objectContaining({
+        workspace_id: workspaceId,
+        owner_user_id: f.targetOwner,
+        status: 'active',
+      }),
+    ]);
+    expect(committed.workspace_members).toEqual(
+      expect.arrayContaining(
+        [f.targetOwner, f.targetMember].map((user_id) =>
+          expect.objectContaining({ workspace_id: workspaceId, user_id, status: 'active' })
+        )
+      )
+    );
+    expect(committed.workspace_members).toHaveLength(2);
+    const admission = committed.workspace_recovery_admissions![0] as {
+      state: string;
+      proof_json: string;
+    };
+    expect(admission.state).toBe('finished');
+    expect(JSON.parse(admission.proof_json).result).toMatchObject({
+      disposition: 'imported',
+      workspaceId,
+    });
+    await expect(runCli(f.argv, () => {}, f)).resolves.toEqual(
+      JSON.parse(admission.proof_json).result
+    );
+    expect(tuple()).toEqual(committed);
+    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placedBytes);
+    expect(inventoryRegularFiles(f.bundleRoot)).toEqual(sealedBytes);
+  }, 120_000);
+
+  it.each([
+    'owner',
+    'member',
+  ] as const)('refuses the selected MOVE when its mapped %s becomes disabled during the actual Core posting hold', async (accountKind) => {
+    const f = await placedMoveFixture();
+    const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    const client = getControlStoreWorkerClient();
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: f.dataRoot,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    let release = await client.pauseForDataRootBackup(database);
+    const tuple = () =>
+      Object.fromEntries(
+        [
+          'workspace_recovery_admissions',
+          'workspace_registry',
+          'workspace_members',
+          'audit_events',
+        ].map((table) => [table, rows(scope.path, table)])
+      );
+    const before = tuple();
+    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+    const publication = vi.spyOn(client, 'recoveryTargetRegistration');
+    const actualOpen = client.open.bind(client);
+    let upstreamOpenRejected = false;
+    let upstreamOpenFailure: unknown;
+    const opening = vi.spyOn(client, 'open').mockImplementation((...args) => {
+      const operation = actualOpen(...args);
+      void operation.catch((error: unknown) => {
+        if (args[0].database === database) {
+          upstreamOpenRejected = true;
+          upstreamOpenFailure = error;
+        }
+      });
+      return operation;
+    });
+    const posts = vi.spyOn(Worker.prototype, 'postMessage');
+    const registrationPosts = () =>
+      posts.mock.calls.filter(
+        ([message]) =>
+          message.operation === 'recovery-target-registration' &&
+          message.database === database &&
+          message.input?.admissionId === f.requestId &&
+          message.input?.workspaceId === workspaceId
+      );
+    let settled = false;
+    const command = runCli(
+      [
+        'finish',
+        '--data-root',
+        f.dataRoot,
+        '--workspace-id',
+        workspaceId,
+        '--request-id',
+        f.requestId,
+      ],
+      () => {},
+      f
+    ).then(
+      (result) => {
+        settled = true;
+        return { result };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    try {
+      // A failed Core open can start cleanup before the producer settles. Its
+      // close needs this hold released, so observe the real rejection separately.
+      while (!publication.mock.calls.length && !settled && !upstreamOpenRejected) await nextTurn();
+      expect(
+        upstreamOpenFailure,
+        'Actual selected Core open rejected before registration.'
+      ).toBeUndefined();
+      expect(publication).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      expect(registrationPosts()).toEqual([]);
+      const writer = openCoreDb(f.dataRoot);
+      try {
+        writer.sqlite
+          .transaction(() =>
+            disableCanonicalUser(writer, accountKind === 'owner' ? f.targetOwner : f.targetMember)
+          )
+          .immediate();
+      } finally {
+        writer.sqlite.close();
+      }
+      release();
+      release = () => {};
+      expect(await command).toMatchObject({ error: { code: 'mapping-refused' } });
+      expect(registrationPosts()).toHaveLength(1);
+      expect(tuple()).toEqual(before);
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+    } finally {
+      release();
+      await command;
+      opening.mockRestore();
+      publication.mockRestore();
+      posts.mockRestore();
+    }
   }, 120_000);
 
   it('WM 441: abandon closes an owned unregistered candidate before a later finish can publish', async () => {
