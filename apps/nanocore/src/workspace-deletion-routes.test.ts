@@ -22,6 +22,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { requireAdministratorOperation } from './auth/operation-authorizer.js';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -50,6 +51,11 @@ import {
   readWorkspaceSnapshotMetadata,
   withVerifiedWorkspaceSnapshotSource,
 } from './storage/workspace-backup-bundle.js';
+import {
+  readRecoveryAdmission,
+  resumeWorkspaceRecoveryOwner,
+} from './storage/workspace-recovery-admissions.js';
+import { finishWorkspaceRecoveryAtCore } from './storage/workspace-restore.js';
 import { recordTestAgentEnvironmentPackage } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -2823,13 +2829,16 @@ async function nativeDeletionRouteFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const actorId = ensureLocalUser(coreDb);
+  const gate = new WorkspaceMutationAdmission();
   const store = new FsStore({ dataRoot });
+  store.setWorkspaceMutationAdmission(gate);
   const workspace = await store.createWorkspace('Native deletion route');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actorId, workspaceId: workspace.id });
   const app = createApp({
     coreDb,
     dataRoot,
     store,
+    workspaceMutationAdmission: gate,
     mode: 'local',
     releaseIdentity: {
       releaseTag: null,
@@ -2855,7 +2864,7 @@ async function nativeDeletionRouteFixture() {
         }
       )
     );
-  return { dataRoot, coreDb, workspace, requestId, invoke };
+  return { dataRoot, coreDb, workspace, requestId, invoke, app, store, actorId, gate };
 }
 
 /** Exact regular-file bytes after native close and rename; no live WAL/SHM exclusions. */
@@ -2868,6 +2877,183 @@ function stagedDeletionBytes(root: string) {
     })
     .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
 }
+
+it('rolls deleted target reactivation, Audit and result back together on late admission failure, then finishes with query-only Main', async () => {
+  const f = await nativeDeletionRouteFixture();
+  let releaseRecovery: (() => void) | undefined;
+  try {
+    const sibling = await f.store.createWorkspace('Healthy beside deleted recovery');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      workspaceId: sibling.id,
+      ownerUserId: f.actorId,
+    });
+    const deleted = await f.invoke();
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
+    const deletion = readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId);
+    const recoveryRequestId = randomUUID();
+    const recover = () =>
+      f.app.request(
+        ...operationRequest(
+          'workspace.deleted-recover',
+          { workspaceId: f.workspace.id },
+          {
+            body: JSON.stringify({ deletionRequestId: f.requestId, requestId: recoveryRequestId }),
+          }
+        )
+      );
+    const tuple = () => ({
+      registry: f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
+        .all(),
+      members: f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members ORDER BY workspace_id,user_id')
+        .all(),
+      admission: f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_recovery_admissions WHERE admission_id=?')
+        .get(recoveryRequestId),
+      audit: f.coreDb.sqlite
+        .prepare(
+          "SELECT * FROM audit_events WHERE action='workspace.deleted-recover' AND request_id=? ORDER BY rowid"
+        )
+        .all(recoveryRequestId),
+    });
+    const before = tuple();
+    const siblingBytes = stagedDeletionBytes(join(f.dataRoot, 'workspaces', sibling.id));
+    // The final admission state change follows registry reactivation, its Audit
+    // and the updated original report. They must all roll back with this fault.
+    f.coreDb.sqlite.exec(`CREATE TRIGGER deletion_recovery_terminal_failure
+      BEFORE UPDATE OF state ON workspace_recovery_admissions
+      WHEN NEW.state='finished'
+      BEGIN SELECT RAISE(ABORT, 'DELETION_RECOVERY_TERMINAL_FAULT'); END`);
+    const refused = await recover();
+    expect(refused.status, await refused.clone().text()).toBe(200);
+    const pending = await refused.json();
+    expect(pending).toEqual({
+      command: 'restore',
+      disposition: 'pending',
+      workspaceId: f.workspace.id,
+      selection: { kind: 'admission', requestId: recoveryRequestId },
+      droppedSourceMemberIds: [],
+      restrictedRecovery: false,
+      nextAction: 'finish',
+    });
+    const prepared = tuple();
+    expect(prepared.registry).toEqual(before.registry);
+    expect(prepared.members).toEqual(before.members);
+    expect(prepared.audit).toEqual([]);
+    expect(prepared.admission).toMatchObject({
+      admission_id: recoveryRequestId,
+      workspace_id: f.workspace.id,
+      backup_id: deletion.recoveryBackupId,
+      state: 'prepared',
+      revision: 1,
+    });
+    const proof = JSON.parse((prepared.admission as { proof_json: string }).proof_json);
+    expect(proof.result.disposition).toBe('quarantined');
+    expect(proof.capture.manifestDigest).toBe(deletion.recoveryBackupManifestDigest);
+    expect(existsSync(join(f.dataRoot, 'workspaces', f.workspace.id))).toBe(true);
+    expect(existsSync((prepared.admission as { candidate_ref: string }).candidate_ref)).toBe(false);
+    const placedBytes = stagedDeletionBytes(join(f.dataRoot, 'workspaces', f.workspace.id));
+    const owned = readRecoveryAdmission(f.coreDb, recoveryRequestId)!;
+    // The original public admission already fenced this empty fixture's runtime.
+    // Rejoin its exact owner for the SQL tuple; physical digest/integrity checks
+    // still run in the real selected producer, without another public census.
+    const freeze = resumeWorkspaceRecoveryOwner(f.coreDb, owned, f.gate, () => []);
+    if (freeze.status !== 'frozen')
+      throw new Error('Expected exact deleted target recovery owner.');
+    releaseRecovery = freeze.release;
+    const actor = { kind: 'local' as const, userId: f.actorId };
+    const owner = {
+      core: f.coreDb,
+      actor,
+      native: { gate: f.gate, freeze },
+      currentAuthority: () => {
+        requireAdministratorOperation(f.coreDb, actor, 'api.call');
+        expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(
+          deletion
+        );
+      },
+      deletedRecovery: { deletion, actorId: f.actorId },
+    };
+    const finish = () =>
+      finishWorkspaceRecoveryAtCore(owner, {
+        dataRoot: f.dataRoot,
+        workspaceId: f.workspace.id,
+        selection: { kind: 'admission' as const, requestId: recoveryRequestId },
+      });
+    await expect(finish()).rejects.toBeInstanceOf(Error);
+    expect(tuple()).toEqual(prepared);
+    expect(stagedDeletionBytes(join(f.dataRoot, 'workspaces', f.workspace.id))).toEqual(
+      placedBytes
+    );
+    expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(deletion);
+    expect(stagedDeletionBytes(join(f.dataRoot, 'workspaces', sibling.id))).toEqual(siblingBytes);
+    f.coreDb.sqlite.exec('DROP TRIGGER deletion_recovery_terminal_failure');
+    f.coreDb.sqlite.pragma('query_only = ON');
+    expect(() =>
+      f.coreDb.sqlite
+        .prepare('UPDATE workspace_recovery_admissions SET revision=revision WHERE admission_id=?')
+        .run(recoveryRequestId)
+    ).toThrow(/readonly/i);
+    const selectedResult = await finish();
+    expect(selectedResult).toMatchObject({
+      command: 'finish',
+      disposition: 'restored',
+      workspaceId: f.workspace.id,
+      selection: { kind: 'admission', requestId: recoveryRequestId },
+    });
+    freeze.release();
+    // Public terminal readmission still validates the real Store/config and
+    // returns the original deleted-recovery report before ordinary serving.
+    const recovered = await recover();
+    expect(recovered.status, await recovered.clone().text()).toBe(200);
+    const result = await recovered.json();
+    expect(result).toMatchObject({
+      disposition: 'restored',
+      workspaceId: f.workspace.id,
+      currentRevision: deletion.expectedRegistryRevision + 3,
+      selection: { kind: 'admission', requestId: recoveryRequestId },
+    });
+    const committed = tuple();
+    expect(committed.registry).toContainEqual(
+      expect.objectContaining({
+        workspace_id: f.workspace.id,
+        owner_user_id: deletion.originalOwnerUserId,
+        status: 'active',
+        revision: deletion.expectedRegistryRevision + 3,
+      })
+    );
+    expect(committed.members).toEqual(prepared.members);
+    expect(committed.admission).toMatchObject({ state: 'finished', revision: 2 });
+    const retained = JSON.parse((committed.admission as { proof_json: string }).proof_json);
+    expect(retained.result).toMatchObject({
+      disposition: 'restored',
+      currentRevision: deletion.expectedRegistryRevision + 3,
+      selection: { kind: 'admission', requestId: recoveryRequestId },
+    });
+    expect(committed.audit).toEqual([
+      expect.objectContaining({
+        action: 'workspace.deleted-recover',
+        actor_json: JSON.stringify({ kind: 'user', id: f.actorId }),
+        request_id: recoveryRequestId,
+        workspace_id: f.workspace.id,
+        outcome: 'succeeded',
+      }),
+    ]);
+    const replay = await recover();
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(await replay.json()).toEqual(result);
+    expect(tuple()).toEqual(committed);
+    expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(deletion);
+    expect(stagedDeletionBytes(join(f.dataRoot, 'workspaces', sibling.id))).toEqual(siblingBytes);
+  } finally {
+    releaseRecovery?.();
+    f.coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    rmSync(f.dataRoot, { recursive: true, force: true });
+  }
+}, 120_000);
 
 it('runs the complete deletion API with Main Core query-only and replays the exact durable terminal truth after native shutdown', async () => {
   const f = await nativeDeletionRouteFixture();

@@ -12,8 +12,11 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { type Worker as NativeWorker, Worker } from 'node:worker_threads';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
@@ -22,6 +25,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
@@ -46,6 +50,7 @@ import { upsertWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
+  denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -53,12 +58,21 @@ import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import {
+  beginWorkspaceDeletion,
+  completeWorkspaceDeletion,
+  getWorkspaceRegistryLifecycleFact,
+} from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
-import { inventoryRegularFiles, writeHotDataRootBackup } from './data-root-backup.js';
+import {
+  inventoryRegularFiles,
+  verifyDataRootBackupManifest,
+  writeHotDataRootBackup,
+} from './data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import {
@@ -67,6 +81,8 @@ import {
 } from './workspace-backup-bundle.js';
 import { protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
+import { inspectWorkspaceRecoveryAtCore } from './workspace-move.js';
+import * as recoveryAdmissions from './workspace-recovery-admissions.js';
 import {
   bindWorkspaceRecoveryNativeOwner,
   readRecoveryAdmission,
@@ -85,6 +101,92 @@ import {
   finishWorkspaceRecoveryAtCore,
 } from './workspace-restore.js';
 
+const registrationInterception = vi.hoisted(() => ({
+  selected: undefined as
+    | {
+        corePath: string;
+        admissionId: string;
+        workspaceId: string;
+        gate: SharedArrayBuffer;
+      }
+    | undefined,
+  worker: undefined as NativeWorker | undefined,
+  replied: false,
+}));
+
+// As in the native client tests, the real entry and real SQL remain in use.
+// Only the selected real host's covering COMMIT can withhold its actual reply.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        const selected = registrationInterception.selected;
+        if (!selected) {
+          super(filename, options);
+          return;
+        }
+        const prelude = `
+          const { workerData } = require('node:worker_threads');
+          const Database = require(workerData.databaseModule);
+          const execute = Database.prototype.exec;
+          const gate = workerData.gate;
+          Database.prototype.exec = function(sql) {
+            const result = execute.call(this, sql);
+            if (/^COMMIT$/i.test(sql) && this.name === workerData.corePath && Atomics.load(gate, 2)) {
+              const admission = this.prepare(
+                'SELECT state, workspace_id FROM workspace_recovery_admissions WHERE admission_id=?'
+              ).get(workerData.admissionId);
+              if (admission?.state === 'finished' && admission.workspace_id === workerData.workspaceId &&
+                  Atomics.load(gate, 0) === 0) {
+                Atomics.store(gate, 3, this.pragma('synchronous', { simple: true }));
+                if (this.inTransaction) throw new Error('Registration COMMIT is still active.');
+                // Publish readiness only after the observer's metadata is complete.
+                Atomics.store(gate, 0, 1);
+                Atomics.wait(gate, 1, 0);
+              }
+            }
+            return result;
+          };
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        const require = createRequire(import.meta.url);
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            ...selected,
+            gate: new Int32Array(selected.gate),
+            databaseModule: require.resolve('better-sqlite3'),
+          },
+        });
+        const post = this.postMessage.bind(this);
+        this.postMessage = (message, ...args) => {
+          if (
+            message.operation === 'recovery-target-registration' &&
+            message.database === `core:${selected.corePath}` &&
+            message.input?.admissionId === selected.admissionId &&
+            message.input?.workspaceId === selected.workspaceId
+          ) {
+            if (registrationInterception.worker)
+              throw new Error('Duplicate selected native registration post.');
+            registrationInterception.worker = this;
+            Atomics.store(new Int32Array(selected.gate), 2, 1);
+            this.on('message', (reply) => {
+              if (reply.id === message.id) registrationInterception.replied = true;
+            });
+          }
+          return post(message, ...args);
+        };
+      }
+    },
+  };
+});
+
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) };
 const roots: string[] = [];
@@ -97,6 +199,9 @@ const runCli: (
 ) => Promise<WorkspaceRecoveryCliReport> = runWorkspaceRecoveryCli;
 
 afterEach(async () => {
+  registrationInterception.selected = undefined;
+  registrationInterception.worker = undefined;
+  registrationInterception.replied = false;
   await shutdownControlStoreWorkerClient();
   for (const cleanup of readmissionCleanups.splice(0).reverse()) cleanup();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -427,7 +532,8 @@ async function refuses(f: Awaited<ReturnType<typeof fixture>>, code: string, arg
 /** Reaches boot quarantine through a real interrupted restore, with stale live read models. */
 async function readmissionFixture(
   priorRecovery = false,
-  interruption: 'before-target-rename' | 'after-target-rename' = 'before-target-rename'
+  interruption: 'before-target-rename' | 'after-target-rename' = 'before-target-rename',
+  prepareCurrent?: (f: Awaited<ReturnType<typeof fixture>>, siblingId: string) => Promise<void>
 ) {
   const f = await fixture();
   let foreignRuntimeConfigManager: ReturnType<typeof createRuntimeConfigManager> | undefined;
@@ -447,6 +553,7 @@ async function readmissionFixture(
   } finally {
     registry.sqlite.close();
   }
+  await prepareCurrent?.(f, sibling.id);
   const staleThread = await f.store.createThread(workspaceId, 'Newer than the restored snapshot');
   const runtimeConfigManager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
   const configPath = join(f.dataRoot, 'workspaces', workspaceId, 'config/workspace.jsonc');
@@ -505,6 +612,7 @@ async function readmissionFixture(
   readmissionCleanups.push(() => freeze.release());
   const owner = {
     core,
+    actor: { kind: 'local' as const, userId: ensureLocalUser(core) },
     fileAdmission: new FileStorageAdmission(f.dataRoot, () => 128n * 1024n * 1024n),
     native: { gate, freeze },
   };
@@ -531,6 +639,583 @@ async function readmissionFixture(
 }
 
 describe('D0-2 same-deployment restore', () => {
+  it('retains the actual committed registration after its native host loses the FULL reply, then resolves by explicit selected replay', async () => {
+    const f = await readmissionFixture(false, 'after-target-rename');
+    await shutdownControlStoreWorkerClient();
+    const gate = new Int32Array(new SharedArrayBuffer(16));
+    registrationInterception.selected = {
+      corePath: coreDbPath(f.dataRoot),
+      admissionId: f.requestId,
+      workspaceId,
+      gate: gate.buffer as SharedArrayBuffer,
+    };
+    const client = getControlStoreWorkerClient(f.gate);
+    const publish = client.recoveryTargetRegistration.bind(client);
+    let nativeFailure: unknown;
+    const publication = vi
+      .spyOn(client, 'recoveryTargetRegistration')
+      .mockImplementation(async (...args) => {
+        try {
+          return await publish(...args);
+        } catch (error) {
+          nativeFailure = error;
+          throw error;
+        }
+      });
+    const core = f.owner.core;
+    core.sqlite.pragma('query_only = ON');
+    const selected = {
+      dataRoot: f.dataRoot,
+      workspaceId,
+      selection: { kind: 'admission' as const, requestId: f.requestId },
+    };
+    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+    const before = readRecoveryAdmission(core, f.requestId)!;
+    const tuple = () =>
+      Object.fromEntries(
+        [
+          'workspace_recovery_admissions',
+          'workspace_registry',
+          'workspace_members',
+          'recurring_schedules',
+          'recurring_occurrences',
+          'recurring_expired_ranges',
+          'scheduler_admission_entries',
+          'scheduler_execution_attempts',
+          'audit_events',
+        ].map((table) => [table, rows(coreDbPath(f.dataRoot), table)])
+      );
+    let settled = false;
+    let command: Promise<unknown> | undefined;
+    try {
+      command = finishWorkspaceRecoveryAtCore(f.owner, selected).then(
+        (result) => {
+          settled = true;
+          return { result };
+        },
+        (error) => {
+          settled = true;
+          return { error };
+        }
+      );
+      while (Atomics.load(gate, 0) === 0 && !settled) await nextTurn();
+      expect(
+        Atomics.load(gate, 0),
+        'Selected registration did not reach its actual native post-COMMIT gate.'
+      ).toBe(1);
+      expect(settled).toBe(false);
+      expect(registrationInterception.replied).toBe(false);
+      expect(Atomics.load(gate, 3)).toBe(2);
+      const committed = tuple();
+      const finished = readRecoveryAdmission(core, f.requestId)!;
+      expect(finished).toMatchObject({ state: 'finished', revision: before.revision + 1 });
+      expect(finished.proof.result).toMatchObject({ disposition: 'restored', workspaceId });
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+      const host = registrationInterception.worker;
+      expect(host).toBeDefined();
+      await host!.terminate();
+      expect(await command).toHaveProperty('error');
+      expect(nativeFailure).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+      expect(registrationInterception.replied).toBe(false);
+      expect(tuple()).toEqual(committed);
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+      expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      registrationInterception.selected = undefined;
+      await shutdownControlStoreWorkerClient();
+      expect(inspectWorkspaceRecoveryAtCore(core, selected)).toMatchObject({
+        command: 'inspect',
+        disposition: 'restored',
+        workspaceId,
+        selection: selected.selection,
+      });
+      const replayPublication = vi.spyOn(
+        getControlStoreWorkerClient(f.gate),
+        'recoveryTargetRegistration'
+      );
+      try {
+        const replay = await finishWorkspaceRecoveryAtCore(f.owner, selected);
+        expect(replay).toEqual({
+          ...finished.proof.result,
+          command: 'finish',
+          selection: selected.selection,
+        });
+        expect(replayPublication).not.toHaveBeenCalled();
+      } finally {
+        replayPublication.mockRestore();
+      }
+      expect(publication).toHaveBeenCalledTimes(1);
+      expect(tuple()).toEqual(committed);
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+    } finally {
+      registrationInterception.selected = undefined;
+      Atomics.store(gate, 1, 1);
+      Atomics.notify(gate, 1);
+      if (registrationInterception.worker) await registrationInterception.worker.terminate();
+      await command;
+      publication.mockRestore();
+    }
+  }, 120_000);
+
+  it.each([
+    'credential-revoked',
+    'freeze-released',
+    'registry-deleted',
+  ] as const)('refuses selected registration after %s while its actual Core post is deferred', async (fault) => {
+    const f = await readmissionFixture(false, 'after-target-rename');
+    const core = f.owner.core;
+    const token = createOpenKitAccessTokenRecord(core, {
+      ownerUserId: f.ownerId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    const actor = {
+      kind: 'token' as const,
+      userId: token.record.ownerUserId,
+      tokenId: token.tokenId,
+      tokenScope: token.record.scope,
+      tokenWorkspaceIds: token.record.workspaceIds,
+    };
+    const owner = {
+      ...f.owner,
+      actor,
+      currentAuthority: () => requireAdministratorOperation(core, actor, 'api.call'),
+    };
+    owner.currentAuthority();
+    const client = getControlStoreWorkerClient(f.gate);
+    const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: f.dataRoot,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    let release = await client.pauseForDataRootBackup(database);
+    const selected = {
+      dataRoot: f.dataRoot,
+      workspaceId,
+      selection: { kind: 'admission' as const, requestId: f.requestId },
+    };
+    const tuple = () =>
+      Object.fromEntries(
+        [
+          'workspace_recovery_admissions',
+          'workspace_registry',
+          'workspace_members',
+          'recurring_schedules',
+          'recurring_occurrences',
+          'recurring_expired_ranges',
+          'scheduler_admission_entries',
+          'scheduler_execution_attempts',
+          'audit_events',
+        ].map((table) => [table, rows(scope.path, table)])
+      );
+    const before = tuple();
+    let expected = before;
+    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+    core.sqlite.pragma('query_only = ON');
+    const publication = vi.spyOn(client, 'recoveryTargetRegistration');
+    const actualOpen = client.open.bind(client);
+    let upstreamOpenRejected = false;
+    let upstreamOpenFailure: unknown;
+    const opening = vi.spyOn(client, 'open').mockImplementation((...args) => {
+      const operation = actualOpen(...args);
+      void operation.catch((error: unknown) => {
+        if (args[0].database === database) {
+          upstreamOpenRejected = true;
+          upstreamOpenFailure = error;
+        }
+      });
+      return operation;
+    });
+    const posts = vi.spyOn(Worker.prototype, 'postMessage');
+    const registrationPosts = () =>
+      posts.mock.calls.filter(
+        ([message]) =>
+          message.operation === 'recovery-target-registration' &&
+          message.database === database &&
+          message.input?.admissionId === f.requestId &&
+          message.input?.workspaceId === workspaceId
+      );
+    let settled = false;
+    const command = finishWorkspaceRecoveryAtCore(owner, selected).then(
+      (result) => {
+        settled = true;
+        return { result };
+      },
+      (error) => {
+        settled = true;
+        return { error };
+      }
+    );
+    try {
+      // A failed open can enter producer cleanup, whose real close waits for this
+      // posting hold. Observe that rejection before joining the whole producer.
+      while (!publication.mock.calls.length && !settled && !upstreamOpenRejected) await nextTurn();
+      expect(
+        upstreamOpenFailure,
+        'Actual selected Core open rejected before registration.'
+      ).toBeUndefined();
+      expect(publication).toHaveBeenCalledTimes(1);
+      expect(settled).toBe(false);
+      expect(registrationPosts()).toEqual([]);
+      if (fault === 'credential-revoked') {
+        const writer = openCoreDb(f.dataRoot);
+        try {
+          revokeOpenKitAccessTokenRecord(writer, token.tokenId);
+        } finally {
+          writer.sqlite.close();
+        }
+      } else if (fault === 'freeze-released') f.freeze.release();
+      else {
+        const writer = openCoreDb(f.dataRoot);
+        try {
+          // Change the actual Core lifecycle through its domain owners. This
+          // adversarial current fact is not a public deletion/file-closure fixture.
+          writer.sqlite
+            .transaction(() => {
+              const registry = getWorkspaceRegistryLifecycleFact(writer, workspaceId)!;
+              const deleting = beginWorkspaceDeletion({
+                coreDb: writer,
+                workspaceId,
+                originalOwnerUserId: f.ownerId,
+                expectedRegistryRevision: registry.registryRevision,
+              });
+              completeWorkspaceDeletion({
+                coreDb: writer,
+                workspaceId,
+                originalOwnerUserId: f.ownerId,
+                expectedRegistryRevision: deleting.registryRevision,
+              });
+            })
+            .immediate();
+        } finally {
+          writer.sqlite.close();
+        }
+        expected = tuple();
+        expect(expected.workspace_recovery_admissions).toEqual(
+          before.workspace_recovery_admissions
+        );
+        expect(expected.workspace_registry).toContainEqual(
+          expect.objectContaining({
+            workspace_id: workspaceId,
+            status: 'deleted',
+          })
+        );
+      }
+      release();
+      release = () => {};
+      expect(await command).toHaveProperty('error');
+      expect(registrationPosts()).toHaveLength(fault === 'freeze-released' ? 0 : 1);
+      expect(tuple()).toEqual(expected);
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('prepared');
+    } finally {
+      release();
+      await command;
+      opening.mockRestore();
+      publication.mockRestore();
+      posts.mockRestore();
+    }
+  }, 120_000);
+
+  it.each([
+    'descriptive-extensions',
+    'unknown-core',
+  ] as const)('selected registration preserves retained report compatibility for %s before committing its result', async (shape) => {
+    const prepare = recoveryAdmissions.prepareRecoveryAdmission;
+    const creation = vi
+      .spyOn(recoveryAdmissions, 'prepareRecoveryAdmission')
+      .mockImplementation((core, id, candidate, proof) => {
+        const parent = verifyDataRootBackupManifest({
+          backupRoot: join(dirname(core.dataRoot), 'parent'),
+        }).manifest;
+        const capture = {
+          ...proof.capture,
+          futureCaptureDescription: { label: 'Original retained capture description' },
+          coverage: {
+            ...proof.capture.coverage,
+            futureCoverageDescription: { label: 'Original retained coverage description' },
+          },
+          source: {
+            kind: 'data-root-backup' as const,
+            dataRootBackupId: parent.id,
+            consistency: parent.consistency,
+            futureSourceDescription: { label: 'Original verified parent description' },
+          },
+        };
+        // The original owner creates the real prepared admission. The negative
+        // variant injects unsupported retained core content, not new authority.
+        const result = {
+          ...proof.result,
+          capture,
+          command: shape === 'unknown-core' ? 'unsupported-future-command' : proof.result.command,
+          futureReportDescription: { label: 'Original retained report description' },
+        } as typeof proof.result;
+        return prepare(core, id, candidate, { ...proof, capture, result });
+      });
+    let f: Awaited<ReturnType<typeof readmissionFixture>>;
+    try {
+      f = await readmissionFixture(false, 'after-target-rename');
+    } finally {
+      creation.mockRestore();
+    }
+    const before = readRecoveryAdmission(f.owner.core, f.requestId)!;
+    const tuple = () =>
+      Object.fromEntries(
+        [
+          'workspace_recovery_admissions',
+          'workspace_registry',
+          'workspace_members',
+          'recurring_schedules',
+          'recurring_occurrences',
+          'recurring_expired_ranges',
+          'scheduler_admission_entries',
+          'scheduler_execution_attempts',
+          'audit_events',
+        ].map((table) => [table, rows(coreDbPath(f.dataRoot), table)])
+      );
+    const original = tuple();
+    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+    const selected = {
+      dataRoot: f.dataRoot,
+      workspaceId,
+      selection: { kind: 'admission' as const, requestId: f.requestId },
+    };
+    f.owner.core.sqlite.pragma('query_only = ON');
+    if (shape === 'unknown-core') {
+      await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).rejects.toBeInstanceOf(Error);
+      expect(tuple()).toEqual(original);
+      expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(before);
+    } else {
+      const result = await finishWorkspaceRecoveryAtCore(f.owner, selected);
+      const expected = {
+        ...before.proof.result,
+        disposition: 'restored',
+        droppedSourceMemberIds: [],
+        nextAction: 'none',
+      };
+      expect(result).toEqual({ ...expected, command: 'finish', selection: selected.selection });
+      const finished = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      expect(finished).toMatchObject({ state: 'finished', revision: before.revision + 1 });
+      expect(finished.proof).toEqual({ ...before.proof, result: expected });
+      const committed = tuple();
+      await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).resolves.toEqual(result);
+      expect(tuple()).toEqual(committed);
+    }
+    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+  }, 120_000);
+
+  it('rolls restore pause history, queued and denied cancellation, Audit and result back together after late admission failure', async () => {
+    let scheduleId = '';
+    let queuedId = '';
+    let deniedId = '';
+    let cancelledId = '';
+    let siblingQueueId = '';
+    const f = await readmissionFixture(false, 'after-target-rename', async (current, siblingId) => {
+      const core = openCoreDb(current.dataRoot);
+      try {
+        const instant = new Date(Date.now() - 30 * 60_000).toISOString();
+        const schedules = new AutomationStore(
+          core,
+          new WorkspaceMutationAdmission(),
+          () => instant
+        );
+        const schedule = await schedules.createAutomation(current.ownerId, {
+          name: 'Current overdue definition',
+          workspaceId,
+          threadId: DEMO_THREAD_ID,
+          intervalSeconds: 60,
+          prompt: 'Restored work must stay interrupted.',
+        });
+        await schedules.updateAutomation(current.ownerId, schedule.id, {
+          expectedRevision: 1,
+          status: 'active',
+          scheduledAt: instant,
+        });
+        scheduleId = schedule.id;
+        const siblingThread = await current.store.createThread(siblingId, 'Current sibling queue');
+        for (const [kind, selectedWorkspaceId, threadId] of [
+          ['queued', workspaceId, DEMO_THREAD_ID],
+          ['denied', workspaceId, DEMO_THREAD_ID],
+          ['cancelled', workspaceId, DEMO_THREAD_ID],
+          ['sibling', siblingId, siblingThread.id],
+        ] as const) {
+          const queueEntryId = randomUUID();
+          createSchedulerAdmissionEntry(core, {
+            backendId: 'nanohost',
+            queueEntryId,
+            requestId: randomUUID(),
+            requestedAgentId: 'agent_codex_host',
+            triggerActor: { kind: 'user', id: current.ownerId },
+            turnInput: 'Retain the original recovery queue boundary.',
+            workspaceId: selectedWorkspaceId,
+            threadId,
+            turnId: allocateEntityId('tu'),
+          });
+          if (kind === 'queued') queuedId = queueEntryId;
+          if (kind === 'denied') {
+            deniedId = queueEntryId;
+            denySchedulerAdmissionEntry(core, { queueEntryId, denialReason: 'authority-denied' });
+          }
+          if (kind === 'cancelled') {
+            cancelledId = queueEntryId;
+            cancelSchedulerAdmissionEntry(core, { workspaceId, queueEntryId });
+          }
+          if (kind === 'sibling') siblingQueueId = queueEntryId;
+        }
+      } finally {
+        core.sqlite.close();
+      }
+    });
+    const core = f.owner.core;
+    const corePath = coreDbPath(f.dataRoot);
+    const tuple = () =>
+      Object.fromEntries(
+        [
+          'workspace_recovery_admissions',
+          'workspace_registry',
+          'workspace_members',
+          'recurring_schedules',
+          'recurring_occurrences',
+          'recurring_expired_ranges',
+          'scheduler_admission_entries',
+          'scheduler_execution_attempts',
+          'audit_events',
+        ].map((table) => [table, rows(corePath, table)])
+      );
+    const before = tuple();
+    const prepared = readRecoveryAdmission(core, f.requestId)!;
+    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+    const sibling = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id));
+    core.sqlite.exec(`CREATE TRIGGER restore_terminal_failure
+      BEFORE UPDATE OF state ON workspace_recovery_admissions WHEN NEW.state='finished'
+      BEGIN SELECT RAISE(ABORT, 'RESTORE_TERMINAL_FAULT'); END`);
+    const selected = {
+      dataRoot: f.dataRoot,
+      workspaceId,
+      selection: { kind: 'admission' as const, requestId: f.requestId },
+    };
+    await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).rejects.toBeInstanceOf(Error);
+    expect(tuple()).toEqual(before);
+    expect(readRecoveryAdmission(core, f.requestId)).toEqual(prepared);
+    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id))).toEqual(sibling);
+    expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+    core.sqlite.exec('DROP TRIGGER restore_terminal_failure');
+    core.sqlite.pragma('query_only = ON');
+    const result = await finishWorkspaceRecoveryAtCore(f.owner, selected);
+    expect(result).toMatchObject({
+      disposition: 'restored',
+      workspaceId,
+      selection: selected.selection,
+    });
+    const committed = tuple();
+    expect(committed.recurring_schedules).toContainEqual(
+      expect.objectContaining({
+        id: scheduleId,
+        status: 'paused',
+        revision: 3,
+        next_scheduled_at: null,
+      })
+    );
+    expect(committed.recurring_occurrences!.length).toBeGreaterThan(
+      before.recurring_occurrences!.length
+    );
+    expect(committed.recurring_expired_ranges!.length).toBeGreaterThan(
+      before.recurring_expired_ranges!.length
+    );
+    expect(committed.audit_events!.length).toBeGreaterThan(before.audit_events!.length);
+    for (const queue_entry_id of [queuedId, deniedId, cancelledId])
+      expect(committed.scheduler_admission_entries).toContainEqual(
+        expect.objectContaining({
+          queue_entry_id,
+          status: 'cancelled',
+        })
+      );
+    expect(committed.scheduler_admission_entries).toContainEqual(
+      (before.scheduler_admission_entries as { queue_entry_id: string }[]).find(
+        (row) => row.queue_entry_id === siblingQueueId
+      )
+    );
+    expect(committed.workspace_registry).toEqual(before.workspace_registry);
+    expect(committed.workspace_members).toEqual(before.workspace_members);
+    const finished = readRecoveryAdmission(core, f.requestId)!;
+    expect(finished).toMatchObject({ state: 'finished', revision: prepared.revision + 1 });
+    expect(finished.proof.result).toMatchObject({ disposition: 'restored', workspaceId });
+    await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).resolves.toEqual(result);
+    expect(tuple()).toEqual(committed);
+    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id))).toEqual(sibling);
+  }, 120_000);
+
+  it('finishes the exact placed restore through the native Core owner with query-only Main', async () => {
+    const f = await readmissionFixture(false, 'after-target-rename');
+    const core = f.owner.core;
+    const before = readRecoveryAdmission(core, f.requestId)!;
+    const corePath = coreDbPath(f.dataRoot);
+    const registry = rows(corePath, 'workspace_registry');
+    const members = rows(corePath, 'workspace_members');
+    const sibling = rows(workspaceDbPath(f.dataRoot, f.sibling.id), 'control_workspaces');
+    const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+    expect(before.state).toBe('prepared');
+    expect(before.proof.result.disposition).toBe('quarantined');
+    expect(existsSync(before.candidate_ref)).toBe(false);
+    core.sqlite.pragma('query_only = ON');
+    expect(() =>
+      core.sqlite
+        .prepare('UPDATE workspace_recovery_admissions SET revision=revision WHERE admission_id=?')
+        .run(f.requestId)
+    ).toThrow(/readonly/i);
+    const selection = { kind: 'admission' as const, requestId: f.requestId };
+    const result = await finishWorkspaceRecoveryAtCore(f.owner, {
+      dataRoot: f.dataRoot,
+      workspaceId,
+      selection,
+    });
+    expect(result).toMatchObject({
+      command: 'finish',
+      disposition: 'restored',
+      workspaceId,
+      selection,
+      nextAction: 'none',
+    });
+    const finished = readRecoveryAdmission(core, f.requestId)!;
+    expect(finished).toMatchObject({
+      admission_id: before.admission_id,
+      workspace_id: workspaceId,
+      state: 'finished',
+      revision: before.revision + 1,
+      candidate_ref: before.candidate_ref,
+    });
+    expect(finished.proof).toEqual({
+      ...before.proof,
+      result: {
+        ...before.proof.result,
+        disposition: 'restored',
+        droppedSourceMemberIds: [],
+        nextAction: 'none',
+      },
+    });
+    expect(rows(corePath, 'workspace_registry')).toEqual(registry);
+    expect(rows(corePath, 'workspace_members')).toEqual(members);
+    expect(rows(workspaceDbPath(f.dataRoot, f.sibling.id), 'control_workspaces')).toEqual(sibling);
+    expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
+    expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+    expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+    await expect(
+      finishWorkspaceRecoveryAtCore(f.owner, { dataRoot: f.dataRoot, workspaceId, selection })
+    ).resolves.toEqual(result);
+    expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+  }, 120_000);
+
   it('selected abandon closes an unsealed native candidate before terminal authority or byte retirement', async () => {
     const f = await fixture();
     const core = openCoreDb(f.dataRoot);
@@ -543,6 +1228,7 @@ describe('D0-2 same-deployment restore', () => {
     readmissionCleanups.push(() => freeze.release());
     const owner = {
       core,
+      actor: { kind: 'local' as const, userId: ensureLocalUser(core) },
       fileAdmission: new FileStorageAdmission(f.dataRoot, () => 128n * 1024n * 1024n),
       native: { gate, freeze },
     };
@@ -884,6 +1570,7 @@ describe('D0-2 same-deployment restore', () => {
       let preparedCapacityChecks = 0;
       const owner = {
         core,
+        actor: { kind: 'local' as const, userId: ensureLocalUser(core) },
         fileAdmission: new FileStorageAdmission(
           f.dataRoot,
           () => 128n * 1024n * 1024n,

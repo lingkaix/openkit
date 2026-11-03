@@ -247,6 +247,13 @@ import {
   type ControlWorkspaceDeletionResult,
   ControlWorkspaceDeletionResultSchema,
 } from './workspace-deletion-codecs.js';
+import type { WorkspaceRecoveryCliReport } from './workspace-recovery-cli.js';
+import {
+  type ControlRecoveryTargetRegistrationInput,
+  ControlRecoveryTargetRegistrationInputSchema,
+  ControlRecoveryTargetRegistrationRefusalSchema,
+  ControlRecoveryTargetRegistrationResultSchema,
+} from './workspace-recovery-target-codecs.js';
 import {
   type ControlWorkspaceReviewDecision,
   ControlWorkspaceReviewDecisionResultSchema,
@@ -265,7 +272,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 46;
+export const CONTROL_WORKER_VERSION = 47;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -559,6 +566,10 @@ export type ControlWorkerCommand =
           readonly input: ControlSchedulerAdmissionWire;
           readonly content?: ArrayBuffer;
         }
+      | {
+          readonly operation: 'recovery-target-registration';
+          readonly input: ControlRecoveryTargetRegistrationInput;
+        }
       | { readonly operation: 'workspace-deletion'; readonly input: ControlWorkspaceDeletionInput }
       | { readonly operation: 'core-sharing'; readonly input: ControlCoreSharing }
       | { readonly operation: 'evaluation-candidate'; readonly input: ControlEvaluationCandidate }
@@ -730,6 +741,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlRuntimeTargetRefusalSchema>
   | z.infer<typeof ControlBackendSessionRefusalSchema>
   | z.infer<typeof ControlHarnessLifecycleRefusalSchema>
+  | z.infer<typeof ControlRecoveryTargetRegistrationRefusalSchema>
   | ControlCoreSharingRefusal
   | ControlSchedulerAdmissionRefusal;
 
@@ -831,6 +843,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'execution-attempt';
       readonly result: ControlExecutionAttemptResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'recovery-target-registration';
+      readonly result: WorkspaceRecoveryCliReport;
     }
   | {
       readonly status: 'ok';
@@ -999,6 +1016,8 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'recovery-target-registration')
+    return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
   if (
     isRecord(value) &&
     (value.operation === 'workspace-review-decision' ||
@@ -1271,6 +1290,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlWorkerHeartbeatResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'worker-control-final-status')
     return ControlWorkerFinalStatusResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'recovery-target-registration')
+    return ControlRecoveryTargetRegistrationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-deletion')
     return ControlWorkspaceDeletionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'core-journal')
@@ -1467,6 +1488,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'shutdown') return exactFields(value, header);
   if (typeof value.database !== 'string' || value.database.length === 0) return false;
   const scoped = [...header, 'database'];
+  if (value.operation === 'recovery-target-registration')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlRecoveryTargetRegistrationInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'workspace-deletion')
     return (
       exactFields(value, [...scoped, 'input']) &&
