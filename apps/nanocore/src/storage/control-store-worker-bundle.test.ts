@@ -1,10 +1,21 @@
 // openkit-test-platform: posix
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+} from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -259,5 +270,61 @@ describe('shipped native worker bundle', () => {
       status: 'error',
       code: 'not-open',
     });
+  }, 30_000);
+
+  it('opens and closes through the compiled client with only the shipped worker bundle available', async () => {
+    const appRoot = fileURLToPath(new URL('../..', import.meta.url));
+    const compiled = join(appRoot, 'dist');
+    expect(
+      existsSync(join(compiled, 'storage', 'control-store-worker-client.js')),
+      'Precondition: run the canonical NanoCore build for this source revision before this case.'
+    ).toBe(true);
+    // Keep the real compiled graph and ESM semantics, but do not permit the old entry to supply startup.
+    const omitted = new Set(
+      [
+        'control-store-worker.js',
+        'control-store-worker.js.map',
+        'control-store-worker.bundle.mjs',
+        'control-store-worker.bundle.mjs.map',
+      ].map((name) => join(compiled, 'storage', name))
+    );
+    cpSync(compiled, join(artifactRoot, 'dist'), {
+      recursive: true,
+      filter: (source) => !omitted.has(source),
+    });
+    copyFileSync(join(appRoot, 'package.json'), join(artifactRoot, 'package.json'));
+    expect(existsSync(join(artifactRoot, 'dist', 'storage', 'control-store-worker.js'))).toBe(
+      false
+    );
+    expect(existsSync(bundle)).toBe(true);
+    const dataRoot = mkdtempSync(join(tmpdir(), 'compiled-selector-data-'));
+    roots.push(dataRoot);
+    const databasePath = join(dataRoot, 'control.sqlite');
+    const clientUrl = pathToFileURL(
+      join(artifactRoot, 'dist', 'storage', 'control-store-worker-client.js')
+    ).href;
+    const { stdout } = await promisify(execFile)(
+      process.execPath,
+      [
+        '--eval',
+        `void (async () => {
+         const native = await import(process.argv[1]);
+         const client = native.getControlStoreWorkerClient();
+         try {
+           await client.open({ database: 'selector', path: process.argv[2], create: true });
+           await client.close('selector');
+         } finally {
+           await native.shutdownControlStoreWorkerClient();
+         }
+         process.stdout.write('compiled-selector-open-close-ok\\n');
+         })().catch((error) => { console.error(error); process.exitCode = 1; });`,
+        clientUrl,
+        databasePath,
+      ],
+      // The absolute executable needs no inherited credentials, loader or Vitest marker.
+      { cwd: artifactRoot, env: {}, timeout: 20_000 }
+    );
+    expect(stdout.trim()).toBe('compiled-selector-open-close-ok');
+    expect(existsSync(databasePath)).toBe(true);
   }, 30_000);
 });

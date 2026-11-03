@@ -677,7 +677,7 @@ class ControlStoreWorkerClient {
         { eval: true }
       );
     } else {
-      host.worker = new Worker(new URL('./control-store-worker.js', import.meta.url));
+      host.worker = new Worker(new URL('./control-store-worker.bundle.mjs', import.meta.url));
     }
     host.worker.on('message', (value: unknown) => this.receive(value, host));
     host.worker.on('messageerror', () => this.fail(host));
