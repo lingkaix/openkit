@@ -536,6 +536,7 @@ test('release notes are checked before publication and verified against the gene
 // #533 re-records runner selection and the two-LTS installer matrix; all other job bytes stay frozen.
 // CI speed proof adds shared build; completed worker probes are retired.
 // The shard raw block changes only because its trailing temporary-probe comments are removed.
+// The Rust disk fix re-records only l0-l2-build and l0-l2-shards to add job-level CARGO_INCREMENTAL disablement.
 const unchangedJobBaseline = {
   'container-image-matrix': 'aaf9dbadd90c16a7be23c7198f043c96a0903ed9673f9692d070ff9a6d18a88d',
   'build-app-candidate': '1097b0a19282c8c3f2d056cb5f58f86002b51c32acd99ac47f26c6d5d1fb4252',
@@ -565,8 +566,8 @@ const candidateJobBaseline = {
 
 const shardJobBaseline = {
   'l0-l2-plan': '041f28521062d0b5417be4096c278e31f9b1174eaee27a7f9340d5fb0fe57874',
-  'l0-l2-build': 'd64709af62693597cde5f273c0c8ef1752f36609dce4ea30fdb1705467aeab2e',
-  'l0-l2-shards': 'f7b5733bb480eb7e76d53824317099c608a2930d3662e217a14e8a12a7e1f55c',
+  'l0-l2-build': '0a29f3aa1e44e2b6889a3d8901fd3cd06d77f7cdeed7d7b221647bd936aba1d9',
+  'l0-l2-shards': '44e7b9d5841c004c281e41c4103d9399d6cbfba1675f77dc7b0054c0b11a2f31',
   'l0-l2-coverage': '815e7651ee3bb7a02949fac3b46354f19d0877d1132bf75495dfc7def61e229f',
   'l0-l2': '2818f9a769eb36de77473ed949c3ed74284cd51c734e68985325430526b8dcc3',
 };
