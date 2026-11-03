@@ -283,16 +283,24 @@ export class KnowledgeNotebook {
   inspectRevision(
     revision: string
   ): Omit<NotebookRevision, 'files'> & { readonly entries: Readonly<Record<string, string>> } {
+    return this.inspectRevisionTree(revision).record;
+  }
+
+  /** Keeps one strict immutable tree within this operation; Source decoding stays at its original boundary. */
+  private inspectRevisionTree(revision: string) {
     if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision))
       throw new NotebookError('recovery_required');
     const commit = this.git(['cat-file', 'commit', revision]);
     const record = this.decodeCommit(revision, commit);
     const tree = this.git(['ls-tree', '-r', '-z', '--full-tree', revision]);
     return {
-      revision,
-      parentRevision: record.parentRevision,
-      entries: this.decodeTree(tree),
-      metadata: record.metadata,
+      record: {
+        revision,
+        parentRevision: record.parentRevision,
+        entries: this.decodeTree(tree),
+        metadata: record.metadata,
+      },
+      tree,
     };
   }
 
@@ -355,9 +363,9 @@ export class KnowledgeNotebook {
 
   /** Reads only native Source pointer blobs from the same immutable Git tree as the pages. */
   readSourcePointers(revision: string): Readonly<Record<string, string>> {
-    this.inspectRevision(revision);
+    const inspected = this.inspectRevisionTree(revision);
     return Object.fromEntries(
-      Object.entries(this.sourceObjects(revision)).map(([id, object]) => [
+      Object.entries(this.sourceObjects(revision, inspected.tree)).map(([id, object]) => [
         id,
         this.readBlob(object),
       ])
@@ -466,8 +474,9 @@ export class KnowledgeNotebook {
 
   /** Reads exact path-qualified content for edit and Proposal deltas; Page projections stay separate. */
   readContent(revision: string, paths?: readonly string[]): Readonly<Record<string, string>> {
-    const entries = { ...this.inspectRevision(revision).entries };
-    for (const [id, object] of Object.entries(this.sourceObjects(revision)))
+    const inspected = this.inspectRevisionTree(revision);
+    const entries = { ...inspected.record.entries };
+    for (const [id, object] of Object.entries(this.sourceObjects(revision, inspected.tree)))
       entries[`@sources/${id}.md`] = object;
     return Object.fromEntries(
       (paths ?? Object.keys(entries)).map((path) => {
@@ -484,9 +493,10 @@ export class KnowledgeNotebook {
     readonly changes: Readonly<Record<string, string | null>>;
     readonly metadata: NotebookCommitMetadata;
   }): string {
-    const base = this.inspectRevision(input.baseRevision);
+    const inspected = this.inspectRevisionTree(input.baseRevision);
+    const base = inspected.record;
     const metadata = NotebookCommitMetadataSchema.parse(input.metadata);
-    const sources = { ...this.sourceObjects(input.baseRevision) };
+    const sources = { ...this.sourceObjects(input.baseRevision, inspected.tree) };
     for (const [id, content] of Object.entries(input.changes)) {
       if (
         !KnowledgeSourceIdSchema.safeParse(id).success ||
@@ -503,8 +513,17 @@ export class KnowledgeNotebook {
   }
 
   /** Gets immutable Source objects without loading raw originals or admitting metadata for disclosure. */
-  private sourceObjects(revision: string): Readonly<Record<string, string>> {
-    const tree = this.git(['ls-tree', '-r', '-z', '--full-tree', revision, '--', 'sources/']);
+  private sourceObjects(
+    revision: string,
+    inspectedTree?: string
+  ): Readonly<Record<string, string>> {
+    const tree =
+      inspectedTree === undefined
+        ? this.git(['ls-tree', '-r', '-z', '--full-tree', revision, '--', 'sources/'])
+        : inspectedTree
+            .split('\0')
+            .filter((row) => row.includes('\tsources/'))
+            .join('\0');
     return this.decodeSourceObjects(tree);
   }
 
@@ -532,7 +551,8 @@ export class KnowledgeNotebook {
     if (Object.keys(input.changes).length > 256) throw new NotebookError('invalid_request');
     const metadata = NotebookCommitMetadataSchema.safeParse(input.metadata);
     if (!metadata.success) throw new NotebookError('invalid_request');
-    const entries = { ...this.inspectRevision(input.baseRevision).entries };
+    const inspected = this.inspectRevisionTree(input.baseRevision);
+    const entries = { ...inspected.record.entries };
     validateNotebookFiles(
       Object.fromEntries(
         Object.entries(input.changes).filter(
@@ -541,7 +561,7 @@ export class KnowledgeNotebook {
       ),
       true
     );
-    const sources = { ...this.sourceObjects(input.baseRevision) };
+    const sources = { ...this.sourceObjects(input.baseRevision, inspected.tree) };
     for (const [path, value] of Object.entries(input.changes)) {
       if (
         (!validPath(path) && !path.startsWith('@sources/')) ||

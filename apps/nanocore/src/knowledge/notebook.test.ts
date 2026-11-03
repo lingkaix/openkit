@@ -968,3 +968,319 @@ describe('KnowledgeNotebook history immutable inspection work', () => {
     }
   });
 });
+
+// Append-only draft for apps/nanocore/src/knowledge/notebook.test.ts.
+// Uses that file's existing imports, metadata/page/fixture/git/rawCommit helpers and cleanup.
+// Preserve every existing test verbatim. No new timeout, import replacement or subject double.
+// Engineer's measured-work criterion: one full-tree Git read per explicit immutable revision
+// in one synchronous operation. The Notebook owner still requires exact retained content,
+// strict metadata/tree/Source validation, fresh public reads and no publication by preparation.
+
+describe('KnowledgeNotebook synchronous Page and Source inspection work', () => {
+  it.each([
+    'readSourcePointers',
+    'readContent',
+    'prepareSourcePointers',
+    'prepare',
+  ] as const)('loads one immutable tree in %s without changing retained Page or Source bytes', async (operation) => {
+    const before = page('Edited', 'Original authored page.\r\n\t  ');
+    const after = page('Edited', 'Explicit replacement page.\r\n');
+    const untouched = page('Untouched', 'Unknown descriptive bytes remain.\r\n\t  ');
+    const sourceBytes = '\uFEFF# Source pointer\r\nExact retained Source bytes.\r\n';
+    const addedBytes = '# Another Source pointer\r\nExact new Source bytes.\r\n';
+    const { notebook, repositoryPath, revision } = await fixture({
+      'edited.md': before,
+      'untouched.md': untouched,
+    });
+    const sourceId = allocateEntityId('ks');
+    const addedId = allocateEntityId('ks');
+    const baseFacts = metadata('sync-source-base');
+    const baseRevision = notebook.prepareSourcePointers({
+      baseRevision: revision,
+      changes: { [sourceId]: sourceBytes },
+      metadata: baseFacts,
+    });
+    notebook.publish({ baseRevision: revision, candidateRevision: baseRevision });
+    const facts = metadata(`sync-${operation}`);
+    const { vi } = await import('vitest');
+    const { default: childProcess } = await import('node:child_process');
+    const { syncBuiltinESMExports } = await import('node:module');
+    // Observe the real public operation's native processes; the spy calls through unchanged.
+    const processes = vi.spyOn(childProcess, 'execFileSync');
+    syncBuiltinESMExports();
+    let result: string | Readonly<Record<string, string>> | undefined;
+    let commands: string[][] = [];
+    try {
+      switch (operation) {
+        case 'readSourcePointers':
+          result = notebook.readSourcePointers(baseRevision);
+          break;
+        case 'readContent':
+          result = notebook.readContent(baseRevision);
+          break;
+        case 'prepareSourcePointers':
+          result = notebook.prepareSourcePointers({
+            baseRevision,
+            changes: { [addedId]: addedBytes },
+            metadata: facts,
+          });
+          break;
+        case 'prepare':
+          result = notebook.prepare({
+            baseRevision,
+            changes: { 'edited.md': after },
+            metadata: facts,
+          });
+          break;
+      }
+    } finally {
+      const repositoryArgument = `--git-dir=${repositoryPath}`;
+      commands = processes.mock.calls.flatMap(([file, args]) =>
+        file === 'git' && Array.isArray(args) && args.includes(repositoryArgument)
+          ? [args.slice(args.indexOf(repositoryArgument) + 1)]
+          : []
+      );
+      processes.mockRestore();
+      syncBuiltinESMExports();
+    }
+
+    const original: Record<string, string> = {
+      'pages/index.md': ROOT_INDEX,
+      'pages/edited.md': before,
+      'pages/untouched.md': untouched,
+      [`sources/${sourceId}.md`]: sourceBytes,
+    };
+    const expected = { ...original };
+    if (operation === 'prepare') expected['pages/edited.md'] = after;
+    if (operation === 'prepareSourcePointers') expected[`sources/${addedId}.md`] = addedBytes;
+    if (operation === 'readSourcePointers') expect(result).toEqual({ [sourceId]: sourceBytes });
+    if (operation === 'readContent') {
+      expect(result).toEqual({
+        'index.md': ROOT_INDEX,
+        'edited.md': before,
+        'untouched.md': untouched,
+        [`@sources/${sourceId}.md`]: sourceBytes,
+      });
+    }
+    const observedRevision = typeof result === 'string' ? result : baseRevision;
+    if (operation === 'prepare' || operation === 'prepareSourcePointers') {
+      expect(typeof result).toBe('string');
+      expect(observedRevision).not.toBe(baseRevision);
+      expect(notebook.inspectRevision(observedRevision)).toMatchObject({
+        revision: observedRevision,
+        parentRevision: baseRevision,
+        metadata: facts,
+      });
+    }
+    const inspected = notebook.inspectRevision(baseRevision);
+    // The public inspection result remains Page-only, with no new Source result field.
+    expect(Object.keys(inspected).sort()).toEqual([
+      'entries',
+      'metadata',
+      'parentRevision',
+      'revision',
+    ]);
+    expect(Object.keys(inspected.entries).sort()).toEqual([
+      'edited.md',
+      'index.md',
+      'untouched.md',
+    ]);
+    expect(inspected).toMatchObject({ parentRevision: revision, metadata: baseFacts });
+    expect(notebook.publishedRevision()).toBe(baseRevision);
+    expect(await git(repositoryPath, ['rev-parse', 'refs/heads/published'])).toBe(baseRevision);
+    // Independent raw Git observations retain every byte, including BOM, CRLF and final whitespace.
+    for (const [commit, files] of [
+      [baseRevision, original],
+      [observedRevision, expected],
+    ] as const) {
+      expect(await git(repositoryPath, ['ls-tree', '-r', '--name-only', commit])).toBe(
+        Object.keys(files).sort().join('\n')
+      );
+      for (const [filePath, bytes] of Object.entries(files)) {
+        const raw = await execFileAsync('git', [
+          '--git-dir',
+          repositoryPath,
+          'cat-file',
+          'blob',
+          `${commit}:${filePath}`,
+        ]);
+        expect(raw.stdout).toBe(bytes);
+      }
+    }
+    // Omitted Page bodies are not loaded by Source reads or either preparation operation.
+    expect(commands.filter((args) => args[0] === 'cat-file' && args[1] === 'blob')).toHaveLength(
+      operation === 'readContent' ? 4 : operation === 'readSourcePointers' ? 1 : 0
+    );
+    expect(
+      commands
+        .filter((args) => args[0] === 'cat-file' && args[1] === 'commit')
+        .map((args) => args[2])
+    ).toEqual([baseRevision]);
+    // Expected RED on the baseline: all four operations perform two real ls-tree processes.
+    const trees = commands.filter((args) => args[0] === 'ls-tree');
+    expect(trees).toHaveLength(1);
+    expect(trees[0]).toContain(baseRevision);
+  });
+
+  it.each([
+    'unsupported metadata',
+    'invalid Source ID',
+    'nested Source path',
+    'executable Source mode',
+  ] as const)('refuses %s at every synchronous Page and Source boundary', async (fault) => {
+    const { notebook, repositoryPath, revision } = await fixture({
+      'retained.md': page('Retained', 'Valid authored bytes'),
+    });
+    const sourceId = allocateEntityId('ks');
+    const sourceBytes = '# Retained Source\r\nExact bytes.\r\n';
+    const baseRevision = notebook.prepareSourcePointers({
+      baseRevision: revision,
+      changes: { [sourceId]: sourceBytes },
+      metadata: metadata('fault-source-base'),
+    });
+    notebook.publish({ baseRevision: revision, candidateRevision: baseRevision });
+    expect(notebook.readSourcePointers(baseRevision)).toEqual({ [sourceId]: sourceBytes });
+    // Inject malformed retained content only after successful owner-produced initialization.
+    let tree: string | undefined;
+    if (fault !== 'unsupported metadata') {
+      const pages = await git(repositoryPath, ['rev-parse', `${baseRevision}:pages`]);
+      const source = await git(repositoryPath, [
+        'rev-parse',
+        `${baseRevision}:sources/${sourceId}.md`,
+      ]);
+      let sources = await git(
+        repositoryPath,
+        ['mktree'],
+        `${fault === 'executable Source mode' ? '100755' : '100644'} blob ${source}\t${fault === 'invalid Source ID' ? 'not-a-source' : sourceId}.md\n`
+      );
+      if (fault === 'nested Source path') {
+        sources = await git(repositoryPath, ['mktree'], `040000 tree ${sources}\tnested\n`);
+      }
+      tree = await git(
+        repositoryPath,
+        ['mktree'],
+        `040000 tree ${pages}\tpages\n040000 tree ${sources}\tsources\n`
+      );
+    }
+    const corrupt = await rawCommit(
+      repositoryPath,
+      baseRevision,
+      JSON.stringify({
+        schemaVersion:
+          fault === 'unsupported metadata'
+            ? 'openkit-knowledge-notebook-commit-future'
+            : 'openkit-knowledge-notebook-commit-v1',
+        ...metadata('retained-fault'),
+      }),
+      tree
+    );
+    const attempts = [
+      () => notebook.readSourcePointers(corrupt),
+      () => notebook.readContent(corrupt, ['retained.md']),
+      () =>
+        notebook.prepareSourcePointers({
+          baseRevision: corrupt,
+          changes: { [sourceId]: sourceBytes },
+          metadata: metadata('refused-source'),
+        }),
+      () =>
+        notebook.prepare({
+          baseRevision: corrupt,
+          changes: { 'retained.md': page('Replacement', 'Must not publish') },
+          metadata: metadata('refused-page'),
+        }),
+    ];
+    for (const attempt of attempts) {
+      expect(attempt).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    }
+    const pinned = new KnowledgeNotebook({ repositoryPath, selectedRevision: corrupt });
+    expect(() => pinned.publishedRevision()).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(await git(repositoryPath, ['rev-parse', 'refs/heads/published'])).toBe(baseRevision);
+  });
+
+  it('does not load omitted Page bodies while still verifying addressed Source and Page bytes', async () => {
+    const selected = page('Selected', 'Exact available bytes');
+    const { notebook, repositoryPath, revision } = await fixture({
+      'selected.md': selected,
+      'omitted.md': page('Omitted', 'Independently missing body'),
+    });
+    const sourceId = allocateEntityId('ks');
+    const sourceBytes = '# Source pointer\r\nExact available Source bytes.\r\n';
+    const baseRevision = notebook.prepareSourcePointers({
+      baseRevision: revision,
+      changes: { [sourceId]: sourceBytes },
+      metadata: metadata('omitted-page-source'),
+    });
+    notebook.publish({ baseRevision: revision, candidateRevision: baseRevision });
+    expect(notebook.readContent(baseRevision, ['selected.md'])).toEqual({
+      'selected.md': selected,
+    });
+    const omitted = await git(repositoryPath, ['rev-parse', `${baseRevision}:pages/omitted.md`]);
+    await unlink(path.join(repositoryPath, 'objects', omitted.slice(0, 2), omitted.slice(2)));
+    expect(notebook.readContent(baseRevision, ['selected.md'])).toEqual({
+      'selected.md': selected,
+    });
+    expect(notebook.readSourcePointers(baseRevision)).toEqual({ [sourceId]: sourceBytes });
+    expect(() => notebook.readContent(baseRevision)).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(await git(repositoryPath, ['rev-parse', 'refs/heads/published'])).toBe(baseRevision);
+  });
+
+  it('revalidates fresh refs and caller-selected commits without retaining Source bytes across calls', async () => {
+    const retained = page('Retained', 'Exact selected Page bytes');
+    const { notebook, repositoryPath, revision } = await fixture({ 'retained.md': retained });
+    const sourceId = allocateEntityId('ks');
+    const originalSource = '# Original Source\r\nExact original bytes.\r\n';
+    const laterSource = '# Later Source\r\nDifferent exact bytes.\r\n';
+    const baseRevision = notebook.prepareSourcePointers({
+      baseRevision: revision,
+      changes: { [sourceId]: originalSource },
+      metadata: metadata('fresh-source-base'),
+    });
+    notebook.publish({ baseRevision: revision, candidateRevision: baseRevision });
+    // This is an explicit caller-selected commit, not a fabricated SQL row or authority tuple.
+    const pinned = new KnowledgeNotebook({ repositoryPath, selectedRevision: baseRevision });
+    expect(pinned.publishedRevision()).toBe(baseRevision);
+    expect(pinned.readSourcePointers(baseRevision)).toEqual({ [sourceId]: originalSource });
+    const later = notebook.prepareSourcePointers({
+      baseRevision,
+      changes: { [sourceId]: laterSource },
+      metadata: metadata('fresh-source-later'),
+    });
+    notebook.publish({ baseRevision, candidateRevision: later });
+    expect(notebook.publishedRevision()).toBe(later);
+    expect(notebook.readSourcePointers(later)).toEqual({ [sourceId]: laterSource });
+    expect(pinned.publishedRevision()).toBe(baseRevision);
+    expect(pinned.readSourcePointers(baseRevision)).toEqual({ [sourceId]: originalSource });
+    await git(repositoryPath, ['update-ref', '-d', 'refs/heads/published', later]);
+    expect(() => notebook.publishedRevision()).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(pinned.publishedRevision()).toBe(baseRevision);
+    const sourceObject = await git(repositoryPath, [
+      'rev-parse',
+      `${baseRevision}:sources/${sourceId}.md`,
+    ]);
+    await unlink(
+      path.join(repositoryPath, 'objects', sourceObject.slice(0, 2), sourceObject.slice(2))
+    );
+    expect(() => pinned.readSourcePointers(baseRevision)).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(pinned.readContent(baseRevision, ['retained.md'])).toEqual({
+      'retained.md': retained,
+    });
+    await unlink(
+      path.join(repositoryPath, 'objects', baseRevision.slice(0, 2), baseRevision.slice(2))
+    );
+    expect(() => pinned.publishedRevision()).toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
+    expect(
+      await git(repositoryPath, ['for-each-ref', '--format=%(refname)', 'refs/heads/published'])
+    ).toBe('');
+  });
+});
