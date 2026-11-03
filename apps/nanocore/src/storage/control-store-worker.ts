@@ -94,6 +94,11 @@ import {
 import { WorkerStorageBindingError } from '../runtime/worker-storage-binding-records.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import {
+  PreservedWorkspaceCaptureRefusal,
+  type RawWorkspaceCapture,
+  WorkspaceCaptureRecoveryRequired,
+} from '../runtime/workspace-snapshot-chain.js';
+import {
   applyControlMaterialCommand,
   type ControlMaterialCommandInput,
   prepareControlMaterialCommand,
@@ -238,6 +243,11 @@ import { WorkspaceBackendHandoffRefusal } from './workspace-backend-handoff-code
 import { applyWorkspaceBackendHandoffInDb } from './workspace-backend-handoff-native.js';
 import { WorkspaceRecoveryError } from './workspace-backup.js';
 import { applyWorkspaceBaselineInDb } from './workspace-baseline-native.js';
+import {
+  ControlWorkspaceCaptureRefusalSchema,
+  WORKSPACE_CAPTURE_MESSAGES,
+} from './workspace-capture-codecs.js';
+import { applyWorkspaceCaptureInDb, prepareWorkspaceCapture } from './workspace-capture-native.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { ControlRecoverySourceReactivationRefusalSchema } from './workspace-reactivation-codecs.js';
@@ -290,6 +300,7 @@ type WriteCommand = Extract<
       | 'workspace-stage-review'
       | 'workspace-backend-handoff'
       | 'workspace-baseline'
+      | 'workspace-capture'
       | 'harness-lifecycle'
       | 'execution-attempt'
       | 'core-journal'
@@ -344,6 +355,7 @@ type WriteRequest = WriteCommand & {
   ready: boolean;
   predecessorFailed: boolean;
   refusal?: ControlWorkerReply;
+  readonly preparedWorkspaceCapture?: RawWorkspaceCapture | null;
   readonly preparedApp?: PreparedControlApp;
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
@@ -610,6 +622,43 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       message: error.message,
       status: 409,
     };
+  if (operation === 'workspace-capture') {
+    let value: unknown;
+    if (error instanceof TypeError && error.message === 'Unsupported retained record format.')
+      value = {
+        operation,
+        code: 'unsupported_retained_format',
+        message: error.message,
+        status: 409,
+      };
+    else if (error instanceof PreservedWorkspaceCaptureRefusal)
+      value = {
+        operation,
+        code: 'preserved_refused',
+        message: 'Workspace capture SQL body was refused.',
+        status: 409,
+      };
+    else if (error instanceof WorkspaceCollectionError && error.outcome === 'recovery_required')
+      value = {
+        operation,
+        code: 'collection_refused',
+        cause: error.cause,
+        message: error.message,
+        status: 409,
+      };
+    else if (
+      error instanceof Error &&
+      WORKSPACE_CAPTURE_MESSAGES.some((message) => message === error.message)
+    )
+      value = {
+        operation,
+        code: error instanceof WorkspaceCaptureRecoveryRequired ? 'recovery_required' : 'refused',
+        message: error.message,
+        status: 409,
+      };
+    const parsed = ControlWorkspaceCaptureRefusalSchema.safeParse(value);
+    if (parsed.success) return parsed.data;
+  }
   if (operation === 'workspace-baseline') {
     if (
       error instanceof WorkspaceCollectionError &&
@@ -2028,6 +2077,24 @@ function flush(owner: OwnedDatabase): void {
               operation: 'workspace-stage-review',
               result: null,
             };
+          } else if (request.operation === 'workspace-capture') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.identity.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            const result = applyWorkspaceCaptureInDb(
+              owner.scopeDb,
+              request.input,
+              request.preparedWorkspaceCapture ?? null
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-capture',
+              result,
+            };
           } else if (request.operation === 'workspace-baseline') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3225,6 +3292,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||
       value.operation === 'workspace-baseline' ||
+      value.operation === 'workspace-capture' ||
       value.operation === 'harness-lifecycle' ||
       value.operation === 'execution-attempt' ||
       value.operation === 'core-journal' ||
@@ -3276,6 +3344,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           barrier:
             value.operation === 'recovery-target-registration' ||
             value.operation === 'recovery-target-preparation' ||
+            value.operation === 'workspace-capture' ||
             value.operation === 'recovery-source-reactivation' ||
             value.operation === 'app-kernel' ||
             value.operation === 'recovery-cleanup' ||
@@ -3298,6 +3367,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           published: new Set(),
         };
         const prepare = async () => {
+          let preparedWorkspaceCapture: RawWorkspaceCapture | null | undefined;
           let preparedApp: PreparedControlApp | undefined;
           let appInput: ControlAppInput | undefined;
           let preparedSchedulerAdmission: ControlSchedulerAdmission | undefined;
@@ -3320,6 +3390,19 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedProvenance: WorkerRuntimeProvenanceMetadataInput | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
           try {
+            if (value.operation === 'workspace-capture') {
+              if (
+                owner.scopeDb?.scope !== 'workspace' ||
+                owner.scopeDb.workspaceId !== value.input.identity.workspaceId
+              )
+                throw new ControlProductPreconditionError();
+              await prepareAfterPredecessors(owner, queued, earlier);
+              preparedWorkspaceCapture = await prepareWorkspaceCapture(
+                owner.scopeDb,
+                value.input,
+                (files) => admitPhysicalPublication(owner, queued, files)
+              );
+            }
             if (value.operation === 'app-kernel') {
               appInput = ControlAppInputSchema.parse(
                 JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value.content))
@@ -3594,6 +3677,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               throw new ControlProductPreconditionError();
             Object.assign(queued, {
               ready: true,
+              preparedWorkspaceCapture,
               preparedApp,
               appInput,
               preparedSchedulerAdmission,

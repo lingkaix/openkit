@@ -69,47 +69,53 @@ export interface WorkspaceCollectionReceipt {
   credentialCheck: 'passed';
 }
 // Committed records are still an admission boundary after restart; additive evidence remains readable.
-const StoredCollectionResultSchema = z
-  .discriminatedUnion('outcome', [
-    z
-      .object({
-        outcome: z.literal('candidate'),
-        sha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-        byteLength: z
-          .number()
-          .int()
-          .positive()
-          .max(256 * 1024 * 1024),
-        head: StoredWorkspaceSnapshotPairV1Schema,
-        previousHead: StoredWorkspaceSnapshotPairV1Schema,
-        acceptedBase: StoredWorkspaceSnapshotPairV1Schema,
-        unstable: z.boolean(),
-      })
-      .passthrough(),
-    z
-      .object({
-        outcome: z.literal('empty'),
-        head: StoredWorkspaceSnapshotPairV1Schema,
-        previousHead: StoredWorkspaceSnapshotPairV1Schema,
-        acceptedBase: StoredWorkspaceSnapshotPairV1Schema,
-        unstable: z.boolean(),
-      })
-      .passthrough(),
-    z.object({ outcome: z.literal('no_new_head'), unstable: z.boolean() }).passthrough(),
-  ])
-  .and(
-    z
-      .object({
-        credentialCheck: z.literal('passed'),
-        collectedAt: TimestampSchema.pipe(z.iso.datetime({ offset: true })),
-        acceptedCommit: z
-          .string()
-          .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
-          .nullable(),
-        pendingEarlierLinks: z.array(z.string().min(1)),
-      })
-      .passthrough()
-  );
+const StoredCaptureObservationV1Schema = z.discriminatedUnion('outcome', [
+  z
+    .object({
+      outcome: z.literal('candidate'),
+      sha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+      byteLength: z
+        .number()
+        .int()
+        .positive()
+        .max(256 * 1024 * 1024),
+      head: StoredWorkspaceSnapshotPairV1Schema,
+      previousHead: StoredWorkspaceSnapshotPairV1Schema,
+      acceptedBase: StoredWorkspaceSnapshotPairV1Schema,
+      unstable: z.boolean(),
+    })
+    .passthrough(),
+  z
+    .object({
+      outcome: z.literal('empty'),
+      head: StoredWorkspaceSnapshotPairV1Schema,
+      previousHead: StoredWorkspaceSnapshotPairV1Schema,
+      acceptedBase: StoredWorkspaceSnapshotPairV1Schema,
+      unstable: z.boolean(),
+    })
+    .passthrough(),
+  z.object({ outcome: z.literal('no_new_head'), unstable: z.boolean() }).passthrough(),
+]);
+/** Original pre-publication capture observation; byte identity may be supplied by preserved source. */
+export const WorkspaceCaptureObservationSchema = z.discriminatedUnion('outcome', [
+  StoredCaptureObservationV1Schema.options[0].partial({ sha256: true, byteLength: true }),
+  StoredCaptureObservationV1Schema.options[1],
+  StoredCaptureObservationV1Schema.options[2],
+]);
+/** Original complete retained receipt result, shared by the native reply validator. */
+export const StoredCollectionResultSchema = StoredCaptureObservationV1Schema.and(
+  z
+    .object({
+      credentialCheck: z.literal('passed'),
+      collectedAt: TimestampSchema.pipe(z.iso.datetime({ offset: true })),
+      acceptedCommit: z
+        .string()
+        .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
+        .nullable(),
+      pendingEarlierLinks: z.array(z.string().min(1)),
+    })
+    .passthrough()
+);
 /** Reads both durable snapshot components without substituting a review commit. */
 export function readWorkspaceSnapshotCursor(
   db: WorkspaceDb,
@@ -641,7 +647,7 @@ export class WorkspaceCaptureRecoveryRequired extends Error {}
 export class PreservedWorkspaceCaptureRefusal extends Error {}
 
 /** Closed capture source facts; SQL alone owns receipts, cursors and disposition. */
-const RawWorkspaceCaptureV1Schema = z.object({
+export const RawWorkspaceCaptureV1Schema = z.object({
   identity: WorkspaceCollectionIdentitySchema,
   result: z.object({
     outcome: z.literal('candidate'),

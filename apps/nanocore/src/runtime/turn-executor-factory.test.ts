@@ -241,11 +241,11 @@ import {
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
+import * as captureOwner from './workspace-capture-publication.js';
 import {
   listWorkspaceReconciliationRecords,
   resolveWorkspaceReconciliationRecord,
 } from './workspace-reconciliation-records.js';
-import * as captureOwner from './workspace-snapshot-chain.js';
 import {
   acceptWorkspaceBaseline,
   authorizeWorkspaceBaselineInitialization,
@@ -5665,11 +5665,11 @@ describe('createConfiguredTurnExecutor', () => {
       db.sqlite.exec(`CREATE TRIGGER refuse_capture_insert BEFORE INSERT ON workspace_snapshot_collections
       BEGIN SELECT RAISE(ABORT, 'capture INSERT refused'); END`);
     let ambiguousBoundaryReached = false;
-    const acceptCapture = captureOwner.acceptWorkspaceCapture;
+    const acceptCapture = captureOwner.publishWorkspaceCapture;
     const captureFault = vi
-      .spyOn(captureOwner, 'acceptWorkspaceCapture')
-      .mockImplementation((...args) => {
-        const receipt = acceptCapture(...args);
+      .spyOn(captureOwner, 'publishWorkspaceCapture')
+      .mockImplementation(async (...args) => {
+        const receipt = await acceptCapture(...args);
         if (fault === 'capture-result') {
           ambiguousBoundaryReached = true;
           throw new Error('Controlled capture-result ambiguity');
@@ -5680,7 +5680,9 @@ describe('createConfiguredTurnExecutor', () => {
     const before = native.effects.length;
     try {
       if (fault === 'body')
-        await expect(admitted.complete()).rejects.toThrow('capture INSERT refused');
+        await expect(admitted.complete()).rejects.toThrow(
+          'Workspace capture SQL body was refused.'
+        );
       else await expect(admitted.complete()).rejects.toThrow('Controlled capture-result ambiguity');
     } finally {
       if (fault === 'body') db.sqlite.exec('DROP TRIGGER refuse_capture_insert');

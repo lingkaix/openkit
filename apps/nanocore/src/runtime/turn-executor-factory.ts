@@ -255,17 +255,19 @@ import {
   authorizeWorkspaceBaselineInitialization,
 } from './workspace-baseline-publication.js';
 import {
+  claimIdleWorkspaceCapture,
+  publishWorkspaceCapture,
+  publishWorkspaceCaptureRecovery,
+} from './workspace-capture-publication.js';
+import {
   WorkspaceCollectCommandSchema,
   WorkspaceCollectionError,
 } from './workspace-collect-wire.js';
 import {
-  completeWorkspaceCaptureRecovery,
   hasPendingWorkspaceCapture,
   listWorkspaceReconciliationRecords,
-  recordWorkspaceCaptureRecovery,
 } from './workspace-reconciliation-records.js';
 import {
-  acceptWorkspaceCapture,
   preserveRawWorkspaceCapture,
   type RawWorkspaceCapture,
   readWorkspaceBaselineIdentity,
@@ -5821,38 +5823,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             ? getWorkerBackendSession(this.coreDb, session.attemptId)
             : null;
         if (idleAnchor) {
-          const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-            `workspace:${db.sqlite.name}`
-          );
-          try {
-            const original = (
-              this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot })
-            ).getAgentSession(identity.agentSessionId).retainedStorage;
-            if (
-              !original ||
-              original.storageRef !== identity.storageRef ||
-              original.workSlotRef !== identity.workSlot ||
-              original.attachmentGeneration !== identity.attachmentGeneration
-            )
-              throw new WorkspaceCaptureRecoveryRequired(
-                'Idle capture lacks its original attachment generation.'
-              );
-            db.sqlite
-              .transaction(() => {
-                if (
-                  listWorkspaceReconciliationRecords(db, identity.workspaceId).some(
-                    (record) => record.id === `wrr_capture_${identity.collectionId}`
-                  )
-                )
-                  throw new WorkspaceCaptureRecoveryRequired(
-                    'Idle capture already has its original continuation.'
-                  );
-                recordWorkspaceCaptureRecovery(db, idleAnchor, identity, null);
-              })
-              .immediate();
-          } finally {
-            resume();
-          }
+          const original = (
+            this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot })
+          ).getAgentSession(identity.agentSessionId).retainedStorage;
+          if (
+            !original ||
+            original.storageRef !== identity.storageRef ||
+            original.workSlotRef !== identity.workSlot ||
+            original.attachmentGeneration !== identity.attachmentGeneration
+          )
+            throw new WorkspaceCaptureRecoveryRequired(
+              'Idle capture lacks its original attachment generation.'
+            );
+          await claimIdleWorkspaceCapture(db, idleAnchor, identity);
           // Workspace acknowledgement precedes Core drain; neither permits dispatch on partial failure.
           try {
             await claimNanoHostIdleCaptureDrain(this.coreDb, {
@@ -5902,30 +5885,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             );
             candidate = preserved.candidate;
           }
-          const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-            `workspace:${db.sqlite.name}`
+          receipt = await publishWorkspaceCapture(
+            db,
+            identity,
+            durable,
+            candidate,
+            preserved,
+            idleAnchor ?? undefined
           );
-          try {
-            receipt = db.sqlite.transaction(() => {
-              if (
-                idleAnchor &&
-                !listWorkspaceReconciliationRecords(db, identity.workspaceId).some(
-                  (record) =>
-                    record.id === `wrr_capture_${identity.collectionId}` &&
-                    record.stateAfter === 'requires-human'
-                )
-              )
-                throw new WorkspaceCaptureRecoveryRequired(
-                  'Idle capture disposition changed during collection.'
-                );
-              const accepted = acceptWorkspaceCapture(db, identity, durable, candidate, preserved);
-              if (idleAnchor)
-                completeWorkspaceCaptureRecovery(db, idleAnchor, identity, preserved ?? null);
-              return accepted;
-            })();
-          } finally {
-            resume();
-          }
         } catch (error) {
           // Even an idle scan has an existing positive drain; raw absence grants no later scan.
           await drainNanoHostSandboxAdmission(this.coreDb, {
@@ -5935,14 +5902,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           try {
             const anchor = getWorkerBackendSession(this.coreDb, session.attemptId);
             if (!anchor) throw new Error('Workspace capture lost its original backend anchor.');
-            const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-              `workspace:${db.sqlite.name}`
-            );
-            try {
-              recordWorkspaceCaptureRecovery(db, anchor, identity, preserved ?? null);
-            } finally {
-              resume();
-            }
+            await publishWorkspaceCaptureRecovery(db, anchor, identity, preserved ?? null);
           } catch {
             console.error(
               'Workspace capture recovery publication is incomplete; backend remains drained.'

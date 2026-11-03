@@ -1,4 +1,8 @@
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
+import {
+  PreservedWorkspaceCaptureRefusal,
+  WorkspaceCaptureRecoveryRequired,
+} from '../runtime/workspace-snapshot-chain.js';
 import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
@@ -9,6 +13,10 @@ import type {
   ControlWorkspaceBackendHandoffResult,
 } from './workspace-backend-handoff-codecs.js';
 import type { ControlWorkspaceBaseline } from './workspace-baseline-codecs.js';
+import type {
+  ControlWorkspaceCapture,
+  ControlWorkspaceCaptureResult,
+} from './workspace-capture-codecs.js';
 import {
   type ControlRecoverySourceReactivationInput,
   ControlRecoverySourceReactivationInputSchema,
@@ -2377,6 +2385,37 @@ class ControlStoreWorkerClient {
         error.domain?.operation === 'workspace-stage-review'
       )
         throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Acknowledges only the exact original capture/recovery tuple; unknown replies remain unknown. */
+  async workspaceCapture(
+    database: string,
+    input: ControlWorkspaceCapture
+  ): Promise<ControlWorkspaceCaptureResult> {
+    try {
+      const reply = await this.request({ operation: 'workspace-capture', database, input });
+      return (reply as Extract<Success, { operation: 'workspace-capture' }>).result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'workspace-capture'
+      ) {
+        if (error.domain.code === 'collection_refused')
+          throw new WorkspaceCollectionError({
+            outcome: 'recovery_required',
+            cause: error.domain.cause,
+          });
+        if (error.domain.code === 'unsupported_retained_format')
+          throw new TypeError(error.domain.message);
+        if (error.domain.code === 'recovery_required')
+          throw new WorkspaceCaptureRecoveryRequired(error.domain.message);
+        if (error.domain.code === 'preserved_refused')
+          throw new PreservedWorkspaceCaptureRefusal(error.domain.message);
+        throw new Error(error.domain.message);
+      }
       throw error;
     }
   }
