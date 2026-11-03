@@ -32,6 +32,7 @@ function downloadHeaders(): Record<string, string> {
   return {
     'content-type': 'application/octet-stream',
     'content-length': String(original.size),
+    'x-openkit-byte-length': String(original.size),
     'x-openkit-content-digest': original.sha256,
   };
 }
@@ -202,20 +203,89 @@ describe('Artifact binary client bindings', () => {
   });
 
   it.each([
-    ['content-length', null],
     ['content-length', '-1'],
     ['content-length', '06'],
     ['content-length', '1.5'],
     ['content-length', '9007199254740992'],
+    ['content-length', String(original.size + 1)],
+    ['x-openkit-byte-length', '-1'],
+    ['x-openkit-byte-length', '06'],
+    ['x-openkit-byte-length', '1.5'],
+    ['x-openkit-byte-length', '9007199254740992'],
     ['x-openkit-content-digest', null],
     ['x-openkit-content-digest', 'sha256:bad'],
     ['x-openkit-content-digest', original.sha256.toUpperCase()],
     ['content-type', null],
-  ])('refuses invalid %s=%s and cancels the unread response body', async (name, value) => {
+  ])('refuses download metadata %s=%s and cancels the unread response body', async (name, value) => {
     const cancel = vi.fn();
     const headers = new Headers(downloadHeaders());
     if (value === null) headers.delete(name!);
     else headers.set(name!, value);
+    const client = createCoreClient({
+      baseUrl: 'http://127.0.0.1',
+      fetch: async () =>
+        new Response(new ReadableStream({ cancel }, { highWaterMark: 0 }), { headers }),
+    });
+    await expect(client.artifactFiles.download(selector)).rejects.toBeInstanceOf(
+      ProtocolValidationError
+    );
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['a stored byte-length header only', { 'x-openkit-byte-length': String(original.size) }],
+    ['a content-length only from an older origin', { 'content-length': String(original.size) }],
+    [
+      'equal content-length and stored byte-length',
+      { 'content-length': String(original.size), 'x-openkit-byte-length': String(original.size) },
+    ],
+    [
+      'an encoded content-length beside the stored byte-length',
+      {
+        'content-length': String(original.size + 7),
+        'x-openkit-byte-length': String(original.size),
+        'content-encoding': 'gzip',
+      },
+    ],
+  ])('accepts a complete download response carrying %s', async (_label, extraHeaders) => {
+    const client = createCoreClient({
+      baseUrl: 'http://127.0.0.1',
+      fetch: async () =>
+        new Response(bytes, {
+          headers: {
+            'content-type': 'application/octet-stream',
+            'x-openkit-content-digest': original.sha256,
+            ...extraHeaders,
+          },
+        }),
+    });
+    const result = await client.artifactFiles.download(selector);
+    expect(result.byteLength).toBe(original.size);
+    expect(result.contentDigest).toBe(original.sha256);
+    expect(Buffer.from(await new Response(result.body).arrayBuffer())).toEqual(bytes);
+  });
+
+  it('refuses a download without any byte length and cancels the unread response body', async () => {
+    const cancel = vi.fn();
+    const headers = new Headers(downloadHeaders());
+    headers.delete('content-length');
+    headers.delete('x-openkit-byte-length');
+    const client = createCoreClient({
+      baseUrl: 'http://127.0.0.1',
+      fetch: async () =>
+        new Response(new ReadableStream({ cancel }, { highWaterMark: 0 }), { headers }),
+    });
+    await expect(client.artifactFiles.download(selector)).rejects.toBeInstanceOf(
+      ProtocolValidationError
+    );
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it('refuses an encoded content-length as the stored byte length and cancels the unread response body', async () => {
+    const cancel = vi.fn();
+    const headers = new Headers(downloadHeaders());
+    headers.delete('x-openkit-byte-length');
+    headers.set('content-encoding', 'gzip');
     const client = createCoreClient({
       baseUrl: 'http://127.0.0.1',
       fetch: async () =>

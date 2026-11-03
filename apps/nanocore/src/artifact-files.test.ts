@@ -590,6 +590,7 @@ describe('exact Artifact file import and download', () => {
     const response = await download(state, accepted.artifactId);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-length')).toBe(String(original.size));
+    expect(response.headers.get('x-openkit-byte-length')).toBe(String(original.size));
     expect(response.headers.get('x-openkit-content-digest')).toBe(original.sha256);
     expect(Buffer.from(await response.arrayBuffer())).toEqual(
       Buffer.from(original.patternHex.repeat(original.repeats), 'hex')

@@ -100,22 +100,36 @@ export function createArtifactFileClient(transport: ClientTransport): ArtifactFi
       const response = await transport.getDownload(
         `${operationHttpPath('artifact.download')}?${query}`
       );
-      const length = response.headers.get('content-length');
+      const declaredByteLength = response.headers.get('x-openkit-byte-length');
+      const declaredContentLength = response.headers.get('content-length');
+      const encoding = response.headers.get('content-encoding')?.trim().toLowerCase();
+      // A compressing proxy may replace the stored length with an encoded length.
+      const encoded = Boolean(encoding && encoding !== 'identity');
       const digest = response.headers.get('x-openkit-content-digest');
       const mediaType = response.headers.get('content-type');
+      const headerByteLength =
+        declaredByteLength === null ? undefined : decimalByteLength(declaredByteLength);
+      const contentLength =
+        encoded || declaredContentLength === null
+          ? undefined
+          : decimalByteLength(declaredContentLength);
+      const byteLength = headerByteLength ?? contentLength;
       if (
-        !length ||
-        !/^(0|[1-9][0-9]*)$/.test(length) ||
-        !Number.isSafeInteger(Number(length)) ||
+        (declaredByteLength !== null && headerByteLength === undefined) ||
+        (!encoded && declaredContentLength !== null && contentLength === undefined) ||
         !digest ||
         !/^sha256:[a-f0-9]{64}$/.test(digest) ||
         !mediaType ||
-        !response.body
+        !response.body ||
+        byteLength === undefined ||
+        (headerByteLength !== undefined &&
+          contentLength !== undefined &&
+          headerByteLength !== contentLength)
       ) {
         await response.body?.cancel();
         throw invalidFileResponse('Artifact download metadata is invalid.');
       }
-      return { body: response.body, byteLength: Number(length), mediaType, contentDigest: digest };
+      return { body: response.body, byteLength, mediaType, contentDigest: digest };
     },
   };
 }
@@ -123,4 +137,11 @@ export function createArtifactFileClient(transport: ClientTransport): ArtifactFi
 /** Creates a bounded transport diagnostic without including response content. */
 function invalidFileResponse(message: string): ProtocolValidationError {
   return new ProtocolValidationError({ path: [], code: 'invalid_payload', message });
+}
+
+/** Accepts only a canonical nonnegative decimal byte count within the safe integer range. */
+function decimalByteLength(value: string): number | undefined {
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) return undefined;
+  const length = Number(value);
+  return Number.isSafeInteger(length) ? length : undefined;
 }

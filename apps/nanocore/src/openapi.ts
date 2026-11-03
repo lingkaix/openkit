@@ -583,7 +583,8 @@ function appApiPaths() {
         })),
         responses: {
           '200': {
-            description: 'Exact immutable original; digest is in X-OpenKit-Content-Digest.',
+            description:
+              'Exact immutable original; digest is in X-OpenKit-Content-Digest and the stored unencoded byte length is in X-OpenKit-Byte-Length.',
             content: {
               'application/octet-stream': { schema: { type: 'string', format: 'binary' } },
             },

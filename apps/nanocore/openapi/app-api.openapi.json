@@ -19153,7 +19153,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Exact immutable original; digest is in X-OpenKit-Content-Digest.",
+            "description": "Exact immutable original; digest is in X-OpenKit-Content-Digest and the stored unencoded byte length is in X-OpenKit-Byte-Length.",
             "content": {
               "application/octet-stream": {
                 "schema": {
@@ -155178,5 +155178,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:294a2a486e94f3d4ed46637792032185a943a4bd5f2ba4a83a6863169c374673"
+  "x-openkit-source-digest": "sha256:faa31957c380ff2e5636240b3b5b95e8bde7b5b88135a6783f3b052c4cf89b07"
 }

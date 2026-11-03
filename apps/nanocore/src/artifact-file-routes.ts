@@ -303,6 +303,7 @@ export function registerArtifactFileRoutes(
           'Cache-Control': 'no-store',
           'Content-Type': mediaType,
           'Content-Length': String(byteLength),
+          'X-OpenKit-Byte-Length': String(byteLength),
           'Content-Disposition': `attachment; filename="artifact"; filename*=UTF-8''${encodeURIComponent(Buffer.from(artifact.title.slice(0, 160), 'utf8').toString('utf8')).replace(/['()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)}`,
           'X-Content-Type-Options': 'nosniff',
           'X-OpenKit-Content-Digest': artifact.contentDigest,
