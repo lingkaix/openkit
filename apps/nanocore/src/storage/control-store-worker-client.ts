@@ -3,6 +3,7 @@ import type {
   ControlWorkspaceBackendHandoff,
   ControlWorkspaceBackendHandoffResult,
 } from './workspace-backend-handoff-codecs.js';
+import type { ControlWorkspaceStageReview } from './workspace-stage-review-codecs.js';
 
 export { ControlStoreWorkerError } from './control-store-worker-error.js';
 
@@ -2307,6 +2308,20 @@ class ControlStoreWorkerClient {
       return (reply as Extract<Success, { operation: 'runtime-target' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'runtime-target')
+        throw new Error(error.domain.message);
+      throw error;
+    }
+  }
+
+  /** Awaits the FULL acknowledgement for the original six-family StageReview. */
+  async workspaceStageReview(database: string, input: ControlWorkspaceStageReview): Promise<void> {
+    try {
+      await this.request({ operation: 'workspace-stage-review', database, input });
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'workspace-stage-review'
+      )
         throw new Error(error.domain.message);
       throw error;
     }

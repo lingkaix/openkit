@@ -236,7 +236,6 @@ import {
 } from './worker-turn-failure.js';
 import { bindWorkerCheckpointToPreparedSession } from './worker-turn-loop.js';
 import { recordWorkspaceBackendHandoff } from './workspace-backend-handoff.js';
-import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -246,10 +245,10 @@ import {
   PreservedWorkspaceCaptureRefusal,
   WorkspaceCaptureRecoveryRequired,
 } from './workspace-snapshot-chain.js';
+import { publishWorkspaceStageReview } from './workspace-stage-review.js';
 import {
   listWorkspaceInputSnapshots,
   listWorkspaceMaterializationRecords,
-  recordWorkspaceSyncReview,
 } from './workspace-sync-records.js';
 
 /** Returns the closed continuity disposition while retaining any cleanup proof separately. */
@@ -4665,7 +4664,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         review: record.review,
       };
       let artifactCreated = false;
-      /** Awaits the immutable Artifact before the existing synchronous review transaction. */
+      /** Awaits the immutable Artifact before the original whole review publication. */
       const persistRecord = async (stagedItem: typeof item): Promise<void> => {
         const body = JSON.stringify(
           {
@@ -4701,59 +4700,49 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           createdAt: existingArtifact?.createdAt ?? timestamp,
           updatedAt: existingArtifact?.updatedAt ?? timestamp,
         } as const;
-        const persist = (): void => {
-          if (record.filesystemApply && workspaceDb) {
-            recordFilesystemWorkspaceStagingRoot(workspaceDb, {
-              before: record.filesystemApply.before,
-              changeSetId: stagedItem.changeSet.id,
-              createdAt: timestamp,
-              reviewId: stagedItem.review.id,
-              stagingRootPath: record.filesystemApply.stagingRootPath,
-              targetRootPath: record.filesystemApply.targetRootPath,
-              workspaceId: stagedItem.review.workspaceId,
-            });
-          }
-          if (workspaceDb && !gitSource) {
-            recordWorkspaceSyncReview(workspaceDb, {
-              item: stagedItem,
-              producer: {
-                actor: {
-                  kind: 'agent',
-                  id: environmentPackage.agent.agentId,
-                  responsibleUserId: responsibleUserIdForActor(
-                    environmentPackage.scope.triggerActor
-                  ),
-                },
-                agentId: environmentPackage.agent.agentId,
-                agentSessionId: environmentPackage.scope.agentSessionId,
-                requestId: artifactRequestId,
-                threadId: environmentPackage.scope.threadId,
-                turnId: environmentPackage.scope.turnId,
-              },
-            });
-          }
-          if (existingArtifact) {
-            if (!isDeepStrictEqual(existingArtifact, artifact)) {
-              throw new Error(`Workspace review artifact replay conflict: ${artifactId}`);
-            }
-          }
-        };
+        // The earlier Artifact is immutable; reject its exact replay conflict before any stage write.
+        if (existingArtifact && !isDeepStrictEqual(existingArtifact, artifact)) {
+          throw new Error(`Workspace review artifact replay conflict: ${artifactId}`);
+        }
 
         if (!existingArtifact) {
           await store.createArtifact(artifact);
           artifactCreated = true;
         }
-        if (workspaceDb) {
-          const resume = await getControlStoreWorkerClient().pauseForDataRootBackup(
-            `workspace:${workspaceDb.sqlite.name}`
-          );
-          try {
-            workspaceDb.sqlite.transaction(persist)();
-          } finally {
-            resume();
-          }
-        } else {
-          persist();
+        if (workspaceDb && (record.filesystemApply || !gitSource)) {
+          await publishWorkspaceStageReview(workspaceDb, {
+            workspaceId: workspaceDb.workspaceId,
+            staging: record.filesystemApply
+              ? {
+                  before: record.filesystemApply.before,
+                  changeSetId: stagedItem.changeSet.id,
+                  createdAt: timestamp,
+                  reviewId: stagedItem.review.id,
+                  stagingRootPath: record.filesystemApply.stagingRootPath,
+                  targetRootPath: record.filesystemApply.targetRootPath,
+                  workspaceId: stagedItem.review.workspaceId,
+                }
+              : null,
+            review: gitSource
+              ? null
+              : {
+                  item: stagedItem,
+                  producer: {
+                    actor: {
+                      kind: 'agent',
+                      id: environmentPackage.agent.agentId,
+                      responsibleUserId: responsibleUserIdForActor(
+                        environmentPackage.scope.triggerActor
+                      ),
+                    },
+                    agentId: environmentPackage.agent.agentId,
+                    agentSessionId: environmentPackage.scope.agentSessionId,
+                    requestId: artifactRequestId,
+                    threadId: environmentPackage.scope.threadId,
+                    turnId: environmentPackage.scope.turnId,
+                  },
+                },
+          });
         }
       };
       await persistRecord(item);

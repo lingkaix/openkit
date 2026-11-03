@@ -279,9 +279,14 @@ import {
   ControlCoreSharingResultSchema,
   ControlCoreSharingSchema,
 } from './workspace-sharing-codecs.js';
+import {
+  type ControlWorkspaceStageReview,
+  ControlWorkspaceStageReviewRefusalSchema,
+  ControlWorkspaceStageReviewSchema,
+} from './workspace-stage-review-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 49;
+export const CONTROL_WORKER_VERSION = 50;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -539,6 +544,10 @@ export type ControlWorkerCommand =
           readonly operation: 'workspace-backend-handoff';
           readonly input: ControlWorkspaceBackendHandoff;
         }
+      | {
+          readonly operation: 'workspace-stage-review';
+          readonly input: ControlWorkspaceStageReview;
+        }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | {
           readonly operation: 'workspace-review-finish';
@@ -749,6 +758,7 @@ interface OrdinaryControlWorkerDomainRefusal {
 /** Existing native refusals plus the sharing family's exact current-record projection. */
 export type ControlWorkerDomainRefusal =
   | OrdinaryControlWorkerDomainRefusal
+  | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
   | z.infer<typeof ControlWorkerFinalStatusRefusalSchema>
   | z.infer<typeof ControlWorkerHeartbeatRefusalSchema>
@@ -841,6 +851,7 @@ export type ControlWorkerReply = {
       readonly operation: 'workspace-backend-handoff';
       readonly result: ControlWorkspaceBackendHandoffResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
   | { readonly status: 'ok'; readonly operation: 'workspace-review-finish'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1050,6 +1061,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       value.operation === 'recovery-target-preparation')
   )
     return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'workspace-stage-review')
+    return ControlWorkspaceStageReviewRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-backend-handoff')
     return ControlWorkspaceBackendHandoffRefusalSchema.safeParse(value).success;
   if (
@@ -1337,6 +1350,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlAccessTokenVerificationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'runtime-target')
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-backend-handoff')
     return ControlWorkspaceBackendHandoffResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-review-finish') return reply.result === null;
@@ -1825,6 +1839,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlRuntimeTargetInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'workspace-stage-review')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceStageReviewSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-backend-handoff')

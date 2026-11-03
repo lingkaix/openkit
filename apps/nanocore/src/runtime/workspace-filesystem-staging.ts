@@ -9,8 +9,8 @@ import { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
 
-// SQL owns the outer marker. Freeze native manifest predicates independently of wire schemas.
-const StoredFilesystemSnapshotManifestV1Schema = z
+/** Retained native manifest predicates; SQL owns the outer marker independently of wire schemas. */
+export const StoredFilesystemSnapshotManifestV1Schema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     resourceId: z.string(),

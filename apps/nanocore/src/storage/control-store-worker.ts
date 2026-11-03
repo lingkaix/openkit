@@ -251,6 +251,8 @@ import { applyWorkspaceReviewFinishInDb } from './workspace-review-finish.js';
 import { applyWorkspaceReviewDecisionInDb } from './workspace-review-records.js';
 import { ControlCoreSharingRefusalSchema } from './workspace-sharing-codecs.js';
 import { applyControlCoreSharing } from './workspace-sharing-native.js';
+import { WorkspaceStageReviewRefusal } from './workspace-stage-review-codecs.js';
+import { applyWorkspaceStageReviewInDb } from './workspace-stage-review-native.js';
 
 if (isMainThread || parentPort === null) {
   throw new Error('The database writer entrypoint requires a dedicated worker thread.');
@@ -279,6 +281,7 @@ type WriteCommand = Extract<
       | 'workspace-apply-plan'
       | 'workspace-review-decision'
       | 'workspace-review-finish'
+      | 'workspace-stage-review'
       | 'workspace-backend-handoff'
       | 'harness-lifecycle'
       | 'execution-attempt'
@@ -574,6 +577,14 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       operation: 'worker-image',
       code: 'worker_image_conflict',
       message: 'Worker image settlement conflicts with its immutable result.',
+      status: 409,
+    };
+  if (operation === 'workspace-stage-review' && error instanceof WorkspaceStageReviewRefusal)
+    return {
+      operation,
+      code: error.code,
+      recordId: error.recordId,
+      message: error.message,
       status: 409,
     };
   if (operation === 'workspace-backend-handoff' && error instanceof WorkspaceBackendHandoffRefusal)
@@ -1946,6 +1957,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'runtime-target',
               result,
             };
+          } else if (request.operation === 'workspace-stage-review') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            applyWorkspaceStageReviewInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-stage-review',
+              result: null,
+            };
           } else if (request.operation === 'workspace-backend-handoff') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3105,6 +3130,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-apply-plan' ||
       value.operation === 'workspace-review-decision' ||
       value.operation === 'workspace-review-finish' ||
+      value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||
       value.operation === 'harness-lifecycle' ||
       value.operation === 'execution-attempt' ||
