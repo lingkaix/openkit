@@ -508,6 +508,7 @@ impl ImageStore {
     /// # Errors
     ///
     /// Fails on busy, unsafe, unreadable, unbounded, or unattributed inventory.
+    /// Per-entry index metadata without a supported version stays incomplete.
     pub fn list(&self) -> Result<Vec<StoreListEntry>, StoreError> {
         let _lock = self.try_lock()?;
         self.list_locked()
@@ -759,6 +760,9 @@ impl ImageStore {
                 Err(StoreError::Corrupt) => {
                     rows.remove(&digest);
                 }
+                // The digest is already attributed by content and index, so unusable
+                // per-entry metadata stays incomplete and retains its bytes.
+                Err(StoreError::InvalidMetadata) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -1271,6 +1275,58 @@ mod tests {
         );
         store.remove(&digest).expect("exact incomplete cleanup");
         assert_eq!(store.capacity().unwrap().used, 0);
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn unversioned_index_lists_as_incomplete_without_hiding_other_images() {
+        let root = fixture_root();
+        let store = open_store(&root);
+        let (usable_archive, usable_digest, _) = archive(&root, "list-usable");
+        store
+            .admit_oci_file(
+                &usable_digest,
+                usable_archive,
+                StoreLineage::LocalArchive(usable_digest.clone()),
+                31,
+            )
+            .expect("admit usable archive");
+
+        let (_, unversioned_digest, bytes) = archive(&root, "list-unversioned");
+        let stem = unversioned_digest.strip_prefix("sha256:").expect("digest");
+        fs::write(store.content_root.join(stem), &bytes).expect("retain unversioned content");
+        let index_path = store.index_path(&unversioned_digest).expect("index path");
+        let metadata = StoreEntry {
+            digest: unversioned_digest.clone(),
+            size: bytes.len() as u64,
+            acquired_at: 32,
+            lineage: StoreLineage::LocalArchive(unversioned_digest.clone()),
+        }
+        .encode()
+        .expect("encode index");
+        let unversioned = metadata.replacen("format_version=1\n", "", 1);
+        assert!(!unversioned.contains("format_version"));
+        fs::write(&index_path, &unversioned).expect("write unversioned index");
+
+        let rows = store.list().expect("list every retained entry");
+        assert_eq!(rows.len(), 2);
+        let usable = rows
+            .iter()
+            .find(|row| row.digest == usable_digest)
+            .expect("usable row");
+        assert_eq!(usable.status, StoreEntryStatus::Usable);
+        let incomplete = rows
+            .iter()
+            .find(|row| row.digest == unversioned_digest)
+            .expect("unversioned row");
+        assert_eq!(incomplete.status, StoreEntryStatus::Incomplete);
+        assert_eq!(incomplete.size, bytes.len() as u64);
+        assert_eq!(incomplete.lineage, None);
+        assert_eq!(
+            fs::read(store.content_path(&unversioned_digest)).unwrap(),
+            bytes
+        );
+        assert_eq!(fs::read(&index_path).unwrap(), unversioned.as_bytes());
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
