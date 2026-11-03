@@ -39,7 +39,7 @@ import {
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { commandInputHash, presentControlFacts } from './control-store-input.js';
-import { ControlProductPreconditionError, readProduct } from './control-store-products.js';
+import { ControlProductPreconditionError, readProduct } from './control-store-product-records.js';
 import type { WorkspaceDb } from './db.js';
 import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import {

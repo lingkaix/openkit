@@ -83,7 +83,7 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,

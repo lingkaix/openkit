@@ -10,7 +10,7 @@ import { FsStore } from '../lib/store.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { closeWorkspaceProductReadHandles } from './control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

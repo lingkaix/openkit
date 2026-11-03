@@ -21,7 +21,7 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { createTestStore } from '../test-support/store.js';
 import type { ControlAdmission } from './control-store-admission.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -183,7 +183,7 @@ try {
 process.stdout.write(JSON.stringify({ pid: process.pid, entries }));`,
         pathToFileURL(createRequire(import.meta.url).resolve('tsx/esm/api')).href,
         new URL('./workspace-file-records.ts', import.meta.url).href,
-        new URL('./control-store-products.ts', import.meta.url).href,
+        new URL('./control-store-product-records.ts', import.meta.url).href,
       ],
       { encoding: 'utf8' },
       (error, stdout, stderr) => resolve({ error: error ?? undefined, stdout, stderr })

@@ -21,14 +21,16 @@ import {
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { applyControlAdmission, ControlAdmissionSchema } from './control-store-admission.js';
-import type { ControlContentPreparation } from './control-store-products.js';
 import {
-  applyControlProducts,
-  applyControlTerminal,
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   type ControlProductEntry,
   ControlProductEntrySchema,
+} from './control-store-product-records.js';
+import type { ControlContentPreparation } from './control-store-products.js';
+import {
+  applyControlProducts,
+  applyControlTerminal,
   ControlProductMutationSchema,
   ControlTerminalTransitionSchema,
   type PreparedControlEntry,

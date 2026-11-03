@@ -28,7 +28,7 @@ import { publishCapturedSource } from './knowledge/source-publication.js';
 import { readManagedSourceText } from './knowledge/source-reading.js';
 import * as knowledgeManager from './knowledge-manager.js';
 import { FsStore } from './lib/store.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { rebuildWorkspaceDerivedIndexes } from './storage/index-rebuild.js';

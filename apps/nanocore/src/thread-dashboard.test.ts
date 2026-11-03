@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import * as evidenceBundles from './evidence-bundles.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import * as database from './storage/db.js';
 import { openCoreDb } from './storage/db.js';

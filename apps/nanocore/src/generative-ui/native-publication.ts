@@ -11,14 +11,16 @@ import {
   recordControlCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
 import {
+  type ControlProductContentMount,
+  ControlProductPreconditionError,
+  readProduct,
+} from '../storage/control-store-product-records.js';
+import {
   applyControlProducts,
   assertControlProductWriter,
   type ControlContentPreparation,
-  type ControlProductContentMount,
-  ControlProductPreconditionError,
   prepareControlEntries,
   prepareControlItemAppend,
-  readProduct,
 } from '../storage/control-store-products.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';

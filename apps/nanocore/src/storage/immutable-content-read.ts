@@ -3,7 +3,10 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { ContentReferenceSchema } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import type { ControlProductContentMount, ControlProductOwner } from './control-store-products.js';
+import type {
+  ControlProductContentMount,
+  ControlProductOwner,
+} from './control-store-product-records.js';
 
 /** Reads exact immutable bytes through one trusted product mount and owner binding. */
 export function readImmutableContentBytes(

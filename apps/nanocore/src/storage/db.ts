@@ -6,7 +6,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import { configureOwnedSqlite } from './control-store.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   coreDbPath,
   ensureLayout,

@@ -19,7 +19,7 @@ import { executeGoalOperation, readGoalView } from './runtime/goal-owner.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
 import { pendingRequestItemId, readPendingRequest } from './runtime/pending-requests.js';
-import { openControlStoreProductReadHandle } from './storage/control-store-products.js';
+import { openControlStoreProductReadHandle } from './storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';

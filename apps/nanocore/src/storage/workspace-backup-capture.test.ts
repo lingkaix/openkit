@@ -44,7 +44,7 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   DATA_ROOT_BACKUP_MANIFEST_FILE,

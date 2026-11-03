@@ -99,10 +99,8 @@ import {
 } from '../workspace-sharing.js';
 import { lightAppDbPath } from './app-db.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import {
-  type ControlTerminalTransition,
-  openControlStoreProductReadHandle,
-} from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
+import type { ControlTerminalTransition } from './control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

@@ -6,10 +6,8 @@ import {
 } from '../runtime/nanohost-attempt-records.js';
 import { writeWorkerControlAcceptedRecord } from '../runtime/worker-control-records.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
-import {
-  assertControlProductWriter,
-  ControlProductPreconditionError,
-} from './control-store-products.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
+import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import type { ControlExecutionAttemptInput } from './execution-attempt-codecs.js';
 

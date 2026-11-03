@@ -31,15 +31,17 @@ import {
   prepareControlPendingCommands,
 } from './control-store-pending.js';
 import {
-  applyControlTerminal,
-  type ControlContentPreparation,
   type ControlProductEntry,
   ControlProductPreconditionError,
-  type ControlTerminalTransition,
   openControlStoreProductReadHandle,
+  readProduct,
+} from './control-store-product-records.js';
+import {
+  applyControlTerminal,
+  type ControlContentPreparation,
+  type ControlTerminalTransition,
   type PreparedControlTerminal,
   prepareControlTerminal,
-  readProduct,
 } from './control-store-products.js';
 import type { WorkspaceDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';

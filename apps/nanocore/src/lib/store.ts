@@ -196,16 +196,18 @@ import type { ControlPendingTransition } from '../storage/control-store-pending.
 import {
   type ControlProductEntry,
   ControlProductEntrySchema,
-  type ControlProductMutation,
   type ControlProductOwner,
-  type ControlTerminalTransition,
-  checkControlItemAppend,
   closeWorkspaceProductReadHandles,
   decode as decodeControlProduct,
-  eventAgreesWithSealedTurnOutcome,
-  eventConflictsWithSealedTurnOutcome,
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
+} from '../storage/control-store-product-records.js';
+import {
+  type ControlProductMutation,
+  type ControlTerminalTransition,
+  checkControlItemAppend,
+  eventAgreesWithSealedTurnOutcome,
+  eventConflictsWithSealedTurnOutcome,
 } from '../storage/control-store-products.js';
 import {
   ControlStoreWorkerError,

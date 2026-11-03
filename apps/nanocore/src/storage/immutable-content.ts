@@ -16,7 +16,7 @@ import {
   ControlProductEntrySchema,
   type ControlProductOwner,
   inlineControlContentBytes,
-} from './control-store-products.js';
+} from './control-store-product-records.js';
 import {
   copyImmutableStage,
   type ImmutableContentHandoff,

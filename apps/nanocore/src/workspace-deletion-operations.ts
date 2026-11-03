@@ -35,7 +35,7 @@ import type { OperationImplementations } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest } from './storage/data-root-backup.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';

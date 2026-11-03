@@ -12,7 +12,7 @@ import {
 import { ProviderRegistry } from './providers/registry.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { readPendingRequest, validateCanonicalLoad } from './runtime/pending-requests.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';

@@ -16,10 +16,8 @@ import {
 } from '../runtime/worker-credential-authority.js';
 import { isServerMcpGrant, isServerMcpReference } from '../vault/server-mcp-authority.js';
 import { recordControlCommandRequestRecordInDb } from './command-request-records.js';
-import {
-  assertControlProductWriter,
-  ControlProductPreconditionError,
-} from './control-store-products.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
+import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import {
   type AdvanceActiveVaultReferenceVersionInput,

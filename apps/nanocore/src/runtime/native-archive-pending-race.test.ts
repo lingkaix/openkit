@@ -11,7 +11,7 @@ import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-
 import {
   ControlProductEntrySchema,
   openControlStoreProductReadHandle,
-} from '../storage/control-store-products.js';
+} from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

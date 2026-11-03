@@ -108,14 +108,16 @@ import {
 } from './control-store-pending.js';
 import {
   CONTROL_PRODUCT_LIMITS,
+  type ControlProductContentMount,
+  ControlProductContentMountSchema,
+  type ControlProductOwner,
+} from './control-store-product-records.js';
+import {
   type ControlEventAppend,
   type ControlEventAppendResult,
   ControlEventAppendSchema,
   type ControlItemAppend,
   ControlItemAppendSchema,
-  type ControlProductContentMount,
-  ControlProductContentMountSchema,
-  type ControlProductOwner,
   type ControlProductTransition,
   ControlProductTransitionSchema,
   type ControlPublicationInput,

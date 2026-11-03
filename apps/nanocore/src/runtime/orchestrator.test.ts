@@ -8,7 +8,7 @@ import type { AgentManifest } from '../agents/manifest.js';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

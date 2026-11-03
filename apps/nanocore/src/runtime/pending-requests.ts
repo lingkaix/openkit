@@ -31,12 +31,11 @@ type ApprovalRequest = import('zod').infer<typeof ApprovalRequestSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
 
 import type Database from 'better-sqlite3';
-
+import { readProduct } from '../storage/control-store-product-records.js';
 import {
   assertControlProductWriter,
   type PreparedControlEntry,
   readPreparedControlEntry,
-  readProduct,
 } from '../storage/control-store-products.js';
 import {
   listExistingWorkspaceDatabaseScopes,

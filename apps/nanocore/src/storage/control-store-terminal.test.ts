@@ -19,11 +19,8 @@ import type {
 } from '../runtime/execution-step-journal.js';
 import { StoredGoalV1Schema } from '../runtime/goal-retained-v1.js';
 import { workerTurnTerminalPublication } from '../runtime/worker-turn-failure.js';
-import type {
-  ControlProductContentMount,
-  ControlTerminalResult,
-  ControlTerminalTransition,
-} from './control-store-products.js';
+import type { ControlProductContentMount } from './control-store-product-records.js';
+import type { ControlTerminalResult, ControlTerminalTransition } from './control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

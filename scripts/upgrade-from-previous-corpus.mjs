@@ -82,7 +82,7 @@ async function owners(appRoot) {
     migrate: 'storage/migrate.js',
     layout: 'storage/fs-layout.js',
     records: 'storage/workspace-file-records.js',
-    products: 'storage/control-store-products.js',
+    products: 'storage/control-store-product-records.js',
     notebook: 'knowledge/notebook.js',
     notebookSelection: 'knowledge/notebook-workspace-selection.js',
     notebookPublication: 'knowledge/notebook-publication.js',

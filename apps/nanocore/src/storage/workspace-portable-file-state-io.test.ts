@@ -27,7 +27,7 @@ import {
 } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { prepareWorkspaceKnowledgeSelection } from './control-store-knowledge.js';
-import { closeWorkspaceProductReadHandles } from './control-store-products.js';
+import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';

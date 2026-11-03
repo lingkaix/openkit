@@ -29,7 +29,7 @@ import {
   closeWorkspaceProductReadHandles,
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
-} from '../storage/control-store-products.js';
+} from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

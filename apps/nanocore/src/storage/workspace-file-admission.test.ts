@@ -15,7 +15,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 import { WorkOwnershipViolationError } from './fs-layout.js';

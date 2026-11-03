@@ -8,10 +8,8 @@ import {
   resolveNanoHostAttemptTokenBinding,
 } from '../runtime/nanohost-attempt-records.js';
 import { acceptWorkerControlSequence } from '../runtime/worker-control-sequences.js';
-import {
-  assertControlProductWriter,
-  ControlProductPreconditionError,
-} from './control-store-products.js';
+import { ControlProductPreconditionError } from './control-store-product-records.js';
+import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import {
   type ControlWorkerHeartbeatInput,

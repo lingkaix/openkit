@@ -26,16 +26,13 @@ import { type CommandRequestRecord, commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { getCommandRequestRecordFromDb } from './command-request-records.js';
 import { type ControlAdmission, ControlAdmissionSchema } from './control-store-admission.js';
-import type {
-  ControlProductEntry,
-  ControlProductMutation,
-  ControlProductOwner,
-} from './control-store-products.js';
+import type { ControlProductEntry, ControlProductOwner } from './control-store-product-records.js';
 import {
   listProducts,
   openControlStoreProductReadHandle,
   readProductEntries,
-} from './control-store-products.js';
+} from './control-store-product-records.js';
+import type { ControlProductMutation } from './control-store-products.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';

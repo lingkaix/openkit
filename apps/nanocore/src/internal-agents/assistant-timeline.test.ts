@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, ThreadSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { closeWorkspaceProductReadHandles } from '../storage/control-store-products.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
