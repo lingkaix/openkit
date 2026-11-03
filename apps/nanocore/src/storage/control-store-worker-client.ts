@@ -1,4 +1,8 @@
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
+import {
+  type ControlRecoverySourceReactivationInput,
+  ControlRecoverySourceReactivationInputSchema,
+} from './workspace-reactivation-codecs.js';
 
 export { ControlStoreWorkerError } from './control-store-worker-error.js';
 
@@ -281,7 +285,18 @@ interface ControlRecoveryTargetPreparationCall
   readonly kind: 'recovery-target-preparation';
   readonly input: ControlRecoveryTargetPreparationInput;
 }
+const sourceReactivationCall = Symbol('source-reactivation-call');
+/** The stopped root-lock lifetime binds one original stage to its exact physical native owner. */
+interface ControlRecoverySourceReactivationCall {
+  readonly kind: 'recovery-source-reactivation';
+  readonly [sourceReactivationCall]: true;
+  readonly input: ControlRecoverySourceReactivationInput;
+  readonly command: Omit<OpenCommand, 'operation'>;
+  readonly path: string;
+  readonly identity: string;
+}
 type ControlFrozenNativeCall =
+  | ControlRecoverySourceReactivationCall
   | ControlRecoveryTargetRegistrationCall
   | ControlRecoveryTargetPreparationCall
   | ControlRecoveryNativeCall
@@ -400,6 +415,7 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
       return true;
     case 'recovery-target-registration':
     case 'recovery-target-preparation':
+    case 'recovery-source-reactivation':
       return true;
     case 'workspace-deletion':
       return command.input.stage === 'complete';
@@ -995,6 +1011,38 @@ class ControlStoreWorkerClient {
           },
         });
       return;
+    }
+    if ('kind' in recovery && recovery.kind === 'recovery-source-reactivation') {
+      try {
+        const physical =
+          opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
+        const current = statSync(recovery.path);
+        const workspace = recovery.input.stage === 'workspace';
+        const owner = recovery.command.productOwner;
+        if (
+          recovery[sourceReactivationCall] !== true ||
+          (workspace
+            ? owner?.kind !== 'workspace' || owner.workspaceId !== recovery.input.workspaceId
+            : owner?.kind !== 'server') ||
+          recovery.command.initialize !== (workspace ? 'workspace' : 'core') ||
+          recovery.command.create !== false ||
+          recovery.command.database !==
+            `${workspace ? 'workspace' : 'core'}:${resolve(recovery.command.path)}` ||
+          realpathSync(recovery.command.path) !== recovery.path ||
+          `${current.dev}:${current.ino}` !== recovery.identity ||
+          !physical ||
+          physical.path !== recovery.path ||
+          physical.identity !== recovery.identity ||
+          !isDeepStrictEqual(physical.command, recovery.command) ||
+          command.operation !== recovery.kind ||
+          command.database !== recovery.command.database ||
+          !isDeepStrictEqual(command.input, recovery.input)
+        )
+          throw new Error('Stopped reactivation lifecycle binding is not current.');
+        return;
+      } catch {
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      }
     }
     if (
       'kind' in recovery &&
@@ -2545,6 +2593,33 @@ class ControlStoreWorkerClient {
       }
       throw error;
     }
+  }
+
+  /** Acknowledges one original stopped-reactivation stage only after its own covering FULL commit. */
+  async recoverySourceReactivation(
+    database: string,
+    value: ControlRecoverySourceReactivationInput
+  ): Promise<void> {
+    const input = ControlRecoverySourceReactivationInputSchema.parse(value);
+    this.assertAccepting();
+    const opening = this.openings.get(database);
+    if (!opening || opening.identity === undefined)
+      throw new ControlStoreWorkerError('not-open', 'not-committed');
+    const call: ControlRecoverySourceReactivationCall = {
+      kind: 'recovery-source-reactivation',
+      [sourceReactivationCall]: true,
+      input,
+      command: opening.command,
+      path: opening.path,
+      identity: opening.identity,
+    };
+    await this.request(
+      { operation: 'recovery-source-reactivation', database, input },
+      undefined,
+      undefined,
+      false,
+      call
+    );
   }
 
   /** Publishes one original prepare/proof/abandon stage under its current Core lifecycle binding. */

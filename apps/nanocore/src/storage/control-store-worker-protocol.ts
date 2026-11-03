@@ -247,6 +247,11 @@ import {
   type ControlWorkspaceDeletionResult,
   ControlWorkspaceDeletionResultSchema,
 } from './workspace-deletion-codecs.js';
+import {
+  type ControlRecoverySourceReactivationInput,
+  ControlRecoverySourceReactivationInputSchema,
+  ControlRecoverySourceReactivationRefusalSchema,
+} from './workspace-reactivation-codecs.js';
 import type { WorkspaceRecoveryCliReport } from './workspace-recovery-cli.js';
 import {
   type ControlRecoveryTargetPreparationInput,
@@ -475,6 +480,10 @@ export type ControlWorkerCommand =
       | { readonly operation: 'recovery-history'; readonly workspaceId: string }
       | { readonly operation: 'recovery-cleanup'; readonly input: ControlRecoveryCleanupInput }
       | { readonly operation: 'recovery-capture'; readonly input: ControlRecoveryCaptureInput }
+      | {
+          readonly operation: 'recovery-source-reactivation';
+          readonly input: ControlRecoverySourceReactivationInput;
+        }
       | { readonly operation: 'recovery-move-out'; readonly input: ControlRecoveryMoveOutInput }
       | { readonly operation: 'recovery-safety'; readonly input: ControlRecoverySafetyInput }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
@@ -748,6 +757,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlBackendSessionRefusalSchema>
   | z.infer<typeof ControlHarnessLifecycleRefusalSchema>
   | z.infer<typeof ControlRecoveryTargetRegistrationRefusalSchema>
+  | z.infer<typeof ControlRecoverySourceReactivationRefusalSchema>
   | ControlCoreSharingRefusal
   | ControlSchedulerAdmissionRefusal;
 
@@ -849,6 +859,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'execution-attempt';
       readonly result: ControlExecutionAttemptResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'recovery-source-reactivation';
+      readonly result: null;
     }
   | {
       readonly status: 'ok';
@@ -1027,6 +1042,8 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'recovery-source-reactivation')
+    return ControlRecoverySourceReactivationRefusalSchema.safeParse(value).success;
   if (
     isRecord(value) &&
     (value.operation === 'recovery-target-registration' ||
@@ -1305,7 +1322,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlWorkerHeartbeatResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'worker-control-final-status')
     return ControlWorkerFinalStatusResultSchema.safeParse(reply.result).success;
-  if (reply.operation === 'recovery-target-preparation') return reply.result === null;
+  if (
+    reply.operation === 'recovery-target-preparation' ||
+    reply.operation === 'recovery-source-reactivation'
+  )
+    return reply.result === null;
   if (reply.operation === 'recovery-target-registration')
     return ControlRecoveryTargetRegistrationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-deletion')
@@ -1504,6 +1525,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'shutdown') return exactFields(value, header);
   if (typeof value.database !== 'string' || value.database.length === 0) return false;
   const scoped = [...header, 'database'];
+  if (value.operation === 'recovery-source-reactivation')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlRecoverySourceReactivationInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'recovery-target-preparation')
     return (
       exactFields(value, [...scoped, 'input']) &&

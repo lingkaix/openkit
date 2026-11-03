@@ -235,6 +235,8 @@ import { recordWorkspaceApplyPlanInDb } from './workspace-apply-plan-records.js'
 import { WorkspaceRecoveryError } from './workspace-backup.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
+import { ControlRecoverySourceReactivationRefusalSchema } from './workspace-reactivation-codecs.js';
+import { applyControlRecoverySourceReactivation } from './workspace-reactivation-native.js';
 import { ControlRecoveryTargetRegistrationRefusalSchema } from './workspace-recovery-target-codecs.js';
 import {
   applyControlRecoveryTargetPreparation,
@@ -300,6 +302,7 @@ type WriteCommand = Extract<
       | 'scheduler-admission'
       | 'recovery-target-registration'
       | 'recovery-target-preparation'
+      | 'recovery-source-reactivation'
       | 'workspace-deletion'
       | 'core-sharing'
       | 'provenance'
@@ -474,6 +477,15 @@ function failure(
 
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
+  if (operation === 'recovery-source-reactivation' && error instanceof WorkspaceRecoveryError) {
+    const parsed = ControlRecoverySourceReactivationRefusalSchema.safeParse({
+      operation,
+      code: error.code,
+      message: error.message,
+      status: 409,
+    });
+    if (parsed.success) return parsed.data;
+  }
   if (
     (operation === 'recovery-target-registration' || operation === 'recovery-target-preparation') &&
     (error instanceof WorkspaceRecoveryError || error instanceof OperationError)
@@ -2035,6 +2047,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'scheduler-admission',
               result,
             };
+          } else if (request.operation === 'recovery-source-reactivation') {
+            if (!owner.scopeDb) throw new ControlProductPreconditionError();
+            applyControlRecoverySourceReactivation(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'recovery-source-reactivation',
+              result: null,
+            };
           } else if (request.operation === 'recovery-target-preparation') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             applyControlRecoveryTargetPreparation(
@@ -3094,6 +3116,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'scheduler-admission' ||
       value.operation === 'recovery-target-registration' ||
       value.operation === 'recovery-target-preparation' ||
+      value.operation === 'recovery-source-reactivation' ||
       value.operation === 'workspace-deletion' ||
       value.operation === 'core-sharing' ||
       value.operation === 'evaluation-candidate' ||
@@ -3130,6 +3153,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           barrier:
             value.operation === 'recovery-target-registration' ||
             value.operation === 'recovery-target-preparation' ||
+            value.operation === 'recovery-source-reactivation' ||
             value.operation === 'app-kernel' ||
             value.operation === 'recovery-cleanup' ||
             value.operation === 'recovery-capture' ||
