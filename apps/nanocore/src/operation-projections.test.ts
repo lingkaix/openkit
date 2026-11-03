@@ -2607,3 +2607,45 @@ it('refuses fixed-User Login operations on the existing real Worker package proj
     f.coreDb.sqlite.close();
   }
 });
+
+it('declares the real deterministic reviewed issue gate and non-decisive completed observation', async () => {
+  // Core Mediation, Enforcement Points: declaration and implementation must describe the same crossing.
+  const { policyOperationDefinition } = await import('./policy/statements.js');
+  const definition = OPERATION_DEFINITIONS['vault.grant-issue'];
+  expect(definition).toMatchObject({
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'vault.admin',
+    mutating: true,
+    insertionPoints: {
+      stages: expect.arrayContaining(['decide', 'completed']),
+      modes: expect.arrayContaining(['gate', 'observe']),
+      participantKinds: ['deterministic'],
+      gateResults: expect.arrayContaining(['allow', 'deny']),
+      gateFailures: ['error'],
+    },
+  });
+  const adapted = policyOperationDefinition('vault.grant-issue');
+  expect(adapted.points.stages).toEqual(expect.arrayContaining(['decide', 'completed']));
+  expect(adapted.points.modes).toEqual(expect.arrayContaining(['gate', 'observe']));
+  expect(adapted.points.modes).toHaveLength(2);
+  expect(adapted.points.gateResults).toHaveLength(2);
+  expect(adapted.points.participantKinds).toEqual(['deterministic']);
+});
+
+// Operation Definition, Inputs: trusted approved lineage is never a public authority selector.
+it('refuses caller-selected mediated decision lineage at the existing issue input boundary', () => {
+  const definition = OPERATION_DEFINITIONS['vault.grant-issue'];
+  const input = {
+    workspaceId: testEntityId('ws', 'reviewed-issue-lineage-input'),
+    threadId: testEntityId('th', 'reviewed-issue-lineage-input'),
+    approvalRequestId: randomUUID(),
+  };
+  expect(definition.inputSchema.safeParse(input).success).toBe(true);
+  expect(
+    definition.inputSchema.safeParse({
+      ...input,
+      decisionLineage: { requestId: input.approvalRequestId, approvalId: input.approvalRequestId },
+    }).success
+  ).toBe(false);
+});

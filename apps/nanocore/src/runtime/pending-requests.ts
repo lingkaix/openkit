@@ -2449,6 +2449,7 @@ function parseDecisionContext(bytes: string | null): Actor | null {
     !value.userId ||
     (value.tokenScope !== undefined &&
       !['server-admin', 'workspace', 'workspace-readonly'].includes(String(value.tokenScope))) ||
+    (value.sessionId !== undefined && (typeof value.sessionId !== 'string' || !value.sessionId)) ||
     (value.tokenId !== undefined && typeof value.tokenId !== 'string') ||
     (value.adminTokenId !== undefined && typeof value.adminTokenId !== 'string') ||
     (value.tokenWorkspaceIds !== undefined &&
@@ -2463,6 +2464,7 @@ function parseDecisionContext(bytes: string | null): Actor | null {
   return {
     kind: value.kind as Actor['kind'],
     userId: value.userId,
+    ...(typeof value.sessionId === 'string' ? { sessionId: value.sessionId } : {}),
     ...(typeof value.tokenId === 'string' ? { tokenId: value.tokenId } : {}),
     ...(typeof value.tokenScope === 'string'
       ? { tokenScope: value.tokenScope as NonNullable<Actor['tokenScope']> }

@@ -1,5 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
-import { type ActorRef, isEntityId, writeRetainedV1 } from '@openkit/protocol';
+import {
+  type ActorRef,
+  isEntityId,
+  responsibleUserIdForActor,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { requireCurrentDeploymentAdmin } from '../auth/access-token-store.js';
 import {
@@ -948,10 +953,38 @@ function assertReviewedGrantAuthority(
   input: Extract<ControlVaultInput, { kind: 'reviewed-grant-issue' }>['record']
 ): void {
   const { authority, grant } = input;
+  const reference = getVaultReference(db, grant.vaultReferenceId);
+  const personalLogin = !!(
+    reference?.ownerScope === 'user' &&
+    reference.userId &&
+    reference.login?.provider === 'codex' &&
+    reference.status === 'active' &&
+    grant.ownerScope === 'workspace' &&
+    grant.workspaceId === authority.workspaceId &&
+    grant.lifetime === 'workspace' &&
+    grant.allowedInjectionPaths.length === 1 &&
+    grant.allowedInjectionPaths[0] === 'runtime-token' &&
+    !grant.targetCapabilityId
+  );
+  if (reference?.ownerScope === 'user' && !personalLogin)
+    throw new ControlProductPreconditionError();
   for (const actor of [authority.issuer, authority.decider]) {
-    const current = requireCurrentDeploymentAdmin(db, definedFields(actor));
-    if (actor.kind === 'session' && current.tokenId !== actor.adminTokenId)
-      throw new ControlProductPreconditionError();
+    if (personalLogin) {
+      if (
+        evaluateOwnedUserOperation(
+          db,
+          definedFields(actor),
+          reference!.userId!,
+          'vault.admin',
+          true
+        ).effect !== 'allow'
+      )
+        throw new ControlProductPreconditionError();
+    } else {
+      const current = requireCurrentDeploymentAdmin(db, definedFields(actor));
+      if (actor.kind === 'session' && current.tokenId !== actor.adminTokenId)
+        throw new ControlProductPreconditionError();
+    }
     if (
       !authorizeWorkspace(db, definedFields(actor), authority.workspaceId, {
         policyOperation: 'vault.admin',
@@ -963,6 +996,12 @@ function assertReviewedGrantAuthority(
   const requester = authority.requester;
   if (requester.kind === 'public') {
     const actor = definedFields(requester.actor);
+    if (
+      personalLogin &&
+      evaluateOwnedUserOperation(db, actor, reference!.userId!, 'vault.admin', false).effect !==
+        'allow'
+    )
+      throw new ControlProductPreconditionError();
     if (grant.ownerScope === 'server' || (actor.kind === 'session' && actor.adminTokenId)) {
       const current = requireCurrentDeploymentAdmin(db, actor);
       if (actor.kind === 'session' && current.tokenId !== actor.adminTokenId)
@@ -984,6 +1023,8 @@ function assertReviewedGrantAuthority(
     )
       throw new ControlProductPreconditionError();
   } else if (
+    (personalLogin &&
+      responsibleUserIdForActor(requester.actor as ActorRef) !== reference!.userId) ||
     !currentWorkerLineageWorkspaceAuthority(
       db,
       { ...requester.lineage, triggerActor: requester.actor as ActorRef },
@@ -992,7 +1033,6 @@ function assertReviewedGrantAuthority(
     )
   )
     throw new ControlProductPreconditionError();
-  const reference = getVaultReference(db, grant.vaultReferenceId);
   if (
     !reference ||
     !isDeepStrictEqual(reference, authority.reference) ||

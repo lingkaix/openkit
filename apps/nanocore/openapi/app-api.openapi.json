@@ -28034,14 +28034,6 @@
                 "format": "date-time",
                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
               },
-              "injectionPath": {
-                "type": "string",
-                "enum": [
-                  "gateway-only",
-                  "runtime-env",
-                  "runtime-file"
-                ]
-              },
               "targetAgentId": {
                 "type": "string",
                 "minLength": 1
@@ -28071,6 +28063,15 @@
                   "server"
                 ]
               },
+              "injectionPath": {
+                "type": "string",
+                "enum": [
+                  "gateway-only",
+                  "runtime-env",
+                  "runtime-file",
+                  "runtime-token"
+                ]
+              },
               "mcpSource": {
                 "type": "object",
                 "properties": {
@@ -28093,9 +28094,9 @@
             },
             "required": [
               "referenceId",
-              "injectionPath",
               "ownerScope",
-              "lifetime"
+              "lifetime",
+              "injectionPath"
             ],
             "additionalProperties": false
           }
@@ -28167,14 +28168,6 @@
                 "format": "date-time",
                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
               },
-              "injectionPath": {
-                "type": "string",
-                "enum": [
-                  "gateway-only",
-                  "runtime-env",
-                  "runtime-file"
-                ]
-              },
               "targetAgentId": {
                 "type": "string",
                 "minLength": 1
@@ -28204,6 +28197,15 @@
                   "server"
                 ]
               },
+              "injectionPath": {
+                "type": "string",
+                "enum": [
+                  "gateway-only",
+                  "runtime-env",
+                  "runtime-file",
+                  "runtime-token"
+                ]
+              },
               "mcpSource": {
                 "type": "object",
                 "properties": {
@@ -28226,9 +28228,9 @@
             },
             "required": [
               "referenceId",
-              "injectionPath",
               "ownerScope",
-              "lifetime"
+              "lifetime",
+              "injectionPath"
             ],
             "additionalProperties": false
           },
@@ -28496,14 +28498,6 @@
                       "format": "date-time",
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
                     },
-                    "injectionPath": {
-                      "type": "string",
-                      "enum": [
-                        "gateway-only",
-                        "runtime-env",
-                        "runtime-file"
-                      ]
-                    },
                     "targetAgentId": {
                       "type": "string",
                       "minLength": 1
@@ -28533,6 +28527,15 @@
                         "server"
                       ]
                     },
+                    "injectionPath": {
+                      "type": "string",
+                      "enum": [
+                        "gateway-only",
+                        "runtime-env",
+                        "runtime-file",
+                        "runtime-token"
+                      ]
+                    },
                     "mcpSource": {
                       "type": "object",
                       "properties": {
@@ -28555,9 +28558,9 @@
                   },
                   "required": [
                     "referenceId",
-                    "injectionPath",
                     "ownerScope",
-                    "lifetime"
+                    "lifetime",
+                    "injectionPath"
                   ],
                   "additionalProperties": false
                 },
@@ -28826,14 +28829,6 @@
                 "format": "date-time",
                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
               },
-              "injectionPath": {
-                "type": "string",
-                "enum": [
-                  "gateway-only",
-                  "runtime-env",
-                  "runtime-file"
-                ]
-              },
               "targetAgentId": {
                 "type": "string",
                 "minLength": 1
@@ -28863,6 +28858,15 @@
                   "server"
                 ]
               },
+              "injectionPath": {
+                "type": "string",
+                "enum": [
+                  "gateway-only",
+                  "runtime-env",
+                  "runtime-file",
+                  "runtime-token"
+                ]
+              },
               "mcpSource": {
                 "type": "object",
                 "properties": {
@@ -28885,9 +28889,9 @@
             },
             "required": [
               "referenceId",
-              "injectionPath",
               "ownerScope",
-              "lifetime"
+              "lifetime",
+              "injectionPath"
             ],
             "additionalProperties": false
           },
@@ -155174,5 +155178,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:708dab29800d2c553a783057a253c81b2c08ef72e9819edf375c8058004bef52"
+  "x-openkit-source-digest": "sha256:294a2a486e94f3d4ed46637792032185a943a4bd5f2ba4a83a6863169c374673"
 }

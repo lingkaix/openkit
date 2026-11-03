@@ -334,16 +334,18 @@ it.each([
     expect(actual.policyDecisionId).toBeTruthy();
     const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
     try {
-      expect(
-        db.sqlite
-          .prepare(
-            'SELECT result, approval_id, policy_snapshot_id FROM permission_decisions WHERE decision_id = ?'
-          )
-          .get(actual.policyDecisionId)
-      ).toEqual({
+      // Policy Enforcement Mapping, Version-One Retained Projection: migrated producers use the real mediated record.
+      const decisions = await readReviewedIssueDecisions(db);
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({
+        decisionId: actual.policyDecisionId,
         result: 'allow',
-        approval_id: request.approvalRequestId,
-        policy_snapshot_id: 'reviewed_vault_grant_issue',
+        approvalId: request.approvalRequestId,
+        policyEngineVersion: 'nanocore-policy:v1',
+        policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
+        reasonCode: 'granted',
+        enforcementPoint: 'vault.grant-issue@decide',
+        mediation: { operation: 'vault.grant-issue', stage: 'decide', role: 'final' },
       });
     } finally {
       db.sqlite.close();
@@ -1414,22 +1416,38 @@ it.each([
           adminTokenId: reviewer.tokenId,
         },
       });
-      const decisions = db.sqlite
-        .prepare<[], { context_summary_json: string; audit_event_id: string }>(
-          "SELECT decision_id, policy_engine_version, policy_snapshot_id, result, reason_code, subject_summary_json, context_summary_json, approval_id, audit_event_id FROM permission_decisions WHERE enforcement_point = 'vault.grant-issue'"
-        )
-        .all();
+      // The specialized producer is migrated in place, with one final authorizer and truthful actual actor.
+      const decisions = await readReviewedIssueDecisions(db);
       expect(decisions).toHaveLength(1);
       expect(decisions[0]).toMatchObject({
-        decision_id: grant.policyDecisionId,
-        policy_engine_version: 'nanocore-vault-policy:v1',
-        policy_snapshot_id: 'reviewed_vault_grant_issue',
+        decisionId: grant.policyDecisionId,
+        policyEngineVersion: 'nanocore-policy:v1',
+        policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
         result: 'allow',
-        reason_code: 'reviewed_vault_grant_administrator_authorized',
-        subject_summary_json: JSON.stringify({ kind: 'user', id: reviewerId }),
-        approval_id: request.approvalRequestId,
+        reasonCode: 'granted',
+        enforcementPoint: 'vault.grant-issue@decide',
+        subjectSummary: {
+          principal: { kind: 'human', id: reviewerId },
+          actor: { kind: 'user', id: reviewerId },
+          responsibleHumanId: reviewerId,
+        },
+        approvalId: request.approvalRequestId,
+        mediation: {
+          operation: 'vault.grant-issue',
+          stage: 'decide',
+          role: 'final',
+          subject: {
+            principal: { kind: 'human', id: reviewerId },
+            actor: { kind: 'user', id: reviewerId },
+            responsibleHumanId: reviewerId,
+          },
+          kernel: { effect: 'allow' },
+        },
       });
-      expect(JSON.parse(decisions[0]!.context_summary_json)).toMatchObject({
+      expect(decisions[0]!.contextSummary).toMatchObject({
+        requestId: request.approvalRequestId,
+        threadId: source.threadId,
+        turnId: request.raisingTurnId,
         issuingActorId: reviewerId,
         requesterId: FIXTURE_LOCAL_USER_ID,
         approvalRequestId: request.approvalRequestId,
@@ -1439,7 +1457,7 @@ it.each([
           .prepare(
             'SELECT actor_json, permission_decision_id, request_id FROM audit_events WHERE audit_event_id = ?'
           )
-          .get(decisions[0]!.audit_event_id)
+          .get(decisions[0]!.auditEventId)
       ).toEqual({
         actor_json: JSON.stringify({ kind: 'user', id: reviewerId }),
         permission_decision_id: grant.policyDecisionId,
@@ -1839,6 +1857,1559 @@ it.each([
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
     expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toHaveLength(0);
   } finally {
+    await f.cleanup();
+  }
+});
+
+/** Establishes ordinary Users and a real active User Login before any request feature is called. */
+async function loginShareFixture(quarantined = false) {
+  const f = fixture();
+  const { createBetterAuth } = await import('../auth/better-auth.js');
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { PolicyInterception } = await import('../policy/interception.js');
+  const { createVaultReference, getVaultReference } = await import('./vault-references.js');
+  const auth = createBetterAuth(f.coreDb, { env: {} });
+  const humans = [];
+  for (const name of ['Login owner', 'Other member', 'Independent administrator']) {
+    const result = await auth.api.signUpEmail({
+      body: {
+        name,
+        email: `${randomUUID()}@example.invalid`,
+        password: randomUUID(),
+      },
+    });
+    humans.push(result.user);
+  }
+  const [owner, other, admin] = humans;
+  const created = await f.send('workspace.create', {
+    name: 'Login share destination',
+    requestId: randomUUID(),
+  });
+  expect(created.status).toBe(201);
+  const workspaceId = (await created.json()).id as string;
+  mkdirSync(join(f.dataRoot, 'config'), { recursive: true });
+  writeFileSync(join(f.dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
+  const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  const participant = vi.fn(
+    async (
+      _input: Parameters<
+        import('../policy/interception.js').DeterministicPolicyParticipant['invoke']
+      >[0]
+    ): Promise<unknown> => ({ decision: 'allow' as const })
+  );
+  const interception = new PolicyInterception({
+    id: 'login-share-test',
+    version: `sha256:${'3'.repeat(64)}`,
+    invoke: participant,
+  });
+  const apps = new Map<string, ReturnType<typeof createApp>>();
+  const sendAs = (userId: string, id: string, body: Record<string, unknown>) => {
+    let app = apps.get(userId);
+    if (!app) {
+      const sessionId = allocateEntityId('auth');
+      app = createApp({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+        vaultUnlockState: f.vaultUnlockState,
+        agentManifests: [createTestAgentSetup().manifest],
+        runtimeConfigManager: manager,
+        policyInterception: interception,
+        mode: 'server',
+        auth: {
+          api: { getSession: async () => ({ session: { id: sessionId }, user: { id: userId } }) },
+          handler: async () => Response.json({}),
+        },
+      });
+      apps.set(userId, app);
+    }
+    return app.request(
+      ...operationRequest(
+        id as OperationId,
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }
+      )
+    );
+  };
+  for (const user of [owner!, other!]) {
+    const invited = await f.send('workspace.invitation-create', {
+      workspaceId,
+      requestId: randomUUID(),
+      inviteeEmail: user.email,
+    });
+    expect(invited.status).toBe(201);
+    const { invitation } = await invited.json();
+    expect(
+      (
+        await sendAs(user.id, 'workspace.my-invitation-accept', {
+          invitationId: invitation.invitationId,
+          expectedRevision: invitation.revision,
+          requestId: randomUUID(),
+        })
+      ).status
+    ).toBe(200);
+  }
+  const thread = await sendAs(owner!.id, 'thread.create', {
+    workspaceId,
+    name: 'Exact personal Login consent',
+    visibility: 'workspace',
+    requestId: randomUUID(),
+  });
+  expect(thread.status).toBe(200);
+  const threadId = (await thread.json()).id as string;
+  const referenceId = allocateEntityId('vault');
+  const backend = f.vaultUnlockState.backend();
+  const material = backend.store({
+    referenceId,
+    material: 'synthetic-login-share-material',
+    metadata: { ownerScope: 'user', userId: owner!.id },
+  });
+  const reference = await createVaultReference(f.coreDb, {
+    referenceId,
+    ownerScope: 'user',
+    userId: owner!.id,
+    displayName: 'Synthetic personal Login',
+    secretKind: 'opaque',
+    backendKind: 'encrypted-file',
+    login: { provider: 'codex', accountId: 'synthetic-login-share-account', quarantined },
+  });
+  expect(
+    reference,
+    'Setup must retain the explicit native User Login, independently of request support'
+  ).toMatchObject({
+    ownerScope: 'user',
+    userId: owner!.id,
+    workspaceId: null,
+    status: 'active',
+    currentVersion: 1,
+    login: { provider: 'codex', accountId: 'synthetic-login-share-account', quarantined },
+  });
+  expect(material).toMatchObject({
+    ownerScope: 'user',
+    userId: owner!.id,
+    currentVersion: 1,
+    revoked: false,
+  });
+  expect(getVaultReference(f.coreDb, referenceId)).toEqual(reference);
+  const adminToken = createOpenKitAccessTokenRecord(f.coreDb, {
+    ownerUserId: admin!.id,
+    scope: 'server-admin',
+    workspaceIds: [],
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  });
+  expect(setDefaultServerAdminTokenId(f.coreDb, admin!.id, adminToken.tokenId)).toBe(true);
+  const terms = {
+    referenceId,
+    ownerScope: 'workspace' as const,
+    lifetime: 'workspace' as const,
+    injectionPath: 'runtime-token' as const,
+    targetAgentId: 'agent_codex_host',
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  };
+  const command = { workspaceId, threadId };
+  const resolve = vi.spyOn(backend, 'resolve');
+  return {
+    ...f,
+    owner: owner!,
+    other: other!,
+    admin: admin!,
+    adminToken,
+    sendAs,
+    manager,
+    participant,
+    interception,
+    reference,
+    backend,
+    resolve,
+    terms,
+    command,
+    raise: async () => {
+      const response = await sendAs(owner!.id, 'vault.grant-request', {
+        ...command,
+        terms,
+        requestId: randomUUID(),
+      });
+      expect(
+        response.status,
+        'Deciding baseline: valid native User Login setup must reach supported runtime-token request admission'
+      ).toBe(200);
+      return response.json();
+    },
+  };
+}
+
+/** Policy is admitted by the existing human configuration owner, never by a fabricated receipt. */
+async function installLoginSharePolicy(
+  f: Awaited<ReturnType<typeof loginShareFixture>>,
+  userId = f.owner.id,
+  uses?: number
+) {
+  const { createAdministrationConfiguration } = await import(
+    '../config/administration-configuration.js'
+  );
+  const { RuntimeConfigFileService } = await import('../config/runtime-config-files.js');
+  const { recordWorkspaceOwnerMembership } = await import('../workspace-membership.js');
+  const personal = await f.store.ensureQuickChatWorkspace(FIXTURE_LOCAL_USER_ID);
+  recordWorkspaceOwnerMembership({
+    coreDb: f.coreDb,
+    workspaceId: personal.id,
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
+  });
+  const thread = await f.store.createThread(
+    personal.id,
+    'Review exact sharing Policy',
+    undefined,
+    'administration',
+    {
+      visibility: 'private',
+      privateOwnerUserId: FIXTURE_LOCAL_USER_ID,
+    }
+  );
+  const turn = await f.store.createTurn(personal.id, thread.id, 'Confirm sharing Policy', {
+    kind: 'user',
+    id: FIXTURE_LOCAL_USER_ID,
+  });
+  const resource = {
+    kind: 'container' as const,
+    container: { kind: 'user' as const, id: userId, owner: { kind: 'user' as const, userId } },
+  };
+  const scope = {
+    subjects: [{ kind: 'human' as const, id: userId }],
+    actions: ['vault.admin'],
+    resources: [resource],
+  };
+  const document: import('@openkit/protocol').PolicyDocumentV1 = {
+    schemaVersion: 1,
+    statements: [
+      {
+        id: 'login-share-policy',
+        kind: 'binding',
+        author: { kind: 'human', id: FIXTURE_LOCAL_USER_ID },
+        authority: { kind: 'human', userId: FIXTURE_LOCAL_USER_ID },
+        authoredAt: new Date().toISOString(),
+        state: 'active',
+        scope,
+        lifetime: { anchor: resource.container, ...(uses === undefined ? {} : { uses }) },
+        operation: 'vault.grant-issue',
+        stage: 'decide',
+        mode: 'gate',
+        participant: {
+          kind: 'deterministic',
+          id: 'login-share-test',
+          version: `sha256:${'3'.repeat(64)}`,
+        },
+        inputDisclosure: scope,
+        order: 0,
+        timeoutMs: 100,
+        failure: 'error',
+        circuit: { failures: 1, recoveryAfterMs: 60_000 },
+      },
+    ],
+  };
+  const files = new RuntimeConfigFileService({
+    dataRoot: f.dataRoot,
+    userId: FIXTURE_LOCAL_USER_ID,
+    workspaceIds: [f.command.workspaceId, personal.id],
+    runtimeConfigManager: f.manager,
+    readRuntimeConfigStatus: () => f.manager.status(),
+  });
+  const workspaceDbs = new Map<string, ReturnType<typeof openWorkspaceDb>>();
+  const repositoryWorkspaceDb = (id: string) => {
+    let db = workspaceDbs.get(id);
+    if (!db) {
+      db = openWorkspaceDb(f.dataRoot, id);
+      workspaceDbs.set(id, db);
+    }
+    return db;
+  };
+  const configuration = createAdministrationConfiguration({
+    actor: { kind: 'local', userId: FIXTURE_LOCAL_USER_ID },
+    coreDb: f.coreDb,
+    store: f.store,
+    files,
+    runtimeConfig: () => f.manager.current(),
+    reload: () => f.manager.reload({ mode: 'safe', dryRun: false }),
+    repositoryWorkspaceDb,
+    inflightCommands: new WeakMap(),
+  });
+  try {
+    const proposed = await configuration.propose(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: files.readFile('server.jsonc').file.revision!,
+        changes: {
+          proposed: document,
+          rationale: 'Exact human review of personal Login sharing Policy.',
+        },
+      },
+      { threadId: thread.id, turnId: turn.id, requestId: randomUUID() }
+    );
+    expect(
+      await configuration.apply({
+        requestId: randomUUID(),
+        candidate: proposed.candidate,
+        confirmation: proposed.confirmation,
+      })
+    ).toMatchObject({ persisted: true, reload: 'applied' });
+  } finally {
+    for (const db of workspaceDbs.values()) db.sqlite.close();
+  }
+}
+
+/** Share review must never imply material resolution, runtime completion, or account disclosure. */
+function expectLoginShareNoDelivery(
+  f: Awaited<ReturnType<typeof loginShareFixture>>,
+  evidence: unknown
+) {
+  expect(f.resolve).not.toHaveBeenCalled();
+  for (const table of ['vault_injection_plans', 'vault_injection_receipts', 'vault_use_records'])
+    expect(f.coreDb.sqlite.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
+  const text = JSON.stringify(evidence);
+  for (const excluded of [
+    'synthetic-login-share-material',
+    'synthetic-login-share-account',
+    'backendLocator',
+    'accountId',
+  ])
+    expect(text).not.toContain(excluded);
+}
+
+describe('governed User Login Workspace sharing', () => {
+  it.each([
+    false,
+    true,
+  ])('shares an explicit Login with exact owner session consent (quarantined=%s)', async (quarantined) => {
+    const f = await loginShareFixture(quarantined);
+    try {
+      const request = await f.raise();
+      expect(request).toMatchObject({
+        requesterKind: 'person',
+        responsibleUserId: f.owner.id,
+        state: 'pending',
+        terms: f.terms,
+        grantId: null,
+      });
+      expect(JSON.parse(request.effect.detail).terms).toEqual(f.terms);
+      const input = { ...f.command, approvalRequestId: request.approvalRequestId };
+      expect((await f.sendAs(f.owner.id, 'vault.grant-issue', input)).status).toBe(409);
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
+      expect(
+        (await f.sendAs(f.owner.id, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(200);
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
+      const issued = await f.sendAs(f.owner.id, 'vault.grant-issue', input);
+      expect(issued.status).toBe(200);
+      const result = await issued.json();
+      expect(result).toMatchObject({
+        decidingActorId: f.owner.id,
+        responsibleUserId: f.owner.id,
+        disposition: 'approved-executed',
+        terms: f.terms,
+      });
+      const grant = getVaultGrant(f.coreDb, result.grantId)!;
+      expect(grant).toMatchObject({
+        issuance: 'target',
+        vaultReferenceId: f.reference.referenceId,
+        ownerScope: 'workspace',
+        workspaceId: f.command.workspaceId,
+        lifetime: 'workspace',
+        allowedInjectionPaths: ['runtime-token'],
+        targetAgentId: f.terms.targetAgentId,
+        targetAgentSessionId: null,
+        targetCapabilityId: null,
+        expiresAt: f.terms.expiresAt,
+        approvalId: request.approvalRequestId,
+        status: 'active',
+      });
+      expect(grant.policyDecisionId).toBeTruthy();
+      const { getVaultReference } = await import('./vault-references.js');
+      expect(getVaultReference(f.coreDb, f.reference.referenceId)).toEqual(f.reference);
+      const again = await f.sendAs(f.owner.id, 'vault.grant-issue', input);
+      expect(again.status).toBe(200);
+      expect((await again.json()).grantId).toBe(result.grantId);
+      expect(listVaultGrants(f.coreDb)).toHaveLength(1);
+      const audit = f.coreDb.sqlite
+        .prepare(
+          "SELECT actor_json, vault_grant_id FROM audit_events WHERE action = 'vault.grant-issue'"
+        )
+        .all();
+      expect(audit).toEqual([
+        {
+          actor_json: JSON.stringify({ kind: 'user', id: f.owner.id }),
+          vault_grant_id: result.grantId,
+        },
+      ]);
+      expectLoginShareNoDelivery(f, [
+        request,
+        result,
+        audit,
+        f.store.listThreadItems(f.command.workspaceId, f.command.threadId),
+      ]);
+    } finally {
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+
+  it('records the actual nonmember administrator without inventing owner or membership facts', async () => {
+    const f = await loginShareFixture();
+    try {
+      const request = await f.raise();
+      expect(
+        (await f.sendAs(f.admin.id, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(200);
+      const issued = await f.sendAs(f.admin.id, 'vault.grant-issue', {
+        ...f.command,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(issued.status).toBe(200);
+      const result = await issued.json();
+      expect(result).toMatchObject({
+        responsibleUserId: f.owner.id,
+        decidingActorId: f.admin.id,
+        disposition: 'approved-executed',
+      });
+      expect(
+        f.coreDb.sqlite
+          .prepare('SELECT * FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
+          .all(f.command.workspaceId, f.admin.id)
+      ).toEqual([]);
+      const db = openWorkspaceDb(f.dataRoot, f.command.workspaceId);
+      try {
+        expect(readPendingRequest(db.sqlite, request.approvalRequestId)).toMatchObject({
+          decidingActor: { kind: 'user', id: f.admin.id },
+          decidingActorContext: {
+            kind: 'session',
+            userId: f.admin.id,
+            adminTokenId: f.adminToken.tokenId,
+          },
+        });
+      } finally {
+        db.sqlite.close();
+      }
+      const { openUserDb } = await import('../storage/db.js');
+      const { listUserPermissionDecisions } = await import('../policy/permission-decisions.js');
+      const { listSqliteAuditEvents } = await import('../audit-events.js');
+      const userDb = openUserDb(f.dataRoot, f.admin.id);
+      try {
+        const final = listUserPermissionDecisions(userDb).filter(
+          (row) =>
+            row.mediation?.operation === 'vault.grant-issue' && row.mediation.role === 'final'
+        );
+        expect(final).toHaveLength(1);
+        expect(final[0]).toMatchObject({ ownerScope: 'user', workspaceId: null, result: 'allow' });
+        expect(listSqliteAuditEvents(userDb.sqlite)).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              action: 'vault.grant-issue',
+              outcome: 'succeeded',
+              actor: { kind: 'user', id: f.admin.id },
+              permissionDecisionId: final[0]!.decisionId,
+            }),
+          ])
+        );
+      } finally {
+        userDb.sqlite.close();
+      }
+      expect(
+        f.coreDb.sqlite
+          .prepare("SELECT actor_json FROM audit_events WHERE action = 'vault.grant-issue'")
+          .all()
+      ).toEqual([{ actor_json: JSON.stringify({ kind: 'user', id: f.admin.id }) }]);
+      expectLoginShareNoDelivery(f, [request, result]);
+    } finally {
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+
+  it('refuses foreign-member requests and approval, and refuses Workspace bearer personal consent', async () => {
+    const f = await loginShareFixture();
+    try {
+      expect(
+        (
+          await f.sendAs(f.other.id, 'vault.grant-request', {
+            ...f.command,
+            terms: f.terms,
+            requestId: randomUUID(),
+          })
+        ).status
+      ).toBe(403);
+      const request = await f.raise();
+      expect(
+        (await f.sendAs(f.other.id, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(403);
+      for (const scope of ['workspace', 'workspace-readonly'] as const) {
+        const token = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: f.owner.id,
+          scope,
+          workspaceIds: [f.command.workspaceId],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        expect(
+          (await f.serverSend('approval.respond', decision(request, 'granted'), token.secret))
+            .status
+        ).toBe(403);
+      }
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
+      expectLoginShareNoDelivery(f, request);
+    } finally {
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    'denied',
+    'changed-terms',
+    'expired',
+    'revoked-decider',
+    'member-left',
+  ] as const)('keeps a %s share request non-authorizing', async (reason) => {
+    const f = await loginShareFixture();
+    try {
+      const request = await f.raise();
+      const decider = reason === 'revoked-decider' ? f.admin.id : f.owner.id;
+      expect(
+        (
+          await f.sendAs(
+            decider,
+            'approval.respond',
+            decision(request, reason === 'denied' ? 'denied' : 'granted')
+          )
+        ).status
+      ).toBe(200);
+      const input = { ...f.command, approvalRequestId: request.approvalRequestId };
+      if (reason === 'expired')
+        vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.terms.expiresAt) + 1);
+      if (reason === 'revoked-decider')
+        revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+      if (reason === 'member-left') {
+        const { getWorkspaceMember } = await import('../workspace-sharing.js');
+        const member = getWorkspaceMember(f.coreDb, f.command.workspaceId, f.owner.id)!;
+        expect(
+          (
+            await f.sendAs(f.owner.id, 'workspace.leave', {
+              workspaceId: f.command.workspaceId,
+              expectedRevision: member.revision,
+              requestId: randomUUID(),
+            })
+          ).status
+        ).toBe(200);
+      }
+      const issued = await f.sendAs(
+        reason === 'member-left' ? f.admin.id : f.owner.id,
+        'vault.grant-issue',
+        {
+          ...input,
+          ...(reason === 'changed-terms'
+            ? { terms: { ...f.terms, targetAgentId: 'other-agent' } }
+            : {}),
+        }
+      );
+      expect(issued.status).toBeGreaterThanOrEqual(400);
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
+      expectLoginShareNoDelivery(f, request);
+    } finally {
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    'locked',
+    'ordinary',
+    'revoked',
+    'wrong-sink',
+    'material-version-mismatch',
+  ] as const)('rejects %s Login selections without capture or material resolution', async (reason) => {
+    const f = await loginShareFixture();
+    try {
+      const { createVaultReference, advanceActiveVaultReferenceVersion, revokeVaultReference } =
+        await import('./vault-references.js');
+      let terms = f.terms;
+      if (reason === 'ordinary') {
+        const referenceId = allocateEntityId('vault');
+        f.backend.store({
+          referenceId,
+          material: 'synthetic-ordinary-user-material',
+          metadata: { ownerScope: 'user', userId: f.owner.id },
+        });
+        await createVaultReference(f.coreDb, {
+          referenceId,
+          ownerScope: 'user',
+          userId: f.owner.id,
+          displayName: 'Ordinary User reference',
+          secretKind: 'opaque',
+          backendKind: 'encrypted-file',
+        });
+        terms = { ...terms, referenceId };
+      }
+      if (reason === 'locked') f.vaultUnlockState.lock();
+      if (reason === 'revoked')
+        await revokeVaultReference(f.coreDb, { referenceId: f.reference.referenceId });
+      if (reason === 'material-version-mismatch')
+        await advanceActiveVaultReferenceVersion(f.coreDb, {
+          referenceId: f.reference.referenceId,
+          currentVersion: 2,
+        });
+      const response = await f.sendAs(f.owner.id, 'vault.grant-request', {
+        ...f.command,
+        terms: reason === 'wrong-sink' ? { ...terms, injectionPath: 'runtime-env' } : terms,
+        requestId: randomUUID(),
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
+      expect(f.store.listThreadTurns(f.command.workspaceId, f.command.threadId)).toEqual([]);
+      expectLoginShareNoDelivery(f, await response.json());
+    } finally {
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    'deny',
+    'version',
+    'revoked',
+    'credential',
+  ] as const)('uses real User Policy and rejects %s after awaited evaluation', async (change) => {
+    const f = await loginShareFixture();
+    try {
+      const request = await f.raise();
+      const caller = change === 'credential' ? f.admin.id : f.owner.id;
+      expect(
+        (await f.sendAs(caller, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(200);
+      await installLoginSharePolicy(f, caller);
+      f.participant.mockImplementation(async () => {
+        const { advanceActiveVaultReferenceVersion, revokeVaultReference } = await import(
+          './vault-references.js'
+        );
+        if (change === 'version')
+          await advanceActiveVaultReferenceVersion(f.coreDb, {
+            referenceId: f.reference.referenceId,
+            currentVersion: 2,
+          });
+        if (change === 'revoked')
+          await revokeVaultReference(f.coreDb, { referenceId: f.reference.referenceId });
+        if (change === 'credential') revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+        return { decision: change === 'deny' ? 'deny' : 'allow' };
+      });
+      const issued = await f.sendAs(caller, 'vault.grant-issue', {
+        ...f.command,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(issued.status).toBeGreaterThanOrEqual(400);
+      expect(f.participant).toHaveBeenCalledOnce();
+      expect(f.participant.mock.calls[0]![0].proposal).toMatchObject({
+        operation: 'vault.grant-issue',
+        workspaceId: null,
+        subject: { actor: { kind: 'user', id: caller }, process: null },
+      });
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
+      expectLoginShareNoDelivery(f, request);
+    } finally {
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+
+  it('consumes one finite User Policy use and records actual-owner decision and Audit at the same home', async () => {
+    const f = await loginShareFixture();
+    try {
+      const request = await f.raise();
+      expect(
+        (await f.sendAs(f.owner.id, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(200);
+      await installLoginSharePolicy(f, f.owner.id, 1);
+      const input = { ...f.command, approvalRequestId: request.approvalRequestId };
+      const issued = await f.sendAs(f.owner.id, 'vault.grant-issue', input);
+      expect(issued.status).toBe(200);
+      const result = await issued.json();
+      expect(f.participant).toHaveBeenCalledOnce();
+      const { openUserDb } = await import('../storage/db.js');
+      const { listUserPermissionDecisions, readPolicyStatementUseCount } = await import(
+        '../policy/permission-decisions.js'
+      );
+      const { listSqliteAuditEvents } = await import('../audit-events.js');
+      const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
+      const { policyDigest } = await import('../policy/statements.js');
+      const userDb = openUserDb(f.dataRoot, f.owner.id);
+      try {
+        const finals = listUserPermissionDecisions(userDb).filter(
+          (row) =>
+            row.mediation?.operation === 'vault.grant-issue' && row.mediation.role === 'final'
+        );
+        expect(finals).toHaveLength(1);
+        expect(finals[0]).toMatchObject({ ownerScope: 'user', workspaceId: null, result: 'allow' });
+        const statement = readAdmittedPolicyDocument(
+          f.coreDb,
+          f.manager.current().openKitConfig.policy?.mediation
+        ).statements.find((row) => row.id === 'login-share-policy')!;
+        expect(
+          readPolicyStatementUseCount(userDb, { id: statement.id, digest: policyDigest(statement) })
+        ).toBe(1);
+        const events = listSqliteAuditEvents(userDb.sqlite);
+        expect(events).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: finals[0]!.auditEventId,
+              action: 'permission.decision',
+              permissionDecisionId: finals[0]!.decisionId,
+              actor: { kind: 'user', id: f.owner.id },
+            }),
+            expect.objectContaining({
+              action: 'vault.grant-issue',
+              outcome: 'succeeded',
+              permissionDecisionId: finals[0]!.decisionId,
+              actor: { kind: 'user', id: f.owner.id },
+            }),
+          ])
+        );
+        expectLoginShareNoDelivery(f, [request, result, events, finals]);
+      } finally {
+        userDb.sqlite.close();
+      }
+    } finally {
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+});
+
+it.each([
+  'live',
+  'revoked-agent',
+] as const)('keeps a %s Worker own-Login request bound to its package and human consent', async (lineage) => {
+  const f = await loginShareFixture();
+  let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+  let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+  let turnId: string | undefined;
+  const admissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+  try {
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      dataRoot: f.dataRoot,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      workspaceConfigs: loadRuntimeConfig(f.dataRoot).workspaceConfigs,
+      agentManifests: [
+        createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] }).manifest,
+      ],
+    });
+    const runtimeConfigManager = createRuntimeConfigManager({
+      dataRoot: null,
+      initialSnapshot: snapshot,
+    });
+    native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+      readRuntimeConfig: () => snapshot,
+    });
+    const app = createApp({
+      coreDb: f.coreDb,
+      store: f.store,
+      vaultUnlockState: f.vaultUnlockState,
+      fileAdmission: native.fileAdmission,
+      turnExecutor: native.executor,
+      workerControlGateway: native.workerControlGateway,
+      runtimeConfigManager,
+      mode: 'server',
+      auth: {
+        api: {
+          getSession: async () => ({
+            session: { id: allocateEntityId('auth') },
+            user: { id: f.owner.id },
+          }),
+        },
+        handler: async () => Response.json({}),
+      },
+    });
+    const started = await app.request(
+      ...operationRequest('task.start', f.command, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          input: 'Request my own selected personal Login share',
+          requestId: randomUUID(),
+        }),
+      })
+    );
+    expect(started.status).toBe(202);
+    const { turn } = StartTaskModeResponseSchema.parse(await started.json());
+    turnId = turn.id;
+    await native.executionFor(turn.id).launched.promise;
+    await native.waitForStartup(turn.id);
+    const pkg = native.workerControlGateway.authenticatePackageToken(
+      `Bearer ${native.executor.capabilityToken}`,
+      { tokenFamily: 'capability' }
+    );
+    expect(pkg.scope).toMatchObject({
+      ...f.command,
+      turnId: turn.id,
+      triggerActor: { kind: 'user', id: f.owner.id },
+    });
+    workspaceDb = openWorkspaceDb(f.dataRoot, f.command.workspaceId);
+    const context = {
+      coreDb: f.coreDb,
+      store: f.store,
+      workspaceDb,
+      dataRoot: f.dataRoot,
+      vaultUnlockState: f.vaultUnlockState,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      packageSnapshotId: pkg.snapshotId,
+      protocolRequestId: randomUUID(),
+      inflightCommands: new WeakMap(),
+      workspaceId: f.command.workspaceId,
+      actor: pkg.scope.triggerActor,
+      scope: pkg.scope,
+    };
+    for (const changed of [
+      { ...context, packageSnapshotId: randomUUID() },
+      { ...context, actor: { kind: 'user' as const, id: f.other.id } },
+    ])
+      await expect(
+        dispatchOpenkitGenerativeTool(changed, 'vault_grant-request', { terms: f.terms })
+      ).rejects.toMatchObject({ code: 'workspace_access_denied' });
+    const response = await dispatchOpenkitGenerativeTool(context, 'vault_grant-request', {
+      terms: f.terms,
+    });
+    const request = response.structuredContent as {
+      workspaceId: string;
+      threadId: string;
+      raisingTurnId: string;
+      approvalRequestId: string;
+    };
+    expect(request).toMatchObject({
+      ...f.command,
+      requesterKind: 'worker',
+      responsibleUserId: f.owner.id,
+      raisingTurnId: turn.id,
+      agentId: pkg.agent.agentId,
+      agentSessionId: pkg.scope.agentSessionId,
+      state: 'pending',
+      grantId: null,
+      terms: f.terms,
+    });
+    expect(listVaultGrants(f.coreDb)).toEqual([]);
+    expect(
+      (await f.sendAs(f.other.id, 'approval.respond', decision(request, 'granted'))).status
+    ).toBe(403);
+    expect(
+      (await f.sendAs(f.owner.id, 'approval.respond', decision(request, 'granted'))).status
+    ).toBe(200);
+    expect(listVaultGrants(f.coreDb)).toEqual([]);
+    if (lineage === 'revoked-agent') {
+      const requestingAgent = {
+        kind: 'agent' as const,
+        userId: f.owner.id,
+        agentId: pkg.agent.agentId,
+        processId: pkg.scope.agentSessionId,
+      };
+      const policy = managedThreadPolicy({
+        ...f.command,
+        userId: f.owner.id,
+        operations: WORKSPACE_MEMBER_OPERATIONS,
+      });
+      const permission = policy.statements.find((statement) => statement.kind === 'permission')!;
+      policy.statements.push({
+        ...permission,
+        id: `${permission.id}-agent`,
+        scope: { ...permission.scope, actions: ['thread.read'] },
+        grant: { kind: 'agent-process', agentId: requestingAgent.agentId },
+      });
+      f.store.setWorkspaceResourcePolicyProjection(() => policy);
+      expect(
+        isThreadIdVisible(
+          f.store,
+          f.command.workspaceId,
+          f.command.threadId,
+          f.owner.id,
+          false,
+          'thread.read',
+          requestingAgent
+        )
+      ).toBe(true);
+      expect(
+        isThreadIdVisible(
+          f.store,
+          f.command.workspaceId,
+          f.command.threadId,
+          f.owner.id,
+          false,
+          'workspace.write',
+          requestingAgent
+        )
+      ).toBe(false);
+      const refused = await f.sendAs(f.owner.id, 'vault.grant-issue', {
+        ...f.command,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(refused.status).toBe(403);
+      expect(listVaultGrants(f.coreDb)).toEqual([]);
+      expectLoginShareNoDelivery(f, request);
+      return;
+    }
+    const issued = await f.sendAs(f.owner.id, 'vault.grant-issue', {
+      ...f.command,
+      approvalRequestId: request.approvalRequestId,
+    });
+    expect(issued.status).toBe(200);
+    const result = await issued.json();
+    expect(result).toMatchObject({
+      requesterKind: 'worker',
+      decidingActorId: f.owner.id,
+      responsibleUserId: f.owner.id,
+      disposition: 'approved-executed',
+      terms: f.terms,
+    });
+    expect(getVaultGrant(f.coreDb, result.grantId)).toMatchObject({
+      vaultReferenceId: f.reference.referenceId,
+      ownerScope: 'workspace',
+      workspaceId: f.command.workspaceId,
+      allowedInjectionPaths: ['runtime-token'],
+    });
+    expectLoginShareNoDelivery(f, [request, result]);
+  } finally {
+    try {
+      native?.executor.completion.resolve();
+      if (turnId && native) {
+        native.executionFor(turnId).completion.resolve();
+        await native.executionFor(turnId).execution;
+      }
+      await Promise.all(
+        admissions.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+    } finally {
+      admissions.mockRestore();
+      await native?.restore();
+      vi.restoreAllMocks();
+      workspaceDb?.sqlite.close();
+      await f.cleanup();
+    }
+  }
+});
+
+/** Reads both historical specialized and mediated issue records so a duplicate producer cannot hide. */
+async function readReviewedIssueDecisions(db: ReturnType<typeof openWorkspaceDb>) {
+  const { readPermissionDecisionRowV1 } = await import('../policy/retained-records-v1.js');
+  return db.sqlite
+    .prepare('SELECT * FROM permission_decisions')
+    .all()
+    .map(readPermissionDecisionRowV1)
+    .filter(
+      (row) =>
+        row.enforcementPoint === 'vault.grant-issue' ||
+        row.mediation?.operation === 'vault.grant-issue'
+    );
+}
+
+/** Derives the actual admitted document revision through the existing Policy owner. */
+async function admittedReviewedIssuePolicyDigest(f: ReturnType<typeof fixture>) {
+  const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
+  const { policyDigest } = await import('../policy/statements.js');
+  return policyDigest(
+    readAdmittedPolicyDocument(
+      f.coreDb,
+      loadRuntimeConfig(f.dataRoot).openKitConfig.policy?.mediation
+    )
+  );
+}
+
+/** Applies exact User or Workspace bindings through human proposal, confirmation and activation. */
+async function installReviewedIssueMediationPolicy(
+  f: Awaited<ReturnType<typeof loginShareFixture>>,
+  callerId: string,
+  workspaceId: string,
+  home: 'user' | 'workspace'
+) {
+  const { createAdministrationConfiguration } = await import(
+    '../config/administration-configuration.js'
+  );
+  const { RuntimeConfigFileService } = await import('../config/runtime-config-files.js');
+  const { recordWorkspaceOwnerMembership } = await import('../workspace-membership.js');
+  const personal = await f.store.ensureQuickChatWorkspace(FIXTURE_LOCAL_USER_ID);
+  recordWorkspaceOwnerMembership({
+    coreDb: f.coreDb,
+    workspaceId: personal.id,
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
+  });
+  const thread = await f.store.createThread(
+    personal.id,
+    'Confirm issue mediation',
+    undefined,
+    'administration',
+    {
+      visibility: 'private',
+      privateOwnerUserId: FIXTURE_LOCAL_USER_ID,
+    }
+  );
+  const turn = await f.store.createTurn(personal.id, thread.id, 'Approve exact issue bindings', {
+    kind: 'user',
+    id: FIXTURE_LOCAL_USER_ID,
+  });
+  const container =
+    home === 'user'
+      ? { kind: 'user' as const, id: callerId, owner: { kind: 'user' as const, userId: callerId } }
+      : {
+          kind: 'workspace' as const,
+          id: workspaceId,
+          owner: { kind: 'workspace' as const, workspaceId },
+        };
+  const resource = { kind: 'container' as const, container };
+  const scope = {
+    subjects: [{ kind: 'human' as const, id: callerId }],
+    actions: ['vault.admin'],
+    resources: [resource],
+  };
+  const document: import('@openkit/protocol').PolicyDocumentV1 = {
+    schemaVersion: 1,
+    statements: (['gate', 'observe'] as const).map((mode) => ({
+      id: `reviewed-issue-${home}-${mode}`,
+      kind: 'binding' as const,
+      author: { kind: 'human' as const, id: FIXTURE_LOCAL_USER_ID },
+      authority: { kind: 'human' as const, userId: FIXTURE_LOCAL_USER_ID },
+      authoredAt: new Date().toISOString(),
+      state: 'active' as const,
+      scope,
+      lifetime: { anchor: container },
+      operation: 'vault.grant-issue',
+      stage: mode === 'gate' ? ('decide' as const) : ('completed' as const),
+      mode,
+      participant: {
+        kind: 'deterministic' as const,
+        id: 'login-share-test',
+        version: `sha256:${'3'.repeat(64)}`,
+      },
+      inputDisclosure: scope,
+      order: 0,
+      timeoutMs: 100,
+      failure: mode === 'gate' ? ('error' as const) : ('continue' as const),
+      circuit: { failures: 1, recoveryAfterMs: 60_000 },
+    })),
+  };
+  const files = new RuntimeConfigFileService({
+    dataRoot: f.dataRoot,
+    userId: FIXTURE_LOCAL_USER_ID,
+    workspaceIds: [workspaceId, personal.id],
+    runtimeConfigManager: f.manager,
+    readRuntimeConfigStatus: () => f.manager.status(),
+  });
+  const workspaceDbs = new Map<string, ReturnType<typeof openWorkspaceDb>>();
+  const repositoryWorkspaceDb = (id: string) => {
+    let db = workspaceDbs.get(id);
+    if (!db) {
+      db = openWorkspaceDb(f.dataRoot, id);
+      workspaceDbs.set(id, db);
+    }
+    return db;
+  };
+  const configuration = createAdministrationConfiguration({
+    actor: { kind: 'local', userId: FIXTURE_LOCAL_USER_ID },
+    coreDb: f.coreDb,
+    store: f.store,
+    files,
+    runtimeConfig: () => f.manager.current(),
+    reload: () => f.manager.reload({ mode: 'safe', dryRun: false }),
+    repositoryWorkspaceDb,
+    inflightCommands: new WeakMap(),
+  });
+  try {
+    const proposed = await configuration.propose(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: files.readFile('server.jsonc').file.revision!,
+        changes: {
+          proposed: document,
+          rationale:
+            'Review deterministic issue gate and completed observation for the exact real owner.',
+        },
+      },
+      { threadId: thread.id, turnId: turn.id, requestId: randomUUID() }
+    );
+    expect(
+      await configuration.apply({
+        requestId: randomUUID(),
+        candidate: proposed.candidate,
+        confirmation: proposed.confirmation,
+      })
+    ).toMatchObject({ persisted: true, reload: 'applied' });
+  } finally {
+    for (const db of workspaceDbs.values()) db.sqlite.close();
+  }
+  return resource;
+}
+
+// Core Mediation, Enforcement Points: every supported issue branch crosses the advertised gate.
+describe('reviewed grant issue mediated producer migration', () => {
+  it.each([
+    ['workspace', 'deny'],
+    ['server', 'deny'],
+    ['user', 'deny'],
+    ['workspace', 'allow'],
+    ['server', 'allow'],
+    ['user', 'allow'],
+    ['workspace', 'current'],
+    ['server', 'current'],
+    ['user', 'current'],
+    ['workspace', 'different-issuer'],
+    ['server', 'different-issuer'],
+    ['user', 'different-issuer'],
+  ] as const)('uses the real %s home for %s and retains one final issue authorizer', async (referenceOwner, outcome) => {
+    const f = await loginShareFixture();
+    try {
+      const source =
+        referenceOwner === 'user'
+          ? { ...f.command, terms: f.terms }
+          : await prepare(f, referenceOwner);
+      const callerId =
+        referenceOwner === 'user' || outcome === 'different-issuer' ? f.owner.id : f.admin.id;
+      if (referenceOwner !== 'user' && outcome === 'different-issuer') {
+        const issuerToken = createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: callerId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        expect(setDefaultServerAdminTokenId(f.coreDb, callerId, issuerToken.tokenId)).toBe(true);
+      }
+      const deciderId = outcome === 'different-issuer' ? f.admin.id : callerId;
+      const home = referenceOwner === 'user' ? 'user' : 'workspace';
+      const requestInput = { ...source, requestId: randomUUID() };
+      const raised =
+        referenceOwner === 'user'
+          ? await f.sendAs(f.owner.id, 'vault.grant-request', requestInput)
+          : await f.send('vault.grant-request', requestInput);
+      expect(raised.status).toBe(200);
+      const request = await raised.json();
+      expect(
+        (await f.sendAs(deciderId, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(200);
+      const resource = await installReviewedIssueMediationPolicy(
+        f,
+        callerId,
+        source.workspaceId,
+        home
+      );
+      f.participant.mockImplementation(async (input) => {
+        if (input.binding.mode === 'observe') return { observed: true };
+        await Promise.resolve();
+        if (outcome === 'current') {
+          if (referenceOwner === 'user') {
+            const { advanceActiveVaultReferenceVersion } = await import('./vault-references.js');
+            await advanceActiveVaultReferenceVersion(f.coreDb, {
+              referenceId: f.reference.referenceId,
+              currentVersion: 2,
+            });
+          } else revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+        }
+        return { decision: outcome === 'deny' ? 'deny' : 'allow' };
+      });
+      const input = {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      };
+      const issued = await f.sendAs(callerId, 'vault.grant-issue', input);
+      const calls = f.participant.mock.calls.map(([call]) => call);
+      expect(calls.filter((call) => call.binding.mode === 'gate')).toHaveLength(1);
+      expect(calls[0]!.proposal).toMatchObject({
+        operation: 'vault.grant-issue',
+        workspaceId: home === 'user' ? null : source.workspaceId,
+        resource,
+        subject: {
+          principal: { kind: 'human', id: callerId },
+          actor: { kind: 'user', id: callerId },
+          responsibleHumanId: callerId,
+        },
+      });
+      const { openUserDb } = await import('../storage/db.js');
+      const db =
+        home === 'user'
+          ? openUserDb(f.dataRoot, callerId)
+          : openWorkspaceDb(f.dataRoot, source.workspaceId);
+      try {
+        const { readPermissionDecisionRowV1 } = await import('../policy/retained-records-v1.js');
+        const rows = db.sqlite
+          .prepare('SELECT * FROM permission_decisions')
+          .all()
+          .map(readPermissionDecisionRowV1)
+          .filter(
+            (row) =>
+              row.enforcementPoint === 'vault.grant-issue' ||
+              row.mediation?.operation === 'vault.grant-issue'
+          );
+        expect(rows.every((row) => row.mediation?.operation === 'vault.grant-issue')).toBe(true);
+        const finals = rows.filter((row) => row.mediation?.role === 'final');
+        expect(finals).toHaveLength(1);
+        expect(finals[0]).toMatchObject({
+          ownerScope: home,
+          workspaceId: home === 'user' ? null : source.workspaceId,
+          policyEngineVersion: 'nanocore-policy:v1',
+          policySnapshotId: await admittedReviewedIssuePolicyDigest(f),
+          enforcementPoint: 'vault.grant-issue@decide',
+          approvalId: request.approvalRequestId,
+          mediation: {
+            stage: 'decide',
+            role: 'final',
+            subject: { actor: { kind: 'user', id: callerId }, responsibleHumanId: callerId },
+          },
+          contextSummary: {
+            requestId: request.approvalRequestId,
+            approvalRequestId: request.approvalRequestId,
+            threadId: source.threadId,
+            turnId: request.raisingTurnId,
+            issuingActorId: callerId,
+            requesterId: referenceOwner === 'user' ? f.owner.id : FIXTURE_LOCAL_USER_ID,
+          },
+        });
+        const { listSqliteAuditEvents } = await import('../audit-events.js');
+        const events = listSqliteAuditEvents(db.sqlite);
+        expect(events.find((event) => event.id === finals[0]!.auditEventId)).toMatchObject({
+          action: 'permission.decision',
+          actor: { kind: 'user', id: callerId },
+          permissionDecisionId: finals[0]!.decisionId,
+          requestId: request.approvalRequestId,
+          threadId: source.threadId,
+          turnId: request.raisingTurnId,
+        });
+        if (outcome === 'allow' || outcome === 'different-issuer') {
+          expect(issued.status).toBe(200);
+          const result = await issued.json();
+          const grant = getVaultGrant(f.coreDb, result.grantId)!;
+          expect(grant).toMatchObject({
+            policyDecisionId: finals[0]!.decisionId,
+            approvalId: request.approvalRequestId,
+          });
+          expect(finals[0]).toMatchObject({
+            result: 'allow',
+            reasonCode: 'granted',
+            mediation: { kernel: { effect: 'allow' } },
+          });
+          expect(rows.filter((row) => row.mediation?.role === 'gate')).toHaveLength(1);
+          expect(calls.filter((call) => call.binding.mode === 'observe')).toHaveLength(1);
+          expect(events).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                policyInvocation: expect.objectContaining({
+                  operation: 'vault.grant-issue',
+                  stage: 'completed',
+                  mode: 'observe',
+                  outcome: 'completed',
+                }),
+              }),
+            ])
+          );
+          expect(
+            f.coreDb.sqlite
+              .prepare(
+                "SELECT actor_json, request_id FROM audit_events WHERE action = 'vault.grant-issue'"
+              )
+              .all()
+          ).toEqual([
+            {
+              actor_json: JSON.stringify({ kind: 'user', id: callerId }),
+              request_id: request.approvalRequestId,
+            },
+          ]);
+          expect((await f.sendAs(callerId, 'vault.grant-issue', input)).status).toBe(200);
+          expect(listVaultGrants(f.coreDb)).toHaveLength(1);
+          const after = db.sqlite
+            .prepare('SELECT * FROM permission_decisions')
+            .all()
+            .map(readPermissionDecisionRowV1)
+            .filter(
+              (row) =>
+                row.mediation?.operation === 'vault.grant-issue' && row.mediation.role === 'final'
+            );
+          expect(after).toEqual(finals);
+        } else {
+          expect(issued.status).toBeGreaterThanOrEqual(400);
+          expect(listVaultGrants(f.coreDb)).toEqual([]);
+          expect(calls.filter((call) => call.binding.mode === 'observe')).toEqual([]);
+          if (outcome === 'deny')
+            expect(finals[0]).toMatchObject({
+              result: 'deny',
+              mediation: { kernel: { effect: 'allow' } },
+            });
+          else expect(finals[0]!.result).not.toBe('allow');
+        }
+      } finally {
+        db.sqlite.close();
+      }
+      const requestDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+      try {
+        expect(readPendingRequest(requestDb.sqlite, request.approvalRequestId)).toMatchObject({
+          requestId: request.approvalRequestId,
+          responsibleUserId: referenceOwner === 'user' ? f.owner.id : FIXTURE_LOCAL_USER_ID,
+          decidingActor: { kind: 'user', id: deciderId },
+          decidingActorContext: { kind: 'session', userId: deciderId },
+        });
+      } finally {
+        requestDb.sqlite.close();
+      }
+      if (home === 'user') {
+        const workspaceDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+        try {
+          expect(await readReviewedIssueDecisions(workspaceDb)).toEqual([]);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
+    } finally {
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+});
+
+// Vault Secret Injection, Reviewed User Login Sharing and Supported Grant Request And Review:
+// one approved exact intent has one final issue authorizer, including during concurrent calls.
+describe('reviewed grant issue concurrent approved-intent consumption', () => {
+  it.each([
+    'user',
+    'workspace',
+  ] as const)('retains one final allow for competing issues in the %s decision home', async (home) => {
+    const f = await loginShareFixture();
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let signalFirstEntered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => {
+      signalFirstEntered = resolve;
+    });
+    const issues: Promise<Response>[] = [];
+    try {
+      const source =
+        home === 'user' ? { ...f.command, terms: f.terms } : await prepare(f, 'workspace');
+      const callerId = home === 'user' ? f.owner.id : f.admin.id;
+      const raised =
+        home === 'user'
+          ? await f.sendAs(f.owner.id, 'vault.grant-request', {
+              ...source,
+              requestId: randomUUID(),
+            })
+          : await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
+      expect(raised.status).toBe(200);
+      const request = await raised.json();
+      expect(
+        (await f.sendAs(callerId, 'approval.respond', decision(request, 'granted'))).status
+      ).toBe(200);
+      if (home === 'user') {
+        // Two available uses keep a duplicate authorizer observable as consumption of two.
+        await installLoginSharePolicy(f, callerId, 2);
+      } else {
+        await installReviewedIssueMediationPolicy(f, callerId, source.workspaceId, home);
+      }
+      f.participant.mockImplementation(async (input) => {
+        if (input.binding.mode === 'observe') return { observed: true };
+        return { decision: 'allow' };
+      });
+      const decide = f.interception.decide.bind(f.interception);
+      let issueDecisions = 0;
+      // Pause before real Policy evaluation. Do not spend its participant deadline
+      // waiting for the competing public command and native acknowledgement.
+      vi.spyOn(f.interception, 'decide').mockImplementation(async (policyInput) => {
+        if (policyInput.proposal.operation === 'vault.grant-issue') {
+          issueDecisions += 1;
+          if (issueDecisions === 1) {
+            signalFirstEntered();
+            await firstHeld;
+          }
+        }
+        return decide(policyInput);
+      });
+      const input = {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      };
+      const firstIssue = Promise.resolve(f.sendAs(callerId, 'vault.grant-issue', input));
+      issues.push(firstIssue);
+      await Promise.race([
+        firstEntered,
+        firstIssue.then(() => {
+          throw new Error('The first issue completed before entering its required Policy gate.');
+        }),
+      ]);
+      // Vault Secret Injection, Supported Grant Request And Review: the winning
+      // single-use reservation precedes actual Policy interception and final authorization.
+      const reservationDb = openWorkspaceDb(f.dataRoot, source.workspaceId);
+      try {
+        expect(readPendingRequest(reservationDb.sqlite, request.approvalRequestId)).toMatchObject({
+          requestId: request.approvalRequestId,
+          state: 'resolved',
+          resolution: 'granted',
+          claim: 'claimed',
+          disposition: null,
+        });
+      } finally {
+        reservationDb.sqlite.close();
+      }
+      const secondIssue = Promise.resolve(f.sendAs(callerId, 'vault.grant-issue', input));
+      issues.push(secondIssue);
+      const second = await secondIssue;
+      releaseFirst();
+      const first = await firstIssue;
+      const succeeded = first.status === 200 ? first : second;
+      expect(succeeded.status).toBe(200);
+      const result = await succeeded.json();
+      const grants = listVaultGrants(f.coreDb);
+      expect(grants).toHaveLength(1);
+      expect(grants[0]).toMatchObject({
+        grantId: result.grantId,
+        approvalId: request.approvalRequestId,
+      });
+      const { openUserDb } = await import('../storage/db.js');
+      const { listUserPermissionDecisions, readPolicyStatementUseCount } = await import(
+        '../policy/permission-decisions.js'
+      );
+      const db =
+        home === 'user'
+          ? openUserDb(f.dataRoot, callerId)
+          : openWorkspaceDb(f.dataRoot, source.workspaceId);
+      try {
+        const rows =
+          'userId' in db ? listUserPermissionDecisions(db) : await readReviewedIssueDecisions(db);
+        const finalAllows = rows.filter(
+          (row) =>
+            row.approvalId === request.approvalRequestId &&
+            row.mediation?.operation === 'vault.grant-issue' &&
+            row.mediation.role === 'final' &&
+            row.result === 'allow'
+        );
+        expect(finalAllows).toHaveLength(1);
+        expect(grants[0]!.policyDecisionId).toBe(finalAllows[0]!.decisionId);
+        if ('userId' in db) {
+          const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
+          const { policyDigest } = await import('../policy/statements.js');
+          const statement = readAdmittedPolicyDocument(
+            f.coreDb,
+            f.manager.current().openKitConfig.policy?.mediation
+          ).statements.find((row) => row.id === 'login-share-policy')!;
+          // Core Policy, Delegated Goal Domain And Statement Lifetime: an allowing
+          // decision consumes its finite use atomically; the losing issue adds none.
+          expect(
+            readPolicyStatementUseCount(db, { id: statement.id, digest: policyDigest(statement) })
+          ).toBe(1);
+        }
+        expectLoginShareNoDelivery(f, [request, result, grants, finalAllows]);
+      } finally {
+        db.sqlite.close();
+      }
+      expect(first.status).toBe(200);
+      expect(second.status).toBeGreaterThanOrEqual(400);
+    } finally {
+      releaseFirst();
+      await Promise.allSettled(issues);
+      vi.restoreAllMocks();
+      await f.cleanup();
+    }
+  });
+});
+
+// Reviewed User Login Sharing: preserve actual browser Session provenance through capture and native issue.
+it('retains the real signup Session identity through Login request, approval and native grant authority', async () => {
+  const f = await loginShareFixture();
+  try {
+    const { eq } = await import('drizzle-orm');
+    const { actorFromSession } = await import('../auth/identity.js');
+    const { session } = await import('../storage/schema/better-auth/index.js');
+    const { openUserDb } = await import('../storage/db.js');
+    const { createOperationInvocation } = await import('../operation-composition.js');
+    // Select only the non-secret identity of the Session produced by real signup.
+    const retainedSessions = f.coreDb.db
+      .select({ id: session.id })
+      .from(session)
+      .where(eq(session.userId, f.owner.id))
+      .all();
+    expect(retainedSessions).toHaveLength(1);
+    const sessionId = retainedSessions[0]!.id;
+    const actor = actorFromSession({ session: { id: sessionId }, user: { id: f.owner.id } });
+    expect(actor).toEqual({ kind: 'session', userId: f.owner.id, sessionId });
+    const repositoryWorkspaceDb = (workspaceId: string) => openWorkspaceDb(f.dataRoot, workspaceId);
+    const inflightCommands = new WeakMap();
+    const invoke = createOperationInvocation({
+      coreDb: f.coreDb,
+      store: f.store,
+      dataRoot: f.dataRoot,
+      mode: 'server',
+      vaultUnlockState: f.vaultUnlockState,
+      runtimeConfigManager: f.manager,
+      policyInterception: f.interception,
+      repositoryWorkspaceDb,
+      repositoryUserDb: (userId) => openUserDb(f.dataRoot, userId),
+      inflightCommands,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      pendingRequestServices: {
+        coreDb: f.coreDb,
+        repositoryWorkspaceDb,
+        inflightCommands,
+      },
+    });
+    const context = { kind: 'public' as const, actor };
+    // A real Session must cross request capture with its identity intact; no Session-free retry.
+    const request = await invoke(
+      'vault.grant-request',
+      { ...f.command, terms: f.terms, requestId: randomUUID() },
+      context
+    );
+    const readRecorded = () => {
+      const db = repositoryWorkspaceDb(f.command.workspaceId);
+      try {
+        return readPendingRequest(db.sqlite, request.approvalRequestId);
+      } finally {
+        db.sqlite.close();
+      }
+    };
+    expect(readRecorded()).toMatchObject({
+      governedIntent: { origin: { kind: 'public', actor } },
+      decidingActorContext: null,
+    });
+    await invoke('approval.respond', decision(request, 'granted'), context);
+    expect(readRecorded()).toMatchObject({
+      governedIntent: { origin: { kind: 'public', actor } },
+      decidingActorContext: actor,
+      decidingActor: { kind: 'user', id: f.owner.id },
+    });
+    // Observe the existing native boundary without replacing its implementation or acknowledgement.
+    const native = vi.spyOn(getControlStoreWorkerClient(), 'vault');
+    const issued = await invoke(
+      'vault.grant-issue',
+      { ...f.command, approvalRequestId: request.approvalRequestId },
+      context
+    );
+    expect(issued).toMatchObject({ disposition: 'approved-executed', decidingActorId: f.owner.id });
+    const submissions = native.mock.calls.filter(
+      ([db, kind]) => db === f.coreDb && kind === 'reviewed-grant-issue'
+    );
+    expect(submissions).toHaveLength(1);
+    expect(submissions[0]![2]).toMatchObject({
+      authority: { issuer: actor, decider: actor, requester: { kind: 'public', actor } },
+    });
+    expect(readRecorded()).toMatchObject({
+      governedIntent: { origin: { kind: 'public', actor } },
+      decidingActorContext: actor,
+      disposition: 'approved-executed',
+    });
+    expect(listVaultGrants(f.coreDb)).toHaveLength(1);
+    expectLoginShareNoDelivery(f, [request, issued]);
+  } finally {
+    vi.restoreAllMocks();
     await f.cleanup();
   }
 });

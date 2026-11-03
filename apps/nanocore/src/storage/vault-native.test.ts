@@ -1391,3 +1391,319 @@ describe('Login release retained lifecycle and metadata currentness', () => {
     }
   });
 });
+
+import { createApp } from '../test-support/app.js';
+
+/** Real public request/review and native User Login creation precede every armed storage fault. */
+async function nativeLoginShareFixture(useAdminBearer = false) {
+  const f = await fixture();
+  const { allocateEntityId } = await import('@openkit/protocol');
+  const { operationRequest } = await import('../test-support/operation-request.js');
+  const { createVaultUnlockState } = await import('../vault/vault-unlock-state.js');
+  const { FsStore } = await import('../lib/store.js');
+  ensureLocalUser(f.db);
+  const { user } = await createBetterAuth(f.db, { env: {} }).api.signUpEmail({
+    body: {
+      name: 'Native share owner',
+      email: `${randomUUID()}@example.invalid`,
+      password: randomUUID(),
+    },
+  });
+  const unlock = createVaultUnlockState({
+    backendKind: 'encrypted-file',
+    storeDir: join(f.db.dataRoot, 'vault-share'),
+  });
+  unlock.unlock({ masterKey: Buffer.alloc(32, 23) });
+  const store = new FsStore({ dataRoot: f.db.dataRoot });
+  const localApp = createApp({
+    coreDb: f.db,
+    dataRoot: f.db.dataRoot,
+    store,
+    vaultUnlockState: unlock,
+  });
+  const sessionId = allocateEntityId('auth');
+  const ownerApp = createApp({
+    coreDb: f.db,
+    dataRoot: f.db.dataRoot,
+    store,
+    vaultUnlockState: unlock,
+    mode: 'server',
+    auth: {
+      api: { getSession: async () => ({ session: { id: sessionId }, user: { id: user.id } }) },
+      handler: async () => Response.json({}),
+    },
+  });
+  const send = (
+    app: typeof localApp,
+    operation: string,
+    body: Record<string, unknown>,
+    secret?: string
+  ) =>
+    app.request(
+      ...operationRequest(
+        operation as import('@openkit/app-api-schemas').OperationId,
+        {},
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(secret ? { authorization: `Bearer ${secret}` } : {}),
+          },
+          body: JSON.stringify(body),
+        }
+      )
+    );
+  const workspace = await send(localApp, 'workspace.create', {
+    name: 'Native share target',
+    requestId: randomUUID(),
+  });
+  expect(workspace.status).toBe(201);
+  const workspaceId = (await workspace.json()).id as string;
+  const invitationResponse = await send(localApp, 'workspace.invitation-create', {
+    workspaceId,
+    inviteeEmail: user.email,
+    requestId: randomUUID(),
+  });
+  expect(invitationResponse.status).toBe(201);
+  const { invitation } = await invitationResponse.json();
+  expect(
+    (
+      await send(ownerApp, 'workspace.my-invitation-accept', {
+        invitationId: invitation.invitationId,
+        expectedRevision: invitation.revision,
+        requestId: randomUUID(),
+      })
+    ).status
+  ).toBe(200);
+  const threadResponse = await send(ownerApp, 'thread.create', {
+    workspaceId,
+    name: 'Native exact share review',
+    visibility: 'workspace',
+    requestId: randomUUID(),
+  });
+  expect(threadResponse.status).toBe(200);
+  const threadId = (await threadResponse.json()).id as string;
+  const referenceId = allocateEntityId('vault');
+  unlock.backend().store({
+    referenceId,
+    material: 'synthetic-native-share-material',
+    metadata: { ownerScope: 'user', userId: user.id },
+  });
+  const reference = await createVaultReference(f.db, {
+    referenceId,
+    ownerScope: 'user',
+    userId: user.id,
+    displayName: 'Native share Login',
+    secretKind: 'opaque',
+    backendKind: 'encrypted-file',
+    login: { provider: 'codex', accountId: 'synthetic-native-share-account', quarantined: false },
+  });
+  expect(reference).toMatchObject({
+    status: 'active',
+    currentVersion: 1,
+    ownerScope: 'user',
+    userId: user.id,
+    login: { provider: 'codex' },
+  });
+  const terms = {
+    referenceId,
+    ownerScope: 'workspace',
+    lifetime: 'workspace',
+    injectionPath: 'runtime-token',
+  };
+  const raised = await send(ownerApp, 'vault.grant-request', {
+    workspaceId,
+    threadId,
+    terms,
+    requestId: randomUUID(),
+  });
+  expect(
+    raised.status,
+    'Expected feature baseline is unsupported runtime-token, after valid native Login setup'
+  ).toBe(200);
+  const request = await raised.json();
+  const decidingToken = useAdminBearer
+    ? createOpenKitAccessTokenRecord(f.db, {
+        ownerUserId: user.id,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      })
+    : undefined;
+  const reviewApp = decidingToken
+    ? createApp({
+        coreDb: f.db,
+        dataRoot: f.db.dataRoot,
+        store,
+        vaultUnlockState: unlock,
+        mode: 'server',
+        auth: { api: { getSession: async () => null }, handler: async () => Response.json({}) },
+      })
+    : ownerApp;
+  expect(
+    (
+      await send(
+        reviewApp,
+        'approval.respond',
+        {
+          workspaceId,
+          threadId,
+          turnId: request.raisingTurnId,
+          approvalRequestId: request.approvalRequestId,
+          decision: 'granted',
+          requestId: randomUUID(),
+        },
+        decidingToken?.secret
+      )
+    ).status
+  ).toBe(200);
+  const issue = async () => {
+    const response = await send(
+      reviewApp,
+      'vault.grant-issue',
+      { workspaceId, threadId, approvalRequestId: request.approvalRequestId },
+      decidingToken?.secret
+    );
+    return { status: response.status, body: await response.json() };
+  };
+  return { ...f, user, workspaceId, reference, request, unlock, decidingToken, issue };
+}
+
+// Accepted Vault publication plus Durable Control Store FULL ACK: reuse the actual existing
+// native SQLite/reply instrument. No new private operation selector or returned-result double.
+describe('User Login share native publication', () => {
+  it('withholds success through FULL COMMIT and covering reply, then survives a cold Core read', async () => {
+    const f = await nativeLoginShareFixture();
+    const boundary = interceptLoginVault(f, 2, true);
+    f.db.sqlite.pragma('query_only = ON');
+    const pending = f.start(f.issue);
+    try {
+      await reached(f, pending);
+      expect(Atomics.load(f.gate, 4)).toBe(2);
+      expect(f.commits()).toBe(boundary.beforeCommit());
+      expect(f.db.sqlite.prepare('SELECT * FROM vault_grants').all()).toEqual([]);
+      releaseNative(f.gate);
+      await reached(f, pending, 'reply');
+      const rows = f.db.sqlite
+        .prepare<[], { grant_id: string }>('SELECT grant_id FROM vault_grants')
+        .all();
+      expect(rows).toHaveLength(1);
+      const committed = getVaultGrant(f.db, rows[0]!.grant_id)!;
+      expect(committed).toMatchObject({
+        vaultReferenceId: f.reference.referenceId,
+        ownerScope: 'workspace',
+        workspaceId: f.workspaceId,
+        lifetime: 'workspace',
+        allowedInjectionPaths: ['runtime-token'],
+        approvalId: f.request.approvalRequestId,
+      });
+      expect(getVaultReference(f.db, f.reference.referenceId)).toEqual(f.reference);
+      expect(pending.settled()).toBe(false);
+      expect(f.commits()).toBe(boundary.beforeCommit() + 1);
+      deliverReplies();
+      expect(await pending.result).toMatchObject({
+        ok: true,
+        value: {
+          status: 200,
+          body: { grantId: committed.grantId, disposition: 'approved-executed' },
+        },
+      });
+      await shutdownControlStoreWorkerClient();
+      const cold = openCoreDb(f.db.dataRoot);
+      try {
+        expect(getVaultGrant(cold, committed.grantId)).toEqual(committed);
+        expect(getVaultReference(cold, f.reference.referenceId)).toEqual(f.reference);
+      } finally {
+        cold.sqlite.close();
+      }
+    } finally {
+      releaseNative(f.gate);
+      deliverReplies();
+      await pending.result;
+      f.unlock.lock();
+    }
+  });
+
+  it.each([
+    'owner-disabled',
+    'membership-removed',
+    'version',
+    'revoked',
+    'unbound',
+    'account',
+    'ordinary',
+    'token-revoked',
+  ] as const)('rechecks %s after FIFO without a grant or fabricated success', async (change) => {
+    const f = await nativeLoginShareFixture(change === 'token-revoked');
+    interceptLoginVault(f, 1);
+    const pending = f.start(f.issue);
+    try {
+      await reached(f, pending);
+      if (change === 'owner-disabled')
+        f.db.sqlite.transaction(() => disableCanonicalUser(f.db, f.user.id))();
+      else if (change === 'token-revoked')
+        revokeOpenKitAccessTokenRecord(f.db, f.decidingToken!.tokenId);
+      else if (change === 'membership-removed') {
+        const { getWorkspaceMember, leaveWorkspace } = await import('../workspace-sharing.js');
+        const member = getWorkspaceMember(f.db, f.workspaceId, f.user.id);
+        expect(member).toMatchObject({ status: 'active', userId: f.user.id });
+        if (!member)
+          throw new Error('The admitted Login owner must have a destination membership.');
+        // Use the canonical non-owner leave transition, including its required removal timestamp.
+        const removed = f.db.sqlite.transaction(() =>
+          leaveWorkspace({
+            coreDb: f.db,
+            workspaceId: f.workspaceId,
+            memberUserId: f.user.id,
+            expectedRevision: member.revision,
+          })
+        )();
+        expect(removed).toMatchObject({
+          kind: 'removed',
+          member: { status: 'removed', revision: member.revision + 1 },
+        });
+      } else if (change === 'version')
+        f.fixtureSql(
+          'UPDATE vault_references SET current_version = current_version + 1 WHERE reference_id = ?'
+        ).run(f.reference.referenceId);
+      else if (change === 'revoked')
+        f.fixtureSql("UPDATE vault_references SET status = 'revoked' WHERE reference_id = ?").run(
+          f.reference.referenceId
+        );
+      else if (change === 'unbound')
+        f.fixtureSql(
+          "UPDATE vault_references SET status = 'unbound', current_version = 0 WHERE reference_id = ?"
+        ).run(f.reference.referenceId);
+      else if (change === 'account')
+        f.fixtureSql('UPDATE vault_references SET login_account_id = ? WHERE reference_id = ?').run(
+          'synthetic-native-account-successor',
+          f.reference.referenceId
+        );
+      else
+        f.fixtureSql(
+          'UPDATE vault_references SET login_provider = NULL, login_account_id = NULL, login_quarantined = NULL WHERE reference_id = ?'
+        ).run(f.reference.referenceId);
+      const current = getVaultReference(f.db, f.reference.referenceId);
+      f.db.sqlite.pragma('query_only = ON');
+      releaseNative(f.gate);
+      const outcome = await pending.result;
+      expect(outcome.ok).toBe(true);
+      if (!outcome.ok) throw outcome.error;
+      expect(outcome.value.status).toBeGreaterThanOrEqual(400);
+      expect(getVaultReference(f.db, f.reference.referenceId)).toEqual(current);
+      expect(f.db.sqlite.prepare('SELECT * FROM vault_grants').all()).toEqual([]);
+      expect(
+        f.db.sqlite
+          .prepare(
+            "SELECT * FROM audit_events WHERE action = 'vault.grant-issue' AND outcome = 'succeeded'"
+          )
+          .all()
+      ).toEqual([]);
+      expect(f.db.sqlite.prepare('SELECT * FROM vault_injection_receipts').all()).toEqual([]);
+    } finally {
+      releaseNative(f.gate);
+      await pending.result;
+      f.unlock.lock();
+    }
+  });
+});

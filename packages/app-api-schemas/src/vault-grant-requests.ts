@@ -14,30 +14,34 @@ import { addRawSecretIssues } from './raw-secrets.js';
 import { CreateWorkspaceVaultGrantRequestSchema } from './vault-admin.js';
 
 /** Exact non-secret bounds admitted by the two current grant issuers. */
-export const VaultGrantRequestTermsSchema = CreateWorkspaceVaultGrantRequestSchema.safeExtend({
-  referenceId: VaultReferenceIdSchema,
-  ownerScope: z.enum(['workspace', 'server']),
-  lifetime: z.enum(['workspace', 'server']),
-  injectionPath: z.enum(['gateway-only', 'runtime-env', 'runtime-file']),
-  mcpSource: z
-    .object({
-      serverId: z.string().min(1).max(128),
-      slot: z.string().regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/),
-    })
-    .strict()
-    .optional(),
-}).superRefine((value, ctx) => {
-  addRawSecretIssues(value, ctx, []);
-  if (value.ownerScope !== value.lifetime)
-    ctx.addIssue({ code: 'custom', message: 'Grant lifetime must match its owning scope.' });
-  if (value.ownerScope === 'server' && value.injectionPath !== 'gateway-only')
-    ctx.addIssue({ code: 'custom', message: 'Server grants require Gateway-only visibility.' });
-  if (value.injectionPath !== 'gateway-only' && value.targetCapabilityId !== undefined)
-    ctx.addIssue({
-      code: 'custom',
-      message: 'Worker-visible credential grants cannot target a capability.',
-    });
-});
+export const VaultGrantRequestTermsSchema = CreateWorkspaceVaultGrantRequestSchema.omit({
+  injectionPath: true,
+})
+  .safeExtend({
+    referenceId: VaultReferenceIdSchema,
+    ownerScope: z.enum(['workspace', 'server']),
+    lifetime: z.enum(['workspace', 'server']),
+    injectionPath: z.enum(['gateway-only', 'runtime-env', 'runtime-file', 'runtime-token']),
+    mcpSource: z
+      .object({
+        serverId: z.string().min(1).max(128),
+        slot: z.string().regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/),
+      })
+      .strict()
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    addRawSecretIssues(value, ctx, []);
+    if (value.ownerScope !== value.lifetime)
+      ctx.addIssue({ code: 'custom', message: 'Grant lifetime must match its owning scope.' });
+    if (value.ownerScope === 'server' && value.injectionPath !== 'gateway-only')
+      ctx.addIssue({ code: 'custom', message: 'Server grants require Gateway-only visibility.' });
+    if (value.injectionPath !== 'gateway-only' && value.targetCapabilityId !== undefined)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Worker-visible credential grants cannot target a capability.',
+      });
+  });
 
 /** Captures exact terms on a selected Thread; trusted Worker assembly supplies its own execution lineage. */
 export const RequestVaultGrantSchema = z

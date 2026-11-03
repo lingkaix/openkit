@@ -69,7 +69,10 @@ import {
   recordVaultAdminAuditEvent,
   recordVaultAuditEvent,
 } from './vault-admin-audit-events.js';
-import { createVaultGrantRequestImplementations } from './vault-grant-requests.js';
+import {
+  createVaultGrantRequestImplementations,
+  type GovernReviewedGrantIssue,
+} from './vault-grant-requests.js';
 import {
   getVaultGrant,
   listExportableWorkspaceVaultGrants,
@@ -238,14 +241,16 @@ export function createVaultOperationImplementations(
       | 'vault.binding-replace'
       | 'vault.binding-revoke'
       | 'vault.injection-plan-list'
-      | 'vault.injection-receipt-list',
+      | 'vault.injection-receipt-list'
+      | 'vault.grant-issue',
     input: { workspaceId: string; requestId?: string },
     context: AdmittedOperationContext,
     db: WorkspaceDb,
     readFacts: () => unknown,
     references: PolicyProposal['inputReferences'],
     attributes: PolicyProposal['inputAttributes'],
-    run: (recheckAuthority: () => Promise<void>) => Promise<T> | T
+    run: (recheckAuthority: () => Promise<void>, decisionId: string) => Promise<T> | T,
+    lineage?: Pick<InterceptionInput, 'decisionLineage' | 'contextSummary'>
   ): Promise<T> {
     if (
       !coreDb ||
@@ -420,6 +425,7 @@ export function createVaultOperationImplementations(
         authorizationUses: initial.authorizationUses,
         resourceSummary: { selectionDigest: factsRevision },
         contextSummary: { requestId: input.requestId ?? null },
+        ...lineage,
         authorCurrent,
         anchorCurrent,
         participantAuthorized: (binding) =>
@@ -443,17 +449,19 @@ export function createVaultOperationImplementations(
         if (!interceptionInput.stillCurrent()) vaultWorkspaceAccessDenied();
       };
       await recheckAuthority();
-      const result = await run(recheckAuthority);
-      await recordVaultAuditEvent({
-        coreDb,
-        workspaceId: input.workspaceId,
-        ...(input.requestId ? { requestId: input.requestId } : {}),
-        actor: auditActor,
-        action: operation,
-        resource: `workspace:${input.workspaceId}`,
-        outcome: 'succeeded',
-        summary: 'Governed Vault operation completed.',
-      });
+      const result = await run(recheckAuthority, ownDecision.decisionId);
+      // Reviewed issuance publishes its exact grant-linked Core Audit in the native effect.
+      if (operation !== 'vault.grant-issue')
+        await recordVaultAuditEvent({
+          coreDb,
+          workspaceId: input.workspaceId,
+          ...(input.requestId ? { requestId: input.requestId } : {}),
+          actor: auditActor,
+          action: operation,
+          resource: `workspace:${input.workspaceId}`,
+          outcome: 'succeeded',
+          summary: 'Governed Vault operation completed.',
+        });
       // Completed observations are non-decisive and cannot make an effect retryable.
       await interception
         .observe({
@@ -902,11 +910,18 @@ export function createVaultOperationImplementations(
       | 'vault.grant-withdraw'
       | 'vault.login-list'
       | 'vault.login-quarantine'
-      | 'vault.login-release',
+      | 'vault.login-release'
+      | 'vault.grant-issue',
     context: AdmittedOperationContext,
     readFacts: (actor: Actor) => F,
     references: (selected: F) => Record<string, string>,
-    effect: (selected: F, actor: Actor, beforeSubmit: () => Promise<void>) => Promise<T>
+    effect: (
+      selected: F,
+      actor: Actor,
+      beforeSubmit: () => Promise<void>,
+      decisionId: string
+    ) => Promise<T>,
+    lineage?: Pick<InterceptionInput, 'decisionLineage' | 'contextSummary'>
   ): Promise<T> {
     const withdrawal = operation === 'vault.grant-withdraw';
     if (
@@ -979,6 +994,7 @@ export function createVaultOperationImplementations(
         resourceSummary: withdrawal
           ? { grantId: inputReferences.grantId!, referenceId: inputReferences.referenceId! }
           : inputReferences,
+        ...lineage,
         authorCurrent,
         anchorCurrent: (anchor) =>
           anchor.owner.kind === 'user' &&
@@ -1004,7 +1020,7 @@ export function createVaultOperationImplementations(
         await context.recheckAdmission!();
         if (!policyInput.stillCurrent()) vaultWorkspaceAccessDenied();
       };
-      const result = await effect(selected, actor, beforeSubmit);
+      const result = await effect(selected, actor, beforeSubmit, decision.decisionId);
       await recordVaultAuditEvent({
         userDb,
         actor: context.actorRef,
@@ -1015,7 +1031,9 @@ export function createVaultOperationImplementations(
         permissionDecisionId: decision.decisionId,
         summary: withdrawal
           ? 'Personal credential grant withdrawal completed.'
-          : 'Personal Login metadata operation completed.',
+          : operation === 'vault.grant-issue'
+            ? 'Personal Login sharing completed.'
+            : 'Personal Login metadata operation completed.',
       });
       await dependencies.policyInterception
         .observe({
@@ -1063,6 +1081,69 @@ export function createVaultOperationImplementations(
       userDb.sqlite.close();
     }
   }
+
+  /** Trusted source ownership selects the existing decision home independently of destination admission. */
+  const governReviewedGrantIssue: GovernReviewedGrantIssue = async (
+    input,
+    context,
+    db,
+    readReference,
+    effect
+  ) => {
+    const selected = readReference();
+    const references = {
+      referenceId: selected.referenceId,
+      workspaceId: input.workspaceId,
+      requestId: input.requestId,
+      approvalId: input.requestId,
+    };
+    const lineage = {
+      decisionLineage: { requestId: input.requestId, approvalId: input.requestId },
+      contextSummary: {
+        requestId: input.requestId,
+        approvalRequestId: input.requestId,
+        threadId: input.threadId,
+        turnId: input.turnId,
+        issuingActorId: publicOperationActor(context).userId,
+        decidingActorId: input.decidingActorId,
+        requesterId: input.requesterId,
+      },
+    };
+    if (selected.ownerScope === 'user' && selected.userId && selected.login) {
+      return governedUserVaultOperation(
+        'vault.grant-issue',
+        context,
+        (actor) => {
+          const reference = readReference();
+          if (reference.ownerScope !== 'user' || !reference.userId || !reference.login)
+            vaultWorkspaceAccessDenied();
+          const kernel = evaluateOwnedUserOperation(
+            coreDb!,
+            actor,
+            reference.userId,
+            'vault.admin',
+            true
+          );
+          if (kernel.effect !== 'allow') vaultWorkspaceAccessDenied();
+          return { reference, kernel };
+        },
+        () => references,
+        (_facts, _actor, beforeSubmit, decisionId) => effect(decisionId, beforeSubmit),
+        lineage
+      );
+    }
+    return governedVaultOperation(
+      'vault.grant-issue',
+      { workspaceId: input.workspaceId, requestId: input.requestId },
+      context,
+      db,
+      readReference,
+      references,
+      {},
+      (beforeSubmit, decisionId) => effect(decisionId, beforeSubmit),
+      lineage
+    );
+  };
 
   /** Withdraws personal reference consent without manufacturing Workspace membership. */
   async function withdrawOwnedGrant(
@@ -1435,7 +1516,7 @@ export function createVaultOperationImplementations(
   }
 
   return {
-    ...createVaultGrantRequestImplementations(dependencies),
+    ...createVaultGrantRequestImplementations(dependencies, governReviewedGrantIssue),
     'vault.binding-deliver': async (input, context) => {
       const result = await bindingOperation('deliver', input, context);
       if (!('realizedProtection' in result))

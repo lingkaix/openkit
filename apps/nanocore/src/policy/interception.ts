@@ -68,6 +68,11 @@ interface InterceptionFacts {
   /** Explicit safe evidence projections retained by the existing decision owner. */
   readonly resourceSummary?: Readonly<Record<string, unknown>>;
   readonly contextSummary?: Readonly<Record<string, unknown>>;
+  /** Existing approved command lineage; this does not assert a mediated human-approval source. */
+  readonly decisionLineage?: {
+    readonly requestId: string;
+    readonly approvalId: string;
+  };
   /** Current finite grants used by the native mandatory Kernel adapter, not participant results. */
   readonly authorizationUses?: RecordProductPermissionDecisionInput['uses'];
   /** Exact human response context supplied only by the existing captured approval owner. */
@@ -539,6 +544,8 @@ export class PolicyInterception {
       const decisionId = allocateEntityId('pd');
       await recordProductPermissionDecision({
         ...decisionInput(input, policyRevision),
+        // Participant evidence cannot claim the approved command's final authorizer link.
+        approvalId: null,
         ...(agent
           ? {
               subjectSummary: {
@@ -665,6 +672,7 @@ function decisionInput(input: InterceptionInput, policyRevision: string) {
     enforcementPoint: `${input.proposal.operation}@decide`,
     policyEngineVersion: 'nanocore-policy:v1',
     policySnapshotId: policyRevision,
+    ...(input.decisionLineage ? { approvalId: input.decisionLineage.approvalId } : {}),
     subjectSummary: {
       principal: input.proposal.subject.principal,
       responsibleHumanId: input.proposal.subject.responsibleHumanId,
@@ -673,8 +681,9 @@ function decisionInput(input: InterceptionInput, policyRevision: string) {
     contextSummary: {
       capabilityCallId: input.proposal.capabilityCallId,
       ...input.contextSummary,
-      threadId: input.proposal.subject.process?.threadId,
-      turnId: input.proposal.subject.process?.turnId,
+      ...(input.decisionLineage ? { requestId: input.decisionLineage.requestId } : {}),
+      threadId: input.proposal.subject.process?.threadId ?? input.contextSummary?.threadId,
+      turnId: input.proposal.subject.process?.turnId ?? input.contextSummary?.turnId,
       ...(input.humanApproval
         ? {
             humanApprovalRequestId: input.humanApproval.requestId,

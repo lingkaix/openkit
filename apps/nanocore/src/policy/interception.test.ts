@@ -914,3 +914,156 @@ describe('User-owned Policy interception', () => {
     }
   });
 });
+
+// The trusted approved-intent owner supplies lineage; interception does not invent a Policy approval source.
+describe('approved command lineage through the real mediated recorder', () => {
+  it.each([
+    'workspace',
+    'user',
+  ] as const)('preserves exact existing identifiers and safe context in the %s native tuple', async (home) => {
+    const requestId = '00000000-0000-4000-8000-000000000041';
+    const requesterId = 'usr_00000000-0000-7000-8000-000000000002';
+    const threadId = 'th_00000000-0000-7000-8000-000000000041';
+    const turnId = 'tu_00000000-0000-7000-8000-000000000041';
+    const contextSummary = {
+      requestId,
+      approvalRequestId: requestId,
+      threadId,
+      turnId,
+      issuingActorId: userId,
+      requesterId,
+    };
+    const resource =
+      home === 'user'
+        ? {
+            kind: 'container' as const,
+            container: {
+              kind: 'user' as const,
+              id: userId,
+              owner: { kind: 'user' as const, userId },
+            },
+          }
+        : {
+            kind: 'container' as const,
+            container: {
+              kind: 'workspace' as const,
+              id: workspaceId,
+              owner: { kind: 'workspace' as const, workspaceId },
+            },
+          };
+    const approvedProposal: PolicyProposal = {
+      operation: 'vault.grant-issue',
+      workspaceId: home === 'user' ? null : workspaceId,
+      capabilityCallId: null,
+      resource,
+      inputReferences: {},
+      inputAttributes: {},
+      subject: {
+        principal,
+        onBehalfOf: null,
+        actor: { kind: 'user', id: userId },
+        process: null,
+        credentialKind: 'local',
+        responsibleHumanId: userId,
+      },
+    };
+    const base = fixture([]);
+    let userDb: UserDb | undefined;
+    if (home === 'user') {
+      userDb = openUserDb(base.workspaceDb.dataRoot, userId);
+      applyScopedMigrations(userDb);
+      userDb.sqlite.pragma('query_only = ON');
+      const ownedUserDb = userDb;
+      cleanup.unshift(() => ownedUserDb.sqlite.close());
+    }
+    const facts = {
+      document: base.document,
+      proposal: approvedProposal,
+      authorizationRevision: base.authorizationRevision,
+      resourceSummary: { referenceId: 'vault_00000000-0000-7000-8000-000000000041' },
+      contextSummary,
+      // These are existing retained request/approval fields, not an invented humanApproval binding.
+      decisionLineage: { requestId, approvalId: requestId },
+      authorCurrent: base.authorCurrent,
+      anchorCurrent: base.anchorCurrent,
+      participantAuthorized: base.participantAuthorized,
+      stillCurrent: base.stillCurrent,
+      finalKernel: () =>
+        evaluateAccess(
+          {
+            elements: [
+              { id: 'u', kind: 'user' },
+              { id: 'ua', kind: 'userAttribute' },
+              { id: 'o', kind: 'object' },
+              { id: 'oa', kind: 'objectAttribute' },
+              { id: 'pc', kind: 'policyClass' },
+            ],
+            assignments: [
+              { child: 'u', parent: 'ua' },
+              { child: 'ua', parent: 'pc' },
+              { child: 'o', parent: 'oa' },
+              { child: 'oa', parent: 'pc' },
+            ],
+            operations: [{ id: 'vault.admin', accessRights: ['vault-admin'] }],
+            associations: [
+              {
+                id: 'current-issuer',
+                userAttribute: 'ua',
+                targetAttribute: 'oa',
+                accessRights: ['vault-admin'],
+              },
+            ],
+          },
+          { user: 'u', operation: 'vault.admin', target: 'o' }
+        ),
+    };
+    const input = userDb ? { ...facts, userDb } : { ...facts, workspaceDb: base.workspaceDb };
+    const result = await new PolicyInterception().decide(input);
+    expect(result.result).toBe('allow');
+    const ownerDb = userDb ?? base.workspaceDb;
+    const rows = ownerDb.sqlite
+      .prepare('SELECT * FROM permission_decisions')
+      .all()
+      .map(readPermissionDecisionRowV1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      decisionId: result.decisionId,
+      ownerScope: home,
+      workspaceId: home === 'user' ? null : workspaceId,
+      result: 'allow',
+      reasonCode: 'granted',
+      approvalId: requestId,
+      policyEngineVersion: 'nanocore-policy:v1',
+      policySnapshotId: policyDigest(base.document),
+      enforcementPoint: 'vault.grant-issue@decide',
+      contextSummary,
+      subjectSummary: {
+        principal,
+        responsibleHumanId: userId,
+        actor: { kind: 'user', id: userId },
+        process: null,
+      },
+      mediation: {
+        operation: 'vault.grant-issue',
+        stage: 'decide',
+        role: 'final',
+        subject: approvedProposal.subject,
+        kernel: { effect: 'allow' },
+      },
+    });
+    expect(rows[0]!.contextSummary).not.toHaveProperty('humanApprovalRequestId');
+    expect(rows[0]!.contextSummary).not.toHaveProperty('approvalSourceDecisionId');
+    expect(rows[0]!.contextSummary).not.toHaveProperty('humanApprovalDeciderId');
+    expect(audit.listSqliteAuditEvents(ownerDb.sqlite)).toMatchObject([
+      {
+        id: rows[0]!.auditEventId,
+        permissionDecisionId: result.decisionId,
+        requestId,
+        threadId,
+        turnId,
+        actor: { kind: 'user', id: userId },
+        action: 'permission.decision',
+      },
+    ]);
+  });
+});

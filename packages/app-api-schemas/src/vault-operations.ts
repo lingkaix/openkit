@@ -286,6 +286,14 @@ export const VAULT_OPERATION_DEFINITIONS = {
     target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
     policyOperation: 'vault.admin',
     mutating: true,
+    insertionPoints: {
+      crossings: ['admission', 'mutation'],
+      stages: ['propose', 'decide', 'commit', 'completed'],
+      modes: ['gate', 'observe'],
+      participantKinds: ['deterministic'],
+      gateResults: ['allow', 'deny'],
+      gateFailures: ['error'],
+    },
   },
   'vault.status': {
     description: 'Read redacted vault administration status.',

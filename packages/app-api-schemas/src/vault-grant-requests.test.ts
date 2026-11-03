@@ -134,3 +134,73 @@ describe('descriptive grant request readers', () => {
     }
   });
 });
+
+// Accepted Login sharing: ruling part A/D and Emphasis 2. The grant remains Workspace-owned.
+describe('User Login Workspace share request terms', () => {
+  const loginTerms = { ...terms, injectionPath: 'runtime-token' };
+
+  it('admits exact Workspace runtime-token terms without inventing a User grant scope', () => {
+    expect(VaultGrantRequestTermsSchema.parse(loginTerms)).toEqual(loginTerms);
+    const bounded = {
+      ...loginTerms,
+      targetAgentId: 'agent_codex_host',
+      targetAgentSessionId: allocateEntityId('as'),
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    };
+    expect(VaultGrantRequestTermsSchema.parse(bounded)).toEqual(bounded);
+    expect(
+      RequestVaultGrantSchema.safeParse({
+        workspaceId: view.workspaceId,
+        threadId: view.threadId,
+        requestId: '22222222-2222-4222-8222-222222222222',
+        terms: bounded,
+      }).success
+    ).toBe(true);
+  });
+
+  it('refuses unsupported runtime-token scopes, lifetimes and capability targeting', () => {
+    for (const changed of [
+      { ...loginTerms, ownerScope: 'user', lifetime: 'user' },
+      { ...loginTerms, ownerScope: 'server', lifetime: 'server' },
+      { ...loginTerms, lifetime: 'server' },
+      { ...loginTerms, lifetime: 'turn' },
+      { ...loginTerms, targetCapabilityId: 'mcp.call-tool' },
+    ])
+      expect(VaultGrantRequestTermsSchema.safeParse(changed).success).toBe(false);
+  });
+
+  it('rejects caller-supplied owner, account, material and locator authority', () => {
+    for (const extra of [
+      { userId: allocateEntityId('usr') },
+      { accountId: 'synthetic-account-equality' },
+      { login: { provider: 'codex', accountId: 'synthetic-account-equality', quarantined: false } },
+      { material: 'synthetic-login-share-material' },
+      { backendLocator: 'synthetic-login-share-locator' },
+    ]) {
+      expect(VaultGrantRequestTermsSchema.safeParse({ ...loginTerms, ...extra }).success).toBe(
+        false
+      );
+      expect(
+        RequestVaultGrantSchema.safeParse({
+          workspaceId: view.workspaceId,
+          threadId: view.threadId,
+          requestId: '33333333-3333-4333-8333-333333333333',
+          terms: loginTerms,
+          ...extra,
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('reads the same exact runtime-token request through the existing descriptive envelope', () => {
+    const shared = { ...view, terms: loginTerms };
+    expect(VaultGrantRequestViewSchema.parse({ ...shared, displayHint: 'inert' })).toEqual(shared);
+    expect(
+      ListVaultGrantRequestsResponseSchema.parse({
+        workspaceId: view.workspaceId,
+        threadId: view.threadId,
+        items: [shared],
+      }).items
+    ).toEqual([shared]);
+  });
+});

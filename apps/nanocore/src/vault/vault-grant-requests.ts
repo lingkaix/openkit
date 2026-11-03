@@ -23,6 +23,7 @@ import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
   currentWorkerLineageWorkspaceAuthority,
+  evaluateOwnedUserOperation,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
@@ -34,7 +35,6 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
@@ -53,9 +53,10 @@ import {
 } from '../runtime/pending-requests.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import type { VaultReferenceRecord } from '../storage/vault-native-codecs.js';
 import { isCurrentServerMcpMaterial } from './server-mcp-authority.js';
-import { prepareVaultAdminAudit, recordVaultAdminAuditEvent } from './vault-admin-audit-events.js';
-import { createVaultGrant, getVaultGrant } from './vault-grants.js';
+import { prepareVaultAdminAudit } from './vault-admin-audit-events.js';
+import { getVaultGrant } from './vault-grants.js';
 import { getVaultReference } from './vault-references.js';
 
 /** Uses only the existing request, grant, material and current authorization owners. */
@@ -64,10 +65,44 @@ type Dependencies = Pick<
   'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'vaultUnlockState' | 'pendingRequestServices'
 >;
 
+/** Existing Policy owner surrounds the claim/effect with one actual final decision. */
+export type GovernReviewedGrantIssue = <T>(
+  input: {
+    workspaceId: string;
+    requestId: string;
+    threadId: string;
+    turnId: string;
+    requesterId: string;
+    decidingActorId: string;
+  },
+  context: AdmittedOperationContext,
+  db: WorkspaceDb,
+  currentReference: () => VaultReferenceRecord,
+  effect: (decisionId: string, beforeSubmit: () => Promise<void>) => Promise<T>
+) => Promise<T>;
+
+/** The grant scope describes its destination; only trusted reference metadata identifies personal consent. */
+function personalLoginReference(
+  reference: VaultReferenceRecord | null,
+  terms: VaultGrantRequestTerms
+): reference is VaultReferenceRecord & { userId: string } {
+  return !!(
+    reference?.login?.provider === 'codex' &&
+    reference.ownerScope === 'user' &&
+    reference.userId &&
+    reference.workspaceId === null &&
+    terms.ownerScope === 'workspace' &&
+    terms.lifetime === 'workspace' &&
+    terms.injectionPath === 'runtime-token' &&
+    !terms.mcpSource
+  );
+}
+
 const ActorSchema = z
   .object({
     userId: UserIdSchema,
     kind: z.enum(['local', 'session', 'token']),
+    sessionId: z.string().min(1).optional(),
     tokenId: AccessTokenIdSchema.optional(),
     tokenScope: z.enum(['server-admin', 'workspace', 'workspace-readonly']).optional(),
     tokenWorkspaceIds: z.array(WorkspaceIdSchema).optional(),
@@ -155,7 +190,7 @@ function currentReference(
   dependencies: Dependencies,
   workspaceId: string,
   terms: VaultGrantRequestTerms
-): void {
+): VaultReferenceRecord {
   const backend = dependencies.vaultUnlockState?.backend();
   if (!dependencies.coreDb || !backend)
     throw new PendingRequestCommandError(
@@ -183,14 +218,41 @@ function currentReference(
         'Current shared-MCP material authority is unavailable.',
         409
       );
-    return;
+    return reference;
+  }
+  if (personalLoginReference(reference, terms)) {
+    const material = backend
+      .listReferences({ ownerScope: 'user', userId: reference.userId })
+      .find((row) => row.referenceId === reference.referenceId);
+    if (
+      reference.status !== 'active' ||
+      !material ||
+      material.revoked ||
+      material.ownerScope !== 'user' ||
+      material.userId !== reference.userId ||
+      material.workspaceId !== undefined ||
+      material.providerSubscriptionAccount !== undefined ||
+      material.currentVersion !== reference.currentVersion ||
+      material.backendKind !== reference.backendKind ||
+      reference.backendKind !== backend.kind ||
+      (reference.backendLocator !== null &&
+        reference.backendLocator !==
+          `${backend.kind}://user/${reference.userId}/vault/${reference.referenceId}`)
+    )
+      throw new PendingRequestCommandError(
+        'vault_reference_not_active',
+        'Current personal Login authority is unavailable.',
+        409
+      );
+    return reference;
   }
   if (
     !reference ||
     reference.status !== 'active' ||
     reference.ownerScope !== 'workspace' ||
     reference.workspaceId !== workspaceId ||
-    reference.userId !== null
+    reference.userId !== null ||
+    terms.injectionPath === 'runtime-token'
   )
     throw new PendingRequestCommandError(
       'vault_reference_not_active',
@@ -224,6 +286,7 @@ function currentReference(
       'Runtime environment grants require a GitHub token reference.',
       400
     );
+  return reference;
 }
 
 /** Admit metadata only from the human's readable owner or the Worker's exact current package and canonical selected slot. */
@@ -241,6 +304,20 @@ function assertRequestSelection(
       403
     );
   if (origin.kind === 'public') {
+    const reference = dependencies.coreDb
+      ? getVaultReference(dependencies.coreDb, terms.referenceId)
+      : null;
+    if (
+      personalLoginReference(reference, terms) &&
+      evaluateOwnedUserOperation(
+        dependencies.coreDb!,
+        origin.actor as Actor,
+        reference.userId,
+        'vault.admin',
+        false
+      ).effect !== 'allow'
+    )
+      throw denied();
     if (terms.ownerScope === 'server') administrator(dependencies, origin.actor as Actor);
     else if (
       !authorizeWorkspace(dependencies.coreDb!, origin.actor as Actor, workspaceId, {
@@ -269,6 +346,11 @@ function assertRequestSelection(
       canonicalJsonText(snapshot.scope.triggerActor) !== canonicalJsonText(origin.actor)
     )
       throw denied();
+    const reference = getVaultReference(dependencies.coreDb!, terms.referenceId);
+    if (personalLoginReference(reference, terms)) {
+      if (reference.userId !== responsibleUserIdForActor(origin.actor as ActorRef)) throw denied();
+      return;
+    }
     if (terms.mcpSource) {
       const selected = snapshot.supply.mcpServers.find(
         (entry) => entry.id === terms.mcpSource!.serverId
@@ -418,25 +500,42 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
   currentReference(dependencies, record.workspaceId, intent.data.terms);
 }
 
-/** The grant decision keeps the effect owner's strict administrative and current requester boundary. */
-export function checkVaultGrantCommandIntent(
+/** Current personal consent is distinct from destination admission; old issuers remain administrative. */
+function reviewerAuthority(
   dependencies: Dependencies,
   record: PendingRequestRecord,
   actor: Actor
 ): void {
-  if (!isVaultGrantRequest(record)) return;
-  administrator(dependencies, actor);
+  const denied = (message: string) =>
+    new PendingRequestCommandError('workspace_access_denied', message, 403);
+  const intent = IntentSchema.parse(record.governedIntent);
+  const reference = dependencies.coreDb
+    ? getVaultReference(dependencies.coreDb, intent.terms.referenceId)
+    : null;
+  if (personalLoginReference(reference, intent.terms)) {
+    if (
+      evaluateOwnedUserOperation(dependencies.coreDb!, actor, reference.userId, 'vault.admin', true)
+        .effect !== 'allow'
+    )
+      throw denied('Personal Login consent is unavailable.');
+  } else administrator(dependencies, actor);
   if (
     !authorizeWorkspace(dependencies.coreDb!, actor, record.workspaceId, {
       policyOperation: 'vault.admin',
       mutating: true,
     })
   )
-    throw new PendingRequestCommandError(
-      'workspace_access_denied',
-      'Workspace access denied.',
-      403
-    );
+    throw denied('Workspace access denied.');
+}
+
+/** The grant decision keeps the effect owner's exact current reviewer and requester boundary. */
+export function checkVaultGrantCommandIntent(
+  dependencies: Dependencies,
+  record: PendingRequestRecord,
+  actor: Actor
+): void {
+  if (!isVaultGrantRequest(record)) return;
+  reviewerAuthority(dependencies, record, actor);
   currentRequester(dependencies, record);
 }
 
@@ -467,13 +566,8 @@ function view(
   let currentAdministrator = false;
   if (actor) {
     try {
-      administrator(dependencies, actor);
-      currentAdministrator = Boolean(
-        authorizeWorkspace(dependencies.coreDb!, actor, record.workspaceId, {
-          policyOperation: 'vault.admin',
-          mutating: true,
-        })
-      );
+      reviewerAuthority(dependencies, record, actor);
+      currentAdministrator = true;
     } catch {
       /* Eligibility is a read projection; every command rechecks it. */
     }
@@ -535,7 +629,10 @@ function failure(error: unknown): never {
 }
 
 /** Joins the bounded request and issue commands to the existing Pending Request and Vault owners. */
-export function createVaultGrantRequestImplementations(dependencies: Dependencies) {
+export function createVaultGrantRequestImplementations(
+  dependencies: Dependencies,
+  governIssue: GovernReviewedGrantIssue
+) {
   const { coreDb, store, repositoryWorkspaceDb } = dependencies;
   /** Open only the selected Workspace database and always release its handle. */
   async function withDatabase<T>(
@@ -764,7 +861,6 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
     'vault.grant-issue': (input, context) =>
       withDatabase(input.workspaceId, async (db) => {
         const actor = publicOperationActor(context);
-        administrator(dependencies, actor);
         let record = requireUsableRecord(
           store!,
           db.sqlite,
@@ -778,6 +874,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             'Workspace access denied.',
             403
           );
+        reviewerAuthority(dependencies, record, actor);
         if (record.claim === 'finished' && record.disposition === 'approved-executed')
           return view(
             dependencies,
@@ -849,6 +946,20 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
           throw error;
         }
         const { terms } = IntentSchema.parse(record.governedIntent);
+        const currentGrantReference = () => {
+          checkVaultGrantCommandIntent(dependencies, record, actor);
+          if (
+            !record.decidingActorContext ||
+            record.decidingActor?.id !== record.decidingActorContext.userId
+          )
+            throw new PendingRequestCommandError(
+              'recovery_required',
+              'The deciding credential lineage is unavailable.',
+              409
+            );
+          checkVaultGrantCommandIntent(dependencies, record, record.decidingActorContext);
+          return currentReference(dependencies, input.workspaceId, terms);
+        };
         const now = new Date().toISOString();
         const claimed = await store!.applyPendingRequestCommand(input.workspaceId, {
           action: 'claim-command',
@@ -878,107 +989,106 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             409
           );
         const grantId = allocateEntityId('grant');
-        const policyDecisionId = allocateEntityId('pd');
         let coreAttempted = false;
         try {
-          const assertCurrentGrantAuthority = () => {
-            // The claim is a reservation; current authority is decided at this synchronous effect boundary.
-            checkVaultGrantCommandIntent(dependencies, record, actor);
-            if (
-              !record.decidingActorContext ||
-              record.decidingActor?.id !== record.decidingActorContext.userId
-            )
-              throw new PendingRequestCommandError(
-                'recovery_required',
-                'The deciding credential lineage is unavailable.',
-                409
-              );
-            checkVaultGrantCommandIntent(dependencies, record, record.decidingActorContext);
-            const access = authorizeWorkspace(
-              coreDb!,
-              record.decidingActorContext!,
-              input.workspaceId,
-              { policyOperation: 'vault.admin', mutating: true }
-            );
-            if (!access) throw new Error('Current Policy refusal.');
-          };
-          assertCurrentGrantAuthority();
-          // Administrator eligibility does not create a Workspace membership fact.
-          await recordProductPermissionDecision({
-            workspaceDb: db,
-            ownerScope: 'workspace',
-            workspaceId: input.workspaceId,
-            decisionId: policyDecisionId,
-            result: 'allow',
-            reasonCode: 'reviewed_vault_grant_administrator_authorized',
-            policyEngineVersion: 'nanocore-vault-policy:v1',
-            policySnapshotId: 'reviewed_vault_grant_issue',
-            subjectSummary: { kind: 'user', id: record.decidingActorContext!.userId },
-            action: 'vault.admin',
-            resourceSummary: {
-              kind: 'vault-reference',
-              id: terms.referenceId,
-              ownerScope: terms.ownerScope,
-            },
-            contextSummary: {
+          return await governIssue(
+            {
+              workspaceId: input.workspaceId,
               requestId: record.requestId,
               threadId: record.threadId,
               turnId: record.raisingTurnId,
-              approvalRequestId: record.requestId,
-              issuingActorId: actor.userId,
               requesterId: record.responsibleUserId,
+              decidingActorId: record.decidingActorContext!.userId,
             },
-            enforcementPoint: 'vault.grant-issue',
-            approvalId: record.requestId,
-            auditActor: { kind: 'user', id: actor.userId },
-          });
-          assertCurrentGrantAuthority();
-          const grant = {
-            grantId,
-            vaultReferenceId: terms.referenceId,
-            ownerScope: terms.ownerScope,
-            workspaceId: terms.ownerScope === 'workspace' ? input.workspaceId : null,
-            lifetime: terms.lifetime,
-            allowedInjectionPaths: [terms.injectionPath],
-            targetAgentId: terms.targetAgentId ?? null,
-            targetAgentSessionId: terms.targetAgentSessionId ?? null,
-            targetCapabilityId: terms.targetCapabilityId ?? null,
-            expiresAt: terms.expiresAt ?? null,
-            subjectSummary: 'Reviewed credential-use request',
-            policyDecisionId,
-            approvalId: record.requestId,
-          };
-          const evidence = prepareVaultAdminAudit({
-            actor,
-            action: 'vault.grant-issue',
-            outcome: 'succeeded',
-            backendKind: dependencies.vaultUnlockState!.backend().kind,
-            workspaceId: input.workspaceId,
-            resource: `approval:${record.requestId}`,
-            vaultGrantId: grantId,
-            requestId: record.requestId,
-            summary: 'Reviewed credential-use grant issued. Explicit binding is required.',
-          });
-          const intent = IntentSchema.parse(record.governedIntent);
-          const reference = getVaultReference(coreDb!, terms.referenceId);
-          if (!reference) throw new Error('Current Vault reference is unavailable.');
-          await getControlStoreWorkerClient().vault(
-            coreDb!,
-            'reviewed-grant-issue',
-            {
-              grant,
-              ...evidence,
-              authority: {
-                workspaceId: input.workspaceId,
-                issuer: actor,
-                decider: record.decidingActorContext!,
-                requester: intent.origin,
-                reference,
-              },
-            },
-            () => {
+            context,
+            db,
+            currentGrantReference,
+            async (policyDecisionId, beforeSubmit) => {
+              const assertCurrentGrantAuthority = () => {
+                currentGrantReference();
+              };
+              await beforeSubmit();
               assertCurrentGrantAuthority();
-              coreAttempted = true;
+              const grant = {
+                grantId,
+                vaultReferenceId: terms.referenceId,
+                ownerScope: terms.ownerScope,
+                workspaceId: terms.ownerScope === 'workspace' ? input.workspaceId : null,
+                lifetime: terms.lifetime,
+                allowedInjectionPaths: [terms.injectionPath],
+                targetAgentId: terms.targetAgentId ?? null,
+                targetAgentSessionId: terms.targetAgentSessionId ?? null,
+                targetCapabilityId: terms.targetCapabilityId ?? null,
+                expiresAt: terms.expiresAt ?? null,
+                subjectSummary: 'Reviewed credential-use request',
+                policyDecisionId,
+                approvalId: record.requestId,
+              };
+              const evidence = prepareVaultAdminAudit({
+                actor,
+                action: 'vault.grant-issue',
+                outcome: 'succeeded',
+                backendKind: dependencies.vaultUnlockState!.backend().kind,
+                workspaceId: input.workspaceId,
+                resource: `approval:${record.requestId}`,
+                vaultGrantId: grantId,
+                requestId: record.requestId,
+                summary: 'Reviewed credential-use grant issued. Explicit binding is required.',
+              });
+              const intent = IntentSchema.parse(record.governedIntent);
+              const reference = getVaultReference(coreDb!, terms.referenceId);
+              if (!reference) throw new Error('Current Vault reference is unavailable.');
+              await getControlStoreWorkerClient().vault(
+                coreDb!,
+                'reviewed-grant-issue',
+                {
+                  grant,
+                  ...evidence,
+                  authority: {
+                    workspaceId: input.workspaceId,
+                    issuer: actor,
+                    decider: record.decidingActorContext!,
+                    requester: intent.origin,
+                    reference,
+                  },
+                },
+                async () => {
+                  await beforeSubmit();
+                  assertCurrentGrantAuthority();
+                  coreAttempted = true;
+                }
+              );
+              const current = requireUsableRecord(
+                store!,
+                db.sqlite,
+                record.requestId,
+                input.workspaceId,
+                input.threadId
+              );
+              const settled = await store!.applyPendingRequestCommand(input.workspaceId, {
+                action: 'finish',
+                workspaceId: input.workspaceId,
+                threadId: input.threadId,
+                requestId: record.requestId,
+                expected: [{ requestId: record.requestId, sourceHash: commandInputHash(current) }],
+                disposition: 'approved-executed',
+                reason: null,
+                heldResult:
+                  current.delivery === 'delivered' || current.delivery === 'closed-out'
+                    ? null
+                    : { grantId },
+                now: new Date().toISOString(),
+              });
+              if (settled.applied === 'lost' || !settled.requestIds.includes(record.requestId))
+                throw new Error('Missing execution settlement.');
+              const finished = requireUsableRecord(
+                store!,
+                db.sqlite,
+                record.requestId,
+                input.workspaceId,
+                input.threadId
+              );
+              return view(dependencies, finished, actor);
             }
           );
         } catch {
@@ -989,6 +1099,12 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             input.workspaceId,
             input.threadId
           );
+          if (current.claim === 'finished')
+            throw new PendingRequestCommandError(
+              'recovery_required',
+              'The grant outcome is retained; inspect completion evidence before another request.',
+              409
+            );
           const failed = await store!.applyPendingRequestCommand(input.workspaceId, {
             action: 'finish',
             workspaceId: input.workspaceId,
@@ -1027,37 +1143,6 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             409
           );
         }
-        const current = requireUsableRecord(
-          store!,
-          db.sqlite,
-          record.requestId,
-          input.workspaceId,
-          input.threadId
-        );
-        const settled = await store!.applyPendingRequestCommand(input.workspaceId, {
-          action: 'finish',
-          workspaceId: input.workspaceId,
-          threadId: input.threadId,
-          requestId: record.requestId,
-          expected: [{ requestId: record.requestId, sourceHash: commandInputHash(current) }],
-          disposition: 'approved-executed',
-          reason: null,
-          heldResult:
-            current.delivery === 'delivered' || current.delivery === 'closed-out'
-              ? null
-              : { grantId },
-          now: new Date().toISOString(),
-        });
-        if (settled.applied === 'lost' || !settled.requestIds.includes(record.requestId))
-          throw new Error('Missing execution settlement.');
-        const finished = requireUsableRecord(
-          store!,
-          db.sqlite,
-          record.requestId,
-          input.workspaceId,
-          input.threadId
-        );
-        return view(dependencies, finished, actor);
       }),
   } satisfies Pick<
     OperationImplementations,
