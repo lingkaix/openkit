@@ -230,6 +230,7 @@ import { applyControlWorkerImage } from './worker-image-native.js';
 import { applyControlWorkerStorageBinding } from './worker-storage-binding-native.js';
 import { WorkspaceApplyPlanConflictError } from './workspace-apply-plan-codecs.js';
 import { recordWorkspaceApplyPlanInDb } from './workspace-apply-plan-records.js';
+import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import {
   WORKSPACE_REVIEW_REFUSALS,
@@ -286,6 +287,7 @@ type WriteCommand = Extract<
       | 'generative-presentation'
       | 'evaluation-candidate'
       | 'scheduler-admission'
+      | 'workspace-deletion'
       | 'core-sharing'
       | 'provenance'
       | 'observation'
@@ -1987,6 +1989,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'scheduler-admission',
               result,
             };
+          } else if (request.operation === 'workspace-deletion') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlWorkspaceDeletion(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'workspace-deletion',
+              result,
+            };
           } else if (request.operation === 'core-sharing') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlCoreSharing(owner.scopeDb, request.input);
@@ -3009,6 +3021,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'worker-control-heartbeat' ||
       value.operation === 'worker-control-record' ||
       value.operation === 'scheduler-admission' ||
+      value.operation === 'workspace-deletion' ||
       value.operation === 'core-sharing' ||
       value.operation === 'evaluation-candidate' ||
       value.operation === 'material' ||

@@ -240,6 +240,12 @@ import {
   ControlWorkspaceApplyPlanSchema,
 } from './workspace-apply-plan-codecs.js';
 import {
+  type ControlWorkspaceDeletionInput,
+  ControlWorkspaceDeletionInputSchema,
+  type ControlWorkspaceDeletionResult,
+  ControlWorkspaceDeletionResultSchema,
+} from './workspace-deletion-codecs.js';
+import {
   type ControlWorkspaceReviewDecision,
   ControlWorkspaceReviewDecisionResultSchema,
   ControlWorkspaceReviewDecisionSchema,
@@ -255,7 +261,7 @@ import {
 } from './workspace-sharing-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 42;
+export const CONTROL_WORKER_VERSION = 43;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -545,6 +551,7 @@ export type ControlWorkerCommand =
           readonly input: ControlSchedulerAdmissionWire;
           readonly content?: ArrayBuffer;
         }
+      | { readonly operation: 'workspace-deletion'; readonly input: ControlWorkspaceDeletionInput }
       | { readonly operation: 'core-sharing'; readonly input: ControlCoreSharing }
       | { readonly operation: 'evaluation-candidate'; readonly input: ControlEvaluationCandidate }
       | { readonly operation: 'review'; readonly input: ControlReviewCommandInput }
@@ -814,6 +821,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'execution-attempt';
       readonly result: ControlExecutionAttemptResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'workspace-deletion';
+      readonly result: ControlWorkspaceDeletionResult;
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
@@ -1245,6 +1257,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlWorkerHeartbeatResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'worker-control-final-status')
     return ControlWorkerFinalStatusResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'workspace-deletion')
+    return ControlWorkspaceDeletionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'core-journal')
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
@@ -1438,6 +1452,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'shutdown') return exactFields(value, header);
   if (typeof value.database !== 'string' || value.database.length === 0) return false;
   const scoped = [...header, 'database'];
+  if (value.operation === 'workspace-deletion')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlWorkspaceDeletionInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
   if (value.operation === 'recovery-history')
     return (
       exactFields(value, [...scoped, 'workspaceId']) &&

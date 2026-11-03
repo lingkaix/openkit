@@ -923,11 +923,33 @@ export function hasWorkspaceDeletionRetryAuthority(
   workspaceId: string,
   request: { dataRoot: string; requestId: string }
 ): boolean {
-  if (!isCanonicalUserActive(coreDb, actor.userId) || !isUsablePresentedAccessToken(coreDb, actor))
+  const current = currentWorkspaceDeletionRetryCoreAuthority(coreDb, actor, workspaceId);
+  if (!current) return false;
+  // Administrators may inspect a contradictory request through the deletion owner, which returns recovery_required before effects. A malformed record never supplies member authority.
+  if (current.administrator) return true;
+  let deletion: ReturnType<typeof readWorkspaceDeletionRequest>;
+  try {
+    deletion = readWorkspaceDeletionRequest(request.dataRoot, workspaceId, request.requestId);
+  } catch {
     return false;
+  }
+  return (
+    deletion.originalOwnerUserId === current.ownerUserId &&
+    deletion.initiatingUserId === actor.userId
+  );
+}
+
+/** Reads the original current Core eligibility before any separate file-owned request selection. */
+function currentWorkspaceDeletionRetryCoreAuthority(
+  coreDb: CoreDb,
+  actor: Actor,
+  workspaceId: string
+): Readonly<{ ownerUserId: string; administrator: boolean }> | null {
+  if (!isCanonicalUserActive(coreDb, actor.userId) || !isUsablePresentedAccessToken(coreDb, actor))
+    return null;
   if (actor.kind === 'token' && !isUsablePresentedServerAdminToken(coreDb, actor)) {
     if (actor.tokenScope !== 'workspace' || !actor.tokenWorkspaceIds?.includes(workspaceId)) {
-      return false;
+      return null;
     }
   }
   const row = coreDb.sqlite
@@ -941,20 +963,27 @@ export function hasWorkspaceDeletionRetryAuthority(
     | { ownerUserId: string; status: 'active' | 'deleting' | 'deleted'; userStatus: string }
     | undefined;
   if (row?.userStatus !== 'active' || (row.status !== 'deleting' && row.status !== 'deleted')) {
-    return false;
+    return null;
   }
-  // Administrators may inspect a contradictory request through the deletion owner, which returns recovery_required before effects. A malformed record never supplies member authority.
-  if (isCurrentDeploymentAdministrator(coreDb, actor)) {
-    return true;
-  }
-  let deletion: ReturnType<typeof readWorkspaceDeletionRequest>;
-  try {
-    deletion = readWorkspaceDeletionRequest(request.dataRoot, workspaceId, request.requestId);
-  } catch {
-    return false;
-  }
+  return {
+    ownerUserId: row.ownerUserId,
+    administrator: isCurrentDeploymentAdministrator(coreDb, actor),
+  };
+}
+
+/** Revalidates the same Core predicates using only the original request facts already selected by its lifecycle owner. */
+export function hasWorkspaceDeletionRetryAuthorityForRequest(
+  coreDb: CoreDb,
+  actor: Actor,
+  workspaceId: string,
+  request: { readonly originalOwnerUserId: string; readonly initiatingUserId: string }
+): boolean {
+  const current = currentWorkspaceDeletionRetryCoreAuthority(coreDb, actor, workspaceId);
   return (
-    deletion.originalOwnerUserId === row.ownerUserId && deletion.initiatingUserId === actor.userId
+    !!current &&
+    (current.administrator ||
+      (request.originalOwnerUserId === current.ownerUserId &&
+        request.initiatingUserId === actor.userId))
   );
 }
 

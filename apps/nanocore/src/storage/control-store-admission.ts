@@ -84,6 +84,7 @@ export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   'workspace.leave',
   'workspace.ownership.transfer',
   'workspace.access.recover',
+  'workspace.delete',
 ] as const satisfies readonly CommandRequestName[];
 
 /** Workspace Knowledge commands commit their original receipt with SQL publication; other scopes retain their current writer. */

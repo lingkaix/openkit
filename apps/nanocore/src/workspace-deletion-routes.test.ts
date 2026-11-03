@@ -2816,3 +2816,205 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     rmSync(workspaceBackupParent, { force: true, recursive: true });
   }
 });
+
+/** Builds one ordinary project through the same public Store and membership owners as the existing route cases. */
+async function nativeDeletionRouteFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-deletion-native-route-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const actorId = ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot });
+  const workspace = await store.createWorkspace('Native deletion route');
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actorId, workspaceId: workspace.id });
+  const app = createApp({
+    coreDb,
+    dataRoot,
+    store,
+    mode: 'local',
+    releaseIdentity: {
+      releaseTag: null,
+      sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+    },
+    turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+  });
+  const requestId = randomUUID();
+  const input = {
+    confirmation: `permanently-delete-workspace:${workspace.id}:1`,
+    expectedRegistryRevision: 1,
+    requestId,
+  };
+  const invoke = () =>
+    app.request(
+      ...operationRequest(
+        'workspace.delete',
+        { workspaceId: workspace.id },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        }
+      )
+    );
+  return { dataRoot, coreDb, workspace, requestId, invoke };
+}
+
+/** Exact regular-file bytes after native close and rename; no live WAL/SHM exclusions. */
+function stagedDeletionBytes(root: string) {
+  return readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const path = join(entry.parentPath, entry.name);
+      return [relative(root, path), readFileSync(path).toString('base64')] as const;
+    })
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+it('runs the complete deletion API with Main Core query-only and replays the exact durable terminal truth after native shutdown', async () => {
+  const f = await nativeDeletionRouteFixture();
+  try {
+    f.coreDb.sqlite.pragma('query_only = ON');
+    expect(f.coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    expect(() =>
+      f.coreDb.sqlite
+        .prepare('UPDATE workspace_registry SET revision = revision WHERE workspace_id = ?')
+        .run(f.workspace.id)
+    ).toThrowError(expect.objectContaining({ code: 'SQLITE_READONLY' }));
+    const response = await f.invoke();
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = await response.json();
+    const request = readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId);
+    expect(request).toMatchObject({
+      phase: 'cleaned',
+      retainedStaging: false,
+      terminalAuditEventId: expect.any(String),
+      commandReceiptKey: expect.any(String),
+      recoveryBackupId: expect.any(String),
+      recoveryBackupManifestDigest: expect.any(String),
+      closureId: expect.any(String),
+      closureDigest: expect.any(String),
+    });
+    expect(existsSync(join(f.dataRoot, 'workspaces', f.workspace.id))).toBe(false);
+    expect(existsSync(join(f.dataRoot, request.stagingRelativePath!))).toBe(false);
+    const terminal = () => ({
+      registry: f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+        .get(f.workspace.id),
+      audit: f.coreDb.sqlite
+        .prepare(
+          "SELECT * FROM audit_events WHERE workspace_id = ? AND action = 'workspace.delete'"
+        )
+        .all(f.workspace.id),
+      receipt: f.coreDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_key = ?')
+        .get(request.commandReceiptKey),
+    });
+    const committed = terminal();
+    expect(committed.registry).toMatchObject({ status: 'deleted', revision: 3 });
+    expect(committed.audit).toHaveLength(1);
+    expect(committed.audit[0]).toMatchObject({
+      audit_event_id: request.terminalAuditEventId,
+      request_id: f.requestId,
+    });
+    expect(committed.receipt).toMatchObject({
+      command_name: 'workspace.delete',
+      request_id: f.requestId,
+      response_kind: 'workspace_deletion',
+      response_id: f.requestId,
+    });
+    await shutdownControlStoreWorkerClient();
+    // The replay must reconcile retained truth and must not submit another native mutation.
+    const replay = await f.invoke();
+    expect(replay.status, await replay.clone().text()).toBe(200);
+    expect(await replay.json()).toEqual(body);
+    expect(terminal()).toEqual(committed);
+    expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(request);
+  } finally {
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    rmSync(f.dataRoot, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it('retains exact staged bytes and file request after a late native receipt failure and completes only on the explicit same-request retry', async () => {
+  const f = await nativeDeletionRouteFixture();
+  try {
+    // Valid owner setup precedes this physical SQL fault. No authority or receipt is fabricated.
+    f.coreDb.sqlite.exec(`CREATE TRIGGER deletion_route_receipt_failure
+      BEFORE INSERT ON idempotency_requests WHEN NEW.command_name = 'workspace.delete'
+      BEGIN SELECT RAISE(ABORT, 'injected route terminal receipt failure'); END`);
+    f.coreDb.sqlite.pragma('query_only = ON');
+    const failed = await f.invoke();
+    expect(failed.status).toBe(409);
+    const staged = readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId);
+    expect(staged).toMatchObject({
+      phase: 'staged',
+      terminalAuditEventId: null,
+      commandReceiptKey: null,
+      recoveryBackupManifestDigest: expect.any(String),
+      closureDigest: expect.any(String),
+    });
+    const stagingRoot = join(f.dataRoot, staged.stagingRelativePath!);
+    expect(existsSync(join(f.dataRoot, 'workspaces', f.workspace.id))).toBe(false);
+    expect(existsSync(stagingRoot)).toBe(true);
+    const requestPath = join(
+      f.dataRoot,
+      'server',
+      'exports',
+      'workspace-deletions',
+      f.workspace.id,
+      f.requestId,
+      'request.json'
+    );
+    const requestBytes = readFileSync(requestPath);
+    const bytes = stagedDeletionBytes(stagingRoot);
+    expect(bytes.length).toBeGreaterThan(0);
+    const sql = () => ({
+      registry: f.coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
+        .get(f.workspace.id),
+      audit: f.coreDb.sqlite
+        .prepare(
+          "SELECT * FROM audit_events WHERE workspace_id = ? AND action = 'workspace.delete'"
+        )
+        .all(f.workspace.id),
+      receipt: f.coreDb.sqlite
+        .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
+        .all(f.requestId),
+    });
+    const rolledBack = sql();
+    expect(rolledBack.registry).toMatchObject({ status: 'deleting', revision: 2 });
+    expect(rolledBack.audit).toEqual([]);
+    expect(rolledBack.receipt).toEqual([]);
+    const retryFailure = await f.invoke();
+    expect(retryFailure.status).toBe(409);
+    expect(sql()).toEqual(rolledBack);
+    expect(readFileSync(requestPath)).toEqual(requestBytes);
+    expect(stagedDeletionBytes(stagingRoot)).toEqual(bytes);
+    // Remove only the injected failure through a separate physical fixture handle.
+    const repair = openCoreDb(f.dataRoot);
+    try {
+      repair.sqlite.exec('DROP TRIGGER deletion_route_receipt_failure');
+    } finally {
+      repair.sqlite.close();
+    }
+    const retry = await f.invoke();
+    expect(retry.status, await retry.clone().text()).toBe(200);
+    const completed = readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId);
+    expect(completed).toMatchObject({
+      ...staged,
+      phase: 'cleaned',
+      retainedStaging: false,
+      cleanedAt: expect.any(String),
+      terminalAuditEventId: expect.any(String),
+      commandReceiptKey: expect.any(String),
+    });
+    expect(existsSync(stagingRoot)).toBe(false);
+    expect(sql().registry).toMatchObject({ status: 'deleted', revision: 3 });
+    expect(sql().audit).toHaveLength(1);
+    expect(sql().receipt).toHaveLength(1);
+  } finally {
+    await shutdownControlStoreWorkerClient();
+    f.coreDb.sqlite.close();
+    rmSync(f.dataRoot, { recursive: true, force: true });
+  }
+}, 30_000);

@@ -188,6 +188,11 @@ import type { ControlWorkerRecordCommand } from './worker-control-record-codecs.
 import type { ControlWorkerImageInput } from './worker-image-codecs.js';
 import type { ControlWorkerStorageInput } from './worker-storage-binding-codecs.js';
 import type { ControlWorkspaceApplyPlan } from './workspace-apply-plan-codecs.js';
+import {
+  type ControlWorkspaceDeletionInput,
+  ControlWorkspaceDeletionInputSchema,
+  type ControlWorkspaceDeletionResult,
+} from './workspace-deletion-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import type { ControlWorkspaceReviewDecision } from './workspace-review-codecs.js';
 import type { ControlCoreSharing, ControlCoreSharingResult } from './workspace-sharing-codecs.js';
@@ -247,7 +252,21 @@ interface ControlWorkspaceSchemaApplicationCall {
   readonly statements: readonly ControlSqlStatement[];
 }
 
-type ControlFrozenNativeCall = ControlRecoveryNativeCall | ControlWorkspaceSchemaApplicationCall;
+const workspaceDeletionCall = Symbol('workspace-deletion-call');
+/** Reuses the caller's exact lifecycle freeze at Core admission and actual posting, never on the wire. */
+interface ControlWorkspaceDeletionCall {
+  readonly kind: 'workspace-deletion';
+  readonly [workspaceDeletionCall]: true;
+  readonly freeze: WorkspaceFrozenAdmission;
+  readonly input: ControlWorkspaceDeletionInput;
+  readonly command: Omit<OpenCommand, 'operation'>;
+  readonly path: string;
+  readonly identity: string;
+}
+type ControlFrozenNativeCall =
+  | ControlRecoveryNativeCall
+  | ControlWorkspaceSchemaApplicationCall
+  | ControlWorkspaceDeletionCall;
 
 export { nativeUserDatabasePath };
 
@@ -359,6 +378,8 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
     case 'recovery-seal':
     case 'recovery-safety':
       return true;
+    case 'workspace-deletion':
+      return command.input.stage === 'complete';
     case 'item':
       return isControlCapacityItem(command.input.item);
     case 'event': {
@@ -950,6 +971,37 @@ class ControlStoreWorkerClient {
           },
         });
       return;
+    }
+    if ('kind' in recovery && recovery.kind === 'workspace-deletion') {
+      try {
+        const physical =
+          opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
+        const current = statSync(recovery.path);
+        if (
+          recovery[workspaceDeletionCall] !== true ||
+          !this.workspaceMutationAdmission?.ownsFreeze(
+            recovery.input.workspaceId,
+            recovery.freeze
+          ) ||
+          recovery.command.productOwner?.kind !== 'server' ||
+          recovery.command.initialize !== 'core' ||
+          recovery.command.create !== false ||
+          recovery.command.database !== `core:${resolve(recovery.command.path)}` ||
+          realpathSync(recovery.command.path) !== recovery.path ||
+          `${current.dev}:${current.ino}` !== recovery.identity ||
+          !physical ||
+          physical.path !== recovery.path ||
+          physical.identity !== recovery.identity ||
+          !isDeepStrictEqual(physical.command, recovery.command) ||
+          command.operation !== 'workspace-deletion' ||
+          command.database !== recovery.command.database ||
+          !isDeepStrictEqual(command.input, recovery.input)
+        )
+          throw new Error('Deletion lifecycle binding is not current.');
+        return;
+      } catch {
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      }
     }
     if ('kind' in recovery) {
       try {
@@ -2389,6 +2441,39 @@ class ControlStoreWorkerClient {
       }
       throw error;
     }
+  }
+
+  /** Publishes one whole original Core deletion stage under its existing lifecycle freeze. */
+  async workspaceDeletion(
+    database: string,
+    value: ControlWorkspaceDeletionInput,
+    freeze: WorkspaceFrozenAdmission
+  ): Promise<ControlWorkspaceDeletionResult> {
+    if (freeze === undefined) throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const input = ControlWorkspaceDeletionInputSchema.parse(value);
+    const opening = this.openings.get(database);
+    if (!opening || opening.identity === undefined)
+      throw new ControlStoreWorkerError('not-open', 'not-committed');
+    const call: ControlWorkspaceDeletionCall = {
+      kind: 'workspace-deletion',
+      [workspaceDeletionCall]: true,
+      freeze,
+      input,
+      command: opening.command,
+      path: opening.path,
+      identity: opening.identity,
+    };
+    const reply = await this.request(
+      { operation: 'workspace-deletion', database, input },
+      undefined,
+      undefined,
+      false,
+      call
+    );
+    const result = (reply as Extract<Success, { operation: 'workspace-deletion' }>).result;
+    if (result.stage !== input.stage)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return result;
   }
 
   /** Commits the exact Core sharing mutation, Audit and original receipt in one covering FULL acknowledgement. */

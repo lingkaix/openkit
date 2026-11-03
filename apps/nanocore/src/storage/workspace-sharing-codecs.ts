@@ -26,6 +26,10 @@ const actor = z
     adminTokenId: z.string().optional(),
   })
   .strict();
+
+/** Existing authenticated actor wire facts, shared by Core lifecycle tuples. */
+export { actor as ControlCoreSharingActorSchema };
+
 const receipt = z
   .object({
     key: z.string().min(1),

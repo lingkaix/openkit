@@ -19,11 +19,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { readRetainedV1 } from '@openkit/protocol';
 import { assertCanonicalDirectory, assertCanonicalRegularFile } from '@openkit/storage';
-import {
-  listServerAuditEvents,
-  listSqliteAuditEvents,
-  recordServerAuditEvent,
-} from './audit-events.js';
+import { listServerAuditEvents } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import {
   evaluateProductAuthorization,
@@ -55,6 +51,7 @@ import {
   withVerifiedWorkspaceSnapshotSource,
 } from './storage/workspace-backup-bundle.js';
 import {
+  nativeProductScope,
   readNativeProduct,
   WorkspaceSystemRecordSchema,
 } from './storage/workspace-file-records.js';
@@ -89,11 +86,7 @@ import type {
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
 } from './workspace-mutation-admission.js';
-import {
-  beginWorkspaceDeletion,
-  completeWorkspaceDeletion,
-  getWorkspaceRegistryLifecycleFact,
-} from './workspace-sharing.js';
+import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
 const CORE_RECEIPT_OWNER = { coreId: 'server' } as const;
 
@@ -569,6 +562,20 @@ async function advanceWorkspaceDeletion(input: {
   )
     throw recoveryRequired();
   await input.closeWorkspaceMcpSessions(input.workspaceId);
+  const coreScope = nativeProductScope(input.dataRoot, { kind: 'server' });
+  const coreDatabase = `core:${coreScope.path}`;
+  const coreClient = getControlStoreWorkerClient(input.mutationAdmission);
+  await coreClient.open({
+    database: coreDatabase,
+    path: coreScope.path,
+    dataRoot: input.dataRoot,
+    create: false,
+    initialize: 'core',
+    productOwner: coreScope.owner,
+    contentMount: coreScope.contentMount,
+  });
+  if (!input.mutationAdmission.ownsFreeze(input.workspaceId, input.freezeOwner))
+    throw recoveryRequired();
   // Cleanup can yield to revocation, so check authority before advancing the request.
   if (request.phase === 'requested' || request.phase === 'fenced') {
     const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
@@ -747,14 +754,17 @@ async function advanceWorkspaceDeletion(input: {
     request = persistDeletionPhase(input.dataRoot, request, {
       recoveryBackupManifestDigest: verified.manifestDigest,
     });
-    input.coreDb.sqlite.transaction(() =>
-      beginWorkspaceDeletion({
-        coreDb: input.coreDb,
+    await coreClient.workspaceDeletion(
+      coreDatabase,
+      {
+        stage: 'begin',
+        actor: input.actor,
         workspaceId: input.workspaceId,
         originalOwnerUserId: request.originalOwnerUserId,
         expectedRegistryRevision: request.expectedRegistryRevision,
-      })
-    )();
+      },
+      input.freezeOwner
+    );
     request = persistDeletionPhase(input.dataRoot, request, {
       phase: 'exported',
       recoveryBackupId: backupId,
@@ -863,64 +873,24 @@ async function advanceWorkspaceDeletion(input: {
     requireExactStagedWorkspace(input.dataRoot, request);
     await verifyDeletionArtifacts(input.dataRoot, request);
     removeSupersededWorkspaceExports(input.dataRoot, request);
-    const terminal = input.coreDb.sqlite.transaction(() => {
-      const recurringAudit = listSqliteAuditEvents(input.coreDb.sqlite, input.workspaceId, true);
-      const registry = completeWorkspaceDeletion({
-        coreDb: input.coreDb,
+    const terminal = await coreClient.workspaceDeletion(
+      coreDatabase,
+      {
+        stage: 'complete',
+        actor: input.actor,
         workspaceId: input.workspaceId,
         originalOwnerUserId: request.originalOwnerUserId,
         expectedRegistryRevision: request.expectedRegistryRevision + 1,
-      });
-      // The verified closure and recovery export now retain this exact Core-homed graph.
-      // Remove children first; a failure rolls back the terminal registry transition too.
-      input.coreDb.sqlite
-        .prepare(`DELETE FROM external_trigger_admissions
-        WHERE schedule_id IN (SELECT id FROM recurring_schedules WHERE workspace_id = ?)`)
-        .run(input.workspaceId);
-      for (const table of [
-        'recurring_occurrences',
-        'recurring_expired_ranges',
-        'recurring_schedules',
-      ])
-        input.coreDb.sqlite
-          .prepare(`DELETE FROM ${table} WHERE workspace_id = ?`)
-          .run(input.workspaceId);
-      for (const event of recurringAudit)
-        input.coreDb.sqlite
-          .prepare('DELETE FROM audit_events WHERE workspace_id = ? AND audit_event_id = ?')
-          .run(input.workspaceId, event.id);
-      const audit = recordServerAuditEvent({
-        action: 'workspace.delete',
-        actor: { id: input.actorId, kind: 'user' },
-        category: 'command',
-        coreDb: input.coreDb,
-        outcome: 'succeeded',
-        requestId: request.requestId,
-        resource: `workspace:${input.workspaceId}`,
-        resourceRevision: registry.registryRevision,
-        summary: 'Workspace permanently deleted with verified recovery artifacts.',
-        workspaceId: input.workspaceId,
-      });
-      const receipt = input.store.recordCommandRequest(
-        {
-          command: 'workspace.delete',
-          requestId: request.requestId,
-          scope: {
-            ...CORE_RECEIPT_OWNER,
-            actorId: input.actorId,
-            targetWorkspaceId: input.workspaceId,
-          },
-          inputHash: commandInputHash(input.request),
-          response: { kind: 'workspace_deletion', id: request.requestId },
-        },
-        input.coreDb
-      );
-      return { audit, receipt, registry };
-    })();
+        initiatingUserId: request.initiatingUserId,
+        request: input.request,
+      },
+      input.freezeOwner
+    );
+    if (terminal.stage !== 'complete') throw recoveryRequired();
     request = persistDeletionPhase(input.dataRoot, request, {
       phase: 'deleted',
-      terminalAuditEventId: terminal.audit.id,
-      commandReceiptKey: terminal.receipt.key,
+      terminalAuditEventId: terminal.auditEventId,
+      commandReceiptKey: terminal.commandReceiptKey,
     });
   }
   if (request.phase === 'deleted') {
