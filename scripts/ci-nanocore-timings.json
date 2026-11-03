@@ -37,6 +37,7 @@
     "src/artifact-operation-projections.test.ts": 84421,
     "src/artifact-reviews.test.ts": 527,
     "src/artifact-routes.test.ts": 19076,
+    "src/artifact-versions.test.ts": 14637,
     "src/assistant-context-portability.test.ts": 9984,
     "src/assistant-history-integration.test.ts": 35939,
     "src/assistant-semantic-handoff.test.ts": 50830,
