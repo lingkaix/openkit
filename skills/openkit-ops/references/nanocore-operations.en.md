@@ -270,7 +270,7 @@ A nearby identity refusal does not prove the cause of a failed package download.
 
 ### Recover A NanoHost At The Rebuild Bound
 
-`epoch rebuild hard bound exceeded` preserves the first unresolved recovery deadline. Restarting that state does not renew the deadline. The service remains non-ready until the cause and failed epoch state receive explicit operator recovery.
+`epoch rebuild hard bound exceeded` preserves the first unresolved recovery deadline. An initial connect timeout also exits as `outer-session startup hard bound exceeded` and writes the same fence before it tears the epoch down. A restart before the 300-second bound removes that failed epoch and starts one fresh attempt. At or after the bound, the restart refuses with `epoch rebuild hard bound exceeded` before it removes any prior epoch root, so the failed state stays available for the custody recovery below. Restarting that state does not renew the deadline. The service remains non-ready until the cause and failed epoch state receive explicit operator recovery.
 
 Use this procedure only under authorization to retire the failed epoch's disposable state. Reuse existing authorization when it covers this operation. It does not authorize deleting retained Worker data, changing enrollment or resetting an App deployment. [NanoHost Runtime And Transport](https://github.com/lingkaix/openkit/blob/main/docs/specs/20260802-nanohost_runtime_and_transport.md#epoch-rebuild-cost-budget) owns this recovery boundary.
 

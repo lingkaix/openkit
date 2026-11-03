@@ -854,6 +854,16 @@ async fn run() -> Result<(), NanoHostRunFailure> {
             )
             .map_err(|_| "nanohost prior-epoch disposition unavailable")?;
     }
+    // Refuse an expired fence before cleanup: the failed epoch is operator-recovery evidence.
+    let mut startup_deadline = tokio::time::Instant::now() + STARTUP_READINESS_HARD_LIMIT;
+    if let Some(started) = fence_started {
+        let remaining = SystemTime::now()
+            .duration_since(started)
+            .ok()
+            .and_then(|elapsed| REBUILD_HARD_LIMIT.checked_sub(elapsed))
+            .ok_or("epoch rebuild hard bound exceeded")?;
+        startup_deadline = startup_deadline.min(tokio::time::Instant::now() + remaining);
+    }
     recovery
         .remove_prior_epoch_roots(
             Path::new("/var/lib/openkit/nanohost"),
@@ -871,15 +881,6 @@ async fn run() -> Result<(), NanoHostRunFailure> {
             return Err("nanohost image store unavailable".into());
         }
     });
-    let mut startup_deadline = tokio::time::Instant::now() + STARTUP_READINESS_HARD_LIMIT;
-    if let Some(started) = fence_started {
-        let remaining = SystemTime::now()
-            .duration_since(started)
-            .ok()
-            .and_then(|elapsed| REBUILD_HARD_LIMIT.checked_sub(elapsed))
-            .ok_or("epoch rebuild hard bound exceeded")?;
-        startup_deadline = startup_deadline.min(tokio::time::Instant::now() + remaining);
-    }
     let plan = match EpochPlan::fresh(
         Path::new("/var/lib/openkit/nanohost"),
         Path::new("/run/openkit/nanohost"),
@@ -2594,6 +2595,28 @@ mod tests {
         let gateway_connected = startup.find("health").expect("typed Gateway health proof");
         assert!(containerd_ready < dockerd_ready && dockerd_ready < gateway_connected);
         assert!(startup[gateway_connected..].contains("terminate_children"));
+    }
+
+    /// Refuses an expired fence before the normal prior-epoch cleanup can delete its evidence.
+    #[test]
+    fn prior_epoch_cleanup_follows_the_rebuild_hard_bound_check() {
+        let run_source = include_str!("main.rs")
+            .split_once("fn run()")
+            .expect("NanoHost run path")
+            .1
+            .split_once("fn main()")
+            .expect("end of NanoHost run path")
+            .0;
+        let hard_bound = run_source
+            .find("\"epoch rebuild hard bound exceeded\"")
+            .expect("rebuild hard-bound check");
+        let prior_epoch_cleanup = run_source
+            .find("remove_prior_epoch_roots(")
+            .expect("prior epoch cleanup");
+        assert!(
+            hard_bound < prior_epoch_cleanup,
+            "an expired fence must be refused before prior epoch cleanup deletes the failed epoch"
+        );
     }
 
     #[test]
