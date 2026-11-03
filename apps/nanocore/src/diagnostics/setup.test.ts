@@ -55,4 +55,44 @@ describe('createSetupDiagnostics', () => {
     expect(JSON.stringify(diagnostics)).not.toContain('/tmp/openkit-test');
     expect(JSON.stringify(diagnostics)).not.toContain('sk-secret');
   });
+
+  it('projects the stored readiness message of a ready Agent', () => {
+    const registry = new ProviderRegistry([
+      {
+        baseUrl: 'https://openrouter.ai/api/v1',
+        displayName: 'Hosted',
+        id: 'agent-openrouter',
+        kind: 'custom',
+        models: ['openai/gpt-5.2'],
+        secretRef: 'env:OPENROUTER_API_KEY',
+      },
+    ]);
+
+    const diagnostics = createSetupDiagnostics({
+      agentManifests: [
+        {
+          ...createTestAgentSetup().manifest,
+          readiness: { message: 'Proved by an accepted turn.', status: 'ready' },
+        },
+      ],
+      dataRoot: '/tmp/openkit-test',
+      gatewayConfig: createTestGatewayConfig(),
+      mode: 'local',
+      openKitConfig: {},
+      providerRegistry: registry,
+      runtimeConfig: {
+        currentVersion: 1,
+        lastFailedReload: null,
+        lastReload: null,
+        loadedAt: '2026-01-01T00:00:00.000Z',
+        pendingRestart: [],
+        staleSessions: [],
+      },
+    });
+
+    expect(diagnostics.agents[0]?.readiness).toEqual({
+      reasons: ['Proved by an accepted turn.'],
+      status: 'ready',
+    });
+  });
 });

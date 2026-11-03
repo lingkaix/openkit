@@ -21,6 +21,24 @@ describe('computeReadiness', () => {
     });
   });
 
+  it('projects the stored message of a ready Agent', () => {
+    expect(
+      computeReadiness(
+        manifest({ readiness: { message: 'Proved by an accepted turn.', status: 'ready' } })
+      )
+    ).toEqual({ reasons: ['Proved by an accepted turn.'], status: 'ready' });
+  });
+
+  it('keeps a ready Agent with a stored message launchable', () => {
+    expect(
+      isAgentLaunchable(
+        computeReadiness(
+          manifest({ readiness: { message: 'Proved by an accepted turn.', status: 'ready' } })
+        )
+      )
+    ).toBe(true);
+  });
+
   it.each([
     ['disabled', 'Disabled by operator.'],
     ['blocked', 'Runtime image is unavailable.'],

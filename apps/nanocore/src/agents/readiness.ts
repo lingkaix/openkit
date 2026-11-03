@@ -11,7 +11,7 @@ export type AgentReadinessStatus = 'ready' | 'degraded' | 'blocked' | 'disabled'
 export interface AgentReadiness {
   /** Computed readiness status. */
   status: AgentReadinessStatus;
-  /** Human-readable reasons explaining non-ready or explicitly declared states. */
+  /** Human-readable reasons for a non-ready state or the stored message of a declared state. */
   reasons: string[];
 }
 
@@ -27,6 +27,9 @@ export function isAgentLaunchable(readiness: AgentReadiness): boolean {
 
 /**
  * Computes agent readiness from manifest dependencies and provider registry state.
+ *
+ * A declared `ready` status reports its stored message, so projections that read
+ * only reasons can name the proving evidence behind a ready Agent.
  *
  * @param manifest Agent manifest to evaluate.
  * @returns Agent readiness result.
@@ -46,10 +49,6 @@ export function computeReadiness(manifest: AgentManifest): AgentReadiness {
           : [],
       status: declaredReadiness.status,
     };
-  }
-
-  if (declaredReadiness?.status === 'ready') {
-    return { reasons: [], status: 'ready' };
   }
 
   if (declaredReadiness?.status) {
