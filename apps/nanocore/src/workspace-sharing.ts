@@ -8,10 +8,6 @@ import type { PolicyDecision } from '@openkit/policy-kernel';
 import { allocateEntityId } from '@openkit/protocol';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import type { CoreDb } from './storage/db.js';
-import {
-  listActiveWorkspaceIdsForActor,
-  resolveWorkspaceMembershipRelation,
-} from './workspace-membership.js';
 
 const INVITATION_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -1125,4 +1121,111 @@ function requireRecoveryState(
     throw new Error('Successful Workspace recovery lost its safe state projection.');
   }
   return recovery;
+}
+
+/** Current ownership identity among active Workspace members; neither value limits operation eligibility. */
+export type WorkspaceMembershipRelation = 'owner' | 'member';
+
+/**
+ * Resolves one actor's ownership relationship from the active Workspace registry and membership rows.
+ *
+ * @param coreDb Core database containing Workspace identity facts.
+ * @param workspaceId Canonical Workspace identifier.
+ * @param userId Canonical actor user identifier.
+ * @returns Ownership relationship, or null when the facts are missing, inactive, or contradictory.
+ */
+export function resolveWorkspaceMembershipRelation(
+  coreDb: CoreDb,
+  workspaceId: string,
+  userId: string
+): WorkspaceMembershipRelation | null {
+  const row = coreDb.sqlite
+    .prepare(
+      `SELECT
+         registry.owner_user_id,
+         registry.status AS registry_status,
+         actor_user.status AS actor_status,
+         member.status AS member_status,
+         owner_member.status AS owner_member_status
+       FROM workspace_registry AS registry
+       INNER JOIN users AS actor_user
+         ON actor_user.id = ?
+       LEFT JOIN workspace_members AS member
+         ON member.workspace_id = registry.workspace_id
+        AND member.user_id = actor_user.id
+       LEFT JOIN workspace_members AS owner_member
+         ON owner_member.workspace_id = registry.workspace_id
+        AND owner_member.user_id = registry.owner_user_id
+       WHERE registry.workspace_id = ?`
+    )
+    .get(userId, workspaceId) as
+    | {
+        actor_status: string;
+        member_status: string | null;
+        owner_member_status: string | null;
+        owner_user_id: string;
+        registry_status: string;
+      }
+    | undefined;
+
+  if (
+    !row ||
+    row.actor_status !== 'active' ||
+    row.registry_status !== 'active' ||
+    row.member_status !== 'active' ||
+    row.owner_member_status !== 'active'
+  ) {
+    return null;
+  }
+  return row.owner_user_id === userId ? 'owner' : 'member';
+}
+
+/**
+ * Lists every active Workspace registry id in stable identifier order.
+ *
+ * @param coreDb Core database containing Workspace identity facts.
+ * @returns Sorted active Workspace identifiers without consulting membership edges.
+ */
+export function listActiveWorkspaceIds(coreDb: CoreDb): string[] {
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT workspace_id
+       FROM workspace_registry
+       WHERE status = 'active'
+       ORDER BY workspace_id`
+    )
+    .all() as Array<{ workspace_id: string }>;
+
+  return rows.map((row) => row.workspace_id);
+}
+
+/**
+ * Lists active, internally consistent Workspace candidates for one actor in stable identifier order.
+ *
+ * @param coreDb Core database containing Workspace identity facts.
+ * @param userId Canonical actor user identifier.
+ * @returns Sorted active Workspace identifiers without consulting Workspace storage.
+ */
+export function listActiveWorkspaceIdsForActor(coreDb: CoreDb, userId: string): string[] {
+  const rows = coreDb.sqlite
+    .prepare(
+      `SELECT registry.workspace_id
+       FROM workspace_registry AS registry
+       INNER JOIN users AS actor_user
+         ON actor_user.id = ?
+        AND actor_user.status = 'active'
+       INNER JOIN workspace_members AS member
+         ON member.workspace_id = registry.workspace_id
+        AND member.user_id = actor_user.id
+       WHERE registry.status = 'active'
+         AND member.status = 'active'
+       ORDER BY registry.workspace_id`
+    )
+    .all(userId) as Array<{ workspace_id: string }>;
+
+  return rows
+    .map((row) => row.workspace_id)
+    .filter(
+      (workspaceId) => resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId) !== null
+    );
 }

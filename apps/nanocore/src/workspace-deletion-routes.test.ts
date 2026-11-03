@@ -77,12 +77,15 @@ import {
 } from './workspace-deletion-request.js';
 import {
   ensureUserQuickChatWorkspace,
-  listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
-  resolveWorkspaceMembershipRelation,
 } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
-import { beginWorkspaceDeletion, completeWorkspaceDeletion } from './workspace-sharing.js';
+import {
+  beginWorkspaceDeletion,
+  completeWorkspaceDeletion,
+  listActiveWorkspaceIdsForActor,
+  resolveWorkspaceMembershipRelation,
+} from './workspace-sharing.js';
 
 it.each([
   'workspace',

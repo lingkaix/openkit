@@ -16,11 +16,13 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
   ensureUserQuickChatWorkspace,
-  listActiveWorkspaceIdsForActor,
   recordWorkspaceOwnerMembership,
-  resolveWorkspaceMembershipRelation,
   WorkspaceOwnerMembershipRemovedError,
 } from './workspace-membership.js';
+import {
+  listActiveWorkspaceIdsForActor,
+  resolveWorkspaceMembershipRelation,
+} from './workspace-sharing.js';
 
 /**
  * Creates a Better Auth test double with one signed-in user.

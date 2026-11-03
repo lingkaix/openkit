@@ -11,7 +11,6 @@ import {
 } from '../auth/operation-authorizer.js';
 import { OperationError } from '../operation-error.js';
 import { cancelSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   getWorkspaceRegistryLifecycleFact,
   recoverDeletedWorkspaceRegistry,
@@ -29,6 +28,7 @@ import {
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
 import { validateWorkspaceMoveMapping } from './workspace-move-mapping.js';
+import { recordWorkspaceOwnerMembership } from './workspace-owner-records.js';
 import {
   endRecoveryAdmission,
   prepareRecoveryAdmission,

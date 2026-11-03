@@ -4,7 +4,7 @@ import type { CoreMode } from '../config/mode.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
-import { resolveWorkspaceMembershipRelation } from '../workspace-membership.js';
+import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
 import { AccessTokenScopeError } from './access-token.js';
 import {
   createOpenKitAccessTokenRecord,

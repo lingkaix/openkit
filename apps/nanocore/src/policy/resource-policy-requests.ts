@@ -38,7 +38,7 @@ import {
   type RaisePendingRequestInput,
 } from '../runtime/pending-requests.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { resolveWorkspaceMembershipRelation } from '../workspace-membership.js';
+import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
 import { EMPTY_POLICY_DOCUMENT } from './statements.js';
 import { parseWorkspacePolicy, workspacePolicySubject } from './workspace-resource-access.js';
 

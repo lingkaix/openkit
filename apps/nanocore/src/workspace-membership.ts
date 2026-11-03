@@ -1,32 +1,48 @@
-import { allocateEntityId } from '@openkit/protocol';
-import { isCanonicalUserActive } from './auth/user-lifecycle.js';
 import { isScopeAdmitted } from './bootstrap/readiness.js';
-import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
+import type { ControlPrivateWorkspaceInput } from './storage/private-workspace-codecs.js';
+import { nativeProductScope } from './storage/workspace-file-records.js';
+import type { RecordWorkspaceOwnerMembershipInput } from './storage/workspace-owner-records.js';
 
-/** Raised when owner provisioning encounters retained removal rather than first-use absence. */
-export class WorkspaceOwnerMembershipRemovedError extends Error {
-  public constructor() {
-    super('Workspace owner membership has been removed.');
-    this.name = 'WorkspaceOwnerMembershipRemovedError';
-  }
+export {
+  type RecordWorkspaceOwnerMembershipInput,
+  recordWorkspaceOwnerMembership,
+  WorkspaceOwnerMembershipRemovedError,
+} from './storage/workspace-owner-records.js';
+
+/** Publishes one exact Core stage; no Main SQL or filesystem work spans its acknowledgement. */
+async function publishPrivateWorkspace(
+  core: CoreDb,
+  input: ControlPrivateWorkspaceInput
+): Promise<string | null> {
+  const client = getControlStoreWorkerClient();
+  const scope = nativeProductScope(core.dataRoot, { kind: 'server' });
+  const path = scope.path;
+  const database = `core:${path}`;
+  await client.open({
+    database,
+    path,
+    dataRoot: core.dataRoot,
+    create: false,
+    initialize: 'core',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  return client.privateWorkspace(database, input);
 }
 
-/** Current ownership identity among active Workspace members; neither value limits operation eligibility. */
-export type WorkspaceMembershipRelation = 'owner' | 'member';
-
-/**
- * Input for recording the owner membership edge of a workspace.
- */
-export interface RecordWorkspaceOwnerMembershipInput {
-  /** Core database used for server-scope identity records. */
-  coreDb: CoreDb;
-  /** Workspace id created by the workspace store. */
-  workspaceId: string;
-  /** Canonical owner user id. */
-  ownerUserId: string;
-  /** Current time override for deterministic tests. */
-  now?: Date;
+/** Awaits ordinary registration through the same Core owner; the command's User receipt remains later. */
+export async function publishWorkspaceOwnerMembership(
+  input: RecordWorkspaceOwnerMembershipInput
+): Promise<void> {
+  await publishPrivateWorkspace(input.coreDb, {
+    action: 'register',
+    userId: input.ownerUserId,
+    workspaceId: input.workspaceId,
+    at: (input.now ?? new Date()).toISOString(),
+  });
 }
 
 /** Input for ensuring one active user's built-in personal Workspace. */
@@ -50,38 +66,13 @@ export interface EnsureUserQuickChatWorkspaceInput {
 export async function ensureUserQuickChatWorkspace(
   input: EnsureUserQuickChatWorkspaceInput
 ): Promise<void> {
-  // Acquire write intent before dependent reads; a deferred WAL upgrade cannot use the busy wait.
-  // Reserve a successor before the first await, so concurrent/restarted callers keep one identity.
-  const workspaceId = input.coreDb.sqlite
-    .transaction(() => {
-      if (!isCanonicalUserActive(input.coreDb, input.userId))
-        throw new Error('Personal workspace requires an active canonical user.');
-      const currentId = quickChatWorkspaceIdForUser(input.userId, input.coreDb.dataRoot);
-      const registry = input.coreDb.sqlite
-        .prepare(
-          'SELECT status, owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?'
-        )
-        .get(currentId) as { status: string; ownerUserId: string } | undefined;
-      if (registry && registry.ownerUserId !== input.userId)
-        throw new Error('Personal Workspace ownership is contradictory.');
-      const membership = input.coreDb.sqlite
-        .prepare('SELECT status FROM workspace_members WHERE workspace_id = ? AND user_id = ?')
-        .get(currentId, input.userId) as { status: string } | undefined;
-      if (membership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
-      if (registry && membership?.status !== 'active')
-        throw new Error('Personal Workspace requires active owner membership.');
-      if (registry?.status === 'retired') {
-        const successor = allocateEntityId('ws');
-        input.coreDb.sqlite
-          .prepare('UPDATE users SET personal_workspace_id = ? WHERE id = ?')
-          .run(successor, input.userId);
-        return successor;
-      }
-      if (registry && registry.status !== 'active')
-        throw new Error('Personal Workspace requires an active registry.');
-      return currentId;
-    })
-    .immediate();
+  // The native deciding section reserves one successor before physical publication can begin.
+  // Its covering ACK keeps concurrent and restarted callers on that same selected identity.
+  const workspaceId = await publishPrivateWorkspace(input.coreDb, {
+    action: 'reserve',
+    userId: input.userId,
+  });
+  if (!workspaceId) throw new Error('Personal Workspace reservation returned no identity.');
   const registry = input.coreDb.sqlite
     .prepare('SELECT owner_user_id AS ownerUserId FROM workspace_registry WHERE workspace_id = ?')
     .get(workspaceId) as { ownerUserId: string } | undefined;
@@ -94,198 +85,11 @@ export async function ensureUserQuickChatWorkspace(
   // An established home with missing storage is recovery, never fresh empty provisioning.
   if (registry) input.store.getWorkspace(workspaceId);
   const workspace = await input.store.ensureQuickChatWorkspace(input.userId);
-  input.coreDb.sqlite
-    .transaction(() => {
-      if (
-        quickChatWorkspaceIdForUser(input.userId, input.coreDb.dataRoot) !== workspace.id ||
-        workspace.id !== workspaceId
-      )
-        throw new Error('Current personal Workspace binding changed.');
-      recordWorkspaceOwnerMembership({
-        coreDb: input.coreDb,
-        ownerUserId: input.userId,
-        workspaceId: workspace.id,
-      });
-    })
-    .immediate();
-}
-
-/**
- * Records the initial workspace registry and adds owner membership without reviving removed access.
- * Write intent precedes current-fact reads so concurrent native writes use the bounded Core wait.
- * Membership removal must retain its row with `status = 'removed'`; deleting the row discards the tombstone.
- *
- * @param input Workspace owner membership input.
- * @throws WorkspaceOwnerMembershipRemovedError when the retained owner membership is removed.
- * @throws Error when the owner identity or active membership is contradictory.
- */
-export function recordWorkspaceOwnerMembership(input: RecordWorkspaceOwnerMembershipInput): void {
-  const now = (input.now ?? new Date()).toISOString();
-
-  input.coreDb.sqlite
-    .transaction(() => {
-      if (!isCanonicalUserActive(input.coreDb, input.ownerUserId)) {
-        throw new Error('Workspace owner requires an active canonical user.');
-      }
-
-      const existing = input.coreDb.sqlite
-        .prepare('SELECT owner_user_id, status FROM workspace_registry WHERE workspace_id = ?')
-        .get(input.workspaceId) as { owner_user_id: string; status: string } | undefined;
-
-      if (existing && existing.owner_user_id !== input.ownerUserId) {
-        throw new Error('Workspace is already owned by another user.');
-      }
-      if (existing && existing.status !== 'active')
-        throw new Error('Workspace owner requires an active registry.');
-
-      input.coreDb.sqlite
-        .prepare(
-          `INSERT INTO workspace_registry (
-          workspace_id,
-          owner_user_id,
-          status,
-          revision,
-          created_at,
-          updated_at
-        )
-         VALUES (?, ?, 'active', 1, ?, ?)
-         ON CONFLICT(workspace_id) DO NOTHING`
-        )
-        .run(input.workspaceId, input.ownerUserId, now, now);
-
-      input.coreDb.sqlite
-        .prepare(
-          `INSERT INTO workspace_members (
-          workspace_id,
-          user_id,
-          status,
-          invitation_id,
-          joined_at,
-          removed_at,
-          revision,
-          created_at,
-          updated_at
-        )
-         VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)
-         ON CONFLICT(workspace_id, user_id) DO NOTHING`
-        )
-        .run(input.workspaceId, input.ownerUserId, now, now, now);
-
-      const ownerMembership = input.coreDb.sqlite
-        .prepare(
-          `SELECT status
-         FROM workspace_members
-         WHERE workspace_id = ? AND user_id = ?`
-        )
-        .get(input.workspaceId, input.ownerUserId) as { status: string } | undefined;
-      if (ownerMembership?.status === 'removed') throw new WorkspaceOwnerMembershipRemovedError();
-      if (ownerMembership?.status !== 'active') {
-        throw new Error('Workspace owner requires an active membership.');
-      }
-    })
-    .immediate();
-}
-
-/**
- * Resolves one actor's ownership relationship from the active Workspace registry and membership rows.
- *
- * @param coreDb Core database containing Workspace identity facts.
- * @param workspaceId Canonical Workspace identifier.
- * @param userId Canonical actor user identifier.
- * @returns Ownership relationship, or null when the facts are missing, inactive, or contradictory.
- */
-export function resolveWorkspaceMembershipRelation(
-  coreDb: CoreDb,
-  workspaceId: string,
-  userId: string
-): WorkspaceMembershipRelation | null {
-  const row = coreDb.sqlite
-    .prepare(
-      `SELECT
-         registry.owner_user_id,
-         registry.status AS registry_status,
-         actor_user.status AS actor_status,
-         member.status AS member_status,
-         owner_member.status AS owner_member_status
-       FROM workspace_registry AS registry
-       INNER JOIN users AS actor_user
-         ON actor_user.id = ?
-       LEFT JOIN workspace_members AS member
-         ON member.workspace_id = registry.workspace_id
-        AND member.user_id = actor_user.id
-       LEFT JOIN workspace_members AS owner_member
-         ON owner_member.workspace_id = registry.workspace_id
-        AND owner_member.user_id = registry.owner_user_id
-       WHERE registry.workspace_id = ?`
-    )
-    .get(userId, workspaceId) as
-    | {
-        actor_status: string;
-        member_status: string | null;
-        owner_member_status: string | null;
-        owner_user_id: string;
-        registry_status: string;
-      }
-    | undefined;
-
-  if (
-    !row ||
-    row.actor_status !== 'active' ||
-    row.registry_status !== 'active' ||
-    row.member_status !== 'active' ||
-    row.owner_member_status !== 'active'
-  ) {
-    return null;
-  }
-  return row.owner_user_id === userId ? 'owner' : 'member';
-}
-
-/**
- * Lists every active Workspace registry id in stable identifier order.
- *
- * @param coreDb Core database containing Workspace identity facts.
- * @returns Sorted active Workspace identifiers without consulting membership edges.
- */
-export function listActiveWorkspaceIds(coreDb: CoreDb): string[] {
-  const rows = coreDb.sqlite
-    .prepare(
-      `SELECT workspace_id
-       FROM workspace_registry
-       WHERE status = 'active'
-       ORDER BY workspace_id`
-    )
-    .all() as Array<{ workspace_id: string }>;
-
-  return rows.map((row) => row.workspace_id);
-}
-
-/**
- * Lists active, internally consistent Workspace candidates for one actor in stable identifier order.
- *
- * @param coreDb Core database containing Workspace identity facts.
- * @param userId Canonical actor user identifier.
- * @returns Sorted active Workspace identifiers without consulting Workspace storage.
- */
-export function listActiveWorkspaceIdsForActor(coreDb: CoreDb, userId: string): string[] {
-  const rows = coreDb.sqlite
-    .prepare(
-      `SELECT registry.workspace_id
-       FROM workspace_registry AS registry
-       INNER JOIN users AS actor_user
-         ON actor_user.id = ?
-        AND actor_user.status = 'active'
-       INNER JOIN workspace_members AS member
-         ON member.workspace_id = registry.workspace_id
-        AND member.user_id = actor_user.id
-       WHERE registry.status = 'active'
-         AND member.status = 'active'
-       ORDER BY registry.workspace_id`
-    )
-    .all(userId) as Array<{ workspace_id: string }>;
-
-  return rows
-    .map((row) => row.workspace_id)
-    .filter(
-      (workspaceId) => resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId) !== null
-    );
+  await publishPrivateWorkspace(input.coreDb, {
+    action: 'bind',
+    userId: input.userId,
+    expectedWorkspaceId: workspaceId,
+    workspaceId: workspace.id,
+    at: new Date().toISOString(),
+  });
 }

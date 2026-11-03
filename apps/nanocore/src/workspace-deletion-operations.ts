@@ -81,12 +81,14 @@ import {
   workspaceDeletionStagingRelativePath,
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
-import { resolveWorkspaceMembershipRelation } from './workspace-membership.js';
 import type {
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
 } from './workspace-mutation-admission.js';
-import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
+import {
+  getWorkspaceRegistryLifecycleFact,
+  resolveWorkspaceMembershipRelation,
+} from './workspace-sharing.js';
 
 const CORE_RECEIPT_OWNER = { coreId: 'server' } as const;
 

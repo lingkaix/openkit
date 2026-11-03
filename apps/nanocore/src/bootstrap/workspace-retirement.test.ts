@@ -16,6 +16,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
@@ -33,15 +34,20 @@ import {
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
-import { userMemoryRoot, workspaceDbPath } from '../storage/fs-layout.js';
+import { coreDbPath, userMemoryRoot, workspaceDbPath } from '../storage/fs-layout.js';
 import {
   applyMigrations,
   applyNativeScopeMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
+import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
@@ -51,8 +57,16 @@ import {
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { isScopeAdmitted } from './readiness.js';
 
+// Wrap the real native entry only to stop its actual FULL COMMIT before its reply.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
+  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+});
+
 const disposals: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
+  releaseCommit();
   vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
   await (
@@ -86,7 +100,11 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     : (await store.createWorkspace('Retired history')).id;
   const siblingId = (await store.createWorkspace('Still admitted')).id;
   for (const id of [workspaceId, siblingId])
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: id, ownerUserId: FIXTURE_LOCAL_USER_ID });
+    await recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: id,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+    });
   const admin = createOpenKitAccessTokenRecord(coreDb, {
     ownerUserId: FIXTURE_LOCAL_USER_ID,
     scope: 'server-admin',
@@ -723,10 +741,47 @@ describe('retired registry consumers and retained Core migration', () => {
     const response = await f.call('workspace.retire-quarantined', f.request);
     expect(response.status, await response.clone().text()).toBe(200);
     const retired = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));
+    const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
+    const database = `core:${coreDbPath(f.dataRoot)}`;
+    await getControlStoreWorkerClient().open({
+      database,
+      path: scope.path,
+      dataRoot: f.dataRoot,
+      create: false,
+      initialize: 'core',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    f.coreDb.sqlite.pragma('query_only = ON');
+    const publication = vi.spyOn(f.store, 'ensureQuickChatWorkspace');
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const original = await heldCommit(2, () =>
+      ensureUserQuickChatWorkspace({
+        coreDb: f.coreDb,
+        store: f.store,
+        userId: FIXTURE_LOCAL_USER_ID,
+      })
+    );
+    const reserved = f.coreDb.sqlite
+      .prepare('SELECT personal_workspace_id FROM users WHERE id = ?')
+      .pluck()
+      .get(FIXTURE_LOCAL_USER_ID) as string;
+    expect(reserved).not.toBe(f.workspaceId);
+    expect(existsSync(join(f.dataRoot, 'workspaces', reserved))).toBe(false);
+    expect(publication).not.toHaveBeenCalled();
+    const post = posted.mock.calls.findLastIndex(
+      ([message]) => (message as { database?: string }).database === database
+    );
+    expect(post).toBeGreaterThanOrEqual(0);
+    await posted.mock.contexts[post]!.terminate();
+    await expect(original.result).rejects.toMatchObject({ code: 'unavailable', commit: 'unknown' });
+    expect(publication).not.toHaveBeenCalled();
+    expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(retired);
+    releaseCommit();
+    posted.mockRestore();
+    await shutdownControlStoreWorkerClient();
     // Fault the Store's public publication boundary before it can create any successor bytes.
-    const publication = vi
-      .spyOn(f.store, 'ensureQuickChatWorkspace')
-      .mockRejectedValueOnce(new Error('Injected pre-publication interruption.'));
+    publication.mockRejectedValueOnce(new Error('Injected pre-publication interruption.'));
     await expect(
       ensureUserQuickChatWorkspace({
         coreDb: f.coreDb,
@@ -741,6 +796,7 @@ describe('retired registry consumers and retained Core migration', () => {
       .pluck()
       .get(FIXTURE_LOCAL_USER_ID) as string;
     expect(selectedId).toMatch(/^ws_/);
+    expect(selectedId).toBe(reserved);
     expect(selectedId).not.toBe(f.workspaceId);
     expect(existsSync(join(f.dataRoot, 'workspaces', selectedId))).toBe(false);
     expect(
@@ -765,6 +821,7 @@ describe('retired registry consumers and retained Core migration', () => {
         .get(FIXTURE_LOCAL_USER_ID)
     ).toBe(selectedId);
     const store = new FsStore({ dataRoot: f.dataRoot });
+    coreDb.sqlite.pragma('query_only = ON');
     // This is a new authorized request after the known pre-effect failure, not an inferred effect replay.
     await ensureUserQuickChatWorkspace({
       coreDb,

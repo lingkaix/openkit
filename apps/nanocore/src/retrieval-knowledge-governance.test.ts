@@ -37,8 +37,8 @@ import { notebookImportFixture } from './test-support/notebook-import.js';
 import { writeManagedThreadPolicyFixture } from './test-support/resource-policy.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
-import * as workspaceMembership from './workspace-membership.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import * as workspaceSharing from './workspace-sharing.js';
 
 const NOW = '2026-10-15T00:00:00.000Z';
 
@@ -96,7 +96,7 @@ describe('canonical local retrieval identity', () => {
     expect(admit).not.toThrow();
     const failure = new Error('Current membership reader is unavailable.');
     const reader = vi
-      .spyOn(workspaceMembership, 'resolveWorkspaceMembershipRelation')
+      .spyOn(workspaceSharing, 'resolveWorkspaceMembershipRelation')
       .mockImplementation(() => {
         throw failure;
       });

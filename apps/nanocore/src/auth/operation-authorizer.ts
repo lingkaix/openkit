@@ -26,14 +26,14 @@ import {
 } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
-  ensureUserQuickChatWorkspace,
+  getWorkspaceInvitation,
+  getWorkspaceMember,
   listActiveWorkspaceIds,
   listActiveWorkspaceIdsForActor,
   resolveWorkspaceMembershipRelation,
-} from '../workspace-membership.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { getWorkspaceInvitation, getWorkspaceMember } from '../workspace-sharing.js';
+} from '../workspace-sharing.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
 import {
   DeploymentAdminRequiredError,
@@ -891,7 +891,7 @@ async function authorizeWorkspaceOperation(
     return null;
   }
 
-  const workspaceId = await resolveWorkspaceId(context, actor, route, input);
+  const workspaceId = resolveWorkspaceId(context, route);
   if (!workspaceId) {
     return workspaceAccessDenied();
   }
@@ -989,31 +989,19 @@ export function hasWorkspaceDeletionRetryAuthorityForRequest(
 
 /**
  * Resolves one operation's Workspace through its declared owner shape.
- * A usable administrator bearer establishes only its own actor-derived Quick Chat home.
+ * JSON selectors are admitted by native invocation and never create a retained HTTP guard.
  *
  * @param context Authenticated request context.
- * @param actor Authenticated request actor.
  * @param route Exact Workspace operation route.
- * @param input Existing lineage owners.
  * @returns Canonical Workspace id, or null when exact lineage cannot be established.
  */
-async function resolveWorkspaceId(
+function resolveWorkspaceId(
   context: Context<{ Variables: AuthVariables }>,
-  actor: Actor,
-  route: OperationRoute & { readonly access: WorkspaceOperationAccess },
-  input: RegisterOperationAccessGuardsInput
-): Promise<string | null> {
+  route: OperationRoute & { readonly access: WorkspaceOperationAccess }
+): string | null {
   try {
     switch (route.access.resolver) {
       case 'actor-quick-chat-workspace':
-        if (isUsablePresentedServerAdminToken(input.coreDb, actor)) {
-          await ensureUserQuickChatWorkspace({
-            coreDb: input.coreDb,
-            store: input.store,
-            userId: actor.userId,
-          });
-        }
-        return input.quickChatWorkspaceIdForUser(actor.userId);
       case 'body-workspace':
       case 'opaque-child-workspace':
         // These migrated selectors are admitted by native operation invocation.

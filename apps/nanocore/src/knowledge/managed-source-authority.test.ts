@@ -17,14 +17,12 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
-import {
-  recordWorkspaceOwnerMembership,
-  resolveWorkspaceMembershipRelation,
-} from '../workspace-membership.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   acceptWorkspaceInvitation,
   createWorkspaceInvitation,
   removeWorkspaceMember,
+  resolveWorkspaceMembershipRelation,
 } from '../workspace-sharing.js';
 
 // Keep the Storage contract case independently runnable from the Native admission owner.

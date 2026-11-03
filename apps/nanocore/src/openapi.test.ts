@@ -43,7 +43,8 @@ import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
-import { listActiveWorkspaceIds, recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { listActiveWorkspaceIds } from './workspace-sharing.js';
 
 const OPENAPI_ROUTE_METHOD_SET = new Set<string>(
   APP_OPENAPI_ROUTE_METHODS.map((method) => method.toUpperCase())

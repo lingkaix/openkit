@@ -1,32 +1,49 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Worker } from 'node:worker_threads';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import type { Worker } from 'node:worker_threads';
 import { afterEach, expect, it, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
+import { armCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
   ensureUserQuickChatWorkspace,
-  resolveWorkspaceMembershipRelation,
+  publishWorkspaceOwnerMembership as recordWorkspaceOwnerMembership,
   WorkspaceOwnerMembershipRemovedError,
 } from '../workspace-membership.js';
-import { getWorkspaceMember, getWorkspaceRegistryFact } from '../workspace-sharing.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getWorkspaceMember,
+  getWorkspaceRegistryFact,
+  resolveWorkspaceMembershipRelation,
+} from '../workspace-sharing.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
-import { coreDbPath } from './fs-layout.js';
+import { coreDbPath, workspaceDbPath } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
+import { nativeProductScope } from './workspace-file-records.js';
+
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
+  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+});
 
 const roots: string[] = [];
 const handles: CoreDb[] = [];
 const blockers: Worker[] = [];
 
 afterEach(async () => {
+  releaseCommit();
   vi.restoreAllMocks();
   await Promise.all(blockers.splice(0).map((worker) => worker.terminate()));
   await shutdownControlStoreWorkerClient();
@@ -48,7 +65,10 @@ function fixture() {
 
 /** Holds the real Core file with the native Worker's connection policy, releasing off Main. */
 async function holdCoreWriter(root: string, holdMs = 250): Promise<Worker> {
-  const worker = new Worker(
+  // This independent lock holder is not the product Worker selected by the commit observer.
+  const { Worker: CorePolicyWorker } =
+    await vi.importActual<typeof import('node:worker_threads')>('node:worker_threads');
+  const worker = new CorePolicyWorker(
     `const { parentPort, workerData } = require('node:worker_threads');
      const Database = require(workerData.module);
      const db = new Database(workerData.path, { fileMustExist: true });
@@ -102,8 +122,8 @@ it('provisions owner membership after a concurrent native-policy Core writer rel
     return workspace;
   });
 
-  // QA091's authorized bounded-wait fallback must tolerate an independently released lock.
-  // The old Main 5 ms connection fails here with SQLITE_BUSY before this release.
+  // Core Storage: the actual native owner must wait; Main cannot write this file.
+  f.coreDb.sqlite.pragma('query_only = ON');
   await expect(ensureUserQuickChatWorkspace(f)).resolves.toBeUndefined();
   await expect(released).resolves.toBe('released');
   const workspaceId = quickChatWorkspaceIdForUser(f.userId, f.root);
@@ -162,42 +182,92 @@ it.each([
   const f = fixture();
   if (fault === 'removed membership') await ensureUserQuickChatWorkspace(f);
   const workspaceId = quickChatWorkspaceIdForUser(f.userId, f.root);
+  const client = getControlStoreWorkerClient();
+  const scope = nativeProductScope(f.root, { kind: 'server' });
+  const database = `core:${scope.path}`;
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: f.root,
+    create: false,
+    initialize: 'core',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
   const prepare = f.store.ensureQuickChatWorkspace.bind(f.store);
+  let resume: (() => void) | undefined;
+  let ready!: () => void;
+  const prepared = new Promise<void>((resolve) => {
+    ready = resolve;
+  });
+  vi.spyOn(f.store, 'ensureQuickChatWorkspace').mockImplementation(async (userId) => {
+    const workspace = await prepare(userId);
+    resume = await client.pauseForDataRootBackup(database);
+    ready();
+    return workspace;
+  });
+  f.coreDb.sqlite.pragma('query_only = ON');
+  let settled = false;
+  const provisioning = ensureUserQuickChatWorkspace(f);
+  const observed = provisioning.then(
+    () => {
+      settled = true;
+      return { reason: undefined };
+    },
+    (reason: unknown) => {
+      settled = true;
+      return { reason };
+    }
+  );
+  // This is a real Core posting wait, after real Workspace publication, before deciding reads.
+  await Promise.race([
+    prepared,
+    observed.then(({ reason }) => {
+      throw reason ?? new Error('Provisioning completed before preparation.');
+    }),
+  ]);
+  const faultDb = openCoreDb(f.root);
+  handles.push(faultDb);
   let registry: ReturnType<typeof getWorkspaceRegistryFact>;
   let member: ReturnType<typeof getWorkspaceMember>;
   let injected = false;
-  vi.spyOn(f.store, 'ensureQuickChatWorkspace').mockImplementation(async (userId) => {
-    const workspace = await prepare(userId);
+  try {
+    await nextTurn();
+    expect(settled).toBe(false);
+    const userId = f.userId;
     if (fault === 'disabled user') {
-      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, userId))();
+      faultDb.sqlite.transaction(() => disableCanonicalUser(faultDb, userId))();
     } else if (fault === 'removed membership') {
       // Deliberate retained corruption after owner setup: ordinary removal forbids the owner.
-      f.coreDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
-      f.coreDb.sqlite
+      faultDb.sqlite.exec('DROP TRIGGER workspace_owner_member_update_guard');
+      faultDb.sqlite
         .prepare(
           "UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
         )
         .run(new Date().toISOString(), workspaceId, userId);
     } else {
       // Deliberate current-binding change after selection; it grants no successor membership.
-      f.coreDb.sqlite
+      faultDb.sqlite
         .prepare('UPDATE users SET personal_workspace_id = ? WHERE id = ?')
         .run(testEntityId('ws', 'changed-personal-owner-binding'), userId);
     }
     registry = getWorkspaceRegistryFact(f.coreDb, workspaceId);
     member = getWorkspaceMember(f.coreDb, workspaceId, f.userId);
     injected = true;
-    return workspace;
-  });
+  } finally {
+    resume?.();
+  }
 
   // Identity denies disabled authority and implicit tombstone revival; current binding wins.
-  const provisioning = ensureUserQuickChatWorkspace(f);
   if (fault === 'removed membership') {
     await expect(provisioning).rejects.toBeInstanceOf(WorkspaceOwnerMembershipRemovedError);
   } else {
     await expect(provisioning).rejects.toBeInstanceOf(Error);
   }
+  await observed;
   expect(injected).toBe(true);
+  expect(existsSync(workspaceDbPath(f.root, workspaceId))).toBe(true);
+  expect(f.store.getWorkspace(workspaceId).id).toBe(workspaceId);
   expect(getWorkspaceRegistryFact(f.coreDb, workspaceId)).toEqual(registry!);
   expect(getWorkspaceMember(f.coreDb, workspaceId, f.userId)).toEqual(member!);
   if (fault !== 'removed membership') {
@@ -211,4 +281,124 @@ it.each([
   } else {
     expect(resolveWorkspaceMembershipRelation(f.coreDb, workspaceId, f.userId)).toBeNull();
   }
+});
+
+it('rechecks the canonical User after a real reservation wait before filesystem publication', async () => {
+  const f = fixture();
+  const client = getControlStoreWorkerClient();
+  const scope = nativeProductScope(f.root, { kind: 'server' });
+  const database = `core:${scope.path}`;
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: f.root,
+    create: false,
+    initialize: 'core',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  const resume = await client.pauseForDataRootBackup(database);
+  const publication = vi.spyOn(f.store, 'ensureQuickChatWorkspace');
+  const workspaceId = quickChatWorkspaceIdForUser(f.userId, f.root);
+  f.coreDb.sqlite.pragma('query_only = ON');
+  let settled = false;
+  const original = ensureUserQuickChatWorkspace(f).then(
+    () => {
+      settled = true;
+      return undefined;
+    },
+    (error: unknown) => {
+      settled = true;
+      return error;
+    }
+  );
+  try {
+    await nextTurn();
+    expect(settled).toBe(false);
+    expect(publication).not.toHaveBeenCalled();
+    const writer = openCoreDb(f.root);
+    handles.push(writer);
+    writer.sqlite.transaction(() => disableCanonicalUser(writer, f.userId))();
+  } finally {
+    resume();
+  }
+  expect(await original).toBeInstanceOf(Error);
+  expect(publication).not.toHaveBeenCalled();
+  expect(quickChatWorkspaceIdForUser(f.userId, f.root)).toBe(workspaceId);
+  expect(getWorkspaceRegistryFact(f.coreDb, workspaceId)).toBeNull();
+  expect(existsSync(workspaceDbPath(f.root, workspaceId))).toBe(false);
+});
+
+it('awaits initial owner FULL before the separate User receipt and rolls back a late member failure', async () => {
+  const f = fixture();
+  const app = createAppWithLocalIdentity({ coreDb: f.coreDb, store: f.store });
+  const requestId = randomUUID();
+  const create = f.store.createWorkspace.bind(f.store);
+  let workspaceId!: string;
+  let gate: Int32Array | undefined;
+  vi.spyOn(f.store, 'createWorkspace').mockImplementation(async (...args) => {
+    const workspace = await create(...args);
+    workspaceId = workspace.id;
+    gate = armCommit(2);
+    return workspace;
+  });
+  f.coreDb.sqlite.pragma('query_only = ON');
+  let completed = false;
+  const response = app
+    .request(
+      ...operationRequest(
+        'workspace.create',
+        {},
+        {
+          body: JSON.stringify({ name: 'Exact owner registration', requestId }),
+        }
+      )
+    )
+    .finally(() => {
+      completed = true;
+    });
+  try {
+    await vi.waitFor(() => expect(gate && Atomics.load(gate, 0)).toBe(1), { timeout: 5000 });
+    await nextTurn();
+    expect(completed).toBe(false);
+    expect(Atomics.load(gate!, 5)).toBe(2);
+    expect(resolveWorkspaceMembershipRelation(f.coreDb, workspaceId, f.userId)).toBe('owner');
+    expect(
+      f.store.getCommandRequest('workspace.create', requestId, { userId: f.userId })
+    ).toBeNull();
+  } finally {
+    releaseCommit();
+  }
+  expect((await response).status).toBe(201);
+  expect(
+    f.store.getCommandRequest('workspace.create', requestId, { userId: f.userId })
+  ).toMatchObject({ response: { kind: 'workspace', id: workspaceId } });
+  vi.mocked(f.store.createWorkspace).mockRestore();
+  const workspace = f.store.getWorkspace(workspaceId);
+  const input = { coreDb: f.coreDb, workspaceId, ownerUserId: f.userId };
+  const registry = getWorkspaceRegistryFact(f.coreDb, workspace.id);
+  const member = getWorkspaceMember(f.coreDb, workspace.id, f.userId);
+  await recordWorkspaceOwnerMembership({ ...input, now: new Date('2099-01-01T00:00:00Z') });
+  expect(getWorkspaceRegistryFact(f.coreDb, workspace.id)).toEqual(registry);
+  expect(getWorkspaceMember(f.coreDb, workspace.id, f.userId)).toEqual(member);
+  const failed = await f.store.createWorkspace('Interrupted owner registration');
+  const faultDb = openCoreDb(f.root);
+  handles.push(faultDb);
+  // Deliberate failure after the first INSERT proves the original two-row rollback obligation.
+  faultDb.sqlite.exec(`CREATE TRIGGER refuse_fixture_initial_member BEFORE INSERT ON workspace_members
+    WHEN NEW.workspace_id = '${failed.id}' BEGIN SELECT RAISE(ABORT, 'injected late member failure'); END`);
+  await expect(
+    Promise.resolve().then(() =>
+      recordWorkspaceOwnerMembership({
+        ...input,
+        workspaceId: failed.id,
+      })
+    )
+  ).rejects.toBeInstanceOf(Error);
+  expect(getWorkspaceRegistryFact(f.coreDb, failed.id)).toBeNull();
+  expect(getWorkspaceMember(f.coreDb, failed.id, f.userId)).toBeNull();
+  expect(f.store.getWorkspace(failed.id).id).toBe(failed.id);
+  faultDb.sqlite.exec('DROP TRIGGER refuse_fixture_initial_member');
+  await recordWorkspaceOwnerMembership({ ...input, workspaceId: failed.id });
+  expect(resolveWorkspaceMembershipRelation(f.coreDb, failed.id, f.userId)).toBe('owner');
 });

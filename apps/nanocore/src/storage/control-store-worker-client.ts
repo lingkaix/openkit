@@ -9,6 +9,7 @@ import type {
   ControlAutomationScannerResult,
 } from './automation-scanner-codecs.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
+import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
 import type {
   ControlWorkspaceBackendHandoff,
   ControlWorkspaceBackendHandoffResult,
@@ -18,6 +19,7 @@ import type {
   ControlWorkspaceCapture,
   ControlWorkspaceCaptureResult,
 } from './workspace-capture-codecs.js';
+import { WorkspaceOwnerMembershipRemovedError } from './workspace-owner-records.js';
 import {
   type ControlRecoverySourceReactivationInput,
   ControlRecoverySourceReactivationInputSchema,
@@ -2485,6 +2487,29 @@ class ControlStoreWorkerClient {
           throw new WorkspaceCaptureRecoveryRequired(error.domain.message);
         if (error.domain.code === 'preserved_refused')
           throw new PreservedWorkspaceCaptureRefusal(error.domain.message);
+        throw new Error(error.domain.message);
+      }
+      throw error;
+    }
+  }
+
+  /** Publishes one original private-Workspace stage and preserves its closed domain failures. */
+  async privateWorkspace(
+    database: string,
+    input: ControlPrivateWorkspaceInput
+  ): Promise<string | null> {
+    try {
+      const reply = await this.request({ operation: 'private-workspace', database, input });
+      if (reply.operation !== 'private-workspace')
+        throw new Error('Invalid private Workspace acknowledgement.');
+      return reply.result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'private-workspace'
+      ) {
+        if (error.domain.code === 'membership_removed')
+          throw new WorkspaceOwnerMembershipRemovedError();
         throw new Error(error.domain.message);
       }
       throw error;

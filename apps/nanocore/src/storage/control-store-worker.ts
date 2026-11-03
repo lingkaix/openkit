@@ -204,6 +204,8 @@ import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
 import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
 import { applyAppMigrations, applyNativeScopeMigrations } from './migrate.js';
+import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
+import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
 import { RuntimeTargetRefusal } from './runtime-target-codecs.js';
 import { applyControlRuntimeTarget } from './runtime-target-native.js';
 import {
@@ -250,6 +252,7 @@ import {
 import { applyWorkspaceCaptureInDb, prepareWorkspaceCapture } from './workspace-capture-native.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
+import { WorkspaceOwnerMembershipRemovedError } from './workspace-owner-records.js';
 import { ControlRecoverySourceReactivationRefusalSchema } from './workspace-reactivation-codecs.js';
 import { applyControlRecoverySourceReactivation } from './workspace-reactivation-native.js';
 import { WorkspaceRecoveryDecisionRefusal } from './workspace-recovery-decision-codecs.js';
@@ -303,6 +306,7 @@ type WriteCommand = Extract<
       | 'workspace-apply-plan'
       | 'automation-scanner'
       | 'workspace-review-decision'
+      | 'private-workspace'
       | 'workspace-review-finish'
       | 'workspace-stage-review'
       | 'workspace-backend-handoff'
@@ -623,6 +627,25 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       message: 'Worker image settlement conflicts with its immutable result.',
       status: 409,
     };
+  if (operation === 'private-workspace') {
+    if (error instanceof WorkspaceOwnerMembershipRemovedError)
+      return {
+        operation,
+        code: 'membership_removed',
+        message: 'Workspace owner membership has been removed.',
+        status: 409,
+      };
+    if (error instanceof Error) {
+      const message = PrivateWorkspaceMessageSchema.safeParse(error.message);
+      if (message.success)
+        return {
+          operation,
+          code: 'personal_workspace_refused',
+          message: message.data,
+          status: 409,
+        };
+    }
+  }
   if (operation === 'workspace-stage-review' && error instanceof WorkspaceStageReviewRefusal)
     return {
       operation,
@@ -2315,6 +2338,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'recovery-target-preparation',
               result: null,
             };
+          } else if (request.operation === 'private-workspace') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlPrivateWorkspaceInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'private-workspace',
+              result,
+            };
           } else if (request.operation === 'recovery-target-registration') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlRecoveryTargetRegistration(owner.scopeDb, request.input);
@@ -3346,6 +3379,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-apply-plan' ||
       value.operation === 'automation-scanner' ||
       value.operation === 'workspace-review-decision' ||
+      value.operation === 'private-workspace' ||
       value.operation === 'workspace-review-finish' ||
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||

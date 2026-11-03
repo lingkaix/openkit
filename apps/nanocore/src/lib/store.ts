@@ -1,3 +1,4 @@
+import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
 
 export { StoreRecordNotFoundError } from './store-errors.js';
@@ -1011,10 +1012,7 @@ export function quickChatWorkspaceIdForUser(userId: string, dataRoot?: string | 
   if (!dataRoot) return initialId;
   const core = openControlStoreProductReadHandle(coreDbPath(dataRoot), { kind: 'server' });
   try {
-    const row = core.sqlite
-      .prepare('SELECT personal_workspace_id FROM users WHERE id = ?')
-      .get(userId) as { personal_workspace_id: string | null } | undefined;
-    return WorkspaceIdSchema.parse(row?.personal_workspace_id ?? initialId);
+    return resolvePersonalWorkspaceIdInDb(core, userId);
   } finally {
     core.close();
   }

@@ -51,10 +51,8 @@ import { createTestStore, openTestNativeWorkspace } from './test-support/store.j
 import { createVaultReference, revokeVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import { listVaultUseRecords } from './vault/vault-use-records.js';
-import {
-  recordWorkspaceOwnerMembership,
-  resolveWorkspaceMembershipRelation,
-} from './workspace-membership.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
 
 /**
  * Creates runtime app options for one Gateway provider fixture.

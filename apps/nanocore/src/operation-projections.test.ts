@@ -57,11 +57,9 @@ import { testGoalDomainProposal } from './test-support/goal-domain.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
-import {
-  recordWorkspaceOwnerMembership,
-  resolveWorkspaceMembershipRelation,
-} from './workspace-membership.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
 
 describe('shared family contract', () => {
   it('projects User owner withdrawal through the public JSON and uniform Skill operation contract', async () => {

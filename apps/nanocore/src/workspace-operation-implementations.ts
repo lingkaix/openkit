@@ -28,7 +28,7 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import type { CoreDb } from './storage/db.js';
-import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+import { publishWorkspaceOwnerMembership } from './workspace-membership.js';
 import {
   readAuthorizedWorkspaceRelation,
   readAuthorizedWorkspaces,
@@ -122,7 +122,7 @@ async function createWorkspace(
           })
         );
         if (coreDb) {
-          recordWorkspaceOwnerMembership({
+          await publishWorkspaceOwnerMembership({
             coreDb,
             ownerUserId: actor.userId,
             workspaceId: workspace.id,

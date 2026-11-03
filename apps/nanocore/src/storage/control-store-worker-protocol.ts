@@ -165,6 +165,12 @@ import {
   ControlHarnessLifecycleResultSchema,
 } from './harness-lifecycle-codecs.js';
 import {
+  type ControlPrivateWorkspaceInput,
+  ControlPrivateWorkspaceInputSchema,
+  ControlPrivateWorkspaceRefusalSchema,
+  ControlPrivateWorkspaceResultSchema,
+} from './private-workspace-codecs.js';
+import {
   type ControlRemoteMcpAudit,
   ControlRemoteMcpAuditSchema,
 } from './remote-mcp-audit-codecs.js';
@@ -321,7 +327,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 57;
+export const CONTROL_WORKER_VERSION = 58;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -587,6 +593,7 @@ export type ControlWorkerCommand =
           readonly operation: 'workspace-stage-review';
           readonly input: ControlWorkspaceStageReview;
         }
+      | { readonly operation: 'private-workspace'; readonly input: ControlPrivateWorkspaceInput }
       | { readonly operation: 'workspace-baseline'; readonly input: ControlWorkspaceBaseline }
       | { readonly operation: 'workspace-capture'; readonly input: ControlWorkspaceCapture }
       | { readonly operation: 'workspace-takeover'; readonly input: ControlWorkspaceTakeover }
@@ -805,6 +812,7 @@ interface OrdinaryControlWorkerDomainRefusal {
 
 /** Existing native refusals plus the sharing family's exact current-record projection. */
 export type ControlWorkerDomainRefusal =
+  | z.infer<typeof ControlPrivateWorkspaceRefusalSchema>
   | OrdinaryControlWorkerDomainRefusal
   | z.infer<typeof ControlWorkspaceBaselineRefusalSchema>
   | z.infer<typeof ControlWorkspaceCaptureRefusalSchema>
@@ -905,6 +913,11 @@ export type ControlWorkerReply = {
       readonly result: ControlWorkspaceBackendHandoffResult;
     }
   | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'private-workspace';
+      readonly result: string | null;
+    }
   | { readonly status: 'ok'; readonly operation: 'workspace-baseline'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1145,6 +1158,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       value.operation === 'recovery-target-preparation')
   )
     return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'private-workspace')
+    return ControlPrivateWorkspaceRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-stage-review')
     return ControlWorkspaceStageReviewRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-recovery-decision')
@@ -1446,6 +1461,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlAccessTokenVerificationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'runtime-target')
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'private-workspace')
+    return ControlPrivateWorkspaceResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
   if (reply.operation === 'workspace-recovery-decision')
@@ -1950,6 +1967,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlRuntimeTargetInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'private-workspace')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlPrivateWorkspaceInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-stage-review')

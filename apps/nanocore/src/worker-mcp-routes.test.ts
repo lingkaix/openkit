@@ -175,11 +175,9 @@ import {
   registerWorkerMcpRoutes,
   reviewCapturedMcpPolicy,
 } from './worker-mcp-routes.js';
-import {
-  recordWorkspaceOwnerMembership,
-  resolveWorkspaceMembershipRelation,
-} from './workspace-membership.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
 
 /** Records the admission and lease that own a manually resolved MCP worker package. */
 function recordMcpWorkerLineage(
