@@ -1,18 +1,6 @@
 import { createHash } from 'node:crypto';
-import {
-  chmodSync,
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
+import { lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import { EvidenceBundleRecordSchema, WorkspaceBackupIdSchema } from '@openkit/app-api-schemas';
 import {
   compareCodeUnits,
@@ -23,6 +11,14 @@ import {
   UserIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
+import {
+  assertCanonicalDirectory,
+  copyRetainedEvidenceTree as copyRetainedEvidence,
+  createPrivateRetainedTreeRoot,
+  syncRetainedDirectory as fsyncDirectory,
+  prepareRetainedPrivateDirectory as mkdirPrivate,
+  writeRetainedPrivateFile as writePrivateText,
+} from '@openkit/storage';
 import { z } from 'zod';
 import { listSqliteAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import { listWorkspaceUsageRecords } from './capability/usage-ledger.js';
@@ -37,10 +33,7 @@ import {
   readRecurringOccurrence,
   readRecurringSchedule,
 } from './storage/recurring-records.js';
-import {
-  assertCanonicalDirectory,
-  assertSafeWorkspacePathSegment,
-} from './storage/workspace-file-records.js';
+import { assertSafeWorkspacePathSegment } from './storage/workspace-file-records.js';
 import { listExportableWorkspaceVaultUseRecords } from './vault/vault-use-records.js';
 
 const DigestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -182,7 +175,12 @@ export function createWorkspaceDeletionClosure(input: {
   const workspaceDb = input.repositoryWorkspaceDb(input.workspaceId);
 
   try {
-    createPrivateClosureRoot(input.dataRoot, input.workspaceId, closureRoot);
+    createPrivateRetainedTreeRoot(
+      join(input.dataRoot, 'server', 'exports'),
+      join(input.dataRoot, 'server', 'exports', 'workspace-closures'),
+      join(input.dataRoot, 'server', 'exports', 'workspace-closures', input.workspaceId),
+      closureRoot
+    );
     mkdirPrivate(recordsRoot);
     const storedEvidence = listStoredWorkspaceEvidenceBundles(workspaceDb, input.workspaceId);
     const usageAggregates = aggregateUsage(
@@ -375,48 +373,6 @@ function workspaceDeletionClosureRoot(
   return join(dataRoot, 'server', 'exports', 'workspace-closures', workspaceId, closureId);
 }
 
-function createPrivateClosureRoot(
-  dataRoot: string,
-  workspaceId: string,
-  closureRoot: string
-): void {
-  const exportsRoot = join(dataRoot, 'server', 'exports');
-  const closuresRoot = join(exportsRoot, 'workspace-closures');
-  const workspaceClosuresRoot = join(closuresRoot, workspaceId);
-  assertCanonicalDirectory(exportsRoot);
-  mkdirPrivate(closuresRoot);
-  fsyncDirectory(exportsRoot);
-  mkdirPrivate(workspaceClosuresRoot);
-  fsyncDirectory(closuresRoot);
-  mkdirSync(closureRoot, { mode: 0o700 });
-  chmodSync(closureRoot, 0o700);
-  fsyncDirectory(workspaceClosuresRoot);
-}
-
-function copyRetainedEvidence(sourceRoot: string, targetRoot: string): void {
-  if (!existsSync(sourceRoot)) {
-    throw new Error('Retained evidence bytes are missing.');
-  }
-  assertCanonicalDirectory(sourceRoot);
-  mkdirPrivate(targetRoot);
-  for (const entry of readdirSync(sourceRoot, { withFileTypes: true })) {
-    const source = join(sourceRoot, entry.name);
-    const target = join(targetRoot, entry.name);
-    const stat = lstatSync(source);
-    if (stat.isSymbolicLink()) {
-      throw new Error('Retained evidence cannot contain symbolic links.');
-    }
-    if (stat.isDirectory()) {
-      copyRetainedEvidence(source, target);
-    } else if (stat.isFile()) {
-      writePrivateText(target, readFileSync(source));
-    } else {
-      throw new Error('Retained evidence must contain only regular files and directories.');
-    }
-  }
-  fsyncDirectory(targetRoot);
-}
-
 function aggregateUsage(records: ReturnType<typeof listWorkspaceUsageRecords>): unknown[] {
   const aggregates = new Map<string, { category: string; unit: string; quantity: number }>();
   for (const record of records) {
@@ -509,36 +465,6 @@ function assertClosureShape(root: string, retainedEvidenceIds: ReadonlySet<strin
   for (const evidenceId of retainedEvidenceIds) {
     assertSafeWorkspacePathSegment(evidenceId, 'Evidence bundle id');
     assertCanonicalDirectory(join(evidenceRoot, evidenceId));
-  }
-}
-
-function writePrivateText(path: string, value: string | Buffer): void {
-  mkdirPrivate(dirname(path));
-  const descriptor = openSync(path, 'wx', 0o600);
-  try {
-    writeFileSync(descriptor, value);
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
-  chmodSync(path, 0o600);
-  fsyncDirectory(dirname(path));
-}
-
-function mkdirPrivate(path: string): void {
-  if (!existsSync(path)) {
-    mkdirSync(path, { mode: 0o700, recursive: true });
-  }
-  assertCanonicalDirectory(path);
-  chmodSync(path, 0o700);
-}
-
-function fsyncDirectory(path: string): void {
-  const descriptor = openSync(path, 'r');
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
   }
 }
 
