@@ -132,7 +132,11 @@ export function previewWorkspaceSchema(
       record(indexes, id, needsReview, { id, before, after });
 
     try {
-      const inventory = readWorkspaceKnowledgeProposalInventory(workspaceRoot, input.workspaceId);
+      const inventory = readWorkspaceKnowledgeProposalInventory(
+        workspaceRoot,
+        input.workspaceId,
+        input.workspaceDb
+      );
       for (const proposal of inventory.knowledgeProposals) {
         try {
           input.admitProposal(proposal);

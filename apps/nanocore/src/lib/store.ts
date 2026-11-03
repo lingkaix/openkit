@@ -104,6 +104,7 @@ import {
   assertScopeAdmitted,
   isScopeAdmitted,
   refuseScope,
+  type ScopeAdmissionFailure,
   scopeAdmissionFailures,
 } from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
@@ -226,6 +227,7 @@ import {
   ensureLayoutDirectories,
   ensureWorkspaceLayout,
   resolveDataRootPath,
+  workspaceDbPath,
 } from '../storage/fs-layout.js';
 import {
   prepareRetainedProductJson,
@@ -275,6 +277,7 @@ import {
   readNativeTurnEvents,
   readNativeTurnHistory,
   readNativeTurnWriteHead,
+  readWorkspaceArtifacts,
   readWorkspaceKnowledgePage,
   readWorkspaceKnowledgePages,
   readWorkspaceTurnEvents,
@@ -930,6 +933,10 @@ export interface CommitArtifactVersionInput {
 export interface FsStoreOptions {
   /** Optional data root for durable file-backed storage. */
   dataRoot?: string;
+  /** Actual admitted Workspace connection, borrowed for the existing native read/compute lifetime. */
+  nativeProductScope?: NativeProductScope;
+  /** Original Main admission facts supplied only to the native request lifetime. */
+  scopeRefusals?: readonly ScopeAdmissionFailure[];
 }
 
 function now(): string {
@@ -1121,6 +1128,9 @@ export class FsStore {
   private terminalHookDepth = 0;
   private workspaceMutationAdmission?: WorkspaceMutationAdmission;
   private readonly dataRoot: string | null;
+  /** A request-scoped existing owner binding; never an owned connection or a second Store. */
+  private readonly borrowedProductScope?: NativeProductScope;
+  private readonly suppliedScopeRefusals: readonly ScopeAdmissionFailure[] | undefined;
 
   /** Validates native product closure and file-owned resources after their native journals are present. */
   public static validateFileAuthority(dataRoot: string): void {
@@ -1191,6 +1201,26 @@ export class FsStore {
     this.dataRoot =
       options.dataRoot ?? (process.env.OPENKIT_DATA_ROOT ? resolveDataRoot(process.env) : null);
 
+    this.suppliedScopeRefusals = options.scopeRefusals;
+    if (options.nativeProductScope) {
+      const scope = options.nativeProductScope;
+      if (
+        !this.dataRoot ||
+        scope.owner.kind !== 'workspace' ||
+        !scope.sqlite ||
+        resolve(scope.path) !== resolve(workspaceDbPath(this.dataRoot, scope.owner.workspaceId)) ||
+        !isDeepStrictEqual(
+          scope.contentMount,
+          nativeProductScope(this.dataRoot, scope.owner).contentMount
+        )
+      )
+        throw new NotebookError('recovery_required');
+      // The physical owner admitted the scope and retains its connection and transaction.
+      const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+      reader.close();
+      this.borrowedProductScope = scope;
+      return;
+    }
     if (this.dataRoot) {
       this.liveCaptureCoverage = captureCoverageBindingFromOpenKitConfig(
         loadOpenKitConfig(this.dataRoot)
@@ -1410,7 +1440,8 @@ export class FsStore {
 
   /** Refuses stale Workspace state after a failed canonical directory commit; only reopen clears it. */
   private assertWorkspacePublicationAcknowledged(workspaceId: string): void {
-    if (this.dataRoot) assertScopeAdmitted(this.dataRoot, 'workspace', workspaceId);
+    if (this.dataRoot)
+      assertScopeAdmitted(this.dataRoot, 'workspace', workspaceId, this.suppliedScopeRefusals);
     if (this.unacknowledgedWorkspaces.has(workspaceId)) {
       throw new CanonicalPublicationError(
         'FsStore: directory synchronization failed after rename during publication acknowledgement. Ordinary Store reopen is required.'
@@ -2121,12 +2152,14 @@ export class FsStore {
     try {
       const root = this.workspaceRootPath(proposal.workspaceId);
       const scope = this.nativeScope({ kind: 'workspace', workspaceId: proposal.workspaceId });
-      const reader = getWorkspaceProductReadHandle(scope.path, {
-        kind: 'workspace',
-        workspaceId: proposal.workspaceId,
-      });
+      const sqlite =
+        scope.sqlite ??
+        getWorkspaceProductReadHandle(scope.path, {
+          kind: 'workspace',
+          workspaceId: proposal.workspaceId,
+        }).sqlite;
       const selected = readControlKnowledgeProposal(
-        { scope: 'workspace', workspaceId: proposal.workspaceId, sqlite: reader.sqlite },
+        { scope: 'workspace', workspaceId: proposal.workspaceId, sqlite },
         proposal.id
       );
       if (!selected) throw knowledgeProposalAuthorityError('recovery_required');
@@ -2226,12 +2259,14 @@ export class FsStore {
 
     try {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId: proposal.workspaceId });
-      const reader = getWorkspaceProductReadHandle(scope.path, {
-        kind: 'workspace',
-        workspaceId: proposal.workspaceId,
-      });
+      const sqlite =
+        scope.sqlite ??
+        getWorkspaceProductReadHandle(scope.path, {
+          kind: 'workspace',
+          workspaceId: proposal.workspaceId,
+        }).sqlite;
       const selected = readControlKnowledgeProposal(
-        { scope: 'workspace', workspaceId: proposal.workspaceId, sqlite: reader.sqlite },
+        { scope: 'workspace', workspaceId: proposal.workspaceId, sqlite },
         proposal.id
       );
       if (!selected) throw knowledgeProposalAuthorityError('recovery_required');
@@ -2249,7 +2284,7 @@ export class FsStore {
       ) {
         throw knowledgeProposalAuthorityError('recovery_required');
       }
-      const audits = reader.sqlite
+      const audits = sqlite
         .prepare(
           `SELECT actor_json FROM audit_events WHERE workspace_id = ? AND request_id = ?
          AND category = 'knowledge' AND action = 'knowledge.proposal.decide' AND outcome = 'succeeded'`
@@ -2299,7 +2334,11 @@ export class FsStore {
       ? listDirectoryNames(join(this.dataRoot, 'workspaces')).filter((id) => id !== '.staging')
       : [...this.workspaces.keys()];
     return ids
-      .filter((id) => !this.dataRoot || isScopeAdmitted(this.dataRoot, 'workspace', id))
+      .filter(
+        (id) =>
+          !this.dataRoot ||
+          isScopeAdmitted(this.dataRoot, 'workspace', id, this.suppliedScopeRefusals)
+      )
       .map((id) => this.getWorkspace(id));
   }
 
@@ -2625,7 +2664,9 @@ export class FsStore {
     const identities = workspaceFileRecordIdentities(records);
     const peers = listDirectoryNames(join(this.dataRoot, 'workspaces')).filter(
       (id) =>
-        id !== '.staging' && id !== workspaceId && isScopeAdmitted(this.dataRoot!, 'workspace', id)
+        id !== '.staging' &&
+        id !== workspaceId &&
+        isScopeAdmitted(this.dataRoot!, 'workspace', id, this.suppliedScopeRefusals)
     );
     const peerIds = new Set(peers);
     const claims: Array<readonly [string, Iterable<string>]> = [[workspaceId, identities]];
@@ -2653,7 +2694,11 @@ export class FsStore {
         claims.push([proposal.workspaceId, [`proposal:${proposal.id}`]]);
     for (const peer of peers)
       claims.push([peer, this.listKnowledgeSources(peer).map(({ id }) => `source:${id}`)]);
-    if (peers.some((id) => !isScopeAdmitted(this.dataRoot!, 'workspace', id)))
+    if (
+      peers.some(
+        (id) => !isScopeAdmitted(this.dataRoot!, 'workspace', id, this.suppliedScopeRefusals)
+      )
+    )
       throw new Error('Workspace recovery peer authority is unavailable.');
     if (refuseWorkspaceIdentityConflicts(this.dataRoot, claims))
       throw new Error('Conflicting Workspace product owner.');
@@ -2785,7 +2830,9 @@ export class FsStore {
         scope,
         'workspace',
         workspaceId,
-        getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId })
+        scope.sqlite
+          ? undefined
+          : getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId })
       );
       if (!native) throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
       const system = WorkspaceSystemRecordSchema.parse(native.record);
@@ -2798,18 +2845,21 @@ export class FsStore {
       );
       // Counts are a disposable projection. Metadata-only authority reads must not decode unrelated Notebook bodies.
       // Each access still reads current committed products and validates the exact current Knowledge pages.
-      const readCounts = () => ({
-        threadCount: listNativeProducts(scope, 'thread').length,
-        artifactCount: [...this.artifacts.values()].filter(
-          (artifact) =>
-            artifact.workspaceId === workspaceId &&
-            !this.pendingArtifactSubmissions.has(artifact.id)
-        ).length,
-        knowledgeEntryCount: readWorkspaceKnowledgePages(
-          this.workspaceRootPath(workspaceId),
-          this.workspaceKnowledgeSelection(workspaceId)
-        ).length,
-      });
+      const readCounts = () => {
+        this.refreshBorrowedArtifactInventory(workspaceId);
+        return {
+          threadCount: listNativeProducts(scope, 'thread').length,
+          artifactCount: [...this.artifacts.values()].filter(
+            (artifact) =>
+              artifact.workspaceId === workspaceId &&
+              !this.pendingArtifactSubmissions.has(artifact.id)
+          ).length,
+          knowledgeEntryCount: readWorkspaceKnowledgePages(
+            this.workspaceRootPath(workspaceId),
+            this.workspaceKnowledgeSelection(workspaceId)
+          ).length,
+        };
+      };
       return {
         ...system,
         name: config.workspace.name,
@@ -2932,7 +2982,8 @@ export class FsStore {
     // Reload projects only admitted owners; an excluded sibling keeps its retained configuration.
     const admittedNames = workspaceNames.filter(
       ({ workspaceId }) =>
-        !this.dataRoot || isScopeAdmitted(this.dataRoot, 'workspace', workspaceId)
+        !this.dataRoot ||
+        isScopeAdmitted(this.dataRoot, 'workspace', workspaceId, this.suppliedScopeRefusals)
     );
     for (const { workspaceId } of admittedNames) {
       this.assertWorkspacePublicationAcknowledged(workspaceId);
@@ -2947,6 +2998,13 @@ export class FsStore {
 
   /** Returns canonical published pages, or explicit in-memory fixture pages. */
   public listKnowledge(workspaceId: string): KnowledgeNotebookPage[] {
+    if (this.borrowedProductScope) {
+      this.getWorkspace(workspaceId);
+      return readWorkspaceKnowledgePages(
+        this.workspaceRootPath(workspaceId),
+        this.workspaceKnowledgeSelection(workspaceId)
+      );
+    }
     return this.getWorkspaceResources(workspaceId).knowledge;
   }
 
@@ -3179,12 +3237,6 @@ export class FsStore {
     };
     readonly audits: readonly AuditEvent[];
     readonly receipt?: CommandRequestRecord;
-    /** Exact reviewed Schema application owned by the current exclusive lifecycle freeze. */
-    readonly schemaApplication?: {
-      readonly schemaFreeze: WorkspaceFrozenAdmission;
-      readonly requestId: string;
-      readonly reportDigest: string;
-    };
     /** Existing synchronous semantic admission; it selects no SQL or effect. */
     readonly revalidatePublication: () => void;
   }): Promise<void> {
@@ -3205,23 +3257,8 @@ export class FsStore {
       input.audits.some((event) => event.workspaceId !== db.workspaceId)
     )
       throw new NotebookError('recovery_required');
-    const schema = input.schemaApplication;
-    if (
-      (!schema && input.receipt?.command === 'knowledge.schema.apply') ||
-      (schema &&
-        (!input.nextHead ||
-          input.newProposal !== undefined ||
-          input.review !== undefined ||
-          !input.receipt ||
-          input.audits.length !== 1 ||
-          input.receipt.command !== 'knowledge.schema.apply' ||
-          input.receipt.requestId !== schema.requestId ||
-          input.receipt.response.kind !== 'knowledge_schema_report' ||
-          input.receipt.response.id !== schema.reportDigest ||
-          input.audits[0]?.requestId !== schema.requestId ||
-          input.audits[0]?.resource !== `knowledge-schema-report:${schema.reportDigest}` ||
-          !this.workspaceMutationAdmission?.ownsFreeze(db.workspaceId, schema.schemaFreeze)))
-    )
+    // Reviewed Schema application has its own current native read/compute tuple.
+    if (input.receipt?.command === 'knowledge.schema.apply')
       throw new NotebookError('recovery_required');
     const scope = this.nativeScope({ kind: 'workspace', workspaceId: db.workspaceId });
     if (resolve(db.sqlite.name) !== resolve(scope.path))
@@ -3238,38 +3275,24 @@ export class FsStore {
         productOwner: scope.owner,
         contentMount: scope.contentMount,
       };
-      let submitSchema: (() => Promise<void>) | undefined;
-      if (schema)
-        submitSchema = await client.openWorkspaceSchemaApplication({
-          workspaceDb: db,
-          command,
-          freeze: schema.schemaFreeze,
-          expectedHead: input.expectedHead,
-          nextHead: input.nextHead!,
-          audit: input.audits[0]!,
-          receipt: input.receipt!,
-          reportDigest: schema.reportDigest,
-        });
-      else await client.open(command);
+      await client.open(command);
       // The existing semantic owner checks authority again after native opening.
       const admission: unknown = input.revalidatePublication();
       if (admission && typeof (admission as { then?: unknown }).then === 'function')
         throw new TypeError('Knowledge publication admission must be synchronous.');
-      if (submitSchema) await submitSchema();
-      else
-        await client.write(database, [
-          ...(input.nextHead
-            ? controlKnowledgeHeadStatements(input.nextHead, input.expectedHead)
-            : [controlKnowledgeHeadGuardStatement(db, input.expectedHead)]),
-          ...(input.newProposal ? [controlKnowledgeProposalStatement(input.newProposal)] : []),
-          ...(input.review
-            ? [controlKnowledgeReviewStatement(db, input.review.proposalId, input.review.review)]
-            : []),
-          ...input.audits.map(prepareAuditEventStatement),
-          ...(input.receipt
-            ? [prepareControlCommandRequestStatement(db.workspaceId, input.receipt)]
-            : []),
-        ]);
+      await client.write(database, [
+        ...(input.nextHead
+          ? controlKnowledgeHeadStatements(input.nextHead, input.expectedHead)
+          : [controlKnowledgeHeadGuardStatement(db, input.expectedHead)]),
+        ...(input.newProposal ? [controlKnowledgeProposalStatement(input.newProposal)] : []),
+        ...(input.review
+          ? [controlKnowledgeReviewStatement(db, input.review.proposalId, input.review.review)]
+          : []),
+        ...input.audits.map(prepareAuditEventStatement),
+        ...(input.receipt
+          ? [prepareControlCommandRequestStatement(db.workspaceId, input.receipt)]
+          : []),
+      ]);
     } catch (error) {
       if (
         error instanceof ControlStoreWorkerError &&
@@ -3285,6 +3308,8 @@ export class FsStore {
   private nativeScope(owner: ControlProductOwner): NativeProductScope {
     if (!this.dataRoot) throw new Error('Native product storage is not configured.');
     if (owner.kind === 'workspace') this.assertWorkspacePublicationAcknowledged(owner.workspaceId);
+    const borrowed = this.borrowedProductScope;
+    if (borrowed && isDeepStrictEqual(borrowed.owner, owner)) return borrowed;
     return nativeProductScope(this.dataRoot, owner);
   }
 
@@ -3688,7 +3713,7 @@ export class FsStore {
           (id) =>
             id !== '.staging' &&
             id !== excludedWorkspaceId &&
-            isScopeAdmitted(this.dataRoot!, 'workspace', id)
+            isScopeAdmitted(this.dataRoot!, 'workspace', id, this.suppliedScopeRefusals)
         )
         .map((workspaceId) => ({ kind: 'workspace' as const, workspaceId })),
     ];
@@ -3711,7 +3736,14 @@ export class FsStore {
         }
         reader =
           owner.kind === 'workspace'
-            ? getWorkspaceProductReadHandle(path, owner)
+            ? getWorkspaceProductReadHandle(
+                path,
+                owner,
+                this.borrowedProductScope &&
+                  isDeepStrictEqual(owner, this.borrowedProductScope.owner)
+                  ? this.borrowedProductScope.sqlite
+                  : undefined
+              )
             : openControlStoreProductReadHandle(path, owner);
         if (owner.kind === 'workspace' && !reader.get('workspace', owner.workspaceId))
           throw new Error('The native Workspace identity is unavailable.');
@@ -3774,7 +3806,8 @@ export class FsStore {
         if (owner.kind === 'workspace') closeWorkspaceProductReadHandles(path);
         throw error;
       } finally {
-        if (owner.kind === 'server') reader.close();
+        if (owner.kind === 'server' || reader.sqlite === this.borrowedProductScope?.sqlite)
+          reader.close();
       }
     }
     return result;
@@ -4358,10 +4391,9 @@ export class FsStore {
   public listThreads(workspaceId: string): Thread[] {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
     return this.dataRoot
-      ? listNativeProducts(
-          nativeProductMetadataScope(this.dataRoot!, { kind: 'workspace', workspaceId }),
-          'thread'
-        ).map((row) => ThreadSchema.parse(row.record))
+      ? listNativeProducts(this.nativeScope({ kind: 'workspace', workspaceId }), 'thread').map(
+          (row) => ThreadSchema.parse(row.record)
+        )
       : structuredClone(
           [...this.threads.values()].filter(
             (thread) => workspaceIdForOwner(thread.owner) === workspaceId
@@ -4532,7 +4564,9 @@ export class FsStore {
           scope,
           'thread',
           threadId,
-          getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId })
+          scope.sqlite
+            ? undefined
+            : getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId })
         )?.record as Thread | undefined;
       } catch (error) {
         if (
@@ -4831,8 +4865,12 @@ export class FsStore {
     const owner = { kind: 'workspace', workspaceId } as const;
     const scope = this.dataRoot ? this.nativeScope(owner) : undefined;
     const record = scope
-      ? readNativeProduct(scope, 'turn', turnId, getWorkspaceProductReadHandle(scope.path, owner))
-          ?.record
+      ? readNativeProduct(
+          scope,
+          'turn',
+          turnId,
+          scope.sqlite ? undefined : getWorkspaceProductReadHandle(scope.path, owner)
+        )?.record
       : this.turns.get(turnId);
     if (
       !record ||
@@ -4865,9 +4903,9 @@ export class FsStore {
       if (!lineage) {
         // An opaque miss cannot prove absence while part of its search domain is quarantined.
         // Never open that authority to distinguish absence; known healthy owners still resolve above.
-        for (const failure of scopeAdmissionFailures(this.dataRoot))
+        for (const failure of this.suppliedScopeRefusals ?? scopeAdmissionFailures(this.dataRoot))
           if (failure.scope === 'workspace')
-            assertScopeAdmitted(this.dataRoot, 'workspace', failure.id);
+            assertScopeAdmitted(this.dataRoot, 'workspace', failure.id, this.suppliedScopeRefusals);
         throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
       }
       return this.getTurn(lineage.workspaceId, lineage.threadId, turnId);
@@ -5624,7 +5662,8 @@ export class FsStore {
   private assertAgentSessionResultAvailable(agentSession: AgentSession): void {
     const { workspaceId, id } = agentSession;
     const unavailable = () => new StoreRecordNotFoundError(`AgentSession not found: ${id}`);
-    if (!isScopeAdmitted(this.dataRoot!, 'workspace', workspaceId)) throw unavailable();
+    if (!isScopeAdmitted(this.dataRoot!, 'workspace', workspaceId, this.suppliedScopeRefusals))
+      throw unavailable();
     const root = join(this.dataRoot!, 'workspaces', workspaceId);
     const path = join(root, 'db', 'workspace.sqlite');
     try {
@@ -6334,8 +6373,48 @@ export class FsStore {
     };
   }
 
+  /** Reads file-owned Artifact authority through its original parser and complete producing-Item proof. */
+  private refreshBorrowedArtifactInventory(workspaceId: string): void {
+    const scope = this.borrowedProductScope;
+    if (!scope || scope.owner.kind !== 'workspace' || scope.owner.workspaceId !== workspaceId)
+      return;
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
+    const threads = this.listThreads(workspaceId);
+    const histories = listNativeProducts(scope, 'turn').map((row) => {
+      const history = readNativeTurnHistory(scope, row.record.id as string);
+      if (!history) throw new NotebookError('recovery_required');
+      return history;
+    });
+    const turns = new Map(histories.map(({ turn }) => [turn.id, turn]));
+    const revisions = histories.flatMap(({ itemRevisions }) => itemRevisions);
+    const root = this.workspaceRootPath(workspaceId);
+    const artifacts = readWorkspaceArtifacts(
+      root,
+      workspaceId,
+      new Set(threads.map(({ id }) => id)),
+      turns
+    );
+    const versions = new Map(
+      artifacts.map((artifact) => [
+        artifact.id,
+        readArtifactVersionHistory(root, artifact, turns, revisions),
+      ])
+    );
+    // Publish no partial projection if any retained original or producing Item fails admission.
+    for (const [id, artifact] of this.artifacts) {
+      if (artifact.workspaceId !== workspaceId) continue;
+      this.artifacts.delete(id);
+      this.artifactVersions.delete(id);
+    }
+    for (const artifact of artifacts) {
+      this.artifacts.set(artifact.id, artifact);
+      this.artifactVersions.set(artifact.id, versions.get(artifact.id)!);
+    }
+  }
+
   public listArtifacts(workspaceId: string): Artifact[] {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
+    this.refreshBorrowedArtifactInventory(workspaceId);
     return [...this.artifacts.values()].filter(
       (artifact) =>
         artifact.workspaceId === workspaceId && !this.pendingArtifactSubmissions.has(artifact.id)
@@ -6344,6 +6423,7 @@ export class FsStore {
 
   public getArtifact(workspaceId: string, artifactId: string): Artifact {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
+    this.refreshBorrowedArtifactInventory(workspaceId);
     const artifact = this.artifacts.get(artifactId);
 
     if (
@@ -6661,10 +6741,12 @@ export class FsStore {
   /** Reads one exact head and schema using the existing physical Workspace reader. */
   private workspaceKnowledgeSelection(workspaceId: string) {
     const scope = this.nativeScope({ kind: 'workspace', workspaceId });
-    const reader = getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId });
+    const sqlite =
+      scope.sqlite ??
+      getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId }).sqlite;
     return readWorkspaceNotebookSelection({
       workspaceRoot: this.workspaceRootPath(workspaceId),
-      workspaceDb: { scope: 'workspace', workspaceId, sqlite: reader.sqlite },
+      workspaceDb: { scope: 'workspace', workspaceId, sqlite },
       knowledgeBaseId: readDefaultKnowledgeBaseId({
         dataRoot: this.dataRoot!,
         scope: { kind: 'workspace', workspaceId },
@@ -6677,10 +6759,12 @@ export class FsStore {
     if (!this.dataRoot) return;
     try {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId });
-      const reader = getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId });
-      const db = { scope: 'workspace' as const, workspaceId, sqlite: reader.sqlite };
+      const sqlite =
+        scope.sqlite ??
+        getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId }).sqlite;
+      const db = { scope: 'workspace' as const, workspaceId, sqlite };
       const root = this.workspaceRootPath(workspaceId);
-      const rows = reader.sqlite
+      const rows = sqlite
         .prepare('SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY proposal_id')
         .all() as { proposal_id: string }[];
       const proposals: KnowledgeProposalRecord[] = [];
@@ -7138,9 +7222,11 @@ export class FsStore {
         .filter((review) => review.workspaceId === workspaceId);
     try {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId });
-      const reader = getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId });
-      const db = { scope: 'workspace' as const, workspaceId, sqlite: reader.sqlite };
-      const rows = reader.sqlite
+      const sqlite =
+        scope.sqlite ??
+        getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId }).sqlite;
+      const db = { scope: 'workspace' as const, workspaceId, sqlite };
+      const rows = sqlite
         .prepare('SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY rowid')
         .all() as { proposal_id: string }[];
       return rows.flatMap(({ proposal_id }) => {

@@ -53,6 +53,10 @@ import {
   prepareControlGenerativePresentation,
 } from '../generative-ui/native-publication.js';
 import { NotebookError } from '../knowledge/notebook.js';
+import {
+  type PreparedNativeSchemaApplication,
+  prepareNativeSchemaApplication,
+} from '../knowledge/schema-application.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
   applyControlExecutionJournal,
@@ -167,6 +171,7 @@ import {
   ControlPhysicalForecastDecisionSchema,
   type ControlPhysicalForecastFiles,
   ControlPhysicalForecastSchema,
+  ControlSchemaApplicationRefusalSchema,
   type ControlSqlResult,
   type ControlSqlRow,
   type ControlSqlStatement,
@@ -180,6 +185,7 @@ import {
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
+  readControlSchemaApplicationInput,
 } from './control-store-worker-protocol.js';
 import { CoreJournalRefusal } from './core-journal-codecs.js';
 import { applyControlCoreJournal } from './core-journal-native.js';
@@ -277,6 +283,7 @@ type WriteCommand = Extract<
       | 'publication'
       | 'project-cleanup'
       | 'app-kernel'
+      | 'schema-application'
       | 'worker-storage-binding'
       | 'workspace-apply-plan'
       | 'workspace-review-decision'
@@ -337,6 +344,7 @@ type WriteRequest = WriteCommand & {
   predecessorFailed: boolean;
   refusal?: ControlWorkerReply;
   readonly preparedApp?: PreparedControlApp;
+  readonly preparedSchemaApplication?: PreparedNativeSchemaApplication;
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
   readonly preparedThreadReadItemIds?: readonly string[];
@@ -491,6 +499,26 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       status: error instanceof WorkspaceRecoveryError ? 409 : error.status,
     });
     if (parsed.success) return parsed.data;
+  }
+  if (operation === 'schema-application') {
+    const code =
+      error instanceof NotebookError ||
+      error instanceof OperationError ||
+      error instanceof IdempotencyKeyConflictError
+        ? error.code
+        : undefined;
+    if (code) {
+      const parsed = ControlSchemaApplicationRefusalSchema.safeParse({
+        operation,
+        code,
+        message: `Schema application ${code.replaceAll('_', ' ')}.`,
+        status: code === 'invalid_request' ? 400 : code === 'workspace_access_denied' ? 403 : 409,
+        ...(error instanceof OperationError && error.details !== undefined
+          ? { details: error.details }
+          : {}),
+      });
+      if (parsed.success) return parsed.data;
+    }
   }
   if (operation === 'app-kernel') {
     const mapped = mapAppSqliteError(error);
@@ -1434,6 +1462,7 @@ function complete(owner: OwnedDatabase, request: WriteRequest, result: ControlWo
   if (request.operation === 'recovery-target-preparation')
     Object.assign(request, { preparedTargetProof: undefined });
   try {
+    request.preparedSchemaApplication?.close();
     reply(result);
   } finally {
     request.finish();
@@ -1593,6 +1622,21 @@ function flush(owner: OwnedDatabase): void {
   }
   const selected = readyBatch(owner);
   if (selected.length === 0) return;
+  // The Schema barrier is the leading sole request. No await separates final CAS,
+  // create-only history publication and the existing covering FULL SQL commit.
+  for (const request of selected) {
+    if (!request.preparedSchemaApplication || request.refusal || request.predecessorFailed)
+      continue;
+    try {
+      request.preparedSchemaApplication.publishHistory();
+    } catch (error) {
+      refuseSuccessors(owner, request);
+      const domain = domainRefusal(request.operation, error);
+      request.refusal = domain
+        ? { ...failure(request.id, 'precondition'), domain }
+        : failure(request.id, failureCode(error, [request.id]));
+    }
+  }
   const publications = new Map(
     selected.flatMap((request) =>
       (request.preparedPublications ?? []).map(
@@ -1678,7 +1722,18 @@ function flush(owner: OwnedDatabase): void {
         sqlite.exec('SAVEPOINT control_transition');
         try {
           let outcome: ControlWorkerReply;
-          if (request.operation === 'transition') {
+          if (request.operation === 'schema-application') {
+            if (!request.preparedSchemaApplication) throw new ControlProductPreconditionError();
+            request.preparedSchemaApplication.revalidate();
+            apply(sqlite, request.preparedSchemaApplication.statements);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'schema-application',
+              result: request.preparedSchemaApplication.result,
+            };
+          } else if (request.operation === 'transition') {
             if (!owner.productOwner) throw new ControlProductPreconditionError();
             const result = applyControlAdmission(
               sqlite,
@@ -3111,6 +3166,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'app-kernel' ||
+      value.operation === 'schema-application' ||
       value.operation === 'thread-read-membership' ||
       value.operation === 'boot-audit' ||
       value.operation === 'admin-recovery' ||
@@ -3183,6 +3239,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             value.operation === 'recovery-target-registration' ||
             value.operation === 'recovery-target-preparation' ||
             value.operation === 'app-kernel' ||
+            value.operation === 'schema-application' ||
             value.operation === 'recovery-cleanup' ||
             value.operation === 'recovery-capture' ||
             value.operation === 'recovery-move-out' ||
@@ -3225,6 +3282,24 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedProvenance: WorkerRuntimeProvenanceMetadataInput | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
           try {
+            if (value.operation === 'schema-application') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              const input = readControlSchemaApplicationInput(value.input, value.content);
+              if (
+                input.request.workspaceId !== owner.scopeDb.workspaceId ||
+                input.request.workspaceId !== value.input.workspaceId
+              )
+                throw new ControlProductPreconditionError();
+              await prepareAfterPredecessors(owner, queued, earlier);
+              const preparedSchemaApplication = prepareNativeSchemaApplication(
+                owner.scopeDb,
+                input
+              );
+              // Retain the owned Core reader on this same slot, including forecast refusal settlement.
+              Object.assign(queued, { preparedSchemaApplication });
+              if (preparedSchemaApplication.files.length)
+                await admitPhysicalPublication(owner, queued, preparedSchemaApplication.files);
+            }
             if (value.operation === 'app-kernel') {
               appInput = ControlAppInputSchema.parse(
                 JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value.content))

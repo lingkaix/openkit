@@ -1,8 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatReferenceUri } from '@openkit/protocol';
+import type { WorkerOptions } from 'node:worker_threads';
+import {
+  canonicalJsonText,
+  compareCodeUnits,
+  formatReferenceUri,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceAuditEvents } from './audit-events.js';
 import {
@@ -10,7 +17,6 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import * as notebookAdmission from './knowledge/notebook-workspace-admission.js';
-import * as schemaHistory from './knowledge/schema-application.js';
 import * as retrieval from './retrieval-knowledge-adapter.js';
 import * as knowledgePreparation from './storage/control-store-knowledge.js';
 import {
@@ -29,6 +35,216 @@ import {
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
+/** Observes only genuine native frames and the actual SQLite commit; it holds no credential payload. */
+const schemaBoundary = vi.hoisted(() => ({
+  database: undefined as string | undefined,
+  events: [] as string[],
+  requests: [] as number[],
+  forecasts: [] as number[],
+  decisions: [] as Array<{ id: number; decision: string }>,
+  bundle: undefined as { url: string; sourceSha256: string; entryOffset: number } | undefined,
+  proofs: [] as Array<{ id: number; database: string; [key: string]: unknown }>,
+  histories: [] as Array<{ synchronous: number; files: Array<{ path: string; hex: string }> }>,
+  beforeForecast: undefined as (() => void) | undefined,
+  injections: 0,
+  injectionError: undefined as unknown,
+}));
+
+// Preserve the real producer, Worker, forecast/decision objects, SQL and acknowledgements.
+vi.mock('node:worker_threads', async (load) => {
+  const native = await load<typeof import('node:worker_threads')>();
+  return {
+    ...native,
+    Worker: class extends native.Worker {
+      constructor(filename: string | URL, options?: WorkerOptions) {
+        const bundleUrl = options?.eval ? undefined : String(filename);
+        let bundle: typeof schemaBoundary.bundle;
+        if (bundleUrl) {
+          const source = readFileSync(new URL(bundleUrl), 'utf8');
+          bundle = {
+            url: bundleUrl,
+            sourceSha256: createHash('sha256').update(source).digest('hex'),
+            entryOffset: source.indexOf('function readAuthorizedWorkspaceNotebookPages('),
+          };
+        }
+        const prelude = `
+          const {parentPort,workerData}=require('node:worker_threads');
+          const Database=require(workerData.schemaRevalidationDatabaseModule);
+          const readFileSync=require('node:fs').readFileSync;
+          const post=parentPort.postMessage.bind(parentPort);
+          const inspector=new (require('node:inspector').Session)();
+          inspector.connect();
+          let enabled=false;
+          inspector.post('Profiler.enable',error=>{ if(error) throw error; enabled=true; });
+          if(!enabled) throw new Error('Native coverage setup did not complete synchronously.');
+          let activeProof;
+          const on=parentPort.on;
+          parentPort.on=function(event,listener) {
+            if(event!=='message') return on.call(this,event,listener);
+            return on.call(this,event,function(value,...args) {
+              if(value && value.operation==='schema-application') {
+                if(activeProof) throw new Error('Overlapping native coverage requests.');
+                activeProof={id:value.id,database:value.database};
+                let started=false;
+                inspector.post('Profiler.startPreciseCoverage',{callCount:true,detailed:false},error=>{
+                  if(error) throw error;
+                  started=true;
+                });
+                if(!started) throw new Error('Native coverage start did not complete synchronously.');
+              }
+              return Reflect.apply(listener,this,[value,...args]);
+            });
+          };
+          let forecast;
+          parentPort.postMessage=function(value,...args) {
+            if(activeProof && value && value.id===activeProof.id &&
+                (value.status==='ok' || value.status==='error')) {
+              const owned=activeProof;
+              activeProof=undefined;
+              let measured=false;
+              inspector.post('Profiler.takePreciseCoverage',(error,result)=>{
+                measured=true;
+                const observation={schemaRevalidation:true,...owned,phase:'proof-count'};
+                try {
+                  if(error) throw error;
+                  const url=workerData.schemaRevalidationBundleUrl;
+                  if(typeof url!=='string') throw new Error('Missing canonical bundle.');
+                  const source=readFileSync(require('node:url').fileURLToPath(url),'utf8');
+                  const entry='function readAuthorizedWorkspaceNotebookPages(';
+                  const offset=source.indexOf(entry);
+                  if(offset<0 || source.indexOf(entry,offset+1)!==-1)
+                    throw new Error('Ambiguous native proof owner.');
+                  const scripts=result.result.filter(script=>script.url===url);
+                  if(scripts.length!==1) throw new Error('Canonical native script not observed.');
+                  const functions=scripts[0].functions.filter(fn=>
+                    fn.functionName==='readAuthorizedWorkspaceNotebookPages' &&
+                    fn.ranges[0].startOffset===offset);
+                  if(functions.length!==1 || functions[0].isBlockCoverage ||
+                      functions[0].ranges.length!==1 || !Number.isSafeInteger(functions[0].ranges[0].count))
+                    throw new Error('Native function entry not observed.');
+                  Object.assign(observation,{
+                    bundleUrl:url,sourceSha256:require('node:crypto').createHash('sha256').update(source).digest('hex'),
+                    functionName:functions[0].functionName,isBlockCoverage:functions[0].isBlockCoverage,entryOffset:offset,
+                    endOffset:functions[0].ranges[0].endOffset,count:functions[0].ranges[0].count,
+                  });
+                } catch {
+                  observation.error='Native complete-proof function entry was not measured.';
+                }
+                post(observation);
+              });
+              if(!measured) throw new Error('Native coverage read did not complete synchronously.');
+              let stopped=false;
+              inspector.post('Profiler.stopPreciseCoverage',error=>{
+                if(error) throw error;
+                stopped=true;
+              });
+              if(!stopped) throw new Error('Native coverage stop did not complete synchronously.');
+            }
+            if(value && value.status==='physical-forecast' && value.files.some(
+              file=>file.path.includes('/knowledge/schema/history/'))) forecast=value;
+            return post(value,...args);
+          };
+          const exec=Database.prototype.exec;
+          Database.prototype.exec=function(sql) {
+            const observed=forecast && forecast.database==='workspace:'+this.name && /^COMMIT$/i.test(sql);
+            if(!observed) return exec.call(this,sql);
+            const selected=forecast; forecast=undefined;
+            const files=selected.files.filter(file=>file.path.includes('/knowledge/schema/history/'))
+              .map(file=>({path:file.path,hex:readFileSync(file.path).toString('hex')}));
+            post({schemaRevalidation:true,database:selected.database,id:selected.id,phase:'history-ready',
+              synchronous:Number(this.pragma('synchronous',{simple:true})),files});
+            const result=exec.call(this,sql);
+            post({schemaRevalidation:true,database:selected.database,id:selected.id,phase:'committed'});
+            return result;
+          };
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...((options?.workerData ?? {}) as object),
+            schemaRevalidationDatabaseModule: createRequire(import.meta.url).resolve(
+              'better-sqlite3'
+            ),
+            schemaRevalidationBundleUrl: bundleUrl,
+          },
+        });
+        const emit = this.emit.bind(this);
+        this.emit = ((event: string | symbol, ...args: unknown[]) => {
+          const row = args[0] as Record<string, unknown> | null;
+          if (event === 'message' && row !== null && typeof row === 'object') {
+            if (row.schemaRevalidation === true) {
+              if (
+                row.database === schemaBoundary.database &&
+                schemaBoundary.requests.includes(row.id as number)
+              ) {
+                if (row.phase === 'proof-count') {
+                  schemaBoundary.proofs.push(
+                    row as { id: number; database: string; [key: string]: unknown }
+                  );
+                  return true;
+                }
+                schemaBoundary.events.push(row.phase as string);
+                if (row.phase === 'history-ready')
+                  schemaBoundary.histories.push({
+                    synchronous: row.synchronous as number,
+                    files: row.files as Array<{ path: string; hex: string }>,
+                  });
+              }
+              // This observation is not a protocol reply and must not reach the production client.
+              return true;
+            }
+            if (
+              row.database === schemaBoundary.database &&
+              schemaBoundary.requests.includes(row.id as number) &&
+              row.status === 'physical-forecast'
+            ) {
+              schemaBoundary.forecasts.push(row.id as number);
+              schemaBoundary.events.push('forecast');
+              if (schemaBoundary.beforeForecast) {
+                try {
+                  schemaBoundary.injections += 1;
+                  schemaBoundary.beforeForecast();
+                } catch (error: unknown) {
+                  schemaBoundary.injectionError = error;
+                }
+              }
+            }
+            if (row.status === 'ok' && schemaBoundary.requests.includes(row.id as number))
+              schemaBoundary.events.push('ack');
+          }
+          return emit(event, ...args);
+        }) as native.Worker['emit'];
+        const postMessage = this.postMessage.bind(this);
+        this.postMessage = ((...args: Parameters<native.Worker['postMessage']>) => {
+          const row = args[0] as Record<string, unknown> | null;
+          if (row !== null && typeof row === 'object' && row.database === schemaBoundary.database) {
+            if (row.operation === 'schema-application') {
+              schemaBoundary.bundle = bundle;
+              schemaBoundary.requests.push(row.id as number);
+              schemaBoundary.events.push('request');
+            }
+            if (
+              row.operation === 'physical-forecast' &&
+              schemaBoundary.requests.includes(row.id as number)
+            ) {
+              schemaBoundary.decisions.push({
+                id: row.id as number,
+                decision: row.decision as string,
+              });
+              schemaBoundary.events.push('decision');
+            }
+          }
+          return postMessage(...args);
+        }) as native.Worker['postMessage'];
+      }
+    },
+  };
+});
+
 /** Builds a real Source and recursive Page closure through their public publication owners. */
 async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'schema-current-proof-'));
@@ -37,6 +253,8 @@ async function fixture() {
   const store = createTestStore({ dataRoot });
   onTestFinished(async () => {
     vi.restoreAllMocks();
+    schemaBoundary.database = undefined;
+    schemaBoundary.beforeForecast = undefined;
     await shutdownControlStoreWorkerClient();
     closeTestCoreDb(coreDb);
     rmSync(dataRoot, { recursive: true, force: true });
@@ -143,12 +361,6 @@ it('checks the complete schema closure once per synchronous preview and apply in
     events.push('admission');
     return result;
   });
-  const originalHistory = schemaHistory.prepareSchemaApplicationHistory;
-  vi.spyOn(schemaHistory, 'prepareSchemaApplicationHistory').mockImplementation((...args) => {
-    const result = originalHistory(...args);
-    events.push('history');
-    return result;
-  });
   const originalSelection = knowledgePreparation.prepareWorkspaceKnowledgeSelection;
   vi.spyOn(knowledgePreparation, 'prepareWorkspaceKnowledgeSelection').mockImplementation(
     async (...args) => {
@@ -158,24 +370,18 @@ it('checks the complete schema closure once per synchronous preview and apply in
     }
   );
   const client = getControlStoreWorkerClient();
-  const originalPause = client.tryPauseForWorkspaceCapture.bind(client);
-  vi.spyOn(client, 'tryPauseForWorkspaceCapture').mockImplementation((...args) => {
-    const paused = originalPause(...args);
-    return (
-      paused?.then((resume) => {
-        events.push('drained');
-        return resume;
-      }) ?? null
-    );
-  });
-  const originalOpen = client.openWorkspaceSchemaApplication.bind(client);
-  vi.spyOn(client, 'openWorkspaceSchemaApplication').mockImplementation(async (...args) => {
-    const submit = await originalOpen(...args);
-    events.push('opened');
-    return async () => {
-      events.push('submit');
-      await submit();
-    };
+  const pause = vi.spyOn(client, 'tryPauseForWorkspaceCapture');
+  Object.assign(schemaBoundary, {
+    database: `workspace:${join(f.coreDb.dataRoot, 'workspaces', f.workspace.id, 'db', 'workspace.sqlite')}`,
+    events,
+    requests: [],
+    forecasts: [],
+    decisions: [],
+    histories: [],
+    proofs: [],
+    beforeForecast: undefined,
+    injections: 0,
+    injectionError: undefined,
   });
   const requestId = randomUUID();
   const applied = await f.call('knowledge.schema.apply', {
@@ -184,26 +390,84 @@ it('checks the complete schema closure once per synchronous preview and apply in
     reviewedReport: preview.body,
   });
   expect(applied.status, JSON.stringify(applied.body)).toBe(200);
-  expect(completeProof.mock.calls.length).toBeGreaterThan(0);
-  expect
-    .soft(completeProof.mock.calls.length, 'public apply complete proofs')
-    .toBeLessThanOrEqual(2);
-  expect(events.filter((event) => event !== 'admission')).toEqual([
-    'drained',
-    'history',
-    'selection',
-    'opened',
-    'submit',
+  expect(schemaBoundary.proofs).toHaveLength(1);
+  const nativeProof = schemaBoundary.proofs[0]!;
+  expect(schemaBoundary.bundle).toBeDefined();
+  expect(schemaBoundary.bundle!.entryOffset).toBeGreaterThanOrEqual(0);
+  expect(nativeProof.error).toBeUndefined();
+  expect(nativeProof).toMatchObject({
+    id: schemaBoundary.requests[0],
+    database: schemaBoundary.database,
+    bundleUrl: schemaBoundary.bundle!.url,
+    sourceSha256: schemaBoundary.bundle!.sourceSha256,
+    functionName: 'readAuthorizedWorkspaceNotebookPages',
+    isBlockCoverage: false,
+    entryOffset: schemaBoundary.bundle!.entryOffset,
+  });
+  expect(nativeProof.endOffset).toBeGreaterThan(nativeProof.entryOffset as number);
+  // Count actual function entries, including any remaining Main proof, for this original request.
+  expect(nativeProof.count).toBeGreaterThan(0);
+  const applyCompleteProofs = completeProof.mock.calls.length + (nativeProof.count as number);
+  expect(applyCompleteProofs).toBeGreaterThan(0);
+  expect.soft(applyCompleteProofs, 'public apply complete proofs').toBeLessThanOrEqual(2);
+  expect(pause).not.toHaveBeenCalled();
+  expect(schemaBoundary.requests).toHaveLength(1);
+  expect(schemaBoundary.forecasts).toEqual(schemaBoundary.requests);
+  expect(schemaBoundary.decisions).toEqual([
+    { id: schemaBoundary.requests[0], decision: 'admitted' },
   ]);
-  // Current authority is never borrowed from immutable selection across an await.
-  for (const [after, before] of [
-    ['drained', 'history'],
-    ['history', 'selection'],
-    ['selection', 'submit'],
-    ['opened', 'submit'],
-  ]) {
-    expect(events.slice(events.indexOf(after) + 1, events.indexOf(before))).toContain('admission');
-  }
+  expect(events.filter((event) => event !== 'admission')).toEqual([
+    'selection',
+    'request',
+    'forecast',
+    'decision',
+    'history-ready',
+    'committed',
+    'ack',
+  ]);
+  // Main rechecks its current owner after candidate-byte preparation; native rechecks after
+  // the forecast exchange are decided by the real late-credential refusal below.
+  expect(events.slice(events.indexOf('selection') + 1, events.indexOf('request'))).toContain(
+    'admission'
+  );
+  const historyRoot = join(
+    f.coreDb.dataRoot,
+    'workspaces',
+    f.workspace.id,
+    'knowledge',
+    'schema',
+    'history'
+  );
+  expect(schemaBoundary.histories).toHaveLength(1);
+  expect(schemaBoundary.histories[0]!.synchronous).toBe(2);
+  expect(
+    schemaBoundary.histories[0]!.files.sort((left, right) =>
+      compareCodeUnits(left.path, right.path)
+    )
+  ).toEqual(
+    [
+      {
+        path: join(historyRoot, `${applied.body.baseSchemaDigest.slice(7)}.yaml`),
+        hex: Buffer.from(f.initial.scopeSchemaText).toString('hex'),
+      },
+      {
+        path: join(historyRoot, `${applied.body.candidateSchemaDigest.slice(7)}.yaml`),
+        hex: Buffer.from(f.input.schemaText).toString('hex'),
+      },
+      {
+        path: join(historyRoot, `${applied.body.reportDigest.slice(7)}.json`),
+        hex: Buffer.from(
+          canonicalJsonText(
+            writeRetainedV1({
+              requiredFeatures: [],
+              reviewedReport: preview.body,
+              actualReport: preview.body,
+            })
+          )
+        ).toString('hex'),
+      },
+    ].sort((left, right) => compareCodeUnits(left.path, right.path))
+  );
   expect(f.selection().scopeSchemaText).toBe(f.input.schemaText);
   expect(f.selection().head.notebookCommit).toBe(f.input.baseRevision);
   const db = createTestWorkspaceDb(f.coreDb.dataRoot, f.workspace.id);
@@ -229,26 +493,60 @@ it('checks the complete schema closure once per synchronous preview and apply in
   }
 });
 
-it('refuses schema publication when the actual writer token is revoked after native opening', async () => {
+it('refuses schema publication when the actual writer token is revoked before the native forecast decision', async () => {
   const f = await fixture();
   const preview = await f.call('knowledge.schema.preview', f.input);
   expect(preview.status, JSON.stringify(preview.body)).toBe(200);
-  const client = getControlStoreWorkerClient();
-  const originalOpen = client.openWorkspaceSchemaApplication.bind(client);
-  const opening = vi
-    .spyOn(client, 'openWorkspaceSchemaApplication')
-    .mockImplementation(async (...args) => {
-      const submit = await originalOpen(...args);
-      revokeOpenKitAccessTokenRecord(f.coreDb, f.writer.tokenId);
-      return submit;
-    });
+  const historyRoot = join(
+    f.coreDb.dataRoot,
+    'workspaces',
+    f.workspace.id,
+    'knowledge',
+    'schema',
+    'history'
+  );
+  const historyBefore = existsSync(historyRoot)
+    ? readdirSync(historyRoot)
+        .sort()
+        .map((path) => ({
+          path,
+          hex: readFileSync(join(historyRoot, path)).toString('hex'),
+        }))
+    : [];
+  Object.assign(schemaBoundary, {
+    database: `workspace:${join(f.coreDb.dataRoot, 'workspaces', f.workspace.id, 'db', 'workspace.sqlite')}`,
+    events: [],
+    requests: [],
+    forecasts: [],
+    decisions: [],
+    histories: [],
+    proofs: [],
+    beforeForecast: () => revokeOpenKitAccessTokenRecord(f.coreDb, f.writer.tokenId),
+    injections: 0,
+    injectionError: undefined,
+  });
   const requestId = randomUUID();
   const applied = await f.call('knowledge.schema.apply', {
     ...f.input,
     requestId,
     reviewedReport: preview.body,
   });
-  expect(opening).toHaveBeenCalledOnce();
+  expect(schemaBoundary.injectionError).toBeUndefined();
+  expect(schemaBoundary.requests).toHaveLength(1);
+  expect(schemaBoundary.forecasts).toEqual(schemaBoundary.requests);
+  expect(schemaBoundary.injections).toBe(1);
+  expect(schemaBoundary.decisions).toHaveLength(1);
+  expect(schemaBoundary.histories).toEqual([]);
+  expect(
+    existsSync(historyRoot)
+      ? readdirSync(historyRoot)
+          .sort()
+          .map((path) => ({
+            path,
+            hex: readFileSync(join(historyRoot, path)).toString('hex'),
+          }))
+      : []
+  ).toEqual(historyBefore);
   expect(applied.status, JSON.stringify(applied.body)).toBe(403);
   expect(f.selection().head).toEqual(f.initial.head);
   expect(f.selection().scopeSchemaText).toBe(f.initial.scopeSchemaText);

@@ -68,7 +68,7 @@ import {
   type UserDb,
   type WorkspaceDb,
 } from './storage/db.js';
-import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
+import { readDataRootLayoutMarker, userDbPath, workspaceDbPath } from './storage/fs-layout.js';
 
 /** Current source and destination authority supplied by trusted operation assembly. */
 export interface KnowledgeRetrievalAccess {
@@ -83,6 +83,8 @@ export interface KnowledgeRetrievalAccess {
   outputTurnId?: string | undefined;
   /** Exact admitted Worker subject supplied only by trusted native context preparation. */
   resourcePolicyActor?: ResourcePolicyActor | undefined;
+  /** Actual admitted Workspace connection for native same-owner read/compute; lifetime stays with its caller. */
+  workspaceDb?: WorkspaceDb | undefined;
   /** Existing authenticated-self database, supplied by native Memory assembly when available. */
   userDb?: UserDb | undefined;
 }
@@ -657,10 +659,18 @@ export function currentKnowledgeReferenceProofs(
   input: Pick<Target, 'workspaceId' | 'access' | 'notebookRevision' | 'pageIds' | 'notebookRead'>
 ): ReadonlyMap<string, KnowledgePageReferenceProof> {
   const { access, workspaceId } = input;
-  const db = access.coreDb
-    ? openAdmittedWorkspaceReadDb(access.coreDb.dataRoot, workspaceId)
-    : undefined;
+  const ownedDb =
+    !access.workspaceDb && access.coreDb
+      ? openAdmittedWorkspaceReadDb(access.coreDb.dataRoot, workspaceId)
+      : undefined;
+  const db = access.workspaceDb ?? ownedDb;
   try {
+    if (access.workspaceDb) {
+      const dataRoot = access.store.getDataRoot();
+      if (!dataRoot || (access.coreDb && resolve(access.coreDb.dataRoot) !== resolve(dataRoot)))
+        throw new NotebookError('recovery_required');
+      assertWorkspaceNotebookReadBinding(dataRoot, workspaceId, access.workspaceDb);
+    }
     return resolveWorkspaceKnowledgeReferenceProofs({
       coreDb: access.coreDb,
       store: access.store,
@@ -671,7 +681,7 @@ export function currentKnowledgeReferenceProofs(
       notebookRead: input.notebookRead,
     });
   } finally {
-    db?.sqlite.close();
+    ownedDb?.sqlite.close();
   }
 }
 /** Request-local immutable content selection; this object contains no retained authorization grant. */
@@ -686,18 +696,36 @@ interface PinnedNotebookTarget extends Target {
   readonly scopeSchemaText: string;
 }
 
+/** Checks the actual borrowed physical owner before either Notebook selection or direct proof reads. */
+function assertWorkspaceNotebookReadBinding(
+  dataRoot: string,
+  workspaceId: string,
+  db: WorkspaceDb
+): void {
+  if (
+    db.scope !== 'workspace' ||
+    db.workspaceId !== workspaceId ||
+    resolve(db.dataRoot) !== resolve(dataRoot) ||
+    !db.sqlite.open ||
+    resolve(db.sqlite.name) !== resolve(workspaceDbPath(dataRoot, workspaceId))
+  )
+    throw new NotebookError('recovery_required');
+}
+
 /** Opens only the explicit Workspace database needed to bind one request-local SQL selection. */
 function selectWorkspaceNotebook(
   dataRoot: string,
   workspaceId: string,
   knowledgeBaseId: string,
-  preparedSelection?: WorkspaceNotebookSelection
+  preparedSelection?: WorkspaceNotebookSelection,
+  borrowedDb?: WorkspaceDb
 ): WorkspaceNotebookSelection {
   let workspaceDb: WorkspaceDb | undefined;
   try {
-    workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
+    if (borrowedDb) assertWorkspaceNotebookReadBinding(dataRoot, workspaceId, borrowedDb);
+    if (!borrowedDb) workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
     return readCurrentWorkspaceNotebookSelection({
-      workspaceDb,
+      workspaceDb: borrowedDb ?? workspaceDb!,
       dataRoot,
       workspaceId,
       expectedKnowledgeBaseId: knowledgeBaseId,
@@ -765,7 +793,8 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
     dataRoot,
     input.workspaceId,
     knowledgeBaseId,
-    input.notebookRead?.selection
+    input.notebookRead?.selection,
+    input.access.workspaceDb
   );
   const notebook = selection.notebook;
   const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
@@ -841,12 +870,20 @@ function pinnedSourcesReadable(
   const { store } = input.access;
   // Source-free pages do not depend on the Source metadata backend.
   let sources: ReturnType<typeof store.listKnowledgeSources> | undefined;
-  const workspaceDb =
+  const ownedWorkspaceDb =
+    !input.access.workspaceDb &&
     input.access.coreDb &&
     refs.some((reference) => /^(?:turn|item|context-package):/.test(reference))
       ? openAdmittedWorkspaceReadDb(input.access.coreDb.dataRoot, input.workspaceId)
       : undefined;
+  const workspaceDb = input.access.workspaceDb ?? ownedWorkspaceDb;
   try {
+    if (input.access.workspaceDb)
+      assertWorkspaceNotebookReadBinding(
+        input.dataRoot,
+        input.workspaceId,
+        input.access.workspaceDb
+      );
     verifyKnowledgeProposalWorkHistory({
       coreDb: input.access.coreDb,
       workspaceDb,
@@ -910,7 +947,7 @@ function pinnedSourcesReadable(
     if (error instanceof NotebookError) throw error;
     return false;
   } finally {
-    workspaceDb?.sqlite.close();
+    ownedWorkspaceDb?.sqlite.close();
   }
 }
 
@@ -1029,7 +1066,13 @@ export async function prepareAuthorizedWorkspaceNotebookRead(input: Target) {
   return prepareWorkspaceNotebookRead({
     ...input,
     dataRoot,
-    selection: selectWorkspaceNotebook(dataRoot, input.workspaceId, knowledgeBaseId),
+    selection: selectWorkspaceNotebook(
+      dataRoot,
+      input.workspaceId,
+      knowledgeBaseId,
+      undefined,
+      input.access.workspaceDb
+    ),
   });
 }
 /** Declares only body, description and tags as body fields; title has its own kernel weight. */

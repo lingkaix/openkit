@@ -13,10 +13,7 @@ import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationAdmission, NotebookUpdate } from './notebook-publication.js';
 import {
@@ -37,28 +34,28 @@ interface WorkspacePublicationAuthority {
   /** Trusted Worker/schedule entry rechecks its existing admission instead of inventing a human session. */
   readonly currentAuthority?: () => void;
   readonly actor: Extract<ActorRef, { kind: 'user' }>;
-  readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
-  /** Exact reviewed-Schema lifecycle freeze; it admits no ordinary publication. */
-  readonly schemaFreeze?: WorkspaceFrozenAdmission;
   readonly notebook: KnowledgeNotebook;
   /** Exact SQL-selected schema bytes for activated Workspace readers. */
   readonly scopeSchemaText: string;
   readonly request: NotebookUpdate;
 }
 
-/** Rechecks current scope and exact source disclosure; a caller's private read grant is not a shared publication grant. */
+/** Rechecks the original authorization and disclosure owners; native callers carry Main's current non-retained Review facts. */
 export function readWorkspaceNotebookAdmission(
-  input: WorkspacePublicationAuthority
+  input: WorkspacePublicationAuthority &
+    (
+      | {
+          readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
+          readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
+        }
+      | { readonly reviewRequiredPageIds: readonly string[] }
+    )
 ): NotebookPublicationAdmission {
   const { workspaceId } = input.request;
   input.currentAuthority?.();
-  const ownsSchemaFreeze =
-    input.schemaFreeze !== undefined &&
-    input.workspaceMutationAdmission.ownsFreeze(workspaceId, input.schemaFreeze);
   if (
-    (input.schemaFreeze !== undefined && !ownsSchemaFreeze) ||
-    (input.workspaceMutationAdmission.isClosed(workspaceId) && !ownsSchemaFreeze) ||
+    ('workspaceMutationAdmission' in input &&
+      input.workspaceMutationAdmission.isClosed(workspaceId)) ||
     (input.requestActor
       ? input.actor.id !== input.requestActor.userId ||
         !isWorkspaceOperationAuthorized(input.coreDb, input.requestActor, workspaceId, {
@@ -70,8 +67,10 @@ export function readWorkspaceNotebookAdmission(
     throw new OperationError('workspace_access_denied', 'Notebook publication access denied.', 403);
   const workspace = input.store.getWorkspace(workspaceId);
   const reviewRequiredPageIds =
-    findWorkspaceConfig(input.runtimeConfigManager.current(), workspaceId)?.config.workspace
-      .knowledgeMaintenance?.reviewRequiredPageIds ?? [];
+    'reviewRequiredPageIds' in input
+      ? [...input.reviewRequiredPageIds]
+      : (findWorkspaceConfig(input.runtimeConfigManager.current(), workspaceId)?.config.workspace
+          .knowledgeMaintenance?.reviewRequiredPageIds ?? []);
 
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot: input.coreDb.dataRoot,

@@ -151,10 +151,7 @@ import {
   type ControlProductSnapshot,
   type ControlStoreProductReadHandle,
   getWorkspaceProductReadHandle,
-  listProducts,
   openControlStoreProductReadHandle,
-  readProduct,
-  readProductEntries,
 } from './control-store-product-records.js';
 import type { WorkspaceDb } from './db.js';
 import {
@@ -779,12 +776,11 @@ export function readNativeProduct(
   existingReader?: ControlStoreProductReadHandle
 ): ControlProductSnapshot | undefined {
   const reader =
-    existingReader ??
-    (scope.sqlite ? undefined : openControlStoreProductReadHandle(scope.path, scope.owner));
-  const sqlite = reader?.sqlite ?? scope.sqlite!;
+    existingReader ?? openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  const sqlite = reader.sqlite;
   try {
     return sqlite.transaction(() => {
-      const known = reader ? reader.get(kind, id) : readProduct(sqlite, scope.owner, kind, id);
+      const known = reader.get(kind, id);
       if (!known) return undefined;
       const table = {
         workspace: 'control_workspaces',
@@ -815,7 +811,7 @@ export function readNativeProduct(
       };
     })();
   } finally {
-    if (!existingReader) reader?.close();
+    if (!existingReader) reader.close();
   }
 }
 
@@ -824,18 +820,14 @@ export function listNativeProducts(
   scope: Pick<NativeProductScope, 'path' | 'owner' | 'sqlite'>,
   kind: ControlProductKind
 ): ControlProductSnapshot[] {
-  const reader = scope.sqlite
-    ? undefined
-    : openControlStoreProductReadHandle(scope.path, scope.owner);
-  const sqlite = reader?.sqlite ?? scope.sqlite!;
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  const sqlite = reader.sqlite;
   const result: ControlProductSnapshot[] = [];
   try {
     let after = '';
     for (;;) {
       const page = sqlite.transaction(() => {
-        const known = reader
-          ? reader.list(kind, after)
-          : listProducts(sqlite, scope.owner, kind, after);
+        const known = reader.list(kind, after);
         const table = {
           workspace: 'control_workspaces',
           thread: 'control_threads',
@@ -860,7 +852,7 @@ export function listNativeProducts(
       after = page.at(-1)!.record.id as string;
     }
   } finally {
-    reader?.close();
+    reader.close();
   }
 }
 
@@ -870,21 +862,14 @@ export function readNativeProductEntries(
   turnId: string,
   kind: 'item' | 'event'
 ) {
-  const reader = scope.sqlite
-    ? undefined
-    : openControlStoreProductReadHandle(scope.path, scope.owner);
-  const sqlite = reader?.sqlite ?? scope.sqlite!;
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
   const entries: Array<{ sequence: number; id: string; revision: number; value: unknown }> = [];
   try {
-    const turn = reader
-      ? reader.get('turn', turnId)
-      : readProduct(sqlite, scope.owner, 'turn', turnId);
+    const turn = reader.get('turn', turnId);
     if (!turn) return entries;
     let after = 0;
     for (;;) {
-      const page = reader
-        ? reader.entries(turnId, kind, after)
-        : readProductEntries(sqlite, scope.owner, turnId, kind, after);
+      const page = reader.entries(turnId, kind, after);
       if (!page.length) return entries;
       // The page SELECT has ended before any byte reads. Its descriptors remain immutable.
       for (const row of page) {
@@ -933,7 +918,7 @@ export function readNativeProductEntries(
       }
     }
   } finally {
-    reader?.close();
+    reader.close();
   }
 }
 
@@ -950,8 +935,8 @@ export function readNativeTurnWriteHead(
 ) {
   const reader =
     scope.owner.kind === 'workspace'
-      ? getWorkspaceProductReadHandle(scope.path, scope.owner)
-      : openControlStoreProductReadHandle(scope.path, scope.owner);
+      ? getWorkspaceProductReadHandle(scope.path, scope.owner, scope.sqlite)
+      : openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
   let snapshot: ControlProductSnapshot | undefined;
   let sequence = 0;
   let eventSequence = 0;
@@ -986,7 +971,7 @@ export function readNativeTurnWriteHead(
       }
     })();
   } finally {
-    if (scope.owner.kind === 'server') reader.close();
+    if (scope.owner.kind === 'server' || scope.sqlite) reader.close();
   }
   if (!snapshot) return undefined;
   const metadata = StoredTurnV1Schema.parse(snapshot.record);
@@ -1447,7 +1432,7 @@ export function loadWorkspace(workspaceRoot: string, workspaceId: string): Works
 
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
-  const artifacts = loadArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
+  const artifacts = readWorkspaceArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
   const knowledgeReader = getWorkspaceProductReadHandle(
     join(workspaceRoot, 'db', 'workspace.sqlite'),
     { kind: 'workspace', workspaceId }
@@ -2131,7 +2116,7 @@ function loadKnowledgeSources(
  * @param turnsById Known turns by id.
  * @returns Artifacts in directory-name order.
  */
-function loadArtifacts(
+export function readWorkspaceArtifacts(
   workspaceRoot: string,
   workspaceId: string,
   threadIds: ReadonlySet<string>,

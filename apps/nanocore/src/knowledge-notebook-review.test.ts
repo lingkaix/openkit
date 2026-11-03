@@ -8,7 +8,10 @@ import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { readAdmittedWorkspaceKnowledgeSelection } from './storage/workspace-file-records.js';
+import {
+  nativeProductScope,
+  readAdmittedWorkspaceKnowledgeSelection,
+} from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { DEMO_WORKSPACE_ID, seedDemoWorkspace } from './test-support/demo-store.js';
 import {
@@ -176,6 +179,175 @@ afterEach(async () => {
 });
 
 describe('native fixed-base Knowledge Review and removal', () => {
+  it('keeps later real Proposal and accepted Review publication outside the borrowed cut', async () => {
+    const f = await fixture();
+    const db = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
+    const scope = nativeProductScope(f.dataRoot, {
+      kind: 'workspace',
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    try {
+      db.sqlite.exec('BEGIN');
+      const bound = new FsStore({
+        dataRoot: f.dataRoot,
+        nativeProductScope: { ...scope, sqlite: db.sqlite },
+      });
+      const pagesBefore = bound.listKnowledge(DEMO_WORKSPACE_ID);
+      const sourcesBefore = bound.listKnowledgeSources(DEMO_WORKSPACE_ID);
+      expect(bound.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
+      expect(bound.listKnowledgeProposalReviewDecisions(DEMO_WORKSPACE_ID)).toEqual([]);
+      // Notebook publication and Review retain their original real public producers.
+      const d = await draft(f, 'borrowed');
+      // The draft response owns status; the retained Proposal owns all remaining fields.
+      const { status: draftStatus, ...proposalRecord } = d.proposal;
+      expect(draftStatus).toBe('pending');
+      const accepted = await accept(f, d);
+      expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+      expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([proposalRecord]);
+      expect(f.store.listKnowledgeProposalReviewDecisions(DEMO_WORKSPACE_ID)).toEqual([
+        accepted.body.review,
+      ]);
+      expect(bound.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
+      expect(bound.listKnowledgeProposalReviewDecisions(DEMO_WORKSPACE_ID)).toEqual([]);
+      expect(bound.getKnowledgeProposalReviewDecision(d.proposal.id)).toBeNull();
+      expect(() => bound.projectKnowledgeProposalDraft(DEMO_WORKSPACE_ID, d.proposal.id)).toThrow(
+        expect.objectContaining({ code: 'recovery_required' })
+      );
+      expect(() =>
+        bound.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, accepted.body.review.reviewId)
+      ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+      expect(bound.listKnowledge(DEMO_WORKSPACE_ID)).toEqual(pagesBefore);
+      expect(bound.listKnowledgeSources(DEMO_WORKSPACE_ID)).toEqual(sourcesBefore);
+      expect(db.sqlite.inTransaction).toBe(true);
+      db.sqlite.exec('ROLLBACK');
+      expect(bound.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([proposalRecord]);
+      expect(bound.projectKnowledgeProposalDraft(DEMO_WORKSPACE_ID, d.proposal.id)).toEqual(
+        proposalRecord
+      );
+      expect(bound.knowledgeProposalDigest(DEMO_WORKSPACE_ID, d.proposal.id)).toBe(
+        d.proposalDigest
+      );
+      expect(bound.listKnowledgeProposalReviewDecisions(DEMO_WORKSPACE_ID)).toEqual([
+        accepted.body.review,
+      ]);
+      expect(bound.getKnowledgeProposalReviewDecision(d.proposal.id)).toEqual(accepted.body.review);
+      expect(
+        bound.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, accepted.body.review.reviewId)
+      ).toEqual(accepted.body);
+      // Notebook/Storage owners retain exact original bytes, history and Source identity.
+      expect(bound.getKnowledgePage(DEMO_WORKSPACE_ID, 'borrowed').content).toBe(d.bytes);
+      expect(bound.listKnowledgeSources(DEMO_WORKSPACE_ID)).toEqual(
+        f.store.listKnowledgeSources(DEMO_WORKSPACE_ID)
+      );
+      expect(currentRevision(f)).toBe(d.proposal.candidateRevision);
+      expect(
+        execFileSync(
+          'git',
+          [
+            '--git-dir',
+            f.repositoryPath,
+            'show',
+            `${d.proposal.candidateRevision}:pages/borrowed.md`,
+          ],
+          { encoding: 'utf8' }
+        )
+      ).toBe(d.bytes);
+      // The original Review remains accountable to exactly its original successful Audit.
+      expect(
+        db.sqlite
+          .prepare(
+            "SELECT actor_json FROM audit_events WHERE workspace_id = ? AND request_id = ? AND category = 'knowledge' AND action = 'knowledge.proposal.decide' AND outcome = 'succeeded'"
+          )
+          .all(DEMO_WORKSPACE_ID, accepted.body.review.requestId)
+          .map((row) => JSON.parse((row as { actor_json: string }).actor_json))
+      ).toEqual([accepted.body.review.actor]);
+      expect(db.sqlite.open).toBe(true);
+      expect(db.sqlite.inTransaction).toBe(false);
+    } finally {
+      if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
+      db.sqlite.close();
+    }
+  }, 30_000);
+
+  it('verifies the original retained Review and Audit on the held cut after a real deferred append', async () => {
+    const f = await fixture();
+    const d = await draft(f, 'deferred-borrowed');
+    // The draft response owns status; the retained Proposal owns all remaining fields.
+    const { status: draftStatus, ...proposalRecord } = d.proposal;
+    expect(draftStatus).toBe('pending');
+    const decision = {
+      proposalId: d.proposal.id,
+      decision: 'deferred',
+      proposalDigest: d.proposalDigest,
+      baseRevision: d.baseRevision,
+      candidateRevision: d.proposal.candidateRevision,
+    };
+    const first = await call(f, 'knowledge.proposal.decide', {
+      ...decision,
+      requestId: randomUUID(),
+    });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    const db = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
+    const scope = nativeProductScope(f.dataRoot, {
+      kind: 'workspace',
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    try {
+      db.sqlite.exec('BEGIN');
+      const bound = new FsStore({
+        dataRoot: f.dataRoot,
+        nativeProductScope: { ...scope, sqlite: db.sqlite },
+      });
+      expect(bound.projectKnowledgeProposalDraft(DEMO_WORKSPACE_ID, d.proposal.id)).toEqual(
+        proposalRecord
+      );
+      expect(
+        bound.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, first.body.review.reviewId)
+      ).toEqual(first.body);
+      const second = await call(f, 'knowledge.proposal.decide', {
+        ...decision,
+        requestId: randomUUID(),
+      });
+      expect(second.status, JSON.stringify(second.body)).toBe(200);
+      expect(f.store.getKnowledgeProposalReviewDecision(d.proposal.id)).toEqual(second.body.review);
+      // A later append cannot make a valid original Review fail its retained-history/Audit check.
+      expect(
+        bound.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, first.body.review.reviewId)
+      ).toEqual(first.body);
+      expect(bound.listKnowledgeProposalReviewDecisions(DEMO_WORKSPACE_ID)).toEqual([
+        first.body.review,
+      ]);
+      expect(bound.getKnowledgeProposalReviewDecision(d.proposal.id)).toEqual(first.body.review);
+      expect(() =>
+        bound.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, second.body.review.reviewId)
+      ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+      expect(bound.knowledgeProposalDigest(DEMO_WORKSPACE_ID, d.proposal.id)).toBe(
+        d.proposalDigest
+      );
+      expect(db.sqlite.inTransaction).toBe(true);
+      db.sqlite.exec('ROLLBACK');
+      expect(bound.listKnowledgeProposalReviewDecisions(DEMO_WORKSPACE_ID)).toEqual([
+        first.body.review,
+        second.body.review,
+      ]);
+      expect(bound.getKnowledgeProposalReviewDecision(d.proposal.id)).toEqual(second.body.review);
+      expect(
+        bound.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, first.body.review.reviewId)
+      ).toEqual(first.body);
+      expect(
+        bound.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, second.body.review.reviewId)
+      ).toEqual(second.body);
+      expect(bound.projectKnowledgeProposalDraft(DEMO_WORKSPACE_ID, d.proposal.id)).toEqual(
+        proposalRecord
+      );
+      expect(db.sqlite.open).toBe(true);
+      expect(db.sqlite.inTransaction).toBe(false);
+    } finally {
+      if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
+      db.sqlite.close();
+    }
+  }, 30_000);
+
   it('publishes the retained candidate and refuses a stale Review without changing the winner', async () => {
     const f = await fixture();
     const d = await draft(f);
