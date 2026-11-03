@@ -9,6 +9,7 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { FsStore } from '../lib/store.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
+import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
@@ -60,8 +61,10 @@ async function fixture() {
       currentPolicy: () => manager.current().openKitConfig.policy?.mediation,
       reload,
     });
+  const wake = vi.fn(async () => undefined);
   const services = {
     coreDb,
+    wake,
     goalDomain: {
       forActor,
       currentRevision: () =>
@@ -166,6 +169,8 @@ async function fixture() {
     );
   return {
     actor,
+    coreDb,
+    wake,
     scope,
     db,
     store,
@@ -238,4 +243,57 @@ it('keeps failed publication non-authorizing and retries from the completed requ
   expect(f.forActor(f.actor).read(f.scope)).toMatchObject({ state: 'active' });
   expect(readPendingRequest(f.db.sqlite, f.plan.pendingRequestId)).toEqual(request);
   expect(readGoalView(f.store, f.db, f.scope.goalId).goal!.changeRevision).toBe(revision);
+});
+
+it('retains the committed Goal, finished Pending and original receipt when Core Policy publication refuses and performs no wake', async () => {
+  const f = await fixture();
+  const original = readFileSync(f.configPath, 'utf8');
+  const wakes = f.wake.mock.calls.length;
+  const requestId = randomUUID();
+  // Deliberate post-setup SQL fault at the real Core publication crossing. Goal writes stay writable.
+  f.coreDb.sqlite.exec(`
+    CREATE TRIGGER refuse_goal_policy_publication BEFORE INSERT ON permission_decisions
+    WHEN NEW.owner_scope = 'server'
+      AND json_extract(NEW.mediation_json, '$.operation') = 'policy.write'
+      AND json_extract(NEW.mediation_json, '$.stage') = 'decide'
+      AND json_extract(NEW.context_summary_json, '$.cause') = 'goal-domain.activate'
+    BEGIN SELECT RAISE(ABORT, 'synthetic Goal Core publication refusal'); END;
+  `);
+  await expect(f.consume(requestId)).rejects.toMatchObject({
+    code: 'goal_domain_publication_failed',
+  });
+  const request = readPendingRequest(f.db.sqlite, f.plan.pendingRequestId)!;
+  expect(request).toMatchObject({ claim: 'finished', disposition: 'approved-executed' });
+  expect(readGoalView(f.store, f.db, f.scope.goalId).goal!.activePlanVersionId).toBe(
+    f.plan.planVersionId
+  );
+  const receipt = f.store.getCommandRequest('goal.plan.approve', requestId, {
+    actorId: f.actor.userId,
+    workspaceId: f.scope.workspaceId,
+    threadId: f.scope.threadId,
+  });
+  expect(receipt).not.toBeNull();
+  expect(receipt).toMatchObject({ response: { kind: 'goal', id: f.scope.goalId } });
+  expect(readFileSync(f.configPath, 'utf8')).toBe(original);
+  expect(f.reload).not.toHaveBeenCalled();
+  expect(f.wake).toHaveBeenCalledTimes(wakes);
+  expect(f.forActor(f.actor).read(f.scope)).toBeNull();
+  expect(listServerPermissionDecisions(f.coreDb)).toEqual([]);
+  const revision = readGoalView(f.store, f.db, f.scope.goalId).goal!.changeRevision;
+  // Remove only the deliberate fault, then explicitly retry the same recorded command.
+  // Success distinguishes that crossing fault from a missing native form or fixture setup failure.
+  f.coreDb.sqlite.exec('DROP TRIGGER refuse_goal_policy_publication');
+  await f.consume(requestId);
+  expect(
+    f.store.getCommandRequest('goal.plan.approve', requestId, {
+      actorId: f.actor.userId,
+      workspaceId: f.scope.workspaceId,
+      threadId: f.scope.threadId,
+    })
+  ).toEqual(receipt);
+  expect(readPendingRequest(f.db.sqlite, f.plan.pendingRequestId)).toEqual(request);
+  expect(readGoalView(f.store, f.db, f.scope.goalId).goal!.changeRevision).toBe(revision);
+  expect(f.forActor(f.actor).read(f.scope)).toMatchObject({ state: 'active' });
+  expect(listServerPermissionDecisions(f.coreDb)).toHaveLength(1);
+  expect(f.wake).toHaveBeenCalledTimes(wakes + 1);
 });

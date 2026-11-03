@@ -44,6 +44,7 @@ import { persistLlmCapabilityCallSystemPromptDigestInDb } from '../llm/system-pr
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
   prepareCapturedCapabilityAdmission,
+  recordBootPolicySelfCheckDecisionsInDb,
   recordProductPermissionDecisionInDb,
 } from '../policy/permission-decisions.js';
 import { PermissionDecisionRetainedV1Schema } from '../policy/retained-records-v1.js';
@@ -464,18 +465,61 @@ const serverAttributionCommand = z
       ).length === 1,
     { message: 'Call attribution requires exactly one owned mutation.' }
   );
+/** Only the finite Kernel fields retained by each fixed boot decision cross the envelope. */
+const bootKernelDecision = z
+  .object({
+    result: z.enum(['allow', 'deny']),
+    reasonCode: z.string(),
+    kernelTrace: z
+      .object({
+        matchedAssociations: z.array(z.string()),
+        matchedProhibitions: z.array(z.string()),
+      })
+      .strict(),
+  })
+  .strict();
+/** The two original Server Policy SQL units share one closed family and existing prepared codec. */
+const serverPermissionCommand = z
+  .object({
+    kind: z.literal('server-permission'),
+    stage: z.discriminatedUnion('kind', [
+      z
+        .object({
+          kind: z.literal('record'),
+          decision: permissionDecision,
+          workspaceId: WorkspaceIdSchema.nullable().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('boot'),
+          bootId: z.string(),
+          policySnapshotId: z.string(),
+          decisions: z.tuple([bootKernelDecision, bootKernelDecision]),
+          now: timestamp.optional(),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
 /** Names only the Server ledger cases of the existing capability owner. */
-export function isServerCapabilityCommand(
-  input: ControlCapabilityCommandInput
-): input is Extract<
+export function isServerCapabilityCommand(input: ControlCapabilityCommandInput): input is Extract<
   ControlCapabilityCommandInput,
-  { kind: 'server-admit' | 'server-usage' | 'server-finish' | 'server-attribution' }
+  {
+    kind:
+      | 'server-admit'
+      | 'server-usage'
+      | 'server-finish'
+      | 'server-attribution'
+      | 'server-permission';
+  }
 > {
   return (
     input.kind === 'server-admit' ||
     input.kind === 'server-usage' ||
     input.kind === 'server-finish' ||
-    input.kind === 'server-attribution'
+    input.kind === 'server-attribution' ||
+    input.kind === 'server-permission'
   );
 }
 /** User Policy shares the existing capability Unit, without Workspace or Server ledger authority. */
@@ -531,6 +575,12 @@ function isCoreCapabilityRefusal(error: unknown): error is Error {
       'Gateway lineage requires its running CapabilityCall.',
       'Gateway lineage logical model conflicts.',
       'Gateway lineage entry is missing.',
+      'Boot policy self-check record is contradictory.',
+      'require_approval permission decisions require requiredApprovalKind.',
+      'PermissionDecision enforcement point projection is inconsistent.',
+      'Gate Policy invocation must match its decision and atomic linked Audit.',
+      'Finite Policy uses require a final owner-scoped allow and atomic linked Audit.',
+      'Consumed Policy statements must exactly match requested finite-use limits.',
     ].includes(error.message)
   )
     return true;
@@ -552,6 +602,14 @@ export function applyControlCoreCapabilityCommand(
   if (!db.sqlite.inTransaction || !isServerCapabilityCommand(input))
     throw new WorkerRawOutputAuthorityError();
   try {
+    if (input.kind === 'server-permission') {
+      if (input.stage.kind === 'record') {
+        recordControlPermissionDecision(db, input.stage.decision, input.stage.workspaceId);
+      } else {
+        recordBootPolicySelfCheckDecisionsInDb({ ...input.stage, coreDb: db });
+      }
+      return null;
+    }
     if (input.kind === 'server-admit')
       return startCapabilityCallInDb(
         presentControlFacts({
@@ -633,6 +691,7 @@ export const ControlCapabilityCommandInputSchema = z.discriminatedUnion('kind', 
   serverUsageCommand,
   serverFinishCommand,
   serverAttributionCommand,
+  serverPermissionCommand,
 ]);
 /** Exact prepared command admitted by the existing bounded native envelope. */
 export type ControlCapabilityCommandInput = z.infer<typeof ControlCapabilityCommandInputSchema>;
@@ -680,6 +739,7 @@ export const ControlCapabilityWireInputSchema = z.discriminatedUnion('kind', [
       .extend({ deliveredKnowledgeAnswer: ControlScalarTextSchema.optional() }),
   }),
   serverAttributionCommand,
+  serverPermissionCommand,
 ]);
 /** Transient binary binding for the current answer field, never retained data. */
 export type ControlCapabilityWireInput = z.infer<typeof ControlCapabilityWireInputSchema>;
@@ -774,17 +834,20 @@ export const ControlCapabilityCommandResultSchema = z.union([
 /** Prepared results become visible only after the existing outer durable acknowledgement. */
 export type ControlCapabilityCommandResult = z.infer<typeof ControlCapabilityCommandResultSchema>;
 
-/** Records only prepared Workspace facts; the existing owner checks finite uses and linked Audit. */
+/** Records the exact prepared facts on their native owner, with the original linked-Audit checks. */
 function recordControlPermissionDecision(
-  db: WorkspaceDb | UserDb,
-  decision: z.infer<typeof permissionDecision>
+  db: WorkspaceDb | UserDb | CoreDb,
+  decision: z.infer<typeof permissionDecision>,
+  workspaceId: string | null = null
 ): void {
   recordProductPermissionDecisionInDb(
     presentControlFacts({
       ...decision,
-      ...(db.scope === 'user'
-        ? { userDb: db, workspaceId: null, ownerScope: 'user' as const }
-        : { workspaceDb: db, workspaceId: db.workspaceId, ownerScope: 'workspace' as const }),
+      ...(db.scope === 'core'
+        ? { coreDb: db, ownerScope: 'server' as const, workspaceId }
+        : db.scope === 'user'
+          ? { userDb: db, workspaceId: null, ownerScope: 'user' as const }
+          : { workspaceDb: db, workspaceId: db.workspaceId, ownerScope: 'workspace' as const }),
       now: new Date(decision.now),
     })
   );

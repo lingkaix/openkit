@@ -23,6 +23,10 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
+import {
+  heldServerPermissionAck,
+  releaseCommit,
+} from '../test-support/control-native-transport.js';
 import { createRetainedDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
@@ -31,8 +35,16 @@ import { createAdministrationConfiguration } from './administration-configuratio
 import { createRuntimeConfigManager } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
+// Keep the actual native owner; hold only this family's exact acknowledged reply on Main.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
+  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+});
+
 const cleanup: (() => void)[] = [];
 afterEach(async () => {
+  releaseCommit();
   await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) close();
@@ -431,6 +443,51 @@ describe('finite delegated Worker Git-read application', () => {
     ).toMatchObject({
       status: 'failed',
     });
+  });
+
+  it.each([
+    'cancelled',
+    'author-revoked',
+  ] as const)('refuses maintenance %s during its admitted evidence ACK wait before Item or file publication', async (change) => {
+    const f = await fixture(1, true);
+    const proposal = await f.propose();
+    const request = { requestId: randomUUID(), candidate: proposal.candidate };
+    const controller = new AbortController();
+    const original = readFileSync(f.agentPath, 'utf8');
+    const items = f.store.listThreadItems(f.workspaceId, f.home.threadId);
+    let pending: Promise<unknown> | undefined;
+    try {
+      const held = await heldServerPermissionAck(
+        { kind: 'maintenance', requestId: request.requestId },
+        () =>
+          (pending = f.service.applyDelegated(request, { ...f.home, signal: controller.signal }))
+      );
+      expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
+      expect(f.store.listThreadItems(f.workspaceId, f.home.threadId)).toEqual(items);
+      expect(f.write).not.toHaveBeenCalled();
+      expect(f.reload).not.toHaveBeenCalled();
+      const committed = listServerPermissionDecisions(f.coreDb);
+      const evidence = committed.filter(
+        (row) => (row.contextSummary as { requestId?: string }).requestId === request.requestId
+      );
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]!.result).toBe('allow');
+      if (change === 'cancelled') controller.abort();
+      else revokeOpenKitAccessTokenRecord(f.coreDb, f.issuerTokenId!);
+      releaseCommit();
+      await expect(held.result).rejects.toMatchObject({
+        code:
+          change === 'cancelled' ? 'configuration_cancelled' : 'configuration_delegation_required',
+      });
+      expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
+      expect(f.store.listThreadItems(f.workspaceId, f.home.threadId)).toEqual(items);
+      expect(f.write).not.toHaveBeenCalled();
+      expect(f.reload).not.toHaveBeenCalled();
+      expect(listServerPermissionDecisions(f.coreDb)).toEqual(committed);
+    } finally {
+      releaseCommit();
+      if (pending) await Promise.allSettled([pending]);
+    }
   });
 
   it('reports persistence separately when reload fails and replays without another write', async () => {

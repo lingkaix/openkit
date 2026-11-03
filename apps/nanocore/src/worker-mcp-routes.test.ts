@@ -6,7 +6,11 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
-import { CONTROL_WORKER_LIMITS } from './storage/control-store-worker-protocol.js';
+import {
+  CONTROL_WORKER_LIMITS,
+  type ControlWorkerReply,
+  type ControlWorkerRequest,
+} from './storage/control-store-worker-protocol.js';
 import { importWorkspaceVaultGrants } from './storage/test-support/vault-retained-fixtures.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
@@ -586,7 +590,7 @@ describe('worker MCP routes', () => {
     };
     let document = EMPTY_POLICY_DOCUMENT;
     let conditions: typeof document.statements = [];
-    const admit = (version = participantVersion, failure?: 'error') => {
+    const admit = async (version = participantVersion, failure?: 'error') => {
       const prepared = preparePolicyDocument({
         current: document,
         userId,
@@ -626,7 +630,7 @@ describe('worker MCP routes', () => {
           ],
         }),
       });
-      recordPolicyWriteDecision({
+      await recordPolicyWriteDecision({
         coreDb,
         actor:
           authorityCase === 'member'
@@ -658,7 +662,7 @@ describe('worker MCP routes', () => {
       document = prepared.document;
       expect(readAdmittedPolicyDocument(coreDb, document)).toEqual(document);
     };
-    const condition = (effect: 'prohibit' | 'require_approval', serverId = 'echo') => {
+    const condition = async (effect: 'prohibit' | 'require_approval', serverId = 'echo') => {
       conditions = [
         {
           id: 'human-mcp-condition',
@@ -683,9 +687,9 @@ describe('worker MCP routes', () => {
           },
         },
       ];
-      admit();
+      await admit();
     };
-    admit();
+    await admit();
     const baseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
     const app = new Hono();
     registerWorkerMcpRoutes({
@@ -862,14 +866,14 @@ describe('worker MCP routes', () => {
       const firstApprovalDiscovery = approvalClient.listTools();
       try {
         await cleanupEntered;
-        condition('prohibit', 'echo-approval');
+        await condition('prohibit', 'echo-approval');
         releaseCleanup();
         const currentDiscovery = await firstApprovalDiscovery;
         expect.soft(currentDiscovery.tools).toEqual([]);
       } finally {
         releaseCleanup();
         conditions = [];
-        admit();
+        await admit();
       }
       expect(document).toEqual(beforeDiscoveryPolicy);
       const seeded = workspaceDb.sqlite
@@ -890,7 +894,7 @@ describe('worker MCP routes', () => {
       expect(gateway.callTool).toHaveBeenCalledTimes(1);
       expect(credentialRead).toHaveBeenCalled();
       // Baseline supply stays usable without an explicit allow statement.
-      condition('prohibit');
+      await condition('prohibit');
       expect((await client.listTools()).tools).toEqual([]);
       const prohibitedBoundary = boundaryCounts();
       await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
@@ -900,7 +904,7 @@ describe('worker MCP routes', () => {
         mediation: { kernel: { effect: 'deny' } },
       });
       conditions = [];
-      admit();
+      await admit();
       expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(['echo']);
       const allowedBoundary = boundaryCounts();
       gate = 'deny';
@@ -909,12 +913,12 @@ describe('worker MCP routes', () => {
       assertRecords(start, 'deny', 'completed');
       expect(boundaryCounts()).toEqual(allowedBoundary);
       const absentVersion = `sha256:${'2'.repeat(64)}`;
-      admit(absentVersion, 'error');
+      await admit(absentVersion, 'error');
       start = decisions().length;
       await expect(call()).rejects.toMatchObject({ data: { code: 'mcp-call-failed' } });
       const unavailable = assertRecords(start, 'error', 'unavailable');
       expect(boundaryCounts()).toEqual(allowedBoundary);
-      admit(absentVersion);
+      await admit(absentVersion);
       start = decisions().length;
       const pendingResult = await call();
       expect(pendingResult).toMatchObject({
@@ -942,7 +946,7 @@ describe('worker MCP routes', () => {
         })
       );
       expect(boundaryCounts()).toEqual(allowedBoundary);
-      admit();
+      await admit();
       gate = 'allow';
       start = decisions().length;
       const invokedBeforeEvidenceFailure = invoke.mock.calls.length;
@@ -957,7 +961,7 @@ describe('worker MCP routes', () => {
       expect(invoke).toHaveBeenCalledTimes(invokedBeforeEvidenceFailure + 1);
       expect(decisions()).toHaveLength(start);
       expect(boundaryCounts()).toEqual(allowedBoundary);
-      condition('require_approval', 'echo-approval');
+      await condition('require_approval', 'echo-approval');
       gate = 'deny';
       start = decisions().length;
       await expect(approvalCall()).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
@@ -1012,7 +1016,7 @@ describe('worker MCP routes', () => {
         ...approvalOnlyConditions,
         { ...approvalCondition, id: 'prohibit-existing-approval', effect: 'prohibit' },
       ];
-      admit();
+      await admit();
       const beforeProhibitedDuplicate = boundaryCounts();
       const beforeDuplicateDecisions = decisions().length;
       // The SDK allocates a fresh protocol request id for identical qualified Tool arguments.
@@ -1036,7 +1040,7 @@ describe('worker MCP routes', () => {
         afterPolicyApproval
       );
       conditions = approvalOnlyConditions;
-      admit();
+      await admit();
       expect(document).toEqual(originalApprovalPolicy);
       expect(await approvalCall()).toMatchObject({
         isError: true,
@@ -1421,7 +1425,7 @@ describe('worker MCP routes', () => {
     const askKnowledge = vi.fn(async () => knowledgeAnswer);
     let builtinPolicy = EMPTY_POLICY_DOCUMENT;
     const builtinBaseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
-    const publishBuiltinCondition = (effect: 'prohibit' | 'require_approval' | null) => {
+    const publishBuiltinCondition = async (effect: 'prohibit' | 'require_approval' | null) => {
       const userId = 'usr_00000000-0000-7000-8000-000000000001';
       const principal = { kind: 'human' as const, id: userId };
       const prepared = preparePolicyDocument({
@@ -1471,7 +1475,7 @@ describe('worker MCP routes', () => {
             : [],
         }),
       });
-      recordPolicyWriteDecision({
+      await recordPolicyWriteDecision({
         coreDb,
         actor: { kind: 'local', userId },
         candidate: {
@@ -1618,7 +1622,7 @@ describe('worker MCP routes', () => {
               'mcp.call-tool.kernel_apps_list'
             );
         const callsBefore = selectedCalls();
-        publishBuiltinCondition('prohibit');
+        await publishBuiltinCondition('prohibit');
         expect((await workClient.listTools()).tools.map((tool) => tool.name)).not.toContain(
           operationToolName('knowledge.ask')
         );
@@ -1636,7 +1640,7 @@ describe('worker MCP routes', () => {
         ).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
         expect(askKnowledge).toHaveBeenCalledTimes(1);
         expect(selectedCalls()).toEqual(callsBefore);
-        publishBuiltinCondition('require_approval');
+        await publishBuiltinCondition('require_approval');
         expect((await workClient.listTools()).tools.map((tool) => tool.name)).toContain(
           operationToolName('knowledge.ask')
         );
@@ -1658,7 +1662,7 @@ describe('worker MCP routes', () => {
         expect(conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toEqual(
           pendingBefore
         );
-        publishBuiltinCondition(null);
+        await publishBuiltinCondition(null);
         const ledgerBeforeHeldAsk = listWorkspaceCapabilityCalls(
           conditionDb,
           workspaceIdForOwner(turn.owner)
@@ -1685,7 +1689,7 @@ describe('worker MCP routes', () => {
         const withheld = expect(heldAsk).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
         try {
           await askEntered;
-          publishBuiltinCondition('prohibit');
+          await publishBuiltinCondition('prohibit');
           releaseAsk();
           await withheld;
           expect(askKnowledge).toHaveBeenCalledTimes(2);
@@ -1711,7 +1715,7 @@ describe('worker MCP routes', () => {
           );
         } finally {
           releaseAsk();
-          publishBuiltinCondition(null);
+          await publishBuiltinCondition(null);
         }
       } finally {
         conditionDb.sqlite.close();
@@ -2859,7 +2863,7 @@ describe('worker MCP routes', () => {
     });
     runtimeConfig.openKitConfig.policy = {
       ...runtimeConfig.openKitConfig.policy,
-      mediation: admitTestMcpApproval({
+      mediation: await admitTestMcpApproval({
         coreDb,
         workspaceId,
         serverId: 'echo',
@@ -3667,7 +3671,7 @@ describe('worker MCP routes', () => {
     });
     snapshot.openKitConfig.policy = {
       ...snapshot.openKitConfig.policy,
-      mediation: admitTestMcpApproval({
+      mediation: await admitTestMcpApproval({
         coreDb,
         workspaceId,
         serverId: 'echo',
@@ -6127,6 +6131,8 @@ interface McpNativeInterception {
   readonly path: string;
   readonly gate: SharedArrayBuffer;
   packet(value: McpNativeCommitPacket): void;
+  posted(value: unknown): void;
+  reply(value: unknown, forward: () => boolean): boolean;
 }
 
 const mcpNativeInterception = vi.hoisted(() => ({
@@ -6163,11 +6169,22 @@ vi.mock('node:worker_threads', async (load) => {
           super(filename, options);
         }
       }
+      override postMessage(
+        value: unknown,
+        transferList?: readonly import('node:worker_threads').TransferListItem[]
+      ): void {
+        this.observation?.posted(value);
+        super.postMessage(value, transferList);
+      }
       override emit(event: string | symbol, ...args: unknown[]): boolean {
         const value = args[0] as McpNativeCommitPacket | undefined;
-        if (event === 'message' && value?.mcpCommitObservation === true && this.observation) {
-          this.observation.packet(value);
-          return true;
+        if (event === 'message' && this.observation) {
+          if (value?.mcpCommitObservation === true) {
+            this.observation.packet(value);
+            return true;
+          }
+          // Forward the original event and object exactly once, after the selected handoff.
+          if (this.observation.reply(value, () => super.emit(event, ...args))) return true;
         }
         return super.emit(event, ...args);
       }
@@ -6296,6 +6313,27 @@ function observeNativeMcpPhysicalCommits(workspacePath: string) {
   let main: ReturnType<typeof observeMcpPhysicalCommits> | undefined;
   let beforeCommit: (() => void) | undefined;
   let afterCommit: ((writes: string[]) => void) | undefined;
+  let afterPermissionCommit: (() => Promise<void>) | undefined;
+  const permittingRequests = new Set<number>();
+  const handoffs: Promise<void>[] = [];
+  const handoffCounts = { selected: 0, received: 0, forwarded: 0 };
+  let heldReply:
+    | {
+        id: number;
+        received: boolean;
+        cancelled: boolean;
+        completed: boolean;
+        acknowledgeArrival(): void;
+        forward?: (() => boolean) | undefined;
+      }
+    | undefined;
+  const forwardReadyReply = () => {
+    if (!heldReply?.completed || !heldReply.forward) return;
+    const forward = heldReply.forward;
+    heldReply = undefined;
+    handoffCounts.forwarded += 1;
+    forward();
+  };
   const interception: McpNativeInterception = {
     path: workspacePath,
     gate: shared,
@@ -6309,7 +6347,48 @@ function observeNativeMcpPhysicalCommits(workspacePath: string) {
         }
         if (value.ledger) {
           if (value.phase === 'before') beforeCommit?.();
-          else afterCommit?.(value.writes);
+          else {
+            afterCommit?.(value.writes);
+            if (
+              afterPermissionCommit &&
+              value.writes.some((sql) => /INSERT.*permission_decisions/i.test(sql))
+            ) {
+              if (heldReply || permittingRequests.size !== 1)
+                throw new Error('Permitting commit has no unique posted request to hold.');
+              const id = [...permittingRequests][0]!;
+              let acknowledgeArrival!: () => void;
+              const arrived = new Promise<void>((resolve) => {
+                acknowledgeArrival = resolve;
+              });
+              heldReply = {
+                id,
+                received: false,
+                cancelled: false,
+                completed: false,
+                acknowledgeArrival,
+              };
+              const selected = heldReply;
+              const callback = afterPermissionCommit;
+              afterPermissionCommit = undefined;
+              handoffCounts.selected += 1;
+              // The packet finally block releases the Worker first. Wait for its exact ACK
+              // to be captured before submitting Core work to that same available Worker.
+              const action = Promise.resolve()
+                .then(async () => {
+                  await arrived;
+                  if (!selected.cancelled) await callback();
+                })
+                .catch((error: unknown) => {
+                  callbackErrors.push(error);
+                  Atomics.store(gate, 1, 1);
+                })
+                .finally(() => {
+                  selected.completed = true;
+                  forwardReadyReply();
+                });
+              handoffs.push(action);
+            }
+          }
         }
       } catch (error) {
         if (Atomics.load(gate, 1) === 0) callbackErrors.push(error);
@@ -6318,6 +6397,31 @@ function observeNativeMcpPhysicalCommits(workspacePath: string) {
         Atomics.store(gate, 3, Math.max(Atomics.load(gate, 3), value.sequence));
         Atomics.notify(gate, 3);
       }
+    },
+    posted(value) {
+      if (!value || typeof value !== 'object') return;
+      const request = value as Extract<ControlWorkerRequest, { operation: 'capability' }>;
+      if (
+        request.operation === 'capability' &&
+        request.database === `workspace:${workspacePath}` &&
+        request.input.kind === 'admit' &&
+        request.input.decision?.result === 'allow'
+      )
+        permittingRequests.add(request.id);
+    },
+    reply(value, forward) {
+      if (!value || typeof value !== 'object') return false;
+      const reply = value as ControlWorkerReply;
+      if (reply.status !== 'ok' && reply.status !== 'error') return false;
+      permittingRequests.delete(reply.id);
+      if (!heldReply || heldReply.id !== reply.id) return false;
+      if (heldReply.received) throw new Error('The held native request replied twice.');
+      heldReply.received = true;
+      heldReply.forward = forward;
+      handoffCounts.received += 1;
+      heldReply.acknowledgeArrival();
+      forwardReadyReply();
+      return true;
     },
   };
   mcpNativeInterception.current = interception;
@@ -6347,6 +6451,21 @@ function observeNativeMcpPhysicalCommits(workspacePath: string) {
     },
     afterCommit(callback: (writes: string[]) => void) {
       afterCommit = callback;
+    },
+    afterPermissionCommitBeforeAck(callback: () => Promise<void>) {
+      afterPermissionCommit = callback;
+    },
+    ackHandoff() {
+      return { ...handoffCounts, pending: heldReply !== undefined };
+    },
+    async drainHandoff() {
+      // A missing ACK must not leave timeout cleanup waiting for an unentered callback.
+      if (heldReply && !heldReply.received) {
+        heldReply.cancelled = true;
+        heldReply.acknowledgeArrival();
+        heldReply = undefined;
+      }
+      await Promise.allSettled(handoffs);
     },
     reset() {
       commits.length = 0;
@@ -6579,11 +6698,15 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
       return openWorkspaceDb(dataRoot, workspaceId);
     },
     async close() {
-      trace.restore();
-      await shutdownControlStoreWorkerClient();
-      db.sqlite.close();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await trace.drainHandoff();
+      try {
+        trace.restore();
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        db.sqlite.close();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     },
   };
 }
@@ -6842,7 +6965,7 @@ describe('MCP proved failure and admitted schema observation', () => {
       expect(await f.call()).toHaveProperty('result');
       f.runtimeConfig.openKitConfig.policy = {
         ...f.runtimeConfig.openKitConfig.policy,
-        mediation: admitTestMcpApproval({
+        mediation: await admitTestMcpApproval({
           coreDb: f.coreDb,
           workspaceId: f.workspaceId,
           serverId: 'echo',
@@ -7749,94 +7872,113 @@ describe('MCP current permission at commit acknowledgement', () => {
       const f = await createMcpCommitFixture();
       let revoked = false;
       try {
-        f.trace.afterCommit((writes) => {
-          if (!revoked && writes.some((sql) => /INSERT.*permission_decisions/i.test(sql))) {
-            revoked = true;
-            const userId = f.environmentPackage.scope.triggerActor.id;
-            if (change === 'user') {
+        if (change === 'user') {
+          f.trace.afterCommit((writes) => {
+            if (!revoked && writes.some((sql) => /INSERT.*permission_decisions/i.test(sql))) {
+              revoked = true;
+              const userId = f.environmentPackage.scope.triggerActor.id;
               f.coreDb.sqlite
                 .transaction(() => {
                   expect(disableCanonicalUser(f.coreDb, userId)?.changed).toBe(true);
                 })
                 .immediate();
-            } else {
-              const principal = { kind: 'human' as const, id: userId };
-              const prepared = preparePolicyDocument({
-                current: EMPTY_POLICY_DOCUMENT,
-                userId,
-                now: new Date().toISOString(),
-                proposed: PolicyDocumentV1Schema.parse({
-                  schemaVersion: 1,
-                  statements: [
-                    {
-                      id: 'prohibit-after-permitting-commit',
-                      kind: 'permission',
-                      effect: 'prohibit',
-                      grant: { kind: 'ordinary' },
-                      author: principal,
-                      authority: { kind: 'human', userId },
-                      authoredAt: new Date().toISOString(),
-                      state: 'active',
-                      scope: {
-                        subjects: [principal],
-                        actions: ['tool.use'],
-                        resources: [
-                          {
-                            kind: 'mcp-tool',
-                            workspaceId: f.workspaceId,
-                            serverId: 'echo',
-                            toolName: 'echo',
-                          },
-                        ],
-                      },
-                      lifetime: {
-                        anchor: {
-                          owner: { kind: 'workspace', workspaceId: f.workspaceId },
-                          kind: 'workspace',
-                          id: f.workspaceId,
+            }
+          });
+        } else {
+          f.trace.afterPermissionCommitBeforeAck(async () => {
+            revoked = true;
+            const userId = f.environmentPackage.scope.triggerActor.id;
+            const principal = { kind: 'human' as const, id: userId };
+            const prepared = preparePolicyDocument({
+              current: EMPTY_POLICY_DOCUMENT,
+              userId,
+              now: new Date().toISOString(),
+              proposed: PolicyDocumentV1Schema.parse({
+                schemaVersion: 1,
+                statements: [
+                  {
+                    id: 'prohibit-after-permitting-commit',
+                    kind: 'permission',
+                    effect: 'prohibit',
+                    grant: { kind: 'ordinary' },
+                    author: principal,
+                    authority: { kind: 'human', userId },
+                    authoredAt: new Date().toISOString(),
+                    state: 'active',
+                    scope: {
+                      subjects: [principal],
+                      actions: ['tool.use'],
+                      resources: [
+                        {
+                          kind: 'mcp-tool',
+                          workspaceId: f.workspaceId,
+                          serverId: 'echo',
+                          toolName: 'echo',
                         },
+                      ],
+                    },
+                    lifetime: {
+                      anchor: {
+                        owner: { kind: 'workspace', workspaceId: f.workspaceId },
+                        kind: 'workspace',
+                        id: f.workspaceId,
                       },
                     },
-                  ],
-                }),
-              });
-              recordPolicyWriteDecision({
-                coreDb: f.coreDb,
-                actor: { kind: 'local', userId },
-                candidate: {
-                  artifactId: testEntityId('ar', 'policy-after-commit'),
-                  contentDigest: policyDigest(prepared.document),
-                },
-                proposal: {
-                  schemaVersion: 1,
-                  proposer: principal,
-                  rationale: 'Revoke Tool authority after the original permitting commit.',
-                  baseRevision: policyDigest(EMPTY_POLICY_DOCUMENT),
-                  proposed: prepared.document,
-                  diff: prepared.diff,
-                  classification: prepared.classification,
-                  validation: 'valid',
-                },
-                requestId: 'req_policy_after_commit',
-                threadId: f.environmentPackage.scope.threadId,
-                turnId: f.environmentPackage.scope.turnId,
-              });
-              f.runtimeConfig.openKitConfig.policy = {
-                ...f.runtimeConfig.openKitConfig.policy,
-                mediation: prepared.document,
-              };
-              expect(readAdmittedPolicyDocument(f.coreDb, prepared.document)).toEqual(
-                prepared.document
-              );
-            }
-          }
-        });
+                  },
+                ],
+              }),
+            });
+            await recordPolicyWriteDecision({
+              coreDb: f.coreDb,
+              actor: { kind: 'local', userId },
+              candidate: {
+                artifactId: testEntityId('ar', 'policy-after-commit'),
+                contentDigest: policyDigest(prepared.document),
+              },
+              proposal: {
+                schemaVersion: 1,
+                proposer: principal,
+                rationale: 'Revoke Tool authority after the original permitting commit.',
+                baseRevision: policyDigest(EMPTY_POLICY_DOCUMENT),
+                proposed: prepared.document,
+                diff: prepared.diff,
+                classification: prepared.classification,
+                validation: 'valid',
+              },
+              requestId: 'req_policy_after_commit',
+              threadId: f.environmentPackage.scope.threadId,
+              turnId: f.environmentPackage.scope.turnId,
+            });
+            f.runtimeConfig.openKitConfig.policy = {
+              ...f.runtimeConfig.openKitConfig.policy,
+              mediation: prepared.document,
+            };
+            expect(readAdmittedPolicyDocument(f.coreDb, prepared.document)).toEqual(
+              prepared.document
+            );
+            expect(f.trace.ackHandoff()).toEqual({
+              selected: 1,
+              received: 1,
+              forwarded: 0,
+              pending: true,
+            });
+            expect(f.gateway.listTools).not.toHaveBeenCalled();
+            expect(f.contacts()).toBe(0);
+          });
+        }
         const response = await f.call();
         // L:143 and M:205 require a typed, durable denial before upstream contact.
         if (change === 'policy')
           expect(response).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
         else expect(response).toHaveProperty('error');
         expect(revoked).toBe(true);
+        if (change === 'policy')
+          expect(f.trace.ackHandoff()).toEqual({
+            selected: 1,
+            received: 1,
+            forwarded: 1,
+            pending: false,
+          });
         const calls = listWorkspaceCapabilityCalls(f.db, f.workspaceId);
         expect(calls).toEqual([
           expect.objectContaining({
@@ -7938,7 +8080,7 @@ describe('MCP current permission at commit acknowledgement', () => {
           ],
         }),
       });
-      recordPolicyWriteDecision({
+      await recordPolicyWriteDecision({
         coreDb: f.coreDb,
         actor: { kind: 'local', userId },
         candidate: {

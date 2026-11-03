@@ -118,7 +118,7 @@ it('runs the native agent participant through the default Gateway model with rea
   }).document;
   const binding = document.statements.find((statement) => statement.kind === 'binding');
   if (!binding) throw new Error('Expected admitted agent binding.');
-  recordPolicyWriteDecision({
+  await recordPolicyWriteDecision({
     coreDb,
     actor: { kind: 'local', userId },
     candidate: { artifactId: allocateEntityId('ar'), contentDigest: policyDigest(document) },

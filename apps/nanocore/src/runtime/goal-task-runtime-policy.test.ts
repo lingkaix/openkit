@@ -873,7 +873,7 @@ async function fixture(
       getServerHealth: () => 'ready',
     };
     if (options.approval) {
-      const policy = admitTestMcpApproval({
+      const policy = await admitTestMcpApproval({
         coreDb,
         document: manager.current().openKitConfig.policy?.mediation,
         workspaceId: workspace.id,
@@ -2161,7 +2161,7 @@ it.each([
         /* Untyped message text is not an owned error result. */
       }
       expect.soft(failurePayload).toMatchObject({ code: 'goal_domain_publication_failed' });
-      f.domains.close(scope);
+      await f.domains.close(scope);
       expect(f.domains.read(scope)).toBeNull();
       expect(() =>
         f.domains.activate({

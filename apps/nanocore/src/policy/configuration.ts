@@ -409,7 +409,7 @@ export function readStorageLeaseAccess(input: {
 }
 
 /** Records the current human admission before the existing file writer can persist Policy. */
-export function recordPolicyWriteDecision(input: {
+export async function recordPolicyWriteDecision(input: {
   readonly coreDb: CoreDb;
   readonly actor: Actor;
   readonly candidate: { readonly artifactId: string; readonly contentDigest: string };
@@ -418,21 +418,28 @@ export function recordPolicyWriteDecision(input: {
   readonly threadId: string;
   readonly turnId: string;
 }) {
-  const administrator = requireCurrentDeploymentAdmin(input.coreDb, input.actor);
-  const kernel = evaluateProductAuthorization(
-    input.coreDb,
-    input.actor,
-    { kind: 'server' },
-    'workspace.configure',
-    true
-  );
+  // The same current authority owns both preparation and the post-publication check.
+  const currentAuthorization = () => {
+    const administrator = requireCurrentDeploymentAdmin(input.coreDb, input.actor);
+    const kernel = evaluateProductAuthorization(
+      input.coreDb,
+      input.actor,
+      { kind: 'server' },
+      'workspace.configure',
+      true
+    );
+    return {
+      kernel,
+      authorizationRevision: policyDigest({
+        administrator,
+        credentialKind: input.actor.kind,
+        operation: 'workspace.configure',
+        kernel,
+      }),
+    };
+  };
+  const { kernel, authorizationRevision } = currentAuthorization();
   const policyRevision = input.proposal.baseRevision;
-  const authorizationRevision = policyDigest({
-    administrator,
-    credentialKind: input.actor.kind,
-    operation: 'workspace.configure',
-    kernel,
-  });
   const approval = {
     proposalDigest: input.candidate.contentDigest,
     policyRevision,
@@ -447,7 +454,7 @@ export function recordPolicyWriteDecision(input: {
     responsibleHumanId: input.actor.userId,
   };
   const decisionId = allocateEntityId('pd');
-  recordProductPermissionDecision({
+  await recordProductPermissionDecision({
     coreDb: input.coreDb,
     decisionId,
     ownerScope: 'server',
@@ -486,5 +493,7 @@ export function recordPolicyWriteDecision(input: {
     auditActor: subject.actor,
   });
   if (kernel.effect !== 'allow') throw new Error('Policy write was not granted.');
+  if (currentAuthorization().authorizationRevision !== authorizationRevision)
+    throw new Error('Policy write was not granted.');
   return { decisionId, approval };
 }

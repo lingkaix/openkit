@@ -30,7 +30,7 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { FsStore } from '../lib/store.js';
-import { executeGoalOperation } from '../runtime/goal-owner.js';
+import { executeGoalOperation, readGoalView } from '../runtime/goal-owner.js';
 import { reserveGoalTask } from '../runtime/goal-task-admission.js';
 import { readGoalTaskPolicyContext } from '../runtime/goal-task-policy-context.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
@@ -51,6 +51,10 @@ import {
 } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
+import {
+  heldServerPermissionAck,
+  releaseCommit,
+} from '../test-support/control-native-transport.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -204,8 +208,16 @@ async function retainCompletedTaskFixture(
   rmSync(retainedRoot, { recursive: true, force: true });
 }
 
+// Keep the actual native owner; hold only this family's exact acknowledged reply on Main.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
+  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+});
+
 const cleanups: (() => void)[] = [];
 afterEach(async () => {
+  releaseCommit();
   vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
   for (const close of cleanups.splice(0)) await close();
@@ -225,7 +237,7 @@ type Administer = (input: {
     lifetime: Permission['lifetime'];
     rationale: string;
   };
-}) => { statement: Permission; policyRevision: string };
+}) => Promise<{ statement: Permission; policyRevision: string }>;
 
 /** Real joint approval, linked Task and prepared scheduler package; no backend execution is claimed. */
 async function fixture() {
@@ -680,6 +692,143 @@ describe('bounded native Goal-domain administration', () => {
     expect(missing.kernel.reasons[0]?.code).toBe('missing-privilege');
   });
 
+  it.each([
+    'coordinator-closed',
+    'task-cancelled',
+  ] as const)('refuses %s through its native owner while Policy evidence ACK is held', async (change) => {
+    const f = await fixture();
+    const original = readFileSync(f.path, 'utf8');
+    const writes = vi.spyOn(f.files, 'updateFile');
+    const reloads = f.reload.mock.calls.length;
+    const before = listServerPermissionDecisions(f.coreDb);
+    let pending: Promise<unknown> | undefined;
+    try {
+      const held = await heldServerPermissionAck(
+        { kind: 'goal-admin', coordinatorTurnId: f.coordinatorTurn.id },
+        () => (pending = Promise.resolve().then(() => f.administer()))
+      );
+      expect(readFileSync(f.path, 'utf8')).toBe(original);
+      expect(writes).not.toHaveBeenCalled();
+      const evidence = listServerPermissionDecisions(f.coreDb);
+      expect(evidence).toHaveLength(before.length + 1);
+      // The ACK is retained on Main, so the same Worker can execute this real authority mutation.
+      if (change === 'coordinator-closed') {
+        await f.store.updateTurn(f.coordinatorTurn.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+        });
+      } else {
+        const card = readGoalView(f.store, f.db, f.scope.goalId).cards[0]!;
+        await executeGoalOperation(
+          'goal.card.cancel',
+          {
+            ...f.scope,
+            requestId: randomUUID(),
+            cardId: card.cardId,
+            expectedRevision: card.revision,
+            reason: 'Cancel the selected Task during Policy publication',
+          },
+          { actor: f.actor },
+          f.store,
+          f.db,
+          { coreDb: f.coreDb }
+        );
+      }
+      releaseCommit();
+      if (change === 'coordinator-closed')
+        await expect(held.result).rejects.toMatchObject({ code: 'coordinator_authority_denied' });
+      else
+        await expect(held.result).rejects.toThrow(
+          'Goal Task Policy context requires current exact owner facts.'
+        );
+      expect(readFileSync(f.path, 'utf8')).toBe(original);
+      expect(writes).not.toHaveBeenCalled();
+      expect(f.reload).toHaveBeenCalledTimes(reloads);
+      expect(listServerPermissionDecisions(f.coreDb)).toEqual(evidence);
+    } finally {
+      releaseCommit();
+      if (pending) await Promise.allSettled([pending]);
+      writes.mockRestore();
+    }
+  });
+
+  it('refuses a candidate expiring at the held Policy ACK boundary while root, Coordinator, Task and Policy stay current', async () => {
+    const f = await fixture();
+    const original = readFileSync(f.path, 'utf8');
+    const originalPolicy = structuredClone(f.manager.current().openKitConfig.policy!.mediation!);
+    const context = f.context();
+    const coordinator = f.store.getTurnById(f.coordinatorTurn.id);
+    const task = f.store.getTurnById(f.turn.id);
+    const candidateExpiry = Date.parse(f.grant.lifetime.notAfter!);
+    expect(Date.now()).toBeLessThan(candidateExpiry);
+    expect(candidateExpiry).toBeLessThan(Date.parse(f.domainExpiry));
+    expect(context).not.toBeNull();
+    expect(coordinator.status).toBe('running');
+    expect(f.store.getTurnExecutor(coordinator.id)).toBe('coordinator');
+    expect(policyDigest(originalPolicy)).toBe(f.input.expectedPolicyRevision);
+    const writes = vi.spyOn(f.files, 'updateFile');
+    const clock = vi.spyOn(Date, 'now');
+    const reloads = f.reload.mock.calls.length;
+    const before = listServerPermissionDecisions(f.coreDb);
+    const beforeAudit = listServerAuditEvents(f.coreDb);
+    let pending: Promise<unknown> | undefined;
+    try {
+      const held = await heldServerPermissionAck(
+        { kind: 'goal-admin', coordinatorTurnId: f.coordinatorTurn.id },
+        () => (pending = Promise.resolve().then(() => f.administer()))
+      );
+      expect(held.completed()).toBe(false);
+      expect(readFileSync(f.path, 'utf8')).toBe(original);
+      expect(writes).not.toHaveBeenCalled();
+      expect(f.reload).toHaveBeenCalledTimes(reloads);
+      const evidence = listServerPermissionDecisions(f.coreDb);
+      const audits = listServerAuditEvents(f.coreDb);
+      expect(evidence).toHaveLength(before.length + 1);
+      expect(audits).toHaveLength(beforeAudit.length + 1);
+      const decision = evidence.find(
+        (row) => !before.some((previous) => previous.decisionId === row.decisionId)
+      )!;
+      expect(decision).toMatchObject({
+        result: 'allow',
+        action: 'workspace.configure',
+        contextSummary: {
+          cause: 'goal-domain.administer',
+          turnId: f.coordinatorTurn.id,
+          goalId: f.scope.goalId,
+        },
+      });
+      expect(audits.filter((event) => event.permissionDecisionId === decision.decisionId)).toEqual([
+        expect.objectContaining({ id: decision.auditEventId }),
+      ]);
+      // No timers or native clocks change. Only Main's candidate-lifetime read crosses equality.
+      clock.mockReturnValue(candidateExpiry);
+      expect(Date.now()).toBe(Date.parse(f.grant.lifetime.notAfter!));
+      expect(f.domains.read(f.scope)).toEqual(f.activation.statement);
+      expect(f.context()).toEqual(context);
+      expect(f.store.getTurnById(f.coordinatorTurn.id)).toEqual(coordinator);
+      expect(f.store.getTurnById(f.turn.id)).toEqual(task);
+      expect(f.manager.current().openKitConfig.policy!.mediation).toEqual(originalPolicy);
+      expect(policyDigest(f.manager.current().openKitConfig.policy!.mediation!)).toBe(
+        f.input.expectedPolicyRevision
+      );
+      releaseCommit();
+      await expect(held.result).rejects.toThrow(
+        'Goal permission exceeds its current delegation, Task identity or lifetime.'
+      );
+      expect(readFileSync(f.path, 'utf8')).toBe(original);
+      expect(writes).not.toHaveBeenCalled();
+      expect(f.reload).toHaveBeenCalledTimes(reloads);
+      expect(f.manager.current().openKitConfig.policy!.mediation).toEqual(originalPolicy);
+      expect(listServerPermissionDecisions(f.coreDb)).toEqual(evidence);
+      expect(listServerAuditEvents(f.coreDb)).toEqual(audits);
+    } finally {
+      releaseCommit();
+      if (pending) await Promise.allSettled([pending]);
+      clock.mockRestore();
+      writes.mockRestore();
+    }
+  });
+
   it('publishes one agent-authored delegated allow through native CAS, reload, decision and Audit', async () => {
     const f = await fixture();
     const before = f.tasks.evaluateTask(f.effect)!;
@@ -836,7 +985,7 @@ describe('bounded native Goal-domain administration', () => {
     const write = vi.spyOn(f.files, 'updateFile').mockImplementationOnce(() => {
       throw new Error('Injected administration CAS conflict');
     });
-    expect(() => f.administer()).toThrow('Injected administration CAS conflict');
+    await expect(f.administer()).rejects.toThrow('Injected administration CAS conflict');
     expect(write).toHaveBeenCalledTimes(1);
     expect(readFileSync(f.path, 'utf8')).toBe(original);
     write.mockRestore();
@@ -847,7 +996,7 @@ describe('bounded native Goal-domain administration', () => {
       return validation;
     });
     const writes = vi.spyOn(f.files, 'updateFile');
-    expect(() => f.administer()).toThrow();
+    await expect(f.administer()).rejects.toThrow();
     expect(writes).not.toHaveBeenCalled();
     expect(readFileSync(f.path, 'utf8')).toBe(original);
     expect(f.reload).toHaveBeenCalledTimes(1);

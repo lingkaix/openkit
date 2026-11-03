@@ -904,7 +904,7 @@ describe('Server-shared MCP through governed Worker routes', () => {
     });
     const worker = await f.worker(f.workspaces[0]!.id);
     expect((await worker.list()).body).toMatchObject({ result: { tools: expect.any(Array) } });
-    const policy = admitTestMcpApproval({
+    const policy = await admitTestMcpApproval({
       coreDb: f.coreDb,
       document: f.manager.current().openKitConfig.policy?.mediation,
       workspaceId: worker.workspaceId,

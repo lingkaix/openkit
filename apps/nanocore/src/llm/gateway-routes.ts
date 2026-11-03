@@ -1325,18 +1325,31 @@ function asOpenAIGatewayError(error: unknown): Response {
   }
 
   if (error instanceof OpenAICompatibleProviderError) {
-    if (error.code === 'model_not_configured') {
+    // These existing public refusals can now precede dispatch after the native evidence wait.
+    // Keep their declared status and fixed messages rather than the generic request failure.
+    const refusals: Record<string, { message: string; status: number; type: string }> = {
+      model_not_configured: {
+        message: 'Requested logical model is not configured.',
+        status: 400,
+        type: 'invalid_request_error',
+      },
+      workspace_access_denied: {
+        message: 'Workspace access denied.',
+        status: 403,
+        type: 'invalid_request_error',
+      },
+      gateway_not_configured: {
+        message: 'Gateway logical model configuration is unavailable.',
+        status: 503,
+        type: 'provider_error',
+      },
+    };
+    const refusal = Object.hasOwn(refusals, error.code) ? refusals[error.code] : undefined;
+    if (refusal)
       return Response.json(
-        {
-          error: {
-            message: 'Requested logical model is not configured.',
-            type: 'invalid_request_error',
-            code: error.code,
-          },
-        },
-        { status: 400 }
+        { error: { message: refusal.message, type: refusal.type, code: error.code } },
+        { status: refusal.status }
       );
-    }
   }
 
   const failure = (error as { failure?: PiAiFailure } | null)?.failure;
@@ -3265,7 +3278,7 @@ export function registerLlmGatewayRoutes({
    *
    * @param input Gateway policy decision details.
    */
-  function recordLlmGatewayPolicyDecision(input: {
+  async function recordLlmGatewayPolicyDecision(input: {
     action: 'llm.gateway.chat_completions' | 'llm.gateway.responses';
     /** Actual native-assigned call whose dispatch requires this decision. */
     capabilityCallId?: string;
@@ -3273,13 +3286,13 @@ export function registerLlmGatewayRoutes({
     reasonCode: 'gateway_allowed' | 'gateway_disabled' | 'gateway_provider_not_allowed';
     result: 'allow' | 'deny';
     route: '/v1/chat/completions' | '/v1/responses';
-  }): void {
+  }): Promise<void> {
     if (!coreDb) {
       return;
     }
 
     try {
-      recordGatewayPolicyDecision({ coreDb, ...input });
+      await recordGatewayPolicyDecision({ coreDb, ...input });
     } catch (error) {
       // The opened call must settle through its existing failure handler before any dispatch.
       if (input.capabilityCallId !== undefined) throw error;
@@ -3289,7 +3302,10 @@ export function registerLlmGatewayRoutes({
     }
   }
 
-  function requireLogicalModel(logicalModelId: string): ResolvedLogicalModel {
+  function requireLogicalModel(logicalModelId: string): {
+    logicalModel: ResolvedLogicalModel;
+    snapshot: RuntimeConfigSnapshot;
+  } {
     try {
       const snapshot = runtimeConfig();
       const logicalModel = resolveLogicalModel(
@@ -3299,7 +3315,7 @@ export function registerLlmGatewayRoutes({
         providerSubscriptionAccountManager,
         providerCredentialConfigured
       );
-      if (logicalModel) return logicalModel;
+      if (logicalModel) return { logicalModel, snapshot };
     } catch {
       throw new OpenAICompatibleProviderError({
         code: 'gateway_not_configured',
@@ -3314,6 +3330,18 @@ export function registerLlmGatewayRoutes({
       status: 400,
       type: 'invalid_request_error',
     });
+  }
+
+  /** Rechecks the existing loaded configuration without treating account availability as config. */
+  function assertGatewayConfigurationCurrent(admitted: RuntimeConfigSnapshot): void {
+    const current = runtimeConfig();
+    if (current.version !== admitted.version || current.contentHash !== admitted.contentHash)
+      throw new OpenAICompatibleProviderError({
+        code: 'gateway_not_configured',
+        message: 'Gateway logical model configuration changed.',
+        status: 503,
+        type: 'provider_error',
+      });
   }
 
   app.get('/v1/models', async (c) => {
@@ -3369,7 +3397,7 @@ export function registerLlmGatewayRoutes({
       const input = GatewayChatCompletionRequestSchema.parse(await c.req.json());
 
       if (!isGatewayEnabled()) {
-        recordLlmGatewayPolicyDecision({
+        await recordLlmGatewayPolicyDecision({
           action: 'llm.gateway.chat_completions',
           providerId: null,
           reasonCode: 'gateway_disabled',
@@ -3403,7 +3431,7 @@ export function registerLlmGatewayRoutes({
 
       const assertAuthority = () =>
         assertPublicAuthority(c, authorityActor, (input as { metadata?: unknown }).metadata);
-      const logicalModel = requireLogicalModel(input.model);
+      const { logicalModel, snapshot: admittedConfiguration } = requireLogicalModel(input.model);
 
       const request = {
         ...input,
@@ -3423,7 +3451,7 @@ export function registerLlmGatewayRoutes({
       });
       if (durableCall) durableCall.assertAuthority = assertAuthority;
       try {
-        recordLlmGatewayPolicyDecision({
+        await recordLlmGatewayPolicyDecision({
           action: 'llm.gateway.chat_completions',
           ...(durableCall ? { capabilityCallId: durableCall.call.id } : {}),
           providerId: logicalModel.routes[0]?.providerProfileId ?? null,
@@ -3431,6 +3459,8 @@ export function registerLlmGatewayRoutes({
           result: 'allow',
           route: '/v1/chat/completions',
         });
+        assertAuthority();
+        assertGatewayConfigurationCurrent(admittedConfiguration);
         const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
@@ -3558,7 +3588,7 @@ export function registerLlmGatewayRoutes({
       const input = GatewayResponsesRequestSchema.parse(await c.req.json());
 
       if (!isGatewayEnabled()) {
-        recordLlmGatewayPolicyDecision({
+        await recordLlmGatewayPolicyDecision({
           action: 'llm.gateway.responses',
           providerId: null,
           reasonCode: 'gateway_disabled',
@@ -3592,7 +3622,7 @@ export function registerLlmGatewayRoutes({
 
       const assertAuthority = () =>
         assertPublicAuthority(c, authorityActor, (input as { metadata?: unknown }).metadata);
-      const logicalModel = requireLogicalModel(input.model);
+      const { logicalModel, snapshot: admittedConfiguration } = requireLogicalModel(input.model);
 
       const request = {
         ...input,
@@ -3609,7 +3639,7 @@ export function registerLlmGatewayRoutes({
       });
       if (durableCall) durableCall.assertAuthority = assertAuthority;
       try {
-        recordLlmGatewayPolicyDecision({
+        await recordLlmGatewayPolicyDecision({
           action: 'llm.gateway.responses',
           ...(durableCall ? { capabilityCallId: durableCall.call.id } : {}),
           providerId: logicalModel.routes[0]?.providerProfileId ?? null,
@@ -3617,6 +3647,8 @@ export function registerLlmGatewayRoutes({
           result: 'allow',
           route: '/v1/responses',
         });
+        assertAuthority();
+        assertGatewayConfigurationCurrent(admittedConfiguration);
         const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),

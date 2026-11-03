@@ -1149,21 +1149,27 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         break;
       }
       const context =
-        input.kind === 'server-admit'
-          ? input.context
-          : input.kind === 'server-usage'
-            ? input.call.context
-            : input.kind === 'mcp-schema'
-              ? input.environmentPackage.scope
-              : input.kind === 'checkpoint'
-                ? input.input
-                : input.kind === 'admit'
-                  ? input.context
-                  : input.kind === 'usage-finish'
-                    ? input.call.context
-                    : input.kind === 'permission'
-                      ? (input.decision.mediation?.subject.process ?? input.decision.contextSummary)
-                      : input;
+        input.kind === 'server-permission'
+          ? input.stage.kind === 'record'
+            ? (input.stage.decision.mediation?.subject.process ??
+              input.stage.decision.contextSummary)
+            : undefined
+          : input.kind === 'server-admit'
+            ? input.context
+            : input.kind === 'server-usage'
+              ? input.call.context
+              : input.kind === 'mcp-schema'
+                ? input.environmentPackage.scope
+                : input.kind === 'checkpoint'
+                  ? input.input
+                  : input.kind === 'admit'
+                    ? input.context
+                    : input.kind === 'usage-finish'
+                      ? input.call.context
+                      : input.kind === 'permission'
+                        ? (input.decision.mediation?.subject.process ??
+                          input.decision.contextSummary)
+                        : input;
       if (typeof context?.turnId === 'string') lanes.add(context.turnId);
       if (context && 'agentSessionId' in context && typeof context.agentSessionId === 'string')
         lanes.add(`session:${context.agentSessionId}`);

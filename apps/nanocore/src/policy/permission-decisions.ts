@@ -431,9 +431,8 @@ export interface RecordBootPolicySelfCheckDecisionsInput {
  *
  * @param input Permission decision record input.
  */
-export function recordPermissionDecision(
-  input: RecordPermissionDecisionInput
-): void | Promise<void> {
+export function recordPermissionDecision(input: RecordPermissionDecisionInput): Promise<void> {
+  const { kernelTrace, ...facts } = projectKernelDecision(input.policyDecision);
   return recordProductPermissionDecision({
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
     ...(input.workspaceDb ? { workspaceDb: input.workspaceDb } : {}),
@@ -448,13 +447,9 @@ export function recordPermissionDecision(
     resourceSummary: input.resourceSummary,
     contextSummary: {
       ...input.contextSummary,
-      kernelTrace: {
-        matchedAssociations: input.policyDecision.trace.matchedAssociations,
-        matchedProhibitions: input.policyDecision.trace.matchedProhibitions,
-      },
+      kernelTrace,
     },
-    result: mapPolicyEffect(input.policyDecision.effect),
-    reasonCode: input.policyDecision.reasons[0]?.code ?? 'unknown',
+    ...facts,
     enforcementPoint: input.enforcementPoint,
     ...(input.requiredApprovalKind ? { requiredApprovalKind: input.requiredApprovalKind } : {}),
     ...(input.approvalId ? { approvalId: input.approvalId } : {}),
@@ -464,20 +459,23 @@ export function recordPermissionDecision(
   });
 }
 
-/** Publishes Workspace decisions through the native owner; other owners keep their existing body. */
-export function recordProductPermissionDecision(
-  input: RecordProductPermissionDecisionInput & { ownerScope: 'workspace' | 'user' }
-): Promise<void>;
-export function recordProductPermissionDecision(
-  input: RecordProductPermissionDecisionInput & { ownerScope: 'server' }
-): void;
+/** Publishes the immutable decision and linked Audit through its existing physical native owner. */
 export function recordProductPermissionDecision(
   input: RecordProductPermissionDecisionInput
-): void | Promise<void>;
-export function recordProductPermissionDecision(
-  input: RecordProductPermissionDecisionInput
-): void | Promise<void> {
-  if (input.ownerScope === 'server') return recordProductPermissionDecisionInDb(input);
+): Promise<void> {
+  if (input.ownerScope === 'server') {
+    permissionDecisionDb(input);
+    return getControlStoreWorkerClient()
+      .coreCapability(input.coreDb!, {
+        kind: 'server-permission',
+        stage: {
+          kind: 'record',
+          decision: prepareControlPermissionDecision(input),
+          ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+        },
+      })
+      .then(assertPermissionPublication);
+  }
   if (input.ownerScope === 'user') {
     permissionDecisionDb(input);
     return getControlStoreWorkerClient()
@@ -486,9 +484,7 @@ export function recordProductPermissionDecision(
         userId: input.userDb!.userId,
         decision: prepareControlPermissionDecision(input),
       })
-      .then((result) => {
-        if (result !== null) throw new TypeError('Invalid native permission decision result.');
-      });
+      .then(assertPermissionPublication);
   }
   if (!input.workspaceDb)
     throw new Error('Workspace-scoped permission decisions require workspaceDb.');
@@ -500,9 +496,24 @@ export function recordProductPermissionDecision(
       workspaceId: input.workspaceDb.workspaceId,
       decision: prepareControlPermissionDecision(input),
     })
-    .then((result) => {
-      if (result !== null) throw new TypeError('Invalid native permission decision result.');
-    });
+    .then(assertPermissionPublication);
+}
+
+/** A permission publication has no independent result beyond its covering durable acknowledgement. */
+function assertPermissionPublication(result: unknown): void {
+  if (result !== null) throw new TypeError('Invalid native permission decision result.');
+}
+
+/** Projects only the Kernel facts retained by the original permission recorder. */
+function projectKernelDecision(decision: PolicyDecision) {
+  return {
+    result: decision.effect,
+    reasonCode: decision.reasons[0]?.code ?? 'unknown',
+    kernelTrace: {
+      matchedAssociations: [...decision.trace.matchedAssociations],
+      matchedProhibitions: [...decision.trace.matchedProhibitions],
+    },
+  };
 }
 
 /** Normalizes descriptive JSON once; the existing native envelope validates the prepared decision. */
@@ -999,8 +1010,10 @@ function mapServerPermissionDecisionRow(
  *
  * @param input Gateway policy decision input.
  */
-export function recordGatewayPolicyDecision(input: RecordGatewayPolicyDecisionInput): void {
-  recordProductPermissionDecision({
+export function recordGatewayPolicyDecision(
+  input: RecordGatewayPolicyDecisionInput
+): Promise<void> {
+  return recordProductPermissionDecision({
     coreDb: input.coreDb,
     decisionId: allocateEntityId('pd'),
     ownerScope: 'server',
@@ -1086,24 +1099,45 @@ function permissionDecisionDb(input: RecordProductPermissionDecisionInput): Core
   return input.coreDb.sqlite;
 }
 
-/**
- * Records independent boot baseline decisions once per retained boot/action correlation.
- * Exact retry verifies immutable facts and linked Audit; ambiguity fails closed.
- *
- * @param input Boot policy self-check recording input.
- */
+/** The boot owner alone fixes the two baseline actions and targets. */
+const BOOT_POLICY_REQUESTS = [
+  { operation: 'api.call', target: 'object:nanocore', resourceKind: 'core-api' },
+  {
+    operation: 'vault.use',
+    target: 'object:baseline-vault-secret',
+    resourceKind: 'vault-reference',
+  },
+] as const;
+
+/** Publishes the finite Kernel projections as one native boot decision/Audit tuple. */
 export function recordBootPolicySelfCheckDecisions(
   input: RecordBootPolicySelfCheckDecisionsInput
-): void {
+): Promise<void> {
   const policySnapshotId = policyDigest(input.kernel.policy);
-  const requests = [
-    { operation: 'api.call', target: 'object:nanocore', resourceKind: 'core-api' },
-    {
-      operation: 'vault.use',
-      target: 'object:baseline-vault-secret',
-      resourceKind: 'vault-reference',
-    },
-  ] as const;
+  const decisions = BOOT_POLICY_REQUESTS.map(({ operation, target }) =>
+    projectKernelDecision(input.kernel.evaluate({ process: 'process:nanocore', operation, target }))
+  );
+  return getControlStoreWorkerClient()
+    .coreCapability(input.coreDb, {
+      kind: 'server-permission',
+      stage: {
+        kind: 'boot',
+        bootId: input.bootId,
+        policySnapshotId,
+        decisions: [decisions[0]!, decisions[1]!],
+        ...(input.now ? { now: input.now.toISOString() } : {}),
+      },
+    })
+    .then(assertPermissionPublication);
+}
+
+/** Keeps retained selection, allocation and both decision/Audit pairs on the native connection. */
+export function recordBootPolicySelfCheckDecisionsInDb(
+  input: { readonly coreDb: CoreDb } & Extract<
+    Extract<ControlCapabilityCommandInput, { kind: 'server-permission' }>['stage'],
+    { kind: 'boot' }
+  >
+): void {
   // Both decisions and Audit share this existing Core authority and rollback boundary.
   input.coreDb.sqlite.transaction(() => {
     const bootRows = input.coreDb.sqlite
@@ -1116,15 +1150,11 @@ export function recordBootPolicySelfCheckDecisions(
         optionalStringField(readPermissionDecisionRowV1(row).contextSummary, 'bootId') ===
         input.bootId
     );
-    if (existingRows.length !== 0 && existingRows.length !== requests.length)
+    if (existingRows.length !== 0 && existingRows.length !== BOOT_POLICY_REQUESTS.length)
       throw new Error('Boot policy self-check record is contradictory.');
-    for (const request of requests) {
+    for (const [index, request] of BOOT_POLICY_REQUESTS.entries()) {
       const process = 'process:nanocore';
-      const policyDecision = input.kernel.evaluate({
-        process,
-        operation: request.operation,
-        target: request.target,
-      });
+      const facts = input.decisions[index]!;
       const existing = existingRows.filter((row) => row.action === request.operation);
       if (existingRows.length > 0 && existing.length !== 1)
         throw new Error('Boot policy self-check record is contradictory.');
@@ -1173,9 +1203,9 @@ export function recordBootPolicySelfCheckDecisions(
           row.decision_id.split('_')[1]?.[14] !== '7' ||
           row.workspace_id !== null ||
           row.policy_engine_version !== 'policy-kernel:v1' ||
-          row.policy_snapshot_id !== policySnapshotId ||
-          row.result !== mapPolicyEffect(policyDecision.effect) ||
-          row.reason_code !== (policyDecision.reasons[0]?.code ?? 'unknown') ||
+          row.policy_snapshot_id !== input.policySnapshotId ||
+          row.result !== facts.result ||
+          row.reason_code !== facts.reasonCode ||
           row.required_approval_kind !== null ||
           row.approval_id !== null ||
           optionalStringField(JSON.parse(row.subject_summary_json), 'id') !== process ||
@@ -1191,32 +1221,23 @@ export function recordBootPolicySelfCheckDecisions(
           throw new Error('Boot policy self-check record is contradictory.');
         continue;
       }
-      recordPermissionDecision({
+      recordProductPermissionDecisionInDb({
         coreDb: input.coreDb,
         decisionId: allocateEntityId('pd'),
         ownerScope: 'server',
-        policyDecision,
+        result: facts.result,
+        reasonCode: facts.reasonCode,
         policyEngineVersion: 'policy-kernel:v1',
-        policySnapshotId,
+        policySnapshotId: input.policySnapshotId,
         subjectSummary: { id: process, kind: 'process' },
         action: request.operation,
         resourceSummary: { id: request.target, kind: request.resourceKind },
-        contextSummary: { boot: true, bootId: input.bootId },
+        contextSummary: { boot: true, bootId: input.bootId, kernelTrace: facts.kernelTrace },
         enforcementPoint: 'boot.policy.self_check',
-        ...(input.now ? { now: input.now } : {}),
+        ...(input.now ? { now: new Date(input.now) } : {}),
       });
     }
   })();
-}
-
-/**
- * Maps low-level policy-kernel effects into first-slice product decision results.
- *
- * @param effect Low-level policy effect.
- * @returns Product permission decision result.
- */
-function mapPolicyEffect(effect: PolicyDecision['effect']): PermissionDecisionResult {
-  return effect;
 }
 
 /** Original captured source authority on the actual Workspace connection. */

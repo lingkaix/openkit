@@ -3140,7 +3140,7 @@ describe('nanocore server', () => {
     });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         action: 'runtime.launch',
         contextSummary: {
           requestId: '00000000-0000-4000-8000-00000000d781',
@@ -3161,7 +3161,7 @@ describe('nanocore server', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         now: new Date('2026-07-06T00:02:00.000Z'),
       });
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         action: 'repo.push',
         approvalId: 'ap_source_repo_push',
         contextSummary: { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
@@ -3536,7 +3536,7 @@ describe('nanocore server', () => {
     const store = await createDemoStore({ dataRoot });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         action: 'runtime.launch',
         contextSummary: {
           requestId: '00000000-0000-4000-8000-00000000d791',
@@ -3592,7 +3592,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
-    recordProductPermissionDecision({
+    await recordProductPermissionDecision({
       action: 'llm.gateway.chat_completions',
       contextSummary: { route: '/v1/chat/completions' },
       coreDb,

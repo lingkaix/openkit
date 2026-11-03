@@ -333,7 +333,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         let permissionDecisionId: string | null = null;
         const policyAdmission =
           body.targetFamily === 'policy' && 'policyProposal' in prepared
-            ? recordPolicyWriteDecision({
+            ? await recordPolicyWriteDecision({
                 coreDb,
                 actor,
                 candidate: request.candidate,
@@ -351,22 +351,26 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
             JSON.stringify(prepared.failureEvidence) !== JSON.stringify(body.failureEvidence)
           )
             fail('configuration_candidate_conflict');
-          requireHome(invocation.threadId, invocation.turnId);
-          if (
-            store.getTurn(workspaceId, invocation.threadId, invocation.turnId).status !==
-              'running' ||
-            invocation.signal?.aborted
-          )
-            fail('configuration_cancelled');
-          const snapshot = options.runtimeConfig();
-          const now = new Date();
-          const decision = evaluateWorkerGitReadMaintenance(
-            snapshot.openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT,
-            { ...prepared.facts, now },
-            (humanId) => isCurrentServerPolicyAuthor(coreDb, humanId, now.getTime())
-          );
+          const currentMaintenance = () => {
+            requireHome(invocation.threadId, invocation.turnId);
+            if (
+              store.getTurn(workspaceId, invocation.threadId, invocation.turnId).status !==
+                'running' ||
+              invocation.signal?.aborted
+            )
+              fail('configuration_cancelled');
+            const snapshot = options.runtimeConfig();
+            const now = new Date();
+            const decision = evaluateWorkerGitReadMaintenance(
+              snapshot.openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT,
+              { ...prepared.facts, now },
+              (humanId) => isCurrentServerPolicyAuthor(coreDb, humanId, now.getTime())
+            );
+            return { snapshot, now, decision };
+          };
+          const { snapshot, now, decision } = currentMaintenance();
           permissionDecisionId = allocateEntityId('pd');
-          recordPermissionDecision({
+          await recordPermissionDecision({
             coreDb,
             decisionId: permissionDecisionId,
             ownerScope: 'server',
@@ -411,7 +415,16 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
             now,
           });
           if (decision.effect !== 'allow') fail('configuration_delegation_required');
+          const current = currentMaintenance();
+          if (current.snapshot.contentHash !== snapshot.contentHash)
+            fail('configuration_candidate_conflict');
+          if (current.decision.effect !== 'allow') fail('configuration_delegation_required');
         }
+        // Native evidence cannot preserve a stale Home, actor or confirmed candidate.
+        requireHome(threadId, turnId);
+        const currentPrepared = prepare(body);
+        if (JSON.stringify(currentPrepared.after) !== JSON.stringify(prepared.after))
+          fail('configuration_candidate_conflict');
         const timestamp = new Date().toISOString();
         await store.createItem(
           {

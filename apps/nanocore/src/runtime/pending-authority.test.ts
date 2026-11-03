@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { Worker, type WorkerOptions } from 'node:worker_threads';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { WorkspaceMcpServerCatalog } from '@openkit/config-schema';
@@ -70,6 +70,7 @@ vi.mock('node:worker_threads', async (load) => {
       constructor(filename: string | URL, options?: WorkerOptions) {
         const prelude = `
           const {workerData,threadId}=require('node:worker_threads');
+          const {basename}=require('node:path');
           const Database=require(workerData.databaseModule), state=new Int32Array(workerData.buffer);
           let claimed=false;
           const afterCommit=()=>{
@@ -83,6 +84,7 @@ vi.mock('node:worker_threads', async (load) => {
             const db=this, stmt=prepare.call(this,sql), run=stmt.run;
             stmt.run=function(...args){
               const result=run.apply(this,args);
+              if(basename(db.name)!=='workspace.sqlite') return result;
               if(result.changes && /^(?:INSERT(?: OR \\w+)? INTO|UPDATE|DELETE FROM)\\s+(?:main\\.)?["\\[]?pending_requests\\b/i.test(sql.trim())){
                 Atomics.add(state,3,result.changes);
                 const first=Atomics.compareExchange(state,9,0,threadId);
@@ -157,6 +159,7 @@ async function fixture() {
     const run = statement.run;
     statement.run = function (...args) {
       const result = run.apply(this, args);
+      if (basename(db.name) !== 'workspace.sqlite') return result;
       if (
         result.changes &&
         /^(?:INSERT(?: OR \w+)? INTO|UPDATE|DELETE FROM)\s+(?:main\.)?["[]?pending_requests\b/i.test(
@@ -600,7 +603,7 @@ async function capturedFixture() {
       ],
     }),
   });
-  recordPolicyWriteDecision({
+  await recordPolicyWriteDecision({
     coreDb: f.coreDb,
     actor: f.actor,
     candidate: { artifactId: allocateEntityId('ar'), contentDigest: policyDigest(policy.document) },

@@ -334,9 +334,9 @@ const bootResult = await runBootPhases({
       name: 'policy-kernel',
       subsystem: 'policy',
       critical: true,
-      run: () => {
+      run: async () => {
         const kernel = loadBootPolicyKernel();
-        recordBootPolicySelfCheckDecisions({
+        await recordBootPolicySelfCheckDecisions({
           bootId,
           coreDb: requireBootValue(coreDb, 'Core database was not initialized.'),
           kernel,

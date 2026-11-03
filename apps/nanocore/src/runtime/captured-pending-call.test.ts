@@ -516,7 +516,7 @@ describe('captured pending MCP schema identity at grant', () => {
       },
     };
     let document = EMPTY_POLICY_DOCUMENT;
-    const admit = (prohibited = false) => {
+    const admit = async (prohibited = false) => {
       const prepared = preparePolicyDocument({
         current: document,
         userId,
@@ -565,7 +565,7 @@ describe('captured pending MCP schema identity at grant', () => {
           ],
         }),
       });
-      recordPolicyWriteDecision({
+      await recordPolicyWriteDecision({
         coreDb: f.coreDb,
         actor: { kind: 'local', userId },
         candidate: {
@@ -589,7 +589,7 @@ describe('captured pending MCP schema identity at grant', () => {
       document = prepared.document;
       expect(readAdmittedPolicyDocument(f.coreDb, document)).toEqual(document);
     };
-    admit();
+    await admit();
     await f.store.createAgentSession({
       id: scope.agentSessionId,
       agentId: f.environmentPackage.agent.agentId,
@@ -760,7 +760,7 @@ describe('captured pending MCP schema identity at grant', () => {
           expect(prepared.failed).toBe(false);
           // Change current Policy after a real review and credential preparation.
           // The unchanged supply and captured source cannot authorize the later claim.
-          admit(true);
+          await admit(true);
           expect(
             resolveWorkspaceMcpServer({ catalog: f.catalog(), serverId: 'echo-server' })
               .catalogDigest

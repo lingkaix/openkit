@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
   listServerCapabilityCalls,
   listWorkspaceCapabilityCalls,
@@ -12,12 +13,21 @@ import {
   recordUsage,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
+import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { type ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { createApp } from '../test-support/app.js';
+import { type CreateAppOptions, createApp } from '../test-support/app.js';
+import {
+  heldServerPermissionAck,
+  releaseCommit,
+} from '../test-support/control-native-transport.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -26,9 +36,16 @@ import { GatewayAttemptFailure } from './gateway-execution.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 
+// Keep the actual native owner; hold only this family's exact acknowledged reply on Main.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
+  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+});
+
 const requestId = '12345678-1234-4234-8234-123456789abc';
 /** Actual public routes, stock synthetic models and Workspace ledger; no ledger double. */
-async function fixture(missingKey = false, enabled = true) {
+async function fixture(missingKey = false, enabled = true, managedConfiguration = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-lineage-'));
   const store = await createDemoStore({ dataRoot });
   const workspaceId = (await store.createWorkspace('Lineage')).id;
@@ -51,7 +68,7 @@ async function fixture(missingKey = false, enabled = true) {
   const credentialResolver = vi.fn<ProviderCredentialResolver>((ref) =>
     ref === 'test:backup' ? 'synthetic-backup-key' : null
   );
-  const app = createApp({
+  const options: CreateAppOptions = {
     coreDb,
     dataRoot,
     store,
@@ -111,7 +128,34 @@ async function fixture(missingKey = false, enabled = true) {
         },
       ],
     },
-  });
+  };
+  if (managedConfiguration) {
+    mkdirSync(join(dataRoot, 'config'), { recursive: true });
+    writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
+    writeFileSync(join(dataRoot, 'config/gateway.jsonc'), JSON.stringify(options.gatewayConfig));
+  }
+  const manager = managedConfiguration
+    ? createRuntimeConfigManager({
+        dataRoot,
+        captureCoverage: store,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          openKitConfig: {},
+          providerRegistry: options.providerRegistry!,
+          gatewayConfig: options.gatewayConfig!,
+        }),
+      })
+    : undefined;
+  const files = manager
+    ? new RuntimeConfigFileService({
+        dataRoot,
+        userId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceIds: [workspaceId],
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      })
+    : undefined;
+  const app = createApp({ ...options, ...(manager ? { runtimeConfigManager: manager } : {}) });
   const post = (endpoint: string, stream = false, attributed = true) =>
     app.request(`/v1/${endpoint}`, {
       method: 'POST',
@@ -145,12 +189,15 @@ async function fixture(missingKey = false, enabled = true) {
     workspaceId,
     dataRoot,
     dispatcher,
+    manager,
+    files,
     credentialResolver,
     primary,
     backup,
     post,
     read,
-    close() {
+    async close() {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     },
@@ -159,6 +206,52 @@ async function fixture(missingKey = false, enabled = true) {
 
 describe('public Gateway decision Audit call linkage', () => {
   for (const endpoint of ['responses', 'chat/completions']) {
+    it(`${endpoint} waits for real Core Policy ACK and rechecks current authority or configuration before credentials or Provider contact`, async () => {
+      const f = await fixture(true, true, endpoint === 'responses');
+      let pending: Promise<Response> | undefined;
+      try {
+        const action =
+          endpoint === 'responses' ? 'llm.gateway.responses' : 'llm.gateway.chat_completions';
+        const held = await heldServerPermissionAck(
+          { kind: 'gateway', action },
+          () => (pending = f.post(endpoint))
+        );
+        expect(f.credentialResolver.mock.calls.filter(([, context]) => context)).toEqual([]);
+        expect(f.primary.state.callCount).toBe(0);
+        expect(f.backup.state.callCount).toBe(0);
+        const evidence = listServerPermissionDecisions(f.coreDb);
+        expect(evidence).toHaveLength(1);
+        expect(evidence[0]).toMatchObject({ action, result: 'allow' });
+        if (endpoint === 'responses') {
+          const current = f.files!.readFile('gateway.jsonc');
+          f.files!.updateFile({
+            id: 'gateway.jsonc',
+            kind: 'gateway',
+            expectedRevision: current.file.revision!,
+            content: JSON.stringify({ schemaVersion: 1, enabled: false, logicalModels: [] }),
+          });
+          expect((await f.manager!.reload({ mode: 'safe', dryRun: false })).status).toBe('applied');
+          expect(f.manager!.current().gatewayConfig.enabled).toBe(false);
+        } else {
+          f.coreDb.sqlite.transaction(() =>
+            disableCanonicalUser(f.coreDb, 'usr_00000000-0000-7000-8000-000000000001')
+          )();
+        }
+        releaseCommit();
+        const response = await held.result;
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ error: { code: 'workspace_access_denied' } });
+        expect(f.credentialResolver.mock.calls.filter(([, context]) => context)).toEqual([]);
+        expect(f.primary.state.callCount).toBe(0);
+        expect(f.backup.state.callCount).toBe(0);
+        expect(listServerPermissionDecisions(f.coreDb)).toEqual(evidence);
+      } finally {
+        releaseCommit();
+        if (pending) await Promise.allSettled([pending]);
+        await f.close();
+      }
+    });
+
     for (const attributed of [true, false]) {
       it(`${endpoint} ${attributed ? 'Workspace' : 'Server'} decision links the exact assigned call`, async () => {
         const f = await fixture();
@@ -192,7 +285,7 @@ describe('public Gateway decision Audit call linkage', () => {
           expect(f.primary.state.callCount).toBe(1);
           expect(f.backup.state.callCount).toBe(0);
         } finally {
-          f.close();
+          await f.close();
         }
       });
 
@@ -230,7 +323,7 @@ describe('public Gateway decision Audit call linkage', () => {
             )
           ).toEqual([]);
         } finally {
-          f.close();
+          await f.close();
         }
       });
     }
@@ -259,7 +352,7 @@ describe('public Gateway decision Audit call linkage', () => {
         expect(f.primary.state.callCount).toBe(0);
         expect(f.backup.state.callCount).toBe(0);
       } finally {
-        f.close();
+        await f.close();
       }
     });
 
@@ -289,7 +382,7 @@ describe('public Gateway decision Audit call linkage', () => {
         expect(f.primary.state.callCount).toBe(0);
         expect(f.backup.state.callCount).toBe(0);
       } finally {
-        f.close();
+        await f.close();
       }
     });
 
@@ -318,7 +411,7 @@ describe('public Gateway decision Audit call linkage', () => {
         expect(f.backup.state.callCount).toBe(0);
         expect(f.credentialResolver).not.toHaveBeenCalled();
       } finally {
-        f.close();
+        await f.close();
       }
     });
   }
@@ -388,7 +481,7 @@ describe('public durable logical Gateway lineage', () => {
       ).toEqual({ quantity: 10 });
       expect(f.coreDb.sqlite.open).toBe(true);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -460,7 +553,7 @@ describe('public durable logical Gateway lineage', () => {
           expect(f.backup.state.callCount).toBe(1);
           expect(f.read()).toEqual(original);
         } finally {
-          f.close();
+          await f.close();
         }
       });
     }
@@ -517,7 +610,7 @@ describe('public durable logical Gateway lineage', () => {
       ])
         expect(serialized).not.toContain(forbidden);
     } finally {
-      f.close();
+      await f.close();
     }
   });
   it('usage.read omits another user private Thread for a readonly member while preserving administrator eligibility', async () => {
@@ -575,7 +668,7 @@ describe('public durable logical Gateway lineage', () => {
       expect(administratorProjection.usageRecords).toHaveLength(1);
     } finally {
       db.sqlite.close();
-      f.close();
+      await f.close();
     }
   });
   it('same-member retry keeps one call and deduplicates identical usage references', async () => {
@@ -602,7 +695,7 @@ describe('public durable logical Gateway lineage', () => {
       expect(f.backup.state.callCount).toBe(0);
     } finally {
       vi.useRealTimers();
-      f.close();
+      await f.close();
     }
   });
   it('refuses a reused running request before any Provider invocation and preserves its bytes', async () => {
@@ -634,7 +727,7 @@ describe('public durable logical Gateway lineage', () => {
       expect(db.sqlite.prepare('SELECT * FROM capability_calls').all()).toEqual(before);
     } finally {
       db.sqlite.close();
-      f.close();
+      await f.close();
     }
   });
   it('identical backend usage collapses to one measurement cited by both retry entries', async () => {
@@ -671,7 +764,7 @@ describe('public durable logical Gateway lineage', () => {
       expect(dispatch).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
-      f.close();
+      await f.close();
     }
   });
   it('a released stream without terminal evidence fails without replay and retains unknown lineage', async () => {
@@ -703,7 +796,7 @@ describe('public durable logical Gateway lineage', () => {
       });
       expect(f.backup.state.callCount).toBe(0);
     } finally {
-      f.close();
+      await f.close();
     }
   });
   it('public calls without Workspace metadata keep Workspace history empty', async () => {
@@ -713,7 +806,7 @@ describe('public durable logical Gateway lineage', () => {
       expect((await f.post('responses', false, false)).status).toBe(200);
       expect(f.read().calls).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 });
@@ -762,7 +855,7 @@ describe('slice 1d round 2 terminal frame closeout', () => {
         expect(dispatch).toHaveBeenCalledTimes(1);
         expect(f.backup.state.callCount).toBe(0);
       } finally {
-        f.close();
+        await f.close();
       }
     });
 });
@@ -806,11 +899,12 @@ it('skips a missing API key with auth_rejected lineage and only backup effort le
       ],
     });
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
+  releaseCommit();
   await shutdownControlStoreWorkerClient();
 });

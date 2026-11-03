@@ -17,6 +17,10 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  heldServerPermissionAck,
+  releaseCommit,
+} from '../test-support/control-native-transport.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService, type GoalDomainStatement } from './goal-domains.js';
 import { evaluateGoalTaskAccess } from './goal-task-access.js';
@@ -26,8 +30,16 @@ import { listServerPermissionDecisions } from './permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
 import { evaluateProductAccess } from './workspace-access.js';
 
+// Keep the actual native owner; hold only this family's exact acknowledged reply on Main.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
+  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+});
+
 const cleanup: (() => void)[] = [];
 afterEach(async () => {
+  releaseCommit();
   await shutdownControlStoreWorkerClient();
   for (const fn of cleanup.splice(0)) fn();
 });
@@ -197,6 +209,36 @@ async function fixture(uses?: number) {
 }
 
 describe('jointly approved Goal-domain publication', () => {
+  it('rechecks the deciding credential after native evidence ACK before activating the Goal domain', async () => {
+    const f = await fixture();
+    await f.approve();
+    await f.consume();
+    const original = readFileSync(f.path, 'utf8');
+    const reloads = f.reload.mock.calls.length;
+    let pending: Promise<unknown> | undefined;
+    try {
+      const held = await heldServerPermissionAck(
+        { kind: 'policy-write', requestId: f.request.requestId },
+        () => (pending = Promise.resolve().then(() => f.activate()))
+      );
+      expect(readFileSync(f.path, 'utf8')).toBe(original);
+      expect(f.reload).toHaveBeenCalledTimes(reloads);
+      const evidence = listServerPermissionDecisions(f.coreDb);
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]!.contextSummary).toMatchObject({ requestId: f.request.requestId });
+      f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))();
+      releaseCommit();
+      await expect(held.result).rejects.toThrow(/credential.*no longer authorized/);
+      expect(readFileSync(f.path, 'utf8')).toBe(original);
+      expect(f.reload).toHaveBeenCalledTimes(reloads);
+      expect(listServerPermissionDecisions(f.coreDb)).toEqual(evidence);
+      expect(f.service().read(f.key)).toBeNull();
+    } finally {
+      releaseCommit();
+      if (pending) await Promise.allSettled([pending]);
+    }
+  });
+
   it('recognizes its own last-use allow while still rechecking current human authority', async () => {
     const f = await fixture(1);
     await f.approve();
@@ -430,7 +472,7 @@ describe('jointly approved Goal-domain publication', () => {
       f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))();
       return result;
     });
-    expect(() => f.activate()).toThrow(/credential.*no longer authorized/);
+    await expect(f.activate()).rejects.toThrow(/credential.*no longer authorized/);
     expect(readFileSync(f.path, 'utf8')).toBe(before);
     expect(f.reload).not.toHaveBeenCalled();
   });
@@ -482,7 +524,7 @@ describe('jointly approved Goal-domain publication', () => {
     f.reload.mockImplementationOnce(() => {
       throw new Error('Injected reload failure');
     });
-    expect(() => f.activate()).toThrow('Injected reload failure');
+    await expect(f.activate()).rejects.toThrow('Injected reload failure');
     expect(JSON.parse(readFileSync(f.path, 'utf8')).policy.mediation.statements[0].state).toBe(
       'active'
     );
@@ -493,7 +535,7 @@ describe('jointly approved Goal-domain publication', () => {
     const update = vi.spyOn(f.files, 'updateFile').mockImplementationOnce(() => {
       throw new Error('Injected CAS conflict');
     });
-    expect(() => f.service().close(f.key)).toThrow('Injected CAS conflict');
+    await expect(f.service().close(f.key)).rejects.toThrow('Injected CAS conflict');
     expect(readFileSync(f.path, 'utf8')).toBe(original);
     expect(f.service().read(f.key)).not.toBeNull();
     update.mockRestore();

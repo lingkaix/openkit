@@ -22,9 +22,16 @@ import {
 } from '../audit-events.js';
 
 import { loadBootPolicyKernel } from '../bootstrap/policy.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb, type UserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  armBootSecondDecisionEntropyFailure,
+  releaseBootEntropyFailure,
+} from '../test-support/control-native-transport.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import * as permissionDecisions from './permission-decisions.js';
 import {
@@ -37,6 +44,13 @@ import {
   recordProductPermissionDecision,
 } from './permission-decisions.js';
 import { readPermissionDecisionRowV1, retainPermissionDecision } from './retained-records-v1.js';
+
+// Keep the real native owner and entry; only the selected allocation is faulted in its thread.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
+  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+});
 
 describe('permission decision recorder', () => {
   it('roundtrips mediation and atomically consumes only final Workspace allows', async () => {
@@ -321,7 +335,7 @@ describe('permission decision recorder', () => {
       applyMigrations(coreDb);
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
       if (ownerScope === 'workspace') await openTestNativeWorkspace(workspaceDb);
-      const recorded = recordProductPermissionDecision({
+      const recorded = await recordProductPermissionDecision({
         coreDb,
         workspaceDb,
         ownerScope,
@@ -342,6 +356,7 @@ describe('permission decision recorder', () => {
       if (ownerScope === 'workspace') await recorded;
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
       workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -366,11 +381,12 @@ describe('permission decision recorder', () => {
     } finally {
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('retains all matched Kernel rule IDs through server list and Core reopen', () => {
+  it('retains all matched Kernel rule IDs through server list and Core reopen', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-'));
     let coreDb = openCoreDb(dataRoot);
 
@@ -409,7 +425,7 @@ describe('permission decision recorder', () => {
         target: 'object:baseline-vault-secret',
       });
 
-      recordPermissionDecision({
+      await recordPermissionDecision({
         coreDb,
         decisionId: 'pd_00000000-0000-7e76-af55-371b5a65dcf3',
         ownerScope: 'server',
@@ -464,6 +480,7 @@ describe('permission decision recorder', () => {
           matchedProhibitions: ['deny:baseline-vault-use', 'deny:vault-extra'],
         },
       };
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
       const response = ListServerPermissionDecisionsResponseSchema.parse({
@@ -479,19 +496,20 @@ describe('permission decision recorder', () => {
       });
       expect(response.permissionDecisions[0]?.contextSummary).toEqual(expectedContext);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('retains canonical boot decisions across exact retry and reopen with separate boot correlation', () => {
+  it('retains canonical boot decisions across exact retry and reopen with separate boot correlation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-'));
     let coreDb = openCoreDb(dataRoot);
     const now = new Date('2026-07-05T00:00:00.000Z');
     const kernel = loadBootPolicyKernel();
     try {
       applyMigrations(coreDb);
-      recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now });
+      await recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now });
       const original = listServerPermissionDecisions(coreDb).sort((a, b) =>
         a.action.localeCompare(b.action)
       );
@@ -528,9 +546,10 @@ describe('permission decision recorder', () => {
       const auditCount = () =>
         coreDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get();
       const originalAuditCount = auditCount();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
-      recordBootPolicySelfCheckDecisions({
+      await recordBootPolicySelfCheckDecisions({
         bootId: 'boot_policy_test',
         coreDb,
         kernel,
@@ -540,7 +559,7 @@ describe('permission decision recorder', () => {
         listServerPermissionDecisions(coreDb).sort((a, b) => a.action.localeCompare(b.action))
       ).toEqual(original);
       expect(auditCount()).toEqual(originalAuditCount);
-      recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_next', coreDb, kernel, now });
+      await recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_next', coreDb, kernel, now });
       const next = listServerPermissionDecisions(coreDb);
       expect(next).toHaveLength(4);
       expect(new Set(next.map((row) => row.decisionId)).size).toBe(4);
@@ -551,9 +570,9 @@ describe('permission decision recorder', () => {
       coreDb.sqlite
         .prepare('DELETE FROM audit_events WHERE audit_event_id = ?')
         .run(original[0]!.auditEventId);
-      expect(() =>
+      await expect(
         recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now })
-      ).toThrow('Boot policy self-check record is contradictory.');
+      ).rejects.toThrow('Boot policy self-check record is contradictory.');
       expect(
         coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
       ).toEqual(retained);
@@ -566,9 +585,9 @@ describe('permission decision recorder', () => {
       const partialAudits = coreDb.sqlite
         .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
         .all();
-      expect(() =>
+      await expect(
         recordBootPolicySelfCheckDecisions({ bootId: 'boot_policy_test', coreDb, kernel, now })
-      ).toThrow('Boot policy self-check record is contradictory.');
+      ).rejects.toThrow('Boot policy self-check record is contradictory.');
       expect(
         coreDb.sqlite.prepare('SELECT * FROM permission_decisions ORDER BY decision_id').all()
       ).toEqual(partialRows);
@@ -576,12 +595,13 @@ describe('permission decision recorder', () => {
         coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
       ).toEqual(partialAudits);
     } finally {
+      await shutdownControlStoreWorkerClient();
       if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('pins boot rule versions to the canonical evaluated PolicyState despite unchanged rule IDs', () => {
+  it('pins boot rule versions to the canonical evaluated PolicyState despite unchanged rule IDs', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-snapshot-'));
     const coreDb = openCoreDb(dataRoot);
     const baseline = loadBootPolicyKernel();
@@ -593,9 +613,13 @@ describe('permission decision recorder', () => {
     });
     try {
       applyMigrations(coreDb);
-      recordBootPolicySelfCheckDecisions({ bootId: 'boot_original', coreDb, kernel: baseline });
-      recordBootPolicySelfCheckDecisions({ bootId: 'boot_same', coreDb, kernel: baseline });
-      recordBootPolicySelfCheckDecisions({ bootId: 'boot_changed', coreDb, kernel: changed });
+      await recordBootPolicySelfCheckDecisions({
+        bootId: 'boot_original',
+        coreDb,
+        kernel: baseline,
+      });
+      await recordBootPolicySelfCheckDecisions({ bootId: 'boot_same', coreDb, kernel: baseline });
+      await recordBootPolicySelfCheckDecisions({ bootId: 'boot_changed', coreDb, kernel: changed });
       const rows = listServerPermissionDecisions(coreDb);
       const original = rows.filter(
         (row) => (row.contextSummary as { bootId: string }).bootId === 'boot_original'
@@ -630,15 +654,16 @@ describe('permission decision recorder', () => {
           .sort((left, right) => left.action.localeCompare(right.action));
       expect(verdicts(revised)).toEqual(verdicts(original));
       const retained = listServerPermissionDecisions(coreDb);
-      expect(() =>
+      await expect(
         recordBootPolicySelfCheckDecisions({
           bootId: 'boot_original',
           coreDb,
           kernel: changed,
         })
-      ).toThrow('Boot policy self-check record is contradictory.');
+      ).rejects.toThrow('Boot policy self-check record is contradictory.');
       expect(listServerPermissionDecisions(coreDb)).toEqual(retained);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -653,7 +678,7 @@ describe('permission decision recorder', () => {
     ['severity', 'warning'],
     ['error_code', 'contradictory'],
     ['occurred_at', '2026-07-05T00:01:00.000Z'],
-  ])('refuses boot retry with contradictory linked Audit %s without changing retained rows', (field, value) => {
+  ])('refuses boot retry with contradictory linked Audit %s without changing retained rows', async (field, value) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-audit-'));
     const coreDb = openCoreDb(dataRoot);
     const input = {
@@ -664,7 +689,7 @@ describe('permission decision recorder', () => {
     };
     try {
       applyMigrations(coreDb);
-      recordBootPolicySelfCheckDecisions(input);
+      await recordBootPolicySelfCheckDecisions(input);
       const decision = listServerPermissionDecisions(coreDb).find(
         (row) => row.action === 'api.call'
       )!;
@@ -678,7 +703,7 @@ describe('permission decision recorder', () => {
       const audits = coreDb.sqlite
         .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
         .all();
-      expect(() => recordBootPolicySelfCheckDecisions(input)).toThrow(
+      await expect(recordBootPolicySelfCheckDecisions(input)).rejects.toThrow(
         'Boot policy self-check record is contradictory.'
       );
       expect(
@@ -688,51 +713,57 @@ describe('permission decision recorder', () => {
         coreDb.sqlite.prepare('SELECT * FROM audit_events ORDER BY audit_event_id').all()
       ).toEqual(audits);
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('publishes neither boot decision nor Audit when the second decision lacks entropy', () => {
+  it('publishes neither boot decision nor Audit when the second decision lacks entropy', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-entropy-'));
     const coreDb = openCoreDb(dataRoot);
     try {
       applyMigrations(coreDb);
-      const nativeEntropy = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
-      const entropy = vi
-        .spyOn(globalThis.crypto, 'getRandomValues')
-        .mockImplementationOnce((value) => nativeEntropy(value))
-        .mockImplementationOnce((value) => nativeEntropy(value))
-        .mockImplementation(() => {
-          throw new Error('Synthetic boot entropy failure.');
-        });
-      try {
-        expect(() =>
+      // Earlier tests can own a native host. Start this selection in a fresh intercepted lifetime.
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.pragma('query_only = ON');
+      const entropy = armBootSecondDecisionEntropyFailure();
+      const failure: unknown = await Promise.resolve()
+        .then(() =>
           recordBootPolicySelfCheckDecisions({
             bootId: 'boot_entropy',
             coreDb,
             kernel: loadBootPolicyKernel(),
           })
-        ).toThrow('Synthetic boot entropy failure.');
-      } finally {
-        entropy.mockRestore();
-      }
+        )
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      // Prove actual Worker fault entry before judging the transport's redacted refusal.
+      expect(Atomics.load(entropy, 1)).toBe(1);
+      expect(Atomics.load(entropy, 2)).toBe(3);
+      expect(Atomics.load(entropy, 3)).toBe(1);
+      expect(failure).toBeInstanceOf(ControlStoreWorkerError);
+      expect(failure).toMatchObject({ code: 'sql-failed', commit: 'not-committed' });
       expect(coreDb.sqlite.prepare('SELECT * FROM permission_decisions').all()).toEqual([]);
       expect(coreDb.sqlite.prepare('SELECT * FROM audit_events').all()).toEqual([]);
     } finally {
+      releaseBootEntropyFailure();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('requires an approval kind for require_approval decisions', () => {
+  it('requires an approval kind for require_approval decisions', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-'));
     const coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
 
-      expect(() =>
+      await expect(
         recordProductPermissionDecision({
           coreDb,
           decisionId: 'pd_00000000-0000-75a1-9ff1-d6ec6ed0f953',
@@ -750,20 +781,21 @@ describe('permission decision recorder', () => {
           reasonCode: 'approval_required',
           enforcementPoint: 'policy.test',
         })
-      ).toThrow('require_approval permission decisions require requiredApprovalKind.');
+      ).rejects.toThrow('require_approval permission decisions require requiredApprovalKind.');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
 
-  it('records approval and escalation outcome mappings as durable rows', () => {
+  it('records approval and escalation outcome mappings as durable rows', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-'));
     const coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
 
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         coreDb,
         decisionId: 'pd_00000000-0000-7d59-952b-a37801be80df',
         ownerScope: 'server',
@@ -782,7 +814,7 @@ describe('permission decision recorder', () => {
         requiredApprovalKind: 'permission',
         approvalId: 'ap_policy_1',
       });
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         coreDb,
         decisionId: 'pd_00000000-0000-7d04-af43-41da70aefdc8',
         ownerScope: 'server',
@@ -830,6 +862,7 @@ describe('permission decision recorder', () => {
         ].sort((left, right) => left.decision_id.localeCompare(right.decision_id))
       );
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -901,14 +934,14 @@ describe('permission decision recorder', () => {
     }
   });
 
-  it('records linked audit events for server-scoped permission decisions', () => {
+  it('records linked audit events for server-scoped permission decisions', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-server-audit-'));
     const coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
 
-      recordProductPermissionDecision({
+      await recordProductPermissionDecision({
         action: 'llm.gateway.responses',
         contextSummary: { requestId: 'req_gateway_policy' },
         coreDb,
@@ -950,6 +983,7 @@ describe('permission decision recorder', () => {
         workspace_id: null,
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });

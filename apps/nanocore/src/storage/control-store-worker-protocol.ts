@@ -296,7 +296,7 @@ import {
 } from './workspace-stage-review-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 52;
+export const CONTROL_WORKER_VERSION = 53;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z

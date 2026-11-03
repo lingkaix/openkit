@@ -1324,6 +1324,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1523,6 +1524,7 @@ describe('OpenAI-compatible agent gateway', () => {
       expect(listWorkspaceUsageRecords(workspaceDb, workspace.id)).toEqual(retainedUsage);
     } finally {
       workspaceDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1717,6 +1719,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceId: workspace.id,
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1813,6 +1816,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1874,6 +1878,7 @@ describe('OpenAI-compatible agent gateway', () => {
         workspaceDb.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -1991,6 +1996,7 @@ describe('OpenAI-compatible agent gateway', () => {
         ]),
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2831,6 +2837,7 @@ describe('OpenAI-compatible agent gateway', () => {
       }
       expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-gateway');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -2906,6 +2913,7 @@ describe('OpenAI-compatible agent gateway', () => {
         )
       );
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -4351,6 +4359,7 @@ describe('API key member availability', () => {
       backend.mockRestore();
       if (previous === undefined) delete process.env[envName];
       else process.env[envName] = previous;
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -4459,6 +4468,7 @@ it('the API-key path restores the same member on next resolve without reload', a
     expect(reload).not.toHaveBeenCalled();
   } finally {
     reload.mockRestore();
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
   }
 });

@@ -46,7 +46,7 @@ export function withHumanMcpApproval(
 }
 
 /** Explicitly records fixture human admission; production candidate/confirmation is tested separately. */
-export function admitTestMcpApproval(input: {
+export async function admitTestMcpApproval(input: {
   coreDb: CoreDb;
   document?: PolicyDocumentV1;
   workspaceId: string;
@@ -56,7 +56,7 @@ export function admitTestMcpApproval(input: {
   principal?: InterceptionInput['proposal']['subject']['principal'];
   threadId: string;
   turnId: string;
-}): PolicyDocumentV1 {
+}): Promise<PolicyDocumentV1> {
   const current = input.document ?? EMPTY_POLICY_DOCUMENT;
   const statement = PolicyPermissionV1Schema.parse({
     id: `human-tool-condition-${input.serverId}-${input.toolName}`,
@@ -93,7 +93,7 @@ export function admitTestMcpApproval(input: {
     userId: input.userId,
     now: new Date().toISOString(),
   });
-  recordPolicyWriteDecision({
+  await recordPolicyWriteDecision({
     coreDb: input.coreDb,
     actor: { kind: 'local', userId: input.userId },
     candidate: {

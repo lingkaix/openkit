@@ -368,7 +368,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     );
   }
 
-  function persist(
+  async function persist(
     current: ReturnType<typeof saved>,
     document: PolicyDocumentV1,
     context: {
@@ -401,20 +401,25 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     if (!validation.valid) throw new Error('Goal-domain Policy configuration validation failed.');
     // Validation reads an overlay from disk; reread live approval and credentials
     // before the final Kernel and Server file effect, rather than trusting its old snapshot.
-    const administration = context.administration?.recheck();
-    if (context.actor) approved(context.key.workspaceId, context.requestId!);
-
-    const kernel =
-      administration?.kernel ??
-      (context.actor
-        ? evaluateProductAuthorization(
-            deps.coreDb,
-            context.actor,
-            { kind: 'workspace', workspaceId: context.key.workspaceId },
-            'workspace.write',
-            true
-          )
-        : null);
+    const currentAuthority = () => {
+      const administration = context.administration?.recheck();
+      if (context.actor) approved(context.key.workspaceId, context.requestId!);
+      const kernel =
+        administration?.kernel ??
+        (context.actor
+          ? evaluateProductAuthorization(
+              deps.coreDb,
+              context.actor,
+              { kind: 'workspace', workspaceId: context.key.workspaceId },
+              'workspace.write',
+              true
+            )
+          : null);
+      if (kernel && kernel.effect !== 'allow')
+        throw new Error('Goal-domain Kernel admission failed.');
+      return { administration, kernel };
+    };
+    const { administration, kernel } = currentAuthority();
     const subject =
       administration?.subject ??
       (context.actor
@@ -427,11 +432,9 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
             responsibleHumanId: context.actor.userId,
           }
         : null);
-    if (kernel && kernel.effect !== 'allow')
-      throw new Error('Goal-domain Kernel admission failed.');
     // Closure is a native withdrawal, not an impersonated human authorization.
     // Both changes retain the existing Policy decision/Audit before the sole CAS.
-    recordProductPermissionDecision({
+    await recordProductPermissionDecision({
       coreDb: deps.coreDb,
       ownerScope: 'server',
       decisionId: allocateEntityId('pd'),
@@ -495,6 +498,10 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
             responsibleUserId: context.responsibleUserId,
           },
     });
+    // The file effect follows ACK only under the same current actor/Task/Plan and loaded Policy.
+    currentAuthority();
+    if ((context.actor || context.administration) && loaded().revision !== current.revision)
+      throw new Error('Goal-domain Policy revision changed.');
     deps.files.updateFile(
       { id: 'server.jsonc', kind: 'server', content, expectedRevision: current.file.file.revision },
       { policyWrite: true }
@@ -512,7 +519,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     /** Publishes only an explicitly bounded exception under the current human-approved domain. */
     administer(input: GoalDomainAdministrationInput) {
       const authority = coordinatorAuthority(input);
-      const { current, context, domain, goal, key } = authority;
+      const { current, domain, goal, key } = authority;
       const grant = input.grant;
       const permission = PolicyPermissionV1Schema.parse({
         id: grant.id,
@@ -529,24 +536,30 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
         scope: grant.scope,
         lifetime: grant.lifetime,
       });
-      if (
-        !grant.rationale.trim() ||
-        permission.scope.subjects.length !== 1 ||
-        permission.scope.subjects[0]?.kind !== 'agent' ||
-        permission.scope.subjects[0].id !== context.agentId ||
-        !policyScopeContains(domain.scope, permission.scope) ||
-        !permissionAnchorCurrent(permission, context) ||
-        (permission.lifetime.notAfter &&
-          (Date.now() >= Date.parse(permission.lifetime.notAfter) ||
-            (domain.lifetime.notAfter &&
-              Date.parse(permission.lifetime.notAfter) > Date.parse(domain.lifetime.notAfter)))) ||
-        (domain.lifetime.uses !== undefined &&
-          permission.lifetime.uses !== undefined &&
-          permission.lifetime.uses > domain.lifetime.uses)
-      )
-        throw new Error(
-          'Goal permission exceeds its current delegation, Task identity or lifetime.'
-        );
+      const currentCandidate = (currentAuthority: ReturnType<typeof coordinatorAuthority>) => {
+        const { context, domain } = currentAuthority;
+        if (
+          !grant.rationale.trim() ||
+          permission.scope.subjects.length !== 1 ||
+          permission.scope.subjects[0]?.kind !== 'agent' ||
+          permission.scope.subjects[0].id !== context.agentId ||
+          !policyScopeContains(domain.scope, permission.scope) ||
+          !permissionAnchorCurrent(permission, context) ||
+          (permission.lifetime.notAfter &&
+            (Date.now() >= Date.parse(permission.lifetime.notAfter) ||
+              (domain.lifetime.notAfter &&
+                Date.parse(permission.lifetime.notAfter) >
+                  Date.parse(domain.lifetime.notAfter)))) ||
+          (domain.lifetime.uses !== undefined &&
+            permission.lifetime.uses !== undefined &&
+            permission.lifetime.uses > domain.lifetime.uses)
+        )
+          throw new Error(
+            'Goal permission exceeds its current delegation, Task identity or lifetime.'
+          );
+        return currentAuthority;
+      };
+      currentCandidate(authority);
       const previous = current.document.statements.find(({ id }) => id === permission.id);
       if (
         previous &&
@@ -574,11 +587,12 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       const policyRevision = persist(current, document, {
         key,
         responsibleUserId: goal.responsibleUserId,
-        administration: { proposal, recheck: () => coordinatorAuthority(input) },
+        administration: { proposal, recheck: () => currentCandidate(coordinatorAuthority(input)) },
       });
-      return policyRevision instanceof Promise
-        ? policyRevision.then((revision) => ({ statement: permission, policyRevision: revision }))
-        : { statement: permission, policyRevision };
+      return policyRevision.then((revision) => ({
+        statement: permission,
+        policyRevision: revision,
+      }));
     },
 
     /** Current native Task facts select only live exceptions; a historical allow is never a new use. */
@@ -667,9 +681,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
         requestId: input.requestId,
         responsibleUserId: approval.goal.responsibleUserId,
       });
-      return policyRevision instanceof Promise
-        ? policyRevision.then((revision) => ({ statement, policyRevision: revision }))
-        : { statement, policyRevision };
+      return policyRevision.then((revision) => ({ statement, policyRevision: revision }));
     },
 
     /** Rechecks the recorded human, exact Plan, saved/loaded revision and lifetime on every use. */
@@ -714,9 +726,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
               ?.responsibleUserId ?? previous.author.id,
         }
       );
-      return policyRevision instanceof Promise
-        ? policyRevision.then((revision) => ({ changed: true, policyRevision: revision }))
-        : { changed: true, policyRevision };
+      return policyRevision.then((revision) => ({ changed: true, policyRevision: revision }));
     },
   };
 

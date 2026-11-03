@@ -44,6 +44,10 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  heldServerPermissionAck,
+  releaseCommit,
+} from '../test-support/control-native-transport.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -57,8 +61,16 @@ import { readDefaultKnowledgeBaseId } from './knowledge-base.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
+// Keep the actual native owner; hold only this family's exact acknowledged reply on Main.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('../test-support/control-native-transport.js');
+  return { ...actual, Worker: nativeCommitWorker(actual.Worker) };
+});
+
 const cleanup: (() => void)[] = [];
 afterEach(async () => {
+  releaseCommit();
   await shutdownControlStoreWorkerClient();
   for (const fn of cleanup.splice(0)) fn();
 });
@@ -668,6 +680,40 @@ describe('administration catalog configuration', () => {
       ).toBeNull();
     } finally {
       await storage.close();
+    }
+  });
+
+  it('retains admitted Policy evidence but refuses a credential revoked during its ACK wait before Item or file publication', async () => {
+    const f = await mcpPolicyFixture();
+    const proposal = await f.service.propose(f.policyRequest(), f.home);
+    const request = f.confirm(proposal);
+    const before = f.files.readFile('server.jsonc').content;
+    const items = f.store.listThreadItems(f.workspaceId, f.home.threadId);
+    let pending: Promise<unknown> | undefined;
+    try {
+      const held = await heldServerPermissionAck(
+        { kind: 'policy-write', requestId: request.requestId },
+        () => (pending = f.service.apply(request))
+      );
+      expect(f.files.readFile('server.jsonc').content).toBe(before);
+      expect(f.store.listThreadItems(f.workspaceId, f.home.threadId)).toEqual(items);
+      expect(f.reload).not.toHaveBeenCalled();
+      const committed = listServerPermissionDecisions(f.coreDb);
+      const evidence = committed.filter(
+        (row) => (row.contextSummary as { requestId?: string }).requestId === request.requestId
+      );
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]!.result).toBe('allow');
+      revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
+      releaseCommit();
+      await expect(held.result).rejects.toThrow('administrator authority');
+      expect(f.files.readFile('server.jsonc').content).toBe(before);
+      expect(f.store.listThreadItems(f.workspaceId, f.home.threadId)).toEqual(items);
+      expect(f.reload).not.toHaveBeenCalled();
+      expect(listServerPermissionDecisions(f.coreDb)).toEqual(committed);
+    } finally {
+      releaseCommit();
+      if (pending) await Promise.allSettled([pending]);
     }
   });
 
