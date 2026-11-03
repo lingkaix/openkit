@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,7 +24,12 @@ import { prepareAuditEvent } from '../audit-events.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSpan } from '../runtime/execution-step-journal.js';
-import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import {
+  ControlProductPreconditionError,
+  closeWorkspaceProductReadHandles,
+  getWorkspaceProductReadHandle,
+  openControlStoreProductReadHandle,
+} from '../storage/control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -802,4 +816,135 @@ describe('native Store authority and immutable closure', () => {
       });
     }
   });
+
+  it('reuses the actual readonly product connection while reading current Workspace and Thread metadata', async () => {
+    const f = fixture();
+    const workspace = await f.store.createWorkspace('Metadata reuse');
+    const thread = await f.store.createThread(workspace.id, 'Before external commit');
+    const peer = new FsStore({ dataRoot: f.root });
+    const owner = { kind: 'workspace', workspaceId: workspace.id } as const;
+    const scope = nativeProductScope(f.root, owner);
+    closeWorkspaceProductReadHandles(scope.path);
+    const reader = getWorkspaceProductReadHandle(scope.path, owner);
+    const sqlite = reader.sqlite;
+    const prepare = sqlite.prepare;
+    const preparedSql: string[] = [];
+    // Observation only: every prepare call executes the original native method on the same receiver.
+    // No result, connection, SQL statement, selector or admission decision is replaced.
+    sqlite.prepare = function (this: typeof sqlite, sql: string) {
+      preparedSql.push(sql);
+      return Reflect.apply(prepare, this, [sql]);
+    } as typeof prepare;
+    try {
+      expect(sqlite.readonly).toBe(true);
+      expect(sqlite.pragma('query_only', { simple: true })).toBe(1);
+      // readonly alone permits TEMP writes; query_only must also prevent this real native write.
+      expect(() =>
+        sqlite.exec('CREATE TEMP TABLE task3_query_only_probe (value INTEGER)')
+      ).toThrow();
+      expect(f.store.getWorkspace(workspace.id)).toMatchObject({
+        id: workspace.id,
+        status: 'active',
+      });
+      const afterWorkspace = preparedSql.length;
+      expect(afterWorkspace).toBeGreaterThan(0);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(f.store.getThread(workspace.id, thread.id).name).toBe('Before external commit');
+      expect(preparedSql.length).toBeGreaterThan(afterWorkspace);
+      expect(sqlite.inTransaction).toBe(false);
+
+      // The existing owner promises prepared-statement reuse, never retained rows or snapshots.
+      const warm = preparedSql.length;
+      expect(f.store.getWorkspace(workspace.id).status).toBe('active');
+      expect(f.store.getThread(workspace.id, thread.id).name).toBe('Before external commit');
+      expect(preparedSql.length).toBe(warm);
+      expect(getWorkspaceProductReadHandle(scope.path, owner)).toBe(reader);
+      expect(sqlite.inTransaction).toBe(false);
+
+      // A separate Store publishes through the real native writer's separate SQLite connection.
+      // The reading Store's process-local metadata is not updated by these operations.
+      await peer.updateThread(workspace.id, thread.id, { name: 'After external commit' });
+      await peer.updateWorkspace(workspace.id, { status: 'archived' });
+      expect(f.store.getWorkspace(workspace.id).status).toBe('archived');
+      expect(f.store.getThread(workspace.id, thread.id).name).toBe('After external commit');
+      expect(getWorkspaceProductReadHandle(scope.path, owner)).toBe(reader);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(sqlite.readonly).toBe(true);
+      expect(sqlite.pragma('query_only', { simple: true })).toBe(1);
+    } finally {
+      sqlite.prepare = prepare;
+      await shutdownControlStoreWorkerClient();
+    }
+    expect(sqlite.open).toBe(false);
+  }, 30_000);
+
+  // Renaming an open SQLite inode is the subject of this new case's POSIX restriction.
+  // The pre-run condition applies only to this case; it does not restrict any existing case.
+  it.skipIf(process.platform === 'win32')(
+    'refuses replaced, missing and unsupported native Workspace and Thread metadata',
+    async () => {
+      for (const kind of ['workspace', 'thread'] as const) {
+        const f = fixture();
+        const workspace = await f.store.createWorkspace('Reader identity refusal');
+        const thread = await f.store.createThread(workspace.id, 'Reader identity Thread');
+        const owner = { kind: 'workspace', workspaceId: workspace.id } as const;
+        const scope = nativeProductScope(f.root, owner);
+        // Stop the native writer before copying/replacing valid canonical database bytes.
+        await shutdownControlStoreWorkerClient();
+        expect(existsSync(`${scope.path}-wal`)).toBe(false);
+        expect(existsSync(`${scope.path}-shm`)).toBe(false);
+        const read =
+          kind === 'workspace'
+            ? () => f.store.getWorkspace(workspace.id)
+            : () => f.store.getThread(workspace.id, thread.id);
+        let reader = getWorkspaceProductReadHandle(scope.path, owner);
+        try {
+          expect(read().id).toBe(kind === 'workspace' ? workspace.id : thread.id);
+          const before = lstatSync(scope.path);
+          const replacement = `${scope.path}.replacement`;
+          copyFileSync(scope.path, replacement);
+          const after = lstatSync(replacement);
+          expect(`${after.dev}:${after.ino}`).not.toBe(`${before.dev}:${before.ino}`);
+          renameSync(replacement, scope.path);
+          expect(read).toThrow(ControlProductPreconditionError);
+          expect(reader.sqlite.open).toBe(false);
+
+          // Invalidation closes the old connection; it is not a new durable quarantine or repair.
+          reader = getWorkspaceProductReadHandle(scope.path, owner);
+          expect(read().id).toBe(kind === 'workspace' ? workspace.id : thread.id);
+          const missing = `${scope.path}.missing`;
+          renameSync(scope.path, missing);
+          expect(read).toThrow();
+          expect(existsSync(scope.path)).toBe(false);
+          expect(reader.sqlite.open).toBe(false);
+          renameSync(missing, scope.path);
+
+          reader = getWorkspaceProductReadHandle(scope.path, owner);
+          expect(read().id).toBe(kind === 'workspace' ? workspace.id : thread.id);
+          const corruptor = openWorkspaceDb(f.root, workspace.id);
+          try {
+            const table = kind === 'workspace' ? 'control_workspaces' : 'control_threads';
+            const id = kind === 'workspace' ? workspace.id : thread.id;
+            // Deliberate corruption after valid owner-produced setup, not successful state fabrication.
+            // The stopped native writer and cached readonly connection are separate from this fault writer.
+            expect(
+              corruptor.sqlite
+                .prepare(
+                  `UPDATE ${table} SET record_json=json_set(record_json, '$.requiredFeatures', json(?)) WHERE id=?`
+                )
+                .run(JSON.stringify(['example.unsupported-task3-feature']), id).changes
+            ).toBe(1);
+            expect(read).toThrow();
+            expect(reader.sqlite.inTransaction).toBe(false);
+            expect(reader.sqlite.open).toBe(true);
+          } finally {
+            corruptor.sqlite.close();
+          }
+        } finally {
+          closeWorkspaceProductReadHandles(scope.path);
+        }
+      }
+    },
+    30_000
+  );
 });

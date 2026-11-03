@@ -2779,7 +2779,12 @@ export class FsStore {
         throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
       }
       const scope = this.nativeScope({ kind: 'workspace', workspaceId });
-      const native = readNativeProduct(scope, 'workspace', workspaceId);
+      const native = readNativeProduct(
+        scope,
+        'workspace',
+        workspaceId,
+        getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId })
+      );
       if (!native) throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
       const system = WorkspaceSystemRecordSchema.parse(native.record);
       const config = WorkspaceConfigSchema.parse(
@@ -4520,10 +4525,12 @@ export class FsStore {
     let thread = this.threads.get(threadId);
     if (this.dataRoot) {
       try {
+        const scope = this.nativeScope({ kind: 'workspace', workspaceId });
         thread = readNativeProduct(
-          this.nativeScope({ kind: 'workspace', workspaceId }),
+          scope,
           'thread',
-          threadId
+          threadId,
+          getWorkspaceProductReadHandle(scope.path, { kind: 'workspace', workspaceId })
         )?.record as Thread | undefined;
       } catch (error) {
         if (
