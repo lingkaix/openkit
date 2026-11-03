@@ -12,6 +12,7 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { openCoreDb } from '../storage/db.js';
 import {
   resolveWorkspaceKnowledgeRetrievalPages,
@@ -1219,13 +1220,20 @@ it.each([
       .all(request.requestId, 'knowledge.proposal.decide', `knowledge-proposal:${proposal.id}`);
   expect(auditRows()).toEqual([]);
   expect(f.coreDb.sqlite.pragma('query_only', { simple: true })).toBe(0);
-  f.coreDb.sqlite.pragma('query_only = ON');
+  // A persistent trigger reaches the native INSERT after the original Review file is retained.
+  f.coreDb.sqlite.exec(
+    `CREATE TRIGGER refuse_proposal_decision_audit BEFORE INSERT ON audit_events WHEN NEW.request_id = '${request.requestId}' AND NEW.action = 'knowledge.proposal.decide' AND NEW.resource = 'knowledge-proposal:${proposal.id}' BEGIN SELECT RAISE(ABORT, 'injected decision audit persistence failure'); END`
+  );
   try {
-    await expect(invoke('knowledge.server.proposal.decide', request, human)).rejects.toMatchObject({
-      code: 'SQLITE_READONLY',
+    const failedDecision = invoke('knowledge.server.proposal.decide', request, human);
+    await expect(failedDecision).rejects.toBeInstanceOf(ControlStoreWorkerError);
+    await expect(failedDecision).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+      message: 'Control database writer operation failed.',
     });
   } finally {
-    f.coreDb.sqlite.pragma('query_only = OFF');
+    f.coreDb.sqlite.exec('DROP TRIGGER refuse_proposal_decision_audit');
   }
   // These deciding checks refuse credit for an error before the actual Review/Audit boundary.
   const afterFailure = readServerNotebookProposal(context, proposal.id);

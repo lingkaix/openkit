@@ -10,6 +10,7 @@ import type {
 } from './automation-scanner-codecs.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
+import type { ControlScopedNotebookSqlInput } from './scoped-notebook-sql-codecs.js';
 import type {
   ControlWorkspaceBackendHandoff,
   ControlWorkspaceBackendHandoffResult,
@@ -2054,6 +2055,22 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Posts one closed Notebook stage to its already opened physical owner; no callback crosses the wire. */
+  async scopedNotebookSql(database: string, input: ControlScopedNotebookSqlInput): Promise<void> {
+    try {
+      const reply = await this.request({ operation: 'scoped-notebook-sql', database, input });
+      if (reply.operation !== 'scoped-notebook-sql' || reply.result !== null)
+        throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'scoped-notebook-sql'
+      )
+        throw new IdempotencyKeyConflictError();
+      throw error;
+    }
   }
 
   /** Reuses the canonical User physical owner and covering FULL acknowledgement. */

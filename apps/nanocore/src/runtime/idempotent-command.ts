@@ -238,6 +238,12 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   const workerOwned =
     workerOwnedApp ||
     (options.store.getDataRoot() !== null &&
+      options.scope.userId !== undefined &&
+      options.scope.coreId === undefined &&
+      options.scope.workspaceId === undefined &&
+      options.scope.appId === undefined &&
+      isControlNativeReceiptCommand(options.command, 'user')) ||
+    (options.store.getDataRoot() !== null &&
       (isControlNativeReceiptCommand(
         options.command,
         options.scope.workspaceId === undefined ? 'core' : 'workspace'

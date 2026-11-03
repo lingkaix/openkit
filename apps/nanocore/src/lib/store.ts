@@ -1,3 +1,4 @@
+import { ControlScopedNotebookSqlInputSchema } from '../storage/scoped-notebook-sql-codecs.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
 
@@ -213,6 +214,7 @@ import {
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
+  nativeUserDatabasePath,
 } from '../storage/control-store-worker-client.js';
 import {
   bindCoreSqlite,
@@ -3154,6 +3156,78 @@ export class FsStore {
           (item) => item.id === itemId
         )
       : undefined;
+  }
+
+  /**
+   * Commits one original scoped Notebook SQL stage on the existing Core or User physical owner.
+   * The optional admission recheck is the caller's existing synchronous semantic check after opening;
+   * it never travels to the worker or authorizes SQL. Completion facts and receipts settle the original effect.
+   */
+  public async commitScopedNotebookStage(
+    db: CoreDb | UserDb,
+    stage:
+      | {
+          readonly kind: 'audit';
+          readonly event: AuditEvent & { createdAt: string; occurredAt: string };
+        }
+      | { readonly kind: 'receipt'; readonly receipt: CommandRequestRecord },
+    revalidatePublication?: () => void
+  ): Promise<void> {
+    if (
+      !this.dataRoot ||
+      resolve(db.dataRoot) !== resolve(this.dataRoot) ||
+      !db.sqlite.open ||
+      db.sqlite.inTransaction
+    )
+      throw new NotebookError('recovery_required');
+    const client = getControlStoreWorkerClient();
+    let database: string;
+    if (db.scope === 'user') {
+      const path = nativeUserDatabasePath(db);
+      database = `user:${path}`;
+      await client.open({ database, path, create: false, initialize: 'user' });
+    } else {
+      const scope = this.nativeScope({ kind: 'server' });
+      if (resolve(db.sqlite.name) !== resolve(scope.path))
+        throw new NotebookError('recovery_required');
+      database = `core:${scope.path}`;
+      await client.open({
+        database,
+        path: scope.path,
+        dataRoot: this.dataRoot,
+        create: false,
+        initialize: 'core',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+    }
+    if (
+      stage.kind === 'audit' &&
+      stage.event.action === 'knowledge.notebook.admit' &&
+      !revalidatePublication
+    )
+      throw new NotebookError('recovery_required');
+    if (revalidatePublication) {
+      const checked: unknown = revalidatePublication();
+      if (checked && typeof (checked as { then?: unknown }).then === 'function')
+        throw new TypeError('Notebook publication admission must be synchronous.');
+    }
+    if (stage.kind === 'audit' && db.scope === 'user') {
+      if (stage.event.workspaceId !== null) throw new NotebookError('recovery_required');
+      await client.capability(database, {
+        kind: 'user-audit',
+        userId: db.userId,
+        event: { ...stage.event, workspaceId: null },
+      });
+    } else {
+      const input =
+        stage.kind === 'audit'
+          ? { action: 'server-audit', event: stage.event }
+          : db.scope === 'user'
+            ? { action: 'user-receipt', userId: db.userId, receipt: stage.receipt }
+            : { action: 'server-receipt', receipt: stage.receipt };
+      await client.scopedNotebookSql(database, ControlScopedNotebookSqlInputSchema.parse(input));
+    }
   }
 
   /**

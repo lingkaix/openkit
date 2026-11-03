@@ -13,6 +13,7 @@ import type { Actor } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { openCoreDb, openUserDb, type UserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -521,14 +522,26 @@ describe('internal direct User and Server Notebook publication', () => {
     db.sqlite.exec(
       "CREATE TRIGGER refuse_admission BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.admit' BEGIN SELECT RAISE(ABORT, 'test admission fault'); END"
     );
-    await expect(publishScopedNotebook(input, request)).rejects.toThrow('test admission fault');
+    const failedAdmission = publishScopedNotebook(input, request);
+    await expect(failedAdmission).rejects.toBeInstanceOf(ControlStoreWorkerError);
+    await expect(failedAdmission).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+      message: 'Control database writer operation failed.',
+    });
     expect(notebook(input).publishedRevision()).toBe(initial);
     expect(counts(db)).toEqual({ audit: 2, receipts: 0 });
     db.sqlite.exec('DROP TRIGGER refuse_admission');
     db.sqlite.exec(
       "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'test receipt fault'); END"
     );
-    await expect(publishScopedNotebook(input, request)).rejects.toThrow('test receipt fault');
+    const failedReceipt = publishScopedNotebook(input, request);
+    await expect(failedReceipt).rejects.toBeInstanceOf(ControlStoreWorkerError);
+    await expect(failedReceipt).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+      message: 'Control database writer operation failed.',
+    });
     const published = notebook(input).publishedRevision();
     expect(published).not.toBe(initial);
     expect(counts(db)).toEqual({ audit: 4, receipts: 0 });

@@ -215,6 +215,7 @@ import {
   SchedulerAdmissionTransitionError,
 } from './scheduler-admission-codecs.js';
 import { applyControlSchedulerAdmission } from './scheduler-admission-native.js';
+import { applyScopedNotebookSqlInDb } from './scoped-notebook-sql-native.js';
 import {
   THREAD_READ_RECEIPT_INVALID,
   ThreadReadItemIdsSchema,
@@ -327,6 +328,7 @@ type WriteCommand = Extract<
       | 'worker-control-record'
       | 'thread-read-membership'
       | 'boot-audit'
+      | 'scoped-notebook-sql'
       | 'admin-recovery'
       | 'better-auth'
       | 'vault'
@@ -513,6 +515,13 @@ function failure(
 
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
+  if (operation === 'scoped-notebook-sql' && error instanceof IdempotencyKeyConflictError)
+    return {
+      operation,
+      code: 'idempotency_key_conflict',
+      message: 'The requestId was already used for different command input.',
+      status: 409,
+    };
   if (operation === 'recovery-source-reactivation' && error instanceof WorkspaceRecoveryError) {
     const parsed = ControlRecoverySourceReactivationRefusalSchema.safeParse({
       operation,
@@ -2116,6 +2125,20 @@ function flush(owner: OwnedDatabase): void {
               operation: 'runtime-target',
               result,
             };
+          } else if (request.operation === 'scoped-notebook-sql') {
+            const db =
+              request.input.action === 'user-receipt'
+                ? nativeUserDb(owner, request.input.userId)
+                : owner.scopeDb;
+            if (!db || db.scope === 'workspace') throw new ControlProductPreconditionError();
+            applyScopedNotebookSqlInDb(db, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'scoped-notebook-sql',
+              result: null,
+            };
           } else if (request.operation === 'workspace-stage-review') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3381,6 +3404,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-review-decision' ||
       value.operation === 'private-workspace' ||
       value.operation === 'workspace-review-finish' ||
+      value.operation === 'scoped-notebook-sql' ||
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||
       value.operation === 'workspace-baseline' ||

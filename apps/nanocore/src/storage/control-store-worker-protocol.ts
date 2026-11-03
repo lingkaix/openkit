@@ -191,6 +191,11 @@ import {
   ControlSchedulerAdmissionWireSchema,
 } from './scheduler-admission-codecs.js';
 import {
+  type ControlScopedNotebookSqlInput,
+  ControlScopedNotebookSqlInputSchema,
+  ControlScopedNotebookSqlRefusalSchema,
+} from './scoped-notebook-sql-codecs.js';
+import {
   type ControlThreadReadMembershipWire,
   ControlThreadReadMembershipWireSchema,
   THREAD_READ_RECEIPT_INVALID,
@@ -327,7 +332,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 58;
+export const CONTROL_WORKER_VERSION = 59;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -601,6 +606,7 @@ export type ControlWorkerCommand =
           readonly operation: 'workspace-recovery-decision';
           readonly input: ControlWorkspaceRecoveryDecision;
         }
+      | { readonly operation: 'scoped-notebook-sql'; readonly input: ControlScopedNotebookSqlInput }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
       | {
@@ -818,6 +824,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlWorkspaceCaptureRefusalSchema>
   | z.infer<typeof ControlWorkspaceTakeoverRefusalSchema>
   | z.infer<typeof ControlWorkspaceRecoveryDecisionRefusalSchema>
+  | z.infer<typeof ControlScopedNotebookSqlRefusalSchema>
   | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
   | z.infer<typeof ControlWorkerFinalStatusRefusalSchema>
@@ -912,6 +919,7 @@ export type ControlWorkerReply = {
       readonly operation: 'workspace-backend-handoff';
       readonly result: ControlWorkspaceBackendHandoffResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'scoped-notebook-sql'; readonly result: null }
   | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1160,6 +1168,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'private-workspace')
     return ControlPrivateWorkspaceRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'scoped-notebook-sql')
+    return ControlScopedNotebookSqlRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-stage-review')
     return ControlWorkspaceStageReviewRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-recovery-decision')
@@ -1463,6 +1473,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'private-workspace')
     return ControlPrivateWorkspaceResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'scoped-notebook-sql') return reply.result === null;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
   if (reply.operation === 'workspace-recovery-decision')
@@ -1973,6 +1984,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlPrivateWorkspaceInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'scoped-notebook-sql')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlScopedNotebookSqlInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-stage-review')

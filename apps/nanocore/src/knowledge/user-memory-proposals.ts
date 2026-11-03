@@ -8,7 +8,7 @@ import {
 import type { ActorRef } from '@openkit/protocol';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
-import { recordUserAuditEvent } from '../audit-events.js';
+import { prepareAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { type FsStore, knowledgeAuthorityId } from '../lib/store.js';
@@ -299,7 +299,7 @@ export async function decideUserMemoryProposal(
         { kind: 'user', id: context.actor.userId }
       )
     );
-  const recordDecision = () => {
+  const recordDecision = async () => {
     admitMemoryContext(context, 'review.apply');
     if (prior) return;
     const path = join(admitMemoryContext(context).notebookRoot, 'reviews', `${proposal.id}.json`);
@@ -316,19 +316,22 @@ export async function decideUserMemoryProposal(
     );
     // Accepted decisions receive the common publisher's admission/completion Audit, including its exact tuple.
     if (request.decision !== 'accepted')
-      recordUserAuditEvent({
-        userDb: context.userDb,
-        requestId: request.requestId,
-        actor: { kind: 'user', id: context.actor.userId },
-        category: 'knowledge',
-        action: 'knowledge.proposal.decide',
-        resource: `knowledge-proposal:${proposal.id}`,
-        outcome: 'succeeded',
-        summary: 'User Memory Proposal decision retained.',
+      await context.store.commitScopedNotebookStage(context.userDb, {
+        kind: 'audit',
+        event: prepareAuditEvent({
+          workspaceId: null,
+          requestId: request.requestId,
+          actor: { kind: 'user', id: context.actor.userId },
+          category: 'knowledge',
+          action: 'knowledge.proposal.decide',
+          resource: `knowledge-proposal:${proposal.id}`,
+          outcome: 'succeeded',
+          summary: 'User Memory Proposal decision retained.',
+        }),
       });
   };
   if (request.decision !== 'accepted') {
-    recordDecision();
+    await recordDecision();
     return { review, notebookRevision: null };
   }
   admitMemoryContext(context, 'knowledge.write');

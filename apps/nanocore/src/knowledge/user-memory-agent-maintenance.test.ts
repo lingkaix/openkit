@@ -21,6 +21,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import {
   resolveWorkspaceKnowledgeRetrievalPages,
@@ -902,8 +903,12 @@ it.each([
     "CREATE TRIGGER refuse_proposal_decision_audit BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.proposal.decide' BEGIN SELECT RAISE(ABORT, 'injected decision audit persistence failure'); END"
   );
   try {
-    await expect(invoke('memory.proposal.decide', request, human)).rejects.toMatchObject({
-      code: 'SQLITE_CONSTRAINT_TRIGGER',
+    const failedDecision = invoke('memory.proposal.decide', request, human);
+    await expect(failedDecision).rejects.toBeInstanceOf(ControlStoreWorkerError);
+    await expect(failedDecision).rejects.toMatchObject({
+      code: 'constraint',
+      commit: 'not-committed',
+      message: 'Control database writer operation failed.',
     });
   } finally {
     f.userDb.sqlite.exec('DROP TRIGGER refuse_proposal_decision_audit');

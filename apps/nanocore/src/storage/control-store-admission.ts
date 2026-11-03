@@ -26,6 +26,10 @@ import {
   ControlProductMutationSchema,
   type PreparedControlEntry,
 } from './control-store-products.js';
+import {
+  SCOPED_NOTEBOOK_SERVER_RECEIPTS,
+  SCOPED_NOTEBOOK_USER_RECEIPTS,
+} from './scoped-notebook-sql-codecs.js';
 
 /** Exact prepared operation families; B2 must exclude these from legacy receipt insert/prune paths before activation. */
 export const CONTROL_ADMISSION_COMMANDS = [
@@ -104,13 +108,15 @@ export const CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS = [
   'knowledge.source.register',
 ] as const satisfies readonly CommandRequestName[];
 
-/** Selects the existing native receipt partition without activating shared Server or User commands. */
+/** Selects each activated physical-scope partition; scoped Notebook names never activate other User commands. */
 export function isControlNativeReceiptCommand(
   command: string,
-  scope: 'core' | 'workspace'
+  scope: 'core' | 'workspace' | 'user'
 ): boolean {
+  if (scope === 'user') return SCOPED_NOTEBOOK_USER_RECEIPTS.some((name) => name === command);
   return (
     CONTROL_NATIVE_RECEIPT_COMMANDS.some((name) => name === command) ||
+    (scope === 'core' && SCOPED_NOTEBOOK_SERVER_RECEIPTS.some((name) => name === command)) ||
     (scope === 'workspace' &&
       CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS.some((name) => name === command))
   );
@@ -187,11 +193,19 @@ function assertReceiptOwner(owner: ControlProductOwner, scope: Record<string, st
 /** Prunes only this activated operation/scope partition; never touches another owner's receipts or Audit rows. */
 export function pruneControlAdmissionReceipts(
   sqlite: Database.Database,
-  owner: ControlProductOwner,
+  owner: ControlProductOwner | { readonly kind: 'user'; readonly userId: string },
   referenceTime: string
 ): void {
   assertControlProductWriter(sqlite);
   z.string().datetime().parse(referenceTime);
+  if (owner.kind === 'user') {
+    sqlite
+      .prepare(
+        `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${SCOPED_NOTEBOOK_USER_RECEIPTS.map(() => '?').join(',')}) AND json_extract(scope_json,'$.userId')=? AND json_extract(scope_json,'$.coreId') IS NULL AND json_extract(scope_json,'$.workspaceId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+      )
+      .run(referenceTime, ...SCOPED_NOTEBOOK_USER_RECEIPTS, owner.userId);
+    return;
+  }
   const scope =
     owner.kind === 'server'
       ? "json_extract(scope_json,'$.coreId')='server' AND json_extract(scope_json,'$.workspaceId') IS NULL"
@@ -199,7 +213,7 @@ export function pruneControlAdmissionReceipts(
   const commands =
     owner.kind === 'workspace'
       ? [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS]
-      : CONTROL_NATIVE_RECEIPT_COMMANDS;
+      : [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...SCOPED_NOTEBOOK_SERVER_RECEIPTS];
   sqlite
     .prepare(
       `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND (command_name IN (${commands.map(() => '?').join(',')})${owner.kind === 'workspace' ? ` OR ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}` : ''}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`

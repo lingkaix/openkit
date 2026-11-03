@@ -9,11 +9,7 @@ import {
   parseReferenceScope,
 } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import {
-  prepareAuditEvent,
-  recordServerAuditEvent,
-  recordUserAuditEvent,
-} from '../audit-events.js';
+import { prepareAuditEvent } from '../audit-events.js';
 import type {
   CommandRequestScope,
   FsStore,
@@ -109,7 +105,7 @@ export interface NotebookPublicationDependencies {
     /** Workspace appends this exact observed Review in the same native publication tuple. */
     readonly review?: KnowledgeProposalReviewRecord;
     /** User and Server retain their current scope-local decision writer. */
-    readonly recordDecision?: () => void;
+    readonly recordDecision?: () => void | Promise<void>;
   };
   /** Human-confirmed removed paths and their exact bytes at the fixed base. */
   readonly confirmedRemovals?: Readonly<Record<string, string>>;
@@ -839,7 +835,7 @@ async function publishAdmittedNotebook(
         authority,
         sourceReferences: [...validated.sourceReferences],
       };
-      const audit = (action: string): void => {
+      const audit = async (action: string, revalidate?: () => void): Promise<void> => {
         const event = {
           requestId: request.requestId,
           actor,
@@ -850,10 +846,16 @@ async function publishAdmittedNotebook(
           notebookAdmission: evidence,
           summary: 'Notebook publication evidence retained.',
         };
-        if (dependencies.owner.kind === 'user')
-          recordUserAuditEvent({ ...event, userDb: dependencies.owner.userDb });
-        else if (dependencies.owner.kind === 'server')
-          recordServerAuditEvent({ ...event, coreDb: dependencies.owner.coreDb });
+        if (dependencies.owner.kind === 'workspace') throw new NotebookError('invalid_request');
+        const db =
+          dependencies.owner.kind === 'user'
+            ? dependencies.owner.userDb
+            : dependencies.owner.coreDb;
+        await dependencies.store.commitScopedNotebookStage(
+          db,
+          { kind: 'audit', event: prepareAuditEvent({ ...event, workspaceId: null }) },
+          revalidate
+        );
       };
       if (dependencies.reviewedCandidate) {
         const retained = dependencies.notebook.retainedCandidate(
@@ -877,7 +879,8 @@ async function publishAdmittedNotebook(
         } else {
           if (!dependencies.reviewedCandidate.recordDecision)
             throw new NotebookError('invalid_request');
-          dependencies.reviewedCandidate.recordDecision();
+          await dependencies.reviewedCandidate.recordDecision();
+          revalidatePublication();
         }
       }
       if (workspaceDb && workspaceSelection && nextHead) {
@@ -912,9 +915,19 @@ async function publishAdmittedNotebook(
         });
         return project(candidateRevision, evidence);
       }
-      audit('knowledge.notebook.admit');
+      await audit('knowledge.notebook.admit', revalidatePublication);
+      // Current execution authority and source facts can change during the original admission ACK.
+      revalidatePublication();
       dependencies.notebook.publish({ baseRevision: request.baseRevision, candidateRevision });
-      audit(operation);
+      await audit(operation);
+      if (dependencies.owner.kind === 'workspace') throw new NotebookError('invalid_request');
+      const db =
+        dependencies.owner.kind === 'user' ? dependencies.owner.userDb : dependencies.owner.coreDb;
+      const { responseKind, ...originalReceipt } = receipt;
+      await dependencies.store.commitScopedNotebookStage(db, {
+        kind: 'receipt',
+        receipt: { ...originalReceipt, response: { kind: responseKind, id: candidateRevision } },
+      });
       return project(candidateRevision, evidence);
     },
   });
