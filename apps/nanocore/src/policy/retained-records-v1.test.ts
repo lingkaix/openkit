@@ -128,6 +128,94 @@ describe('independent version-one Policy and Audit decoders', () => {
     ).toThrow();
   });
 
+  it('derives a mediated subject and enforcement point from retained evidence and strips annotations', () => {
+    const digest = `sha256:${'b'.repeat(64)}`;
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    const staleUserId = 'usr_00000000-0000-7000-8000-000000000002';
+    const subject = {
+      principal: { kind: 'human', id: userId },
+      onBehalfOf: null,
+      actor: { kind: 'user', id: userId },
+      process: null,
+      credentialKind: 'local',
+      responsibleHumanId: userId,
+      note: 'annotation',
+    };
+    const mediation = {
+      operation: 'mcp.call-tool',
+      stage: 'decide',
+      proposalDigest: digest,
+      authorizationRevision: digest,
+      subject,
+      role: 'final',
+      kernel: { effect: 'allow', reason: 'granted' },
+      invocations: [],
+      consumedStatements: [],
+      note: 'annotation',
+    };
+    const row = {
+      ...decisionRow,
+      owner_scope: 'workspace',
+      workspace_id: 'ws_00000000-0000-7000-8000-000000000001',
+      policy_snapshot_id: digest,
+      // These stored projections contradict the mediated facts and must not be trusted.
+      subject_summary_json: JSON.stringify({
+        principal: { kind: 'human', id: staleUserId },
+        actor: { kind: 'user', id: staleUserId },
+        process: null,
+        onBehalfOf: null,
+        credentialKind: 'token',
+        responsibleHumanId: staleUserId,
+        stale: true,
+      }),
+      enforcement_point: 'stale.operation@commit',
+      mediation_json: JSON.stringify(mediation),
+    };
+
+    const decoded = readPermissionDecisionRowV1(row);
+    expect(decoded.subjectSummary).toEqual({
+      principal: subject.principal,
+      actor: subject.actor,
+      process: null,
+      onBehalfOf: null,
+      credentialKind: 'local',
+      responsibleHumanId: userId,
+    });
+    expect(decoded.subjectSummary).not.toHaveProperty('stale');
+    expect(decoded.enforcementPoint).toBe('mcp.call-tool@decide');
+    expect(decoded.mediation).not.toHaveProperty('note');
+    expect(decoded.mediation?.subject).not.toHaveProperty('note');
+    expect(() =>
+      readPermissionDecisionRowV1({
+        ...row,
+        mediation_json: JSON.stringify({ ...mediation, stage: 'unknown' }),
+      })
+    ).toThrow();
+  });
+
+  it('refuses missing and unknown markers before interpreting mediated JSON', () => {
+    const row = {
+      ...decisionRow,
+      subject_summary_json: 'not JSON',
+      resource_summary_json: 'not JSON',
+      context_summary_json: 'not JSON',
+      mediation_json: 'not JSON',
+    };
+    for (const schema_version of [undefined, 0, 2]) {
+      expect(() => readPermissionDecisionRowV1({ ...row, schema_version })).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        readAuditEventRowV1({
+          ...auditRow,
+          schema_version,
+          actor_json: 'not JSON',
+          policy_invocation_json: 'not JSON',
+        })
+      ).toThrow('Unsupported retained record format.');
+    }
+  });
+
   it('refuses missing and unknown markers before decoding either family JSON', () => {
     for (const schema_version of [undefined, 2]) {
       expect(() =>

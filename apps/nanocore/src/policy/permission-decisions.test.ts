@@ -1431,3 +1431,216 @@ describe('User permission decision ownership', () => {
     }
   });
 });
+
+// Workspace publication proves the same retained links, rollback boundary, finite-use contention
+// and cold-read identity through its exported recorder and list operations.
+describe('Workspace permission decision links and finite uses', () => {
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const userId = 'usr_00000000-0000-7000-8000-000000000001';
+  const digest = `sha256:${'a'.repeat(64)}`;
+
+  /** Fixed mediated evidence independent of any private schema import. */
+  function mediation(consumedStatements: PolicyDecisionV1['consumedStatements']): PolicyDecisionV1 {
+    return {
+      operation: 'mcp.call-tool',
+      stage: 'decide',
+      proposalDigest: digest,
+      authorizationRevision: digest,
+      subject: {
+        principal: { kind: 'human', id: userId },
+        onBehalfOf: null,
+        actor: { kind: 'user', id: userId },
+        process: null,
+        credentialKind: 'local',
+        responsibleHumanId: userId,
+      },
+      role: 'final',
+      kernel: { effect: 'allow', reason: 'granted' },
+      invocations: [],
+      consumedStatements,
+    };
+  }
+
+  /** Shared public recorder input; only the case-specific facts vary. */
+  function decision(
+    workspaceDb: ReturnType<typeof openWorkspaceDb>,
+    facts: Record<string, unknown>
+  ) {
+    return {
+      workspaceDb,
+      workspaceId,
+      ownerScope: 'workspace' as const,
+      policyEngineVersion: 'fixture:v1',
+      policySnapshotId: digest,
+      subjectSummary: {},
+      action: 'tool.use',
+      resourceSummary: {},
+      contextSummary: {},
+      reasonCode: 'granted',
+      result: 'allow' as const,
+      enforcementPoint: 'mcp.call-tool@decide',
+      ...facts,
+    };
+  }
+
+  it('publishes one exact Audit link per decision and keeps both identical after a cold reopen', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-policy-links-'));
+    let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      await openTestNativeWorkspace(workspaceDb);
+      await recordProductPermissionDecision(
+        decision(workspaceDb, {
+          decisionId: 'pd_00000000-0000-7000-8000-000000000001',
+          action: 'repo.push',
+          result: 'require_approval',
+          requiredApprovalKind: 'permission',
+          approvalId: 'approval_links',
+          reasonCode: 'approval_required',
+          enforcementPoint: 'repo.push.approval_response',
+          contextSummary: { requestId: '00000000-0000-4000-8000-000000000001' },
+          now: new Date('2026-10-18T00:00:00.000Z'),
+        })
+      );
+      await recordProductPermissionDecision(
+        decision(workspaceDb, {
+          decisionId: 'pd_00000000-0000-7000-8000-000000000002',
+          mediation: mediation([]),
+          now: new Date('2026-10-18T00:00:01.000Z'),
+        })
+      );
+
+      const decisions = listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId);
+      const audits = listWorkspaceAuditEvents(workspaceDb, workspaceId);
+      expect(decisions).toHaveLength(2);
+      expect(audits).toHaveLength(2);
+      for (const recorded of decisions) {
+        expect(recorded.auditEventId).toMatch(/^aud_/);
+        const linked = audits.filter((event) => event.permissionDecisionId === recorded.decisionId);
+        expect(linked).toHaveLength(1);
+        expect(linked[0]).toMatchObject({
+          id: recorded.auditEventId,
+          workspaceId,
+          action: 'permission.decision',
+          resource: `permission:${recorded.action}`,
+          outcome: 'succeeded',
+        });
+        expect(audits.filter((event) => event.id === recorded.auditEventId)).toHaveLength(1);
+      }
+      expect(audits.every((event) => event.permissionDecisionId !== null)).toBe(true);
+
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      expect(listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)).toEqual(
+        decisions
+      );
+      expect(listWorkspaceAuditEvents(workspaceDb, workspaceId)).toEqual(audits);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls back a finite-use decision when its linked Audit cannot publish', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-policy-use-rollback-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    const statement = { id: 'workspace-once', digest };
+    try {
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      await openTestNativeWorkspace(workspaceDb);
+      workspaceDb.sqlite.exec(`
+        CREATE TRIGGER reject_workspace_permission_audit
+        BEFORE INSERT ON audit_events
+        WHEN NEW.action = 'permission.decision'
+        BEGIN
+          SELECT RAISE(ABORT, 'injected workspace permission audit failure');
+        END
+      `);
+
+      await expect(
+        async () =>
+          await recordProductPermissionDecision(
+            decision(workspaceDb, {
+              decisionId: 'pd_00000000-0000-7000-8000-000000000003',
+              mediation: mediation([statement]),
+              uses: [{ statement, limit: 1 }],
+            })
+          )
+      ).rejects.toThrow();
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM permission_decisions').get()
+      ).toEqual({ count: 0 });
+      expect(
+        workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()
+      ).toEqual({ count: 0 });
+      expect(readPolicyStatementUseCount(workspaceDb, statement)).toBe(0);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts one concurrent finite-use decision and preserves the winner after a cold reopen', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-policy-contention-'));
+    let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    const statement = { id: 'workspace-contended-once', digest };
+    try {
+      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      await openTestNativeWorkspace(workspaceDb);
+      const attempts = [
+        'pd_00000000-0000-7000-8000-000000000004',
+        'pd_00000000-0000-7000-8000-000000000005',
+      ];
+      const results = await Promise.allSettled(
+        attempts.map((decisionId) =>
+          recordProductPermissionDecision(
+            decision(workspaceDb, {
+              decisionId,
+              mediation: mediation([statement]),
+              uses: [{ statement, limit: 1 }],
+            })
+          )
+        )
+      );
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+
+      const decisions = listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId);
+      const audits = listWorkspaceAuditEvents(workspaceDb, workspaceId);
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({
+        result: 'allow',
+        mediation: {
+          role: 'final',
+          kernel: { effect: 'allow' },
+          consumedStatements: [statement],
+        },
+      });
+      expect(attempts).toContain(decisions[0]!.decisionId);
+      expect(readPolicyStatementUseCount(workspaceDb, statement)).toBe(1);
+      expect(audits).toHaveLength(1);
+      expect(audits[0]).toMatchObject({
+        id: decisions[0]!.auditEventId,
+        permissionDecisionId: decisions[0]!.decisionId,
+        outcome: 'succeeded',
+        workspaceId,
+      });
+
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+      expect(listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)).toEqual(
+        decisions
+      );
+      expect(listWorkspaceAuditEvents(workspaceDb, workspaceId)).toEqual(audits);
+      expect(readPolicyStatementUseCount(workspaceDb, statement)).toBe(1);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+});

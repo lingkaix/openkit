@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { allocateEntityId } from '@openkit/protocol';
+import { type ActorRef, allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { commitArtifactVersionCommand, importArtifactFile } from './artifact-file-commands.js';
 import { scopeAdmissionFailures } from './bootstrap/readiness.js';
@@ -150,11 +150,13 @@ describe('artifact file command contract', () => {
       actorId = actor,
       source: Readable = Readable.from([original]),
       assertAuthorized: () => void = () => {},
-      target: FsStore = store
+      target: FsStore = store,
+      actorRef: ActorRef = { kind: 'user', id: actorId },
+      workspaceDb: WorkspaceDb = db
     ) =>
       importArtifactFile({
         store: target,
-        workspaceDb: db,
+        workspaceDb,
         admission,
         inflightCommands,
         metadata: importMetadata,
@@ -163,7 +165,7 @@ describe('artifact file command contract', () => {
         context: {
           ...context,
           actor: { kind: 'session', userId: actorId },
-          actorRef: { kind: 'user', id: actorId },
+          actorRef,
         },
       });
     const submitVersion = (
@@ -172,13 +174,15 @@ describe('artifact file command contract', () => {
       requestId: string,
       source: Readable = Readable.from([next]),
       assertAuthorized: () => void = () => {},
-      changed: { title?: string; summary?: string | null } = {}
+      changed: { title?: string; summary?: string | null } = {},
+      actorRef: ActorRef = { kind: 'user', id: actor },
+      workspaceDb: WorkspaceDb = db
     ) =>
       commitArtifactVersionCommand({
         store,
-        workspaceDb: db,
+        workspaceDb,
         inflightCommands,
-        context,
+        context: { ...context, actorRef },
         command: 'artifact.version-file-commit',
         metadata: {
           workspaceId: workspace.id,
@@ -449,6 +453,141 @@ describe('artifact file command contract', () => {
     expect(state.readVersion(imported.artifactId, 1)).toEqual(state.original);
     expect(state.store.listCommandRequests(state.workspace.id)).toHaveLength(1);
     expect(state.store.listThreadTurns(state.workspace.id, state.thread.id)).toHaveLength(0);
+  });
+
+  /** Awaits one rejection so the owner class and its exact public facts stay independently assertable. */
+  async function rejectionOf(run: () => Promise<unknown>): Promise<unknown> {
+    return run().then(
+      () => undefined,
+      (error: unknown) => error
+    );
+  }
+
+  it('refuses both file commands before any effect when the actor has no responsible user', async () => {
+    const state = await contractFixture();
+    const unowned: ActorRef = {
+      kind: 'agent',
+      id: 'agent_contract_unowned',
+      responsibleUserId: null,
+    };
+
+    const importSource = observableSource(state.original);
+    const importAuthorized = vi.fn();
+    const importFailure = await rejectionOf(() =>
+      state.submitImport(state.actor, importSource.source, importAuthorized, state.store, unowned)
+    );
+    expect(importFailure).toBeInstanceOf(OperationError);
+    expect(importFailure).toMatchObject({
+      code: 'workspace_access_denied',
+      message: 'Workspace access denied.',
+      status: 403,
+    });
+    expect(importSource.consumed()).toBe(false);
+    expect(importAuthorized).not.toHaveBeenCalled();
+    expect(state.store.listArtifacts(state.workspace.id)).toEqual([]);
+    expect(state.store.listCommandRequests(state.workspace.id)).toEqual([]);
+    expect(state.store.listThreadTurns(state.workspace.id, state.thread.id)).toEqual([]);
+
+    const imported = await state.submitImport();
+    const versionsBefore = state.store.listArtifactVersions(
+      state.workspace.id,
+      imported.artifactId
+    );
+    const receiptsBefore = state.store.listCommandRequests(state.workspace.id);
+    const versionSource = observableSource(state.next);
+    const versionAuthorized = vi.fn();
+    const versionFailure = await rejectionOf(() =>
+      state.submitVersion(
+        imported.artifactId,
+        1,
+        randomUUID(),
+        versionSource.source,
+        versionAuthorized,
+        {},
+        unowned
+      )
+    );
+    expect(versionFailure).toBeInstanceOf(OperationError);
+    expect(versionFailure).toMatchObject({
+      code: 'workspace_access_denied',
+      message: 'Workspace access denied.',
+      status: 403,
+    });
+    expect(versionSource.consumed()).toBe(false);
+    expect(versionAuthorized).not.toHaveBeenCalled();
+    expect(state.store.getArtifact(state.workspace.id, imported.artifactId).version).toBe(1);
+    expect(state.store.listArtifactVersions(state.workspace.id, imported.artifactId)).toEqual(
+      versionsBefore
+    );
+    expect(state.store.listCommandRequests(state.workspace.id)).toEqual(receiptsBefore);
+    expect(state.store.listThreadTurns(state.workspace.id, state.thread.id)).toEqual([]);
+  });
+
+  it('refuses both file commands before any effect when workspaceDb belongs to another Workspace', async () => {
+    const state = await contractFixture();
+    const otherWorkspaceId = allocateEntityId('ws');
+    const otherDb = openWorkspaceDb(state.dataRoot, otherWorkspaceId);
+    applyScopedMigrations(otherDb, undefined, 'pre-knowledge');
+    databases.push(otherDb);
+
+    const importSource = observableSource(state.original);
+    const importAuthorized = vi.fn();
+    const importFailure = await rejectionOf(() =>
+      state.submitImport(
+        state.actor,
+        importSource.source,
+        importAuthorized,
+        state.store,
+        undefined,
+        otherDb
+      )
+    );
+    expect(importFailure).toBeInstanceOf(OperationError);
+    expect(importFailure).toMatchObject({
+      code: 'workspace_access_denied',
+      message: 'Workspace access denied.',
+      status: 403,
+    });
+    expect(importSource.consumed()).toBe(false);
+    expect(importAuthorized).not.toHaveBeenCalled();
+    expect(state.store.listArtifacts(state.workspace.id)).toEqual([]);
+    expect(state.store.listCommandRequests(state.workspace.id)).toEqual([]);
+    expect(state.store.listThreadTurns(state.workspace.id, state.thread.id)).toEqual([]);
+
+    const imported = await state.submitImport();
+    const versionsBefore = state.store.listArtifactVersions(
+      state.workspace.id,
+      imported.artifactId
+    );
+    const receiptsBefore = state.store.listCommandRequests(state.workspace.id);
+    const versionSource = observableSource(state.next);
+    const versionAuthorized = vi.fn();
+    const versionFailure = await rejectionOf(() =>
+      state.submitVersion(
+        imported.artifactId,
+        1,
+        randomUUID(),
+        versionSource.source,
+        versionAuthorized,
+        {},
+        undefined,
+        otherDb
+      )
+    );
+    expect(versionFailure).toBeInstanceOf(OperationError);
+    expect(versionFailure).toMatchObject({
+      code: 'workspace_access_denied',
+      message: 'Workspace access denied.',
+      status: 403,
+    });
+    expect(versionSource.consumed()).toBe(false);
+    expect(versionAuthorized).not.toHaveBeenCalled();
+    expect(state.store.getArtifact(state.workspace.id, imported.artifactId).version).toBe(1);
+    expect(state.store.listArtifactVersions(state.workspace.id, imported.artifactId)).toEqual(
+      versionsBefore
+    );
+    expect(state.store.listCommandRequests(state.workspace.id)).toEqual(receiptsBefore);
+    expect(state.store.listThreadTurns(state.workspace.id, state.thread.id)).toEqual([]);
   });
 
   it('retains both version originals after receipt failure and refuses recapture', async () => {
