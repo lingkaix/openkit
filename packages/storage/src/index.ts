@@ -25,6 +25,7 @@ export {
   ensureTreeDirectory,
   ensureTreeDirectory as ensureCanonicalDirectoryAsync,
   hasTelemetryHeadroom,
+  inspectSqliteCopy,
   LocalStorage,
   listCanonicalDirectoryNames,
   listCanonicalFileNames,

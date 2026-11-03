@@ -1,18 +1,14 @@
 import {
-  copyFileSync,
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   statSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
@@ -21,6 +17,7 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { inspectSqliteCopy } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
@@ -768,41 +765,6 @@ function workspaceDatabaseIsHealthy(path: string, dataRoot: string): boolean {
     });
   } catch {
     return false;
-  }
-}
-
-/**
- * Inspects a private native copy without changing the stopped predecessor's exact inventory.
- *
- * Read-only WAL opens can still create source sidecars. Copy retained WAL and rollback journals, but rebuild shared-memory indexes only inside the disposable copy. Callers close native handles before cleanup; no source journal or database bytes are changed.
- *
- * @param dataRoot Stopped predecessor root that must not contain inspection files.
- * @param path Authoritative SQLite path.
- * @param inspect Read inspection that closes its private native handles before returning.
- * @returns Inspection result.
- * @throws When an input is unsafe, temporary storage is inside the predecessor, or copy or inspection fails.
- */
-function inspectSqliteCopy<T>(dataRoot: string, path: string, inspect: (copy: string) => T): T {
-  const root = realpathSync(dataRoot);
-  const temporaryBase = realpathSync(tmpdir());
-  if (temporaryBase === root || temporaryBase.startsWith(`${root}${sep}`)) {
-    throw new Error('SQLite preflight temporary storage must be outside the predecessor root.');
-  }
-  const directory = mkdtempSync(join(temporaryBase, 'openkit-sqlite-preflight-'));
-  const copy = join(directory, 'database.sqlite');
-  try {
-    for (const suffix of ['', '-wal', '-journal']) {
-      const source = `${path}${suffix}`;
-      const metadata = lstatSync(source, { throwIfNoEntry: false });
-      if (!metadata && suffix) continue;
-      if (!metadata || metadata.isSymbolicLink() || !metadata.isFile()) {
-        throw new Error('SQLite preflight input must be a regular file.');
-      }
-      copyFileSync(source, `${copy}${suffix}`);
-    }
-    return inspect(copy);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
   }
 }
 

@@ -17,6 +17,7 @@ import {
   readdirSync,
   readFileSync,
   readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -40,6 +41,7 @@ import fs, {
   stat,
   unlink,
 } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { type Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -2702,4 +2704,43 @@ export function readLayoutDirectory(path: string) {
 
   assertLayoutDirectory(path);
   return readdirSync(path, { withFileTypes: true });
+}
+
+/**
+ * Inspects a private native copy without changing the stopped predecessor's exact inventory.
+ *
+ * Read-only WAL opens can still create source sidecars. Copy retained WAL and rollback journals, but rebuild shared-memory indexes only inside the disposable copy. Callers close native handles before cleanup; no source journal or database bytes are changed.
+ *
+ * @param dataRoot Stopped predecessor root that must not contain inspection files.
+ * @param path Authoritative SQLite path.
+ * @param inspect Read inspection that closes its private native handles before returning.
+ * @returns Inspection result.
+ * @throws When an input is unsafe, temporary storage is inside the predecessor, or copy or inspection fails.
+ */
+export function inspectSqliteCopy<T>(
+  dataRoot: string,
+  path: string,
+  inspect: (copy: string) => T
+): T {
+  const root = realpathSync(dataRoot);
+  const temporaryBase = realpathSync(tmpdir());
+  if (temporaryBase === root || temporaryBase.startsWith(`${root}${sep}`)) {
+    throw new Error('SQLite preflight temporary storage must be outside the predecessor root.');
+  }
+  const directory = mkdtempSync(join(temporaryBase, 'openkit-sqlite-preflight-'));
+  const copy = join(directory, 'database.sqlite');
+  try {
+    for (const suffix of ['', '-wal', '-journal']) {
+      const source = `${path}${suffix}`;
+      const metadata = lstatSync(source, { throwIfNoEntry: false });
+      if (!metadata && suffix) continue;
+      if (!metadata || metadata.isSymbolicLink() || !metadata.isFile()) {
+        throw new Error('SQLite preflight input must be a regular file.');
+      }
+      copyFileSync(source, `${copy}${suffix}`);
+    }
+    return inspect(copy);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
