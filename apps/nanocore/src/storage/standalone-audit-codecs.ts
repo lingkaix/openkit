@@ -20,6 +20,12 @@ export const STANDALONE_AUDIT_STAGES = [
   'administration.server-mcp-select-version',
   'administration.server-mcp-update-binding',
   'administration.server-mcp-remove',
+  'catalog.mcp-create',
+  'catalog.mcp-stage-version',
+  'catalog.mcp-remove',
+  'catalog.mcp-select',
+  'catalog.mcp-binding',
+  'catalog.plugin-import',
 ] as const;
 /** One original prepared Audit, bound to its exact existing scope and admitted stage. */
 export const ControlStandaloneAuditInputSchema = z
@@ -72,6 +78,24 @@ export const ControlStandaloneAuditInputSchema = z
         (event.outcome === 'unknown'
           ? /^mcp-command:sha256:[0-9a-f]{64}$/.test(event.resource ?? '')
           : event.outcome === 'succeeded' && event.resource?.startsWith('catalog_mcp:') === true)
+      );
+    if (
+      stage === 'catalog.mcp-create' ||
+      stage === 'catalog.mcp-stage-version' ||
+      stage === 'catalog.mcp-remove' ||
+      stage === 'catalog.mcp-select' ||
+      stage === 'catalog.mcp-binding' ||
+      stage === 'catalog.plugin-import'
+    )
+      return (
+        workspaceId !== undefined &&
+        event.workspaceId === workspaceId &&
+        typeof event.requestId === 'string' &&
+        event.category === 'command' &&
+        event.outcome === 'succeeded' &&
+        event.severity === 'info' &&
+        typeof event.resourceRevision === 'number' &&
+        event.resource?.startsWith(stage === 'catalog.plugin-import' ? 'plugin:' : 'mcp:') === true
       );
     if (stage === 'app.update.start' || stage === 'app.update.start.handoff')
       return (

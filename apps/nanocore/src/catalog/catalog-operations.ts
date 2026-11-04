@@ -3,7 +3,7 @@ import { CATALOG_OPERATION_DEFINITIONS, type OperationInput } from '@openkit/app
 import { createPrivateTreeSync, removePrivateTreeSync } from '@openkit/storage';
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
-import { prepareWorkspaceAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
+import { prepareWorkspaceAuditEvent } from '../audit-events.js';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import {
   DeploymentAdminRequiredError,
@@ -197,22 +197,32 @@ export function createCatalogOperationImplementations(
     workspaceDb: WorkspaceDb,
     input: { workspaceId: string; requestId: string },
     context: AdmittedOperationContext,
-    action: string,
+    action:
+      | 'catalog.mcp-create'
+      | 'catalog.mcp-stage-version'
+      | 'catalog.mcp-remove'
+      | 'catalog.mcp-select'
+      | 'catalog.mcp-binding'
+      | 'catalog.plugin-import',
     resource: string,
     resourceRevision: number
   ) =>
-    recordWorkspaceAuditEvent({
-      workspaceDb,
+    getControlStoreWorkerClient().standaloneAudit(workspaceDb, {
       workspaceId: input.workspaceId,
-      requestId: input.requestId,
-      actor: context.actorRef,
-      authentication: auditAuthenticationFromActor(publicOperationActor(context)),
-      action,
-      resource,
-      resourceRevision,
-      category: 'command',
-      outcome: 'succeeded',
-      summary: 'Catalog mutation completed.',
+      stage: action,
+      event: prepareWorkspaceAuditEvent({
+        workspaceDb,
+        workspaceId: input.workspaceId,
+        requestId: input.requestId,
+        actor: context.actorRef,
+        authentication: auditAuthenticationFromActor(publicOperationActor(context)),
+        action,
+        resource,
+        resourceRevision,
+        category: 'command',
+        outcome: 'succeeded',
+        summary: 'Catalog mutation completed.',
+      }),
     });
   const readArtifact = (
     selection: SkillCandidateArtifactSelection,
@@ -483,7 +493,7 @@ export function createCatalogOperationImplementations(
         stdioHostAuthorized: administrator(context),
         owner: { kind: 'workspace', workspaceId: input.workspaceId },
       });
-      auditMutation(
+      await auditMutation(
         workspaceDb,
         input,
         context,
@@ -834,7 +844,7 @@ export function createCatalogOperationImplementations(
           mcpId: input.mcpId,
           expectedRevision: input.expectedRevision,
         });
-        auditMutation(
+        await auditMutation(
           workspaceDb,
           input,
           context,
@@ -862,7 +872,7 @@ export function createCatalogOperationImplementations(
           stdioHostAuthorized: administrator(context),
           owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });
-        auditMutation(
+        await auditMutation(
           workspaceDb,
           input,
           context,
@@ -913,7 +923,7 @@ export function createCatalogOperationImplementations(
           expectedRevision: input.expectedRevision,
           owner: { kind: 'workspace', workspaceId: input.workspaceId },
         });
-        auditMutation(
+        await auditMutation(
           workspaceDb,
           input,
           context,
@@ -957,7 +967,7 @@ export function createCatalogOperationImplementations(
           treeRoot: staging,
           workspaceId: input.workspaceId,
         });
-        auditMutation(
+        await auditMutation(
           workspaceDb,
           input,
           context,

@@ -276,6 +276,12 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'administration.server-mcp-select-version',
     'administration.server-mcp-update-binding',
     'administration.server-mcp-remove',
+    'catalog.mcp-create',
+    'catalog.mcp-stage-version',
+    'catalog.mcp-remove',
+    'catalog.mcp-select',
+    'catalog.mcp-binding',
+    'catalog.plugin-import',
   ]);
   const f = await fixture();
   f.queryOnly();
