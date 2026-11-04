@@ -49902,6 +49902,10 @@
             "type": "integer",
             "exclusiveMinimum": 0,
             "maximum": 9007199254740991
+          },
+          "cursor": {
+            "type": "string",
+            "pattern": "^(0|[1-9]\\d*)(?![\\s\\S])"
           }
         },
         "required": [
@@ -155156,5 +155160,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:f140d08b1f40443ca8746dbdb27198d0ca017b7c8eb35dfbb61750a8100e4376"
+  "x-openkit-source-digest": "sha256:12ab26b0d25065aa38a96d193040cb89427b39d95a8d8f5a3208e239754fba6c"
 }

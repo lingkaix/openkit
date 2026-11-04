@@ -106,7 +106,7 @@ The runner does not convert an OCI manifest digest and a local image id into eac
 
 Every host batch and administrator CLI call checks the declared machine identity and round-owned Thread scope. Credentials are opened only through a regular mode-0600 path, passed to the existing CLI in memory, redacted from saved outputs, and scanned when the round exits.
 
-The supported public `thread.items` operation currently returns the full retained log with `nextCursor: null`; a non-null cursor is refused as incomplete because its input schema exposes no continuation cursor, while complete Turns are read from the dashboard and then `turn.read`.
+The public `thread.items` operation accepts an optional decimal-string `cursor` and honors the existing `limit`, retaining the complete log with `nextCursor: null` when both are omitted; the release-round client still refuses unexpected continuation as incomplete, while complete Turns are read from the dashboard and then `turn.read`.
 
 `summarize` is offline and writes only derived evidence projections, validates pins and closed-window coverage, recomputes Artifact bytes and origins and the deciding public-record predicates, and proposes non-pass outcomes with evidence references.
 

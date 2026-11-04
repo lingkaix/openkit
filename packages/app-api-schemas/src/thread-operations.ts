@@ -108,6 +108,13 @@ export const THREAD_OPERATION_DEFINITIONS = {
         ...threadSelector,
         since: z.number().nonnegative().optional(),
         limit: z.number().int().positive().optional(),
+        // Positional continuation only; addressed-Thread read authority stays with invocation.
+        // Reject final line terminators that JavaScript's $ anchor permits.
+        cursor: z
+          .string()
+          .regex(/^(0|[1-9]\d*)(?![\s\S])/)
+          .refine((cursor) => Number.isSafeInteger(Number(cursor)))
+          .optional(),
       })
       .strict(),
     outputSchema: ListThreadItemsResponseSchema,

@@ -100,12 +100,19 @@ export function createThreadOperationImplementations(
         throw error;
       }
     },
-    // The old owner accepts the cursor/limit view but returns the full retained Item log.
+    // Page only the admitted public read; internal callers retain complete chronological history.
     'thread.items': async (input) => {
       try {
+        const items = dependencies.store!.listThreadItems(input.workspaceId, input.threadId);
+        const offset = Number(input.cursor ?? '0');
+        const page = items.slice(
+          offset,
+          input.limit === undefined ? undefined : offset + input.limit
+        );
+        const nextOffset = offset + page.length;
         return await {
-          items: dependencies.store!.listThreadItems(input.workspaceId, input.threadId),
-          nextCursor: null,
+          items: page,
+          nextCursor: nextOffset < items.length ? String(nextOffset) : null,
         };
       } catch (error) {
         if (error instanceof StoreRecordNotFoundError)
