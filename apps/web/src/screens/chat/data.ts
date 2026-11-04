@@ -39,6 +39,10 @@ export const chatKeys = {
   navigation: (workspaceId: string) => ['threads', workspaceId, 'navigation'] as const,
   thread: (workspaceId: string, threadId: string) => ['thread', workspaceId, threadId] as const,
   items: (workspaceId: string, threadId: string) => ['items', workspaceId, threadId] as const,
+  itemCursor: (workspaceId: string, threadId: string) =>
+    ['items', workspaceId, threadId, 'cursor'] as const,
+  loadedEarlier: (workspaceId: string, threadId: string) =>
+    ['items', workspaceId, threadId, 'earlier'] as const,
   dashboard: (workspaceId: string, threadId: string) =>
     ['thread-dashboard', workspaceId, threadId] as const,
   conversationTargets: (workspaceId: string, threadId?: string) =>
@@ -514,20 +518,78 @@ export function useThreadDashboard(
  * @param threadId Current Thread identity.
  * @param poll When true, refresh this observer every 5s in the foreground.
  */
+type ThreadItemsInput = Parameters<CoreClient['operations']['thread.items']>[0];
+
+/** One earlier page. `cursor` is the continuation the previous read returned. */
+function earlierItemsInput(
+  workspaceId: string,
+  threadId: string,
+  cursor: string
+): ThreadItemsInput {
+  return { workspaceId, threadId, limit: 50, cursor };
+}
+
+/** Keeps loaded earlier rows in front of a newer page, dropping duplicate ids. */
+function withEarlierItems(
+  earlier: readonly ThreadItem[],
+  page: readonly ThreadItem[]
+): ThreadItem[] {
+  const seen = new Set(page.map((item) => item.id));
+  return [...earlier.filter((item) => !seen.has(item.id)), ...page];
+}
+
 export function useThreadItems(workspaceId: string | null, threadId: string, poll = false) {
   const client = useCoreClient();
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: chatKeys.items(workspaceId ?? '', threadId),
-    queryFn: async () =>
-      (
-        await client.operations['thread.items']({
-          workspaceId: workspaceId as string,
-          threadId: threadId,
-        })
-      ).items,
+    queryFn: async () => {
+      const page = await client.operations['thread.items']({
+        workspaceId: workspaceId as string,
+        threadId,
+      });
+      const keyWorkspace = workspaceId ?? '';
+      queryClient.setQueryData(chatKeys.itemCursor(keyWorkspace, threadId), page.nextCursor);
+      const earlier =
+        queryClient.getQueryData<ThreadItem[]>(chatKeys.loadedEarlier(keyWorkspace, threadId)) ??
+        [];
+      return withEarlierItems(earlier, page.items);
+    },
     enabled: Boolean(workspaceId),
     refetchInterval: poll ? 5_000 : false,
     refetchIntervalInBackground: false,
+  });
+}
+
+/** Cursor from the latest unpaged items read. Null means the server has no earlier page. */
+export function useThreadItemCursor(workspaceId: string | null, threadId: string) {
+  return useQuery<string | null>({
+    queryKey: chatKeys.itemCursor(workspaceId ?? '', threadId),
+    queryFn: skipToken,
+  });
+}
+
+/** Prepends one earlier page. The unpaged cache stays the newest page until this runs. */
+export function useLoadEarlierItems(workspaceId: string | null, threadId: string) {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (cursor: string) =>
+      client.operations['thread.items'](earlierItemsInput(workspaceId as string, threadId, cursor)),
+    onSuccess: (page) => {
+      if (!workspaceId) return;
+      queryClient.setQueryData<ThreadItem[]>(
+        chatKeys.loadedEarlier(workspaceId, threadId),
+        (current) => {
+          const seen = new Set((current ?? []).map((item) => item.id));
+          return [...(current ?? []), ...page.items.filter((item) => !seen.has(item.id))];
+        }
+      );
+      queryClient.setQueryData<ThreadItem[]>(chatKeys.items(workspaceId, threadId), (current) =>
+        withEarlierItems(page.items, current ?? [])
+      );
+      queryClient.setQueryData(chatKeys.itemCursor(workspaceId, threadId), page.nextCursor);
+    },
   });
 }
 
@@ -692,6 +754,16 @@ export function useLiveThreadItems(
                   staleTime: 0,
                 })
                 .catch(() => undefined);
+            }
+          }
+          // A new tool call replaces the progress line. Yield once so the current step can be seen.
+          if (event.data.type === 'item-created') {
+            const step = ItemSchema.safeParse(event.data.item);
+            if (step.success && step.data.type === 'tool-call') {
+              await new Promise((resolve) => {
+                setTimeout(resolve, 0);
+              });
+              if (cancelled) break;
             }
           }
           await queryClient.cancelQueries({
@@ -998,6 +1070,11 @@ export function useWithdrawPendingRequest(workspaceId: string, threadId: string)
         queryClient.invalidateQueries({ queryKey: chatKeys.dashboard(workspaceId, threadId) }),
       ]),
   });
+}
+
+/** Tool calls, file changes, and reasoning stay in Details. The transcript keeps the decision. */
+export function isTimelineDetail(item: ThreadItem): boolean {
+  return item.type === 'tool-call' || item.type === 'file-change' || item.type === 'reasoning';
 }
 
 /** Group a flat item stream by turn, preserving order (Thread → Turn → Item). */

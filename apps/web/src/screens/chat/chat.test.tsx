@@ -1277,7 +1277,9 @@ describe('chat starter (board 01)', () => {
     );
     expect(startTurn).not.toHaveBeenCalled();
     // Navigated into the thread screen (its index toggle is present).
-    expect(await screen.findByRole('button', { name: /Side panel/i })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('button', { name: /^(Show|Hide) Details$/ })
+    ).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       threadId: 'th_00000000-0000-75c2-bada-0a01c17d153e',
@@ -6151,7 +6153,7 @@ describe('conversation artifact inspection', () => {
         }),
       })
     );
-    const panel = await screen.findByRole('complementary', { name: 'Side panel' });
+    const panel = await screen.findByRole('complementary', { name: 'Details' });
     expect(await within(panel).findByText('Saved output · Version 1')).toBeInTheDocument();
     expect(within(panel).getAllByText('Saved output · Version 1')).toHaveLength(1);
     expect(within(panel).getAllByText('Saved output · Version 2')).toHaveLength(1);
@@ -6161,7 +6163,7 @@ describe('conversation artifact inspection', () => {
     expect(within(panel).getByText(path)).toBeVisible();
     expect(screen.getAllByText('Saved output · Version 1')).toHaveLength(3);
     expect(screen.getAllByText('Saved output · Version 2')).toHaveLength(2);
-    expect(screen.getAllByText('File change · modified')).toHaveLength(2);
+    expect(screen.getAllByText('File change · modified')).toHaveLength(1);
   });
 
   it('opens the referenced content from both the stream and side panel only on demand', async () => {
@@ -6186,7 +6188,7 @@ describe('conversation artifact inspection', () => {
     expect(within(dialog).getByText('Version 1')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Close' }));
     await user.click(
-      within(screen.getByRole('complementary', { name: 'Side panel' })).getByRole('button', {
+      within(screen.getByRole('complementary', { name: 'Details' })).getByRole('button', {
         name: 'View content',
       })
     );
@@ -6359,15 +6361,15 @@ it('closes the outputs panel from inside and returns focus to its toggle', async
     '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
     makeClient()
   );
-  const panel = await screen.findByRole('complementary', { name: 'Side panel' });
-  await user.click(within(panel).getByRole('button', { name: 'Close outputs' }));
-  expect(screen.queryByRole('complementary', { name: 'Side panel' })).not.toBeInTheDocument();
-  const toggle = screen.getByRole('button', { name: 'Show Side panel' });
+  const panel = await screen.findByRole('complementary', { name: 'Details' });
+  await user.click(within(panel).getByRole('button', { name: 'Close details' }));
+  expect(screen.queryByRole('complementary', { name: 'Details' })).not.toBeInTheDocument();
+  const toggle = screen.getByRole('button', { name: 'Show Details' });
   expect(toggle).toHaveFocus();
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await user.click(toggle);
-  expect(screen.getByRole('complementary', { name: 'Side panel' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Hide Side panel' })).toHaveAttribute(
+  expect(screen.getByRole('complementary', { name: 'Details' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Hide Details' })).toHaveAttribute(
     'aria-expanded',
     'true'
   );

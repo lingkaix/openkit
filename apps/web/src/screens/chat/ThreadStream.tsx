@@ -1,14 +1,18 @@
 import { createRequestId } from '@openkit/core-client';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useConnection } from '../../app/core-client';
 import { useGenerativeSourceGroups } from '../../generative/source-groups';
-import { EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
+import { Button, EmptyState, ErrorBanner, Skeleton, TurnSeparator } from '../../primitives';
 import {
   groupItemsByTurn,
+  isTimelineDetail,
   type ThreadItem,
   useLiveThreadItems,
+  useLoadEarlierItems,
   useRespondApproval,
   useSubmitTurnAnswers,
+  useThreadItemCursor,
   useThreadItems,
   useWithdrawPendingRequest,
 } from './data';
@@ -17,6 +21,23 @@ import { ItemView } from './ItemView';
 import { ThreadReadReceipts } from './ThreadReadReceipts';
 
 const MISSING_TURN_ERROR = 'This turn failed. Review the conversation before trying again.';
+
+/** Seconds since a running Turn started. Zero when the timestamp cannot be read. */
+function elapsedSeconds(startedAt: string): number {
+  const started = Date.parse(startedAt);
+  if (!Number.isFinite(started)) return 0;
+  return Math.max(0, Math.floor((Date.now() - started) / 1000));
+}
+
+/** The latest tool call that is still running, if this Turn has one. */
+function latestRunningStep(
+  items: readonly ThreadItem[]
+): Extract<ThreadItem, { type: 'tool-call' }> | undefined {
+  return items.findLast(
+    (item): item is Extract<ThreadItem, { type: 'tool-call' }> =>
+      item.type === 'tool-call' && item.status !== 'completed' && item.status !== 'failed'
+  );
+}
 
 /** Item-log groups plus dashboard activity or historical failures for Turns with no Items. */
 function streamGroupsByTurn(
@@ -53,6 +74,8 @@ export interface ThreadStreamProps {
   emptyTitle?: string;
   /** Exact retained Turn selected by a link; lookup never starts or repairs work. */
   focusTurnId?: string | null;
+  /** Opens Details and scrolls to this Turn's steps. */
+  onShowSteps?: (turnId: string) => void;
 }
 
 /**
@@ -72,9 +95,34 @@ export function ThreadStream({
   readOnly,
   emptyTitle,
   focusTurnId,
+  onShowSteps,
 }: ThreadStreamProps) {
   const connection = useConnection();
+  const queryClient = useQueryClient();
   const items = useThreadItems(workspaceId, threadId);
+  const cursor = useThreadItemCursor(workspaceId, threadId);
+  const loadEarlier = useLoadEarlierItems(workspaceId, threadId);
+  const earlierCursor =
+    typeof cursor.data === 'string' && cursor.data.length > 0 ? cursor.data : null;
+  const decisionScope = useRef<string | null>(null);
+  const knownDecisionIds = useRef<Set<string>>(new Set());
+  const decisionIds = (items.data ?? [])
+    .filter((item) => item.type === 'approval-request' || item.type === 'user-input-request')
+    .map((item) => item.id)
+    .join('\n');
+  useEffect(() => {
+    if (!workspaceId || !items.isSuccess) return;
+    const ids = decisionIds.length === 0 ? [] : decisionIds.split('\n');
+    const scope = `${workspaceId}:${threadId}`;
+    if (decisionScope.current !== scope) {
+      decisionScope.current = scope;
+      knownDecisionIds.current = new Set(ids);
+      return;
+    }
+    const arrived = ids.some((id) => !knownDecisionIds.current.has(id));
+    knownDecisionIds.current = new Set(ids);
+    if (arrived) void queryClient.invalidateQueries({ queryKey: ['attention', workspaceId] });
+  }, [decisionIds, items.isSuccess, queryClient, threadId, workspaceId]);
   const baselineCandidate =
     items.isSuccess && (items.fetchStatus === 'idle' || items.isFetchedAfterMount);
   const [baseline, setBaseline] = useState(() => ({
@@ -206,6 +254,16 @@ export function ThreadStream({
       disabled={controlsReadOnly || live.isError}
     >
       <div className="flex flex-col gap-5">
+        {earlierCursor ? (
+          <Button
+            variant="quiet"
+            size="sm"
+            isDisabled={loadEarlier.isPending}
+            onPress={() => loadEarlier.mutate(earlierCursor)}
+          >
+            Load earlier
+          </Button>
+        ) : null}
         {unavailableTurn ? (
           <p className="text-sm text-fg-muted">Recorded Turn is unavailable in this Thread.</p>
         ) : null}
@@ -224,6 +282,12 @@ export function ThreadStream({
             groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
               ? (groupTurn.error?.message ?? MISSING_TURN_ERROR)
               : null;
+          const runningStep =
+            groupTurn?.status === 'running' ? latestRunningStep(group.items) : undefined;
+          const actorName = groupTurn?.agentId
+            ? (participantNames.get(`agent:${groupTurn.agentId}`) ?? groupTurn.agentId)
+            : 'Working';
+          const hasSteps = group.items.some((item) => isTimelineDetail(item));
 
           return (
             <div
@@ -243,8 +307,27 @@ export function ThreadStream({
                 </p>
               ) : null}
               {index > 0 ? <TurnSeparator label={`Turn ${index + 1}`} /> : null}
+              {runningStep && groupTurn ? (
+                <div role="status" className="text-sm text-fg">
+                  <Button variant="quiet" size="sm" onPress={() => onShowSteps?.(group.turnId)}>
+                    <span>{actorName}</span>
+                    <span aria-hidden="true"> · </span>
+                    <span>running</span>
+                    <span aria-hidden="true"> · </span>
+                    <span>{elapsedSeconds(groupTurn.startedAt ?? '')} seconds</span>
+                    <span aria-hidden="true"> · </span>
+                    <span>{runningStep.tool}</span>
+                  </Button>
+                </div>
+              ) : null}
+              {onShowSteps && hasSteps ? (
+                <Button variant="quiet" size="sm" onPress={() => onShowSteps(group.turnId)}>
+                  Show steps
+                </Button>
+              ) : null}
               {group.items.map((item) =>
-                groupedSourceIds.has(item.id) ? null : item.type === 'generative-ui-reference' ? (
+                isTimelineDetail(item) || groupedSourceIds.has(item.id) ? null : item.type ===
+                  'generative-ui-reference' ? (
                   <GenerativePresentationView
                     key={item.id}
                     item={item}

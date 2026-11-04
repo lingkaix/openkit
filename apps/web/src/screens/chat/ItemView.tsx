@@ -376,85 +376,88 @@ export function ItemView({
 
     case 'approval-request':
       return (
-        <ItemCard
-          kind="notice"
-          title={item.title}
-          meta={item.description}
-          actions={
-            readOnly ||
-            resolvedApproval ||
-            approvalUnavailableReason ||
-            !onApprovalDecision ? undefined : (
-              <>
-                {approvalEffect?.status === 'available' && (
+        <div aria-live="polite" className="flex flex-col gap-2">
+          <p className="text-xs font-bold text-notice-fg">Needs you</p>
+          <ItemCard
+            kind="notice"
+            title={item.title}
+            meta={item.description}
+            actions={
+              readOnly ||
+              resolvedApproval ||
+              approvalUnavailableReason ||
+              !onApprovalDecision ? undefined : (
+                <>
+                  {approvalEffect?.status === 'available' && (
+                    <Button
+                      size="sm"
+                      isDisabled={approvalPending}
+                      variant="accent"
+                      onPress={() =>
+                        onApprovalDecision?.(item.approvalRequestId, item.turnId, 'granted')
+                      }
+                    >
+                      Approve
+                    </Button>
+                  )}
                   <Button
                     size="sm"
+                    variant="negative-outline"
                     isDisabled={approvalPending}
-                    variant="accent"
                     onPress={() =>
-                      onApprovalDecision?.(item.approvalRequestId, item.turnId, 'granted')
+                      onApprovalDecision?.(item.approvalRequestId, item.turnId, 'denied')
                     }
                   >
-                    Approve
+                    Deny
                   </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="negative-outline"
-                  isDisabled={approvalPending}
-                  onPress={() =>
-                    onApprovalDecision?.(item.approvalRequestId, item.turnId, 'denied')
-                  }
-                >
-                  Deny
-                </Button>
-                {onWithdrawApproval && (
-                  <Button
-                    size="sm"
-                    isDisabled={approvalPending}
-                    onPress={() => onWithdrawApproval(item.approvalRequestId)}
-                  >
-                    Withdraw
-                  </Button>
-                )}
-              </>
-            )
-          }
-        >
-          {resolvedApproval ? (
-            <p>
-              {resolvedApproval.decision === 'granted' ? 'Approved' : 'Denied'}. This approval is
-              closed.
-            </p>
-          ) : approvalUnavailableReason || readOnly ? (
-            <p>{approvalUnavailableReason ?? 'Approval actions are unavailable in this view.'}</p>
-          ) : null}
-          {!resolvedApproval &&
-            !readOnly &&
-            !approvalUnavailableReason &&
-            (approvalEffect?.status === 'available' ? (
-              <section aria-label="Complete exact effect">
-                <p>{approvalEffect.summary}</p>
-                <pre className="overflow-auto whitespace-pre-wrap break-all">
-                  {approvalEffect.detail}
-                </pre>
-              </section>
-            ) : (
+                  {onWithdrawApproval && (
+                    <Button
+                      size="sm"
+                      isDisabled={approvalPending}
+                      onPress={() => onWithdrawApproval(item.approvalRequestId)}
+                    >
+                      Withdraw
+                    </Button>
+                  )}
+                </>
+              )
+            }
+          >
+            {resolvedApproval ? (
               <p>
-                Exact effect unavailable; approval disabled
-                {approvalEffect?.status === 'unavailable'
-                  ? `: ${approvalEffect.reason}`
-                  : ': Complete detail has not been loaded.'}
+                {resolvedApproval.decision === 'granted' ? 'Approved' : 'Denied'}. This approval is
+                closed.
               </p>
-            ))}
-          {approvalPending ? <p role="status">Submitting decision…</p> : null}
-          {approvalError && !resolvedApproval ? (
-            <ErrorBanner
-              message="Couldn't submit this decision."
-              onRetry={readOnly || approvalUnavailableReason ? undefined : onRetryApproval}
-            />
-          ) : null}
-        </ItemCard>
+            ) : approvalUnavailableReason || readOnly ? (
+              <p>{approvalUnavailableReason ?? 'Approval actions are unavailable in this view.'}</p>
+            ) : null}
+            {!resolvedApproval &&
+              !readOnly &&
+              !approvalUnavailableReason &&
+              (approvalEffect?.status === 'available' ? (
+                <section aria-label="Complete exact effect">
+                  <p>{approvalEffect.summary}</p>
+                  <pre className="overflow-auto whitespace-pre-wrap break-all">
+                    {approvalEffect.detail}
+                  </pre>
+                </section>
+              ) : (
+                <p>
+                  Exact effect unavailable; approval disabled
+                  {approvalEffect?.status === 'unavailable'
+                    ? `: ${approvalEffect.reason}`
+                    : ': Complete detail has not been loaded.'}
+                </p>
+              ))}
+            {approvalPending ? <p role="status">Submitting decision…</p> : null}
+            {approvalError && !resolvedApproval ? (
+              <ErrorBanner
+                message="Couldn't submit this decision."
+                onRetry={readOnly || approvalUnavailableReason ? undefined : onRetryApproval}
+              />
+            ) : null}
+          </ItemCard>
+        </div>
       );
 
     case 'approval-decision':

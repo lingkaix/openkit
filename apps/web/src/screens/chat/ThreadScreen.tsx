@@ -18,6 +18,8 @@ import {
 import { useArtifacts, useArtifactVersion } from '../artifacts/data';
 import {
   chatKeys,
+  groupItemsByTurn,
+  isTimelineDetail,
   type ThreadItem,
   taskThreadPath,
   useArchiveThread,
@@ -39,30 +41,23 @@ import { ItemView } from './ItemView';
 import { ThreadStream } from './ThreadStream';
 
 /**
- * Indexes unique Artifact versions and every file-change row for the Side panel.
+ * Indexes the first reference for each Artifact version.
  *
  * @param items Thread Items in conversation order.
- * @returns First Artifact-reference per output identity plus every file-change.
+ * @returns One Artifact-reference per output identity.
  */
-function conversationOutputIndex(items: readonly ThreadItem[]): ThreadItem[] {
+function artifactIndex(items: readonly ThreadItem[]): ThreadItem[] {
   const seenArtifactVersions = new Set<string>();
   return items.filter((item) => {
-    if (item.type === 'file-change') {
-      return true;
-    }
-    if (item.type !== 'artifact-reference') {
-      return false;
-    }
+    if (item.type !== 'artifact-reference') return false;
     const identity = `${item.artifactId}:${item.artifactVersion}`;
-    if (seenArtifactVersions.has(identity)) {
-      return false;
-    }
+    if (seenArtifactVersions.has(identity)) return false;
     seenArtifactVersions.add(identity);
     return true;
   });
 }
 
-/** Right Side panel — Thread Artifact and file-change index (DESIGN.md §3.3, D-006). */
+/** Details — steps, file changes, reasoning, and saved outputs for this Thread. */
 function SidePanel({
   workspaceId,
   threadId,
@@ -73,19 +68,23 @@ function SidePanel({
   onClose: () => void;
 }) {
   const items = useThreadItems(workspaceId, threadId);
-  const artifacts = conversationOutputIndex(items.data ?? []);
+  const list = items.data ?? [];
+  const detailGroups = groupItemsByTurn(list.filter((item) => isTimelineDetail(item)));
+  const artifacts = artifactIndex(list);
+  const itemKey = (item: ThreadItem) =>
+    `${item.owner.kind === 'workspace' ? item.owner.workspaceId : 'server'}:${item.id}`;
   return (
     <aside
-      aria-label="Side panel"
+      aria-label="Details"
       className="absolute inset-y-0 right-0 z-10 w-60 shrink-0 overflow-y-auto border-l border-separator bg-layer-1 p-3 shadow-ok-menu @min-[47rem]/thread:static @min-[47rem]/thread:shadow-none"
     >
       <div className="flex items-center justify-between gap-2">
-        <Eyebrow>Conversation outputs</Eyebrow>
+        <Eyebrow>Details</Eyebrow>
         <Button
           size="sm"
           variant="quiet"
-          aria-label="Close outputs"
-          title="Close outputs"
+          aria-label="Close details"
+          title="Close details"
           className="h-7 w-7 shrink-0 px-0!"
           onPress={onClose}
         >
@@ -93,18 +92,24 @@ function SidePanel({
         </Button>
       </div>
       <p className="mt-1 text-xs text-fg-muted">
-        Saved outputs and file-change records from this conversation.
+        Tool steps, file changes, reasoning, and saved outputs from this conversation.
       </p>
+      {detailGroups.map((group) => (
+        <div
+          key={group.turnId}
+          id={`turn-steps-${group.turnId}`}
+          className="mt-3 flex flex-col gap-2"
+        >
+          {group.items.map((item) => (
+            <ItemView key={itemKey(item)} item={item} />
+          ))}
+        </div>
+      ))}
       <div className="mt-2 flex flex-col gap-1">
-        {artifacts.length === 0 ? (
+        {detailGroups.length === 0 && artifacts.length === 0 ? (
           <p className="text-xs text-fg-muted">No outputs or file changes yet.</p>
         ) : (
-          artifacts.map((item) => (
-            <ItemView
-              key={`${item.owner.kind === 'workspace' ? item.owner.workspaceId : 'server'}:${item.id}`}
-              item={item}
-            />
-          ))
+          artifacts.map((item) => <ItemView key={itemKey(item)} item={item} />)
         )}
       </div>
     </aside>
@@ -120,7 +125,7 @@ export interface ThreadScreenProps {
  * Thread screen (WP-4) — boards 02/03 (chat) and 04 (task).
  *
  * A centered conversation column with the composer docked at the bottom (D-007),
- * an optional Side panel that indexes this Thread's Artifacts and file changes
+ * an optional Details panel for this Thread's steps, files, reasoning, and outputs
  * (board 03, DESIGN.md §3.3; not the global Artifact inventory), and the inline
  * approval-card pattern (board 04) handled per-item. Honors the §9.13 states: skeleton stream,
  * inline send-failure banner, and — when the runtime is unreachable — a disabled
@@ -344,7 +349,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
 
   return (
     <div className="@container/thread relative isolate flex h-full">
-      <div className="flex h-full min-w-lg flex-1 flex-col">
+      <div className="flex h-full min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-separator px-6 py-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {mode === 'task' ? (
@@ -434,8 +439,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               variant="quiet"
               ref={railToggle}
               aria-expanded={showRail}
-              aria-label={showRail ? 'Hide Side panel' : 'Show Side panel'}
-              title={showRail ? 'Hide Side panel' : 'Show Side panel'}
+              aria-label={showRail ? 'Hide Details' : 'Show Details'}
+              title={showRail ? 'Hide Details' : 'Show Details'}
               className="h-8 w-8 shrink-0 px-0!"
               onPress={() => setShowRail((v) => !v)}
             >
@@ -528,6 +533,14 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               readOnly={disconnected}
               focusTurnId={new URLSearchParams(location.search).get('turnId')}
               emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
+              onShowSteps={(turnId) => {
+                setShowRail(true);
+                window.setTimeout(() => {
+                  document.getElementById(`turn-steps-${turnId}`)?.scrollIntoView({
+                    block: 'nearest',
+                  });
+                }, 0);
+              }}
             />
             {feedbackTurn ? (
               <div className="mt-5 flex flex-col items-end gap-2 border-t border-separator pt-3">
