@@ -33,12 +33,13 @@ import {
   settingsKeys,
 } from './data';
 import {
-  affectedLogicalModels,
+  GatewayActivation,
   GatewayConfiguration,
   GuidedSubscriptionSetup,
   KeyProviderCard,
   ProfileRemoval,
   ProviderHeader,
+  usedByLabels,
 } from './GatewayConfiguration';
 import { projectSafeValue, providerSubscriptionAccountStatusLabel } from './secret-safe';
 
@@ -204,16 +205,27 @@ export function AiInterfaceScreen() {
       queryKey: [...settingsKeys.aiInterface, 'server'],
     });
   }, [queryClient]);
+  const slotNames = Object.fromEntries(
+    accounts.flatMap((provider) =>
+      provider.accounts.map((account) => [
+        `${provider.subscriptionProviderId}/${account.accountSlotId}`,
+        account.displayName,
+      ])
+    )
+  );
+  const pilesReady = Boolean(diagnostics.data && (initialAccountsObserved || accountsReady));
+  const showPiles =
+    !adminDenied && !inventory.isLoading && !inventory.isError && pilesReady && diagnostics.data;
+  const showNotSetUp = initialAccountsObserved || Boolean(showPiles);
 
   return (
     <Page>
       <PageHeader
-        eyebrow="Deployment administration"
         title="Gateway"
-        subtitle="Manage Providers, effective model metadata, and logical model routing for this deployment."
+        subtitle="Deployment administration. Manage Providers, effective model metadata, and logical model routing for this deployment."
         actions={
           <Button
-            size="sm"
+            className="min-h-11"
             variant="outline"
             isDisabled={
               disconnected ||
@@ -309,63 +321,205 @@ export function AiInterfaceScreen() {
               message={dependencyMessage(diagnostics.error, 'Gateway diagnostics')}
               onRetry={() => void diagnostics.refetch()}
             />
-          ) : diagnostics.isLoading || (!initialAccountsObserved && !accountsReady) ? (
-            <Skeleton lines={4} />
-          ) : (
-            <ProviderProfiles
+          ) : null}
+          {diagnostics.isError &&
+          !diagnostics.data &&
+          (initialAccountsObserved || accountsReady) ? (
+            <SubscriptionAccounts
               client={client}
               disconnected={disconnected}
-              profiles={diagnostics.data?.providers.registry ?? []}
-              diagnostics={diagnostics.data?.providers.diagnostics ?? []}
+              providers={accounts}
+              onAccountsChanged={onAccountsChanged}
+              onAccessDenied={(providerId, slot) => setQuotaAccessDenied({ providerId, slot })}
+            />
+          ) : null}
+          {!diagnostics.isError && !pilesReady ? <Skeleton lines={4} /> : null}
+          {showPiles && diagnostics.data ? (
+            <GatewayPiles
+              client={client}
+              disconnected={disconnected}
+              diagnostics={diagnostics.data}
               accounts={accounts}
-              gateway={diagnostics.data?.gateway ?? null}
+              slotNames={slotNames}
               onProfilesChanged={onProfilesChanged}
               onAccountsChanged={onAccountsChanged}
               onAccessDenied={(providerId, slot) => setQuotaAccessDenied({ providerId, slot })}
             />
-          )}
-          {initialAccountsObserved || accountsReady ? (
-            <SubscriptionAccounts
-              client={client}
-              disconnected={disconnected}
-              providers={accounts.map((provider) => ({
-                ...provider,
-                accounts: provider.accounts.filter(
-                  (account) =>
-                    !diagnostics.data?.providers.registry.some(
-                      (profile) =>
-                        profile.subscriptionAccount?.subscriptionProviderId ===
-                          provider.subscriptionProviderId &&
-                        profile.subscriptionAccount.accountSlotId === account.accountSlotId
-                    )
-                ),
-              }))}
-              onAccountsChanged={onAccountsChanged}
-              onAccessDenied={(providerId, slot) => setQuotaAccessDenied({ providerId, slot })}
-            />
-          ) : null}
-          {diagnostics.data ? (
-            <GatewayConfiguration
-              client={client}
-              disconnected={disconnected}
-              diagnostics={diagnostics.data}
-              onChanged={onProfilesChanged}
-            />
           ) : null}
         </>
       )}
-      {/* Keep admitted setup progress mounted when a dependency projection is loading or fails. */}
-      {initialAccountsObserved ? (
-        <GuidedSubscriptionSetup
+      {showNotSetUp ? (
+        <GatewayNotSetUp
           client={client}
-          disconnected={
+          disconnected={disconnected}
+          diagnostics={diagnostics.data}
+          accounts={accounts}
+          showDetails={Boolean(showPiles)}
+          showSetup={initialAccountsObserved}
+          setupDisconnected={
             disconnected || adminDenied || !inventory.isSuccess || !diagnostics.isSuccess
           }
-          accounts={accounts}
+          onProfilesChanged={onProfilesChanged}
+          onAccountsChanged={onAccountsChanged}
+          onAccessDenied={(providerId, slot) => setQuotaAccessDenied({ providerId, slot })}
+        />
+      ) : null}
+      {showPiles && diagnostics.data ? (
+        <GatewayActivation
+          client={client}
+          disconnected={disconnected}
+          diagnostics={diagnostics.data}
           onChanged={onProfilesChanged}
         />
       ) : null}
     </Page>
+  );
+}
+
+/** In use and Providers. Not set up stays outside this tree so setup state survives access denial. */
+function GatewayPiles({
+  client,
+  disconnected,
+  diagnostics,
+  accounts,
+  slotNames,
+  onProfilesChanged,
+  onAccountsChanged,
+  onAccessDenied,
+}: {
+  client: CoreClient;
+  disconnected: boolean;
+  diagnostics: Awaited<ReturnType<CoreClient['operations']['diagnostics.app']>>;
+  accounts: ConnectedAppProviderRow[];
+  slotNames: Readonly<Record<string, string>>;
+  onProfilesChanged: () => void;
+  onAccountsChanged: () => void;
+  onAccessDenied: (providerId: SubscriptionProviderId, slot: string) => void;
+}) {
+  const registry = diagnostics.providers.registry;
+  return (
+    <>
+      <GatewayConfiguration
+        client={client}
+        disconnected={disconnected}
+        diagnostics={diagnostics}
+        onChanged={onProfilesChanged}
+        slotNames={slotNames}
+      />
+      <ProviderProfiles
+        client={client}
+        disconnected={disconnected}
+        profiles={registry}
+        diagnostics={diagnostics.providers.diagnostics}
+        accounts={accounts}
+        gateway={diagnostics.gateway}
+        onProfilesChanged={onProfilesChanged}
+        onAccountsChanged={onAccountsChanged}
+        onAccessDenied={onAccessDenied}
+      />
+    </>
+  );
+}
+
+/** Not set up. The guided setup child keeps its place when account cards hide. */
+function GatewayNotSetUp({
+  client,
+  disconnected,
+  diagnostics,
+  accounts,
+  showDetails,
+  showSetup,
+  setupDisconnected,
+  onProfilesChanged,
+  onAccountsChanged,
+  onAccessDenied,
+}: {
+  client: CoreClient;
+  disconnected: boolean;
+  diagnostics: Awaited<ReturnType<CoreClient['operations']['diagnostics.app']>> | undefined;
+  accounts: ConnectedAppProviderRow[];
+  showDetails: boolean;
+  showSetup: boolean;
+  setupDisconnected: boolean;
+  onProfilesChanged: () => void;
+  onAccountsChanged: () => void;
+  onAccessDenied: (providerId: SubscriptionProviderId, slot: string) => void;
+}) {
+  const registry = diagnostics?.providers.registry ?? [];
+  const unboundProviders = accounts.map((provider) => ({
+    ...provider,
+    accounts: provider.accounts.filter(
+      (account) =>
+        !registry.some(
+          (profile) =>
+            profile.subscriptionAccount?.subscriptionProviderId ===
+              provider.subscriptionProviderId &&
+            profile.subscriptionAccount.accountSlotId === account.accountSlotId
+        )
+    ),
+  }));
+  const profileless = accounts.filter(
+    (provider) =>
+      !registry.some(
+        (profile) =>
+          profile.subscriptionAccount?.subscriptionProviderId === provider.subscriptionProviderId
+      )
+  );
+  const waiting =
+    unboundProviders.some((provider) => provider.accounts.length > 0) || profileless.length > 0;
+  return (
+    <section className="flex min-w-0 flex-col gap-3" aria-labelledby="gateway-not-set-up">
+      <h2 id="gateway-not-set-up" className="text-lg font-bold text-fg-strong">
+        Not set up
+      </h2>
+      {showDetails ? (
+        <>
+          {waiting ? null : (
+            <EmptyState
+              icon="connect"
+              title="Nothing waiting to be set up"
+              hint="Unbound account slots and subscription providers without a profile appear here."
+            />
+          )}
+          <SubscriptionAccounts
+            client={client}
+            disconnected={disconnected}
+            providers={unboundProviders}
+            onAccountsChanged={onAccountsChanged}
+            onAccessDenied={onAccessDenied}
+            showHeading={false}
+          />
+          {profileless.map((provider) => (
+            <Card key={provider.subscriptionProviderId}>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-base text-fg">{provider.displayName}</p>
+                <Button
+                  className="min-h-11"
+                  variant="outline"
+                  aria-label={`Set up ${provider.displayName}`}
+                  onPress={() =>
+                    document.getElementById('guided-subscription-setup')?.scrollIntoView({
+                      block: 'start',
+                    })
+                  }
+                >
+                  Set up
+                </Button>
+              </div>
+            </Card>
+          ))}
+        </>
+      ) : null}
+      {showSetup ? (
+        <GuidedSubscriptionSetup
+          key="guided-setup"
+          client={client}
+          disconnected={setupDisconnected}
+          accounts={accounts}
+          onChanged={onProfilesChanged}
+        />
+      ) : null}
+    </section>
   );
 }
 
@@ -376,27 +530,37 @@ function SubscriptionAccounts({
   providers,
   onAccountsChanged,
   onAccessDenied,
+  showHeading = true,
 }: {
   client: CoreClient;
   disconnected: boolean;
   providers: ConnectedAppProviderRow[];
   onAccountsChanged: () => void;
   onAccessDenied: (providerId: SubscriptionProviderId, slot: string) => void;
+  /** When false, omit the pile heading and skip providers that have no slots. */
+  showHeading?: boolean;
 }) {
+  const rows = showHeading
+    ? providers
+    : providers.filter((provider) => provider.accounts.length > 0);
+  if (!showHeading && rows.length === 0) return null;
   return (
-    <section className="flex min-w-0 w-full flex-col gap-3" aria-labelledby="ai-connected-apps">
-      <div className="flex min-w-0 w-full flex-wrap items-baseline gap-2">
-        <h2
-          id="ai-connected-apps"
-          className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
-        >
-          Retained subscription slots
-        </h2>
-        <span className="text-wrap text-xs text-fg-muted">
-          OpenAI Codex and xAI device-code login
-        </span>
-      </div>
-      {providers.length === 0 ? (
+    <section
+      className="flex min-w-0 w-full flex-col gap-3"
+      aria-labelledby={showHeading ? 'ai-connected-apps' : undefined}
+      aria-label={showHeading ? undefined : 'Unbound account slots'}
+    >
+      {showHeading ? (
+        <div className="flex min-w-0 w-full flex-wrap items-baseline gap-2">
+          <h2 id="ai-connected-apps" className="text-lg font-bold text-fg-strong">
+            Retained subscription slots
+          </h2>
+          <span className="text-wrap text-sm text-fg-muted">
+            OpenAI Codex and xAI device-code login
+          </span>
+        </div>
+      ) : null}
+      {rows.length === 0 ? (
         <EmptyState
           icon="connect"
           title="No subscription providers"
@@ -404,7 +568,7 @@ function SubscriptionAccounts({
         />
       ) : (
         <div className="flex min-w-0 w-full flex-col gap-4">
-          {providers.map((provider) => (
+          {rows.map((provider) => (
             <ProviderAccounts
               key={provider.subscriptionProviderId}
               client={client}
@@ -720,9 +884,7 @@ function AccountControls({
         {profile ? (
           <>
             <ProviderHeader profile={profile} />
-            <p className="text-xs text-fg-muted">
-              Affected logical models: {affected.join(', ') || 'None'}
-            </p>
+            <p className="text-sm text-fg">Used by: {affected.join(', ') || 'None'}</p>
             <ProfileRemoval
               client={client}
               profile={profile}
@@ -829,7 +991,12 @@ function AccountControls({
           />
         ) : null}
         <div className="flex min-w-0 w-full flex-wrap gap-2">
-          <Button size="sm" isDisabled={disconnected || quota.isPending} onPress={refresh}>
+          <Button
+            className="min-h-11"
+            size="sm"
+            isDisabled={disconnected || quota.isPending}
+            onPress={refresh}
+          >
             Refresh quota
           </Button>
           {live.status === 'pending' ? (
@@ -846,6 +1013,7 @@ function AccountControls({
             live.status === 'error' ||
             live.status === 'unavailable' ? (
             <Button
+              className="min-h-11"
               size="sm"
               isDisabled={disconnected || login.isPending}
               onPress={() => login.mutate()}
@@ -969,6 +1137,7 @@ function AccountControls({
                 Rename account
               </Button>
               <Button
+                className="min-h-11"
                 size="sm"
                 variant="outline"
                 isDisabled={disconnected || logout.isPending}
@@ -977,6 +1146,7 @@ function AccountControls({
                 Log out
               </Button>
               <Button
+                className="min-h-11"
                 size="sm"
                 variant="negative-outline"
                 isDisabled={disconnected || remove.isPending}
@@ -1389,19 +1559,16 @@ function ProviderProfiles({
 }) {
   return (
     <section className="flex min-w-0 flex-col gap-3" aria-labelledby="gateway-providers">
-      <h2
-        id="gateway-providers"
-        className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
-      >
+      <h2 id="gateway-providers" className="text-lg font-bold text-fg-strong">
         Providers
       </h2>
-      <p className="text-xs text-fg-muted">
+      <p className="text-sm text-fg-muted">
         Active server state. Provider registry changes require restart.
       </p>
       {profiles.length === 0 ? (
         <EmptyState
           icon="connect"
-          title="No provider profiles"
+          title="No Providers connected"
           hint="Add a Provider or edit authored configuration."
         />
       ) : (
@@ -1410,18 +1577,7 @@ function ProviderProfiles({
           const account = accounts
             .find((provider) => provider.subscriptionProviderId === pair?.subscriptionProviderId)
             ?.accounts.find((slot) => slot.accountSlotId === pair?.accountSlotId);
-          const affected = affectedLogicalModels(
-            gateway,
-            profiles
-              .filter((candidate) =>
-                pair
-                  ? candidate.subscriptionAccount?.subscriptionProviderId ===
-                      pair.subscriptionProviderId &&
-                    candidate.subscriptionAccount.accountSlotId === pair.accountSlotId
-                  : candidate.id === profile.id
-              )
-              .map((candidate) => candidate.id)
-          );
+          const affected = usedByLabels(gateway, profile.id);
           return pair && account ? (
             <AccountControls
               key={profile.id}
@@ -1442,12 +1598,10 @@ function ProviderProfiles({
                   Account slot {pair.subscriptionProviderId} / {pair.accountSlotId} is missing or
                   unavailable.
                 </p>
-                <Button variant="outline" onPress={onAccountsChanged}>
+                <Button className="min-h-11" variant="outline" onPress={onAccountsChanged}>
                   Retry account slots
                 </Button>
-                <p className="text-xs text-fg-muted">
-                  Affected logical models: {affected.join(', ') || 'None'}
-                </p>
+                <p className="text-sm text-fg">Used by: {affected.join(', ') || 'None'}</p>
                 <ProfileRemoval
                   client={client}
                   profile={profile}

@@ -1731,19 +1731,22 @@ describe('Unified Gateway acceptance', () => {
     });
     renderScreen(client);
     expect(await screen.findByRole('heading', { name: 'Gateway', level: 1 })).toBeInTheDocument();
-    for (const name of ['Providers', 'Models', 'Logical models'])
+    for (const name of ['In use', 'Providers', 'Not set up'])
       expect(await screen.findByRole('heading', { name, level: 2 })).toBeInTheDocument();
     const card = screen.getByRole('region', { name: 'Codex work' });
     expect(within(card).getByText('Codex primary')).toBeInTheDocument();
-    expect(within(card).getByText(/Affected logical models: Tier/)).toBeInTheDocument();
+    expect(within(card).getByText(/Used by: Tier \(primary\)/)).toBeInTheDocument();
     expect(screen.getByText('Context: 300000 · deployment extension')).toBeInTheDocument();
     expect(screen.getByText('Output: Unknown · not reported')).toBeInTheDocument();
     expect(screen.getByText('Input price: 0 · profile override')).toBeInTheDocument();
     const logical = screen.getByRole('region', { name: 'Tier' });
-    expect(
-      within(logical).getByText(/Primary.*provider_codex.*subscription_account_logged_out/)
-    ).toBeInTheDocument();
-    expect(within(logical).getByText(/Backup 1.*provider_demo.*Available/)).toBeInTheDocument();
+    const members = within(logical).getAllByRole('listitem');
+    expect(members[0]).toHaveTextContent('Primary');
+    expect(members[0]).toHaveTextContent('Codex work');
+    expect(members[0]).toHaveTextContent('unavailable: slot not signed in');
+    expect(members[1]).toHaveTextContent('Backup 1');
+    expect(members[1]).toHaveTextContent('Demo provider');
+    expect(members[1]).toHaveTextContent('available');
     expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
     expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
@@ -1870,7 +1873,8 @@ describe('Unified Gateway acceptance', () => {
     );
     expect(screen.getByText('Persisted revision: catalog-saved')).toBeInTheDocument();
     expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Apply saved Gateway configuration' }));
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await user.click(screen.getByRole('button', { name: 'Reload configuration' }));
     expect(await screen.findByText(/Reload application: applied/)).toBeInTheDocument();
     expect(screen.getByText(/Restart-required activation: modelCatalog/)).toBeInTheDocument();
     expect(screen.getByText('Context: 300000 · deployment extension')).toBeInTheDocument();
@@ -1905,7 +1909,7 @@ describe('Gateway dependency and routing completion', () => {
       },
     });
     renderScreen(client);
-    await user.click(await screen.findByRole('button', { name: 'Edit routes tier' }));
+    await user.click(await screen.findByRole('button', { name: 'Edit route' }));
     const routes = await screen.findByLabelText('Ordered routes JSON');
     await user.clear(routes);
     const edited = [
@@ -1928,9 +1932,13 @@ describe('Gateway dependency and routing completion', () => {
     });
     expect(client.operations['runtime.validate']).toHaveBeenCalledBefore(updateFile);
     expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
-    expect(
-      screen.getByText(/Primary.*provider_codex.*subscription_account_logged_out/)
-    ).toBeInTheDocument();
+    const tier = screen.getByRole('region', { name: 'Tier', hidden: true });
+    const members = within(tier).getAllByRole('listitem', { hidden: true });
+    expect(members[0]).toHaveTextContent('Primary');
+    expect(members[0]).toHaveTextContent('Codex work');
+    expect(members[0]).toHaveTextContent('unavailable: slot not signed in');
+    expect(members[1]).toHaveTextContent('Backup 1');
+    expect(members[1]).toHaveTextContent('Demo provider');
     expect(await screen.findByText('Persisted revision: routes-saved')).toBeInTheDocument();
   });
 
@@ -2042,7 +2050,7 @@ describe('Gateway dependency and routing completion', () => {
     await user.click(
       within(denial.closest('[role="alert"]')!).getByRole('button', { name: 'Try again' })
     );
-    expect(await screen.findByRole('heading', { name: 'Models', level: 2 })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'In use', level: 2 })).toBeInTheDocument();
     expect(getDiagnostics).toHaveBeenCalledTimes(2);
     expect(client.operations['provider-subscription.provider-list']).toHaveBeenCalledTimes(1);
     expect(document.body.textContent).not.toContain('private-diagnostics-denial');
@@ -2216,14 +2224,18 @@ describe('Round 2 Gateway dependency recovery', () => {
     renderScreen(client);
     const card = await screen.findByRole('region', { name: 'Codex work' });
     expect(within(card).getByText(/Account slot openai-codex/)).toBeInTheDocument();
-    expect(within(card).getByText('Affected logical models: Tier')).toBeInTheDocument();
+    expect(within(card).getByText(/Used by: Tier \(primary\)/)).toBeInTheDocument();
     expect(within(card).getByRole('button', { name: 'Remove Provider' })).toBeEnabled();
     await user.click(within(card).getByRole('button', { name: 'Retry account slots' }));
     await waitFor(() =>
       expect(client.operations['provider-subscription.account-list']).toHaveBeenCalledTimes(4)
     );
-    expect(screen.getByText(/Primary · primary · provider_codex/)).toBeInTheDocument();
-    expect(screen.getByText(/Backup 1 · backup · provider_demo/)).toBeInTheDocument();
+    const tier = screen.getByRole('region', { name: 'Tier' });
+    const members = within(tier).getAllByRole('listitem');
+    expect(members[0]).toHaveTextContent('Primary');
+    expect(members[0]).toHaveTextContent('Codex work');
+    expect(members[1]).toHaveTextContent('Backup 1');
+    expect(members[1]).toHaveTextContent('Demo provider');
     expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
     expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
   });
@@ -2258,15 +2270,19 @@ describe('Round 2 Gateway dependency recovery', () => {
     await user.click(within(card).getByRole('button', { name: 'Remove account' }));
     const warning = await screen.findByText(/Account slot openai-codex/);
     const absentCard = warning.closest('section')!;
-    expect(within(absentCard).getByText('Affected logical models: Tier')).toBeInTheDocument();
+    expect(within(absentCard).getByText(/Used by: Tier \(primary\)/)).toBeInTheDocument();
     expect(within(absentCard).getByRole('button', { name: 'Remove Provider' })).toBeEnabled();
     expect(within(absentCard).getByRole('button', { name: 'Retry account slots' })).toBeEnabled();
     expect(deleteAccount).toHaveBeenCalledExactlyOnceWith({
       subscriptionProviderId: 'openai-codex',
       accountSlotId: 'primary',
     });
-    expect(screen.getByText(/Primary · primary · provider_codex/)).toBeInTheDocument();
-    expect(screen.getByText(/Backup 1 · backup · provider_demo/)).toBeInTheDocument();
+    const tier = screen.getByRole('region', { name: 'Tier' });
+    const members = within(tier).getAllByRole('listitem');
+    expect(members[0]).toHaveTextContent('Primary');
+    expect(members[0]).toHaveTextContent('Codex work');
+    expect(members[1]).toHaveTextContent('Backup 1');
+    expect(members[1]).toHaveTextContent('Demo provider');
     expect(client.operations['runtime.file-update']).not.toHaveBeenCalled();
     expect(client.operations['runtime.file-delete']).not.toHaveBeenCalled();
     expect(client.operations['runtime.reload']).not.toHaveBeenCalled();
