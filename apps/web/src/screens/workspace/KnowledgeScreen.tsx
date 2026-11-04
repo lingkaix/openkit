@@ -760,29 +760,26 @@ export function KnowledgeScreen() {
           >
             Maintain
           </Button>
-          {maintainOpen ? (
-            <section aria-label="Maintain">
-              <p className="text-sm text-fg-muted">
-                Health, repair, and indexes stay in Retrieval and Manager so those operations remain
-                reachable.
-              </p>
-            </section>
-          ) : null}
+          {/* Stay mounted while collapsed. These catalogs use refetchOnMount always, so unmounting would read them again on open. */}
+          <section aria-label="Maintain" hidden={!maintainOpen}>
+            <KnowledgeSourcesPanel
+              connectionBlocked={connectionBlocked}
+              workspaceId={workspaceId}
+            />
+            <KnowledgeRetrievalPanel
+              connectionBlocked={connectionBlocked}
+              workspaceId={workspaceId}
+              knowledgeBaseId={knowledge.data?.knowledgeBaseId}
+              currentEntries={knowledge.isSuccess ? pages : []}
+            />
+            <KnowledgeManagerPanel
+              connectionBlocked={connectionBlocked}
+              workspaceId={workspaceId}
+              knowledgeBaseId={knowledge.data?.knowledgeBaseId}
+              currentEntries={knowledge.isSuccess ? pages : []}
+            />
+          </section>
         </div>
-
-        <KnowledgeSourcesPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
-        <KnowledgeRetrievalPanel
-          connectionBlocked={connectionBlocked}
-          workspaceId={workspaceId}
-          knowledgeBaseId={knowledge.data?.knowledgeBaseId}
-          currentEntries={knowledge.isSuccess ? pages : []}
-        />
-        <KnowledgeManagerPanel
-          connectionBlocked={connectionBlocked}
-          workspaceId={workspaceId}
-          knowledgeBaseId={knowledge.data?.knowledgeBaseId}
-          currentEntries={knowledge.isSuccess ? pages : []}
-        />
 
         {attention.isLoading ? (
           <Skeleton lines={2} />

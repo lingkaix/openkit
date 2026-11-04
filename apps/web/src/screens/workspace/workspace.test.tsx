@@ -827,8 +827,17 @@ function makeClient(
   } as unknown as CoreClient;
 }
 
+/** Opens Maintain. Sources, Retrieval, and Manager sit inside that collapsed disclosure. */
+function openKnowledgeMaintain() {
+  const maintain = screen.getByRole('button', { name: 'Maintain' });
+  if (maintain.getAttribute('aria-expanded') === 'false') {
+    fireEvent.click(maintain);
+  }
+}
+
 /** Returns one labelled Knowledge product panel on the existing /knowledge surface. */
 function knowledgePanel(name: 'Sources' | 'Retrieval' | 'Manager') {
+  openKnowledgeMaintain();
   return screen.getByRole('region', { name });
 }
 
@@ -4243,6 +4252,8 @@ describe('Knowledge (board 14)', () => {
       })
     );
 
+    await screen.findByRole('button', { name: 'Maintain' });
+    openKnowledgeMaintain();
     expect(await screen.findByText(KNOWLEDGE_SOURCE.title)).toBeInTheDocument();
     expect(screen.getByText('Transcript', { selector: ':not(option)' })).toBeInTheDocument();
     const statusBackgroundClasses = [
@@ -4296,6 +4307,8 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValue({ items: [] });
     renderApp('/knowledge', makeClient({ app: { 'knowledge.source.list': listKnowledgeSources } }));
 
+    await screen.findByRole('button', { name: 'Maintain' });
+    openKnowledgeMaintain();
     const alert = await screen.findByRole('alert');
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listKnowledgeSources).toHaveBeenCalledTimes(2));
@@ -4621,6 +4634,8 @@ describe('Knowledge (board 14)', () => {
       })
     );
 
+    await screen.findByRole('button', { name: 'Maintain' });
+    openKnowledgeMaintain();
     expect(await screen.findByText(KNOWLEDGE_SOURCE.title)).toBeInTheDocument();
     const sources = knowledgePanel('Sources');
     await selectListedOption(user, sources, 'Source kind', SOURCE_KIND_OPTION);
@@ -5866,6 +5881,8 @@ describe('Knowledge (board 14)', () => {
     );
 
     const first = reads.catalog(WORKSPACE_A.id).current;
+    await screen.findByRole('button', { name: 'Maintain' });
+    openKnowledgeMaintain();
     expect(await screen.findByText(first.source)).toBeInTheDocument();
     expect(callsOn(listKnowledgeSources, WORKSPACE_A.id)).toHaveLength(1);
     expect(callsOn(readKnowledgeIndexes, WORKSPACE_A.id)).toHaveLength(1);
@@ -5874,6 +5891,7 @@ describe('Knowledge (board 14)', () => {
     if (mode === 'switch') {
       act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_B.id }));
       const workspaceB = reads.catalog(WORKSPACE_B.id).current;
+      openKnowledgeMaintain();
       expect(await screen.findByText(workspaceB.source)).toBeInTheDocument();
       act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_A.id }));
     } else {
@@ -5889,6 +5907,8 @@ describe('Knowledge (board 14)', () => {
       expect(callsOn(readKnowledgeIndexes, WORKSPACE_A.id)).toHaveLength(2);
     });
     const second = reads.catalog(WORKSPACE_A.id).current;
+    await screen.findByRole('button', { name: 'Maintain' });
+    openKnowledgeMaintain();
     expect(await screen.findByText(second.source)).toBeInTheDocument();
   });
 
