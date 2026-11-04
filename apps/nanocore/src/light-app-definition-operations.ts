@@ -3,7 +3,7 @@ import type {
   CreateLightAppResponse,
   LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
-import { recordWorkspaceAuditEvent } from './audit-events.js';
+import { prepareWorkspaceAuditEvent } from './audit-events.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { catalogFailure } from './catalog/catalog-operations.js';
 import {
@@ -48,6 +48,7 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { lightAppDbPath, openExistingAppDb } from './storage/app-db.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 
 type MutationId =
   | 'catalog.light-app-import'
@@ -188,7 +189,7 @@ export function createLightAppDefinitionOperationImplementations(
             throw new CatalogIntegrityError('Definition receipt has an invalid resource kind.');
           return options.replay(receipt.response.id);
         },
-        execute: () => {
+        execute: async () => {
           authorize();
           if (
             loadWorkspaceResourceCatalog(dataRoot(), input.workspaceId).revision !==
@@ -197,7 +198,7 @@ export function createLightAppDefinitionOperationImplementations(
             throw new CatalogConflictError();
           const result = options.work();
           published = true;
-          recordWorkspaceAuditEvent({
+          const event = prepareWorkspaceAuditEvent({
             workspaceDb,
             workspaceId: input.workspaceId,
             requestId: input.requestId,
@@ -206,6 +207,12 @@ export function createLightAppDefinitionOperationImplementations(
             resource: `light-app-definition:${options.responseId(result)}`,
             outcome: 'succeeded',
             summary: 'Updated a reusable Light App definition without changing live app data.',
+          });
+          // Settle the original historical Audit before its separate receipt; this is not a new grant.
+          await getControlStoreWorkerClient().standaloneAudit(workspaceDb, {
+            workspaceId: input.workspaceId,
+            stage: operation,
+            event,
           });
           return result;
         },

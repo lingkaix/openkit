@@ -6,6 +6,10 @@ export const STANDALONE_AUDIT_STAGES = [
   'catalog.skill-candidate-decide.admit',
   'catalog.skill-candidate-withdraw.admit',
   'catalog.skill-candidate-submit.admit',
+  'catalog.light-app-import',
+  'catalog.light-app-history-import',
+  'catalog.light-app-select',
+  'catalog.light-app-pin',
   'app.update.start',
   'app.update.start.handoff',
   'administration.server-mcp-create',
@@ -25,12 +29,30 @@ export const ControlStandaloneAuditInputSchema = z
     }),
   })
   .refine(({ workspaceId, stage, event }) => {
+    if (event.action !== stage || event.notebookAdmission !== undefined) return false;
     if (
-      event.action !== stage ||
-      event.actor?.kind !== 'user' ||
-      event.notebookAdmission !== undefined
+      stage === 'catalog.light-app-import' ||
+      stage === 'catalog.light-app-history-import' ||
+      stage === 'catalog.light-app-select' ||
+      stage === 'catalog.light-app-pin'
     )
-      return false;
+      return (
+        workspaceId !== undefined &&
+        event.workspaceId === workspaceId &&
+        event.actor !== null &&
+        typeof event.requestId === 'string' &&
+        event.category === 'system' &&
+        event.outcome === 'succeeded' &&
+        event.severity === 'info' &&
+        event.resourceRevision === null &&
+        (stage === 'catalog.light-app-import'
+          ? /^light-app-definition:sha256:[0-9a-f]{64}$/.test(event.resource ?? '') &&
+            (event.actor.kind === 'user' ||
+              event.actor.kind === 'agent' ||
+              event.actor.kind === 'system')
+          : event.resource === `light-app-definition:${workspaceId}`)
+      );
+    if (event.actor?.kind !== 'user') return false;
     if (
       stage === 'administration.server-mcp-create' ||
       stage === 'administration.server-mcp-stage-version' ||
