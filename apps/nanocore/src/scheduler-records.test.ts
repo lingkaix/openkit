@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
 import {
@@ -27,6 +27,7 @@ import {
   findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   listSchedulerAdmissionEntriesForWorkspace,
+  readSchedulerAdmissionPagesForWorkspace,
   requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
 } from './scheduler-records';
@@ -1740,3 +1741,225 @@ function resolveAttemptRoute(
     },
   });
 }
+
+describe('bounded original scheduler authority readers', () => {
+  it('keeps the original admission snapshot when a queued storage reference moves behind the read cursor', () => {
+    const coreDb = createMigratedCoreDb();
+    const writer = openCoreDb(coreDb.dataRoot);
+    onTestFinished(() => {
+      writer.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    expect(coreDb.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+    expect(writer.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const storageRef = 'storage_snapshot_survivor';
+    const admissionInput = {
+      backendId: 'nanohost',
+      triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
+      workspaceId,
+      requestedAgentId: 'agent_worker',
+      turnInput: 'Retain the selected storage.',
+      now: () => '2026-07-05T00:00:01.000Z',
+    };
+    const fillers: ReturnType<typeof requireSchedulerAdmissionEntry>[] = [];
+    for (let index = 0; index < 128; index += 1) {
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        ...admissionInput,
+        queueEntryId: `queue_snapshot_f${String(index).padStart(3, '0')}`,
+        threadId: testEntityId('th', `snapshot-filler-${index}`),
+        turnId: testEntityId('tu', `snapshot-filler-${index}`),
+      });
+      // Real attempt admission avoids queued accumulation without bypassing the queue cap.
+      attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
+        entry,
+        attemptId: testEntityId('attempt', `snapshot-filler-${index}`),
+        preparationInput: { admission: entry },
+      });
+      fillers.push(requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId));
+    }
+    const selectedInput = {
+      ...admissionInput,
+      workerStorageChoice: {
+        expectedRevision: 1,
+        goalId: null,
+        kind: 'selected' as const,
+        purpose: 'work' as const,
+        storageRef,
+        taskId: null,
+      },
+    };
+    const original = createSchedulerAdmissionEntry(coreDb, {
+      ...selectedInput,
+      queueEntryId: 'queue_snapshot_z',
+      threadId: testEntityId('th', 'snapshot-original'),
+      turnId: testEntityId('tu', 'snapshot-original'),
+    });
+    const replacementId = 'queue_snapshot_a';
+    let crossed = false;
+    const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
+    // Delegate every SQL operation and its exact result. Only schedule a real WAL commit
+    // after the first inventory SELECT finishes, independent of LIMIT or page API shape.
+    const observation = vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (
+        sql.includes('FROM scheduler_admission_entries') &&
+        sql.includes('ORDER BY enqueued_at ASC, queue_entry_id ASC')
+      ) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, 'all').mockImplementation((...parameters) => {
+          const rows = all(...parameters);
+          if (!crossed) {
+            crossed = true;
+            writer.sqlite
+              .transaction(() => {
+                const replacement = createSchedulerAdmissionEntry(writer, {
+                  ...selectedInput,
+                  queueEntryId: replacementId,
+                  threadId: testEntityId('th', 'snapshot-replacement'),
+                  turnId: testEntityId('tu', 'snapshot-replacement'),
+                });
+                expect(replacement.status).toBe('queued');
+                expect(requireSchedulerAdmissionEntry(writer, original.queueEntryId).status).toBe(
+                  'queued'
+                );
+                cancelSchedulerAdmissionEntry(writer, {
+                  queueEntryId: original.queueEntryId,
+                  workspaceId,
+                });
+              })
+              .immediate();
+          }
+          return rows;
+        });
+      }
+      return statement;
+    });
+    let observed: ReturnType<typeof listSchedulerAdmissionEntriesForWorkspace>;
+    try {
+      observed = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+        workspaceId,
+        statuses: ['queued', 'denied', 'admitted'],
+      });
+    } finally {
+      observation.mockRestore();
+    }
+    expect(crossed).toBe(true);
+    expect(requireSchedulerAdmissionEntry(writer, replacementId)).toMatchObject({
+      status: 'queued',
+      workerStorageChoice: { kind: 'selected', storageRef },
+    });
+    expect(requireSchedulerAdmissionEntry(writer, original.queueEntryId).status).toBe('cancelled');
+    // Persistent Worker Volumes, Purge: no surviving references. The real purge caller
+    // treats any queued selected-storage row as a refusal; a mixed absence is not proof.
+    expect(
+      observed
+        .filter(
+          (entry) =>
+            entry.status === 'queued' &&
+            entry.workerStorageChoice?.kind === 'selected' &&
+            entry.workerStorageChoice.storageRef === storageRef
+        )
+        .map((entry) => entry.queueEntryId)
+    ).toEqual([original.queueEntryId]);
+    expect(observed).toEqual([...fillers, original]);
+  });
+
+  it('reads all admitted enqueue/id ties across three pages and keeps the original decoder refusal', () => {
+    const coreDb = createMigratedCoreDb();
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const expected: ReturnType<typeof requireSchedulerAdmissionEntry>[] = [];
+    for (let index = 0; index < 257; index += 1) {
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        queueEntryId: `queue_page_${String(256 - index).padStart(3, '0')}`,
+        workspaceId,
+        threadId: testEntityId('th', `page-thread-${index}`),
+        turnId: testEntityId('tu', `page-turn-${index}`),
+        turnInput: `Original admission ${index}`,
+        requestedAgentId: 'agent_worker',
+        now: () =>
+          index === 0
+            ? '2026-07-05T00:00:02.000Z'
+            : index === 256
+              ? '2026-07-05T00:00:00.000Z'
+              : '2026-07-05T00:00:01.000Z',
+      });
+      // The actual admission/attempt owners leave no queued accumulation or queue-cap bypass.
+      attemptActionOwners.createSchedulerExecutionAttempt(coreDb, {
+        entry,
+        attemptId: testEntityId('attempt', `page-attempt-${index}`),
+        preparationInput: { admission: entry },
+      });
+      expected.push(requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId));
+    }
+    expected.sort((left, right) =>
+      left.enqueuedAt < right.enqueuedAt
+        ? -1
+        : left.enqueuedAt > right.enqueuedAt
+          ? 1
+          : left.queueEntryId < right.queueEntryId
+            ? -1
+            : 1
+    );
+    const input = { workspaceId, statuses: ['admitted'] as const };
+    const before = coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_admission_entries ORDER BY queue_entry_id')
+      .all();
+    const pages: Array<typeof expected> = [];
+    for (const page of readSchedulerAdmissionPagesForWorkspace(coreDb, input)) {
+      expect(coreDb.sqlite.inTransaction).toBe(false);
+      pages.push([...page]);
+    }
+    expect(pages.map((page) => page.length)).toEqual([128, 128, 1]);
+    expect(pages.flat()).toEqual(expected);
+    expect(listSchedulerAdmissionEntriesForWorkspace(coreDb, input)).toEqual(expected);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_admission_entries ORDER BY queue_entry_id')
+        .all()
+    ).toEqual(before);
+    const closing = readSchedulerAdmissionPagesForWorkspace(coreDb, input);
+    expect(closing.next().done).toBe(false);
+    expect(coreDb.sqlite.inTransaction).toBe(false);
+    expect(coreDb.sqlite.pragma('wal_checkpoint(TRUNCATE)')).toEqual([
+      expect.objectContaining({ busy: 0 }),
+    ]);
+    closing.return(undefined);
+    expect(coreDb.sqlite.inTransaction).toBe(false);
+    expect(coreDb.sqlite.pragma('wal_checkpoint(TRUNCATE)')).toEqual([
+      expect.objectContaining({ busy: 0 }),
+    ]);
+
+    // Declared post-setup corruption of the last real row: retained version refusal must
+    // precede JSON decoding, including when only the third page contains that row.
+    const last = expected.at(-1)!;
+    coreDb.sqlite
+      .prepare(
+        'UPDATE scheduler_admission_entries SET schema_version=2, trigger_actor_json=? WHERE queue_entry_id=?'
+      )
+      .run('{', last.queueEntryId);
+    const corrupt = coreDb.sqlite
+      .prepare('SELECT * FROM scheduler_admission_entries WHERE queue_entry_id=?')
+      .get(last.queueEntryId);
+    const failed = readSchedulerAdmissionPagesForWorkspace(coreDb, input);
+    expect(failed.next().value).toHaveLength(128);
+    expect(failed.next().value).toHaveLength(128);
+    expect(() => failed.next()).toThrow('Unsupported retained record format');
+    expect(() => listSchedulerAdmissionEntriesForWorkspace(coreDb, input)).toThrow(
+      'Unsupported retained record format'
+    );
+    expect(coreDb.sqlite.inTransaction).toBe(false);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT * FROM scheduler_admission_entries WHERE queue_entry_id=?')
+        .get(last.queueEntryId)
+    ).toEqual(corrupt);
+  });
+});
