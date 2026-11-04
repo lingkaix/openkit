@@ -1,13 +1,18 @@
 import { AuditEventSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** Originally standalone Catalog admission and App-update stages; never arbitrary Audit actions. */
+/** Originally standalone Catalog, App-update and Server MCP stages; never arbitrary Audit actions. */
 export const STANDALONE_AUDIT_STAGES = [
   'catalog.skill-candidate-decide.admit',
   'catalog.skill-candidate-withdraw.admit',
   'catalog.skill-candidate-submit.admit',
   'app.update.start',
   'app.update.start.handoff',
+  'administration.server-mcp-create',
+  'administration.server-mcp-stage-version',
+  'administration.server-mcp-select-version',
+  'administration.server-mcp-update-binding',
+  'administration.server-mcp-remove',
 ] as const;
 /** One original prepared Audit, bound to its exact existing scope and admitted stage. */
 export const ControlStandaloneAuditInputSchema = z
@@ -26,6 +31,23 @@ export const ControlStandaloneAuditInputSchema = z
       event.notebookAdmission !== undefined
     )
       return false;
+    if (
+      stage === 'administration.server-mcp-create' ||
+      stage === 'administration.server-mcp-stage-version' ||
+      stage === 'administration.server-mcp-select-version' ||
+      stage === 'administration.server-mcp-update-binding' ||
+      stage === 'administration.server-mcp-remove'
+    )
+      return (
+        workspaceId === undefined &&
+        event.workspaceId === null &&
+        event.category === 'system' &&
+        event.severity === 'info' &&
+        typeof event.requestId === 'string' &&
+        (event.outcome === 'unknown'
+          ? /^mcp-command:sha256:[0-9a-f]{64}$/.test(event.resource ?? '')
+          : event.outcome === 'succeeded' && event.resource?.startsWith('catalog_mcp:') === true)
+      );
     if (stage === 'app.update.start' || stage === 'app.update.start.handoff')
       return (
         workspaceId === undefined &&

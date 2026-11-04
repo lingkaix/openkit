@@ -402,6 +402,11 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
   expect(original.receipts).toEqual([]); // Both original commits are Audit-only, without a receipt.
   expect(await f.coldRows()).toEqual(original);
   expect([...STANDALONE_AUDIT_STAGES].sort()).toEqual([
+    'administration.server-mcp-create',
+    'administration.server-mcp-remove',
+    'administration.server-mcp-select-version',
+    'administration.server-mcp-stage-version',
+    'administration.server-mcp-update-binding',
     'app.update.start',
     'app.update.start.handoff',
     'catalog.skill-candidate-decide.admit',

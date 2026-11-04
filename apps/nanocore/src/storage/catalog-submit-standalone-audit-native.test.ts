@@ -430,6 +430,11 @@ it('acknowledges exact native admission before publishing the inactive candidate
     }).entries[0]?.content?.toString('base64')
   ).toBe(tree[0]!.contentBase64);
   expect([...STANDALONE_AUDIT_STAGES].sort()).toEqual([
+    'administration.server-mcp-create',
+    'administration.server-mcp-remove',
+    'administration.server-mcp-select-version',
+    'administration.server-mcp-stage-version',
+    'administration.server-mcp-update-binding',
     'app.update.start',
     'app.update.start.handoff',
     'catalog.skill-candidate-decide.admit',

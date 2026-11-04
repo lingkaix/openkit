@@ -5,10 +5,12 @@ import { z } from 'zod';
 import {
   listServerAuditEvents,
   prepareAuditEvent,
+  prepareServerAuditEvent,
   recordServerAuditEvent,
 } from '../audit-events.js';
 import {
   authorizeWorkspace,
+  DeploymentAdminRequiredError,
   evaluateProductAuthorization,
   requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
@@ -40,6 +42,7 @@ import {
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { ControlStandaloneAuditInputSchema } from '../storage/standalone-audit-codecs.js';
 import { VAULT_SERVER_MCP_COMMANDS } from '../storage/vault-native-codecs.js';
 import {
   isCurrentServerMcpMaterial,
@@ -134,6 +137,11 @@ export function createServerMcpOperationImplementations(
       ...(workspaceId ? { workspaceId } : { coreId: 'server' }),
     };
     const nativeVault = VAULT_SERVER_MCP_COMMANDS.some((value) => value === name);
+    // The shared Workspace disable command retains its distinct original rollout stages.
+    const standaloneStage =
+      !nativeVault && name !== 'catalog.shared-mcp-set-disabled'
+        ? ControlStandaloneAuditInputSchema.shape.stage.parse(name)
+        : null;
     const marker = `mcp-command:${commandInputHash({ name, scope, requestId: input.requestId })}`;
     try {
       const result = await runIdempotentCommand({
@@ -176,6 +184,15 @@ export function createServerMcpOperationImplementations(
           if (nativeVault) {
             await recordVaultAuditEvent(started);
             requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
+          } else if (standaloneStage) {
+            await getControlStoreWorkerClient().standaloneAudit(coreDb!, {
+              stage: standaloneStage,
+              event: prepareServerAuditEvent(started),
+            });
+            // Historical Audit cannot authorize a later physical catalog or session effect.
+            requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
+            await context.recheckAdmission?.();
+            requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
           } else recordServerAuditEvent(started);
           const result = await execute();
           const succeeded = {
@@ -201,6 +218,11 @@ export function createServerMcpOperationImplementations(
                 id: responseId(result),
               },
             });
+          } else if (standaloneStage) {
+            await getControlStoreWorkerClient().standaloneAudit(coreDb!, {
+              stage: standaloneStage,
+              event: prepareServerAuditEvent(succeeded),
+            });
           } else recordServerAuditEvent(succeeded);
           return result;
         },
@@ -215,6 +237,9 @@ export function createServerMcpOperationImplementations(
         throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
       return result;
     } catch (error) {
+      // Preserve the existing public authority refusal after the new standalone ACK boundary.
+      if (standaloneStage && error instanceof DeploymentAdminRequiredError)
+        throw new OperationError('deployment_admin_required', error.message, 403, { cause: error });
       fail(error);
     }
   };

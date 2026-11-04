@@ -264,6 +264,11 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'catalog.skill-candidate-submit.admit',
     'app.update.start',
     'app.update.start.handoff',
+    'administration.server-mcp-create',
+    'administration.server-mcp-stage-version',
+    'administration.server-mcp-select-version',
+    'administration.server-mcp-update-binding',
+    'administration.server-mcp-remove',
   ]);
   const f = await fixture();
   f.queryOnly();
