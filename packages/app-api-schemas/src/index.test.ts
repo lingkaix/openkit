@@ -4926,6 +4926,7 @@ describe('app api schemas', () => {
     ).toHaveLength(1);
     expect(
       ListWorkspaceAuditEventsResponseSchema.parse({
+        nextCursor: null,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         auditEvents: [
           {

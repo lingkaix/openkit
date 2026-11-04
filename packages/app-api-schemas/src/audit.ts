@@ -68,6 +68,7 @@ export const ListWorkspaceAuditEventsResponseSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     auditEvents: z.array(AuditEventSchema),
+    nextCursor: z.string().nullable(),
   })
   .strict();
 

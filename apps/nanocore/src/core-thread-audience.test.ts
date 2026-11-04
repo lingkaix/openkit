@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { type AuditEvent, compareCodeUnits } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { listWorkspaceAuditEvents, recordWorkspaceAuditEvent } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -417,8 +418,8 @@ describe('core Thread audience', () => {
       const first = await read();
       expect(first.status).toBe(200);
       const history = await first.json();
+      // Workspace Audit owner: descending createdAt/id; the freshly recorded Stop is newer.
       expect(history.auditEvents).toEqual([
-        ...initialHistory.auditEvents,
         expect.objectContaining({
           action: 'turn.interrupt',
           category: 'command',
@@ -427,6 +428,11 @@ describe('core Thread audience', () => {
           ...selectors,
           requestId,
         }),
+        ...initialHistory.auditEvents.toSorted(
+          (left: AuditEvent, right: AuditEvent) =>
+            compareCodeUnits(right.createdAt ?? '', left.createdAt ?? '') ||
+            compareCodeUnits(right.id, left.id)
+        ),
       ]);
       const replay = await app.request(
         ...operationRequest('turn.interrupt', selectors, {
@@ -494,10 +500,14 @@ describe('core Thread audience', () => {
           )
         );
         expect(response.status).toBe(200);
-        expect((await response.json()).auditEvents).toEqual([
-          ...initialHistory,
-          ...(visible ? [event] : []),
-        ]);
+        // Workspace Audit owner: descending createdAt/id, with absent time last.
+        expect((await response.json()).auditEvents).toEqual(
+          [...initialHistory, ...(visible ? [event] : [])].toSorted(
+            (left, right) =>
+              compareCodeUnits(right.createdAt ?? '', left.createdAt ?? '') ||
+              compareCodeUnits(right.id, left.id)
+          )
+        );
       }
     } finally {
       await fixture.close();

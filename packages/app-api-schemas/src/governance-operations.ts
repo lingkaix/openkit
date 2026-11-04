@@ -35,11 +35,17 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'audit.workspace-list': {
-    description: 'List audit events for one workspace.',
+    description: 'List audit events for one workspace in descending position order.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        limit: z.number().int().positive().optional(),
+        cursor: z.string().min(1).optional(),
+      })
+      .strict(),
     outputSchema: ListWorkspaceAuditEventsResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },

@@ -1,4 +1,10 @@
 import type { GOVERNANCE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import {
+  type AuditEvent,
+  AuditEventIdSchema,
+  compareCodeUnits,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from './audit-events.js';
 import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
@@ -101,19 +107,38 @@ export function createGovernanceOperationImplementations(
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
 
         try {
+          const visibleEvents = listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb).filter(
+            (event) =>
+              !event.threadId ||
+              isThreadIdVisible(
+                dependencies.store!,
+                workspaceId,
+                event.threadId,
+                publicOperationActor(context).userId,
+                isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
+              )
+          );
+          const position = decodeWorkspaceAuditCursor(input.cursor, workspaceId);
+          const remaining = visibleEvents
+            .sort(compareWorkspaceAuditPositions)
+            .filter((event) => !position || compareWorkspaceAuditPositions(event, position) > 0);
+          const auditEvents =
+            input.limit === undefined ? remaining : remaining.slice(0, input.limit);
+          const last = auditEvents.at(-1);
           return {
             workspaceId,
-            auditEvents: listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb).filter(
-              (event) =>
-                !event.threadId ||
-                isThreadIdVisible(
-                  dependencies.store!,
-                  workspaceId,
-                  event.threadId,
-                  publicOperationActor(context).userId,
-                  isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
-                )
-            ),
+            auditEvents,
+            nextCursor:
+              last && auditEvents.length < remaining.length
+                ? Buffer.from(
+                    JSON.stringify([
+                      'audit.workspace-list',
+                      workspaceId,
+                      last.createdAt ?? '',
+                      last.id,
+                    ])
+                  ).toString('base64url')
+                : null,
           };
         } finally {
           workspaceDb.sqlite.close();
@@ -207,6 +232,40 @@ export function createGovernanceOperationImplementations(
       }
     },
   } satisfies FamilyImplementations<typeof GOVERNANCE_OPERATION_DEFINITIONS>;
+}
+
+/** A continuation is a scoped position, not a retained anchor or an authorization grant. */
+const workspaceAuditCursorSchema = z.tuple([
+  z.literal('audit.workspace-list'),
+  WorkspaceIdSchema,
+  z.union([z.string().datetime(), z.literal('')]),
+  AuditEventIdSchema,
+]);
+
+/** Descending canonical pair order; historical absent timestamps occupy the minimum position. */
+function compareWorkspaceAuditPositions(
+  left: Pick<AuditEvent, 'createdAt' | 'id'>,
+  right: Pick<AuditEvent, 'createdAt' | 'id'>
+): number {
+  return (
+    compareCodeUnits(right.createdAt ?? '', left.createdAt ?? '') ||
+    compareCodeUnits(right.id, left.id)
+  );
+}
+
+/** Reject malformed or foreign positions without reading an anchor or disclosing cursor content. */
+function decodeWorkspaceAuditCursor(cursor: string | undefined, workspaceId: string) {
+  if (cursor === undefined) return undefined;
+  try {
+    const bytes = Buffer.from(cursor, 'base64url');
+    const position = workspaceAuditCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== cursor || position[1] !== workspaceId) {
+      throw new Error('Invalid audit continuation.');
+    }
+    return { createdAt: position[2], id: position[3] };
+  } catch {
+    throw new OperationError('invalid_request', 'Invalid audit continuation.', 400);
+  }
 }
 
 /** Retained decoders publish a fixed failure; arbitrary exceptions retain the shared error boundary. */
