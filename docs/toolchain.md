@@ -138,6 +138,8 @@ This guide does not own tool-version values, the documentation type system, test
 - Human quick start: `README.md`
 - Setup and operational recipes: `docs/cookbooks/README.md`
 
+`pnpm build` runs `turbo run build`. Its graph includes the Retrieval Kernel: `@openkit/nanocore#build` depends on `@openkit/retrieval-kernel#build`. `pnpm build:openkit` is different. It compiles the Node workspace closure of `@openkit/core-client` and `@openkit/nanocore`, then bundles the administrator CLI. The kernel package is outside that Node closure. Exit 0 from that Node build does not mean the sidecar is ready. A direct NanoCore run that requires the kernel follows the [Retrieval Kernel guide](../packages/retrieval-kernel/README.md) and the [NanoCore test-support guide](../apps/nanocore/src/test-support/README.md).
+
 ## Related Authority
 
 - Agent execution rules and completion gate: root `AGENTS.md`
