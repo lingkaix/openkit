@@ -7,6 +7,7 @@ import { type OperationId, StartTaskModeResponseSchema } from '@openkit/app-api-
 import { resolveWorkspaceMcpServer } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
+
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -62,11 +63,11 @@ import { createVaultGrant, getVaultGrant, listVaultGrants } from './vault-grants
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
 /** Owns one isolated real App/API fixture and removes every synthetic record at closeout. */
-function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
+async function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'vault-grant-request-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
+  await ensureLocalUser(coreDb);
   const vaultUnlockState = createVaultUnlockState({
     backendKind: 'encrypted-file',
     storeDir: join(dataRoot, 'server', 'vault'),
@@ -74,16 +75,16 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
   vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 19) });
   const store = new FsStore({ dataRoot });
   const agentManifests = [createTestAgentSetup().manifest];
-  const app = createApp({ coreDb, dataRoot, vaultUnlockState, store, agentManifests });
-  let server: ReturnType<typeof createApp> | undefined;
-  let sessionServer: ReturnType<typeof createApp> | undefined;
+  const app = await createApp({ coreDb, dataRoot, vaultUnlockState, store, agentManifests });
+  let server: Awaited<ReturnType<typeof createApp>> | undefined;
+  let sessionServer: Awaited<ReturnType<typeof createApp>> | undefined;
   const authenticationSessionId = allocateEntityId('auth');
   return {
     coreDb,
     dataRoot,
     store,
-    sessionSend: (id: string, body: Record<string, unknown>) => {
-      sessionServer ??= createApp({
+    sessionSend: async (id: string, body: Record<string, unknown>) => {
+      sessionServer ??= await createApp({
         coreDb,
         dataRoot,
         vaultUnlockState,
@@ -112,8 +113,8 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
         )
       );
     },
-    serverSend: (id: string, body: Record<string, unknown>, secret: string) => {
-      server ??= createApp({
+    serverSend: async (id: string, body: Record<string, unknown>, secret: string) => {
+      server ??= await createApp({
         coreDb,
         dataRoot,
         vaultUnlockState,
@@ -158,7 +159,7 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
 
 describe('supported Vault grant request and review', () => {
   it('records exact requested terms without granting secret-use authority', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const workspace = await f.send('workspace.create', {
         name: 'Request review',
@@ -221,7 +222,7 @@ describe('supported Vault grant request and review', () => {
 
 /** Creates existing native records before exercising the new command boundary. */
 async function prepare(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   ownerScope: 'workspace' | 'server' = 'workspace',
   visibility: 'private' | 'workspace' = 'private'
 ) {
@@ -284,7 +285,7 @@ it.each([
   'workspace',
   'server',
 ] as const)('issues one reviewed %s grant with exact lineage and preserves the original after narrowing', async (scope) => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f, scope);
     const raised = await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
@@ -398,7 +399,7 @@ it.each([
   'denied',
   'withdrawn',
 ] as const)('keeps a %s request non-authorizing after late review', async (ending) => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const raised = await f.send('vault.grant-request', { ...source, requestId: randomUUID() });
@@ -435,13 +436,13 @@ it.each([
 });
 
 it('refuses a revoked deciding credential even when another administrator consumes the request', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const request = await (
       await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
     ).json();
-    const decider = createOpenKitAccessTokenRecord(f.coreDb, {
+    const decider = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
@@ -461,8 +462,8 @@ it('refuses a revoked deciding credential even when another administrator consum
     } finally {
       db.sqlite.close();
     }
-    revokeOpenKitAccessTokenRecord(f.coreDb, decider.tokenId);
-    const other = createOpenKitAccessTokenRecord(f.coreDb, {
+    await revokeOpenKitAccessTokenRecord(f.coreDb, decider.tokenId);
+    const other = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
@@ -495,10 +496,10 @@ it('refuses a revoked deciding credential even when another administrator consum
 });
 
 it('refuses a revoked initiating credential without substituting current membership', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
-    const requester = createOpenKitAccessTokenRecord(f.coreDb, {
+    const requester = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace',
       workspaceIds: [source.workspaceId],
@@ -511,7 +512,7 @@ it('refuses a revoked initiating credential without substituting current members
     );
     expect(response.status).toBe(200);
     const request = await response.json();
-    const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+    const admin = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
@@ -520,7 +521,7 @@ it('refuses a revoked initiating credential without substituting current members
     expect(
       (await f.serverSend('approval.respond', decision(request, 'granted'), admin.secret)).status
     ).toBe(200);
-    revokeOpenKitAccessTokenRecord(f.coreDb, requester.tokenId);
+    await revokeOpenKitAccessTokenRecord(f.coreDb, requester.tokenId);
     const issue = await f.serverSend(
       'vault.grant-issue',
       {
@@ -538,10 +539,10 @@ it('refuses a revoked initiating credential without substituting current members
 });
 
 it('refuses issuance after the human requester loses only request-Thread write rights', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f, 'workspace', 'workspace');
-    const requester = createOpenKitAccessTokenRecord(f.coreDb, {
+    const requester = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace',
       workspaceIds: [source.workspaceId],
@@ -590,7 +591,7 @@ it('refuses issuance after the human requester loses only request-Thread write r
 });
 
 it('retains an interrupted claim as unknown after restart and never issues again', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const request = await (
@@ -631,7 +632,7 @@ it('retains an interrupted claim as unknown after restart and never issues again
 });
 
 it('rejects unsupported lifetime, visibility, raw fields and a changed scope before recording a request', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     for (const terms of [
@@ -664,7 +665,7 @@ it('rejects unsupported lifetime, visibility, raw fields and a changed scope bef
 });
 
 it('records a committed grant with uncertain request settlement without retrying or fabricating injection completion', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const request = await (
@@ -718,11 +719,11 @@ it('records a committed grant with uncertain request settlement without retrying
 });
 
 it('permits deny and withdraw when exact disclosure is unavailable and prevents approval', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     // This is non-secret credential-scope metadata, not model-authored request input.
-    const requester = createOpenKitAccessTokenRecord(f.coreDb, {
+    const requester = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace',
       workspaceIds: [
@@ -731,7 +732,7 @@ it('permits deny and withdraw when exact disclosure is unavailable and prevents 
       ],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const admin = createOpenKitAccessTokenRecord(f.coreDb, {
+    const admin = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
@@ -788,7 +789,7 @@ it.each([
   'revoked-agent',
 ] as const)('binds a Worker %s request to its exact package and current canonical MCP slot', async (selection) => {
   const ownerScope = selection === 'revoked-agent' ? 'workspace' : selection;
-  const f = fixture();
+  const f = await fixture();
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
   let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
   const admittedTurns: string[] = [];
@@ -878,7 +879,7 @@ it.each([
     });
     const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
     const results = vi.spyOn(native.runtime, 'acceptNanoHostHarnessResult');
-    const app = createApp({
+    const app = await createApp({
       coreDb: f.coreDb,
       store: f.store,
       vaultUnlockState: f.vaultUnlockState,
@@ -1187,7 +1188,7 @@ it.each([
 });
 
 it('reads only retained Server shared-MCP delivery lineage, separately from request/grant metadata', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const shared = await prepare(f, 'server');
     const workspace = await prepare(f, 'workspace');
@@ -1242,7 +1243,7 @@ it('reads only retained Server shared-MCP delivery lineage, separately from requ
         revocationStatus: 'active',
       },
     ]);
-    const member = createOpenKitAccessTokenRecord(f.coreDb, {
+    const member = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace',
       workspaceIds: [shared.workspaceId],
@@ -1269,7 +1270,7 @@ it('reads only retained Server shared-MCP delivery lineage, separately from requ
 });
 
 it('releases its Core-local raising Turn when atomic request publication fails', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const item = vi
@@ -1304,19 +1305,21 @@ it('releases its Core-local raising Turn when atomic request publication fails',
 });
 
 it('does not substitute a session replacement Token for the credential that decided', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const request = await (
       await f.send('vault.grant-request', { ...source, requestId: randomUUID() })
     ).json();
-    const first = createOpenKitAccessTokenRecord(f.coreDb, {
+    const first = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    expect(setDefaultServerAdminTokenId(f.coreDb, FIXTURE_LOCAL_USER_ID, first.tokenId)).toBe(true);
+    expect(await setDefaultServerAdminTokenId(f.coreDb, FIXTURE_LOCAL_USER_ID, first.tokenId)).toBe(
+      true
+    );
     expect((await f.sessionSend('approval.respond', decision(request, 'granted'))).status).toBe(
       200
     );
@@ -1328,16 +1331,16 @@ it('does not substitute a session replacement Token for the credential that deci
     } finally {
       db.sqlite.close();
     }
-    revokeOpenKitAccessTokenRecord(f.coreDb, first.tokenId);
-    const replacement = createOpenKitAccessTokenRecord(f.coreDb, {
+    await revokeOpenKitAccessTokenRecord(f.coreDb, first.tokenId);
+    const replacement = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    expect(setDefaultServerAdminTokenId(f.coreDb, FIXTURE_LOCAL_USER_ID, replacement.tokenId)).toBe(
-      true
-    );
+    expect(
+      await setDefaultServerAdminTokenId(f.coreDb, FIXTURE_LOCAL_USER_ID, replacement.tokenId)
+    ).toBe(true);
     const issue = await f.sessionSend('vault.grant-issue', {
       workspaceId: source.workspaceId,
       threadId: source.threadId,
@@ -1355,7 +1358,7 @@ it.each([
   'server',
 ] as const)('records exact nonmember administrator session review and provenance for %s', async (scope) => {
   const reviewerId = allocateEntityId('usr');
-  const f = fixture(reviewerId);
+  const f = await fixture(reviewerId);
   try {
     const source = await prepare(f, scope);
     const request = await (
@@ -1366,13 +1369,13 @@ it.each([
         "INSERT INTO users (id, display_name, email, email_verified, kind, created_at, updated_at, status) VALUES (?, 'Synthetic reviewer', ?, 0, 'human', ?, ?, 'active')"
       )
       .run(reviewerId, randomUUID(), Date.now(), Date.now());
-    const reviewer = createOpenKitAccessTokenRecord(f.coreDb, {
+    const reviewer = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: reviewerId,
       scope: 'server-admin',
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    expect(setDefaultServerAdminTokenId(f.coreDb, reviewerId, reviewer.tokenId)).toBe(true);
+    expect(await setDefaultServerAdminTokenId(f.coreDb, reviewerId, reviewer.tokenId)).toBe(true);
     const listed = await f.sessionSend('vault.grant-request-list', {
       workspaceId: source.workspaceId,
       threadId: source.threadId,
@@ -1482,7 +1485,7 @@ it.each([
   'workspace',
   'server',
 ] as const)('delivers an actually reviewed %s grant through the real Gateway sink and retains truthful completion lineage', async (ownerScope) => {
-  const f = fixture();
+  const f = await fixture();
   const upstream = await createMcpHttpStub();
   const gateway = createDefaultWorkerMcpGateway(f.coreDb);
   const client = new Client({ name: 'reviewed-grant-sink-fixture', version: '1.0.0' });
@@ -1573,7 +1576,7 @@ it.each([
     native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
       readRuntimeConfig: () => snapshot,
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb: f.coreDb,
       store: f.store,
       vaultUnlockState: f.vaultUnlockState,
@@ -1703,7 +1706,7 @@ it.each([
 });
 
 it('issues an explicitly Worker-visible GitHub grant with exact Agent and AgentSession bounds', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const secret = await f.send('vault.secret-create', {
@@ -1762,7 +1765,7 @@ it.each([
   'pending',
   'approved',
 ] as const)('cannot issue a %s request after Thread archival', async (state) => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const request = await (
@@ -1793,7 +1796,7 @@ it.each([
 });
 
 it('refuses a now-expired approved request without issuing or resolving material', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f);
     const expiry = Date.now() + 60_000;
@@ -1822,7 +1825,7 @@ it.each([
   'workspace',
   'server',
 ] as const)('refuses an approved %s request after reference revocation', async (ownerScope) => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const source = await prepare(f, ownerScope);
     const request = await (
@@ -1863,7 +1866,7 @@ it.each([
 
 /** Establishes ordinary Users and a real active User Login before any request feature is called. */
 async function loginShareFixture(quarantined = false) {
-  const f = fixture();
+  const f = await fixture();
   const { createBetterAuth } = await import('../auth/better-auth.js');
   const { mkdirSync, writeFileSync } = await import('node:fs');
   const { PolicyInterception } = await import('../policy/interception.js');
@@ -1902,12 +1905,12 @@ async function loginShareFixture(quarantined = false) {
     version: `sha256:${'3'.repeat(64)}`,
     invoke: participant,
   });
-  const apps = new Map<string, ReturnType<typeof createApp>>();
-  const sendAs = (userId: string, id: string, body: Record<string, unknown>) => {
+  const apps = new Map<string, Awaited<ReturnType<typeof createApp>>>();
+  const sendAs = async (userId: string, id: string, body: Record<string, unknown>) => {
     let app = apps.get(userId);
     if (!app) {
       const sessionId = allocateEntityId('auth');
-      app = createApp({
+      app = await createApp({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
         store: f.store,
@@ -1995,13 +1998,13 @@ async function loginShareFixture(quarantined = false) {
     revoked: false,
   });
   expect(getVaultReference(f.coreDb, referenceId)).toEqual(reference);
-  const adminToken = createOpenKitAccessTokenRecord(f.coreDb, {
+  const adminToken = await createOpenKitAccessTokenRecord(f.coreDb, {
     ownerUserId: admin!.id,
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  expect(setDefaultServerAdminTokenId(f.coreDb, admin!.id, adminToken.tokenId)).toBe(true);
+  expect(await setDefaultServerAdminTokenId(f.coreDb, admin!.id, adminToken.tokenId)).toBe(true);
   const terms = {
     referenceId,
     ownerScope: 'workspace' as const,
@@ -2345,7 +2348,7 @@ describe('governed User Login Workspace sharing', () => {
         (await f.sendAs(f.other.id, 'approval.respond', decision(request, 'granted'))).status
       ).toBe(403);
       for (const scope of ['workspace', 'workspace-readonly'] as const) {
-        const token = createOpenKitAccessTokenRecord(f.coreDb, {
+        const token = await createOpenKitAccessTokenRecord(f.coreDb, {
           ownerUserId: f.owner.id,
           scope,
           workspaceIds: [f.command.workspaceId],
@@ -2388,7 +2391,7 @@ describe('governed User Login Workspace sharing', () => {
       if (reason === 'expired')
         vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.terms.expiresAt) + 1);
       if (reason === 'revoked-decider')
-        revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+        await revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
       if (reason === 'member-left') {
         const { getWorkspaceMember } = await import('../workspace-sharing.js');
         const member = getWorkspaceMember(f.coreDb, f.command.workspaceId, f.owner.id)!;
@@ -2498,7 +2501,8 @@ describe('governed User Login Workspace sharing', () => {
           });
         if (change === 'revoked')
           await revokeVaultReference(f.coreDb, { referenceId: f.reference.referenceId });
-        if (change === 'credential') revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+        if (change === 'credential')
+          await revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
         return { decision: change === 'deny' ? 'deny' : 'allow' };
       });
       const issued = await f.sendAs(caller, 'vault.grant-issue', {
@@ -2616,7 +2620,7 @@ it.each([
     native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
       readRuntimeConfig: () => snapshot,
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb: f.coreDb,
       store: f.store,
       vaultUnlockState: f.vaultUnlockState,
@@ -2817,7 +2821,7 @@ async function readReviewedIssueDecisions(db: ReturnType<typeof openWorkspaceDb>
 }
 
 /** Derives the actual admitted document revision through the existing Policy owner. */
-async function admittedReviewedIssuePolicyDigest(f: ReturnType<typeof fixture>) {
+async function admittedReviewedIssuePolicyDigest(f: Awaited<ReturnType<typeof fixture>>) {
   const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
   const { policyDigest } = await import('../policy/statements.js');
   return policyDigest(
@@ -2978,13 +2982,15 @@ describe('reviewed grant issue mediated producer migration', () => {
       const callerId =
         referenceOwner === 'user' || outcome === 'different-issuer' ? f.owner.id : f.admin.id;
       if (referenceOwner !== 'user' && outcome === 'different-issuer') {
-        const issuerToken = createOpenKitAccessTokenRecord(f.coreDb, {
+        const issuerToken = await createOpenKitAccessTokenRecord(f.coreDb, {
           ownerUserId: callerId,
           scope: 'server-admin',
           workspaceIds: [],
           expiresAt: '2099-01-01T00:00:00.000Z',
         });
-        expect(setDefaultServerAdminTokenId(f.coreDb, callerId, issuerToken.tokenId)).toBe(true);
+        expect(await setDefaultServerAdminTokenId(f.coreDb, callerId, issuerToken.tokenId)).toBe(
+          true
+        );
       }
       const deciderId = outcome === 'different-issuer' ? f.admin.id : callerId;
       const home = referenceOwner === 'user' ? 'user' : 'workspace';
@@ -3014,7 +3020,7 @@ describe('reviewed grant issue mediated producer migration', () => {
               referenceId: f.reference.referenceId,
               currentVersion: 2,
             });
-          } else revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
+          } else await revokeOpenKitAccessTokenRecord(f.coreDb, f.adminToken.tokenId);
         }
         return { decision: outcome === 'deny' ? 'deny' : 'allow' };
       });

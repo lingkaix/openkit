@@ -64,7 +64,7 @@ it('preserves authored errors and route-specific code and status', async () => {
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = await createDemoStore({ dataRoot });
-  const app = createAppWithWorkspaceAuthority({ store });
+  const app = await createAppWithWorkspaceAuthority({ store });
   vi.spyOn(store, 'listThreads').mockImplementation(() => {
     throw error;
   });

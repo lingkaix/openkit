@@ -132,7 +132,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
     try {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -173,7 +173,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const configuredApp = createApp({
+      const configuredApp = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -185,20 +185,24 @@ describe('NanoHost transport App API safe-sink routes', () => {
       for (const boundary of [
         {
           name: 'non-server',
-          response: await createApp({
-            mode: 'local',
-            turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-          }).request(...operationRequest('nanohost.runtime-target', {})),
+          response: await (
+            await createApp({
+              mode: 'local',
+              turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+            })
+          ).request(...operationRequest('nanohost.runtime-target', {})),
           status: 404,
         },
         {
           name: 'missing-storage',
-          response: await createApp({
-            auth: ownerSessionAuth(),
-            mode: 'server',
-            openKitConfig: { nanohost: config },
-            turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-          }).request(
+          response: await (
+            await createApp({
+              auth: ownerSessionAuth(),
+              mode: 'server',
+              openKitConfig: { nanohost: config },
+              turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+            })
+          ).request(
             ...operationRequest(
               'nanohost.runtime-target',
               {},
@@ -211,9 +215,9 @@ describe('NanoHost transport App API safe-sink routes', () => {
         },
         {
           name: 'missing-config',
-          response: await createApp({ auth: ownerSessionAuth(), coreDb, mode: 'server' }).request(
-            ...operationRequest('nanohost.runtime-target', {}, { headers: adminHeaders })
-          ),
+          response: await (
+            await createApp({ auth: ownerSessionAuth(), coreDb, mode: 'server' })
+          ).request(...operationRequest('nanohost.runtime-target', {}, { headers: adminHeaders })),
           status: 503,
         },
         {
@@ -380,7 +384,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -484,7 +488,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -536,7 +540,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -612,7 +616,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -805,7 +809,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1015,7 +1019,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         workspaceIds: [],
       });
       const authority = createNanoHostTransportSessionAuthority();
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1114,7 +1118,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1181,7 +1185,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1283,7 +1287,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1375,7 +1379,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1445,7 +1449,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1532,7 +1536,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1674,7 +1678,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       });
       restoreNativeFault = () => nativeFault.mockRestore();
 
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1725,7 +1729,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
 });
 
 /** Supplies explicit deployment authority, configured sinks and a real typed client for the cutover checks. */
-function administrationFixture(acceptingProductWork = true) {
+async function administrationFixture(acceptingProductWork = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-projections-'));
   const slotRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-projection-slots-'));
   const coreDb = openCoreDb(dataRoot);
@@ -1739,7 +1743,7 @@ function administrationFixture(acceptingProductWork = true) {
     workspaceIds: [],
   });
   const headers = { authorization: `Bearer ${admin.secret}` };
-  const app = createApp({
+  const app = await createApp({
     auth: ownerSessionAuth(),
     coreDb,
     dataRoot,
@@ -1785,7 +1789,7 @@ describe('definition-derived deployment administration cutover', () => {
     'restart',
     'revoke',
   ] as const)('projects the stored physical Epoch through native, HTTP, MCP and CLI reads after %s', async (loss) => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       const physicalEpoch = '0123456789abcdef'.repeat(4);
       insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
@@ -1936,7 +1940,7 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('refuses caller-selected RuntimeTarget input and non-administrator reads without exposing a stored Epoch', async () => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       const physicalEpoch = 'fedcba9876543210'.repeat(4);
       const identity = {
@@ -2026,7 +2030,7 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('executes the family across client and MCP with redacted sinks, derived CLI metadata and CLI inventory execution', async () => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       // The internal Tool is still the fixed RuntimeTarget read; growing the tables never selects enrollment.
       const generation = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
@@ -2119,7 +2123,7 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('removes every authenticated former binding without touching Token rows or sink files', async () => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       const before = f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all();
       for (const [method, path] of [
@@ -2155,7 +2159,7 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('gates every new HTTP and MCP mutation before Token, identity, sink or backup effects', async () => {
-    const f = administrationFixture(false);
+    const f = await administrationFixture(false);
     try {
       for (const [id, input] of Object.entries({
         'nanohost.enroll': { expiresAt: '2999-01-01T00:00:00.000Z' },
@@ -2194,7 +2198,7 @@ describe('definition-derived deployment administration cutover', () => {
   });
 
   it('refuses every operation under a readonly bearer before changing retained Token rows, identity or sinks', async () => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       const enrolled = await f.client.operations['nanohost.enroll']({
         expiresAt: '2999-01-01T00:00:00.000Z',
@@ -2261,7 +2265,7 @@ describe('definition-derived deployment administration cutover', () => {
     status,
     code,
   }) => {
-    const f = administrationFixture();
+    const f = await administrationFixture();
     try {
       insertActiveNanoHostIdentity(f.coreDb, f.config.identityId, f.config.deploymentId);
       const retained = await createNanoHostTransportTokenRecord(f.coreDb, {

@@ -209,7 +209,7 @@ it('executes a Server request on the configured role model with its own captured
   expect(notebook.readRevision(result.notebookRevision).files['index.md']).toContain(
     'BLUE-HERON-7'
   );
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

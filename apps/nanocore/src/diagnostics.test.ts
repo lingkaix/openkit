@@ -69,7 +69,7 @@ describe('Settings diagnostics app API', () => {
         secretRef: 'env:OLLAMA_API_KEY',
       },
     ]);
-    const app = createApp({
+    const app = await createApp({
       providerRegistry,
     });
 
@@ -139,7 +139,7 @@ describe('Settings diagnostics app API', () => {
           secretRef: 'env:OPENROUTER_API_KEY',
         },
       ]);
-      const app = createApp({
+      const app = await createApp({
         providerRegistry,
       });
 
@@ -183,7 +183,7 @@ describe('Settings diagnostics app API', () => {
   });
 
   it('preserves provider diagnostic fields through shared App API schema parsing', async () => {
-    const app = createApp({
+    const app = await createApp({
       providerDiagnostics: {
         redactedSnapshot: [],
         summaries: [
@@ -216,7 +216,7 @@ describe('Settings diagnostics app API', () => {
   });
 
   it('keeps generic internal-agent runtime state out of App Diagnostics', async () => {
-    const app = createApp();
+    const app = await createApp();
     const res = await app.request(...operationRequest('diagnostics.app', {}));
     const body = await res.json();
 
@@ -226,7 +226,7 @@ describe('Settings diagnostics app API', () => {
   });
 
   it('samples the current process and nested process.telemetry flags for authorized callers', async () => {
-    const app = createApp();
+    const app = await createApp();
     const res = await app.request(...operationRequest('diagnostics.app', {}));
     const body = await res.json();
 
@@ -246,7 +246,7 @@ describe('Settings diagnostics app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
     const coreDb = diagnosticsCore(dataRoot);
     const appliedMigrations = listAppliedMigrationIds(coreDb);
-    const app = createApp({
+    const app = await createApp({
       dataRoot,
       coreDb,
       providerRegistry: new ProviderRegistry([]),
@@ -271,7 +271,7 @@ describe('Settings diagnostics app API', () => {
   it('rejects signed-in sessions from deployment diagnostics without leaking session tokens', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-session-'));
     const coreDb = diagnosticsCore(dataRoot);
-    const app = createApp({
+    const app = await createApp({
       dataRoot,
       coreDb,
       auth: createAuthStub({
@@ -307,7 +307,7 @@ describe('Settings diagnostics app API', () => {
         vendor: 'openrouter',
       },
     ]);
-    const app = createApp({
+    const app = await createApp({
       dataRoot,
       openKitConfig: {},
       providerRegistry,
@@ -364,7 +364,7 @@ describe('Settings diagnostics app API', () => {
   });
 
   it('projects setup resolver blockers into agent readiness reasons', async () => {
-    const app = createApp({
+    const app = await createApp({
       providerRegistry: new ProviderRegistry([
         {
           baseUrl: 'https://openrouter.ai/api/v1',
@@ -405,7 +405,7 @@ describe('Settings diagnostics app API', () => {
 
 describe('product diagnostics cutover and support bindings', () => {
   it('retires both authorized legacy diagnostics routes while preserving owned results', async () => {
-    const app = createApp();
+    const app = await createApp();
     for (const [oldPath, id] of [
       ['/api/app/diagnostics', 'diagnostics.app'],
       ['/api/setup/diagnostics', 'diagnostics.setup'],
@@ -418,7 +418,7 @@ describe('product diagnostics cutover and support bindings', () => {
   });
 
   it('serves unauthenticated metadata and health in server mode without product discovery', async () => {
-    const app = createApp({ mode: 'server' });
+    const app = await createApp({ mode: 'server' });
     for (const path of ['/api/meta', '/health', '/api/health']) {
       const response = await app.request(path);
       expect(response.status).toBe(200);

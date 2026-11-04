@@ -31,7 +31,7 @@ it('returns the original MCP result after native Audit persistence and surfaces 
       workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const app = createApp({ coreDb, dataRoot, store, mode: 'server' });
+    const app = await createApp({ coreDb, dataRoot, store, mode: 'server' });
     const observedErrors = vi.fn();
     app.onError((error, context) => {
       observedErrors(error);

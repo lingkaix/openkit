@@ -30,7 +30,7 @@ it('frames native writer contention as the same safe HTTP and MCP storage failur
     workspaceIds: [workspace.id],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const app = createApp({ mode: 'server', coreDb, dataRoot, store });
+  const app = await createApp({ mode: 'server', coreDb, dataRoot, store });
   const blocker = openWorkspaceDb(dataRoot, workspace.id);
   const input = {
     workspaceId: workspace.id,

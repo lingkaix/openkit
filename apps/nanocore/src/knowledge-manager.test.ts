@@ -330,7 +330,7 @@ describe('Knowledge proposal decision lineage', () => {
       verifiedExternalReferences: [],
       producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const response = await app.request(
@@ -371,7 +371,7 @@ describe('Knowledge Store save-time validation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const response = await app.request(
@@ -421,7 +421,7 @@ describe('Knowledge Store save-time validation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const createResponse = await app.request(
@@ -499,7 +499,7 @@ describe('Knowledge Manager answer operation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const sourceContent = 'Release cadence is weekly.';
     const registerRes = await app.request(
       ...knowledgeOperationRequest(
@@ -738,7 +738,7 @@ describe('Knowledge Manager answer operation', () => {
       },
     });
     corruptTestWorkspaceNotebookCommit(dataRoot, DEMO_WORKSPACE_ID, candidateRevision);
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     try {
       const workspaceRoot = join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID);
       // The supplied missing-source page is an explicit validation fault, not a captured Source.
@@ -872,7 +872,7 @@ describe('Knowledge Manager answer operation', () => {
       [{ source, content: sourceMaterial }],
       coreDb
     );
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const owner = notebook(dataRoot);
     const notebookRevision = owner.publishedRevision();
     const releasePage = owner.readRevision(notebookRevision).files['release-plan.md']!;
@@ -986,7 +986,7 @@ describe('Knowledge Manager answer operation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
+    const { app, createResponses } = await createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'release cadence',
         pageId: workspacePageUri(dataRoot, 'release-plan'),
@@ -1185,7 +1185,7 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
+    const { app } = await createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'unwritten roadmap promise',
         answer: 'There is no evidence for that roadmap promise.',
@@ -1223,7 +1223,7 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
+    const { app } = await createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'Reply exactly CATALOG_OK_GROK. Do not call tools.',
         answer: 'The notebook does not establish the selected model.',
@@ -1284,7 +1284,7 @@ describe('Knowledge Manager answer operation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
-    const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
+    const { app } = await createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'Cadence',
         pageId: workspacePageUri(dataRoot, 'cadence'),
@@ -1371,7 +1371,7 @@ describe('Knowledge Manager answer operation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store: demoStore });
+    const app = await createApp({ coreDb, dataRoot, store: demoStore });
 
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
@@ -1551,7 +1551,7 @@ describe('Knowledge Manager answer operation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    let app = createApp({ coreDb, dataRoot, store });
+    let app = await createApp({ coreDb, dataRoot, store });
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.source.register',
@@ -1636,7 +1636,7 @@ describe('Knowledge Manager answer operation', () => {
     coreDb.sqlite.close();
     coreDb = openCoreDb(dataRoot);
     store = new FsStore({ dataRoot });
-    app = createApp({ coreDb, dataRoot, store });
+    app = await createApp({ coreDb, dataRoot, store });
 
     const replayRes = await draft(draftRequest);
     expect(replayRes.status, await replayRes.clone().text()).toBe(200);
@@ -1717,7 +1717,7 @@ describe('Knowledge Manager answer operation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const first = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.notebook.create',
@@ -1843,7 +1843,7 @@ describe('Knowledge Manager answer operation', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const first = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.notebook.create',
@@ -1968,7 +1968,7 @@ describe('Knowledge Manager answer operation', () => {
       closeWorkspaceProductReadHandles(dataRoot);
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const app = createApp({ store: await createDemoStore({ dataRoot }) });
+    const app = await createApp({ store: await createDemoStore({ dataRoot }) });
     const proposalBytes = proposalPageBytes(
       'caller-override',
       'Caller override',
@@ -2045,7 +2045,7 @@ describe('Knowledge Manager answer operation', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     try {
-      const { app, createResponses } = createKnowledgeAnswerApp(
+      const { app, createResponses } = await createKnowledgeAnswerApp(
         { coreDb, dataRoot, store: demoStore },
         [],
         'ENOENT /Users/private/openkit-data/knowledge/pages/secret.md token=private-secret'
@@ -2089,7 +2089,7 @@ describe('Knowledge Manager answer operation', () => {
     vi.spyOn(readStore, 'listKnowledge').mockImplementation(() => {
       throw new Error(unsafeMessage);
     });
-    const readApp = createAppWithWorkspaceAuthority({ store: readStore });
+    const readApp = await createAppWithWorkspaceAuthority({ store: readStore });
     // The native context owner bypasses the former RAM page snapshot. Fault its
     // actual operation dependency; the HTTP boundary must still redact the same error.
     const contextFailure = vi
@@ -2151,7 +2151,7 @@ describe('Knowledge Manager answer operation', () => {
     const proposalCoreDb = openCoreDb(dataRoot);
     applyMigrations(proposalCoreDb);
     authorizeDemoWorkspace(proposalCoreDb);
-    const proposalApp = createApp({ coreDb: proposalCoreDb, dataRoot, store: proposalStore });
+    const proposalApp = await createApp({ coreDb: proposalCoreDb, dataRoot, store: proposalStore });
     try {
       const registered = await proposalApp.request(
         ...knowledgeOperationRequest(

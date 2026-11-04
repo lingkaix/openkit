@@ -52,7 +52,7 @@ it('never borrows a stored administrator credential for scheduled Server mainten
   );
   const store = new FsStore({ dataRoot });
   let scan!: (instant: string) => Promise<void>;
-  createApp({
+  await createApp({
     mode: 'server',
     coreDb,
     dataRoot,
@@ -125,8 +125,8 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
     );
   };
   let scan!: (instant: string) => Promise<void>;
-  const boot = () =>
-    createApp({
+  const boot = async () =>
+    await createApp({
       coreDb,
       dataRoot,
       store,
@@ -140,11 +140,11 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
       .listThreads(workspace.id)
       .flatMap((thread) => store.listThreadTurns(workspace.id, thread.id));
   configure(false);
-  boot();
+  await boot();
   await scan('2026-10-17T10:00:00.000Z');
   expect(turns()).toEqual([]);
   configure(true);
-  boot();
+  await boot();
   await scan('2026-10-17T10:01:00.000Z');
   const retained = turns();
   expect(retained).toHaveLength(1);
@@ -171,7 +171,7 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
     })
   );
   // Boot and a later scan retain the same outcome; neither restarts model work.
-  boot();
+  await boot();
   await scan('2026-10-17T20:00:00.000Z');
   expect(turns().map(({ id }) => id)).toEqual([turn.id]);
 });
@@ -188,7 +188,7 @@ it('stops bounded maintenance through the public Turn command before a late Prov
     .notebookCommit;
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, []);
+  const { app, createResponses } = await createKnowledgeAnswerApp({ coreDb, dataRoot, store }, []);
   createResponses.mockImplementationOnce(async () => {
     entered.resolve();
     await release.promise;

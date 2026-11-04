@@ -276,7 +276,7 @@ describe('synthetic Skill Artifact/catalog component', () => {
     const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     const executeTurn = executor.startTurn.bind(executor);
-    const app = createApp({
+    const app = await createApp({
       fileAdmission,
       coreDb,
       dataRoot,

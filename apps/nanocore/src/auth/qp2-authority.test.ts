@@ -42,9 +42,9 @@ async function fixture() {
     ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
   await store.createThread(workspace.id, 'Shared history');
-  const local = createApp({ dataRoot: root, coreDb: db, store });
-  const session = (userId: string) =>
-    createApp({
+  const local = await createApp({ dataRoot: root, coreDb: db, store });
+  const session = async (userId: string) =>
+    await createApp({
       dataRoot: root,
       coreDb: db,
       store,
@@ -68,7 +68,7 @@ async function fixture() {
   );
   expect(signup.status).toBe(200);
   const memberId: string = (await signup.json()).user.id;
-  const member = session(memberId);
+  const member = await session(memberId);
   const invitationResponse = await local.request(
     ...operationRequest(
       'workspace.invitation-create',
@@ -113,7 +113,7 @@ describe('QP-2a current authority', () => {
     'member',
   ] as const)('refuses an ordinary %s export even when all history is shared', async (role) => {
     const f = await fixture();
-    const app = role === 'owner' ? f.session(FIXTURE_LOCAL_USER_ID) : f.member;
+    const app = role === 'owner' ? await f.session(FIXTURE_LOCAL_USER_ID) : f.member;
     const admitted = await app.request(
       ...operationRequest('workspace.dashboard', { workspaceId: f.workspace.id })
     );
@@ -136,7 +136,7 @@ describe('QP-2a current authority', () => {
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const creator = f.session(FIXTURE_LOCAL_USER_ID);
+    const creator = await f.session(FIXTURE_LOCAL_USER_ID);
     const exported = await creator.request(
       ...operationRequest('workspace.export', { workspaceId: f.workspace.id })
     );

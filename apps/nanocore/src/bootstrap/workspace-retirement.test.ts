@@ -19,7 +19,6 @@ import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -47,6 +46,7 @@ import {
 } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
+import { createAppWithPreparedChannels as createApp } from '../test-support/app.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -119,7 +119,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
   });
   const admission = new WorkspaceMutationAdmission();
   const gateway = createDefaultWorkerMcpGateway(coreDb);
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,
@@ -655,7 +655,14 @@ describe('retired registry consumers and retained Core migration', () => {
     expect(bytes(join(f.dataRoot, 'workspaces', f.workspaceId))).toEqual(tree);
     if (fault === 'missing')
       expect(existsSync(workspaceDbPath(f.dataRoot, f.workspaceId))).toBe(false);
+    const channelOwner = await import('../channel-services.js');
+    const preparedChannelServices = await channelOwner.prepareChannelServices({ coreDb, store });
+    let recoverAttention: (() => Promise<void>) | undefined;
     const restarted = appOwner.createApp({
+      preparedChannelServices,
+      onChannelServicesReady: (services) => {
+        recoverAttention = services.recoverAttention;
+      },
       coreDb,
       dataRoot: f.dataRoot,
       store,
@@ -663,6 +670,9 @@ describe('retired registry consumers and retained Core migration', () => {
       workspaceMutationAdmission: admission,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     });
+    if (!recoverAttention)
+      throw new Error('The actual restarted App channel services were not bound.');
+    await recoverAttention();
     const retry = (operation: string, input: Record<string, unknown>) =>
       restarted.request(`/api/app/operations/${operation}`, {
         method: 'POST',

@@ -37,12 +37,14 @@ function createDataRoot(): string {
 }
 
 /** Creates a simulated app whose runtime config owner reads the real test data root. */
-function createApp(options: Parameters<typeof createTestApp>[0]): ReturnType<typeof createTestApp> {
+async function createApp(
+  options: Parameters<typeof createTestApp>[0]
+): Promise<Awaited<ReturnType<typeof createTestApp>>> {
   const dataRoot = options.dataRoot;
   if (!dataRoot) {
     throw new Error('Runtime config file tests require a data root.');
   }
-  return createTestApp({
+  return await createTestApp({
     ...options,
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
   });
@@ -118,7 +120,7 @@ describe('runtime config file API', () => {
     try {
       writeServerConfig(dataRoot);
       const store = await createDemoStore({ dataRoot });
-      const app = createApp({ dataRoot, store });
+      const app = await createApp({ dataRoot, store });
       const before = readFileSync(join(dataRoot, 'config/server.jsonc'), 'utf8');
       const readResponse = await app.request(
         ...operationRequest('runtime.file-read', { id: 'server.jsonc' })
@@ -156,7 +158,7 @@ describe('runtime config file API', () => {
   it('lists and reads allowed runtime config files with stable revisions', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const app = createApp({ dataRoot, store: await createDemoStore({ dataRoot }) });
+    const app = await createApp({ dataRoot, store: await createDemoStore({ dataRoot }) });
 
     const listRes = await app.request(...operationRequest('runtime.file-list', {}));
     const list = (await listRes.json()) as {
@@ -204,7 +206,7 @@ describe('runtime config file API', () => {
         }
       }\n`
     );
-    const app = createApp({ dataRoot, store });
+    const app = await createApp({ dataRoot, store });
 
     const listRes = await app.request(...operationRequest('runtime.file-list', {}));
     const list = (await listRes.json()) as {
@@ -253,7 +255,7 @@ describe('runtime config file API', () => {
         "sources": []
       }\n`
     );
-    const app = createApp({ dataRoot, store });
+    const app = await createApp({ dataRoot, store });
 
     const fileId = 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc';
     const listRes = await app.request(...operationRequest('runtime.file-list', {}));
@@ -335,7 +337,7 @@ describe('runtime config file API', () => {
     );
 
     try {
-      const app = createApp({ coreDb, dataRoot, store });
+      const app = await createApp({ coreDb, dataRoot, store });
       const fileId = 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc';
       const readRes = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
       const read = (await readRes.json()) as { file: { revision: string }; content: string };
@@ -402,7 +404,7 @@ describe('runtime config file API', () => {
     });
 
     try {
-      const app = createApp({ coreDb, dataRoot, store });
+      const app = await createApp({ coreDb, dataRoot, store });
       const created = await app.request(
         ...operationRequest(
           'catalog.mcp-create',
@@ -455,7 +457,7 @@ describe('runtime config file API', () => {
   it('creates provider and agent config files from server templates', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const app = createApp({ dataRoot });
+    const app = await createApp({ dataRoot });
 
     const providerRes = await app.request(
       ...operationRequest(
@@ -522,7 +524,7 @@ describe('runtime config file API', () => {
     try {
       chmodSync(serverPath, 0o600);
       expect(statSync(serverPath).mode & 0o777).toBe(0o600);
-      const app = createApp({ dataRoot });
+      const app = await createApp({ dataRoot });
       const readRes = await app.request(
         ...operationRequest('runtime.file-read', { id: 'server.jsonc' })
       );
@@ -574,7 +576,7 @@ describe('runtime config file API', () => {
   it('rejects path traversal and invalid config writes', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const app = createApp({ dataRoot });
+    const app = await createApp({ dataRoot });
 
     const traversalRes = await app.request(
       ...operationRequest('runtime.file-read', { id: '../server.jsonc' })
@@ -604,7 +606,7 @@ describe('runtime config file API', () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
     const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
-    const app = createTestApp({ dataRoot, runtimeConfigManager });
+    const app = await createTestApp({ dataRoot, runtimeConfigManager });
     const activeSnapshot = runtimeConfigManager.current();
     const activeProviders = structuredClone(activeSnapshot.providerRegistry.list());
     const providerFileId = 'providers/agent-openrouter.provider.jsonc';
@@ -809,7 +811,7 @@ describe('runtime config file API', () => {
   it('keeps admin config routes protected in server mode', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const app = createApp({
+    const app = await createApp({
       auth: {
         api: { getSession: async () => null },
         handler: async () => Response.json({ status: 'auth-ok' }),
@@ -825,7 +827,7 @@ describe('runtime config file API', () => {
   it('does not reload unsaved validation overlays', async () => {
     const dataRoot = createDataRoot();
     writeServerConfig(dataRoot);
-    const app = createApp({ dataRoot });
+    const app = await createApp({ dataRoot });
     const providerFileId = 'providers/agent-openrouter.provider.jsonc';
     const original = readFileSync(join(dataRoot, 'config', providerFileId), 'utf8');
 

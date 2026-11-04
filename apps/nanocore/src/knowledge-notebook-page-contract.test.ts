@@ -42,7 +42,7 @@ async function fixture() {
     userId,
     workspaceId: workspace.id,
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-    app: createApp({
+    app: await createApp({
       coreDb,
       dataRoot,
       store,
@@ -54,7 +54,7 @@ async function fixture() {
 }
 
 /** Reopen retained owners without reseeding or replaying a publication. */
-function reopen(f: Awaited<ReturnType<typeof fixture>>) {
+async function reopen(f: Awaited<ReturnType<typeof fixture>>) {
   f.workspaceDb.sqlite.close();
   f.coreDb.sqlite.close();
   f.coreDb = openCoreDb(f.dataRoot);
@@ -62,7 +62,7 @@ function reopen(f: Awaited<ReturnType<typeof fixture>>) {
   f.workspaceDb = openWorkspaceDb(f.dataRoot, f.workspaceId);
   applyScopedMigrations(f.workspaceDb);
   f.store = new FsStore({ dataRoot: f.dataRoot });
-  f.app = createApp({
+  f.app = await createApp({
     coreDb: f.coreDb,
     dataRoot: f.dataRoot,
     store: f.store,
@@ -311,7 +311,7 @@ describe('canonical page commands compose the native Notebook publisher and read
     }
     const removed = await call(f, 'knowledge.notebook.delete', remove);
     const removedRevision = publication(f, removed, 'knowledge.notebook.delete', remove);
-    reopen(f);
+    await reopen(f);
     expect(await call(f, 'knowledge.notebook.create', create)).toEqual(created);
     expect(await call(f, 'knowledge.notebook.update', edit)).toEqual(updated);
     expect(await call(f, 'knowledge.notebook.delete', remove)).toEqual(removed);

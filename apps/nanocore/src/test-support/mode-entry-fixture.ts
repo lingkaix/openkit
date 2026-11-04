@@ -267,7 +267,7 @@ export async function assistantWiringFixture(
       })
     : undefined;
   await preparePending?.({ coreDb, store, actorUserId, thread });
-  const app = createApp({
+  const app = await createApp({
     mode: memberCredential ? 'server' : 'local',
     coreDb,
     dataRoot,
@@ -418,7 +418,7 @@ export const taskTerminalReplayCloseoutOwnership: (input: {
   });
   const brief = 'Implement a focused change and run its tests.';
   const provider = taskProposalProvider(brief, setup.manifest.id);
-  const app = createAppWithWorkspaceAuthority({
+  const app = await createAppWithWorkspaceAuthority({
     coreDb,
     dataRoot,
     store,
@@ -800,7 +800,7 @@ export const independentTasksAdmissionOwnership: () => Promise<void> = async () 
       threadId: turn.threadId,
       turnId: turn.id,
     });
-  const app = createAppWithWorkspaceAuthority({
+  const app = await createAppWithWorkspaceAuthority({
     coreDb,
     dataRoot,
     store,

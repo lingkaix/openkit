@@ -31,7 +31,7 @@ async function ordinaryActivityFixture() {
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,
@@ -372,7 +372,7 @@ describe('thread dashboard app API', () => {
         });
     }
 
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       store,
@@ -483,7 +483,7 @@ describe('thread dashboard app API', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     try {
       const response = await app.request('/api/app/operations/thread.dashboard', {
         method: 'POST',
@@ -633,7 +633,7 @@ describe('thread dashboard app API', () => {
       .spyOn(workObservations, 'readThreadRuntimeActivity')
       .mockReturnValue([activity]);
     const opened = vi.spyOn(database, 'openWorkspaceDb');
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       store,
@@ -711,7 +711,7 @@ describe('thread dashboard app API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const response = await app.request('/api/app/operations/thread.dashboard', {
@@ -794,7 +794,7 @@ describe('thread dashboard app API', () => {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const res = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',
@@ -867,7 +867,7 @@ describe('thread dashboard app API', () => {
       createdAt: '2026-07-01T00:00:00.000Z',
       updatedAt: '2026-07-01T00:00:00.000Z',
     });
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const res = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',
@@ -945,7 +945,7 @@ describe('thread dashboard app API', () => {
       });
     }
     const inventory = store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const res = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1110,7 +1110,7 @@ describe('thread dashboard app API', () => {
       scope: 'workspace-readonly',
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
-    const app = createApp({
+    const app = await createApp({
       auth: {
         api: { getSession: async () => null },
         handler: async () => new Response(null, { status: 404 }),
@@ -1275,7 +1275,7 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const res = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1416,7 +1416,7 @@ describe('thread dashboard app API', () => {
       completedAt: timestamp,
     });
     await store.updateTurn(duplicateTurn.id, { agentId: 'agent_codex_host' });
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const response = await app.request('/api/app/operations/thread.dashboard', {
       method: 'POST',

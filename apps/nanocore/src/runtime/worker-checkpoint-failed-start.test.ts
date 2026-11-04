@@ -152,7 +152,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   const setup = createTestAgentSetup({
     requiredCapabilities: provenance ? ['worker.runtime-provenance.v1'] : [],
   });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,
@@ -304,7 +304,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     backend,
     coreDb,
   });
-  const restartedApp = createApp({
+  const restartedApp = await createApp({
     coreDb,
     dataRoot,
     store,

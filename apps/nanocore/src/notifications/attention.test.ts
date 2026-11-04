@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyNativeScopeMigrations } from '../storage/migrate.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { bindCoreSqlite, openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   AttentionNotifications,
@@ -23,17 +29,23 @@ const now = () => '2026-10-16T12:00:00.000Z';
 const dbs: Database.Database[] = [];
 const directories: string[] = [];
 
-function fixture(path = ':memory:') {
-  const sqlite = new Database(path);
+async function fixture(dataRoot?: string) {
+  if (!dataRoot) {
+    dataRoot = mkdtempSync(join(tmpdir(), 'attention-owner-'));
+    directories.push(dataRoot);
+  }
+  const coreDb = openCoreDb(dataRoot);
+  const { sqlite } = coreDb;
   dbs.push(sqlite);
   sqlite.pragma('foreign_keys = ON');
-  applyNativeScopeMigrations(sqlite, 'core');
-  const notifications = new AttentionNotifications(sqlite, { now });
-  const delivery = notifications.enqueue({ source, recipientUserId: aliceId });
-  return { sqlite, notifications, delivery };
+  applyMigrations(coreDb);
+  const notifications = new AttentionNotifications(coreDb, { now });
+  const delivery = await notifications.enqueue({ source, recipientUserId: aliceId });
+  return { coreDb, sqlite, notifications, delivery };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const db of dbs.splice(0)) if (db.open) db.close();
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
@@ -43,13 +55,15 @@ describe('attention delivery owner', () => {
   it('does not run DDL in its constructor', () => {
     const sqlite = new Database(':memory:');
     dbs.push(sqlite);
-    new AttentionNotifications(sqlite);
+    const dataRoot = mkdtempSync(join(tmpdir(), 'attention-constructor-'));
+    directories.push(dataRoot);
+    new AttentionNotifications(bindCoreSqlite(sqlite, dataRoot));
     expect(sqlite.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all()).toEqual([]);
   });
 
-  it('deduplicates the exact source and recipient and preserves other identities', () => {
-    const { notifications, delivery } = fixture();
-    expect(notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(delivery);
+  it('deduplicates the exact source and recipient and preserves other identities', async () => {
+    const { notifications, delivery } = await fixture();
+    expect(await notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(delivery);
     for (const changed of [
       { source, recipientUserId: bobId },
       { source: { ...source, requestId: 'apr_other' }, recipientUserId: aliceId },
@@ -66,15 +80,15 @@ describe('attention delivery owner', () => {
         recipientUserId: aliceId,
       },
     ]) {
-      expect(notifications.enqueue(changed).id).not.toBe(delivery.id);
+      expect((await notifications.enqueue(changed)).id).not.toBe(delivery.id);
     }
   });
 
-  it('bounds recipient reads and applies current source and audience admission', () => {
-    const { notifications, delivery } = fixture();
-    notifications.enqueue({ source, recipientUserId: bobId });
+  it('bounds recipient reads and applies current source and audience admission', async () => {
+    const { notifications, delivery } = await fixture();
+    await notifications.enqueue({ source, recipientUserId: bobId });
     for (let index = 0; index < 4; index++) {
-      notifications.enqueue({
+      await notifications.enqueue({
         source: { ...source, requestId: `apr_${index}` },
         recipientUserId: aliceId,
       });
@@ -93,26 +107,26 @@ describe('attention delivery owner', () => {
     }
   });
 
-  it('rejects malformed identities and captured source arguments at admission', () => {
-    const { notifications } = fixture();
+  it('rejects malformed identities and captured source arguments at admission', async () => {
+    const { notifications } = await fixture();
     for (const input of [
       { source: { ...source, workspaceId: 'bad' }, recipientUserId: aliceId },
       { source: { ...source, threadId: 'bad' }, recipientUserId: aliceId },
       { source, recipientUserId: 'bad' },
       { source: { ...source, arguments: { private: 'content' } }, recipientUserId: aliceId },
     ]) {
-      expect(() => notifications.enqueue(input)).toThrow('invalid_attention_input');
+      await expect(notifications.enqueue(input)).rejects.toThrow('invalid_attention_input');
     }
   });
 
   it('claims durably before synchronous authority admission and sends only the App link', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'attention-claim-'));
     directories.push(directory);
-    const path = join(directory, 'core.sqlite');
-    const { notifications, delivery } = fixture(path);
+    const path = join(directory, 'server', 'db', 'core.sqlite');
+    const { coreDb, notifications, delivery } = await fixture(directory);
     const observerDb = new Database(path);
     dbs.push(observerDb);
-    const observer = new AttentionNotifications(observerDb);
+    const observer = new AttentionNotifications(bindCoreSqlite(observerDb, coreDb.dataRoot));
     const events: string[] = [];
     const result = await notifications.deliver(
       {
@@ -145,11 +159,11 @@ describe('attention delivery owner', () => {
       status: 'sent',
       attempt: { status: 'sent', failureCode: null },
     });
-    expect(notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(result);
+    expect(await notifications.enqueue({ source, recipientUserId: aliceId })).toEqual(result);
   });
 
   it('makes no contact after authority loss or admission dependency failure', async () => {
-    const { notifications, delivery } = fixture();
+    const { notifications, delivery } = await fixture();
     const transport = vi.fn<AttentionTransport>();
     for (const isEligible of [
       () => false,
@@ -179,7 +193,7 @@ describe('attention delivery owner', () => {
   });
 
   it('allows only explicit retry of definite no-send and keeps the original channel', async () => {
-    const { notifications, delivery } = fixture();
+    const { notifications, delivery } = await fixture();
     const input = {
       deliveryId: delivery.id,
       recipientUserId: aliceId,
@@ -229,7 +243,7 @@ describe('attention delivery owner', () => {
   });
 
   it('does not replay an explicit retry that also ends in definite no-send', async () => {
-    const { notifications, delivery } = fixture();
+    const { notifications, delivery } = await fixture();
     const first = {
       deliveryId: delivery.id,
       recipientUserId: aliceId,
@@ -252,7 +266,7 @@ describe('attention delivery owner', () => {
     'unknown',
     'invalid',
   ] as const)('keeps %s transport results unknown and prevents retry or channel fallback', async (mode) => {
-    const { notifications, delivery } = fixture();
+    const { notifications, delivery } = await fixture();
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
@@ -294,19 +308,21 @@ describe('attention delivery owner', () => {
   });
 
   it('refuses concurrent and wrong-recipient sends before any additional contact', async () => {
-    const { sqlite, notifications, delivery } = fixture();
-    const observer = new AttentionNotifications(sqlite);
+    const { coreDb, notifications, delivery } = await fixture();
+    const observer = new AttentionNotifications(coreDb);
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
       recipientUserId: aliceId,
       channel: 'discord' as const,
     };
+    const entered = Promise.withResolvers<void>();
     let complete: ((result: { status: 'sent' }) => void) | undefined;
     const transport = vi.fn<AttentionTransport>(
       () =>
         new Promise((resolve) => {
           complete = resolve;
+          entered.resolve();
         })
     );
     const dependencies = { isEligible: () => true, transport };
@@ -314,39 +330,66 @@ describe('attention delivery owner', () => {
       observer.deliver({ ...input, recipientUserId: bobId }, dependencies)
     ).rejects.toThrow('attention_not_found');
     const pending = notifications.deliver(input, dependencies);
-    await expect(observer.deliver(input, dependencies)).rejects.toThrow(
-      'attention_attempt_conflict'
-    );
-    complete!({ status: 'sent' });
-    expect((await pending).status).toBe('sent');
-    expect(transport).toHaveBeenCalledTimes(1);
+    try {
+      // Actual transport ingress proves that the first native claim has acknowledged.
+      await entered.promise;
+      await expect(observer.deliver(input, dependencies)).rejects.toThrow(
+        'attention_attempt_conflict'
+      );
+      complete!({ status: 'sent' });
+      expect((await pending).status).toBe('sent');
+      expect(transport).toHaveBeenCalledTimes(1);
+    } finally {
+      complete?.({ status: 'sent' });
+      await Promise.allSettled([pending]);
+    }
   });
 
   it('reopens persisted unfinished claims as unknown without retry', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'attention-restart-'));
     directories.push(directory);
-    const path = join(directory, 'core.sqlite');
-    const { sqlite, notifications, delivery } = fixture(path);
+    const path = join(directory, 'server', 'db', 'core.sqlite');
+    const { sqlite, notifications, delivery } = await fixture(directory);
     const input = {
       deliveryId: delivery.id,
       expectedAttemptId: null,
       recipientUserId: aliceId,
       channel: 'discord' as const,
     };
+    await getControlStoreWorkerClient().close(`core:${sqlite.name}`);
     sqlite.exec(`CREATE TRIGGER refuse_attempt_settlement BEFORE UPDATE ON notification_delivery_attempts
       BEGIN SELECT RAISE(ABORT, 'simulated lost settlement'); END`);
     const transport = vi.fn<AttentionTransport>().mockResolvedValue({ status: 'sent' });
-    await expect(
-      notifications.deliver(input, { isEligible: () => true, transport })
-    ).rejects.toThrow('simulated lost settlement');
+    // Core Storage requires definite rollback certainty and redacted native failures.
+    const failure: unknown = await notifications
+      .deliver(input, { isEligible: () => true, transport })
+      .then(
+        () => {
+          throw new Error('The real settlement trigger did not refuse.');
+        },
+        (error: unknown) => error
+      );
+    expect(failure).toBeInstanceOf(ControlStoreWorkerError);
+    expect(failure).toMatchObject({
+      name: 'ControlStoreWorkerError',
+      code: 'constraint',
+      commit: 'not-committed',
+      domain: undefined,
+    });
+    if (!(failure instanceof ControlStoreWorkerError)) throw failure;
+    expect(failure.cause).toBeUndefined();
+    expect([failure.message, failure.stack, JSON.stringify(failure)].join('\n')).not.toMatch(
+      /simulated lost settlement|CREATE TRIGGER|refuse_attempt_settlement/
+    );
     expect(notifications.get(delivery.id)?.status).toBe('sending');
+    await getControlStoreWorkerClient().close(`core:${sqlite.name}`);
     sqlite.exec('DROP TRIGGER refuse_attempt_settlement');
     sqlite.close();
     const reopened = new Database(path);
     dbs.push(reopened);
-    const restarted = new AttentionNotifications(reopened, { now });
-    expect(restarted.reconcileIncompleteAttempts()).toBe(1);
-    expect(restarted.reconcileIncompleteAttempts()).toBe(0);
+    const restarted = new AttentionNotifications(bindCoreSqlite(reopened, directory), { now });
+    expect(await restarted.reconcileIncompleteAttempts()).toBe(1);
+    expect(await restarted.reconcileIncompleteAttempts()).toBe(0);
     expect(restarted.get(delivery.id)).toMatchObject({
       status: 'delivery-unknown',
       attempt: { failureCode: 'restart' },
@@ -365,9 +408,9 @@ describe('attention delivery owner', () => {
   });
 
   it('uses the injected App route and refuses an external link before contact', async () => {
-    const { sqlite, delivery } = fixture();
+    const { coreDb, delivery } = await fixture();
     const transport = vi.fn<AttentionTransport>().mockResolvedValue({ status: 'sent' });
-    const notifications = new AttentionNotifications(sqlite, {
+    const notifications = new AttentionNotifications(coreDb, {
       now,
       buildAppPath: () => 'https://external.invalid/private',
     });
@@ -383,7 +426,7 @@ describe('attention delivery owner', () => {
       )
     ).rejects.toThrow('invalid_attention_input');
     expect(transport).not.toHaveBeenCalled();
-    const conversation = new AttentionNotifications(sqlite, {
+    const conversation = new AttentionNotifications(coreDb, {
       now,
       buildAppPath: (exact) =>
         `/chat/${exact.workspaceId}/${exact.threadId}?requestId=${exact.requestId}`,
@@ -406,7 +449,7 @@ describe('attention delivery owner', () => {
   });
 
   it('refuses a contradictory history instead of retrying a prior unknown send', async () => {
-    const { sqlite, notifications, delivery } = fixture();
+    const { sqlite, notifications, delivery } = await fixture();
     await notifications.deliver(
       {
         deliveryId: delivery.id,
@@ -416,6 +459,7 @@ describe('attention delivery owner', () => {
       },
       { isEligible: () => true, transport: async () => ({ status: 'delivery-unknown' }) }
     );
+    await getControlStoreWorkerClient().close(`core:${sqlite.name}`);
     sqlite
       .prepare(`INSERT INTO notification_delivery_attempts (attention_id, channel, status, failure_code, started_at, finished_at)
       VALUES (?, 'discord', 'failed-no-send', 'transport-refused', ?, ?)`)
@@ -437,7 +481,8 @@ describe('attention delivery owner', () => {
   });
 
   it('fails closed on unknown retained core values without transport', async () => {
-    const { sqlite, notifications, delivery } = fixture();
+    const { sqlite, notifications, delivery } = await fixture();
+    await getControlStoreWorkerClient().close(`core:${sqlite.name}`);
     sqlite.pragma('ignore_check_constraints = ON');
     sqlite
       .prepare('UPDATE notification_attention SET channel = ? WHERE id = ?')

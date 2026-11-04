@@ -3,15 +3,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MetaResponseSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
-
-import { createApp as createNanoCoreApp } from './app.js';
 import type { FsStore } from './lib/store.js';
 import type { RuntimeCapabilities, RuntimeEventFamily, TurnExecutor } from './runtime/types.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
-import { createApp } from './test-support/app.js';
+import {
+  createApp,
+  createAppWithPreparedChannels as createNanoCoreApp,
+} from './test-support/app.js';
 import { createTestStore } from './test-support/store.js';
 
 class StubTurnExecutor implements TurnExecutor {
@@ -53,7 +54,7 @@ describe('nanocore metadata', () => {
 
     try {
       const store = createTestStore({ dataRoot });
-      const app = createNanoCoreApp({ coreDb, store });
+      const app = await createNanoCoreApp({ coreDb, store });
       const res = await app.request('/api/meta');
 
       expect(res.status).toBe(200);
@@ -94,7 +95,7 @@ describe('nanocore metadata', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
-    const app = createApp({
+    const app = await createApp({
       store,
       turnExecutor: new StubTurnExecutor({
         approvals: true,

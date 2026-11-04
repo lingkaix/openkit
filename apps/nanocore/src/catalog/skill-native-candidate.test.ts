@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import type { OperationId } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -15,6 +14,7 @@ import { FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createAppWithPreparedChannels as createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { loadWorkspaceResourceCatalog, readWorkspaceSkillSnapshot } from './resource-catalog.js';
@@ -97,7 +97,7 @@ async function fixture(
     workspaceIds: options.administrator ? [] : [workspace.id],
     expiresAt: '2099-01-01T00:00:00Z',
   });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

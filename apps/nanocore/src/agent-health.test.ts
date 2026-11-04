@@ -20,7 +20,7 @@ describe('Agent inventory and health operations', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
-    const app = createApp({
+    const app = await createApp({
       agentManifests: [createTestAgentSetup().manifest],
       store,
     });
@@ -70,7 +70,7 @@ describe('Agent inventory and health operations', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
-    const app = createApp({
+    const app = await createApp({
       agentManifests: [createTestAgentSetup().manifest],
       store,
     });

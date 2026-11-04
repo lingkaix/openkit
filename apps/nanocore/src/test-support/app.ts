@@ -5,7 +5,9 @@ import { afterEach } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from '../app.js';
 import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
+import { type PreparedChannelServices, prepareChannelServices } from '../channel-services.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
+import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
@@ -46,10 +48,36 @@ export function createTestSessionActor(coreDb: CoreDb, userId: string): Actor {
   return { kind: 'session', userId, ...(adminTokenId ? { adminTokenId } : {}) };
 }
 
+/** Direct channel fixtures use the same actual awaited recovery and exact App bindings. */
+export async function createPreparedChannelServices(input: Parameters<PreparedChannelServices>[0]) {
+  return (await prepareChannelServices(input))(input);
+}
+
+/** Uses the real production App and the same awaited channel startup, without fixture identity or an executor override. */
+export async function createAppWithPreparedChannels(options: CreateAppOptions = {}) {
+  if (!options.coreDb) return createNanoCoreApp(options);
+  const store =
+    options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
+  const preparedChannelServices = await prepareChannelServices({ coreDb: options.coreDb, store });
+  let recoverAttention: (() => Promise<void>) | undefined;
+  const app = createNanoCoreApp({
+    ...options,
+    store,
+    preparedChannelServices,
+    onChannelServicesReady: (services) => {
+      recoverAttention = services.recoverAttention;
+      options.onChannelServicesReady?.(services);
+    },
+  });
+  if (!recoverAttention) throw new Error('The actual App channel services were not bound.');
+  await recoverAttention();
+  return app;
+}
+
 /** Supplies explicit fixture identity and the real owner shared by one durable fixture lifetime. */
-export function createAppWithLocalIdentity(
+export async function createAppWithLocalIdentity(
   options: CreateAppOptions = {}
-): ReturnType<typeof createNanoCoreApp> {
+): Promise<ReturnType<typeof createNanoCoreApp>> {
   let admission = options.workspaceMutationAdmission ?? options.automationStore?.mutationAdmission;
   const dataRoot = options.dataRoot ?? options.store?.getDataRoot() ?? options.coreDb?.dataRoot;
   if (dataRoot) {
@@ -63,7 +91,7 @@ export function createAppWithLocalIdentity(
     // competing live Apps rather than having this fixture silently replace one.
     admission ??= fixtureNativeOwner.admission;
   }
-  return createNanoCoreApp({
+  return await createAppWithPreparedChannels({
     ...(!options.coreDb && options.mode !== 'server' ? { localUserId: FIXTURE_LOCAL_USER_ID } : {}),
     ...options,
     ...(admission ? { workspaceMutationAdmission: admission } : {}),
@@ -76,7 +104,9 @@ export function createAppWithLocalIdentity(
  * @param options Production app options, including an optional executor override.
  * @returns NanoCore app configured for deterministic unit tests.
  */
-export function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNanoCoreApp> {
+export async function createApp(
+  options: CreateAppOptions = {}
+): Promise<ReturnType<typeof createNanoCoreApp>> {
   if (options.coreDb) {
     admitTestNativeEnvironment(options.coreDb, createTestAgentSetup().manifest);
     for (const manifest of options.agentManifests ??
@@ -110,7 +140,7 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
     );
   const turnExecutor =
     options.turnExecutor ?? new SimulatedTurnExecutor({ coreDb: options.coreDb, fileAdmission });
-  return createAppWithLocalIdentity({
+  return await createAppWithLocalIdentity({
     ...(ownsRuntimeConfig && providerSupportsDefaultGateway
       ? { gatewayConfig: createTestGatewayConfig() }
       : {}),
@@ -141,10 +171,11 @@ afterEach(async () => {
 });
 
 /** Supplies real local identity and membership records for formerly storage-only HTTP fixtures; explicit and server authority stays caller-owned. */
-export function createAppWithWorkspaceAuthority(
+export async function createAppWithWorkspaceAuthority(
   options: CreateAppOptions = {}
-): ReturnType<typeof createNanoCoreApp> {
-  if (options.coreDb || options.mode === 'server' || !options.store) return createApp(options);
+): Promise<ReturnType<typeof createNanoCoreApp>> {
+  if (options.coreDb || options.mode === 'server' || !options.store)
+    return await createApp(options);
   // A file-backed Store already owns its prepared Workspace scopes. Keep Core relationships
   // in that exact root; a second empty root cannot stand in for native Knowledge authority.
   const storeRoot = options.store.getDataRoot();
@@ -160,5 +191,5 @@ export function createAppWithWorkspaceAuthority(
       workspaceId: workspace.id,
     });
   }
-  return createApp({ ...options, coreDb });
+  return await createApp({ ...options, coreDb });
 }

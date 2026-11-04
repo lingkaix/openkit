@@ -28,7 +28,7 @@ describe('Catalog mutation Audit', () => {
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
     const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(workspaceDb);
-    const app = createApp({ coreDb, dataRoot, store, mode: 'local' });
+    const app = await createApp({ coreDb, dataRoot, store, mode: 'local' });
     const requests = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
     const call = (id: OperationId, input: unknown) =>
       app.request(

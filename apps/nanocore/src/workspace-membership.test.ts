@@ -290,7 +290,7 @@ describe('workspace membership foundation', () => {
            VALUES ('usr_00000000-0000-7011-88df-c2b1e8466b6f', 'Owner', 'owner@example.com', false, NULL, ?, ?, 'human', NULL)`
         )
         .run(Date.now(), Date.now());
-      const app = createApp({
+      const app = await createApp({
         auth: authForUser('usr_00000000-0000-7011-88df-c2b1e8466b6f'),
         coreDb,
         dataRoot,
@@ -367,13 +367,13 @@ describe('workspace membership foundation', () => {
         )
         .run(now, now, now, now);
       const requestId = randomUUID();
-      const firstApp = createApp({
+      const firstApp = await createApp({
         auth: authForUser('usr_00000000-0000-7036-b7d6-6d53799d5d56'),
         coreDb,
         mode: 'server',
         store,
       });
-      const secondApp = createApp({
+      const secondApp = await createApp({
         auth: authForUser('usr_00000000-0000-750e-951f-bebbf278d045'),
         coreDb,
         mode: 'server',
@@ -569,7 +569,7 @@ describe('workspace membership foundation', () => {
            WHERE workspace_id = ? AND user_id = ?`
         )
         .run(joinedAt, joinedAt, removed.id, 'usr_00000000-0000-7011-88df-c2b1e8466b6f');
-      const app = createApp({
+      const app = await createApp({
         auth: authForUser('usr_00000000-0000-7011-88df-c2b1e8466b6f'),
         coreDb,
         dataRoot,
@@ -635,7 +635,7 @@ describe('workspace membership foundation', () => {
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const exporterApp = createApp({
+      const exporterApp = await createApp({
         auth: authForUser('usr_00000000-0000-778d-b552-9947e8876ed1'),
         coreDb,
         dataRoot,
@@ -672,7 +672,7 @@ describe('workspace membership foundation', () => {
         )
       );
       expect(saved.status).toBe(200);
-      const otherApp = createApp({
+      const otherApp = await createApp({
         auth: authForUser('usr_00000000-0000-73d4-904a-d4c4b905df7c'),
         coreDb,
         dataRoot,

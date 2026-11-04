@@ -71,10 +71,10 @@ import {
   scopeAdmissionFailures,
 } from './bootstrap/readiness.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
-import {
-  type ChannelServices,
-  createChannelServices,
-  type DiscordAttentionTransport,
+import type {
+  ChannelServices,
+  DiscordAttentionTransport,
+  PreparedChannelServices,
 } from './channel-services.js';
 import { createDiscordRestTransport } from './channels/discord-rest.js';
 import { createAgentNativeEnvironmentService } from './config/agent-native-environment.js';
@@ -466,6 +466,10 @@ export interface CreateAppOptions {
   policyInterception?: PolicyInterception;
   /** Optional private Discord send boundary; deterministic tests supply a fake. */
   discordAttentionTransport?: DiscordAttentionTransport;
+  /** Actual Core/Store Attention recovery completed by the awaited startup composition. */
+  preparedChannelServices?: PreparedChannelServices;
+  /** Gives startup the actual bound service for its existing finite source-recovery pass. */
+  onChannelServicesReady?: (services: ChannelServices) => void;
   /** Boot joins this finite preparation callback to the existing recurring scanner. */
   onKnowledgeMaintenanceReady?: (scan: (instant: string) => Promise<void>) => void;
   /** Explicit canonical identity for an embedded fixture without Core storage; production resolves the recorded local User. */
@@ -633,6 +637,10 @@ export function createDefaultVaultUnlockState(
  * Creates the Hono app for tests and runtime startup.
  */
 export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: AuthVariables }> {
+  if (options.coreDb && (!options.store || !options.preparedChannelServices))
+    throw new Error('A Core App requires its explicit Store and recovered channel services.');
+  if (!options.coreDb && options.preparedChannelServices)
+    throw new Error('Recovered channel services require their actual Core owner.');
   const mode = options.mode ?? 'local';
   const auth = options.auth;
   const dataRoot = options.dataRoot ?? null;
@@ -2461,7 +2469,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
             resolveBotToken: async () => resolveEnvSecretRef(botTokenRef),
           })
         : undefined);
-    channelServices = createChannelServices({
+    channelServices = options.preparedChannelServices!({
       coreDb: options.coreDb,
       store: sharedStore,
       mode,
@@ -2482,7 +2490,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         })(id, value, { kind: 'public', actor, delivery: 'human' }),
     });
     setPendingRequestAttentionObserver(sharedStore, channelServices.attentionRaised);
-    channelServices.recoverAttention();
+    options.onChannelServicesReady?.(channelServices);
   }
 
   registerKnowledgePackageRoutes({

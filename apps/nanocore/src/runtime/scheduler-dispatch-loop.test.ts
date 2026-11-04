@@ -731,7 +731,7 @@ describe('scheduler dispatch loop', () => {
       expect(accepted.state).toBe('admission-accepted');
       const entry = schedulerRecords.requireSchedulerAdmissionEntry(coreDb, accepted.queueEntryId!);
       // Assemble HTTP before the fault: no later ordinary Workspace write may publish the stale cache.
-      const app = createApp({ coreDb, dataRoot: root, store, automationStore: schedules });
+      const app = await createApp({ coreDb, dataRoot: root, store, automationStore: schedules });
       const published = readPublishedTurnFileRecords(
         root,
         DEMO_WORKSPACE_ID,
@@ -910,7 +910,12 @@ describe('scheduler dispatch loop', () => {
         executorKind: 'worker',
       }
     );
-    const app = createApp({ coreDb, dataRoot: coreDb.dataRoot, store, automationStore: schedules });
+    const app = await createApp({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      automationStore: schedules,
+    });
     const published = readPublishedTurnFileRecords(
       coreDb.dataRoot,
       DEMO_WORKSPACE_ID,
@@ -1117,7 +1122,7 @@ describe('scheduler dispatch loop', () => {
           state: 'pending',
           attempts: [{ code: 'queue_backlog_full' }],
         });
-        const app = createApp({
+        const app = await createApp({
           coreDb,
           dataRoot: root,
           store: reopened,

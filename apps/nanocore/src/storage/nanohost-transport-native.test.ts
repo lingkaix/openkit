@@ -9,7 +9,6 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { createNanoHostOperationImplementations } from '../auth/nanohost-operations.js';
@@ -36,6 +35,7 @@ import {
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
+import { createAppWithPreparedChannels as createApp } from '../test-support/app.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -950,7 +950,7 @@ describe('NanoHost native credential ownership', () => {
       writeFileSync(configPath, JSON.stringify(config));
       const manager = createRuntimeConfigManager({ dataRoot: f.root });
       // Use the real App-owned restart latch and its wrapped authority, never a replacement admit.
-      createApp({
+      await createApp({
         coreDb: f.db,
         dataRoot: f.root,
         mode: 'server',

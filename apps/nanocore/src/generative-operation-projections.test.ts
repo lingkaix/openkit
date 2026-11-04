@@ -169,7 +169,12 @@ async function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   return {
     coreDb,
     store,
-    app: createApp({ coreDb, dataRoot, store, ...(getBootReadiness ? { getBootReadiness } : {}) }),
+    app: await createApp({
+      coreDb,
+      dataRoot,
+      store,
+      ...(getBootReadiness ? { getBootReadiness } : {}),
+    }),
   };
 }
 
@@ -709,7 +714,7 @@ it('retains Workspace availability failures and refuses before any app or presen
 
 it('refuses read-only and revoked credentials before any newly migrated Kernel or UI write', async () => {
   const f = await fixture();
-  const server = createApp({
+  const server = await createApp({
     mode: 'server',
     coreDb: f.coreDb,
     dataRoot: f.store.getDataRoot()!,

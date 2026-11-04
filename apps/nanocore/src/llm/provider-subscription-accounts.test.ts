@@ -1072,7 +1072,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         dataRoot: fixture.dataRoot,
         subscriptionAccounts: fixture.manager,
       });
-      const app = createApp({
+      const app = await createApp({
         dataRoot: fixture.dataRoot,
         coreDb: fixture.coreDb,
         runtimeConfigManager: manager,
@@ -1124,7 +1124,7 @@ describe('ProviderSubscriptionAccountManager', () => {
         dataRoot: fixture.dataRoot,
         subscriptionAccounts: fixture.manager,
       });
-      const app = createApp({
+      const app = await createApp({
         dataRoot: fixture.dataRoot,
         coreDb: fixture.coreDb,
         providerSubscriptionAccountManager: fixture.manager,
@@ -3387,8 +3387,8 @@ describe('ProviderSubscriptionAccountManager', () => {
   it('keeps the admitted account caller and credential on lifecycle success and failure', async () => {
     const fixture = createFixture();
     try {
-      const user = ensureLocalUser(fixture.coreDb);
-      const app = createApp({
+      const user = await ensureLocalUser(fixture.coreDb);
+      const app = await createApp({
         coreDb: fixture.coreDb,
         dataRoot: fixture.dataRoot,
         providerSubscriptionAccountManager: fixture.manager,
@@ -4762,7 +4762,7 @@ describe('public inference observation read model', () => {
       'vault_00000000-0000-7b65-922a-a84acfa604c4'
     );
     const presented = (await handle.resolveInferenceAuth())!.presented!;
-    const app = createApp({
+    const app = await createApp({
       coreDb: fixture.coreDb,
       dataRoot: fixture.dataRoot,
       providerSubscriptionAccountManager: fixture.manager,
@@ -4872,7 +4872,7 @@ describe('live quota and inference observations', () => {
     await handle.observeInference(presented, { kind: 'quota_exhausted', settled: true });
     const both = await handle.getObservation();
     const before = authoritySnapshot(fixture);
-    const app = createApp({
+    const app = await createApp({
       coreDb: fixture.coreDb,
       dataRoot: fixture.dataRoot,
       providerSubscriptionAccountManager: fixture.manager,
@@ -4980,7 +4980,7 @@ async function createObservedInferenceRouteFixture(
       id: 'usr_00000000-0000-7000-8000-000000000001',
     }
   );
-  ensureLocalUser(fixture.coreDb);
+  await ensureLocalUser(fixture.coreDb);
   recordWorkspaceOwnerMembership({
     coreDb: fixture.coreDb,
     workspaceId: workspaceIdForOwner(turn.owner),
@@ -5041,7 +5041,7 @@ async function createObservedInferenceRouteFixture(
       workerCapabilityToken: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC',
     });
   }
-  const app = createApp({
+  const app = await createApp({
     coreDb: fixture.coreDb,
     dataRoot: fixture.dataRoot,
     store,
@@ -5406,7 +5406,7 @@ describe('subscription refresh inference ownership', () => {
         version: 'vault_00000000-0000-79d6-aa15-2f46423f0a70:2',
         auth: { apiKey: fresh.access },
       });
-      const app = createApp({
+      const app = await createApp({
         coreDb: fixture.coreDb,
         dataRoot: fixture.dataRoot,
         providerSubscriptionAccountManager: fixture.manager,
@@ -5781,16 +5781,20 @@ describe('uncommitted ancestor account recovery', () => {
 async function codexManagementFixture() {
   const fixture = createFixture();
   const pair = accountPair('codex_management');
-  const userId = ensureLocalUser(fixture.coreDb);
+  const userId = await ensureLocalUser(fixture.coreDb);
   await createStoredPair(
     fixture,
     pair,
     'vault_00000000-0000-76b6-bb44-69ed58d73f3b',
     oauthCredential('management-canary')
   );
-  const appFor = (manager = fixture.manager, coreDb = fixture.coreDb) =>
-    createApp({ coreDb, dataRoot: fixture.dataRoot, providerSubscriptionAccountManager: manager });
-  const app = appFor();
+  const appFor = async (manager = fixture.manager, coreDb = fixture.coreDb) =>
+    await createApp({
+      coreDb,
+      dataRoot: fixture.dataRoot,
+      providerSubscriptionAccountManager: manager,
+    });
+  const app = await appFor();
   return {
     ...fixture,
     pair,
@@ -5869,14 +5873,14 @@ describe('subscription account status dependency projection', () => {
   }) => {
     const fixture = createFixture();
     const pair = accountPair(`status_${fault}_${bound}`);
-    ensureLocalUser(fixture.coreDb);
+    await ensureLocalUser(fixture.coreDb);
     if (bound) {
       await createStoredPair(fixture, pair, testEntityId('vault', pair.accountSlotId));
     } else {
       await fixture.manager.createAccount(pair);
     }
     const before = authoritySnapshot(fixture);
-    const app = createApp({
+    const app = await createApp({
       coreDb: fixture.coreDb,
       dataRoot: fixture.dataRoot,
       providerSubscriptionAccountManager: fixture.createManager(),
@@ -5947,7 +5951,7 @@ describe('Codex settings and manual reset public behavior', () => {
     });
     const label = await fixture.invoke('account-update', { displayName: 'Renamed Codex' });
     expect(label.status).toBe(200);
-    const restarted = fixture.appFor(fixture.createManager());
+    const restarted = await fixture.appFor(fixture.createManager());
     const read = await fixture.invoke('account-status', {}, restarted);
     expect(await read.json()).toMatchObject({
       displayName: 'Renamed Codex',
@@ -6036,7 +6040,7 @@ describe('Codex settings and manual reset public behavior', () => {
       const second = await fixture.invoke(
         'account-use-reset',
         { redeemRequestId },
-        fixture.appFor(manager, reopened)
+        await fixture.appFor(manager, reopened)
       );
       expect(second.status).toBe(200);
       expect(await second.json()).toMatchObject({
@@ -6591,7 +6595,7 @@ describe('native subscription credential attribution', () => {
 /** COORD 07:06Z: personal acquisition cannot select, replace or rewrite a Gateway account. */
 it('preserves the real Gateway account, binding and material through human Login acquisition', async () => {
   const fixture = createFixture();
-  ensureLocalUser(fixture.coreDb);
+  await ensureLocalUser(fixture.coreDb);
   const pair = accountPair('harness-acquisition-is-separate');
   const referenceId = testEntityId('vault', 'harness-acquisition-gateway-unchanged');
   const credential = oauthCredential('gateway-unchanged');
@@ -6621,7 +6625,7 @@ it('preserves the real Gateway account, binding and material through human Login
       expires_in: 3600,
     });
   });
-  const app = createApp({
+  const app = await createApp({
     coreDb: fixture.coreDb,
     dataRoot: fixture.dataRoot,
     providerSubscriptionAccountManager: fixture.manager,

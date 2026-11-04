@@ -9791,7 +9791,7 @@ describe('createConfiguredTurnExecutor', () => {
     });
     const acceptCommand = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
     const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot: coreDb.dataRoot,
       store,
@@ -13147,7 +13147,7 @@ describe('createConfiguredTurnExecutor', () => {
     const commandObservation = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
     const admissions = vi.spyOn(productOwners, 'observeTurnAdmission');
     const dispatches = vi.spyOn(schedulerOwners, 'runSchedulerDispatchLoop');
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot: coreDb.dataRoot,
       store,
@@ -16885,7 +16885,7 @@ describe('createConfiguredTurnExecutor', () => {
         admitTestNativeEnvironment(coreDb, setup.manifest);
         const store = new FsStore({ dataRoot: coreDb.dataRoot });
         // Product admission composes the real Core entry and the real NanoHost executor.
-        const app = createAppWithWorkspaceAuthority({
+        const app = (await createAppWithWorkspaceAuthority({
           coreDb,
           store,
           turnExecutor: runtime.turnExecutor,
@@ -16906,7 +16906,7 @@ describe('createConfiguredTurnExecutor', () => {
             },
           ]),
           gatewayConfig: createTestGatewayConfig(),
-        });
+        }));
         // Use a distinct Thread under the same currently authorized Workspace.
         await store.createThread(
           residentPackage.scope.workspaceId,

@@ -97,7 +97,7 @@ async function fixture(
   if (initialize || retain) retainedCleanup.push(cleanup);
   else onTestFinished(cleanup);
   const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
-  const app = createApp({ coreDb, dataRoot, store, runtimeConfigManager });
+  const app = await createApp({ coreDb, dataRoot, store, runtimeConfigManager });
   const call = async (operation: string, input: Record<string, unknown>, targetApp = app) => {
     const { requestId, ...body } = input;
     const response = await targetApp.request(`/api/app/operations/${operation}`, {
@@ -1044,7 +1044,11 @@ async function assertMaintenance(
         expect(savedStore.knowledgeProposalDigest(f.workspace.id, proposal.id)).toBe(
           tuple.proposalDigest
         );
-        const savedApp = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: savedStore });
+        const savedApp = await createApp({
+          coreDb: f.coreDb,
+          dataRoot: f.dataRoot,
+          store: savedStore,
+        });
         expect(
           await f.call(
             'knowledge.proposal.read',
@@ -1127,7 +1131,7 @@ async function assertMaintenance(
         expect(acceptedStore.getKnowledgeProposalReviewDecision(proposal.id)).toEqual(
           f.store.getKnowledgeProposalReviewDecision(proposal.id)
         );
-        const acceptedApp = createApp({
+        const acceptedApp = await createApp({
           coreDb: f.coreDb,
           dataRoot: f.dataRoot,
           store: acceptedStore,

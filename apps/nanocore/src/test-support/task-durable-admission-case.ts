@@ -179,7 +179,7 @@ export async function assertTaskDurableAdmissionResponse({
     requiredCapabilities: ['trusted-worker-inference-relay'],
   });
   const provider = taskProposalProvider(input, setup.manifest.id);
-  const app = createAppWithWorkspaceAuthority({
+  const app = await createAppWithWorkspaceAuthority({
     fileAdmission: native.fileAdmission,
     workerControlGateway: native.workerControlGateway,
     coreDb,

@@ -34,9 +34,10 @@ import {
 import { NanoHostEffectNotEnqueuedError } from './runtime/nanohost-session-dispatch.js';
 import { listThreadPendingRequests } from './runtime/pending-requests.js';
 import * as productTurnOwners from './runtime/product-turn-start.js';
+import * as schedulerDispatchOwners from './runtime/scheduler-dispatch-loop.js';
 import {
   getSchedulerPreparationClaims,
-  runSchedulerDispatchLoop,
+  type runSchedulerDispatchLoop,
 } from './runtime/scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from './runtime/turn-executor-factory.js';
 import type { TurnStartRuntimeContext } from './runtime/types.js';
@@ -538,7 +539,7 @@ describe('conversation.submit worker storage choice', () => {
     const workerSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
       dataRoot,
@@ -677,7 +678,7 @@ describe('conversation.submit worker storage choice', () => {
       createdAt: '2026-09-16T00:00:00.000Z',
       updatedAt: '2026-09-16T00:00:00.000Z',
     });
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
       store,
@@ -758,7 +759,7 @@ describe('conversation.submit worker storage choice', () => {
       return execution;
     });
     const workerSetup = createTestAgentSetup();
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
       fileAdmission,
@@ -974,7 +975,7 @@ describe('conversation.submit worker acceptance wait', () => {
     const workerSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
       dataRoot,
@@ -1241,7 +1242,7 @@ describe('conversation.submit worker acceptance wait', () => {
       expect(completed.status).toBe(200);
       expect(await completed.json()).toMatchObject({ id: workerScope.turnId, status: 'completed' });
       const reloaded = await createDemoStore({ dataRoot });
-      const restarted = createAppWithWorkspaceAuthority({
+      const restarted = await createAppWithWorkspaceAuthority({
         agentManifests: [workerSetup.manifest],
         coreDb,
         dataRoot,
@@ -1334,7 +1335,7 @@ describe('conversation.submit worker acceptance wait', () => {
     if (cleanupFails)
       vi.spyOn(backend, 'cleanupSession').mockRejectedValue(new Error('Cleanup is unproved.'));
     const taskObservation = vi.spyOn(productTurnOwners, 'observeTurnAdmission');
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       fileAdmission,
       coreDb,
       dataRoot,
@@ -1430,7 +1431,7 @@ describe('conversation.submit worker acceptance wait', () => {
     const workerSetup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       agentManifests: [workerSetup.manifest],
       coreDb,
       dataRoot,
@@ -1655,7 +1656,7 @@ describe('mode command failure diagnostics', () => {
     const store = await createDemoStore({ dataRoot });
     const setup = createTestAgentSetup({ imageRef: `sha256:${'d'.repeat(64)}` });
     const executor = await CompletingTurnExecutor.create({ coreDb });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       store,
@@ -1784,7 +1785,7 @@ describe('mode command failure diagnostics', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1848,7 +1849,7 @@ describe('Task durable admission response', () => {
     const store = await createDemoStore({ dataRoot });
     const executor = await CompletingTurnExecutor.create({ coreDb });
     const setup = createTestAgentSetup();
-    const app = createApp({
+    const app = await createApp({
       mode: 'server',
       coreDb,
       dataRoot,
@@ -1931,8 +1932,8 @@ describe('exact Task Agent selection', () => {
     const executor = new HoldingTurnExecutor(coreDb);
     const preferred = createTestAgentSetup({ agentId: 'agent_preferred' }).manifest;
     const selected = createTestAgentSetup({ agentId: 'agent_selected' }).manifest;
-    const makeApp = (ownerStore = store, manifests = [preferred, selected]) =>
-      createAppWithWorkspaceAuthority({
+    const makeApp = async (ownerStore = store, manifests = [preferred, selected]) =>
+      await createAppWithWorkspaceAuthority({
         coreDb,
         dataRoot,
         store: ownerStore,
@@ -1940,7 +1941,7 @@ describe('exact Task Agent selection', () => {
         agentManifests: manifests,
         openKitConfig: { defaults: { defaultAgentId: preferred.id } },
       });
-    const app = makeApp();
+    const app = await makeApp();
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2073,7 +2074,7 @@ describe('exact Task Agent selection', () => {
       // Reopen the durable store with the original Agent unavailable and a different ready supply.
       const remaining = createTestAgentSetup({ agentId: 'agent_replacement' }).manifest;
       const reloaded = await createDemoStore({ dataRoot: f.dataRoot });
-      const restarted = f.makeApp(reloaded, [remaining]);
+      const restarted = await f.makeApp(reloaded, [remaining]);
       const preparationCount = f.prepare.mock.calls.length;
       const replay = await f.post(restarted, choice);
       expect(replay.status, await replay.clone().text()).toBe(202);
@@ -2106,7 +2107,7 @@ describe('exact Task Agent selection', () => {
         ...f.selected,
         readiness: { status: readiness === 'missing' ? ('ready' as const) : readiness },
       };
-      const app = f.makeApp(
+      const app = await f.makeApp(
         f.store,
         readiness === 'missing' ? [f.preferred] : [f.preferred, selected]
       );
@@ -2158,7 +2159,7 @@ describe('exact Task Agent selection', () => {
         },
       };
       const gateway = createTestGatewayConfig();
-      const app = createAppWithWorkspaceAuthority({
+      const app = await createAppWithWorkspaceAuthority({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
         store: f.store,
@@ -2238,7 +2239,7 @@ describe('exact Task Agent selection', () => {
         models: { preferredLogicalModelId: healthyModelId, allowedLogicalModelIds: 'all' as const },
       };
       const gateway = createTestGatewayConfig();
-      const app = createAppWithWorkspaceAuthority({
+      const app = await createAppWithWorkspaceAuthority({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
         store: f.store,
@@ -2317,7 +2318,7 @@ describe('exact Task Agent selection', () => {
               },
             }
           : { ...f.selected, resources: { 'unenforced-test-resource': { limit: 2 } } };
-      const app = f.makeApp(f.store, [f.preferred, selected]);
+      const app = await f.makeApp(f.store, [f.preferred, selected]);
       const before = f.effects();
       const response = await f.post(app, { agentId: f.selected.id });
       expect(response.status, await response.clone().text()).toBe(409);
@@ -2345,8 +2346,8 @@ describe('route B queued Task receipts', () => {
     const store = await createDemoStore({ dataRoot });
     const executor = new HoldingTurnExecutor(coreDb);
     const setup = createTestAgentSetup();
-    const makeApp = (ownerStore: FsStore) =>
-      createAppWithWorkspaceAuthority({
+    const makeApp = async (ownerStore: FsStore) =>
+      await createAppWithWorkspaceAuthority({
         coreDb,
         dataRoot,
         store: ownerStore,
@@ -2354,7 +2355,7 @@ describe('route B queued Task receipts', () => {
         agentManifests: [setup.manifest],
         openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
       });
-    const app = makeApp(store);
+    const app = await makeApp(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2395,9 +2396,32 @@ describe('route B queued Task receipts', () => {
     const prepare = vi
       .spyOn(executor, 'prepareAgentSessionForTurn')
       .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
+    // The receipt precedes native capacity closeout; observe and join its actual dispatch.
+    const dispatchEntered = Promise.withResolvers<{
+      completion: ReturnType<typeof runSchedulerDispatchLoop>;
+    }>();
+    let dispatchCompletion: ReturnType<typeof runSchedulerDispatchLoop> | undefined;
+    const runDispatch = schedulerDispatchOwners.runSchedulerDispatchLoop;
+    const dispatchObservation = vi
+      .spyOn(schedulerDispatchOwners, 'runSchedulerDispatchLoop')
+      .mockImplementation((input) => {
+        const completion = runDispatch(input);
+        if (
+          input.coreDb === coreDb &&
+          input.store === store &&
+          input.callerQueueEntryId !== undefined &&
+          !dispatchCompletion
+        ) {
+          dispatchCompletion = completion;
+          dispatchEntered.resolve({ completion });
+        }
+        return completion;
+      });
     try {
       const response = await post(app);
       expect(response.status, await response.clone().text()).toBe(202);
+      const dispatch = await dispatchEntered.promise;
+      await dispatch.completion;
       const accepted = await response.json();
       const turn = accepted.turn;
       expect(turn).toMatchObject({ status: 'pending' });
@@ -2415,20 +2439,25 @@ describe('route B queued Task receipts', () => {
       });
       expect(executor.launches).toBe(0);
       const reloaded = await createDemoStore({ dataRoot });
-      const replay = await post(makeApp(reloaded));
+      const replay = await post(await makeApp(reloaded));
       expect(replay.status, await replay.clone().text()).toBe(202);
       expect((await replay.json()).turn.id).toBe(turn.id);
       expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual(queued);
-      const conflict = await post(makeApp(reloaded), requestId, 'Different immutable input.');
+      const conflict = await post(await makeApp(reloaded), requestId, 'Different immutable input.');
       expect(conflict.status).toBe(409);
       expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
       expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual(queued);
       expect(executor.launches).toBe(0);
     } finally {
-      prepare.mockRestore();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      try {
+        await dispatchCompletion;
+      } finally {
+        dispatchObservation.mockRestore();
+        prepare.mockRestore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
   });
 
@@ -2451,7 +2480,7 @@ describe('route B queued Task receipts', () => {
     const store = await createDemoStore({ dataRoot });
     const executor = new HoldingTurnExecutor(coreDb);
     const setup = createTestAgentSetup();
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot,
       store,

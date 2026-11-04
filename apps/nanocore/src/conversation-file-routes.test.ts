@@ -100,7 +100,7 @@ async function fixture(availableBytes?: () => bigint) {
     visibility: 'workspace',
   });
   const provider = { createResponses: vi.fn(async () => assistantAnswer()) };
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,
@@ -145,7 +145,7 @@ describe('Turn-owned conversation originals', () => {
     const prepare = vi
       .spyOn(executor, 'prepareAgentSessionForTurn')
       .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
-    const app = createApp({
+    const app = await createApp({
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: state.store,
@@ -221,7 +221,7 @@ describe('Turn-owned conversation originals', () => {
     const setup = createTestAgentSetup();
     const executor = new SimulatedTurnExecutor({ coreDb: state.coreDb });
     const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
-    const app = createApp({
+    const app = await createApp({
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: state.store,
@@ -262,7 +262,7 @@ describe('Turn-owned conversation originals', () => {
     const start = vi
       .spyOn(executor, 'prepareAgentSessionForTurn')
       .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
-    const app = createApp({
+    const app = await createApp({
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: state.store,
@@ -560,7 +560,7 @@ describe('Turn-owned conversation originals', () => {
         });
         throw new WorkerGovernanceCapacityUnavailableError();
       });
-    const app = createApp({
+    const app = await createApp({
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: state.store,
@@ -716,7 +716,7 @@ describe('Turn-owned conversation originals', () => {
       fileInputs: [metadata(bytes)],
     };
     const provider = proposalProvider('goal_create', { intent: input.input });
-    const app = createApp({
+    const app = await createApp({
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: state.store,
@@ -915,7 +915,7 @@ describe('Turn-owned conversation originals', () => {
       expect(
         readFileSync(turnFilePayloadPath(root, state.thread.id, accepted.turn.id, ordinal))
       ).toEqual(Buffer.from(part));
-    const restartedApp = createApp({
+    const restartedApp = await createApp({
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: restarted,

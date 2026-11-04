@@ -42,9 +42,9 @@ async function fixture() {
     workspaceId: workspace.id,
     ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
-  const local = createApp({ dataRoot: root, coreDb: db, store });
-  const session = (userId: string) =>
-    createApp({
+  const local = await createApp({ dataRoot: root, coreDb: db, store });
+  const session = async (userId: string) =>
+    await createApp({
       dataRoot: root,
       coreDb: db,
       store,
@@ -126,7 +126,7 @@ function removeOperationGrants(operation: string, serverOnly = false) {
 describe('QP-2c remaining inline authority', () => {
   it('reports unavailable authority when diagnostics has no Core dependency', async () => {
     const f = await fixture();
-    const app = createApp({
+    const app = await createApp({
       dataRoot: f.root,
       store: f.store,
       turnExecutor: new SimulatedTurnExecutor({ coreDb: f.db }),
@@ -139,7 +139,7 @@ describe('QP-2c remaining inline authority', () => {
 
   it('rechecks the authenticated diagnostics administrator after selected Token revocation', async () => {
     const f = await fixture();
-    const app = f.session(FIXTURE_LOCAL_USER_ID);
+    const app = await f.session(FIXTURE_LOCAL_USER_ID);
     expect((await app.request('/api/diagnostics')).status).toBe(200);
     const actualResolve = tokenStore.resolveSessionDeploymentAdminTokenId;
     vi.spyOn(tokenStore, 'resolveSessionDeploymentAdminTokenId').mockImplementation((...args) => {
@@ -158,7 +158,7 @@ describe('QP-2c remaining inline authority', () => {
     'administrator',
   ] as const)('requires invitation.respond for a valid %s without adding membership', async (actor) => {
     const f = await fixture();
-    const app = f.session(actor === 'invitee' ? f.inviteeId : FIXTURE_LOCAL_USER_ID);
+    const app = await f.session(actor === 'invitee' ? f.inviteeId : FIXTURE_LOCAL_USER_ID);
     const first = await f.invite();
     const declined = await app.request(
       ...operationRequest(
@@ -274,7 +274,7 @@ describe('QP-2c remaining inline authority', () => {
 
   it('requires Server workspace.configure for stdio activation while Workspace configuration remains allowed', async () => {
     const f = await fixture();
-    const app = f.session(FIXTURE_LOCAL_USER_ID);
+    const app = await f.session(FIXTURE_LOCAL_USER_ID);
     const createRequestId = randomUUID();
     const created = await app.request(
       ...operationRequest(

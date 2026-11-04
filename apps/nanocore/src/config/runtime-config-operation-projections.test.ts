@@ -36,7 +36,7 @@ describe('runtime and provider subscription operation cutover', () => {
     roots.push(dataRoot);
     const executorCoreDb = createTestCoreDb(dataRoot);
     executorCoreDbs.push(executorCoreDb);
-    const app = createApp({
+    const app = await createApp({
       dataRoot,
       turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
     });
@@ -71,7 +71,7 @@ it('retires all ten former runtime bindings for the authorized local actor witho
   writeFileSync(path, content);
   const executorCoreDb = createTestCoreDb(dataRoot);
   executorCoreDbs.push(executorCoreDb);
-  const app = createApp({
+  const app = await createApp({
     dataRoot,
     turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
   });
@@ -204,7 +204,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
       },
     },
   });
-  const app = createApp({
+  const app = await createApp({
     dataRoot,
     coreDb,
     providerSubscriptionAccountManager: manager,
@@ -500,7 +500,7 @@ it('reaches all ten owned runtime responses with explicit local authority', asyn
   writeFileSync(join(dataRoot, 'config/server.jsonc'), '{"schemaVersion":1}');
   const executorCoreDb = createTestCoreDb(dataRoot);
   executorCoreDbs.push(executorCoreDb);
-  const app = createApp({
+  const app = await createApp({
     dataRoot,
     turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
   });

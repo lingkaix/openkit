@@ -20,13 +20,13 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real self authority and isolated canonical storage exercise the public Memory boundary. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-public-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
@@ -66,7 +66,7 @@ function fixture() {
 
 describe('public explicit self Memory', () => {
   it('retains the first-save User base before public reads of its exact published bytes', async () => {
-    const f = fixture();
+    const f = await fixture();
     const owner = { dataRoot: f.dataRoot, scope: { kind: 'user' as const, userId: f.userId } };
     expect(() => readDefaultKnowledgeBaseId(owner)).toThrow();
     const content = f.content('Keep this first preference exactly.\r\n');
@@ -87,7 +87,7 @@ describe('public explicit self Memory', () => {
   });
 
   it('publishes exact personally authored bytes through self-only operations and refuses a stale edit', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = f.content('Keep this exact personal preference.\r\n');
     const saved = await f.call('memory.create', {
       requestId: randomUUID(),
@@ -123,7 +123,7 @@ describe('public explicit self Memory', () => {
   });
 
   it('replays the first save without replacing later content and refuses a lost initialized root', async () => {
-    const f = fixture();
+    const f = await fixture();
     const input = {
       requestId: randomUUID(),
       baseRevision: null,
@@ -163,7 +163,7 @@ describe('public explicit self Memory', () => {
   });
 
   it('rejects caller-selected owners and unsupported source-bearing content without publication', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initialized = await f.call('memory.create', {
       requestId: randomUUID(),
       baseRevision: null,
@@ -189,7 +189,7 @@ describe('public explicit self Memory', () => {
   });
 
   it('refuses a missing User database before first-save admission can replace its retained authority', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = f.content('Retain my exact preference.\r\n');
     const first = await f.call('memory.create', {
       requestId: randomUUID(),
@@ -227,7 +227,7 @@ describe('public explicit self Memory', () => {
 });
 
 it('forwards inherited optional metadata selectors through private native Memory search', async () => {
-  const f = fixture();
+  const f = await fixture();
   const userDb = openUserDb(f.dataRoot, f.userId);
   applyScopedMigrations(userDb);
   const baseRevision = initializeScopedNotebook({

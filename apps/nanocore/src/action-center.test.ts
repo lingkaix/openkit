@@ -54,10 +54,10 @@ function createCoreDb(): CoreDb {
  * @param store Test store whose Workspaces need canonical owner membership.
  * @returns NanoCore test app with local Workspace access.
  */
-function createAuthorizedCoreApp(
+async function createAuthorizedCoreApp(
   coreDb: CoreDb,
   store: ReturnType<typeof createDemoStore>
-): ReturnType<typeof createApp> {
+): Promise<Awaited<ReturnType<typeof createApp>>> {
   ensureLocalUser(coreDb);
   for (const workspace of store.listWorkspaces()) {
     recordWorkspaceOwnerMembership({
@@ -66,7 +66,7 @@ function createAuthorizedCoreApp(
       workspaceId: workspace.id,
     });
   }
-  return createAppWithWorkspaceAuthority({ coreDb, store });
+  return await createAppWithWorkspaceAuthority({ coreDb, store });
 }
 
 /** Installs one failed-health catalog summary after createApp wires the live projection. */
@@ -401,7 +401,7 @@ describe('action center app API', () => {
       producer: single.producer,
       createdAt: timestamp,
     });
-    const app = createAuthorizedCoreApp(coreDb, store);
+    const app = await createAuthorizedCoreApp(coreDb, store);
     const response = await app.request(
       ...operationRequest('attention.list', { workspaceId }, undefined)
     );
@@ -429,7 +429,7 @@ describe('action center app API', () => {
     );
 
     try {
-      const response = await createAuthorizedCoreApp(coreDb, store).request(
+      const response = await (await createAuthorizedCoreApp(coreDb, store)).request(
         ...operationRequest(
           'attention.list',
           { workspaceId: 'ws_00000000-0000-7490-845b-dcfa3ee49925' },
@@ -590,7 +590,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const app = createAuthorizedCoreApp(coreDb, store);
+    const app = await createAuthorizedCoreApp(coreDb, store);
 
     const res = await app.request(
       ...operationRequest(
@@ -842,7 +842,7 @@ describe('action center app API', () => {
         scope,
         workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       }).secret;
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       auth: {
         api: { getSession: async () => null },
         handler: async () => new Response(null, { status: 404 }),
@@ -1095,7 +1095,7 @@ describe('action center app API', () => {
         artifactVersion: artifact.version,
         createdAt: '2026-05-31T00:01:00.000Z',
       });
-      const app = createAuthorizedCoreApp(coreDb, store);
+      const app = await createAuthorizedCoreApp(coreDb, store);
       const response = await app.request(
         ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
@@ -1252,7 +1252,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const app = createAppWithWorkspaceAuthority({ store });
+    const app = await createAppWithWorkspaceAuthority({ store });
 
     const res = await app.request(
       ...operationRequest(
@@ -1364,7 +1364,7 @@ describe('action center app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const app = createAppWithWorkspaceAuthority({ store });
+    const app = await createAppWithWorkspaceAuthority({ store });
 
     const res = await app.request(
       ...operationRequest(
@@ -1425,7 +1425,7 @@ describe('action center app API', () => {
         denialReason: 'authority-denied',
       });
 
-      const app = createAuthorizedCoreApp(coreDb, store);
+      const app = await createAuthorizedCoreApp(coreDb, store);
       const res = await app.request(
         ...operationRequest(
           'attention.list',
@@ -1522,7 +1522,7 @@ describe('action center app API', () => {
         now: () => timestamp,
       });
 
-      const app = createAuthorizedCoreApp(coreDb, store);
+      const app = await createAuthorizedCoreApp(coreDb, store);
       const res = await app.request(
         ...operationRequest(
           'attention.list',
@@ -1612,7 +1612,7 @@ describe('action center app API', () => {
           'operation_action_center', 'native-liveness-expired', ?, ?)`)
         .run('ws_00000000-0000-7000-8000-000000000001', thread.id, turn.id, timestamp, timestamp);
 
-      const app = createAuthorizedCoreApp(coreDb, store);
+      const app = await createAuthorizedCoreApp(coreDb, store);
       const res = await app.request(
         ...operationRequest(
           'attention.list',
@@ -1725,7 +1725,7 @@ describe('action center app API', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    const app = createAuthorizedCoreApp(coreDb, store);
+    const app = await createAuthorizedCoreApp(coreDb, store);
 
     const res = await app.request(
       ...operationRequest(
@@ -1826,7 +1826,7 @@ describe('action center app API', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
-      const app = createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
+      const app = await createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
       const memberToken = createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace',
@@ -1931,7 +1931,7 @@ describe('action center app API', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
-      const app = createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
+      const app = await createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
       const memberToken = createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace',
@@ -2088,7 +2088,7 @@ describe('action center app API', () => {
           },
         },
       });
-      const app = createAuthorizedCoreApp(coreDb, store);
+      const app = await createAuthorizedCoreApp(coreDb, store);
       const pendingResponse = await app.request(
         ...operationRequest('attention.list', { workspaceId: workspace.id }, undefined)
       );
@@ -2205,7 +2205,7 @@ describe('action center app API', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
-      const app = createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
+      const app = await createAppWithWorkspaceAuthority({ coreDb, store, mode: 'server' });
       const memberToken = createOpenKitAccessTokenRecord(coreDb, {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'workspace',

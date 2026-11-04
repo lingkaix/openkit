@@ -122,7 +122,7 @@ describe('B10 retired routes', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: workspace.id,
       });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     try {
       const response = await app.request(path, {
         method,
@@ -161,7 +161,7 @@ async function admittedFixture() {
   const host = vi.fn(async () => {
     throw new Error('Unexpected host effect.');
   });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

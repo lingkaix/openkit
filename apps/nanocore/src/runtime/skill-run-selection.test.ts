@@ -105,7 +105,7 @@ async function fixture(explicitSetupVersion = true) {
   const executor = new SimulatedTurnExecutor({ coreDb });
   const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
   const submit = vi.spyOn(executor, 'submit');
-  const app = createApp({
+  const app = await createApp({
     dataRoot,
     coreDb,
     store,

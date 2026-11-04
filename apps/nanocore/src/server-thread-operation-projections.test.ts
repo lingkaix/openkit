@@ -8,6 +8,7 @@ import type { Worker as NativeWorker, WorkerOptions } from 'node:worker_threads'
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { expect, it, onTestFinished, vi } from 'vitest';
+
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -35,6 +36,7 @@ const commitBoundary = vi.hoisted(() => ({
   gate: undefined as SharedArrayBuffer | undefined,
   point: 'before' as 'before' | 'after',
   workers: [] as NativeWorker[],
+  paths: new Map<NativeWorker, Set<string>>(),
 }));
 
 vi.mock('node:worker_threads', async (load) => {
@@ -43,6 +45,16 @@ vi.mock('node:worker_threads', async (load) => {
     ...native,
     /** Holds the real native COMMIT; no SQL, worker handler or acknowledgement is replaced. */
     Worker: class extends native.Worker {
+      override postMessage(...args: Parameters<NativeWorker['postMessage']>): void {
+        const message = args[0] as { operation?: string; path?: string };
+        if (message.operation === 'open' && message.path) {
+          const paths = commitBoundary.paths.get(this) ?? new Set<string>();
+          paths.add(message.path);
+          commitBoundary.paths.set(this, paths);
+        }
+        super.postMessage(...args);
+      }
+
       constructor(filename: string | URL, options?: WorkerOptions) {
         if (commitBoundary.gate) {
           const prelude = `
@@ -85,7 +97,7 @@ it('admits Server history only with current Server authority and never through a
   const dataRoot = mkdtempSync(join(tmpdir(), 'server-thread-api-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  const userId = ensureLocalUser(coreDb);
+  const userId = await ensureLocalUser(coreDb);
   onTestFinished(async () => {
     await getControlStoreWorkerClient().shutdown();
     coreDb.sqlite.close();
@@ -95,19 +107,19 @@ it('admits Server history only with current Server authority and never through a
   const workspace = await store.createWorkspace('Ordinary Workspace');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const thread = await store.createServerThread('Private Server maintenance');
-  const admin = createOpenKitAccessTokenRecord(coreDb, {
+  const admin = await createOpenKitAccessTokenRecord(coreDb, {
     ownerUserId: userId,
     scope: 'server-admin',
     workspaceIds: [],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const member = createOpenKitAccessTokenRecord(coreDb, {
+  const member = await createOpenKitAccessTokenRecord(coreDb, {
     ownerUserId: userId,
     scope: 'workspace',
     workspaceIds: [workspace.id],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const app = createApp({
+  const app = await createApp({
     mode: 'server',
     coreDb,
     dataRoot,
@@ -135,7 +147,7 @@ it('admits Server history only with current Server authority and never through a
   expect(denied.status).toBe(403);
   expect(JSON.stringify(await denied.json())).not.toContain('Private Server maintenance');
   expect(store.listThreads(workspace.id)).toEqual([]);
-  expect(setDefaultServerAdminTokenId(coreDb, userId, admin.tokenId)).toBe(true);
+  expect(await setDefaultServerAdminTokenId(coreDb, userId, admin.tokenId)).toBe(true);
   const invoke = createOperationInvocation({
     coreDb,
     store,
@@ -171,7 +183,7 @@ it('admits Server history only with current Server authority and never through a
   expect(
     (await read(admin.secret, { threadId: thread.id, workspaceId: workspace.id })).status
   ).toBe(400);
-  revokeOpenKitAccessTokenRecord(coreDb, admin.tokenId);
+  await revokeOpenKitAccessTokenRecord(coreDb, admin.tokenId);
   await expect(
     invoke('thread.server.read', { threadId: thread.id }, session)
   ).rejects.toMatchObject({ code: 'deployment_admin_required', status: 403 });
@@ -184,7 +196,7 @@ async function productFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'product-authority-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  const userId = ensureLocalUser(coreDb);
+  const userId = await ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Product authority');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
@@ -245,7 +257,7 @@ it('rolls back the public Thread change and Audit when its native receipt insert
 it('rolls back Server maintenance history when its native receipt insert fails', async () => {
   const f = await productFixture();
   const requestId = randomUUID();
-  const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+  const app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
   const beforeAudit = f.coreDb.sqlite
     .prepare('SELECT * FROM audit_events ORDER BY audit_event_id')
     .all();
@@ -353,12 +365,19 @@ it.each([
   expect(Atomics.load(gate, 1), 'the public command must reach its native COMMIT boundary').toBe(1);
   expect(settled).toBe(false);
   expect(Atomics.load(gate, 3)).toBe(2);
-  await commitBoundary.workers.at(-1)!.terminate();
+  // Core Storage: one native writer owns each physical database.
+  const workspaceOwners = () =>
+    commitBoundary.workers.filter((worker) =>
+      commitBoundary.paths.get(worker)?.has(f.db.sqlite.name)
+    );
+  const owners = workspaceOwners();
+  expect(owners).toHaveLength(1);
+  await owners[0]!.terminate();
   const outcome = await command;
   expect(outcome.value).toBeUndefined();
   expect(outcome.error).toBeInstanceOf(Error);
   expect(outcome.error).not.toMatchObject({ commit: 'not-committed' });
-  expect(commitBoundary.workers).toHaveLength(1);
+  expect(workspaceOwners()).toEqual(owners);
   await getControlStoreWorkerClient().shutdown();
   f.db.sqlite.close();
   const reopened = new FsStore({ dataRoot: f.dataRoot });
@@ -460,13 +479,13 @@ it('reads public committed products synchronously through a separate readonly qu
     expect(f.store.getThread(f.workspace.id, thread.id)).not.toBeInstanceOf(Promise);
     expect(f.db.sqlite.readonly).toBe(false);
     expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(0);
-    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+    const token = await createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: f.userId,
       scope: 'workspace',
       workspaceIds: [f.workspace.id],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    revokeOpenKitAccessTokenRecord(f.coreDb, token.tokenId);
+    await revokeOpenKitAccessTokenRecord(f.coreDb, token.tokenId);
     expect(
       f.coreDb.sqlite
         .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id=?')

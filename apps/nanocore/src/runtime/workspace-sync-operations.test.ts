@@ -350,7 +350,7 @@ async function fixture(
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
   const mutationAdmission = new WorkspaceMutationAdmission();
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     store,
     dataRoot,

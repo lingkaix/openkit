@@ -49,7 +49,7 @@ describe('data-root admin routes', () => {
       scope: 'workspace-readonly',
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
-    const app = createApp({
+    const app = await createApp({
       auth: {
         api: {
           getSession: async () => ({
@@ -156,7 +156,7 @@ describe('data-root admin routes', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({ coreDb, dataRoot, mode: 'server' });
+      const app = await createApp({ coreDb, dataRoot, mode: 'server' });
       // Corruption is introduced after startup so the real request reaches the layout reader's SQLite failure.
       const damagedDbDirectory = join(
         dataRoot,

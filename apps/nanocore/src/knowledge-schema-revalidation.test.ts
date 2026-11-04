@@ -49,7 +49,7 @@ async function fixture() {
     workspaceIds: [workspace.id],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
-  const app = createAppWithWorkspaceAuthority({ mode: 'server', coreDb, dataRoot, store });
+  const app = await createAppWithWorkspaceAuthority({ mode: 'server', coreDb, dataRoot, store });
   const call = async (operation: string, input: Record<string, unknown>) => {
     const requestId = typeof input.requestId === 'string' ? input.requestId : randomUUID();
     const response = await app.request(`/api/app/operations/${operation}`, {

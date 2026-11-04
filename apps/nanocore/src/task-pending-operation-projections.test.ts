@@ -159,7 +159,7 @@ async function fixture(
       : {}),
   };
   return {
-    app: createApp(appOptions),
+    app: await createApp(appOptions),
     coreDb,
     dataRoot,
     store,
@@ -185,7 +185,7 @@ async function projections(
     workspaceIds: scope === 'server-admin' ? [] : workspaceIds,
     expiresAt: '2099-01-01T00:00:00.000Z',
   }).secret;
-  const app = createApp({ ...f.appOptions, mode: 'server' });
+  const app = await createApp({ ...f.appOptions, mode: 'server' });
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${token}` };
   const client = createCoreClient({
     baseUrl: 'http://127.0.0.1',
@@ -631,7 +631,7 @@ describe('Task conversation and Pending Request definition projections', () => {
         workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
         expiresAt: '2099-01-01T00:00:00.000Z',
       }).secret;
-      const app = createApp({ ...f.appOptions, mode: 'server' });
+      const app = await createApp({ ...f.appOptions, mode: 'server' });
       const input = { ...inputs(f)[id] } as Record<string, unknown>;
       // These former strict body schemas received selectors from the path, not JSON.
       if (id === 'conversation.submit' || id === 'task.start') {

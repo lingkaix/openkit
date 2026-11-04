@@ -17,13 +17,13 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { KnowledgeNotebook } from './notebook.js';
 
 /** Creates actual self authority and public operations over private local Storage. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'user-source-error-boundary-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
@@ -55,7 +55,7 @@ function rawFiles(root: string): Record<string, string> {
 
 describe('public User Source error contract', () => {
   it('returns JSON invalid_request for an invalid new profile without capture effects', async () => {
-    const f = fixture();
+    const f = await fixture();
     const healthyContent = 'Exact admitted User original.\r\nUnicode Ω 雪.\n';
     const captured = await f.register('Valid User original', healthyContent);
     expect(captured.status).toBe(200);

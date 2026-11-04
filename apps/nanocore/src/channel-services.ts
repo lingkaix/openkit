@@ -28,13 +28,14 @@ import {
   listThreadPendingRequests,
   type PendingRequestRecord,
 } from './runtime/pending-requests.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Private Discord transport injected by startup or deterministic external-boundary tests. */
 export type DiscordAttentionTransport = ReturnType<typeof createDiscordRestTransport>;
 
-/** Binds external delivery to current Core request owners, without granting channel-specific decision authority. */
-export function createChannelServices(input: {
+/** Actual App dependencies for current request selection and captured Pending decisions. */
+interface ChannelServicesInput {
   readonly coreDb: CoreDb;
   readonly store: FsStore;
   readonly mode: CoreMode;
@@ -47,7 +48,39 @@ export function createChannelServices(input: {
     value: unknown,
     actor: Actor
   ) => Promise<unknown>;
-}) {
+}
+
+/** Recovered Attention owner awaiting the actual synchronous App dependency bindings. */
+export type PreparedChannelServices = (input: ChannelServicesInput) => ChannelServices;
+
+/** Uses the current Thread route without retaining content or granting disclosure. */
+function attentionPathFor(
+  store: FsStore,
+  source: { workspaceId: string; threadId: string; requestId: string }
+): string {
+  const thread = store.getThread(source.workspaceId, source.threadId);
+  const route = thread.visibility === 'private' ? 'chat' : 'tasks';
+  return `/${route}/${encodeURIComponent(source.workspaceId)}/${encodeURIComponent(source.threadId)}?requestId=${encodeURIComponent(source.requestId)}`;
+}
+
+/** Completes startup recovery before App construction; a failure admits neither App commands nor sends. */
+export async function prepareChannelServices(input: {
+  readonly coreDb: CoreDb;
+  readonly store: FsStore;
+}): Promise<PreparedChannelServices> {
+  const notifications = new AttentionNotifications(input.coreDb, {
+    buildAppPath: (source) => attentionPathFor(input.store, source),
+  });
+  await notifications.reconcileIncompleteAttempts();
+  return (bindings) => {
+    if (bindings.coreDb !== input.coreDb || bindings.store !== input.store)
+      throw new Error('Channel preparation must bind its actual Core and Store owners.');
+    return bindChannelServices(bindings, notifications);
+  };
+}
+
+/** Binds recovered Attention to the actual App authority callbacks without starting another recovery. */
+function bindChannelServices(input: ChannelServicesInput, notifications: AttentionNotifications) {
   const { coreDb, store } = input;
   // The local User owner retains this identity; each channel action still checks its active state.
   const localUserId = input.mode === 'local' ? getLocalUserId(coreDb) : undefined;
@@ -137,13 +170,8 @@ export function createChannelServices(input: {
     }
   }
 
-  const attentionPath = (source: { workspaceId: string; threadId: string; requestId: string }) => {
-    const thread = store.getThread(source.workspaceId, source.threadId);
-    const route = thread.visibility === 'private' ? 'chat' : 'tasks';
-    return `/${route}/${encodeURIComponent(source.workspaceId)}/${encodeURIComponent(source.threadId)}?requestId=${encodeURIComponent(source.requestId)}`;
-  };
-  const notifications = new AttentionNotifications(coreDb.sqlite, { buildAppPath: attentionPath });
-  notifications.reconcileIncompleteAttempts();
+  const attentionPath = (source: { workspaceId: string; threadId: string; requestId: string }) =>
+    attentionPathFor(store, source);
   if (input.discordConfig && !input.publicBaseUrl)
     throw new OperationError(
       'channel_configuration_invalid',
@@ -249,45 +277,49 @@ export function createChannelServices(input: {
   }
 
   /** Publishes only an exact source reference; a notification write cannot change the Core request. */
-  function attentionRaised(record: PendingRequestRecord): void {
+  async function attentionRaised(record: PendingRequestRecord): Promise<void> {
     if (record.state !== 'pending') return;
     const actor = ordinaryActor(record.responsibleUserId);
     if (!actor || !currentRequest(actor, record)) return;
-    const delivery = notifications.enqueue({
-      source: {
-        workspaceId: record.workspaceId,
-        threadId: record.threadId,
-        requestId: record.requestId,
-        kind: record.kind === 'approval' ? 'approval-request' : 'user-input-request',
-      },
-      recipientUserId: record.responsibleUserId,
+    return getControlStoreWorkerClient().runOperation(async () => {
+      const delivery = await notifications.enqueue({
+        source: {
+          workspaceId: record.workspaceId,
+          threadId: record.threadId,
+          requestId: record.requestId,
+          kind: record.kind === 'approval' ? 'approval-request' : 'user-input-request',
+        },
+        recipientUserId: record.responsibleUserId,
+      });
+      if (delivery.status === 'queued' && discord?.binding(actor) && input.transport)
+        await send(actor, delivery.id, null).catch(() => undefined);
     });
-    if (delivery.status === 'queued' && discord?.binding(actor) && input.transport)
-      void send(actor, delivery.id, null).catch(() => undefined);
   }
 
   /** Re-enumerates the request authority at boot or binding change, without a notification runner or implicit retry. */
-  function recoverAttention(): void {
-    for (const workspace of store.listWorkspaces()) {
-      try {
-        const db = input.openWorkspace(workspace.id);
+  async function recoverAttention(): Promise<void> {
+    return getControlStoreWorkerClient().runOperation(async () => {
+      for (const workspace of store.listWorkspaces()) {
         try {
-          for (const thread of store.listThreads(workspace.id)) {
-            for (const record of listThreadPendingRequests(db.sqlite, workspace.id, thread.id)) {
-              try {
-                attentionRaised(record);
-              } catch {
-                /* An unavailable projection never settles or blocks a Core request. */
+          const db = input.openWorkspace(workspace.id);
+          try {
+            for (const thread of store.listThreads(workspace.id)) {
+              for (const record of listThreadPendingRequests(db.sqlite, workspace.id, thread.id)) {
+                try {
+                  await attentionRaised(record);
+                } catch {
+                  /* An unavailable projection never settles or blocks a Core request. */
+                }
               }
             }
+          } finally {
+            db.sqlite.close();
           }
-        } finally {
-          db.sqlite.close();
+        } catch {
+          /* Missing source storage skips this projection; a later recovery can inspect it again. */
         }
-      } catch {
-        /* Missing source storage skips this projection; a later recovery can inspect it again. */
       }
-    }
+    });
   }
 
   return {
@@ -307,7 +339,7 @@ export function createChannelServices(input: {
 }
 
 /** App-owned channel services shared by native settings, the signed Discord entry, and request attention. */
-export type ChannelServices = ReturnType<typeof createChannelServices>;
+export type ChannelServices = ReturnType<typeof bindChannelServices>;
 
 /** Joins user settings and transport observations to their existing domain owners. */
 export function createChannelOperationImplementations(services: ChannelServices | undefined) {

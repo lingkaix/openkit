@@ -117,8 +117,8 @@ describe('reasoning effort admission and replay', () => {
         ...(defaultEffort !== undefined ? { reasoningEffort: defaultEffort } : {}),
       },
     };
-    const makeApp = (activeStore: FsStore) =>
-      createApp({
+    const makeApp = async (activeStore: FsStore) =>
+      await createApp({
         coreDb,
         dataRoot,
         fileAdmission,
@@ -127,7 +127,7 @@ describe('reasoning effort admission and replay', () => {
         openKitConfig: { defaults: { defaultAgentId: manifest.id } },
         turnExecutor: executor,
       });
-    const app = makeApp(store);
+    const app = await makeApp(store);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -193,7 +193,7 @@ describe('reasoning effort admission and replay', () => {
       if (expected === undefined)
         expect(reloaded.getTurnById(turn.id)).not.toHaveProperty('reasoningEffort');
       else expect(reloaded.getTurnById(turn.id)).toHaveProperty('reasoningEffort', expected);
-      const replay = await post(makeApp(reloaded), body);
+      const replay = await post(await makeApp(reloaded), body);
       expect(replay.status, await replay.clone().text()).toBe(202);
       const replayed = await replay.json();
       expect((entry === 'turn.start' ? replayed : replayed.turn).id).toBe(turn.id);
@@ -207,14 +207,14 @@ describe('reasoning effort admission and replay', () => {
           expected
         );
       expect(executor.startContexts).toHaveLength(launches);
-      const conflict = await post(makeApp(reloaded), { ...body, reasoningEffort: 'low' });
+      const conflict = await post(await makeApp(reloaded), { ...body, reasoningEffort: 'low' });
       expect(conflict.status).toBe(409);
       expect(await conflict.json()).toMatchObject({ code: 'idempotency_key_conflict' });
       expect(executor.startContexts).toHaveLength(launches);
       await expect(
         reloaded.updateTurn(turn.id, { reasoningEffort: 'low' } as never)
       ).rejects.toThrow('Turn update cannot change field: reasoningEffort');
-      const later = await post(makeApp(reloaded), {
+      const later = await post(await makeApp(reloaded), {
         ...payload,
         requestId: '00000000-0000-4000-8000-000000000779',
       });
@@ -269,7 +269,7 @@ describe('reasoning effort admission and replay', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const before = store.listThreads('ws_00000000-0000-7000-8000-000000000001').length;
     const input =
       entry === 'turn.start'
@@ -340,7 +340,7 @@ it('publishes resolver effort levels, empty controls, and absent controls in the
     },
   ]);
   const base = createTestGatewayConfig();
-  const app = createAppWithWorkspaceAuthority({
+  const app = await createAppWithWorkspaceAuthority({
     store: await createDemoStore({ dataRoot }),
     providerRegistry,
     gatewayConfig: {

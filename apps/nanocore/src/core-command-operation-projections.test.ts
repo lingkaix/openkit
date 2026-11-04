@@ -69,7 +69,7 @@ async function fixture(bootReadiness?: BootReadinessSnapshot) {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const app = createAppWithWorkspaceAuthority({
+  const app = await createAppWithWorkspaceAuthority({
     coreDb,
     store,
     ...(bootReadiness ? { bootReadiness } : {}),
@@ -343,7 +343,7 @@ it('admits member Workspace updates once and refuses readonly or removed authori
         `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7609-aed5-db4b5c95e76c', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(timestamp, timestamp, timestamp);
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       store,
       coreDb,
       mode: 'server',
@@ -499,7 +499,7 @@ it.each([
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const app = createAppWithWorkspaceAuthority({ store, coreDb, mode: 'server' });
+    const app = await createAppWithWorkspaceAuthority({ store, coreDb, mode: 'server' });
     const input = {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',

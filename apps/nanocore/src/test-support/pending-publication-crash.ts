@@ -3,6 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createApp } from '../app.js';
+import { prepareChannelServices } from '../channel-services.js';
 import { FsStore } from '../lib/store.js';
 import {
   raiseRecordedPendingRequest,
@@ -81,7 +82,19 @@ if (retainedRoot) {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const app = createApp({ coreDb, store, dataRoot });
+  const preparedChannelServices = await prepareChannelServices({ coreDb, store });
+  let recoverAttention: (() => Promise<void>) | undefined;
+  const app = createApp({
+    coreDb,
+    store,
+    dataRoot,
+    preparedChannelServices,
+    onChannelServicesReady: (services) => {
+      recoverAttention = services.recoverAttention;
+    },
+  });
+  if (!recoverAttention) throw new Error('Channel services were not bound.');
+  await recoverAttention();
   const now = new Date().toISOString();
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',

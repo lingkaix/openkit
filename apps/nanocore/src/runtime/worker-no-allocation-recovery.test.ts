@@ -49,6 +49,7 @@ afterEach(async () => {
 const producer = String.raw`
 import { readFileSync } from 'node:fs';
 import { createApp } from './src/app.ts';
+import { prepareChannelServices } from './src/channel-services.ts';
 import { FsStore } from './src/lib/store.ts';
 import { ProviderRegistry } from './src/providers/registry.ts';
 import { FileStorageAdmission } from './src/storage/artifacts/file-admission.ts';
@@ -102,7 +103,11 @@ store.updateTurn = async (...args) => {
 };
 const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
 const executor = new WorkerGovernanceTurnExecutor({ coreDb, backend, fileAdmission });
+const preparedChannelServices = await prepareChannelServices({ coreDb, store });
+let recoverAttention;
 const app = createApp({
+  preparedChannelServices,
+  onChannelServicesReady: (services) => { recoverAttention = services.recoverAttention; },
   coreDb, dataRoot, store, turnExecutor: executor, fileAdmission, localUserId: userId,
   agentManifests: [setup.manifest], gatewayConfig,
   providerRegistry: new ProviderRegistry([{
@@ -111,6 +116,8 @@ const app = createApp({
   }]),
   openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
 });
+if (!recoverAttention) throw new Error('Channel services were not bound.');
+await recoverAttention();
 const response = await app.request(...operationRequest('task.start', { workspaceId, threadId }, {
   body: JSON.stringify({ requestId, input: 'Inspect the admitted request without effects.' }),
 }));

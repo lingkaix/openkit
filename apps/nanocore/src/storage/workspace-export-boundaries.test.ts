@@ -400,7 +400,7 @@ describe('workspace export route boundaries', () => {
   it('streams one zstd workspace archive from the verified export', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-archive-'));
     const store = await createBoundaryStore(dataRoot);
-    const app = createApp({
+    const app = await createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
       store,
@@ -456,7 +456,7 @@ describe('workspace export route boundaries', () => {
   it('exports a knowledge page path that needs a USTAR prefix', async () => {
     const sourceDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-ustar-source-'));
     const sourceStore = await createBoundaryStore(sourceDataRoot);
-    const sourceApp = createApp({
+    const sourceApp = await createApp({
       coreDb: boundaryAuthority(sourceDataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot: sourceDataRoot,
       store: sourceStore,
@@ -535,7 +535,7 @@ describe('workspace export route boundaries', () => {
       updatedAt: turn.startedAt ?? timestamp,
     });
     await store.updateTurn(turn.id, { agentSessionId: session.id });
-    const app = createApp({
+    const app = await createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
       store,

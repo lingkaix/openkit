@@ -9,12 +9,12 @@ import {
 } from '@openkit/app-api-schemas';
 import { formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { createApp } from '../app.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { assertPortableWorkspaceNotebookDisclosure } from '../knowledge/notebook-workspace-portability.js';
 import { parseOkfDocument, updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { createAppWithPreparedChannels as createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import {
@@ -411,7 +411,7 @@ describe('workspace portable file state', () => {
       producer: { kind: 'agent', id: 'agent_knowledge', responsibleUserId: LOCAL_USER_ID },
       createdAt: firstTimestamp,
     });
-    const app = createApp({ coreDb, dataRoot, store, workspaceMutationAdmission });
+    const app = await createApp({ coreDb, dataRoot, store, workspaceMutationAdmission });
     const review = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.proposal.decide',
@@ -558,7 +558,7 @@ describe('workspace portable file state', () => {
         },
       })
     ).not.toThrow();
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const response = await app.request(
       ...operationRequest('workspace.export', { workspaceId }, { method: 'POST' })
     );
@@ -656,7 +656,7 @@ describe('workspace portable file state', () => {
     expect(restrictedPage.ok).toBe(true);
     if (!restrictedPage.ok) throw new Error('Restricted fixture page must remain valid OKF.');
     expect(restrictedPage.document.frontmatter.sensitivity).toBe('restricted');
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const response = await app.request(
       ...operationRequest('workspace.export', { workspaceId }, { method: 'POST' })
     );

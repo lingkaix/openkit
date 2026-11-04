@@ -515,7 +515,7 @@ Exact retained candidate.\r\n`;
     expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
     store = new FsStore({ dataRoot: f.dataRoot });
     expect(store.projectKnowledgeProposalDraft(f.workspaceId, proposal.id)).toEqual(proposal);
-    const app = createAppWithLocalIdentity({ coreDb: f.coreDb, dataRoot: f.dataRoot, store });
+    const app = await createAppWithLocalIdentity({ coreDb: f.coreDb, dataRoot: f.dataRoot, store });
     const reviewed = await call(
       { ...f, store, app },
       'knowledge.proposal.decide',

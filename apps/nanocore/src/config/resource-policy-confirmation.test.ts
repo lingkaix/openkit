@@ -44,7 +44,7 @@ describe('raw Workspace configuration Policy edits', () => {
       expect(WorkspaceConfigSchema.safeParse(source).success).toBe(true);
       const configPath = join(dataRoot, 'workspaces', workspace.id, 'config', 'workspace.jsonc');
       writeFileSync(configPath, JSON.stringify(source));
-      const app = createApp({ dataRoot, coreDb, store });
+      const app = await createApp({ dataRoot, coreDb, store });
       const send = (operation: string, body: unknown) =>
         app.request(`/api/app/operations/${operation}`, {
           method: 'POST',

@@ -2,20 +2,36 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import type { Worker as NativeWorker } from 'node:worker_threads';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
-import { createChannelServices, type DiscordAttentionTransport } from './channel-services.js';
+import {
+  type ChannelServices,
+  type DiscordAttentionTransport,
+  type PreparedChannelServices,
+  prepareChannelServices,
+} from './channel-services.js';
 import type { DiscordReply } from './channels/discord.js';
+import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
-import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
+import {
+  raiseRecordedPendingRequest,
+  setPendingRequestAttentionObserver,
+} from './runtime/pending-request-flow.js';
 import { readPendingRequest } from './runtime/pending-requests.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { heldCommit, releaseCommit } from './test-support/control-native-transport.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
@@ -26,6 +42,33 @@ import {
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { removeWorkspaceMember } from './workspace-sharing.js';
+
+const native = vi.hoisted(() => ({
+  worker: undefined as NativeWorker | undefined,
+  action: undefined as string | undefined,
+}));
+// Preserve the actual Worker and FULL-COMMIT instrument; retain only the selected Attention owner.
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { nativeCommitWorker } = await import('./test-support/control-native-transport.js');
+  const InstrumentedWorker = nativeCommitWorker(actual.Worker);
+  return {
+    ...actual,
+    Worker: class extends InstrumentedWorker {
+      override postMessage(
+        value: unknown,
+        transferList?: readonly import('node:worker_threads').TransferListItem[]
+      ): void {
+        const request = value as { operation?: string; input?: { action?: string } } | null;
+        if (request?.operation === 'attention') {
+          native.worker = this;
+          native.action = request.input?.action;
+        }
+        super.postMessage(value, transferList);
+      }
+    },
+  };
+});
 
 const actor: Actor = { userId: testEntityId('usr', 'channel-member'), kind: 'session' };
 const applicationId = '123456789012345678';
@@ -47,7 +90,10 @@ function text(reply: DiscordReply): string {
 }
 
 /** Composes real signed channel input, Core authority, native invocation and Pending storage. */
-async function fixture(kind: 'approval' | 'user-input' = 'approval') {
+async function fixture(
+  kind: 'approval' | 'user-input' = 'approval',
+  composition: 'direct' | 'app' | 'unbound' = 'direct'
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'channel-pending-seam-'));
   directories.push(dataRoot);
   let coreDb = openCoreDb(dataRoot);
@@ -82,92 +128,96 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
     id: actor.userId,
   });
   const requestId = kind === 'approval' ? 'ap_channel_seam' : 'ui_channel_seam';
-  const itemId = testEntityId('it', `channel-seam-${requestId}`);
-  const common = {
-    workspaceId: DEMO_WORKSPACE_ID,
-    threadId: thread.id,
-    raisingTurnId: turn.id,
-    responsibleUserId: actor.userId,
-    now: turn.startedAt!,
-    requestId,
-    requestItemId: itemId,
-    requesterKind: 'person' as const,
-  };
-  const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-  try {
-    if (kind === 'approval') {
-      await store.createItem({
-        id: itemId,
-        owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
-        threadId: thread.id,
-        turnId: turn.id,
-        type: 'approval-request',
-        status: 'completed',
-        approvalRequestId: requestId,
-        kind: 'permission',
-        title: 'Review exact publication',
-        description: 'Publish the chosen page.',
-        createdAt: turn.startedAt!,
-        completedAt: turn.startedAt!,
-      });
-      await raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
-        ...common,
-        kind,
-        governedIntent: { action: 'review.apply', page: 'page_exact' },
-        approval: {
+  /** Raises each exact supplied request through the same original Pending owner setup. */
+  async function raiseRequest(requestId: string, page = 'page_exact') {
+    const itemId = testEntityId('it', `channel-seam-${requestId}`);
+    const common = {
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: thread.id,
+      raisingTurnId: turn.id,
+      responsibleUserId: actor.userId,
+      now: turn.startedAt!,
+      requestId,
+      requestItemId: itemId,
+      requesterKind: 'person' as const,
+    };
+    const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    try {
+      if (kind === 'approval') {
+        await store.createItem({
+          id: itemId,
+          owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+          threadId: thread.id,
+          turnId: turn.id,
+          type: 'approval-request',
+          status: 'completed',
+          approvalRequestId: requestId,
           kind: 'permission',
           title: 'Review exact publication',
           description: 'Publish the chosen page.',
-        },
-      });
-    } else {
-      const questions = [
-        {
-          id: 'color',
-          header: 'Color',
-          question: 'Which color?',
-          options: null,
-          isOther: true,
-          isSecret: false,
-        },
-      ];
-      const requestItem = await store.createItem({
-        id: itemId,
-        owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
-        threadId: thread.id,
-        turnId: turn.id,
-        responsibleUserId: actor.userId,
-        type: 'user-input-request',
-        status: 'completed',
-        userInputRequestId: requestId,
-        prompt: 'Which color?',
-        questions,
-        createdAt: turn.startedAt!,
-        completedAt: turn.startedAt!,
-      });
-      await raiseRecordedPendingRequest(
-        store,
-        workspaceDb.sqlite,
-        {
+          createdAt: turn.startedAt!,
+          completedAt: turn.startedAt!,
+        });
+        await raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
           ...common,
           kind,
+          governedIntent: { action: 'review.apply', page },
+          approval: {
+            kind: 'permission',
+            title: 'Review exact publication',
+            description: 'Publish the chosen page.',
+          },
+        });
+      } else {
+        const questions = [
+          {
+            id: 'color',
+            header: 'Color',
+            question: 'Which color?',
+            options: null,
+            isOther: true,
+            isSecret: false,
+          },
+        ];
+        const requestItem = await store.createItem({
+          id: itemId,
+          owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+          threadId: thread.id,
+          turnId: turn.id,
+          responsibleUserId: actor.userId,
+          type: 'user-input-request',
+          status: 'completed',
+          userInputRequestId: requestId,
+          prompt: 'Which color?',
           questions,
-          questionDigest: 'exact-color-question',
-        },
-        requestItem
-      );
+          createdAt: turn.startedAt!,
+          completedAt: turn.startedAt!,
+        });
+        await raiseRecordedPendingRequest(
+          store,
+          workspaceDb.sqlite,
+          {
+            ...common,
+            kind,
+            questions,
+            questionDigest: 'exact-color-question',
+          },
+          requestItem
+        );
+      }
+    } finally {
+      workspaceDb.sqlite.close();
     }
-  } finally {
-    workspaceDb.sqlite.close();
   }
+  await raiseRequest(requestId);
 
   const nativeCalls: Array<{ id: string; input: unknown; actor: Actor }> = [];
   const sendAttention = vi
     .fn<DiscordAttentionTransport['sendAttention']>()
     .mockResolvedValue({ status: 'sent', externalMessageId: '523456789012345678' });
   let workspaceAvailable = true;
-  function compose(configured = true) {
+  function bindings(configured = true) {
     const repositoryWorkspaceDb = (workspaceId: string) => {
       if (!workspaceAvailable) throw new Error('Simulated unavailable Workspace storage');
       return openWorkspaceDb(dataRoot, workspaceId);
@@ -182,22 +232,57 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       pendingRequestServices: { coreDb, repositoryWorkspaceDb, inflightCommands },
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     });
-    return createChannelServices({
+    return {
       publicBaseUrl: 'https://openkit.invalid',
       coreDb,
       store,
-      mode: 'server',
+      mode: 'server' as const,
       ...(configured
         ? { discordConfig: { applicationId, publicKey }, transport: { sendAttention } }
         : {}),
       openWorkspace: repositoryWorkspaceDb,
-      invokePending: async (id, input, decidingActor) => {
+      invokePending: async (
+        id: 'approval.respond' | 'question.answer',
+        input: unknown,
+        decidingActor: Actor
+      ) => {
         nativeCalls.push({ id, input, actor: decidingActor });
         return invoke(id, input, { kind: 'public', actor: decidingActor, delivery: 'human' });
       },
-    });
+    };
   }
-  let services = compose();
+  const prepare = () => prepareChannelServices({ coreDb, store });
+  async function compose(configured = true) {
+    const prepared = await prepare();
+    return prepared(bindings(configured));
+  }
+  let services: ChannelServices | undefined;
+  let app: ReturnType<typeof createApp> | undefined;
+  /** Binds the real App invocation and Workspace callbacks after actual native preparation. */
+  function bindApp(preparedChannelServices: PreparedChannelServices) {
+    app = createApp({
+      coreDb,
+      dataRoot,
+      store,
+      mode: 'server',
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+      openKitConfig: {
+        server: { publicBaseUrl: 'https://openkit.invalid' },
+        channels: { discord: { applicationId, publicKey } },
+      },
+      discordAttentionTransport: { sendAttention },
+      preparedChannelServices,
+      onChannelServicesReady: (bound) => {
+        services = bound;
+      },
+    });
+    return app;
+  }
+  if (composition === 'direct') services = await compose();
+  if (composition === 'app') {
+    bindApp(await prepare());
+    await services!.recoverAttention();
+  }
   let event = 100000000000000000n;
   const envelope = (command: string, values: Record<string, string>) => ({
     id: String(++event),
@@ -234,17 +319,35 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
     };
   };
   const send = (command: string, values: Record<string, string>) =>
-    services.discord!.handleSignedInteraction(signed(envelope(command, values)));
+    services!.discord!.handleSignedInteraction(signed(envelope(command, values)));
   const target = { workspace: DEMO_WORKSPACE_ID, thread: thread.id, request: requestId };
-  const record = () => {
+  const record = (id = requestId) => {
     const db = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
     try {
-      return readPendingRequest(db.sqlite, requestId)!;
+      return readPendingRequest(db.sqlite, id)!;
     } finally {
       db.sqlite.close();
     }
   };
+  /** Sends exact signed bytes through the App's real separately authenticated entry. */
+  const postApp = (signedInput: ReturnType<typeof signed>) => {
+    if (!app) throw new Error('The App fixture has not been bound.');
+    return app.request('/api/channels/discord/interactions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-signature-timestamp': signedInput.timestamp,
+        'x-signature-ed25519': signedInput.signature,
+      },
+      body: signedInput.body.toString('utf8'),
+    });
+  };
   return {
+    prepare,
+    bindings,
+    bindApp,
+    postApp,
+    raiseRequest,
     nativeCalls,
     sendAttention,
     send,
@@ -259,13 +362,14 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       return store;
     },
     get services() {
+      if (!services) throw new Error('The actual channel services have not been bound.');
       return services;
     },
     setWorkspaceAvailable(available: boolean) {
       workspaceAvailable = available;
     },
     async pair() {
-      const { challenge } = services.discord!.beginPairing(actor);
+      const { challenge } = services!.discord!.beginPairing(actor);
       expect(text(await send('pair', { challenge }))).toContain('paired');
     },
     async disclose() {
@@ -275,8 +379,8 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       expect(disclosure).toBeTruthy();
       return disclosure!;
     },
-    withoutAdapter() {
-      const unconfigured = compose(false);
+    async withoutAdapter() {
+      const unconfigured = await compose(false);
       const invoke = createOperationInvocation({
         coreDb,
         store,
@@ -324,19 +428,25 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       mkdirSync(directory, { recursive: true });
       writeFileSync(join(directory, 'workspace.jsonc'), JSON.stringify(config));
     },
-    restart() {
+    async restart() {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
       databases.push(coreDb);
       applyMigrations(coreDb);
       store = new FsStore({ dataRoot });
-      services = compose();
+      services = await compose();
     },
   };
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  releaseCommit();
+  vi.useRealTimers();
   await shutdownControlStoreWorkerClient();
+  native.worker = undefined;
+  native.action = undefined;
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
@@ -351,7 +461,8 @@ describe('Discord to native Pending Request seam', () => {
     const invokePending = vi.fn(async () => {
       throw new Error('Pairing must not invoke a Pending Request');
     });
-    const services = createChannelServices({
+    const prepared = await prepareChannelServices({ coreDb: f.coreDb, store: f.store });
+    const services = prepared({
       coreDb: f.coreDb,
       store: f.store,
       mode: 'local',
@@ -374,13 +485,13 @@ describe('Discord to native Pending Request seam', () => {
     const f = await fixture();
     const pending = f.record();
     f.setWorkspaceAvailable(false);
-    expect(() => f.services.recoverAttention()).not.toThrow();
+    await expect(f.services.recoverAttention()).resolves.toBeUndefined();
     expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([]);
     expect(f.sendAttention).not.toHaveBeenCalled();
     expect(f.record()).toEqual(pending);
 
     f.setWorkspaceAvailable(true);
-    f.services.recoverAttention();
+    await f.services.recoverAttention();
     expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([
       expect.objectContaining({
         source: {
@@ -412,7 +523,7 @@ describe('Discord to native Pending Request seam', () => {
         .get(actor.userId)
     ).toEqual({ count: 1 });
     const pending = f.record();
-    const invoke = f.withoutAdapter();
+    const invoke = await f.withoutAdapter();
     expect(await invoke('channel.discord.status')).toEqual({
       configured: false,
       sendingAvailable: false,
@@ -586,7 +697,7 @@ describe('Discord to native Pending Request seam', () => {
       return { status: 'sent', externalMessageId: '523456789012345678' };
     });
     const pending = f.record();
-    f.services.attentionRaised(pending);
+    const publishing = f.services.attentionRaised(pending);
     await preparing;
     try {
       if (loss === 'membership') f.removeMembership();
@@ -594,6 +705,7 @@ describe('Discord to native Pending Request seam', () => {
     } finally {
       release!();
     }
+    await publishing;
     await vi.waitFor(() =>
       expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
         'failed-no-send'
@@ -610,7 +722,7 @@ describe('Discord to native Pending Request seam', () => {
     await f.pair();
     f.sendAttention.mockRejectedValue(new Error('simulated lost message acknowledgement'));
     const pending = f.record();
-    f.services.attentionRaised(pending);
+    await f.services.attentionRaised(pending);
     await vi.waitFor(() =>
       expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
         'delivery-unknown'
@@ -619,8 +731,8 @@ describe('Discord to native Pending Request seam', () => {
     const delivery = f.services.notifications.listForActor(actor.userId, {}, () => true)[0]!;
     expect(f.record()).toEqual(pending);
     expect(f.sendAttention).toHaveBeenCalledTimes(1);
-    f.restart();
-    f.services.recoverAttention();
+    await f.restart();
+    await f.services.recoverAttention();
     await expect(f.services.send(actor, delivery.id, delivery.attempt!.id)).rejects.toThrow();
     expect(f.services.notifications.get(delivery.id)?.status).toBe('delivery-unknown');
     expect(f.sendAttention).toHaveBeenCalledTimes(1);
@@ -636,7 +748,7 @@ describe('Discord to native Pending Request seam', () => {
       code: 'simulated-message-refusal',
     });
     const pending = f.record();
-    f.services.attentionRaised(pending);
+    await f.services.attentionRaised(pending);
     await vi.waitFor(() =>
       expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
         'failed-no-send'
@@ -670,11 +782,268 @@ describe('Discord to native Pending Request seam', () => {
     expect(f.store.getApproval(f.target.request).status).toBe('denied');
     expect(f.nativeCalls).toHaveLength(1);
     f.coreDb.sqlite.exec('DROP TRIGGER refuse_channel_receipt');
-    f.restart();
+    await f.restart();
     expect(text(await f.services.discord!.handleSignedInteraction(signed))).toContain(
       'outcome is unknown'
     );
     expect(f.nativeCalls).toHaveLength(1);
     expect(f.store.getApproval(f.target.request).status).toBe('denied');
+  });
+});
+
+describe('prepared Attention and actual App composition', () => {
+  it('S1: joins the actual FULL recovery before returning a synchronous App', async () => {
+    const f = await fixture('approval', 'unbound');
+    const before = f.record();
+    // Finish the first genuine preparation/open before selecting only the next reconcile COMMIT.
+    await f.prepare();
+    const held = await heldCommit(2, f.prepare);
+    try {
+      expect(native.action).toBe('reconcile');
+      expect(held.completed()).toBe(false);
+      expect(f.sendAttention).not.toHaveBeenCalled();
+      expect(f.record()).toEqual(before);
+      releaseCommit();
+      const prepared = await held.result;
+      const app = f.bindApp(prepared);
+      expect(app).not.toBeInstanceOf(Promise);
+      expect((await app.request('/api/meta')).status).toBe(200);
+      await f.services.recoverAttention();
+      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toEqual([
+        expect.objectContaining({
+          source: expect.objectContaining({ requestId: f.target.request }),
+          status: 'queued',
+        }),
+      ]);
+      expect(f.record()).toEqual(before);
+    } finally {
+      releaseCommit();
+      await Promise.allSettled([held.result]);
+    }
+  });
+
+  it('S2: returns no prepared factory when the actual recovery FULL acknowledgement is lost', async () => {
+    const f = await fixture('approval', 'unbound');
+    const before = f.record();
+    // Finish the first genuine preparation/open before selecting only the next reconcile COMMIT.
+    await f.prepare();
+    const held = await heldCommit(2, f.prepare);
+    try {
+      expect(native.action).toBe('reconcile');
+      expect(native.worker).toBeDefined();
+      expect(held.completed()).toBe(false);
+      await native.worker!.terminate();
+      await expect(held.result).rejects.toBeInstanceOf(ControlStoreWorkerError);
+      await expect(held.result).rejects.toMatchObject({ commit: 'unknown' });
+      expect(f.sendAttention).not.toHaveBeenCalled();
+      expect(f.record()).toEqual(before);
+    } finally {
+      releaseCommit();
+      await Promise.allSettled([held.result]);
+    }
+  });
+
+  it('S3: refuses an unprepared Core App and mismatched actual owners, while keeping no-Core channels absent', async () => {
+    const f = await fixture('approval', 'unbound');
+    const before = f.record();
+    expect(() => createApp({ coreDb: f.coreDb, store: f.store })).toThrow();
+    const prepared = await f.prepare();
+    expect(() => createApp({ coreDb: f.coreDb, preparedChannelServices: prepared })).toThrow();
+    expect(() =>
+      createApp({ preparedChannelServices: prepared, localUserId: FIXTURE_LOCAL_USER_ID })
+    ).toThrow();
+    const anotherStore = new FsStore({ dataRoot: f.coreDb.dataRoot });
+    expect(() => prepared({ ...f.bindings(), store: anotherStore })).toThrow();
+    const anotherCore = openCoreDb(f.coreDb.dataRoot);
+    databases.push(anotherCore);
+    expect(() => prepared({ ...f.bindings(), coreDb: anotherCore })).toThrow();
+    expect(f.nativeCalls).toEqual([]);
+    expect(f.sendAttention).not.toHaveBeenCalled();
+    expect(f.record()).toEqual(before);
+    const app = f.bindApp(prepared);
+    expect(app).not.toBeInstanceOf(Promise);
+    expect((await app.request('/api/meta')).status).toBe(200);
+    const noCore = createApp({
+      localUserId: FIXTURE_LOCAL_USER_ID,
+      turnExecutor: new SimulatedTurnExecutor(),
+    });
+    const unavailable = await noCore.request('/api/channels/discord/interactions', {
+      method: 'POST',
+      body: '{}',
+    });
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toMatchObject({ error: { code: 'channel_unavailable' } });
+  });
+
+  it.each([
+    'resolve',
+    'revoke',
+  ] as const)('S4: binds the actual App Pending owner with current authority (%s)', async (mode) => {
+    const f = await fixture('approval', 'app');
+    const { challenge } = f.services.discord!.beginPairing(actor);
+    const pairing = await f.postApp(f.signed(f.envelope('pair', { challenge })));
+    expect(pairing.status).toBe(200);
+    expect(text((await pairing.json()) as DiscordReply)).toContain('paired');
+    const inspected = await f.postApp(f.signed(f.envelope('inspect', f.target)));
+    expect(inspected.status).toBe(200);
+    const disclosure = text((await inspected.json()) as DiscordReply).match(
+      /Disclosure: ([A-Za-z0-9_-]+)/
+    )?.[1];
+    expect(disclosure).toBeTruthy();
+    const before = f.record();
+    if (mode === 'revoke') f.services.discord!.revoke(actor);
+    const exactInput = f.signed(f.envelope('deny', { ...f.target, disclosure: disclosure! }));
+    const response = await f.postApp(exactInput);
+    expect(response.status).toBe(200);
+    const reply = text((await response.json()) as DiscordReply);
+    if (mode === 'revoke') {
+      expect(reply).toContain('refused');
+      expect(f.record()).toEqual(before);
+      expect(f.store.getApproval(f.target.request).status).toBe('pending');
+    } else {
+      expect(reply).toContain('accepted');
+      expect(f.record()).toMatchObject({
+        state: 'resolved',
+        resolution: 'denied',
+        decidingActor: { kind: 'user', id: actor.userId },
+      });
+      expect(f.store.getApproval(f.target.request).status).toBe('denied');
+      const settled = f.record();
+      const items = f.store.listThreadItems(DEMO_WORKSPACE_ID, f.target.thread);
+      const duplicate = await f.postApp(exactInput);
+      expect(text((await duplicate.json()) as DiscordReply)).toContain('already handled');
+      expect(f.record()).toEqual(settled);
+      expect(f.store.listThreadItems(DEMO_WORKSPACE_ID, f.target.thread)).toEqual(items);
+      expect(f.store.listThreadTurns(DEMO_WORKSPACE_ID, f.target.thread)).toHaveLength(1);
+    }
+  });
+
+  it.each([
+    'release',
+    'lose-reply',
+  ] as const)('S5: joins actual observer publication after Pending commit and contains its separate failure (%s)', async (mode) => {
+    const f = await fixture('approval', 'app');
+    const original = f.record();
+    const entered = Promise.withResolvers<Awaited<ReturnType<typeof heldCommit<void>>>>();
+    // The installed observer forwards the exact real consumer; only its native ACK is observed.
+    setPendingRequestAttentionObserver(f.store, async (record) => {
+      try {
+        const held = await heldCommit(2, () => f.services.attentionRaised(record));
+        entered.resolve(held);
+        await held.result;
+      } catch (error) {
+        entered.reject(error);
+        throw error;
+      }
+    });
+    const requestId = 'ap_channel_observer';
+    let completed = false;
+    const raising = f.raiseRequest(requestId, 'page_observer').finally(() => {
+      completed = true;
+    });
+    const held = await entered.promise;
+    try {
+      expect(native.action).toBe('enqueue');
+      expect(completed).toBe(false);
+      const committed = f.record(requestId);
+      expect(committed).toMatchObject({ requestId, state: 'pending', claim: 'unclaimed' });
+      expect(
+        f.store
+          .listThreadItems(DEMO_WORKSPACE_ID, f.target.thread)
+          .filter((item) => item.id === committed.requestItemId)
+      ).toHaveLength(1);
+      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)).toContainEqual(
+        expect.objectContaining({
+          source: expect.objectContaining({ requestId }),
+          status: 'queued',
+        })
+      );
+      if (mode === 'lose-reply') {
+        expect(native.worker).toBeDefined();
+        await native.worker!.terminate();
+        await expect(held.result).rejects.toMatchObject({
+          name: 'ControlStoreWorkerError',
+          commit: 'unknown',
+        });
+      } else {
+        releaseCommit();
+        await held.result;
+      }
+      await raising;
+      expect(completed).toBe(true);
+      expect(f.record(requestId)).toEqual(committed);
+      expect(f.record()).toEqual(original);
+      expect(f.store.getApproval(requestId).status).toBe('pending');
+      expect(f.sendAttention).not.toHaveBeenCalled();
+    } finally {
+      releaseCommit();
+      await Promise.allSettled([held.result, raising]);
+    }
+  });
+
+  it('S6: retains the real signed recovery lifetime past the unchanged inline deadline', async () => {
+    const f = await fixture('approval', 'app');
+    const before = f.record();
+    const entered = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<{ status: 'sent'; externalMessageId: string }>();
+    f.sendAttention.mockImplementation(() => {
+      entered.resolve();
+      return finish.promise;
+    });
+    const { challenge } = f.services.discord!.beginPairing(actor);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const response = f.postApp(f.signed(f.envelope('pair', { challenge })));
+    let closing: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(2_000);
+      const progress = await response;
+      expect(progress.status).toBe(200);
+      expect(await progress.json()).toMatchObject({
+        type: 4,
+        data: {
+          flags: 64,
+          content:
+            'The response is still being checked. Inspect the request in OpenKit before retrying.',
+        },
+      });
+      vi.useRealTimers();
+      let closed = false;
+      closing = shutdownControlStoreWorkerClient().then(() => {
+        closed = true;
+      });
+      await nextTurn();
+      expect(closed).toBe(false);
+      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
+        'sending'
+      );
+      finish.resolve({ status: 'sent', externalMessageId: '523456789012345678' });
+      await closing;
+      expect(f.services.notifications.listForActor(actor.userId, {}, () => true)[0]?.status).toBe(
+        'sent'
+      );
+      expect(f.sendAttention).toHaveBeenCalledTimes(1);
+      expect(f.record()).toEqual(before);
+    } finally {
+      vi.useRealTimers();
+      finish.resolve({ status: 'sent', externalMessageId: '523456789012345678' });
+      await Promise.allSettled([response, ...(closing ? [closing] : [])]);
+    }
+  });
+
+  it('S6: contains a real recovery dependency rejection without replacing the signed owner result', async () => {
+    const f = await fixture('approval', 'app');
+    const before = f.record();
+    const read = vi.spyOn(f.store, 'listWorkspaces').mockImplementationOnce(() => {
+      throw new Error('Injected projection source enumeration failure.');
+    });
+    const response = await f.postApp(
+      f.signed({ id: '223456789012345678', application_id: applicationId, type: 1, version: 1 })
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ type: 1 });
+    expect(read).toHaveBeenCalledOnce();
+    expect(f.record()).toEqual(before);
+    expect(f.sendAttention).not.toHaveBeenCalled();
   });
 });

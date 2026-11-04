@@ -30,7 +30,7 @@ it('imports, pins, activates and restores a reusable definition through public o
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Definition lifecycle');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
-  const app = createApp({ coreDb, dataRoot, store, mode: 'local' });
+  const app = await createApp({ coreDb, dataRoot, store, mode: 'local' });
   const call = (operation: string, input: object) =>
     app.request(`/api/app/operations/${operation}`, {
       method: 'POST',
@@ -249,7 +249,7 @@ async function catalogReadFixture() {
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Catalog read boundaries');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
-  const app = createApp({ coreDb, dataRoot, store, mode: 'local' });
+  const app = await createApp({ coreDb, dataRoot, store, mode: 'local' });
   return {
     dataRoot,
     workspaceId: workspace.id,

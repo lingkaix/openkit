@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 /** Builds real authored files so active provenance and restart retention use the production loader. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'gateway-settings-'));
   const executorCoreDb = createTestCoreDb(root);
   executorCoreDbs.push(executorCoreDb);
@@ -84,7 +84,7 @@ function fixture() {
     })
   );
   const manager = createRuntimeConfigManager({ dataRoot: root });
-  const app = createApp({
+  const app = await createApp({
     dataRoot: root,
     runtimeConfigManager: manager,
     turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),
@@ -94,7 +94,7 @@ function fixture() {
 
 describe('Gateway settings active diagnostics', () => {
   it('projects active binding, exact catalog key, every leaf source, unknown, false, zero and empty arrays', async () => {
-    const { app } = fixture();
+    const { app } = await fixture();
     const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(response.status).toBe(200);
     const body = AppDiagnosticsResponseSchema.parse(await response.json());
@@ -126,7 +126,7 @@ describe('Gateway settings active diagnostics', () => {
   });
 
   it('retains the active binding and metadata during pending restart and exposes ordered unavailable routes', async () => {
-    const { app, manager, profile, profilePath, catalog, catalogPath } = fixture();
+    const { app, manager, profile, profilePath, catalog, catalogPath } = await fixture();
     writeFileSync(
       profilePath,
       JSON.stringify({
@@ -170,11 +170,11 @@ describe('Gateway settings active diagnostics', () => {
   });
 
   it('keeps the deployment-admin gate ahead of the new reads', async () => {
-    const { manager } = fixture();
+    const { manager } = await fixture();
     const coreDb = openCoreDb(roots.at(-1)!);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       runtimeConfigManager: manager,
       mode: 'server',
@@ -199,12 +199,12 @@ describe('Gateway settings active diagnostics', () => {
 });
 
 it('uses the existing network-free pair check for exact active subscription binding', async () => {
-  const { manager, executorCoreDb } = fixture();
+  const { manager, executorCoreDb } = await fixture();
   const gatewayUnavailableReason = vi.fn().mockReturnValue('subscription_account_logged_out');
   const accountManager = {
     gatewayUnavailableReason,
   } as unknown as ProviderSubscriptionAccountManager;
-  const app = createApp({
+  const app = await createApp({
     runtimeConfigManager: manager,
     providerSubscriptionAccountManager: accountManager,
     turnExecutor: new SimulatedTurnExecutor({ coreDb: executorCoreDb }),

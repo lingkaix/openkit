@@ -1087,7 +1087,7 @@ describe('administrator cleanup public operation composition', () => {
   it('uses the same real JSON operation through generated CLI and eligible remote MCP', async () => {
     const f = await fixture();
     await populate(f);
-    const app = createApp({
+    const app = await createApp({
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
       store: f.store,

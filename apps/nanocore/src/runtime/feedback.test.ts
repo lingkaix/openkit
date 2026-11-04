@@ -143,7 +143,7 @@ describe('turn feedback', () => {
       }
     );
     await store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const res = await app.request(
       ...operationRequest(
@@ -182,7 +182,7 @@ describe('turn feedback', () => {
       }
     );
     await store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const res = await app.request(
       ...operationRequest(
@@ -296,7 +296,7 @@ describe('turn feedback', () => {
         new Date().toISOString(),
         new Date().toISOString()
       );
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       store: ownerStore,
       auth: createHeaderAuthStub(),

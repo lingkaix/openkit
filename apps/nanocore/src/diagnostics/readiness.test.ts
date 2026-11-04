@@ -83,7 +83,7 @@ describe('operational readiness dimensions', () => {
         },
       },
     });
-    const app = createApp({ bootReadiness: boot });
+    const app = await createApp({ bootReadiness: boot });
     const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
@@ -114,7 +114,7 @@ describe('operational readiness dimensions', () => {
         },
       },
     });
-    const app = createApp({ bootReadiness: boot });
+    const app = await createApp({ bootReadiness: boot });
     const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(await response.json()).toMatchObject({
       boot: { overall: 'ready', acceptingProductWork: true },

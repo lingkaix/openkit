@@ -21,6 +21,7 @@ import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openk
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -34,7 +35,6 @@ import {
   publishWorkspaceResourceCatalog,
   readWorkspaceResourceCatalog,
 } from '../catalog/resource-catalog.js';
-import { createChannelServices } from '../channel-services.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -52,6 +52,7 @@ import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { createPreparedChannelServices as createChannelServices } from '../test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
@@ -250,9 +251,9 @@ async function fixture(channelHistory = false, unfinished = false) {
   const dataRoot = join(root, 'source');
   const store = await createDemoStore({ dataRoot });
   const core = openCoreDb(dataRoot);
-  const ownerId = ensureLocalUser(core);
+  const ownerId = await ensureLocalUser(core);
   recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: ownerId });
-  const credential = createOpenKitAccessTokenRecord(core, {
+  const credential = await createOpenKitAccessTokenRecord(core, {
     ownerUserId: ownerId,
     scope: 'workspace',
     workspaceIds: [workspaceId],
@@ -375,10 +376,10 @@ async function fixture(channelHistory = false, unfinished = false) {
     pendingRequestId: pendingId,
   };
   // Exercise the actual channel admission owner without contacting an external transport.
-  const inspectChannel = () => {
+  const inspectChannel = async () => {
     const channelDb = openCoreDb(dataRoot);
     try {
-      const channels = createChannelServices({
+      const channels = await createChannelServices({
         coreDb: channelDb,
         store,
         mode: 'server',
@@ -393,7 +394,7 @@ async function fixture(channelHistory = false, unfinished = false) {
     }
   };
   if (channelHistory)
-    expect(inspectChannel()).toMatchObject({ status: 'available', responseAllowed: true });
+    expect(await inspectChannel()).toMatchObject({ status: 'available', responseAllowed: true });
   await shutdownControlStoreWorkerClient();
   const sourceDeploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
@@ -611,7 +612,7 @@ async function readmissionFixture(
   readmissionCleanups.push(() => freeze.release());
   const owner = {
     core,
-    actor: { kind: 'local' as const, userId: ensureLocalUser(core) },
+    actor: { kind: 'local' as const, userId: await ensureLocalUser(core) },
     fileAdmission: new FileStorageAdmission(f.dataRoot, () => 128n * 1024n * 1024n),
     native: { gate, freeze },
   };
@@ -763,7 +764,7 @@ describe('D0-2 same-deployment restore', () => {
   ] as const)('refuses selected registration after %s while its actual Core post is deferred', async (fault) => {
     const f = await readmissionFixture(false, 'after-target-rename');
     const core = f.owner.core;
-    const token = createOpenKitAccessTokenRecord(core, {
+    const token = await createOpenKitAccessTokenRecord(core, {
       ownerUserId: f.ownerId,
       scope: 'server-admin',
       workspaceIds: [],
@@ -794,7 +795,13 @@ describe('D0-2 same-deployment restore', () => {
       productOwner: scope.owner,
       contentMount: scope.contentMount,
     });
-    let release = await client.pauseForDataRootBackup(database);
+    // Core Policy: commit revocation before the captured request can post.
+    // A Core-wide hold would also prevent its real revocation owner from running.
+    const beforeSubmit = Promise.withResolvers<void>();
+    let release =
+      fault === 'credential-revoked'
+        ? () => beforeSubmit.resolve()
+        : await client.pauseForDataRootBackup(database);
     const selected = {
       dataRoot: f.dataRoot,
       workspaceId,
@@ -818,7 +825,13 @@ describe('D0-2 same-deployment restore', () => {
     let expected = before;
     const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
     core.sqlite.pragma('query_only = ON');
-    const publication = vi.spyOn(client, 'recoveryTargetRegistration');
+    const register = client.recoveryTargetRegistration.bind(client);
+    const publication = vi
+      .spyOn(client, 'recoveryTargetRegistration')
+      .mockImplementation(async (...args) => {
+        if (fault === 'credential-revoked') await beforeSubmit.promise;
+        return register(...args);
+      });
     const actualOpen = client.open.bind(client);
     let upstreamOpenRejected = false;
     let upstreamOpenFailure: unknown;
@@ -866,7 +879,10 @@ describe('D0-2 same-deployment restore', () => {
       if (fault === 'credential-revoked') {
         const writer = openCoreDb(f.dataRoot);
         try {
-          revokeOpenKitAccessTokenRecord(writer, token.tokenId);
+          expect(revokeOpenKitAccessTokenRecord(writer, token.tokenId)).toMatchObject({
+            tokenId: token.tokenId,
+            status: 'revoked',
+          });
         } finally {
           writer.sqlite.close();
         }
@@ -1304,7 +1320,7 @@ describe('D0-2 same-deployment restore', () => {
     readmissionCleanups.push(() => freeze.release());
     const owner = {
       core,
-      actor: { kind: 'local' as const, userId: ensureLocalUser(core) },
+      actor: { kind: 'local' as const, userId: await ensureLocalUser(core) },
       fileAdmission: new FileStorageAdmission(f.dataRoot, () => 128n * 1024n * 1024n),
       native: { gate, freeze },
     };
@@ -1646,7 +1662,7 @@ describe('D0-2 same-deployment restore', () => {
       let preparedCapacityChecks = 0;
       const owner = {
         core,
-        actor: { kind: 'local' as const, userId: ensureLocalUser(core) },
+        actor: { kind: 'local' as const, userId: await ensureLocalUser(core) },
         fileAdmission: new FileStorageAdmission(
           f.dataRoot,
           () => 128n * 1024n * 1024n,
@@ -2362,7 +2378,7 @@ describe('D0-2 same-deployment restore', () => {
   it('WM 377–381: current registry, membership, grants, restrictions, holds and expiry win over backup state', async () => {
     const f = await fixture();
     const core = openCoreDb(f.dataRoot);
-    revokeOpenKitAccessTokenRecord(core, f.credential.tokenId);
+    await revokeOpenKitAccessTokenRecord(core, f.credential.tokenId);
     const currentOwner = allocateEntityId('usr');
     const changedAt = new Date().toISOString();
     core.sqlite.transaction(() => {
@@ -2562,7 +2578,7 @@ describe('D0-2 same-deployment restore', () => {
     expect(rows(coreDbPath(f.dataRoot), 'recurring_schedules')).toEqual([
       expect.objectContaining({ id: schedule.id, status: 'paused', next_scheduled_at: null }),
     ]);
-    expect(f.inspectChannel()).toMatchObject({ status: 'unavailable' });
+    expect(await f.inspectChannel()).toMatchObject({ status: 'unavailable' });
     const audit = rows(workspaceDbPath(f.dataRoot, workspaceId), 'audit_events');
     expect(
       audit.some(

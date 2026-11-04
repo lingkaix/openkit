@@ -667,7 +667,7 @@ interface Fixture {
   access: KnowledgeRetrievalAccess;
   userId: string;
   notebook: KnowledgeNotebook;
-  app: ReturnType<typeof createApp>;
+  app: Awaited<ReturnType<typeof createApp>>;
   runtimeConfigManager: ReturnType<typeof createRuntimeConfigManager>;
 }
 
@@ -725,7 +725,7 @@ async function createFixture(
     get notebook() {
       return readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
     },
-    app: createApp({ coreDb, dataRoot, store, runtimeConfigManager }),
+    app: await createApp({ coreDb, dataRoot, store, runtimeConfigManager }),
     runtimeConfigManager,
     access: {
       store,

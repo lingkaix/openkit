@@ -664,7 +664,7 @@ describe('execution backend port through real Core coordination', () => {
           if (input.turn.threadId === 'th_00000000-0000-7034-bb1e-225363d49699') await gate.promise;
           return prepare(store, input);
         });
-      const post = (app: ReturnType<typeof createAppWithWorkspaceAuthority>) =>
+      const post = (app: Awaited<ReturnType<typeof createAppWithWorkspaceAuthority>>) =>
         app.request(
           ...operationRequest(
             'turn.start',
@@ -681,7 +681,7 @@ describe('execution backend port through real Core coordination', () => {
           )
         );
       try {
-        const app = createAppWithWorkspaceAuthority(appInput);
+        const app = await createAppWithWorkspaceAuthority(appInput);
         const response = await post(app);
         expect(response.status).toBe(202);
         const b = await response.json();
@@ -940,7 +940,7 @@ describe('execution backend port through real Core coordination', () => {
         store: f.store,
         turnExecutor: f.executor,
       };
-      const response = await createApp(appInput).request(
+      const response = await (await createApp(appInput)).request(
         ...operationRequest(
           'turn.interrupt',
           {

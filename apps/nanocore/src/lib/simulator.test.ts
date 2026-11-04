@@ -130,7 +130,7 @@ async function configureNativeRuntimeTarget(coreDb: CoreDb): Promise<void> {
  *
  * @param app NanoCore app under test.
  */
-async function linkRepository(app: ReturnType<typeof createApp>): Promise<string> {
+async function linkRepository(app: Awaited<ReturnType<typeof createApp>>): Promise<string> {
   const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-simulator-repository-'));
 
   execFileSync('git', ['init'], { cwd: repositoryPath, stdio: 'ignore' });
@@ -270,7 +270,7 @@ async function createRemoteGitProductFixture(
       ],
     }),
   });
-  const app = createApp({ coreDb, runtimeConfigManager, store, turnExecutor: executor });
+  const app = await createApp({ coreDb, runtimeConfigManager, store, turnExecutor: executor });
 
   return { app, canaryPath, coreDb, executor, store };
 }
@@ -291,7 +291,7 @@ describe('SimulatedTurnExecutor', () => {
     });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-    const app = createApp({
+    const app = await createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
@@ -417,7 +417,7 @@ describe('SimulatedTurnExecutor', () => {
     };
     const executor = new SimulatedTurnExecutor({ coreDb });
     const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-    const app = createApp({
+    const app = await createApp({
       agentManifests: [setup.manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
@@ -574,7 +574,7 @@ describe('SimulatedTurnExecutor', () => {
       completions[nextExecution++]?.resolve(completion);
       return completion;
     });
-    const app = createApp({
+    const app = await createApp({
       fileAdmission,
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -725,7 +725,7 @@ describe('SimulatedTurnExecutor', () => {
         models: ['openai/gpt-5.2'],
       },
     ]);
-    const firstApp = createApp({
+    const firstApp = await createApp({
       fileAdmission,
       agentManifests: [createTestAgentSetup({ imageRef: imageRefA }).manifest],
       coreDb,
@@ -735,7 +735,7 @@ describe('SimulatedTurnExecutor', () => {
       store,
       turnExecutor: executor,
     });
-    const secondApp = createApp({
+    const secondApp = await createApp({
       fileAdmission,
       agentManifests: [createTestAgentSetup({ imageRef: imageRefB }).manifest],
       coreDb,
@@ -1164,7 +1164,7 @@ describe('SimulatedTurnExecutor', () => {
         })();
         return admissionProof;
       });
-    const app = createApp({
+    const app = await createApp({
       fileAdmission: admission,
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -1983,7 +1983,7 @@ describe('SimulatedTurnExecutor', () => {
   it('uses the simulator as the default executor when requested by environment', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
 
-    const app = createApp();
+    const app = await createApp();
     const response = await app.request('/api/meta');
     const meta = (await response.json()) as { itemTypes: string[] };
 
@@ -2002,7 +2002,7 @@ describe('SimulatedTurnExecutor', () => {
     });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
-    const app = createApp({
+    const app = await createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
       gatewayConfig: createTestGatewayConfig(),

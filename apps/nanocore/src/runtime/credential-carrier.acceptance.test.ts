@@ -541,7 +541,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const interception = new PolicyInterception();
-    const app = createApp({
+    const app = await createApp({
       coreDb: f.coreDb,
       dataRoot: f.coreDb.dataRoot,
       store: f.store,
@@ -622,7 +622,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
 
   it('issues only the exact runtime-file grant after public request, late review and current Policy', async () => {
     const f = await fixture();
-    const app = createApp({
+    const app = await createApp({
       coreDb: f.coreDb,
       dataRoot: f.coreDb.dataRoot,
       store: f.store,

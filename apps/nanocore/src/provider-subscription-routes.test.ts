@@ -426,7 +426,7 @@ afterEach(() => {
  *
  * @returns Manager spies, app dependencies, and cleanup handle.
  */
-function createFixture(providerRegistry = new ProviderRegistry([])) {
+async function createFixture(providerRegistry = new ProviderRegistry([])) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-subscription-routes-'));
   const coreDb = openCoreDb(dataRoot);
   fixtureDatabases.push(coreDb);
@@ -519,7 +519,7 @@ function createFixture(providerRegistry = new ProviderRegistry([])) {
   });
 
   return {
-    app: createApp({
+    app: await createApp({
       coreDb,
       dataRoot,
       providerRegistry,
@@ -558,7 +558,7 @@ function jsonRequest(method: string, body?: unknown): RequestInit {
  *
  * @param fixture Observed route fixture.
  */
-function expectNoProviderStateIo(fixture: ReturnType<typeof createFixture>): void {
+function expectNoProviderStateIo(fixture: Awaited<ReturnType<typeof createFixture>>): void {
   for (const spy of Object.values(fixture.spies)) {
     expect(spy).not.toHaveBeenCalled();
   }
@@ -567,7 +567,7 @@ function expectNoProviderStateIo(fixture: ReturnType<typeof createFixture>): voi
 
 describe('Codex management HTTP authority and projection', () => {
   it('denies both reset and settings operations to a signed-in non-admin before provider I/O', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const userId = 'usr_00000000-0000-7691-add4-fc1fc8769319';
     fixture.coreDb.sqlite
       .prepare(
@@ -580,7 +580,7 @@ describe('Codex management HTTP authority and projection', () => {
       },
       handler: async () => Response.json({ status: 'auth-ok' }),
     };
-    const app = createApp({
+    const app = await createApp({
       mode: 'server',
       auth,
       coreDb: fixture.coreDb,
@@ -618,7 +618,7 @@ describe('Codex management HTTP authority and projection', () => {
   });
 
   it('rejects Codex settings on xAI before account or credential access', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const response = await fixture.app.request(
       '/api/app/operations/provider-subscription.codex-settings',
       {
@@ -637,7 +637,7 @@ describe('Codex management HTTP authority and projection', () => {
   });
 
   it('projects rich quota through the real reader and public operation without credential detail', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       Response.json({
         ...CODEX_USAGE,
@@ -679,7 +679,7 @@ describe('Codex management HTTP authority and projection', () => {
 
 describe('provider-subscription app API', () => {
   it('registers the eleven provider-neutral operations and returns fixed inventory without state I/O', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
 
     try {
       const operationIds = new Set<string>(OPERATION_ROUTES.map(({ operationId }) => operationId));
@@ -771,7 +771,7 @@ describe('provider-subscription app API', () => {
   it.each(['openai-codex', 'xai'] as const)(
     'routes %s list, create, update, status, and delete through the exact provider-slot pair',
     async (subscriptionProviderId) => {
-      const fixture = createFixture();
+      const fixture = (await createFixture());
       const slot = subscriptionProviderId === 'openai-codex' ? 'codex_team' : 'xai_team';
 
       try {
@@ -837,7 +837,7 @@ describe('provider-subscription app API', () => {
       extensions: { openkit: { subscriptionAccount: { accountSlotId: 'bound_slot' } } },
     };
     const registry = new ProviderRegistry([profile]);
-    const fixture = createFixture(registry);
+    const fixture = await createFixture(registry);
     try {
       const response = await fixture.app.request(
         ...operationRequest(
@@ -877,7 +877,7 @@ describe('provider-subscription app API', () => {
       message: 'Invalid operation input.',
     },
   ])('classifies authorized native account-create $name at its owning boundary', async (testCase) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     // The admission/manager seam must use the real owner instead of the route fixture's stub.
     fixture.spies.createAccount.mockRestore();
     try {
@@ -898,7 +898,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('rejects invalid providers, slots, and strict bodies before account, Vault, or provider I/O', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const cases = [
       {
         code: 'provider_subscription_provider_not_found',
@@ -1000,7 +1000,7 @@ describe('provider-subscription app API', () => {
   it.each(['openai-codex', 'xai'] as const)(
     'projects delegated %s device-code login, cancellation, and local logout without private fields',
     async (subscriptionProviderId) => {
-      const fixture = createFixture();
+      const fixture = (await createFixture());
 
       try {
         const startResponse = await fixture.app.request(...operationRequest('provider-subscription.login-start', { subscriptionProviderId: subscriptionProviderId, accountSlotId: "default" }, jsonRequest('POST', { mode: 'device_code' }))
@@ -1231,7 +1231,7 @@ describe('provider-subscription app API', () => {
       },
     ] as const;
 
-    const fixture = createFixture();
+    const fixture = await createFixture();
     try {
       for (const testCase of cases) {
         const error = testCase.error();
@@ -1259,7 +1259,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('gives whole-operation persistence failure precedence across all ten account operations', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const persistence = new ProviderSubscriptionAccountError(
       'provider_subscription_persistence_failed',
       'Bearer private persistence detail'
@@ -1352,7 +1352,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('keeps overlapping and post-completion backup-slot Codex quota reads independent', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const backupPair = {
       accountSlotId: 'backup',
       subscriptionProviderId: 'openai-codex',
@@ -1597,7 +1597,7 @@ describe('provider-subscription app API', () => {
       windows: [SECONDARY_QUOTA_WINDOW],
     },
   ])('projects Codex quota with $name', async ({ body, windows }) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response(JSON.stringify(body)));
@@ -1637,7 +1637,7 @@ describe('provider-subscription app API', () => {
     [0],
     [-1],
   ] as const)('projects only a positive reported Codex window duration (%s)', async (seconds) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
         JSON.stringify({
@@ -1681,7 +1681,7 @@ describe('provider-subscription app API', () => {
   it.each([
     401, 403, 429, 503,
   ])('distinguishes Codex quota HTTP %s without credential mutation', async (status) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response('token_expired Bearer upstream-private-canary', { status }));
@@ -1711,7 +1711,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('does not reject a replacement Codex credential after an older quota read returns 401', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     fixture.spies.credentialRead
       .mockResolvedValueOnce(CODEX_CREDENTIAL as never)
       .mockResolvedValueOnce({ ...CODEX_CREDENTIAL, access: 'replacement-access-canary' } as never);
@@ -1740,7 +1740,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('projects xAI credits quota through getAuth without reading the credential store', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = mockXaiQuotaUpstream();
 
     try {
@@ -1797,7 +1797,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('reads xAI auto-topup through a fresh discovery without a billing request', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = mockXaiQuotaFetch({
       autoTopup: async () =>
         new Response(
@@ -1842,7 +1842,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('rejects non-xAI auto-topup before account or credential access', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockRejectedValue(new Error('auto-topup must not perform a network request.'));
@@ -1872,7 +1872,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('canonicalizes an RFC 3339 offset period end to UTC Date.toISOString form', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = mockXaiQuotaUpstream({
       billing: {
         config: {
@@ -1917,7 +1917,7 @@ describe('provider-subscription app API', () => {
       name: 'invalid calendar period end',
     },
   ])('redacts xAI quota $name as temporarily unavailable', async ({ end }) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = mockXaiQuotaUpstream({
       billing: {
         config: {
@@ -1947,7 +1947,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('fails closed on a discovery redirect without a billing request', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input instanceof Request ? input.url : input);
       if (init?.redirect === 'error') {
@@ -1983,7 +1983,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('redacts xAI auth-resolution failure as temporary quota unavailability without provider requests', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     fixture.spies.modelsGetAuth.mockResolvedValue(undefined);
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
@@ -2129,7 +2129,7 @@ describe('provider-subscription app API', () => {
       },
     },
   ])('projects xAI billing $name through the credits reader', async (testCase) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = mockXaiQuotaUpstream({
       billing: testCase.billing,
       billingBody: testCase.billingBody,
@@ -2194,7 +2194,7 @@ describe('provider-subscription app API', () => {
       },
     },
   ])('redacts xAI $name without reading past the byte ceiling', async (testCase) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const { overflow, responses } = testCase.responses();
     const fetchSpy = mockXaiQuotaFetch(responses);
 
@@ -2241,7 +2241,7 @@ describe('provider-subscription app API', () => {
       },
     },
   ])('redacts xAI $name as temporarily unavailable', async (testCase) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = mockXaiQuotaFetch(testCase.responses);
 
     try {
@@ -2288,7 +2288,7 @@ describe('provider-subscription app API', () => {
       },
     },
   ])('redacts xAI $name at the request-and-body deadline', async (testCase) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const fetchSpy = mockXaiQuotaFetch(testCase.responses);
     vi.useFakeTimers();
 
@@ -2335,7 +2335,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('accepts an otherwise-valid quota body at the exact UTF-8 byte limit', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const body = jsonBodyAtUtf8ByteLength(CODEX_USAGE, MAX_CODEX_QUOTA_BODY_BYTES);
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(body));
 
@@ -2367,7 +2367,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('stops pulling a streamed valid JSON body immediately after it crosses the byte limit', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const bytes = new TextEncoder().encode(
       jsonBodyAtUtf8ByteLength(CODEX_USAGE, MAX_CODEX_QUOTA_BODY_BYTES + 1)
     );
@@ -2776,7 +2776,7 @@ describe('provider-subscription app API', () => {
       )
     ),
   ])('redacts Codex quota $name without mutation', async (testCase) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     fixture.spies.credentialRead.mockResolvedValue(testCase.credential as never);
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(testCase.upstream);
     if ('timeout' in testCase) {
@@ -2853,7 +2853,7 @@ describe('provider-subscription app API', () => {
   });
 
   it('redacts credential-read rejection as temporary quota unavailability', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     fixture.spies.credentialRead.mockRejectedValue(
       new Error('Bearer credential-read-error-canary')
     );
@@ -2910,7 +2910,7 @@ describe('provider-subscription app API', () => {
       status: 503,
     },
   ] as const)('preserves the fixed $name before quota fallback', async (testCase) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const error = new ProviderSubscriptionAccountError(
       testCase.code,
       `Bearer ${testCase.failureAt}-error-canary`
@@ -2964,7 +2964,7 @@ describe('quota observation clearing wiring', () => {
     'openai-codex',
     'xai',
   ] as const)('reports live %s quota and forwards its material version and success', async (subscriptionProviderId) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const upstream =
       subscriptionProviderId === 'xai'
         ? mockXaiQuotaUpstream()
@@ -2995,7 +2995,7 @@ describe('quota observation clearing wiring', () => {
   });
 
   it('forwards accepted xAI discovery when billing is unavailable', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const upstream = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(new Response(JSON.stringify(XAI_USER)))
@@ -3024,7 +3024,7 @@ describe('quota observation clearing wiring', () => {
     'openai-codex',
     'xai',
   ] as const)('suppresses same-bearer %s rejection when the material version changed', async (subscriptionProviderId) => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     fixture.spies.getCredentialVersion
       .mockResolvedValueOnce('fixture_r1:1')
       .mockResolvedValue('fixture_r1:2');
@@ -3047,7 +3047,7 @@ describe('quota observation clearing wiring', () => {
   });
 
   it('admits only a proven current xAI quota rejection', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const upstream = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(new Response('', { status: 401 }));

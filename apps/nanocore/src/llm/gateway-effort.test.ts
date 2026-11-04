@@ -236,8 +236,8 @@ async function fixture(
   const dispatcher = new LLMGatewayProviderDispatcher({
     piAiClient: new PiAiGatewayClient({ models: options.customStock ? createModels() : models }),
   });
-  const makeApp = (manager = config) =>
-    createApp({
+  const makeApp = async (manager = config) =>
+    await createApp({
       coreDb,
       dataRoot,
       store,
@@ -258,7 +258,7 @@ async function fixture(
           }
         : {}),
     });
-  const app = makeApp();
+  const app = await makeApp();
   const post = (
     endpoint: 'responses' | 'chat/completions',
     effort?: unknown,
@@ -324,7 +324,7 @@ async function fixture(
     config,
     writeProfile,
     writeRoutes,
-    restartedApp: () => makeApp(createRuntimeConfigManager({ dataRoot })),
+    restartedApp: async () => await makeApp(createRuntimeConfigManager({ dataRoot })),
     turn,
     store,
     dataRoot,
@@ -818,7 +818,7 @@ describe('Gateway reasoning effort admission and fitting', () => {
     f.writeRoutes(['c']);
     expect((await f.config.reload({ mode: 'safe' })).status).toBe('applied');
     expect(await read()).not.toHaveProperty('reasoningEffortLevels');
-    const restarted = f.restartedApp();
+    const restarted = await f.restartedApp();
     const restartedModel = (await (await restarted.request('/v1/models')).json()).data[0];
     expect(restartedModel).toEqual(await read());
     expect(f.store.getTurn(workspaceIdForOwner(f.turn.owner), f.turn.threadId, f.turn.id)).toEqual(

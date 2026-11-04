@@ -1699,7 +1699,7 @@ describe('app api openapi projection', () => {
     expect(unclassifiedAppApiRoutes(app.routes)).toEqual(['GET /internal/unregistered']);
   });
 
-  it('keeps live public app api routes and openapi operations aligned', () => {
+  it('keeps live public app api routes and openapi operations aligned', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
@@ -1707,7 +1707,7 @@ describe('app api openapi projection', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const unsupportedMethodRoutes = app.routes
       .filter(
         ({ method, path }) =>
@@ -1772,7 +1772,7 @@ describe('app api openapi projection', () => {
     ).toEqual([...PRIVATE_NANOHOST_EFFECT_ROUTES].sort());
   });
 
-  it('keeps the direct Core and Gateway access inventory aligned with live routes', () => {
+  it('keeps the direct Core and Gateway access inventory aligned with live routes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
@@ -1780,8 +1780,8 @@ describe('app api openapi projection', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
-    const liveOperationKeys = createApp({ store })
-      .routes.filter(
+    const liveOperationKeys = (await createApp({ store })).routes
+      .filter(
         ({ method, path }) =>
           OPENAPI_ROUTE_METHOD_SET.has(method) &&
           (path === '/api/workspaces' ||
@@ -2082,7 +2082,7 @@ describe('app api openapi projection', () => {
     ).toThrow('Unknown App API operationId: missingOperation');
   });
 
-  it('binds every registered handler to its documented operation route', () => {
+  it('binds every registered handler to its documented operation route', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
@@ -2090,7 +2090,7 @@ describe('app api openapi projection', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const document = createAppOpenApiDocument();
     const documentedRouteByOperationId = new Map<string, string>();
 
@@ -2172,7 +2172,7 @@ describe('app api openapi projection', () => {
     expect(schemas).not.toHaveProperty('ConvertRecoveryPendingUserTurnToFollowUpResponse');
   });
 
-  it('preserves the characterized handler registration order', () => {
+  it('preserves the characterized handler registration order', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-openapi-inventory-'));
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
@@ -2180,7 +2180,7 @@ describe('app api openapi projection', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
-    expect(getRegisteredAppApiOperationIds(createApp({ store }))).toEqual([
+    expect(getRegisteredAppApiOperationIds(await createApp({ store }))).toEqual([
       'workspace.archive-download',
       'workspace.backup-download',
       'knowledge.package.export',
@@ -2460,7 +2460,7 @@ describe('ordinary portable import removal', () => {
         privateOwnerUserId: userId,
       });
       // Local mode's canonical user is the current deployment administrator.
-      const app = createApp({ coreDb, dataRoot, store });
+      const app = await createApp({ coreDb, dataRoot, store });
       const exported = await app.request('/api/app/operations/workspace.export', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

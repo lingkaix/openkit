@@ -179,8 +179,8 @@ async function fixture(
         : answer();
     },
   });
-  const makeApp = (ownerStore: FsStore) =>
-    createApp({
+  const makeApp = async (ownerStore: FsStore) =>
+    await createApp({
       coreDb,
       dataRoot,
       fileAdmission,
@@ -200,7 +200,7 @@ async function fixture(
       openKitConfig: { defaults: { defaultAgentId: preferred.manifest.id } },
       llmPiAiClient: provider,
     });
-  const app = makeApp(store);
+  const app = await makeApp(store);
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   onTestFinished(async () => {
     await setImmediate();
@@ -632,7 +632,7 @@ describe('Assistant semantic Task handoff', () => {
     expect(originalReceipt).not.toBeNull();
     if (restart) {
       f.store = new FsStore({ dataRoot: f.dataRoot });
-      f.app = f.makeApp(f.store);
+      f.app = await f.makeApp(f.store);
       expect(
         f.store.listThreadItems(f.workspace.id, f.thread.id).find((item) => item.id === request.id)
       ).toEqual(request);
@@ -877,7 +877,7 @@ describe('Assistant semantic Task handoff', () => {
     const before = f.store.listThreadTurns(f.workspace.id, f.thread.id);
     const receipts = f.store.listCommandRequests();
     const reopened = new FsStore({ dataRoot: f.dataRoot });
-    const app = f.makeApp(reopened);
+    const app = await f.makeApp(reopened);
     for (const input of [
       conversationInput,
       'What should I do?',

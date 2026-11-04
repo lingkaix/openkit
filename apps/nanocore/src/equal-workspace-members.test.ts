@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { compareCodeUnits } from '@openkit/protocol';
 import { expect, it } from 'vitest';
-import { createApp } from './app.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { BetterAuthServer } from './auth/middleware.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
@@ -14,6 +13,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { readWorkspaceSnapshotMetadata } from './storage/workspace-backup-bundle.js';
+import { createAppWithPreparedChannels as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import {
   createWorkspaceDeletionRequest,
@@ -129,7 +129,7 @@ it('admits member management and exact member deletion replay while preserving p
       },
       handler: async () => Response.json({ status: 'auth-ok' }),
     };
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot: root,
       mode: 'server',

@@ -225,7 +225,7 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
   });
   try {
     const selected = () => readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id);
-    const app = createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
+    const app = await createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
     const timestamp = new Date().toISOString();
     const page = knowledgePageFixture(
       {

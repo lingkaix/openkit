@@ -143,7 +143,7 @@ describe('content-free deployment maintenance preflight', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const app = createApp({ store, coreDb, dataRoot: root });
+    const app = await createApp({ store, coreDb, dataRoot: root });
     const response = await app.request('/api/app/operations/app-update.preflight', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -175,7 +175,7 @@ describe('content-free deployment maintenance preflight', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({ store: fixtureStore });
+    const app = await createApp({ store: fixtureStore });
     const response = await app.request('/api/app/operations/app-update.preflight', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

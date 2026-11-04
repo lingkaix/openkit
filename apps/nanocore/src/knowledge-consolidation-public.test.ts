@@ -24,7 +24,7 @@ interface Fixture {
   coreDb: ReturnType<typeof openCoreDb>;
   workspaceDb: ReturnType<typeof openWorkspaceDb>;
   store: FsStore;
-  app: ReturnType<typeof createApp>;
+  app: Awaited<ReturnType<typeof createApp>>;
   knowledgeRoot: string;
   pageScopeId: string;
 }
@@ -54,7 +54,7 @@ async function fixture(): Promise<Fixture> {
     coreDb,
     workspaceDb,
     store,
-    app: createApp({ coreDb, dataRoot, store }),
+    app: await createApp({ coreDb, dataRoot, store }),
     knowledgeRoot: join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge'),
     pageScopeId: `page/workspace/${DEMO_WORKSPACE_ID}/${knowledgeBaseId}`,
   };
@@ -72,7 +72,7 @@ async function reopen(f: ReturnType<typeof fixture>) {
   f.workspaceDb = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
   applyScopedMigrations(f.workspaceDb, undefined, 'pre-knowledge');
   f.store = new FsStore({ dataRoot: f.dataRoot });
-  f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+  f.app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
 }
 
 /** Use native JSON operation admission and its actual command-identity header. */

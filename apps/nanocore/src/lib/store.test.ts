@@ -1781,9 +1781,9 @@ describe('FsStore persistence', () => {
         vi.spyOn(coordinator, 'boot');
         return coordinator;
       });
-    let app: ReturnType<typeof createApp>;
+    let app: Awaited<ReturnType<typeof createApp>>;
     try {
-      app = createApp({ dataRoot, runtimeConfigManager, store });
+      app = await createApp({ dataRoot, runtimeConfigManager, store });
       expect(coordinators).toHaveBeenCalledOnce();
       for (const { value: coordinator } of coordinators.mock.results) {
         const boot = vi.mocked(coordinator.boot);

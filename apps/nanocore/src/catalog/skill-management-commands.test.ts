@@ -84,7 +84,7 @@ async function fixture() {
     activate: false,
     tree: tree('Version B'),
   });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   const call = (
     operation: Parameters<typeof operationRequest>[0],
     input: Record<string, unknown>

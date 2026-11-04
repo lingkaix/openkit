@@ -40,7 +40,7 @@ describe('App release identity', () => {
     });
     expect(RELEASE_IDENTITY_PATH).toBe('/usr/local/lib/openkit/release-identity.json');
 
-    const app = createApp({ releaseIdentity: readReleaseIdentity(path) });
+    const app = await createApp({ releaseIdentity: readReleaseIdentity(path) });
     const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(response.status).toBe(200);
     expect(AppDiagnosticsResponseSchema.parse(await response.json()).build).toEqual({
@@ -78,7 +78,7 @@ describe('App release identity', () => {
   });
 
   it('reports a non-release build when diagnostics has no admitted identity', async () => {
-    const app = createApp();
+    const app = await createApp();
     const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(response.status).toBe(200);
     expect(AppDiagnosticsResponseSchema.parse(await response.json()).build).toEqual({

@@ -40,7 +40,7 @@ async function fixture() {
   const store = await createDemoStore({ dataRoot });
   const workspace = await store.createWorkspace('ZIP folder intake');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: workspace.id });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   return { dataRoot, coreDb, workspace, store, app };
 }
 
@@ -120,7 +120,7 @@ describe('explicit ZIP folder intake', () => {
       expandedBytes: 9,
       entries: [{ relativePath: 'note.txt', byteLength: 9 }],
     });
-    state.app = createApp({
+    state.app = await createApp({
       coreDb: state.coreDb,
       dataRoot: state.dataRoot,
       store: new FsStore({ dataRoot: state.dataRoot }),

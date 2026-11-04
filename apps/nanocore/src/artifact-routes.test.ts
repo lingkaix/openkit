@@ -104,7 +104,7 @@ function artifactDigest(content: string): string {
  * @returns Route response.
  */
 function postJson(
-  app: ReturnType<typeof createApp>,
+  app: Awaited<ReturnType<typeof createApp>>,
   path: string,
   body: unknown
 ): Promise<Response> {
@@ -216,7 +216,7 @@ describe('Core artifact routes', () => {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const listRes = await app.request(
       ...operationRequest('artifact.list', {
@@ -317,7 +317,7 @@ describe('Core artifact routes', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const textRes = await app.request(
       ...operationRequest('artifact.read', {
@@ -353,7 +353,7 @@ describe('Core artifact routes', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
     applyScopedMigrations(workspaceDb);
     workspaceDb.sqlite.close();
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const content = '# Imported\n\nExact bytes.';
     const contentDigest = artifactDigest(content);
     const importBody = {
@@ -574,7 +574,7 @@ describe('Core artifact routes', () => {
     });
     const firstReview = reviews[0]!;
     workspaceDb.sqlite.close();
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const decisionPath = [
       'artifact.review.decide',
       {
@@ -904,7 +904,7 @@ describe('Core artifact routes', () => {
       WHEN NEW.command_name = 'artifact.review.decide'
       BEGIN SELECT RAISE(ABORT, 'simulated receipt failure'); END`);
     workspaceDb.sqlite.close();
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const response = await postJson(
@@ -1062,7 +1062,7 @@ describe('Core artifact routes', () => {
     });
     workspaceDb.sqlite.close();
     const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
-    const app = createApp({
+    const app = await createApp({
       runtimeConfigManager,
       coreDb,
       dataRoot,

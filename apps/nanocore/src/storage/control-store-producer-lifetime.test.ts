@@ -391,7 +391,7 @@ it.each([
         ],
       };
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot: root,
       store,

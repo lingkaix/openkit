@@ -293,7 +293,7 @@ async function postWorkerEffort(input: {
       headers: { 'content-type': 'text/event-stream' },
     });
   });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     gatewayConfig,
     llmGatewayDispatcher: dispatcher,

@@ -23,7 +23,7 @@ async function fixture() {
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Schema preview');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   const call = async (operation: string, input: Record<string, unknown>) => {
     const response = await app.request(`/api/app/operations/${operation}`, {
       method: 'POST',

@@ -145,7 +145,7 @@ async function fixture(subscription = false) {
       closeRevokedCredentialBindings({ coreDb }, { referenceId }),
   });
   const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
-  const app = createApp({
+  const app = await createApp({
     store,
     dataRoot,
     coreDb,
@@ -311,7 +311,7 @@ describe('provider profile removal', () => {
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const app = createApp({
+    const app = await createApp({
       store: f.store,
       dataRoot: f.dataRoot,
       coreDb: f.coreDb,

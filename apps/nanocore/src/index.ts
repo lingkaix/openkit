@@ -48,6 +48,7 @@ import { closeWithDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
 import { restoreWorkspaceRecoveryAdmission } from './bootstrap/workspace-recovery.js';
 import { recoverRunningCapabilityCalls } from './capability/usage-ledger.js';
+import { prepareChannelServices } from './channel-services.js';
 import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
 import { resolveDataRoot } from './config/data-root.js';
 import { BootConfigError, resolveMode } from './config/mode.js';
@@ -667,7 +668,13 @@ const auth =
 readFileReserveBytes = () =>
   runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
 let prepareKnowledgeMaintenance: ((instant: string) => Promise<void>) | undefined;
+const preparedChannelServices = await prepareChannelServices({ coreDb, store });
+let recoverChannelAttention: (() => Promise<void>) | undefined;
 const app = createApp({
+  preparedChannelServices,
+  onChannelServicesReady: (services) => {
+    recoverChannelAttention = services.recoverAttention;
+  },
   onKnowledgeMaintenanceReady: (prepare) => {
     prepareKnowledgeMaintenance = prepare;
   },
@@ -725,6 +732,7 @@ const app = createApp({
   releaseIdentity: requireBootValue(releaseIdentity, 'Release identity was not read.'),
   workspaceMutationAdmission,
 });
+await requireBootValue(recoverChannelAttention, 'Channel services were not bound.')();
 const hostname = requireBootValue(bindHost, 'HTTP bind host was not resolved.');
 const port = requireBootValue(bindPort, 'HTTP bind port was not resolved.');
 if (

@@ -41,7 +41,7 @@ async function fixture() {
       coreDb,
       store,
       workspaceDb,
-      app: createApp({ coreDb, dataRoot, store }),
+      app: await createApp({ coreDb, dataRoot, store }),
       repositoryPath: join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
     };
     fixtures.push(f);
@@ -212,7 +212,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
     expect(accepted.body.review.actor).toEqual({ kind: 'user', id: LOCAL_USER_ID });
     // Reopen real owners: saved proposal bytes must resolve through their retained Git ref.
     f.store = new FsStore({ dataRoot: f.dataRoot });
-    f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+    f.app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
     expect(
       f.store.projectKnowledgeProposalDecision(DEMO_WORKSPACE_ID, accepted.body.review.reviewId)
     ).toEqual(accepted.body);

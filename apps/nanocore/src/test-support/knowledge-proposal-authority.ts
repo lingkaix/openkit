@@ -91,7 +91,7 @@ export async function createOwners(registerCleanup = onTestFinished) {
     get notebook(): KnowledgeNotebook {
       return currentSelection(this).notebook;
     },
-    app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
+    app: await createAppWithLocalIdentity({ coreDb, dataRoot, store }),
   };
 }
 export type Owners = Awaited<ReturnType<typeof createOwners>>;

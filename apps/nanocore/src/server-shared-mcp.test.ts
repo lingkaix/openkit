@@ -186,7 +186,7 @@ async function fixture() {
   const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
   cleanups.push(() => workerMcpGateway.close());
   let sessionUserId: string | null = null;
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

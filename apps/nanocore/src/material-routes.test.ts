@@ -92,7 +92,7 @@ describe('Workspace Material app API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const stalePaths = [
@@ -220,7 +220,7 @@ describe('Workspace Material app API', () => {
       'ws_00000000-0000-7000-8000-000000000001',
       'Material route thread'
     );
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const createRequest = {
       requestId: 'material-create-1',
       title: 'Release notes',

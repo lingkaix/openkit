@@ -1416,14 +1416,14 @@ async function nativeLoginShareFixture(useAdminBearer = false) {
   });
   unlock.unlock({ masterKey: Buffer.alloc(32, 23) });
   const store = new FsStore({ dataRoot: f.db.dataRoot });
-  const localApp = createApp({
+  const localApp = await createApp({
     coreDb: f.db,
     dataRoot: f.db.dataRoot,
     store,
     vaultUnlockState: unlock,
   });
   const sessionId = allocateEntityId('auth');
-  const ownerApp = createApp({
+  const ownerApp = await createApp({
     coreDb: f.db,
     dataRoot: f.db.dataRoot,
     store,
@@ -1532,7 +1532,7 @@ async function nativeLoginShareFixture(useAdminBearer = false) {
       })
     : undefined;
   const reviewApp = decidingToken
-    ? createApp({
+    ? await createApp({
         coreDb: f.db,
         dataRoot: f.db.dataRoot,
         store,

@@ -30,7 +30,7 @@ async function fixture() {
   });
   let instant = '2026-10-16T00:00:00.000Z';
   const automationStore = new AutomationStore(db, new WorkspaceMutationAdmission(), () => instant);
-  const app = createApp({ store, coreDb: db, dataRoot: root, automationStore });
+  const app = await createApp({ store, coreDb: db, dataRoot: root, automationStore });
   owned.push({ root, db });
   const request = (id: string, input: unknown) =>
     app.request(`/api/app/operations/automation.${id}`, {

@@ -74,7 +74,7 @@ describe('managed Thread native admission', () => {
         ],
       }),
     });
-    const app = createApp({ dataRoot, coreDb: db, store, runtimeConfigManager: manager });
+    const app = await createApp({ dataRoot, coreDb: db, store, runtimeConfigManager: manager });
     try {
       const retained = new Hono<{ Variables: AuthVariables }>();
       retained.use('*', async (context, next) => {

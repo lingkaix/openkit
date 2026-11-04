@@ -140,7 +140,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   const scriptErrors: unknown[] = [];
   let beforeAnswer: (() => void | Promise<void>) | undefined;
   let answerText = 'The history query is complete.';
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     store,
     gatewayConfig: {

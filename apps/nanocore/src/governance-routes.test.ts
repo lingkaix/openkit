@@ -34,7 +34,7 @@ it.each([
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     recordWorkspaceEvidenceBundle(db, {
       id: 'evb_probe',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -112,7 +112,7 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     await createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       displayName: 'Worker GitHub token',

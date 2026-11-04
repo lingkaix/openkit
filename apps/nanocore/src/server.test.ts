@@ -65,7 +65,7 @@ import {
 } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type CreateAppOptions, createApp as createNanoCoreApp } from './app.js';
+import type { CreateAppOptions } from './app.js';
 import { createArtifactReview } from './artifact-reviews.js';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from './audit-events.js';
 import type { AuthVariables } from './auth/middleware.js';
@@ -211,6 +211,7 @@ import { createTestAgentSetup, createTestGatewayConfig } from './test-support/ag
 import {
   createAppWithWorkspaceAuthority,
   createApp as createDeterministicTestApp,
+  createAppWithPreparedChannels as createNanoCoreApp,
 } from './test-support/app.js';
 import { createDemoWorkspaceForUser } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -624,7 +625,7 @@ function chatAnsweringProvider(
 async function createApp(
   options: CreateAppOptions = {},
   canonicalAuthority = false
-): Promise<ReturnType<typeof createNanoCoreApp>> {
+): Promise<Awaited<ReturnType<typeof createNanoCoreApp>>> {
   if (options.turnExecutor instanceof FakeTurnExecutor && !options.coreDb) {
     const root = options.store ? demoStoreRoots.get(options.store) : undefined;
     const coreDb = root ? openCoreDb(root) : createCoreDb(false);
@@ -695,7 +696,7 @@ function fixturePage(title: string, content: string) {
 
 /** Creates authored fixture content through the native publisher and current fixed base. */
 async function createKnowledgeFixture(
-  app: ReturnType<typeof createNanoCoreApp>,
+  app: Awaited<ReturnType<typeof createNanoCoreApp>>,
   store: FsStore,
   input: { title: string; content: string }
 ) {
@@ -752,7 +753,7 @@ function removeKnowledgeFixtureBlob(store: FsStore, revision: string, pageId: st
  * @returns Exact proposal and candidate page tuple used by decision and reversal tests.
  */
 async function draftKnowledgeProposalFixture(
-  app: ReturnType<typeof createNanoCoreApp>,
+  app: Awaited<ReturnType<typeof createNanoCoreApp>>,
   store: FsStore,
   suffix: string,
   registeredSource?: Response
@@ -858,7 +859,7 @@ function knowledgeProposalRequestId(label: string): string {
  * @returns Route response.
  */
 function submitKnowledgeProposalDecision(
-  app: ReturnType<typeof createNanoCoreApp>,
+  app: Awaited<ReturnType<typeof createNanoCoreApp>>,
   store: FsStore,
   proposalId: string,
   requestId: string,
@@ -920,7 +921,7 @@ function captureKnowledgeProposalDecisionRequest(
  * @returns Route response.
  */
 function submitKnowledgeProposalReversal(
-  app: ReturnType<typeof createNanoCoreApp>,
+  app: Awaited<ReturnType<typeof createNanoCoreApp>>,
   proposalId: string,
   input: {
     requestId: string;
@@ -7476,7 +7477,7 @@ describe('nanocore server', () => {
     delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
 
     try {
-      const app = createNanoCoreApp({ coreDb });
+      const app = await createNanoCoreApp({ coreDb });
       const res = await app.request('/api/meta');
 
       expect(res.status).toBe(200);
@@ -9349,7 +9350,7 @@ describe('nanocore server', () => {
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = await store.createWorkspace('Foreign workspace review owner');
-    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = await createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const baseReview = workspaceSyncReviewRouteItem();
     const reviewId = 'swr_foreign_child_lineage';
     const changeSetId = 'wcs_foreign_child_lineage';
@@ -9468,7 +9469,7 @@ describe('nanocore server', () => {
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = await store.createWorkspace('Foreign workspace recovery owner');
-    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = await createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const reconciliationRecordId = 'wrr_foreign_child_lineage';
     const timestamp = '2026-07-19T00:00:00.000Z';
 
@@ -9560,7 +9561,7 @@ describe('nanocore server', () => {
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = await store.createWorkspace('Foreign workspace apply-result owner');
-    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = await createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const applyResultId = 'war_foreign_child_lineage';
 
     if (!authorizedWorkspace) {
@@ -9628,7 +9629,7 @@ describe('nanocore server', () => {
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = await store.createWorkspace('Foreign AEP snapshot owner');
-    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = await createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
@@ -11380,7 +11381,7 @@ describe('nanocore server', () => {
       routeHandler,
       sessionAuthority: authority,
     });
-    const app = createNanoCoreApp({
+    const app = await createNanoCoreApp({
       coreDb,
       fileAdmission,
       mode: 'server',

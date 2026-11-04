@@ -52,13 +52,13 @@ afterEach(async () => {
 });
 
 /** Creates real identity and storage owners without pre-provisioning membership. */
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'workspace-membership-owner-'));
   roots.push(root);
   const coreDb = openCoreDb(root);
   handles.push(coreDb);
   applyMigrations(coreDb);
-  const userId = ensureLocalUser(coreDb);
+  const userId = await ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
   return { coreDb, root, store, userId };
 }
@@ -107,7 +107,7 @@ async function holdCoreWriter(root: string, holdMs = 250): Promise<Worker> {
 }
 
 it('provisions owner membership after a concurrent native-policy Core writer releases its lock', async () => {
-  const f = fixture();
+  const f = await fixture();
   const prepare = f.store.ensureQuickChatWorkspace.bind(f.store);
   let released: Promise<unknown> | undefined;
   vi.spyOn(f.store, 'ensureQuickChatWorkspace').mockImplementation(async (userId) => {
@@ -131,8 +131,8 @@ it('provisions owner membership after a concurrent native-policy Core writer rel
 });
 
 it('returns a safe public storage refusal when Core contention outlasts its bounded wait', async () => {
-  const f = fixture();
-  const app = createAppWithLocalIdentity({ coreDb: f.coreDb, store: f.store });
+  const f = await fixture();
+  const app = await createAppWithLocalIdentity({ coreDb: f.coreDb, store: f.store });
   const create = f.store.createWorkspace.bind(f.store);
   let reachedMembership = false;
   let released: Promise<unknown> | undefined;
@@ -179,7 +179,7 @@ it.each([
   'removed membership',
   'changed binding',
 ] as const)('refuses a %s introduced during real personal Workspace preparation without partial membership', async (fault) => {
-  const f = fixture();
+  const f = await fixture();
   if (fault === 'removed membership') await ensureUserQuickChatWorkspace(f);
   const workspaceId = quickChatWorkspaceIdForUser(f.userId, f.root);
   const client = getControlStoreWorkerClient();
@@ -284,7 +284,7 @@ it.each([
 });
 
 it('rechecks the canonical User after a real reservation wait before filesystem publication', async () => {
-  const f = fixture();
+  const f = await fixture();
   const client = getControlStoreWorkerClient();
   const scope = nativeProductScope(f.root, { kind: 'server' });
   const database = `core:${scope.path}`;
@@ -330,8 +330,8 @@ it('rechecks the canonical User after a real reservation wait before filesystem 
 });
 
 it('awaits initial owner FULL before the separate User receipt and rolls back a late member failure', async () => {
-  const f = fixture();
-  const app = createAppWithLocalIdentity({ coreDb: f.coreDb, store: f.store });
+  const f = await fixture();
+  const app = await createAppWithLocalIdentity({ coreDb: f.coreDb, store: f.store });
   const requestId = randomUUID();
   const create = f.store.createWorkspace.bind(f.store);
   let workspaceId!: string;

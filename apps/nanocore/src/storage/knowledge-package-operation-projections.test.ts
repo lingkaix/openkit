@@ -125,7 +125,7 @@ async function fixture() {
   const source = await workspace('Knowledge package source');
   const target = await workspace('Fresh Knowledge package target');
   const tamperTarget = await workspace('Unchanged tamper target');
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   const call = async (
     operation: string,
     workspaceId: string,
@@ -213,7 +213,7 @@ async function restrictSourceThread(
   sourceThreadId: string
 ) {
   const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
-  const app = createApp({
+  const app = await createApp({
     coreDb: f.coreDb,
     dataRoot: f.dataRoot,
     store: f.store,
@@ -833,7 +833,7 @@ it('stops export disclosure when its Source origin becomes restricted', async ()
     workspaceIds: [f.source.id],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const server = createApp({
+  const server = await createApp({
     mode: 'server',
     coreDb: f.coreDb,
     dataRoot: f.dataRoot,

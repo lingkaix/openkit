@@ -215,7 +215,7 @@ async function fixture(
   const releaseIdentityPath = join(dataRoot, 'fixture-release-identity.json');
   const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   writeFileSync(releaseIdentityPath, JSON.stringify({ releaseTag: null, sourceCommit }));
-  const app = createApp({
+  const app = await createApp({
     workspaceMutationAdmission: admission,
     ...(getBootReadiness ? { getBootReadiness } : {}),
     ...(auth ? { auth } : {}),
@@ -852,7 +852,7 @@ it('continues the original committed recovery after serving activation fails wit
       committed!.proof.candidateDigest
     );
     const restartedStore = new FsStore({ dataRoot: f.dataRoot });
-    const restarted = createApp({
+    const restarted = await createApp({
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
       store: restartedStore,

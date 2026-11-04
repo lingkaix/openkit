@@ -94,7 +94,7 @@ async function createBoundaryFixture() {
 }
 
 /** Admits public Source requests with real current authority; the caller cannot choose a Source ID. */
-function sourceBoundaryApp(f: Awaited<ReturnType<typeof createBoundaryFixture>>) {
+async function sourceBoundaryApp(f: Awaited<ReturnType<typeof createBoundaryFixture>>) {
   const coreDb = openCoreDb(f.dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
@@ -105,7 +105,7 @@ function sourceBoundaryApp(f: Awaited<ReturnType<typeof createBoundaryFixture>>)
       ownerUserId: userId,
     });
   onTestFinished(() => coreDb.sqlite.close());
-  return createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
+  return await createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
 }
 
 /** Fresh import supplies actual User attribution; no materialized page directory initializes content. */
@@ -535,7 +535,7 @@ describe('workspace file-record write and load boundaries', () => {
       }
 
       case 'knowledge source': {
-        const app = sourceBoundaryApp(f);
+        const app = await sourceBoundaryApp(f);
         const originalMaterial = 'The first workspace owns this source material.';
         const created = await app.request(
           ...operationRequest(
@@ -1166,7 +1166,7 @@ describe('workspace file-record write and load boundaries', () => {
         });
         return;
       }
-      const app = sourceBoundaryApp(f);
+      const app = await sourceBoundaryApp(f);
       return app.request(
         ...operationRequest(
           'knowledge.source.register',

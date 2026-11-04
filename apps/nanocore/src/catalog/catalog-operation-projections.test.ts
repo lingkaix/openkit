@@ -39,7 +39,7 @@ async function fixture(
     ownerUserId: userId,
     workspaceId: workspace.id,
   });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

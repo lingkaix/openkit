@@ -299,7 +299,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({ store: fixtureStore });
+    const app = await createApp({ store: fixtureStore });
 
     const res = await app.request('/internal/v1/chat/completions', {
       method: 'POST',
@@ -318,7 +318,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({ store: fixtureStore });
+    const app = await createApp({ store: fixtureStore });
     const res = await app.request('/health');
 
     expect(res.status).toBe(200);
@@ -336,7 +336,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({ store: fixtureStore });
+    const app = await createApp({ store: fixtureStore });
 
     const res = await app.request('/v1/completions', {
       method: 'POST',
@@ -358,7 +358,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({ ...createOpenAIProviderOptions(), store: fixtureStore });
+    const app = await createApp({ ...createOpenAIProviderOptions(), store: fixtureStore });
 
     const res = await app.request('/v1/models');
     const body = (await res.json()) as { data: Array<Record<string, unknown>>; object: string };
@@ -380,7 +380,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       gatewayConfig: {
         schemaVersion: 1,
         enabled: true,
@@ -483,7 +483,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       gatewayConfig: {
         schemaVersion: 1,
         enabled: true,
@@ -548,7 +548,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       gatewayConfig: {
         schemaVersion: 1,
         enabled: true,
@@ -606,7 +606,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async () => {
@@ -651,7 +651,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async () => {
@@ -697,7 +697,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (_provider, request) => {
@@ -755,7 +755,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       gatewayConfig: {
         schemaVersion: 1,
         enabled: true,
@@ -855,7 +855,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...options,
       gatewayConfig: {
         ...options.gatewayConfig,
@@ -912,7 +912,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmGatewayDispatcher: {
         createChatCompletion: async (_provider, request, context = {}) => {
@@ -970,7 +970,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
@@ -1010,7 +1010,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
@@ -1074,7 +1074,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
@@ -1122,7 +1122,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
@@ -1174,7 +1174,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
@@ -1217,7 +1217,7 @@ describe('OpenAI-compatible agent gateway', () => {
         rmSync(storeRoot, { recursive: true, force: true });
       });
       const fixtureStore = createTestStore({ dataRoot: storeRoot });
-      const app = createApp({
+      const app = await createApp({
         ...createPiAiProviderOptions(providerId),
         llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
           piAiClient: new PiAiGatewayClient({ models }),
@@ -1273,7 +1273,7 @@ describe('OpenAI-compatible agent gateway', () => {
           return baseRuntimeConfigManager.current();
         },
       };
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -1417,7 +1417,7 @@ describe('OpenAI-compatible agent gateway', () => {
           };
     });
     try {
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -1573,7 +1573,7 @@ describe('OpenAI-compatible agent gateway', () => {
     try {
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -1733,7 +1733,7 @@ describe('OpenAI-compatible agent gateway', () => {
     try {
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -1829,7 +1829,7 @@ describe('OpenAI-compatible agent gateway', () => {
     try {
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -1896,7 +1896,7 @@ describe('OpenAI-compatible agent gateway', () => {
     try {
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -2022,7 +2022,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const workspace = await store.createWorkspace('Gateway fixture');
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -2102,7 +2102,7 @@ describe('OpenAI-compatible agent gateway', () => {
       );
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -2185,7 +2185,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const workspace = await store.createWorkspace('Gateway fixture');
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -2258,7 +2258,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createAnthropicProviderOptions(),
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
         piAiClient: new PiAiGatewayClient({ models }),
@@ -2340,7 +2340,7 @@ describe('OpenAI-compatible agent gateway', () => {
         const workspace = await store.createWorkspace('Gateway fixture');
         recordLocalGatewayAuthority(coreDb, workspace.id);
 
-        const app = createApp({
+        const app = await createApp({
           coreDb,
           dataRoot,
           store,
@@ -2413,7 +2413,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const workspace = await store.createWorkspace('Gateway fixture');
       recordLocalGatewayAuthority(coreDb, workspace.id);
 
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -2517,7 +2517,7 @@ describe('OpenAI-compatible agent gateway', () => {
         const workspace = await store.createWorkspace('Gateway fixture');
         recordLocalGatewayAuthority(coreDb, workspace.id);
 
-        const app = createApp({
+        const app = await createApp({
           coreDb,
           dataRoot,
           store,
@@ -2609,7 +2609,7 @@ describe('OpenAI-compatible agent gateway', () => {
         const store = await createDemoStore({ dataRoot });
         const workspace = await store.createWorkspace('Gateway fixture');
         recordLocalGatewayAuthority(coreDb, workspace.id);
-        const app = createApp({
+        const app = await createApp({
           coreDb,
           dataRoot,
           store,
@@ -2669,7 +2669,7 @@ describe('OpenAI-compatible agent gateway', () => {
       const store = await createDemoStore({ dataRoot });
       const workspace = await store.createWorkspace('Gateway fixture');
       recordLocalGatewayAuthority(coreDb, workspace.id);
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         store,
@@ -2762,7 +2762,7 @@ describe('OpenAI-compatible agent gateway', () => {
         vendor: 'openai',
       };
       const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         gatewayConfig: logicalGatewayConfig(profile),
@@ -2866,7 +2866,7 @@ describe('OpenAI-compatible agent gateway', () => {
         secretRef: 'vault://vault_00000000-0000-79a9-ad82-3f4a5baeac82',
         vendor: 'openai',
       };
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot,
         gatewayConfig: logicalGatewayConfig(profile),
@@ -2934,7 +2934,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletionStream: async (_provider, request) => {
@@ -3156,7 +3156,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletionStream: async () => stream,
@@ -3229,7 +3229,7 @@ describe('OpenAI-compatible agent gateway', () => {
         const workspace = await store.createWorkspace('Gateway fixture');
         recordLocalGatewayAuthority(coreDb, workspace.id);
 
-        const app = createApp({
+        const app = await createApp({
           coreDb,
           dataRoot,
           store,
@@ -3331,7 +3331,7 @@ describe('OpenAI-compatible agent gateway', () => {
         rmSync(storeRoot, { recursive: true, force: true });
       });
       const fixtureStore = createTestStore({ dataRoot: storeRoot });
-      const app = createApp({
+      const app = await createApp({
         ...createOllamaProviderOptions(),
         llmPiAiClient: asPiAiGatewayClientDouble({
           createChatCompletionStream: async () => stream,
@@ -3381,7 +3381,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletionStream: async () => stream,
@@ -3415,7 +3415,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => ({
@@ -3478,7 +3478,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: piAiClient,
       store: fixtureStore,
@@ -3513,7 +3513,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: new PiAiGatewayClient(),
       store: fixtureStore,
@@ -3695,7 +3695,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
@@ -3742,7 +3742,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (_provider, request) => {
@@ -3790,7 +3790,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOllamaProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createChatCompletion: async (_provider, request) => {
@@ -3840,7 +3840,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request) => {
@@ -3887,7 +3887,7 @@ describe('OpenAI-compatible agent gateway', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...createOpenAIProviderOptions(),
       llmPiAiClient: asPiAiGatewayClientDouble({
         createResponses: async (_provider, request, onUsage) => {
@@ -4159,7 +4159,7 @@ describe('Round 2 public exhaustion cause', () => {
             rmSync(storeRoot, { recursive: true, force: true });
           });
           const fixtureStore = createTestStore({ dataRoot: storeRoot });
-          const app = createApp({
+          const app = await createApp({
             gatewayConfig: {
               schemaVersion: 1,
               enabled: true,
@@ -4322,7 +4322,7 @@ describe('API key member availability', () => {
         : {}),
     };
     const providerOptions = createProviderOptions(profile);
-    const app = createApp({
+    const app = await createApp({
       ...providerOptions,
       coreDb,
       dataRoot,
@@ -4374,7 +4374,7 @@ describe('API key member availability', () => {
       rmSync(storeRoot, { recursive: true, force: true });
     });
     const fixtureStore = createTestStore({ dataRoot: storeRoot });
-    const app = createApp({
+    const app = await createApp({
       ...options,
       providerRegistry: new ProviderRegistry(
         options.providerRegistry
@@ -4428,7 +4428,7 @@ it('the API-key path restores the same member on next resolve without reload', a
       agentManifests: [],
     }),
   });
-  const app = createApp({
+  const app = await createApp({
     ...options,
     coreDb,
     dataRoot,

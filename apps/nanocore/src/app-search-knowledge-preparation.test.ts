@@ -31,7 +31,7 @@ async function searchFixture() {
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Knowledge preparation');
-  const app = createApp({ dataRoot, store });
+  const app = await createApp({ dataRoot, store });
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot,
     scope: { kind: 'workspace', workspaceId: workspace.id },

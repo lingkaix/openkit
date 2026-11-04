@@ -116,7 +116,7 @@ describe('entrypoint index-rebuild classification', () => {
         },
       ],
     });
-    const app = createApp({ bootReadiness: result.readiness });
+    const app = await createApp({ bootReadiness: result.readiness });
     const response = await app.request(...operationRequest('diagnostics.app', {}));
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({

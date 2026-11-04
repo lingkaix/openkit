@@ -53,7 +53,7 @@ describe('workspace routes', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: allowedWorkspace.id,
     });
-    const app = createApp({ coreDb, store });
+    const app = await createApp({ coreDb, store });
     await store.createWorkspace('Denied Workspace');
     const listWorkspaces = vi.spyOn(store, 'listWorkspaces').mockImplementation(() => {
       throw new Error('Workspace listing must not discover physical Workspaces.');
@@ -97,7 +97,7 @@ describe('workspace routes', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       store,
       mode: 'server',

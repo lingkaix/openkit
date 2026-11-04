@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 /** Opens an isolated candidate with the real identity, membership and operation owners. */
-function deployment(
+async function deployment(
   root = mkdtempSync(join(tmpdir(), 'openkit-id-reset-dry-run-')),
   admission = new WorkspaceMutationAdmission()
 ) {
@@ -45,7 +45,7 @@ function deployment(
       BETTER_AUTH_SECRET: 'isolated-synthetic-reset-test-secret-at-least-32-characters',
     },
   });
-  const app = createApp({
+  const app = await createApp({
     auth,
     coreDb,
     store,
@@ -63,7 +63,7 @@ function deployment(
 
 /** Uses public authentication with invented fixture identities; no host account is read. */
 async function authenticate(
-  target: ReturnType<typeof deployment>,
+  target: Awaited<ReturnType<typeof deployment>>,
   subject: string,
   register: boolean
 ) {
@@ -110,7 +110,11 @@ async function authenticate(
 }
 
 /** Proves that a current session can create a Workspace and publish exact Artifact bytes. */
-async function publish(target: ReturnType<typeof deployment>, cookie: string, label: string) {
+async function publish(
+  target: Awaited<ReturnType<typeof deployment>>,
+  cookie: string,
+  label: string
+) {
   const workspaceResponse = await target.app.request(
     ...operationRequest(
       'workspace.create',
@@ -151,7 +155,7 @@ async function publish(target: ReturnType<typeof deployment>, cookie: string, la
 }
 
 it('re-registers the protected synthetic account set on a clean candidate and retains usable source and candidate records', async () => {
-  const source = deployment();
+  const source = await deployment();
   const oldIds: string[] = [];
   const sourceWork = [];
   for (const subject of subjects) {
@@ -162,13 +166,13 @@ it('re-registers the protected synthetic account set on a clean candidate and re
   const oldArtifactBytes = sourceWork.map((work) =>
     JSON.stringify(source.store.getArtifact(work.workspaceId, work.artifactId))
   );
-  const candidate = deployment(undefined, source.admission);
+  const candidate = await deployment(undefined, source.admission);
   expect(candidate.root).not.toBe(source.root);
   // This variable models selected ingress only; it changes no host or service.
   let selectedIngress = source;
   const verifiedSubjects = new Set<string>();
   let administratorVerified = false;
-  let verifiedCandidate: ReturnType<typeof deployment> | null = null;
+  let verifiedCandidate: Awaited<ReturnType<typeof deployment>> | null = null;
   const switchCandidate = () => {
     if (
       verifiedSubjects.size !== subjects.length ||
@@ -244,7 +248,7 @@ it('re-registers the protected synthetic account set on a clean candidate and re
     )
   ).toEqual(oldArtifactBytes);
   candidate.coreDb.sqlite.close();
-  const reopened = deployment(candidate.root, candidate.admission);
+  const reopened = await deployment(candidate.root, candidate.admission);
   for (const [index, subject] of subjects.entries()) {
     const account = await authenticate(reopened, subject, false);
     expect(account.id).toBe(newIds[index]);

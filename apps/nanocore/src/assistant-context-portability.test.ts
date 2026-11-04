@@ -55,7 +55,7 @@ async function deployment() {
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Portable context');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
-  const app = createApp({ dataRoot, coreDb, store });
+  const app = await createApp({ dataRoot, coreDb, store });
   return { dataRoot, coreDb, store, workspace, app };
 }
 

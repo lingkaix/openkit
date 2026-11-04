@@ -45,7 +45,7 @@ function createConfiguredProviderOptions(gateway: { enabled?: boolean } = {}) {
 
 describe('LLM gateway policy controls', () => {
   it('does not list models while the agent gateway is disabled', async () => {
-    const app = createApp({
+    const app = await createApp({
       ...createConfiguredProviderOptions({ enabled: false }),
     });
 
@@ -59,7 +59,7 @@ describe('LLM gateway policy controls', () => {
 
   it('can disable agent gateway chat completions', async () => {
     const coreDb = createTestCoreDb();
-    const app = createApp({
+    const app = await createApp({
       ...createConfiguredProviderOptions({ enabled: false }),
       coreDb,
     });
@@ -92,7 +92,7 @@ describe('LLM gateway policy controls', () => {
 
   it('records allowed gateway chat completion policy decisions', async () => {
     const coreDb = createTestCoreDb();
-    const app = createApp({
+    const app = await createApp({
       ...createConfiguredProviderOptions(),
       coreDb,
       llmPiAiClient: asPiAiGatewayClientDouble({

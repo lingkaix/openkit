@@ -74,7 +74,7 @@ async function source() {
     ),
     updates: { custom: { preserve: ['one', 'two'] } },
   }).replace(/^openkit_entry_(?:id|kind):.*\n/gm, '');
-  const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+  const app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
   const listedResponse = await app.request(
     ...operationRequest('knowledge.notebook.list', { workspaceId: workspace.id })
   );

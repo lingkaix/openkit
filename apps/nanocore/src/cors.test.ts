@@ -33,7 +33,7 @@ describe('browser CORS', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
-    const app = createApp({
+    const app = await createApp({
       store,
       auth: signedOutAuth(),
       mode: 'server',
@@ -79,7 +79,7 @@ describe('browser CORS', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
-    const app = createPlainApp({ store });
+    const app = await createPlainApp({ store });
     const loopback = await app.request('/api/health', {
       headers: { origin: 'http://localhost:5173' },
     });
@@ -112,7 +112,7 @@ describe('browser CORS', () => {
   it('rejects a disallowed browser origin before a mutating handler runs', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cors-mutation-'));
     initializeTestCore(dataRoot);
-    const app = createApp({ dataRoot });
+    const app = await createApp({ dataRoot });
     const before = await app.request('/api/app/operations/workspace.list', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

@@ -17,7 +17,6 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createApp } from './app.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -40,6 +39,7 @@ import * as databases from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
+import { createAppWithPreparedChannels as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
@@ -127,7 +127,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
   const admission = new WorkspaceMutationAdmission();
   const gateway = createDefaultWorkerMcpGateway(coreDb);
   const executor = new SimulatedTurnExecutor({ coreDb });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

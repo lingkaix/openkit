@@ -1237,7 +1237,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       return materialize(pkg, context);
     };
-    let app: ReturnType<typeof createAppWithWorkspaceAuthority>;
+    let app: Awaited<ReturnType<typeof createAppWithWorkspaceAuthority>>;
     const fenceEntered = Promise.withResolvers<void>();
     const permitFence = Promise.withResolvers<void>();
     const release = backend.release.bind(backend);
@@ -1335,7 +1335,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         return getWorkerControlAcceptedFinalStatus(coreDb, lineage)!;
       },
     });
-    app = createAppWithWorkspaceAuthority({
+    app = await createAppWithWorkspaceAuthority({
       coreDb,
       dataRoot,
       store,
@@ -3730,7 +3730,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ownerUserId: LOCAL_USER_ID,
         workspaceId: workspaceIdForOwner(turn.owner),
       });
-      const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot: coreDb.dataRoot, store });
+      const app = await createAppWithWorkspaceAuthority({
+        coreDb,
+        dataRoot: coreDb.dataRoot,
+        store,
+      });
       const applied = await app.request('/api/app/operations/artifact.review.decide', {
         method: 'POST',
         headers: {
@@ -6354,7 +6358,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }
       ),
     } as unknown as LLMGatewayProviderDispatcher;
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       gatewayConfig: createTestGatewayConfig(),
       llmGatewayDispatcher,
@@ -8270,7 +8274,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         id: workspaceIdForOwner(turn.owner),
         check: 'database',
       });
-      const app = createAppWithWorkspaceAuthority({
+      const app = await createAppWithWorkspaceAuthority({
         coreDb,
         dataRoot,
         store: reopenedStore,
@@ -9522,7 +9526,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fixture.turn.id,
       triggerInput
     );
-    const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
+    const app = await createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
     const backend = new FakeWorkerGovernanceBackend();
     const nativeLaunch = backend.submit.bind(backend);
     const launch = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
@@ -10402,7 +10406,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const notebook = fixture.notebook;
     const originalRevision = notebook.publishedRevision();
     const originalIndex = notebook.readRevision(originalRevision, ['index.md']).files['index.md'];
-    const app = createApp({
+    const app = await createApp({
       coreDb: fixture.coreDb,
       dataRoot: fixture.coreDb.dataRoot,
       mode: 'local',
@@ -10509,7 +10513,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         'original historical guidance',
         'new current guidance'
       );
-      const app = createApp({
+      const app = await createApp({
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
         mode: 'local',
@@ -10697,7 +10701,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     // Keep the same completed Task for both observations; each runs without another physical launch.
     let completed: {
       fixture: Awaited<ReturnType<typeof createWorkerContextExecutorFixture>>;
-      app: ReturnType<typeof createApp>;
+      app: Awaited<ReturnType<typeof createApp>>;
       launchSpy: MockInstance<FakeWorkerGovernanceBackend['submit']>;
     };
     beforeAll(async () => {
@@ -10705,7 +10709,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         maxContextTokens: 240_000,
         skipInitialKnowledgeSelection: true,
       });
-      const app = createApp({
+      const app = await createApp({
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
         mode: 'local',
@@ -14497,7 +14501,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
             }),
           };
           participantInvoke = participant.invoke;
-          const app = createApp({
+          const app = await createApp({
             coreDb: fixture.coreDb,
             dataRoot: fixture.coreDb.dataRoot,
             store: fixture.store,
@@ -15142,7 +15146,11 @@ describe('retained-record failure publication', () => {
         expect(terminal).toMatchObject({
           data: { type: 'turn-completed', stopReason: 'error', turn: { error: turn.error } },
         });
-        const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
+        const app = await createApp({
+          coreDb: fixture.coreDb,
+          mode: 'local',
+          store: fixture.store,
+        });
         const response = await app.request('/api/app/operations/turn.read', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

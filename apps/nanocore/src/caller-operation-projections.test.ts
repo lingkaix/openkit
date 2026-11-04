@@ -54,9 +54,9 @@ async function fixture() {
   fixtures.push({ coreDb, dataRoot });
   const store = new FsStore({ dataRoot });
   const auth = createBetterAuth(coreDb);
-  const makeApp = (ownerStore = store, mode: 'local' | 'server' = 'server') =>
-    createApp({ auth, coreDb, dataRoot, mode, store: ownerStore });
-  const app = makeApp();
+  const makeApp = async (ownerStore = store, mode: 'local' | 'server' = 'server') =>
+    await createApp({ auth, coreDb, dataRoot, mode, store: ownerStore });
+  const app = await makeApp();
   const signup = await app.request('/api/auth/sign-up/email', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -260,7 +260,7 @@ describe('caller operation projections', () => {
       });
     const f = await fixture();
     const admin = f.token();
-    const localApp = f.makeApp(f.store, 'local');
+    const localApp = await f.makeApp(f.store, 'local');
     expect(coordinators).toHaveBeenCalledTimes(2);
     for (const { value: coordinator } of coordinators.mock.results) {
       const boot = vi.mocked(coordinator.boot);
@@ -389,7 +389,7 @@ describe('caller operation projections', () => {
       'New canonical record',
       testEntityId('th', 'th_restart')
     );
-    const restarted = f.makeApp(new FsStore({ dataRoot: f.dataRoot }));
+    const restarted = await f.makeApp(new FsStore({ dataRoot: f.dataRoot }));
     const afterRestart = await f.post(
       'caller.read',
       input,

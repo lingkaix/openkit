@@ -46,7 +46,7 @@ async function fixture() {
     );
   }
   const store = new FsStore({ dataRoot });
-  const app = createApp({ coreDb, dataRoot, store, mode: 'server' });
+  const app = await createApp({ coreDb, dataRoot, store, mode: 'server' });
   const workspace = await store.createWorkspace('Memory query context', {
     requestId: randomUUID(),
     producer: { kind: 'user', id: userIds[0]! },

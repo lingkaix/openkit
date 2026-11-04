@@ -73,7 +73,7 @@ describe('User-owned Thread read receipts', () => {
       workspaceIds: [workspace.id],
       expiresAt: '2099-01-01T00:00:00.000Z',
     }).secret;
-    const app = createApp({ mode: 'server', coreDb, store });
+    const app = await createApp({ mode: 'server', coreDb, store });
     const owner = { workspaceId: workspace.id, threadId: thread.id };
     const request = (
       id: Parameters<typeof operationRequest>[0],

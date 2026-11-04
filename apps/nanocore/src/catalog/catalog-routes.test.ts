@@ -41,12 +41,16 @@ async function catalogFixture() {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: workspace.id,
   });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   return { app, coreDb, dataRoot, workspace };
 }
 
 /** Posts complete logical input through the canonical catalog operation. */
-function postCatalog(app: ReturnType<typeof createApp>, path: OperationId, input: unknown) {
+function postCatalog(
+  app: Awaited<ReturnType<typeof createApp>>,
+  path: OperationId,
+  input: unknown
+) {
   return app.request(
     ...operationRequest(
       path,
@@ -335,7 +339,7 @@ describe('resource catalog operations', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const empty = await app.request(
@@ -433,7 +437,7 @@ describe('resource catalog operations', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     try {
       const escaped = await app.request(
         ...operationRequest(

@@ -51,7 +51,7 @@ describe('thread item replay app API', () => {
       createdAt: '2026-05-06T00:00:01.000Z',
       completedAt: '2026-05-06T00:00:01.000Z',
     });
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const res = await app.request('/api/app/operations/thread.items', {
       method: 'POST',

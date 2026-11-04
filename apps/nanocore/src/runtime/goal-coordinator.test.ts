@@ -127,7 +127,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
       });
     }
   );
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,
@@ -273,7 +273,7 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
   gatewayConfig.logicalModels[0]!.contextManagement = [
     { type: 'compaction', compactThreshold: 64000 },
   ];
-  const app = createApp({
+  const app = await createApp({
     agentManifests: [
       createTestAgentSetup({ agentId: 'discoverable-worker' }).manifest,
       {
@@ -540,7 +540,7 @@ it('completes the real Coordinator request through stock Codex with unchanged To
   });
   const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() });
   const dispatch = vi.spyOn(dispatcher, 'createResponses');
-  const app = createApp({
+  const app = await createApp({
     gatewayConfig,
     coreDb,
     dataRoot,

@@ -33,7 +33,7 @@ async function fixture() {
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
   const register = (requestId: string, fields: Record<string, unknown> = {}) =>
     app.request(

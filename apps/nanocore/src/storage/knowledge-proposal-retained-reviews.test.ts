@@ -117,7 +117,7 @@ describe('knowledge proposal authority', () => {
         workspaceRoot,
         repositoryPath,
         notebook,
-        app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
+        app: await createAppWithLocalIdentity({ coreDb, dataRoot, store }),
       };
       return {
         ...fixture,
@@ -130,7 +130,7 @@ describe('knowledge proposal authority', () => {
       expect(accepted.review.proposalDigest).toBe(digest(readFileSync(f.proposalPath, 'utf8')));
       expect(accepted.review.proposalDigest).not.toBe(f.contentDigest);
       f.store = new FsStore({ dataRoot: f.dataRoot });
-      f.app = createAppWithLocalIdentity({
+      f.app = await createAppWithLocalIdentity({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
         store: f.store,

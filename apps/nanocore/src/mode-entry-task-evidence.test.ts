@@ -31,7 +31,7 @@ it('replays and collects one terminal Task with more than 100 retained evidence 
   const setup = createTestAgentSetup({
     requiredCapabilities: ['trusted-worker-inference-relay'],
   });
-  const app = createAppWithWorkspaceAuthority({
+  const app = await createAppWithWorkspaceAuthority({
     agentManifests: [setup.manifest],
     coreDb,
     dataRoot,

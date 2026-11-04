@@ -567,7 +567,7 @@ describe('configuration-stage work-slot source refusal', () => {
     );
     const id = 'agents/team.agent.jsonc';
     if (operation === 'runtime.file-update') f.write(id, agent([]));
-    const app = createAppWithWorkspaceAuthority({ dataRoot: f.dataRoot, store: f.store });
+    const app = await createAppWithWorkspaceAuthority({ dataRoot: f.dataRoot, store: f.store });
     const response = await app.request(`/api/app/operations/${operation}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

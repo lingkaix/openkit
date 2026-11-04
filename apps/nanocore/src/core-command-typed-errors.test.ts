@@ -35,7 +35,7 @@ it.each([
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const app = createApp({ coreDb, dataRoot, store, mode: 'server' });
+    const app = await createApp({ coreDb, dataRoot, store, mode: 'server' });
     const errors: Error[] = [];
     app.onError((error, context) => {
       errors.push(error);

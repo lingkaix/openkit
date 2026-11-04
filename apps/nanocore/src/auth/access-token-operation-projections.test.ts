@@ -58,7 +58,7 @@ describe('B12 bootstrap credential admission', () => {
       },
       handler: async () => new Response(null, { status: 404 }),
     };
-    const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
+    const app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
     try {
       const before = f.rows();
       const response = await app.request(
@@ -82,7 +82,7 @@ describe('B12 bootstrap credential admission', () => {
   it('refuses non-loopback plaintext before bootstrap writes even with a valid secret', async () => {
     const f = fixture();
     try {
-      const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server' });
+      const app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server' });
       const before = f.rows();
       const response = await app.request(
         new Request('http://public.example/api/app/operations/bootstrap.consume', {
@@ -222,7 +222,7 @@ describe('B12 authorized former binding retirement', () => {
         },
         handler: async () => new Response(null, { status: 404 }),
       };
-      const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
+      const app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, mode: 'server', auth });
       const response = await app.request(path, {
         method,
         headers: path.includes('my-admin-tokens')

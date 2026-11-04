@@ -1751,7 +1751,7 @@ describe('terminal failed-start product recovery', () => {
           },
         ],
       });
-      const app = createApp({
+      const app = await createApp({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
         store: f.store,
@@ -1958,7 +1958,7 @@ describe('terminal failed-start product recovery', () => {
     });
     const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
     const starts = vi.spyOn(executor, 'startTurn');
-    const app = createApp({
+    const app = await createApp({
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
       store: f.store,
@@ -6390,7 +6390,7 @@ describe('minimal scheduler reconnect contract', () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(f.clock.now));
       const executor = new RejectRecoveredTurnExecutor();
-      const app = createApp({
+      const app = await createApp({
         coreDb: f.coreDb,
         dataRoot: f.coreDb.dataRoot,
         store: f.store,
@@ -6514,7 +6514,7 @@ describe('minimal scheduler reconnect contract', () => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(f.clock.now));
       const executor = new RejectRecoveredTurnExecutor();
-      const app = createApp({
+      const app = await createApp({
         coreDb: f.coreDb,
         dataRoot: f.coreDb.dataRoot,
         store: f.store,
@@ -6793,7 +6793,13 @@ describe('minimal scheduler reconnect contract', () => {
         session: store.getAgentSession(f.agentSessionId),
         checkpoint: getWorkerCheckpoint(db, workspace.id, f.threadId, f.turnId),
       }));
-      const app = createApp({ auth, coreDb, dataRoot: coreDb.dataRoot, mode: 'server', store });
+      const app = await createApp({
+        auth,
+        coreDb,
+        dataRoot: coreDb.dataRoot,
+        mode: 'server',
+        store,
+      });
       const getTurn = vi.spyOn(store, 'getTurn');
       const getSession = vi.spyOn(store, 'getAgentSession');
       try {

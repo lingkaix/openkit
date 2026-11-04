@@ -103,7 +103,13 @@ async function fixture() {
     JSON.stringify(initialConfig)
   );
   const manager = createRuntimeConfigManager({ dataRoot });
-  const app = createApp({ dataRoot, coreDb, store, mode: 'server', runtimeConfigManager: manager });
+  const app = await createApp({
+    dataRoot,
+    coreDb,
+    store,
+    mode: 'server',
+    runtimeConfigManager: manager,
+  });
   const admin = createOpenKitAccessTokenRecord(coreDb, {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     scope: 'server-admin',
@@ -260,7 +266,7 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
       })
     );
     const restarted = createRuntimeConfigManager({ dataRoot: f.dataRoot });
-    const restartedApp = createApp({
+    const restartedApp = await createApp({
       dataRoot: f.dataRoot,
       coreDb: f.coreDb,
       store: f.store,

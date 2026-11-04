@@ -225,7 +225,7 @@ async function createWorkerControlRouteFixture(
   coreDb: CoreDb,
   captureOn = false
 ): Promise<{
-  app: ReturnType<typeof createApp>;
+  app: Awaited<ReturnType<typeof createApp>>;
   environmentPackage: AgentEnvironmentPackage;
   gateway: WorkerControlGateway;
   lineage: WorkerControlLineage;
@@ -288,7 +288,7 @@ async function createWorkerControlRouteFixture(
   const registration = gateway.registerSession(environmentPackage);
 
   return {
-    app: createApp({
+    app: await createApp({
       mode: 'server',
       store,
       workerControlGateway: gateway,
@@ -579,7 +579,7 @@ describe('worker control routes', () => {
       fixture.environmentPackage,
       binding
     );
-    const app = createApp({
+    const app = await createApp({
       workspaceMutationAdmission: fixture.workspaceMutationAdmission,
       coreDb,
       mode: 'server',
@@ -802,7 +802,7 @@ describe('worker control routes', () => {
     });
   });
 
-  it('keeps worker route planes ahead of product API middleware', () => {
+  it('keeps worker route planes ahead of product API middleware', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-route-inventory-'));
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
@@ -810,8 +810,8 @@ describe('worker control routes', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = createTestStore({ dataRoot });
-    const routes = createApp({ store })
-      .routes.filter(({ path }) => path.startsWith('/api/worker-') || path === '/api/*')
+    const routes = (await createApp({ store })).routes
+      .filter(({ path }) => path.startsWith('/api/worker-') || path === '/api/*')
       .map(({ method, path }) => `${method} ${path}`);
 
     expect(routes).toEqual([
@@ -913,7 +913,7 @@ describe('worker control routes', () => {
       const absoluteDeadline = absoluteAttemptDeadline(coreDb, fixture.lineage.turnId);
       const firstGateway = createDefaultWorkerControlGateway(coreDb);
       registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
-      const firstApp = createApp({
+      const firstApp = await createApp({
         workspaceMutationAdmission: fixture.workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -958,7 +958,7 @@ describe('worker control routes', () => {
 
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
       registerDurableWorkerControlSession(restartedGateway, fixture.environmentPackage, binding);
-      const restartedApp = createApp({
+      const restartedApp = await createApp({
         workspaceMutationAdmission: fixture.workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -1085,7 +1085,7 @@ describe('worker control routes', () => {
         environmentPackage,
         binding
       );
-      const firstApp = createApp({
+      const firstApp = await createApp({
         coreDb,
         mode: 'server',
         store,
@@ -1115,7 +1115,7 @@ describe('worker control routes', () => {
         environmentPackage,
         binding
       );
-      const secondApp = createApp({
+      const secondApp = await createApp({
         coreDb,
         mode: 'server',
         store,
@@ -1221,7 +1221,7 @@ describe('worker control routes', () => {
         environmentPackage,
         binding
       );
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         mode: 'server',
         store,
@@ -1322,7 +1322,7 @@ describe('worker control routes', () => {
     );
     let gateway = createDefaultWorkerControlGateway(coreDb);
     const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-    let app = createApp({
+    let app = await createApp({
       coreDb,
       mode: 'server',
       store,
@@ -1419,7 +1419,7 @@ describe('worker control routes', () => {
     coreDb.sqlite.close();
     coreDb = openCoreDb(dataRoot);
     gateway = createDefaultWorkerControlGateway(coreDb);
-    app = createApp({
+    app = await createApp({
       coreDb,
       mode: 'server',
       store,
@@ -1475,7 +1475,7 @@ describe('worker control routes', () => {
     );
     let gateway = createDefaultWorkerControlGateway(coreDb);
     const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-    let app = createApp({
+    let app = await createApp({
       coreDb,
       mode: 'server',
       store,
@@ -1551,7 +1551,7 @@ describe('worker control routes', () => {
     expect(registerDurableWorkerControlSession(gateway, environmentPackage, binding).token).toBe(
       registration.token
     );
-    app = createApp({
+    app = await createApp({
       coreDb,
       mode: 'server',
       store,
@@ -1593,7 +1593,7 @@ describe('worker control routes', () => {
     );
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const registration = registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       mode: 'server',
       store,
@@ -1722,7 +1722,7 @@ describe('worker control routes', () => {
         sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       });
       gateway.registerSession(environmentPackage);
-      const app = createApp({
+      const app = await createApp({
         workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -1894,7 +1894,7 @@ describe('worker control routes', () => {
         environmentPackage,
         binding
       );
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         mode: 'server',
         store,
@@ -2202,7 +2202,7 @@ describe('worker control routes', () => {
       environmentPackage,
       'lease-binding:lease_default_binding'
     );
-    const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+    const app = await createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
 
     await gateway.recordHeartbeat({
       authorization: `Bearer ${registration.token}`,
@@ -2370,7 +2370,7 @@ describe('worker control routes', () => {
         environmentPackage,
         'lease-binding:missing_lease'
       );
-      const app = createApp({
+      const app = await createApp({
         workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -2410,7 +2410,7 @@ describe('worker control routes', () => {
     const registration = gateway.registerSession(environmentPackage, {
       sandboxBindingRef: 'lease-binding:database_failure',
     });
-    const app = createApp({
+    const app = await createApp({
       workspaceMutationAdmission,
       mode: 'server',
       store,
@@ -2687,7 +2687,7 @@ describe('worker control routes', () => {
       environmentPackage,
       'lease-binding:lease_final_status'
     );
-    const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+    const app = await createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
     const finalStatusBody = JSON.stringify({
       schemaVersion: 2,
       lineage,
@@ -2753,7 +2753,7 @@ describe('worker control routes', () => {
 
     coreDb.sqlite.exec('DROP TRIGGER reject_final_status_release');
     const rebuiltGateway = createDefaultWorkerControlGateway(coreDb);
-    const rebuiltApp = createApp({
+    const rebuiltApp = await createApp({
       coreDb,
       mode: 'server',
       store,
@@ -2941,7 +2941,7 @@ describe('worker control routes', () => {
         sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       });
       registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-      const app = createApp({
+      const app = await createApp({
         workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -3062,7 +3062,7 @@ describe('worker control routes', () => {
         sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       });
       registerDurableWorkerControlSession(gateway, environmentPackage, binding);
-      const app = createApp({
+      const app = await createApp({
         workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -3269,7 +3269,7 @@ describe('worker control routes', () => {
         workerInferenceTokenHash: hashWorkerRouteToken(workerRouteToken(binding, 'inference')),
       });
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const app = createApp({
+      const app = await createApp({
         workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -3299,7 +3299,7 @@ describe('worker control routes', () => {
       expect(listBackendWorkspaceHandles(workspaceDb, lineage.workspaceId)).toEqual(pendingHandles);
 
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
-      const restartedApp = createApp({
+      const restartedApp = await createApp({
         workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -3447,7 +3447,7 @@ describe('worker control routes', () => {
         'final_status_replay'
       );
       const gateway = createDefaultWorkerControlGateway(coreDb);
-      const app = createApp({
+      const app = await createApp({
         workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -3481,7 +3481,7 @@ describe('worker control routes', () => {
         method: 'POST',
       });
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
-      const restartedApp = createApp({
+      const restartedApp = await createApp({
         workspaceMutationAdmission,
         coreDb,
         mode: 'server',
@@ -3703,7 +3703,7 @@ describe('worker control routes', () => {
         environmentPackage,
         'lease-binding:lease_supply_refresh'
       );
-      const app = createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
+      const app = await createApp({ coreDb, mode: 'server', store, workerControlGateway: gateway });
 
       const res = await app.request('/api/worker-control/supply-refresh-ack', {
         body: JSON.stringify({
@@ -3930,7 +3930,7 @@ describe('worker control routes', () => {
         fixture.environmentPackage,
         binding
       );
-      let app = createApp({
+      let app = await createApp({
         coreDb,
         mode: 'server',
         store: fixture.store,
@@ -3972,7 +3972,7 @@ describe('worker control routes', () => {
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
-      app = createApp({
+      app = await createApp({
         coreDb,
         mode: 'server',
         store: fixture.store,
@@ -4539,7 +4539,7 @@ describe('worker control routes', () => {
         environmentPackage,
         'lease-binding:lease_rebuild'
       );
-      const firstApp = createApp({
+      const firstApp = await createApp({
         coreDb,
         mode: 'server',
         store,
@@ -4620,7 +4620,7 @@ describe('worker control routes', () => {
       expect
         .soft(rebuiltGateway.getSessionSnapshot(lineage.packageSnapshotId)?.heartbeat)
         .toBeNull();
-      const restartedApp = createApp({
+      const restartedApp = await createApp({
         coreDb,
         mode: 'server',
         store,

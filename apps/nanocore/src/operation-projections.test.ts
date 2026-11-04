@@ -456,7 +456,7 @@ async function operationFixture(
       return coordinator;
     });
   try {
-    const app = createApp({ coreDb, dataRoot, store, ...options });
+    const app = await createApp({ coreDb, dataRoot, store, ...options });
     for (const { value: coordinator } of coordinators.mock.results)
       await vi.mocked(coordinator.boot).mock.results[0]!.value;
     return { app, coreDb, store, command, appRecord, schema, mode: options.mode ?? 'local' };
@@ -870,7 +870,7 @@ describe('operation projection cutover', () => {
   it('preserves typed read-only denial through authenticated HTTP and rejects a revoked next call', async () => {
     const f = await operationFixture();
     try {
-      const server = createApp({
+      const server = await createApp({
         mode: 'server',
         coreDb: f.coreDb,
         dataRoot: f.command.dataRoot,
@@ -1348,7 +1348,7 @@ async function publicJourneyProjections(
 ) {
   const app =
     secret && f.mode !== 'server'
-      ? createApp({
+      ? await createApp({
           mode: 'server',
           coreDb: f.coreDb,
           dataRoot: f.command.dataRoot,

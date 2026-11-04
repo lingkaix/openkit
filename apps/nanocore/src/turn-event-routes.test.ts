@@ -133,7 +133,7 @@ describe('turn event routes', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const { workspaceId, threadId, turnId } = await createReplayTurn(store);
 
     const coldRes = await app.request(
@@ -167,7 +167,7 @@ describe('turn event routes', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const { workspaceId, threadId, turnId } = await createReplayTurn(store);
     const terminalSequence = store
       .getTurnEvents(turnId)
@@ -194,7 +194,7 @@ describe('turn event routes', () => {
 
     vi.spyOn(store, 'addTurnListener').mockReturnValue(unsubscribe);
 
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const thread = await store.createThread(workspaceId, 'Open replay thread');
     const turn = await store.createTurn(workspaceId, thread.id, 'Keep streaming', {
@@ -276,7 +276,7 @@ describe('turn event routes', () => {
     );
 
     const listenerSpy = vi.spyOn(store, 'addTurnListener');
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const res = await app.request(
       `/api/workspaces/${workspaceId}/threads/${thread.id}/events?turnId=${turn.id}&since=0`
     );
@@ -334,7 +334,7 @@ describe('turn event routes', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = await createDemoStore({ dataRoot });
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Overflow replay thread'
@@ -401,7 +401,7 @@ describe('turn event routes', () => {
     const store = await createDemoStore({ dataRoot });
     const otherWorkspace = await store.createWorkspace('Other event workspace');
     const { turnId } = await createReplayTurn(store, otherWorkspace.id);
-    const app = createApp({ store });
+    const app = await createApp({ store });
 
     const res = await app.request(
       `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/events?turnId=${turnId}&since=0`
@@ -413,7 +413,7 @@ describe('turn event routes', () => {
 
   it('omits AgentSession identity from ordinary SSE while retained events may still carry it', async () => {
     const store = await createDemoStore();
-    const app = createApp({ store });
+    const app = await createApp({ store });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Hidden AgentSession stream'

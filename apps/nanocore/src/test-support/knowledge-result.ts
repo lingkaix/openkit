@@ -40,7 +40,7 @@ export async function fixture(enableMaintenance = false) {
   maintenanceGateway.logicalModels[0]!.contextManagement = [
     { type: 'compaction', compactThreshold: 32_000 },
   ];
-  const result = createKnowledgeAnswerApp(
+  const result = await createKnowledgeAnswerApp(
     {
       dataRoot,
       store,

@@ -368,7 +368,7 @@ describe('B6 binding retirement', () => {
           }),
         })
       : undefined;
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       store,

@@ -32,7 +32,7 @@ it('applies only the exact reviewed complete schema report under its exclusive f
   const workspace = await store.createWorkspace('Reviewed schema application');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const admission = new WorkspaceMutationAdmission();
-  let app = createAppWithLocalIdentity({
+  let app = await createAppWithLocalIdentity({
     mode: 'server',
     coreDb,
     dataRoot,
@@ -281,7 +281,7 @@ it('applies only the exact reviewed complete schema report under its exclusive f
   await shutdownControlStoreWorkerClient();
   db.sqlite.close();
   store = createTestStore({ dataRoot });
-  app = createAppWithLocalIdentity({
+  app = await createAppWithLocalIdentity({
     mode: 'server',
     coreDb,
     dataRoot,

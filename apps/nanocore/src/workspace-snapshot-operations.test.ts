@@ -55,7 +55,7 @@ const workspaceId = DEMO_WORKSPACE_ID;
 
 /** Calls the frozen App API wire contract without deriving a path from candidate composition. */
 async function request(
-  app: ReturnType<typeof createAppWithLocalIdentity>,
+  app: Awaited<ReturnType<typeof createAppWithLocalIdentity>>,
   operation: string,
   input: Record<string, unknown>,
   signal?: AbortSignal
@@ -98,7 +98,7 @@ async function fixture(
     fileAdmission,
     releaseIdentity,
   };
-  const app = createAppWithLocalIdentity(appOptions);
+  const app = await createAppWithLocalIdentity(appOptions);
   return { dataRoot, store, coreDb, ownerId, admission, fileAdmission, appOptions, app };
 }
 
@@ -183,7 +183,7 @@ describe('C-a composed snapshot App API', () => {
       expect(captured.status, await captured.clone().text()).toBe(200);
       const original = WorkspaceSnapshotReportSchema.parse(await captured.json());
       // Local initial Server admission is real; the snapshot owner still needs Core facts.
-      const missingCore = createAppWithLocalIdentity({ ...f.appOptions, coreDb: undefined });
+      const missingCore = await createAppWithLocalIdentity({ ...f.appOptions, coreDb: undefined });
       const effects = [
         vi.spyOn(f.admission, 'tryFreeze'),
         vi.spyOn(captureProtection, 'protectCapture'),
@@ -241,7 +241,7 @@ describe('C-a composed snapshot App API', () => {
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const server = createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
+      const server = await createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
       const authenticated = (operation: string, input: Record<string, unknown>) =>
         server.request(`/api/app/operations/${operation}`, {
           method: 'POST',
@@ -361,7 +361,7 @@ describe('C-a composed snapshot App API', () => {
     let frozen: ReturnType<WorkspaceMutationAdmission['tryFreeze']> | undefined;
     let reopenedCore: ReturnType<typeof createTestCoreDb> | undefined;
     try {
-      const view = createAppWithLocalIdentity(defaultOptions);
+      const view = await createAppWithLocalIdentity(defaultOptions);
       frozen = originalOwner.tryFreeze(workspaceId, () => []);
       expect(frozen.status).toBe('frozen');
       if (frozen.status !== 'frozen') throw new Error('Expected the original fixture freeze.');
@@ -381,9 +381,12 @@ describe('C-a composed snapshot App API', () => {
       }
 
       const differentOwner = new WorkspaceMutationAdmission();
-      expect(() =>
-        createAppWithLocalIdentity({ ...f.appOptions, workspaceMutationAdmission: differentOwner })
-      ).toThrow();
+      await expect(
+        createAppWithLocalIdentity({
+          ...f.appOptions,
+          workspaceMutationAdmission: differentOwner,
+        })
+      ).rejects.toThrow();
       expect(getControlStoreWorkerClient()).toBe(firstClient);
       expect(originalOwner.isClosed(workspaceId)).toBe(true);
       await expect(
@@ -409,7 +412,7 @@ describe('C-a composed snapshot App API', () => {
       closeTestCoreDb(f.coreDb);
       reopenedCore = createTestCoreDb(f.dataRoot);
       const reopenedStore = new FsStore({ dataRoot: f.dataRoot });
-      const restarted = createAppWithLocalIdentity({
+      const restarted = await createAppWithLocalIdentity({
         ...defaultOptions,
         coreDb: reopenedCore,
         store: reopenedStore,
@@ -447,7 +450,7 @@ describe('C-a composed snapshot App API', () => {
       });
       expect(captured.status, await captured.clone().text()).toBe(200);
       const original = WorkspaceSnapshotReportSchema.parse(await captured.json());
-      const unknown = createAppWithLocalIdentity({
+      const unknown = await createAppWithLocalIdentity({
         ...f.appOptions,
         releaseIdentity: { releaseTag: null, sourceCommit: null },
       });
@@ -961,7 +964,7 @@ describe('C-a composed snapshot App API', () => {
         expect(ApiErrorSchema.parse(JSON.parse(body))).toMatchObject({ code: 'recovery-required' });
         expect(body).not.toContain(f.dataRoot);
       }
-      const server = createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
+      const server = await createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
       const denied = await request(server, 'workspace.recovery-inspect', {
         workspaceId,
         selection,
@@ -1352,7 +1355,7 @@ describe('C-a composed snapshot App API', () => {
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const server = createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
+      const server = await createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
       expect(accessTokens.revokeOpenKitAccessTokenRecord(f.coreDb, issued.tokenId)?.status).toBe(
         'revoked'
       );
@@ -1397,7 +1400,7 @@ describe('C-a composed snapshot App API', () => {
         restoreWorkspaceRecoveryAdmission(f.coreDb, f.admission);
         f.store = new FsStore({ dataRoot: f.dataRoot });
         f.appOptions = { ...f.appOptions, store: f.store, workspaceMutationAdmission: f.admission };
-        f.app = createAppWithLocalIdentity(f.appOptions);
+        f.app = await createAppWithLocalIdentity(f.appOptions);
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
         expect(f.admission.isClosed(workspaceId)).toBe(true);
       }
@@ -1747,7 +1750,7 @@ describe('C-a composed snapshot App API', () => {
         workspaceIds: [],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const server = createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
+      const server = await createAppWithLocalIdentity({ ...f.appOptions, mode: 'server' });
       const copy = durableBytes.copyVerifiedFile;
       let first = true;
       vi.spyOn(durableBytes, 'copyVerifiedFile').mockImplementation(async (...args) => {

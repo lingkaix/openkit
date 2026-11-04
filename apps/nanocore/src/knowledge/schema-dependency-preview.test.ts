@@ -48,7 +48,7 @@ it('previews real Workspace dependencies and keeps unreadable or malformed conta
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
   const auth = createBetterAuth(f.coreDb, { env: { PORT: '3000' } });
-  const app = createApp({
+  const app = await createApp({
     auth,
     mode: 'server',
     coreDb: f.coreDb,

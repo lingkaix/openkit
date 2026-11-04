@@ -20,7 +20,7 @@ describe('personal Workspace mode', () => {
       const userId = ensureLocalUser(coreDb);
       const store = createTestStore({ dataRoot });
       await ensureUserQuickChatWorkspace({ coreDb, store, userId });
-      const app = createApp({ coreDb, dataRoot, store });
+      const app = await createApp({ coreDb, dataRoot, store });
       const res = await app.request('/api/app/operations/workspace.list', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },

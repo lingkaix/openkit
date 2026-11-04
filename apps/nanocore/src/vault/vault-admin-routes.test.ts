@@ -40,7 +40,7 @@ import { createVaultUnlockState } from './vault-unlock-state.js';
  *
  * @returns Hono app, migrated Core DB, and deterministic unlock key material.
  */
-function createVaultAdminApp() {
+async function createVaultAdminApp() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-routes-'));
   const coreDb = openCoreDb(dataRoot);
   const masterKey = Buffer.alloc(32, 9);
@@ -69,7 +69,7 @@ function createVaultAdminApp() {
   });
 
   return {
-    app: createApp({ coreDb, dataRoot, runtimeConfigManager, vaultUnlockState }),
+    app: await createApp({ coreDb, dataRoot, runtimeConfigManager, vaultUnlockState }),
     coreDb,
     dataRoot,
     keyFilePath,
@@ -111,7 +111,7 @@ function createSignedInAuthStub(): BetterAuthServer {
 
 describe('vault admin app API', () => {
   it('narrows a reviewed grant through replacement without expanding authority or reusing the old grant', async () => {
-    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     const send = (id: OperationId, input: Record<string, unknown>) => {
       const options = {
@@ -272,7 +272,7 @@ describe('vault admin app API', () => {
   });
 
   it('creates, rotates and revokes workspace secrets and gateway-only grants without exposing material', async () => {
-    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, masterKey, vaultUnlockState } = await createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     const workspaceResponse = await app.request(
       ...operationRequest(
@@ -432,7 +432,7 @@ describe('vault admin app API', () => {
   });
 
   it('rejects locked, malformed, cross-workspace and inconsistent secret mutations with redacted errors', async () => {
-    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, masterKey, vaultUnlockState } = await createVaultAdminApp();
     const request = (id: OperationId, input: Record<string, unknown>) =>
       app.request(
         ...operationRequest(
@@ -545,7 +545,7 @@ describe('vault admin app API', () => {
   });
 
   it('denies workspace-scoped bearer tokens every secret and grant mutation', async () => {
-    const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     const token = createOpenKitAccessTokenRecord(coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -553,7 +553,7 @@ describe('vault admin app API', () => {
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       vaultUnlockState,
@@ -657,7 +657,7 @@ describe('vault admin app API', () => {
     'token',
     'session',
   ] as const)('accepts workspace secret enrollment from a deployment-admin %s', async (kind) => {
-    const { coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     const admin = createOpenKitAccessTokenRecord(coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -677,7 +677,7 @@ describe('vault admin app API', () => {
       },
       handler: async () => Response.json({}),
     };
-    const app = createApp({ coreDb, dataRoot, vaultUnlockState, mode: 'server', auth });
+    const app = await createApp({ coreDb, dataRoot, vaultUnlockState, mode: 'server', auth });
     try {
       const response = await app.request(
         ...operationRequest(
@@ -705,7 +705,7 @@ describe('vault admin app API', () => {
   });
 
   it('destroys newly stored material when Core reference persistence fails', async () => {
-    const { app, coreDb, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, masterKey, vaultUnlockState } = await createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     coreDb.sqlite.exec(
       "CREATE TRIGGER reject_secret_insert BEFORE INSERT ON vault_references BEGIN SELECT RAISE(ABORT, 'persistence-error-canary'); END"
@@ -743,7 +743,7 @@ describe('vault admin app API', () => {
   });
 
   it('stores and rotates an authored provider API key without echoing secret material', async () => {
-    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     const providersRoot = join(dataRoot, 'config', 'providers');
     const firstApiKey = 'xai-test-api-key-first';
     const replacementApiKey = 'xai-test-api-key-replacement';
@@ -850,7 +850,7 @@ describe('vault admin app API', () => {
   });
 
   it('rejects a response-unsafe provider id before any Vault or Core effect', async () => {
-    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     const providersRoot = join(dataRoot, 'config', 'providers');
 
     mkdirSync(providersRoot, { recursive: true });
@@ -893,7 +893,7 @@ describe('vault admin app API', () => {
   });
 
   it('returns an audited typed failure when any authored provider file is malformed', async () => {
-    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     const providersRoot = join(dataRoot, 'config', 'providers');
 
     mkdirSync(providersRoot, { recursive: true });
@@ -943,7 +943,7 @@ describe('vault admin app API', () => {
   });
 
   it('records recovery-required evidence when backend store succeeds before Core insert fails', async () => {
-    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     const providersRoot = join(dataRoot, 'config', 'providers');
     const apiKey = 'partial-effect-test-key';
 
@@ -1029,8 +1029,8 @@ describe('vault admin app API', () => {
       workspaceIds: [],
     });
     initializeTestCore(localDataRoot);
-    const localApp = createApp({ dataRoot: localDataRoot });
-    const serverApp = createApp({
+    const localApp = await createApp({ dataRoot: localDataRoot });
+    const serverApp = await createApp({
       auth: createSignedOutAuthStub(),
       coreDb: serverCoreDb,
       dataRoot: serverDataRoot,
@@ -1100,7 +1100,7 @@ describe('vault admin app API', () => {
   });
 
   it('refuses request-supplied unlock material before creating a Vault header', async () => {
-    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     const unlockSpy = vi.spyOn(vaultUnlockState, 'unlock');
     try {
       const response = await app.request('/api/app/operations/vault.unlock', {
@@ -1118,7 +1118,7 @@ describe('vault admin app API', () => {
   });
 
   it('keeps an empty Vault locked when the configured key file is missing', async () => {
-    const { app, coreDb, dataRoot, keyFilePath, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, keyFilePath, vaultUnlockState } = await createVaultAdminApp();
     rmSync(keyFilePath);
     const unlockSpy = vi.spyOn(vaultUnlockState, 'unlock');
     try {
@@ -1143,7 +1143,7 @@ describe('vault admin app API', () => {
   });
 
   it('reports, unlocks, and locks the encrypted-file backend without echoing key material', async () => {
-    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, dataRoot, masterKey, vaultUnlockState } = await createVaultAdminApp();
     const masterKeyBase64 = masterKey.toString('base64');
     vaultUnlockState.unlock({ masterKey });
     vaultUnlockState.lock();
@@ -1202,7 +1202,7 @@ describe('vault admin app API', () => {
 
   it('rejects a wrong configured key without rewriting the retained header or exposing material', async () => {
     const { app, coreDb, dataRoot, keyFilePath, masterKey, vaultUnlockState } =
-      createVaultAdminApp();
+      await createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     vaultUnlockState.lock();
     const headerPath = join(dataRoot, 'server', 'vault', 'header.json');
@@ -1262,7 +1262,7 @@ describe('vault admin app API', () => {
   });
 
   it('rate-limits repeated failed unlock attempts and audits the denial', async () => {
-    const { app, coreDb, keyFilePath } = createVaultAdminApp();
+    const { app, coreDb, keyFilePath } = await createVaultAdminApp();
     const badMaterial = Buffer.alloc(4, 2);
     const badKey = badMaterial.toString('base64');
     writeFileSync(keyFilePath, badMaterial);
@@ -1316,7 +1316,7 @@ describe('vault admin app API', () => {
   });
 
   it('rebinds imported workspace vault references without echoing secret material', async () => {
-    const { app, coreDb, vaultUnlockState } = createVaultAdminApp();
+    const { app, coreDb, vaultUnlockState } = await createVaultAdminApp();
     const material = 'workspace-rebound-secret';
     const materialBase64 = Buffer.from(material, 'utf8').toString('base64');
 
@@ -1388,7 +1388,7 @@ describe('vault admin app API', () => {
   });
 
   it('denies a foreign vault reference but preserves a missing reference result', async () => {
-    const { app, coreDb } = createVaultAdminApp();
+    const { app, coreDb } = await createVaultAdminApp();
     const materialBase64 = Buffer.from('foreign-workspace-secret', 'utf8').toString('base64');
 
     try {
@@ -1458,7 +1458,7 @@ describe('vault admin app API', () => {
   });
 
   it('lists redacted workspace vault references for re-binding', async () => {
-    const { app, coreDb } = createVaultAdminApp();
+    const { app, coreDb } = await createVaultAdminApp();
 
     try {
       importUnboundWorkspaceVaultReference(coreDb, {
@@ -1513,7 +1513,7 @@ describe('vault admin app API', () => {
                  'vault-user@example.com', false, ?, ?, 'human')`
       )
       .run(Date.now(), Date.now());
-    const app = createApp({
+    const app = await createApp({
       auth: createSignedInAuthStub(),
       coreDb,
       dataRoot,
@@ -1594,7 +1594,7 @@ describe('vault admin app API', () => {
       })}\n`
     );
     vaultUnlockState.unlock({ masterKey });
-    const app = createApp({
+    const app = await createApp({
       auth: createSignedOutAuthStub(),
       coreDb,
       dataRoot,
@@ -1694,7 +1694,7 @@ describe('vault admin app API', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-vault-admin-auth-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const app = createApp({
+    const app = await createApp({
       auth: createSignedOutAuthStub(),
       coreDb,
       dataRoot,
@@ -1751,7 +1751,7 @@ describe('human acquisition trusted refresh refusal', () => {
     'missing-trusted-account',
     'account-mismatch',
   ] as const)('refuses %s with no material/metadata publication or raw error response', async (fault) => {
-    const { app, coreDb, vaultUnlockState, masterKey } = createVaultAdminApp();
+    const { app, coreDb, vaultUnlockState, masterKey } = await createVaultAdminApp();
     vaultUnlockState.unlock({ masterKey });
     const backend = vaultUnlockState.backend();
     const access = (account?: string) =>

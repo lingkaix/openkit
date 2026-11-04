@@ -72,7 +72,7 @@ async function fixture(agentManifests?: AgentManifest[]) {
     coreDb,
     store,
     workspace,
-    app: createApp({
+    app: await createApp({
       coreDb,
       dataRoot,
       store,
@@ -215,7 +215,11 @@ describe('exact Artifact file import and download', () => {
       sourceDigest: original.sha256,
     });
     state.store = reopened;
-    state.app = createApp({ coreDb: state.coreDb, dataRoot: state.dataRoot, store: reopened });
+    state.app = await createApp({
+      coreDb: state.coreDb,
+      dataRoot: state.dataRoot,
+      store: reopened,
+    });
     for (const exact of [
       { version: 1, bytes: firstBytes, digest: original.sha256 },
       { version: 2, bytes, digest: contentDigest },
@@ -546,7 +550,11 @@ describe('exact Artifact file import and download', () => {
     expect(state.store.getArtifact(state.workspace.id, accepted.artifactId).title).toContain(
       '\ud800'
     );
-    state.app = createApp({ coreDb: state.coreDb, dataRoot: state.dataRoot, store: state.store });
+    state.app = await createApp({
+      coreDb: state.coreDb,
+      dataRoot: state.dataRoot,
+      store: state.store,
+    });
     const response = await download(state, accepted.artifactId);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-disposition')).toContain('%EF%BF%BD');

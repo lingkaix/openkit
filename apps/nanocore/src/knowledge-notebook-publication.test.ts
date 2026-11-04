@@ -30,7 +30,7 @@ async function restrictSourceThread(
   threadId: string
 ) {
   const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
-  const app = createApp({
+  const app = await createApp({
     coreDb: f.coreDb,
     dataRoot: f.dataRoot,
     store: f.store,
@@ -129,7 +129,7 @@ async function fixture() {
       coreDb,
       store,
       workspaceDb,
-      app: createApp({ coreDb, dataRoot, store }),
+      app: await createApp({ coreDb, dataRoot, store }),
       repositoryPath: join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
     };
     fixtures.push(f);
@@ -143,7 +143,7 @@ async function fixture() {
 }
 
 /** Reopen retained product owners without reseeding, initializing Git, or repairing command evidence. */
-function reopen(f: ReturnType<typeof fixture>) {
+async function reopen(f: ReturnType<typeof fixture>) {
   f.workspaceDb.sqlite.close();
   f.coreDb.sqlite.close();
   f.coreDb = openCoreDb(f.dataRoot);
@@ -151,7 +151,7 @@ function reopen(f: ReturnType<typeof fixture>) {
   f.workspaceDb = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
   applyScopedMigrations(f.workspaceDb, undefined, 'pre-knowledge');
   f.store = new FsStore({ dataRoot: f.dataRoot });
-  f.app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+  f.app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
 }
 
 /** Native read-only Git observations do not use the publisher's tree or metadata reader. */
@@ -345,7 +345,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     });
     expect(updated.status, JSON.stringify(updated.body)).toBe(200);
     const currentRevision = (await listing(f)).notebookRevision;
-    reopen(f);
+    await reopen(f);
     const replay = await command(f, 'knowledge.notebook.create', createRequestId, input);
     expect(replay).toEqual(created);
     expect((await listing(f)).notebookRevision).toBe(currentRevision);
@@ -433,7 +433,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     });
     expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
     const removedRevision = (await listing(f)).notebookRevision;
-    reopen(f);
+    await reopen(f);
     expect(await command(f, 'knowledge.notebook.update', requestId, input)).toEqual(updated);
     expect((await listing(f)).notebookRevision).toBe(removedRevision);
     expect((await listing(f)).pages.some((entry) => entry.id === id)).toBe(false);
@@ -480,7 +480,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       ],
       summary: 'Retain authored extension metadata',
     });
-    reopen(f);
+    await reopen(f);
     const updated = await command(f, 'knowledge.notebook.update', randomUUID(), {
       baseRevision: annotated.notebookRevision,
       changes: [
@@ -506,7 +506,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(parsed.document.frontmatter.generated).toEqual(generated);
     expect(parsed.document.frontmatter.title).toBe('Updated title');
     expect(parsed.document.body).toBe('Updated body.\n');
-    reopen(f);
+    await reopen(f);
     expect((await listing(f)).pages).toContainEqual({
       id,
       path: `${id}.md`,
@@ -534,7 +534,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       content: raw,
       contentDigest: `sha256:${createHash('sha256').update(raw).digest('hex')}`,
     });
-    reopen(f);
+    await reopen(f);
     expect((await listing(f)).pages).toContainEqual({
       id: 'rough',
       path: 'rough.md',
@@ -556,7 +556,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       authority: { kind: 'direct' },
       sourceReferences: [],
     });
-    reopen(f);
+    await reopen(f);
     expect(selectedRevision(f)).toBe(revision);
   });
 
@@ -624,7 +624,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(second.notebookRevision).not.toBe(first.notebookRevision);
     const completedCount = publishedCount(f);
     expect(await publish(f, firstEdit)).toEqual(first);
-    reopen(f);
+    await reopen(f);
     expect(await publish(f, firstEdit)).toEqual(first);
     expect(publishedCount(f)).toBe(completedCount);
     expect((await listing(f)).notebookRevision).toBe(second.notebookRevision);
@@ -701,7 +701,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       name: 'Unrelated persisted Thread title',
     });
     expect(readFileSync(sentinelPath, 'utf8')).toBe(sentinel);
-    reopen(f);
+    await reopen(f);
     const retained = await listing(f);
     expect(retained.notebookRevision).toBe(published.notebookRevision);
     expect(retained.pages.find((item) => item.id === 'alpha')?.content).toContain(
@@ -734,7 +734,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     // The same valid command must publish after removing only the injected Audit fault.
     const completed = await publish(f, request);
     expect(publishedCount(f)).toBe(count + 1);
-    reopen(f);
+    await reopen(f);
     expect((await listing(f)).notebookRevision).toBe(completed.notebookRevision);
   });
 
@@ -770,7 +770,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     f.workspaceDb.sqlite.exec('DROP TRIGGER reject_notebook_head');
     const completed = await publish(f, request);
     expect(publishedCount(f)).toBe(count + 1);
-    reopen(f);
+    await reopen(f);
     expect((await listing(f)).notebookRevision).toBe(completed.notebookRevision);
     expect(await publish(f, request)).toEqual(completed);
   });
@@ -793,7 +793,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
             .prepare('DELETE FROM audit_events WHERE action = ? AND request_id = ?')
             .run(OPERATION, request.requestId);
     expect(deleted.changes).toBe(1);
-    reopen(f);
+    await reopen(f);
     const replay = await submit(f, request);
     expect(replay.status).toBeGreaterThanOrEqual(400);
     expect(replay.body).toMatchObject({ code: 'recovery_required' });

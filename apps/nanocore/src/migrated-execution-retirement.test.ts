@@ -79,7 +79,13 @@ describe('migrated execution route retirement', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const recoveryScope = { workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id, turnId: turn.id };
-    const app = createApp({ coreDb, dataRoot, store, automationStore, workspaceMutationAdmission });
+    const app = await createApp({
+      coreDb,
+      dataRoot,
+      store,
+      automationStore,
+      workspaceMutationAdmission,
+    });
     const binding = {
       'automation.list': ['GET', '/api/app/automations', undefined],
       'automation.create': [

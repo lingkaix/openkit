@@ -71,7 +71,7 @@ describe('agent.list and agent.read operations', () => {
         vi.spyOn(coordinator, 'boot');
         return coordinator;
       });
-    const app = createApp({
+    const app = await createApp({
       store,
       coreDb,
       runtimeConfigManager,
@@ -201,7 +201,7 @@ describe('agent.list and agent.read operations', () => {
       scope: 'workspace-readonly',
       workspaceIds: [allowedWorkspace.id],
     });
-    const app = createApp({
+    const app = await createApp({
       runtimeConfigManager,
       auth: {
         api: { getSession: async () => null },
@@ -466,7 +466,7 @@ describe('agent.list and agent.read operations', () => {
       configured.id,
       unready.id,
     ]);
-    const app = createApp({
+    const app = await createApp({
       runtimeConfigManager,
       store,
     });

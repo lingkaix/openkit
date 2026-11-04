@@ -44,7 +44,7 @@ async function fixture(retainedHistory = false) {
       store,
       userId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, store });
+    const app = await createApp({ coreDb, store });
     return { app, coreDb, store };
   };
   return { ...(await open()), reopen: open };
@@ -52,7 +52,7 @@ async function fixture(retainedHistory = false) {
 
 /** Calls the definition-derived public binding with an explicit command identity when supplied. */
 async function request(
-  app: ReturnType<typeof createApp>,
+  app: Awaited<ReturnType<typeof createApp>>,
   operation: OperationId,
   input: Record<string, unknown>
 ) {
@@ -138,7 +138,7 @@ describe('Personal Assistant Timeline admission', () => {
       )
       .run(workspace.id, timestamp, timestamp, timestamp);
     let actor = 'usr_00000000-0000-7000-8000-000000000001';
-    const app = createApp({
+    const app = await createApp({
       coreDb: current.coreDb,
       store: current.store,
       mode: 'server',

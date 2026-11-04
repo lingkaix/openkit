@@ -32,7 +32,7 @@ async function fixture() {
   const thread = await store.createThread(workspace.id, 'Working agent');
   const actor = { kind: 'user' as const, id: userId };
   const turn = await store.createTurn(workspace.id, thread.id, 'Ask about Knowledge', actor);
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();

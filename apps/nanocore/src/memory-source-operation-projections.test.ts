@@ -16,13 +16,13 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 
 /** Actual User authority and isolated canonical files exercise explicit Source intake through HTTP. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-source-public-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
@@ -50,7 +50,7 @@ function fixture() {
 
 describe('public explicit self Source intake', () => {
   it('retains exact text and replays its original Source without extra commits or Sources', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = 'Keep this exact document.\r\nSecond line.\n';
     const input = {
       requestId: randomUUID(),
@@ -108,7 +108,7 @@ describe('public explicit self Source intake', () => {
   });
 
   it('publishes and inspects an explicitly authored page against the exact current self Source', async () => {
-    const f = fixture();
+    const f = await fixture();
     const captured = await f.call('memory.source.register', {
       requestId: randomUUID(),
       kind: 'document',
@@ -167,7 +167,7 @@ describe('public explicit self Source intake', () => {
   });
 
   it('withholds suppressed Source versions from actual model MCP reads while retaining human inspection', async () => {
-    const f = fixture();
+    const f = await fixture();
     const captured = await f.call('memory.source.register', {
       requestId: randomUUID(),
       kind: 'document',
@@ -257,7 +257,7 @@ describe('public explicit self Source intake', () => {
   });
 
   it('refuses to replace a missing User database while established Source bytes remain', async () => {
-    const f = fixture();
+    const f = await fixture();
     const input = {
       requestId: randomUUID(),
       kind: 'document',
@@ -287,7 +287,7 @@ describe('public explicit self Source intake', () => {
   });
 
   it('refuses another owner and unjoined transcript provenance without capturing them', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = await f.call('memory.source.register', {
       requestId: randomUUID(),
       kind: 'document',

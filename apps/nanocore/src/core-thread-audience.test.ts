@@ -189,7 +189,7 @@ async function createCoreAudienceFixture() {
     sessionCompatibilityKey: 'audience-fixture',
     now: () => new Date().toISOString(),
   });
-  const app = createApp({
+  const app = await createApp({
     auth: {
       api: { getSession: async () => null },
       handler: async () => new Response(null, { status: 404 }),

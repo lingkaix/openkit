@@ -73,7 +73,7 @@ async function fixture(member = true, citedAnswer = false) {
         uncertainty: 'No authorized matching evidence.',
       };
   const answerPlans = [plan, plan, plan, plan, plan, plan];
-  const { app } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, answerPlans);
+  const { app } = await createKnowledgeAnswerApp({ coreDb, dataRoot, store }, answerPlans);
   const dependencies = {
     coreDb,
     store,
@@ -140,9 +140,11 @@ async function projections(f: ReturnType<typeof fixture>, token?: string) {
     ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
   const app = token
-    ? createKnowledgeAnswerApp(
-        { mode: 'server', coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store },
-        f.answerPlans
+    ? (
+        await createKnowledgeAnswerApp(
+          { mode: 'server', coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store },
+          f.answerPlans
+        )
       ).app
     : f.app;
   const client = createCoreClient({
@@ -859,7 +861,7 @@ describe('Knowledge operation definition cutover', () => {
         workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const app = createApp({
+      const app = await createApp({
         mode: 'server',
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
@@ -1067,7 +1069,7 @@ it.each([
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const app = createApp({
+    const app = await createApp({
       mode: 'server',
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,

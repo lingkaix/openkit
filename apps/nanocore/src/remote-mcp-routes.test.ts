@@ -104,7 +104,7 @@ async function fixture(
     });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
-  const app = createApp({
+  const app = await createApp({
     automationStore,
     workspaceMutationAdmission,
     coreDb,

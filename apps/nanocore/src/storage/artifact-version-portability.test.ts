@@ -47,7 +47,7 @@ it('preserves exact historical bytes, parents and publication lineage through th
   });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId: workspace.id });
   const thread = await store.createThread(workspace.id, 'Publish revisions');
-  const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
+  const app = await createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
   const original = Buffer.from([0, 255, 128, 13, 10]);
   const query = new URLSearchParams({
     workspaceId: workspace.id,
@@ -250,7 +250,7 @@ it('retains historical Artifact event snapshots and Item deltas in the verified 
     completedAt: recordedAt,
     durationMs: 0,
   });
-  const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
+  const app = await createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
   const committed = await app.request(
     ...operationRequest(
       'artifact.version-commit',
@@ -458,7 +458,7 @@ it('exports target-owned judgements, exact range results and candidate choices',
   } finally {
     db.sqlite.close();
   }
-  const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
+  const app = await createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
   /** Invokes the public projection so the round trip also exercises the native family join. */
   async function post(operation: JsonOperationId, input: unknown, status: number) {
     const response = await app.request(

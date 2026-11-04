@@ -128,7 +128,7 @@ class DelayedServerTurnExecutor extends SimulatedTurnExecutor {
  * @returns Default workspace and thread ids for that actor.
  */
 async function readDefaultScope(
-  app: ReturnType<typeof createApp>,
+  app: Awaited<ReturnType<typeof createApp>>,
   cookie: string
 ): Promise<{ workspaceId: string; threadId: string }> {
   const workspaceRes = await app.request(
@@ -195,7 +195,7 @@ describe('server auth flow', () => {
     applyMigrations(coreDb);
     try {
       const store = new FsStore({ dataRoot });
-      const app = createApp({
+      const app = await createApp({
         auth: createBetterAuth(coreDb, {
           onActiveUserSession: (userId) => ensureUserQuickChatWorkspace({ coreDb, store, userId }),
         }),
@@ -287,7 +287,7 @@ describe('server auth flow', () => {
     try {
       const store = new FsStore({ dataRoot });
       expect(store.listWorkspaces()).toEqual([]);
-      const app = createApp({
+      const app = await createApp({
         auth: createBetterAuth(coreDb, {
           onActiveUserSession: (userId) => ensureUserQuickChatWorkspace({ coreDb, store, userId }),
         }),
@@ -420,7 +420,7 @@ describe('server auth flow', () => {
         code: 'workspace_access_denied',
       });
 
-      const restartedApp = createApp({
+      const restartedApp = await createApp({
         auth: createBetterAuth(coreDb),
         coreDb,
         dataRoot,
@@ -468,7 +468,7 @@ describe('server auth flow', () => {
     applyMigrations(coreDb);
 
     try {
-      const app = createApp({
+      const app = await createApp({
         auth: createBetterAuth(coreDb),
         coreDb,
         dataRoot,
@@ -583,7 +583,7 @@ describe('server auth flow', () => {
       const dispatch = vi.spyOn(dispatcher, 'runSchedulerDispatchLoop');
       onTestFinished(() => dispatch.mockRestore());
       const manifest = createTestAgentSetup().manifest;
-      const app = createApp({
+      const app = await createApp({
         agentManifests: [manifest],
         auth: createBetterAuth(coreDb),
         coreDb,

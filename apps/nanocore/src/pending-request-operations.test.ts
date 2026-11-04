@@ -130,7 +130,7 @@ async function createApprovalFixture(action: 'review.apply' | 'tool.use' = 'revi
   workspaceDb.sqlite.close();
 
   return {
-    app: createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor({ coreDb }) }),
+    app: await createApp({ coreDb, store, turnExecutor: new SimulatedTurnExecutor({ coreDb }) }),
     coreDb,
     gate,
     turnInput: `Approve ${action}`,
@@ -339,7 +339,7 @@ describe('Pending Request operations', () => {
       // Lost acknowledgement leaves Main caches unpublished; reopen the committed owner for recovery.
       await shutdownControlStoreWorkerClient();
       fixture.store = new FsStore({ dataRoot: fixture.coreDb.dataRoot });
-      fixture.app = createApp({
+      fixture.app = await createApp({
         coreDb: fixture.coreDb,
         store: fixture.store,
         turnExecutor: new SimulatedTurnExecutor({ coreDb: fixture.coreDb }),
@@ -559,7 +559,7 @@ describe('Pending Request operations', () => {
           resolvedAt: new Date().toISOString(),
         })
       );
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
 
     try {
       const response = await app.request(
@@ -633,7 +633,7 @@ describe('Pending Request operations', () => {
     });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const respondApproval = vi.spyOn(executor, 'respondApproval');
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
 
     const response = await app.request(
       ...operationRequest(

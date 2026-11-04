@@ -25,7 +25,7 @@ it('previews every exact multi-page candidate byte with bounded paging and refus
   const workspace = await store.createWorkspace('Exact Proposal preview');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
-  const app = createApp({ coreDb, dataRoot, store, runtimeConfigManager });
+  const app = await createApp({ coreDb, dataRoot, store, runtimeConfigManager });
   onTestFinished(async () => {
     await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();

@@ -43,7 +43,7 @@ async function sourceFixture() {
     workspaceId: DEMO_WORKSPACE_ID,
     ownerUserId: LOCAL_USER_ID,
   });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   const client = createCoreClient({
     baseUrl: 'http://test.invalid',
     fetch: createLoopbackAppFetch(app),
@@ -67,7 +67,7 @@ async function restrictSourceThread(
   threadId: string
 ) {
   const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
-  const app = createApp({
+  const app = await createApp({
     coreDb: f.coreDb,
     dataRoot: f.dataRoot,
     store: f.store,
@@ -171,7 +171,7 @@ describe('direct Knowledge saved-source lineage', () => {
         workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const app = createApp({
+      const app = await createApp({
         mode: 'server',
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
@@ -239,7 +239,7 @@ describe('direct Knowledge saved-source lineage', () => {
         workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const app = createApp({
+      const app = await createApp({
         mode: 'server',
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
@@ -288,7 +288,7 @@ describe('direct Knowledge saved-source lineage', () => {
         workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const app = createApp({
+      const app = await createApp({
         mode: 'server',
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
@@ -352,7 +352,7 @@ describe('direct Knowledge saved-source lineage', () => {
         workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const app = createApp({
+      const app = await createApp({
         mode: 'server',
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
@@ -544,7 +544,7 @@ describe('direct Knowledge saved-source lineage', () => {
         expect.objectContaining({ conceptId: page.id, reference, resolved: true })
       );
       const reopened = new FsStore({ dataRoot });
-      const reopenedApp = createApp({ coreDb, dataRoot, store: reopened });
+      const reopenedApp = await createApp({ coreDb, dataRoot, store: reopened });
       const reopenedClient = createCoreClient({
         baseUrl: 'http://test.invalid',
         fetch: createLoopbackAppFetch(reopenedApp),
@@ -744,7 +744,7 @@ describe('direct Knowledge saved-source lineage', () => {
         workspaceIds: [DEMO_WORKSPACE_ID],
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const server = createApp({
+      const server = await createApp({
         mode: 'server',
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,

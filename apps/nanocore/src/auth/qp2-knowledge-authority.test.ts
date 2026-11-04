@@ -128,7 +128,7 @@ function removeOperationGrants(operation: 'knowledge.read' | 'knowledge.write' |
 describe('QP-2c Knowledge operation authority', () => {
   it('refuses the public first Memory save before binding or publication when Knowledge write is denied', async () => {
     const f = await fixture();
-    const app = createApp({ dataRoot: f.dataRoot, coreDb: f.coreDb, store: f.store });
+    const app = await createApp({ dataRoot: f.dataRoot, coreDb: f.coreDb, store: f.store });
     const owner = { dataRoot: f.dataRoot, scope: { kind: 'user' as const, userId: f.userId } };
     expect(() => readDefaultKnowledgeBaseId(owner)).toThrow();
     const content = serializeKnowledgePageFixture(

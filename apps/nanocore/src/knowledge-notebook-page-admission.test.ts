@@ -42,7 +42,7 @@ async function fixture() {
     userId,
     workspaceId: workspace.id,
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
-    app: createApp({
+    app: await createApp({
       coreDb,
       dataRoot,
       store,
@@ -160,7 +160,7 @@ async function restrictSourceThread(
   sourceThreadId: string
 ) {
   const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
-  const app = createApp({
+  const app = await createApp({
     coreDb: f.coreDb,
     dataRoot: f.dataRoot,
     store: f.store,

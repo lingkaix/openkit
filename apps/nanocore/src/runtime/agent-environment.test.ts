@@ -1962,7 +1962,7 @@ describe('agent environment package resolver', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 27) });
-    const app = createApp({ coreDb, dataRoot, vaultUnlockState });
+    const app = await createApp({ coreDb, dataRoot, vaultUnlockState });
     const post = (
       operation: 'vault.secret-create' | 'vault.grant-create',
       body: Record<string, unknown>
@@ -2894,7 +2894,7 @@ describe('public network AEP admission', () => {
       workspaceRoots: [],
     };
     try {
-      createApp({
+      await createApp({
         coreDb,
         dataRoot,
         store,

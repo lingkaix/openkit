@@ -201,7 +201,7 @@ async function internalCapturedSummary(reasoning: boolean): Promise<unknown> {
 }
 
 interface WorkerSummaryFixture {
-  readonly app: ReturnType<typeof createApp>;
+  readonly app: Awaited<ReturnType<typeof createApp>>;
   readonly coreDb: CoreDb;
   readonly token: string;
   readonly turnId: string;
@@ -323,7 +323,7 @@ async function createWorkerSummaryFixture(): Promise<WorkerSummaryFixture> {
     requiredFeatures: [],
   };
   return {
-    app: createApp({
+    app: await createApp({
       coreDb,
       gatewayConfig,
       llmGatewayDispatcher: new LLMGatewayProviderDispatcher({
@@ -485,7 +485,7 @@ async function publicCapturedSummary(): Promise<unknown> {
   faux.setResponses([fauxAssistantMessage('Ready.')]);
   const models = createModels();
   models.setProvider(faux.provider);
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

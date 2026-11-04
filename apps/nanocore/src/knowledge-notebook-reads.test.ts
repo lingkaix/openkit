@@ -60,7 +60,7 @@ async function restrictSourceThread(
   deferReload = false
 ) {
   const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
-  const app = createApp({
+  const app = await createApp({
     coreDb: f.coreDb,
     dataRoot: f.dataRoot,
     store: f.store,
@@ -502,7 +502,7 @@ describe('published Workspace notebook reads', () => {
     await restrictSourceThread({ ...f, userId: LOCAL_USER_ID }, sourceThread.id);
     expect(knowledgeSourceAudienceReadable(f, source.id)).toBe(false);
     expect(knowledgeSourceAudienceReadable(f, randomUUID())).toBe(false);
-    const app = createApp({
+    const app = await createApp({
       store: f.store,
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,

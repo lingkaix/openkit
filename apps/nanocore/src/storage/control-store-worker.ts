@@ -105,6 +105,8 @@ import {
   WorkspaceMaterialError,
 } from '../workspace-materials.js';
 import { type AppDb, assertAppAuthority, lightAppDbPath } from './app-db.js';
+import { applyAttentionInDb } from './attention-native.js';
+import { AttentionError } from './attention-records.js';
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
 import {
   ControlStoreBusyError,
@@ -307,6 +309,7 @@ type WriteCommand = Extract<
       | 'worker-storage-binding'
       | 'workspace-apply-plan'
       | 'automation-scanner'
+      | 'attention'
       | 'workspace-review-decision'
       | 'private-workspace'
       | 'workspace-review-finish'
@@ -631,6 +634,8 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     error.message === 'Unsupported retained record format.'
   )
     return { operation, code: 'unsupported_retained_format', message: error.message, status: 409 };
+  if (operation === 'attention' && error instanceof AttentionError)
+    return { operation, code: error.code };
   if (operation === 'worker-image' && error instanceof WorkerImageSettlementConflict)
     return {
       operation: 'worker-image',
@@ -2277,6 +2282,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'automation-scanner',
               result,
             };
+          } else if (request.operation === 'attention') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyAttentionInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'attention',
+              result,
+            };
           } else if (request.operation === 'workspace-apply-plan') {
             if (
               owner.scopeDb?.scope !== 'workspace' ||
@@ -3413,6 +3428,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'worker-storage-binding' ||
       value.operation === 'workspace-apply-plan' ||
       value.operation === 'automation-scanner' ||
+      value.operation === 'attention' ||
       value.operation === 'workspace-review-decision' ||
       value.operation === 'private-workspace' ||
       value.operation === 'workspace-review-finish' ||

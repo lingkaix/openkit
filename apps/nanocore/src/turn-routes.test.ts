@@ -367,7 +367,7 @@ async function createSchedulerFixture(
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const app = createApp({
+  const app = await createApp({
     agentManifests: [manifest],
     coreDb,
     providerRegistry: testProviderRegistry(),
@@ -429,7 +429,7 @@ async function createNativeTurnFixture(slug: string) {
   });
   const admissions = vi.spyOn(productTurnOwners, 'observeTurnAdmission');
   const submissions = vi.spyOn(native.executor.executionBackend!, 'submit');
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,
@@ -540,7 +540,7 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });
   const finishExecution = observeRecordingExecution(executor);
-  const app = createApp({
+  const app = await createApp({
     agentManifests: [createTestAgentSetup().manifest],
     auth: createHeaderAuthStub(),
     coreDb,
@@ -645,7 +645,7 @@ describe('generic turn routes', () => {
       'Read this turn',
       LOCAL_ACTOR
     );
-    const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
+    const app = await createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     const response = await app.request('/api/app/operations/turn.read', {
       method: 'POST',
@@ -688,7 +688,7 @@ describe('generic turn routes', () => {
       updatedAt: turn.startedAt!,
     });
     await store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7271-8ba3-bea82b217022' });
-    const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
+    const app = await createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     const response = await app.request('/api/app/operations/turn.read', {
       method: 'POST',
@@ -726,7 +726,7 @@ describe('generic turn routes', () => {
       'Keep this turn scoped',
       LOCAL_ACTOR
     );
-    const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
+    const app = await createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     for (const path of [
       `/api/workspaces/ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28/threads/th_00000000-0000-7000-8000-000000000001/turns/${turn.id}`,
@@ -759,7 +759,7 @@ describe('generic turn routes', () => {
       LOCAL_ACTOR
     );
     const executor = new RecordingTurnExecutor();
-    const app = createApp({ store, turnExecutor: executor });
+    const app = await createApp({ store, turnExecutor: executor });
 
     const response = await app.request(
       ...operationRequest(
@@ -890,7 +890,7 @@ describe('generic turn routes', () => {
       status: 'completed',
     });
     const executor = new RecordingTurnExecutor();
-    const app = createApp({ store, turnExecutor: executor });
+    const app = await createApp({ store, turnExecutor: executor });
 
     const response = await app.request(
       ...operationRequest(

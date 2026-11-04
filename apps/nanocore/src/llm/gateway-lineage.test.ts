@@ -155,7 +155,10 @@ async function fixture(missingKey = false, enabled = true, managedConfiguration 
         readRuntimeConfigStatus: () => manager.status(),
       })
     : undefined;
-  const app = createApp({ ...options, ...(manager ? { runtimeConfigManager: manager } : {}) });
+  const app = await createApp({
+    ...options,
+    ...(manager ? { runtimeConfigManager: manager } : {}),
+  });
   const post = (endpoint: string, stream = false, attributed = true) =>
     app.request(`/v1/${endpoint}`, {
       method: 'POST',
@@ -615,7 +618,7 @@ describe('public durable logical Gateway lineage', () => {
   });
   it('usage.read omits another user private Thread for a readonly member while preserving administrator eligibility', async () => {
     const f = await fixture();
-    const memberApp = createApp({
+    const memberApp = await createApp({
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
       store: f.store,

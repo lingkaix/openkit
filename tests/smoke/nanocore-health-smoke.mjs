@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:http2';
-import { createServer } from 'node:net';
+import { connect as connectTcp, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { ensureLocalUser } from '../../apps/nanocore/dist/auth/identity.js';
 import { FsStore } from '../../apps/nanocore/dist/lib/store.js';
@@ -357,4 +357,197 @@ async function sleep(ms) {
   await new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+/** Test-local source observation leaves the actual built App body intact except for one fixed entry marker. */
+async function installAttentionObserver({ appUrl, clientUrl }) {
+  const { isMainThread } = await import('node:worker_threads');
+  if (!isMainThread) return;
+  const { registerHooks } = await import('node:module');
+  registerHooks({
+    load(url, context, nextLoad) {
+      const result = nextLoad(url, context);
+      if (url !== appUrl) return result;
+      const text =
+        typeof result.source === 'string'
+          ? result.source
+          : Buffer.from(result.source).toString('utf8');
+      const signature = 'export function createApp(options = {}) {';
+      if (text.split(signature).length !== 2)
+        throw new Error('Actual App entry observation is unavailable.');
+      process.stdout.write('ATTENTION_SMOKE_OBSERVER\n');
+      return {
+        ...result,
+        source: text.replace(
+          signature,
+          `${signature}\nprocess.stdout.write('ATTENTION_SMOKE_APP\\n');`
+        ),
+      };
+    },
+  });
+  const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(clientUrl);
+  const client = getControlStoreWorkerClient();
+  const original = client.attention.bind(client);
+  client.attention = async (database, input) => {
+    const reply = await original(database, input);
+    if (input.action !== 'reconcile') return reply;
+    if (!database.startsWith('core:') || reply.kind !== 'reconciled')
+      throw new Error('Actual native Attention reconciliation was not selected.');
+    process.stdout.write('ATTENTION_SMOKE_ACK\n');
+    const next = await new Promise((resolve) =>
+      process.stdin.once('data', (bytes) => resolve(bytes.toString().trim()))
+    );
+    if (next === 'fail') throw new ControlStoreWorkerError('native', 'unknown');
+    if (next !== 'release') throw new Error('Unexpected smoke control input.');
+    return reply;
+  };
+}
+
+/** Observes the actual native recovery reply and App entry in one real built child, without a product hook. */
+async function checkAttentionStartup(command) {
+  const appPort = await findOpenPort();
+  const nanoHostPort = await findOpenPort();
+  const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-attention-startup-'));
+  await seedWorkspaceDeletionRequest(dataRoot);
+  await writeNanoHostConfig(dataRoot, nanoHostPort);
+  const preload = join(dataRoot, 'attention-observer.mjs');
+  const appUrl = pathToFileURL(join(repoRoot, 'apps/nanocore/dist/app.js')).href;
+  const clientUrl = pathToFileURL(
+    join(repoRoot, 'apps/nanocore/dist/storage/control-store-worker-client.js')
+  ).href;
+  // These fixed markers contain no command payload, path, account or credential.
+  await writeFile(
+    preload,
+    `await (${installAttentionObserver.toString()})(${JSON.stringify({ appUrl, clientUrl })});\n`
+  );
+  const child = spawn(
+    process.execPath,
+    ['--import', pathToFileURL(preload).href, join(repoRoot, 'apps/nanocore/dist/index.js')],
+    {
+      cwd: join(repoRoot, 'apps/nanocore'),
+      env: {
+        ...process.env,
+        OPENKIT_CORE_MODE: 'local',
+        OPENKIT_BIND_HOST: '127.0.0.1',
+        OPENKIT_DATA_ROOT: dataRoot,
+        OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1',
+        PORT: String(appPort),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }
+  );
+  const output = captureOutput(child);
+  try {
+    await waitForMarker(child, output, 'ATTENTION_SMOKE_ACK');
+    if (
+      !hasSmokeMarker(output, 'ATTENTION_SMOKE_OBSERVER') ||
+      hasSmokeMarker(output, 'ATTENTION_SMOKE_APP')
+    )
+      throw new Error(
+        `App construction overtook actual Attention recovery or its observer was absent.\n${output()}`
+      );
+    await assertNotListening(appPort);
+    await assertNotListening(nanoHostPort);
+    let inputError;
+    child.stdin.once('error', (error) => {
+      inputError = error;
+    });
+    const closed = command === 'fail' ? waitForChildClose(child, output) : undefined;
+    child.stdin.end(`${command}\n`);
+    if (command === 'release') {
+      await waitForMarker(child, output, 'ATTENTION_SMOKE_APP');
+      await waitForHttp(`http://127.0.0.1:${appPort}/api/health`, child, output);
+      if (
+        output()
+          .split(/\r?\n/u)
+          .filter((line) => line === 'ATTENTION_SMOKE_APP').length !== 1
+      )
+        throw new Error(`The actual App entry was not observed once after recovery.\n${output()}`);
+      if (inputError) throw inputError;
+      await stopProcess(child);
+    } else {
+      const exit = await closed;
+      if (inputError) throw inputError;
+      if (exit.code !== 1 || exit.signal !== null || hasSmokeMarker(output, 'ATTENTION_SMOKE_APP'))
+        throw new Error(
+          `Unknown recovery reply did not fail before App/listener admission.\n${output()}`
+        );
+      await assertNotListening(appPort);
+      await assertNotListening(nanoHostPort);
+    }
+    console.log(`OpenKit actual native Attention startup ${command} smoke PASS`);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = waitForChildClose(child, output);
+      child.kill('SIGKILL');
+      await closed;
+    }
+    await rm(dataRoot, { force: true, recursive: true });
+  }
+}
+
+/** Fixed whole lines cannot be confused with a stack's quoted source excerpt. */
+function hasSmokeMarker(output, marker) {
+  return output().split(/\r?\n/u).includes(marker);
+}
+
+/** Uses the original smoke deadline and real child output; unrelated early boot failure is never a pass. */
+function waitForMarker(child, output, marker) {
+  return new Promise((resolveMarker, reject) => {
+    const finish = (error) => {
+      clearTimeout(timer);
+      child.stdout.off('data', check);
+      child.stderr.off('data', check);
+      child.off('close', ended);
+      if (error) reject(error);
+      else resolveMarker();
+    };
+    const check = () => {
+      if (hasSmokeMarker(output, marker)) finish();
+    };
+    const ended = () =>
+      finish(new Error(`Child exited before selected native Attention reply.\n${output()}`));
+    const timer = setTimeout(
+      () => finish(new Error(`Selected native Attention reply was not observed.\n${output()}`)),
+      30_000
+    );
+    child.stdout.on('data', check);
+    child.stderr.on('data', check);
+    child.once('close', ended);
+    check();
+  });
+}
+
+/** Joins both child exit and stdio flush before inspecting the absence of App admission. */
+function waitForChildClose(child, output) {
+  return new Promise((resolveClose, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Child did not close.\n${output()}`)), 30_000);
+    child.once('close', (code, signal) => {
+      clearTimeout(timer);
+      resolveClose({ code, signal });
+    });
+  });
+}
+
+/** A real socket refusal proves that neither configured listener opened while the actual reply was held. */
+function assertNotListening(port) {
+  return new Promise((resolveRefusal, reject) => {
+    const socket = connectTcp({ host: '127.0.0.1', port });
+    socket.setTimeout(30_000);
+    socket.once('connect', () => {
+      socket.destroy();
+      reject(new Error('Listener opened before recovery.'));
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      reject(new Error('Listener refusal was not observed.'));
+    });
+    socket.once('error', (error) => {
+      socket.destroy();
+      if (error.code === 'ECONNREFUSED') resolveRefusal();
+      else reject(error);
+    });
+  });
+}
+
+await checkAttentionStartup('release');
+await checkAttentionStartup('fail');
 await main();

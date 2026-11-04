@@ -303,7 +303,7 @@ class FakeWorkerInferenceDispatcher {
 
 interface WorkerInferenceRouteFixture {
   /** App serving the worker-only routes. */
-  readonly app: ReturnType<typeof createApp>;
+  readonly app: Awaited<ReturnType<typeof createApp>>;
   /** Core database backing durable worker inference attribution, when configured. */
   readonly coreDb: CoreDb | undefined;
   /** Dispatcher fake shared with the app. */
@@ -552,7 +552,7 @@ async function createWorkerInferenceRouteFixture(
   });
 
   return {
-    app: createApp({
+    app: await createApp({
       ...(appCoreDb ? { coreDb: appCoreDb } : {}),
       gatewayConfig: options.gatewayConfig ?? {
         schemaVersion: 1,
@@ -3377,7 +3377,7 @@ describe('Worker Turn admitted limits', () => {
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       store,

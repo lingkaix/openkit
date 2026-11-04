@@ -115,7 +115,7 @@ async function fixture(member = true, acceptingProductWork = true, privateOrigin
           }),
         }),
   };
-  const app = createApp(options);
+  const app = await createApp(options);
   return {
     app,
     coreDb,
@@ -135,7 +135,7 @@ async function projections(f: ReturnType<typeof fixture>, token?: string, operat
     'content-type': 'application/json',
     ...(token ? { authorization: `Bearer ${token}` } : {}),
   };
-  const app = token ? createApp({ ...f.options, mode: 'server' }) : f.app;
+  const app = token ? await createApp({ ...f.options, mode: 'server' }) : f.app;
   const client = createCoreClient({
     baseUrl: 'http://127.0.0.1',
     headers,

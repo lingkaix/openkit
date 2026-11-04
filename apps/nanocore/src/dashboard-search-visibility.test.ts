@@ -30,7 +30,7 @@ describe('dashboard and search Thread audiences', () => {
     });
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Creation team');
-    const app = createApp({ store });
+    const app = await createApp({ store });
     for (const visibility of ['private', 'workspace'] as const) {
       const response = await ((input: Record<string, unknown>) =>
         app.request('/api/app/operations/thread.create', {
@@ -113,7 +113,7 @@ describe('dashboard and search Thread audiences', () => {
         privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const app = createApp({ store });
+    const app = await createApp({ store });
     for (const _mode of ['task']) {
       const response = await app.request(
         ...operationRequest(
@@ -160,7 +160,7 @@ describe('dashboard and search Thread audiences', () => {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({
+    const app = await createApp({
       store,
       coreDb,
       dataRoot,
@@ -302,7 +302,7 @@ describe('dashboard and search Thread audiences', () => {
     vi.spyOn(store, 'listThreads').mockImplementation((workspaceId) =>
       listThreads(workspaceId).map(unavailableAudience)
     );
-    const app = createApp({
+    const app = await createApp({
       auth: {
         api: { getSession: async () => null },
         handler: async () => new Response(null, { status: 404 }),

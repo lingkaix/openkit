@@ -23,7 +23,7 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
   const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: localUserId });
   const automationStore = new AutomationStore(coreDb, new WorkspaceMutationAdmission());
-  const app = createApp({ store, coreDb, dataRoot: root, automationStore });
+  const app = await createApp({ store, coreDb, dataRoot: root, automationStore });
   const responses: Response[] = [];
   const client = createCoreClient({
     baseUrl: 'http://nanocore.test',

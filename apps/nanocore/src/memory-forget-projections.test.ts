@@ -24,7 +24,7 @@ async function fixture() {
   const userId = ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
@@ -288,7 +288,7 @@ describe('public Item-confirmed self Memory forget', () => {
         "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at) VALUES (?, 'human', 'Other fixture', ?, 0, ?, ?)"
       )
       .run(otherUserId, [otherUserId, 'example.invalid'].join('@'), now, now);
-    const server = createApp({
+    const server = await createApp({
       mode: 'server',
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,

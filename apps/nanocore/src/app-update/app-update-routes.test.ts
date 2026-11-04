@@ -123,7 +123,7 @@ function createMemoryTransport(now: () => number = Date.now): AppUpdateHostTrans
 
 describe('app-update routes', () => {
   it('disables prepare when deployment configuration is absent', async () => {
-    const app = createApp();
+    const app = await createApp();
     const response = await app.request(
       ...operationRequest(
         'app-update.prepare',
@@ -142,7 +142,7 @@ describe('app-update routes', () => {
   });
 
   it('keeps Core serving when configured App-update identity files are missing', async () => {
-    const app = createApp({
+    const app = await createApp({
       openKitConfig: {
         appUpdate: {
           host: '127.0.0.1',
@@ -172,7 +172,7 @@ describe('app-update routes', () => {
   });
 
   it('prepares a published-digest source and starts only that receipt', async () => {
-    const app = createApp({ appUpdateHostTransport: createMemoryTransport() });
+    const app = await createApp({ appUpdateHostTransport: createMemoryTransport() });
     const prepared = await app.request(
       ...operationRequest(
         'app-update.prepare',
@@ -217,7 +217,7 @@ describe('app-update routes', () => {
   });
 
   it('refuses start for a missing receipt instead of creating a new execution', async () => {
-    const app = createApp({ appUpdateHostTransport: createMemoryTransport() });
+    const app = await createApp({ appUpdateHostTransport: createMemoryTransport() });
     const response = await app.request(
       ...operationRequest(
         'app-update.start',
@@ -270,14 +270,14 @@ describe('app-update routes', () => {
       maintenanceConsent: true,
       requestId: '11111111-1111-4111-8111-111111111111',
     });
-    const sessionApp = createApp({
+    const sessionApp = await createApp({
       appUpdateHostTransport: createMemoryTransport(),
       auth: createSignedInAuthStub('usr_00000000-0000-73e7-9746-362a4fae6001'),
       coreDb,
       dataRoot,
       mode: 'server',
     });
-    const tokenApp = createApp({
+    const tokenApp = await createApp({
       appUpdateHostTransport: createMemoryTransport(),
       auth: createSignedOutAuthStub(),
       coreDb,
@@ -398,7 +398,7 @@ describe('app-update routes', () => {
         return inner.invoke(command);
       },
     };
-    const app = createApp({
+    const app = await createApp({
       appUpdateHostTransport: transport,
       coreDb,
       dataRoot,
@@ -465,7 +465,7 @@ describe('app-update routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-app-update-unconfigured-audit-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const app = createApp({
+    const app = await createApp({
       appUpdateHostTransport: null,
       coreDb,
       dataRoot,

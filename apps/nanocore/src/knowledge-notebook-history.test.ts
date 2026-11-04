@@ -48,7 +48,7 @@ async function fixture(snapshotRoot?: string) {
       coreDb,
       store,
       workspaceDb,
-      app: createAppWithLocalIdentity({ coreDb, dataRoot, store }),
+      app: await createAppWithLocalIdentity({ coreDb, dataRoot, store }),
       repositoryPath: join(dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
     };
     fixtures.push(f);
@@ -548,14 +548,14 @@ describe('native Workspace Notebook history and restore', () => {
     const runtimeConfigManager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
     const policyFixture = {
       ...f,
-      app: createAppWithLocalIdentity({
+      app: await createAppWithLocalIdentity({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
         store: f.store,
         runtimeConfigManager,
       }),
     };
-    const server = createAppWithLocalIdentity({
+    const server = await createAppWithLocalIdentity({
       mode: 'server',
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,

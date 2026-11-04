@@ -85,6 +85,13 @@ import {
   ControlAccessTokenVerificationSchema,
 } from './access-token-verification-codecs.js';
 import {
+  type ControlAttention,
+  ControlAttentionRefusalSchema,
+  type ControlAttentionResult,
+  ControlAttentionResultSchema,
+  ControlAttentionSchema,
+} from './attention-codecs.js';
+import {
   type ControlAutomationScanner,
   type ControlAutomationScannerResult,
   ControlAutomationScannerResultSchema,
@@ -336,7 +343,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 60;
+export const CONTROL_WORKER_VERSION = 61;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -614,6 +621,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'scoped-notebook-sql'; readonly input: ControlScopedNotebookSqlInput }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
+      | { readonly operation: 'attention'; readonly input: ControlAttention }
       | {
           readonly operation: 'workspace-review-finish';
           readonly input: ControlWorkspaceReviewFinish;
@@ -832,6 +840,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlScopedNotebookSqlRefusalSchema>
   | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
+  | z.infer<typeof ControlAttentionRefusalSchema>
   | z.infer<typeof ControlWorkerFinalStatusRefusalSchema>
   | z.infer<typeof ControlWorkerHeartbeatRefusalSchema>
   | z.infer<typeof ControlWorkerRecordRefusalSchema>
@@ -959,6 +968,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'automation-scanner';
       readonly result: ControlAutomationScannerResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'attention';
+      readonly result: ControlAttentionResult;
     }
   | {
       readonly status: 'ok';
@@ -1204,6 +1218,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
       value.status === facts.status
     );
   }
+  if (isRecord(value) && value.operation === 'attention')
+    return ControlAttentionRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-apply-plan')
     return (
       exactFields(value, ['operation', 'code', 'message', 'status']) &&
@@ -1496,6 +1512,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlWorkspaceReviewDecisionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'automation-scanner')
     return ControlAutomationScannerResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'attention')
+    return ControlAttentionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-apply-plan')
     return ControlWorkspaceApplyPlanSchema.safeParse(reply.result).success;
   if (reply.operation === 'backend-session')
@@ -2055,6 +2073,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlAutomationScannerSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'attention')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlAttentionSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'workspace-apply-plan')

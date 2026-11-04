@@ -128,7 +128,7 @@ describe('NanoHost restart-required reload fencing', () => {
         writeHost(host);
         const manager = createRuntimeConfigManager({ dataRoot });
         const initial = manager.current();
-        let app = createApp({ coreDb, dataRoot, runtimeConfigManager: manager, store });
+        let app = await createApp({ coreDb, dataRoot, runtimeConfigManager: manager, store });
         const authority = getNanoHostTransportSessionAuthority(app);
         authorities.push(authority);
         coreDb.sqlite
@@ -275,7 +275,7 @@ describe('NanoHost restart-required reload fencing', () => {
         expect(authority.authoritativeGeneration(host.identityId)).toBeNull();
 
         // A new App lifetime reads the restored startup file and admits a fresh generation.
-        app = createApp({
+        app = await createApp({
           coreDb,
           dataRoot,
           runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
@@ -307,7 +307,7 @@ describe('runtime config reload API', () => {
       'config',
       'workspace.jsonc'
     );
-    const app = createApp({ dataRoot, store });
+    const app = await createApp({ dataRoot, store });
 
     writeFileSync(
       workspaceConfigPath,
@@ -340,7 +340,7 @@ describe('runtime config reload API', () => {
     onTestFinished(() => {
       coreDb.sqlite.close();
     });
-    const app = createApp({
+    const app = await createApp({
       dataRoot,
       runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
@@ -424,7 +424,7 @@ describe('runtime config reload API', () => {
       completion.resolve(run);
       return run;
     });
-    const app = createApp({
+    const app = await createApp({
       agentManifests: [agentSetup.manifest],
       coreDb,
       dataRoot,

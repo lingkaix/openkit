@@ -72,7 +72,7 @@ it('marks exported Thread semantics before an unsupported reader can admit depen
       visibility: 'private',
       privateOwnerUserId: userId,
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const response = await app.request(
       ...operationRequest('workspace.export', { workspaceId: workspace.id }, { method: 'POST' })
     );
@@ -178,7 +178,7 @@ it('uses native product history for public Workspace export without a product-fi
       data: { type: 'error', code: 'fixture', message: 'Retained event' },
     });
     store.emitTurnEvent(turn.id, envelope);
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     rmSync(join(dataRoot, 'workspaces', workspace.id, 'threads'), {
       recursive: true,
       force: true,
@@ -1252,7 +1252,7 @@ describe('workspace export verifier', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: fixture.workspace.id,
     });
-    const response = await createApp({ coreDb, dataRoot, store }).request(
+    const response = await (await createApp({ coreDb, dataRoot, store })).request(
       ...operationRequest(
         'workspace.export',
         { workspaceId: fixture.workspace.id },
@@ -1434,7 +1434,7 @@ describe('workspace export verifier', () => {
     });
     workspaceDb.sqlite.close();
 
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const response = await app.request(
       ...operationRequest(
         'workspace.export',

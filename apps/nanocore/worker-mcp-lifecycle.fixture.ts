@@ -372,7 +372,7 @@ export async function assertCapturedOutcome(
       }
       return publication;
     });
-  const app = createApp({
+  const app = await createApp({
     fileAdmission,
     coreDb,
     dataRoot,

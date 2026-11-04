@@ -52,7 +52,7 @@ async function preparedRetrievalFixture() {
     requestActor: { kind: 'local', userId },
   };
   const input = { dataRoot, workspaceId: workspace.id, access, caller: 'app-api' as const };
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot,
     scope: { kind: 'workspace', workspaceId: workspace.id },
@@ -202,7 +202,7 @@ describe('Knowledge retrieval segmentation', () => {
     applyMigrations(coreDb);
     const userId = ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const currentNotebook = async () => {
       const response = await app.request(
         ...operationRequest('knowledge.notebook.list', { workspaceId: workspace.id })

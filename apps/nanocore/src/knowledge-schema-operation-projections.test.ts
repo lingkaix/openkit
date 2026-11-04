@@ -22,7 +22,7 @@ it('admits only a current human writer and refuses a stale schema preview base w
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Public schema preview');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const app = createApp({ mode: 'server', coreDb, dataRoot, store });
+  const app = await createApp({ mode: 'server', coreDb, dataRoot, store });
   onTestFinished(async () => {
     await shutdownControlStoreWorkerClient();
     closeTestCoreDb(coreDb);

@@ -98,7 +98,11 @@ it('selects the SQL Knowledge authority across stale projections and cold replay
   const cold = {
     ...f,
     store: coldStore,
-    app: createAppWithLocalIdentity({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: coldStore }),
+    app: await createAppWithLocalIdentity({
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: coldStore,
+    }),
   };
   expect(readControlKnowledgeHead(db, knowledgeBaseId)).toEqual(head);
   expect(readControlKnowledgeProposal(db, f.proposal.id)).toEqual(proposal);

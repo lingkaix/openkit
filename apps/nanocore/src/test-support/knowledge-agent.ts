@@ -11,7 +11,7 @@ import { createTestGatewayConfig } from './agent-environment.js';
 import { createApp } from './app.js';
 
 /** Only the external transport is fake; native query Tools and Gateway own each answer. */
-export function createKnowledgeAnswerApp(
+export async function createKnowledgeAnswerApp(
   options: Parameters<typeof createApp>[0],
   plans: Array<{
     query: string;
@@ -75,7 +75,7 @@ export function createKnowledgeAnswerApp(
   gatewayConfig.logicalModels[0]!.contextManagement = [
     { type: 'compaction', compactThreshold: 32_000 },
   ];
-  const app = createApp({
+  const app = await createApp({
     ...options,
     providerRegistry: new ProviderRegistry([
       {

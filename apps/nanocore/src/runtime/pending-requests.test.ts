@@ -252,7 +252,7 @@ async function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGate
     coreDb,
     createTestAgentSetup({ ...(agentId ? { agentId } : {}) }).manifest
   );
-  const app = createApp({
+  const app = await createApp({
     fileAdmission,
     ...(agentId
       ? {

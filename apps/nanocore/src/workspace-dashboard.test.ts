@@ -85,7 +85,7 @@ describe('workspace dashboard app API', () => {
       dataRoot,
       initialSnapshot: snapshot,
     });
-    const app = createApp({ store, coreDb, runtimeConfigManager });
+    const app = await createApp({ store, coreDb, runtimeConfigManager });
     const workspaceResponse = await app.request(
       ...operationRequest('workspace.dashboard', { workspaceId })
     );
@@ -128,7 +128,7 @@ describe('workspace dashboard app API', () => {
         workspaceId: workspace.id,
       });
     }
-    const app = createApp({ store, coreDb });
+    const app = await createApp({ store, coreDb });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -188,7 +188,7 @@ describe('workspace dashboard app API', () => {
         workspaceId: workspace.id,
       });
     }
-    const app = createApp({ providerRegistry, store, coreDb });
+    const app = await createApp({ providerRegistry, store, coreDb });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -323,7 +323,7 @@ describe('workspace dashboard app API', () => {
         workspaceId: workspace.id,
       });
     }
-    const app = createApp({ store, coreDb });
+    const app = await createApp({ store, coreDb });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -497,7 +497,7 @@ describe('workspace dashboard app API', () => {
         workspaceId: workspace.id,
       });
     }
-    const app = createApp({ store, coreDb });
+    const app = await createApp({ store, coreDb });
     const res = await app.request(
       ...operationRequest('workspace.dashboard', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -574,7 +574,7 @@ describe('workspace dashboard app API', () => {
         workspaceId: workspace.id,
       });
     }
-    const app = createApp({ store, coreDb });
+    const app = await createApp({ store, coreDb });
 
     const response = await app.request(
       ...operationRequest('workspace.dashboard', {
@@ -658,7 +658,7 @@ describe('workspace dashboard app API', () => {
         scope: 'workspace-readonly',
         workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: {
           api: { getSession: async () => null },
           handler: async () => new Response(null, { status: 404 }),

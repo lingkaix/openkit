@@ -106,7 +106,7 @@ describe('server-mode access-token auth', () => {
     try {
       applyMigrations(coreDb);
       const bootstrap = ensureServerBootstrapToken(coreDb)!;
-      const app = createApp({
+      const app = await createApp({
         auth: createBetterAuth(coreDb),
         coreDb,
         dataRoot,
@@ -238,7 +238,7 @@ describe('server-mode access-token auth', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -378,7 +378,7 @@ describe('server-mode access-token auth', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -453,7 +453,7 @@ describe('server-mode access-token auth', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -600,7 +600,7 @@ describe('server-mode access-token auth', () => {
         scope: 'workspace',
         workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: {
           api: {
             getSession: async () => ({
@@ -671,7 +671,7 @@ describe('server-mode access-token auth', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -783,7 +783,7 @@ describe('server-mode access-token auth', () => {
         scope: 'workspace-readonly',
         workspaceIds: ['ws_00000000-0000-7056-a1a1-4f49a5d58035'],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: {
           api: { getSession: async () => null },
           handler: async () => new Response(null, { status: 404 }),
@@ -836,7 +836,7 @@ describe('server-mode access-token auth', () => {
     try {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -972,7 +972,7 @@ describe('server-mode access-token auth', () => {
         scope: 'server-admin',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1111,7 +1111,7 @@ describe('server-mode access-token auth', () => {
         tokenId: 'tok_00000000-0000-75d5-969a-53fce04182b5',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1261,7 +1261,7 @@ describe('server-mode access-token auth', () => {
         tokenId: 'tok_00000000-0000-7738-b866-40ef37604600',
         workspaceIds: [],
       });
-      const app = createApp({
+      const app = await createApp({
         auth: ownerSessionAuth(),
         coreDb,
         dataRoot,
@@ -1344,7 +1344,7 @@ describe('personal administrator-token canonical-user access', () => {
           expiresAt: '2999-01-01T00:00:00.000Z',
         });
       }
-      const app = createApp({ coreDb, dataRoot, mode: 'local' });
+      const app = await createApp({ coreDb, dataRoot, mode: 'local' });
       const listed = await app.request(...operationRequest('token.my-admin-list', {}, {}));
       expect(listed.status).toBe(200);
       const body = await listed.json();
@@ -1421,7 +1421,7 @@ describe('personal administrator-token canonical-user access', () => {
         workspaceIds: [],
         expiresAt: '2999-01-01T00:00:00.000Z',
       });
-      const app = createApp({ auth: ownerSessionAuth(), coreDb, dataRoot, mode: 'server' });
+      const app = await createApp({ auth: ownerSessionAuth(), coreDb, dataRoot, mode: 'server' });
       for (const [id, input] of [
         ['token.my-admin-list', {}],
         ['token.my-admin-default', { tokenId: 'tok_00000000-0000-75c5-b4dc-6661b8eac629' }],

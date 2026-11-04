@@ -252,7 +252,7 @@ describe('Worker environment App composition', () => {
         );
         return actualReload(input);
       });
-      const app = createApp({
+      const app = await createApp({
         runtimeConfigManager,
         auth: noSessionAuth(),
         coreDb,
@@ -709,7 +709,7 @@ describe('Worker environment App composition', () => {
           return transcript;
         });
       restoreCollection = () => collection.mockRestore();
-      const app = createApp({
+      const app = await createApp({
         agentManifests: [agentSetup.manifest],
         auth: ownerSessionAuth(USER_ID),
         runtimeConfigManager,

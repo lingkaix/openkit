@@ -53,7 +53,7 @@ function createAuthStub(
 
 describe('server-mode auth middleware', () => {
   it('rejects protected API routes without a session', async () => {
-    const app = createApp({ auth: createAuthStub(null), mode: 'server' });
+    const app = await createApp({ auth: createAuthStub(null), mode: 'server' });
     const res = await app.request('/api/openapi.json');
 
     expect(res.status).toBe(401);
@@ -65,7 +65,7 @@ describe('server-mode auth middleware', () => {
   });
 
   it('allows protected API routes with a valid session', async () => {
-    const app = createApp({
+    const app = await createApp({
       auth: createAuthStub({
         session: { id: 'session_1' },
         user: { id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
@@ -92,7 +92,7 @@ describe('server-mode auth middleware', () => {
             'disabled', '2026-07-19T01:02:03.000Z')`
         )
         .run('usr_00000000-0000-7e63-b85a-c188de8ee1c3', now, now);
-      const app = createApp({
+      const app = await createApp({
         auth: createAuthStub({
           session: { id: 'session_disabled' },
           user: { id: 'usr_00000000-0000-7e63-b85a-c188de8ee1c3' },
@@ -108,7 +108,7 @@ describe('server-mode auth middleware', () => {
   });
 
   it('protects every public LLM Gateway route before request parsing', async () => {
-    const app = createApp({ auth: createAuthStub(null), mode: 'server' });
+    const app = await createApp({ auth: createAuthStub(null), mode: 'server' });
 
     for (const request of [
       { path: '/v1/models' },
@@ -129,21 +129,21 @@ describe('server-mode auth middleware', () => {
   });
 
   it('keeps LLM Gateway routes usable for authenticated server actors and local mode', async () => {
-    const serverApp = createApp({
+    const serverApp = await createApp({
       auth: createAuthStub({
         session: { id: 'session_1' },
         user: { id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
       }),
       mode: 'server',
     });
-    const localApp = createApp({ mode: 'local' });
+    const localApp = await createApp({ mode: 'local' });
 
     expect((await serverApp.request('/v1/models')).status).toBe(200);
     expect((await localApp.request('/v1/models')).status).toBe(200);
   });
 
   it('keeps reduced public meta, health, and Better Auth routes open', async () => {
-    const app = createApp({ auth: createAuthStub(null), mode: 'server' });
+    const app = await createApp({ auth: createAuthStub(null), mode: 'server' });
 
     const metaRes = await app.request('/api/meta');
     const healthRes = await app.request('/api/health');

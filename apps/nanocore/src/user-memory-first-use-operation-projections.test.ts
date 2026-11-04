@@ -200,7 +200,7 @@ describe('first private User Memory query', () => {
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
       store: f.store,

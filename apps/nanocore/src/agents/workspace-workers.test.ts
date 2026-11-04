@@ -63,11 +63,11 @@ function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
  * @param agentId Optional catalog Agent id to project as configured supply.
  * @returns NanoCore test app with local Workspace access.
  */
-function createAuthorizedApp(
+async function createAuthorizedApp(
   coreDb: CoreDb,
   store: FsStore,
   agentId = 'agent_codex_host'
-): ReturnType<typeof createApp> {
+): Promise<Awaited<ReturnType<typeof createApp>>> {
   ensureLocalUser(coreDb);
   for (const workspace of store.listWorkspaces()) {
     recordWorkspaceOwnerMembership({
@@ -76,7 +76,7 @@ function createAuthorizedApp(
       workspaceId: workspace.id,
     });
   }
-  return createApp({
+  return await createApp({
     agentManifests: [
       createTestAgentSetup({
         agentId,
@@ -305,7 +305,7 @@ describe('worker.list operation', () => {
       }
     );
     await store.updateTurn(turn.id, { agentId: 'quick-chat' });
-    const app = createAuthorizedApp(coreDb, store);
+    const app = await createAuthorizedApp(coreDb, store);
 
     try {
       const workersRes = await app.request(
@@ -461,7 +461,7 @@ describe('worker.list operation', () => {
     coreDb.sqlite.close();
     coreDb = openCoreDb(coreDb.dataRoot);
     store = new FsStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({
+    const app = await createApp({
       agentManifests: [
         createTestAgentSetup({
           agentId: 'agent_other_supply',
@@ -535,7 +535,7 @@ describe('worker.list operation', () => {
         threadId: thread.id,
         turnId: 'tu_00000000-0000-7ac3-97b3-02904dd64098',
       });
-      const app = createAuthorizedApp(coreDb, store);
+      const app = await createAuthorizedApp(coreDb, store);
       const workspaceDb = openTestWorkspaceDb(coreDb);
       try {
         await upsertWorkerCheckpoint(workspaceDb, {
@@ -642,7 +642,7 @@ describe('worker.list operation', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    const ownerApp = createAuthorizedApp(coreDb, store);
+    const ownerApp = await createAuthorizedApp(coreDb, store);
     const viewerEmail = ['viewer-workers', 'example.com'].join('@');
     const viewer = await createBetterAuth(coreDb, { env: {}, mode: 'local' }).api.signUpEmail({
       body: {
@@ -681,7 +681,7 @@ describe('worker.list operation', () => {
       scope: 'workspace-readonly',
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
     });
-    const viewerApp = createApp({
+    const viewerApp = await createApp({
       agentManifests: [
         createTestAgentSetup({
           agentId: 'agent_codex_host',
@@ -824,7 +824,7 @@ it('admits current administrators to foreign private Threads under the accepted 
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot: coreDb.dataRoot,
     store,

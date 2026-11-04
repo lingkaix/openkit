@@ -42,7 +42,7 @@ async function archiveFixture(
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: workspace.id,
   });
-  const app = createApp({
+  const app = await createApp({
     auth: {
       api: {
         getSession: async () => ({

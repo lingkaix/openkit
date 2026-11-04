@@ -350,7 +350,11 @@ describe('knowledge proposal authority', () => {
     const afterAnalysis = currentNotebookRevision(f);
     expect(afterAnalysis).not.toBe(reversed.application.notebookRevision);
     f.store = new FsStore({ dataRoot: f.dataRoot });
-    f.app = createAppWithLocalIdentity({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+    f.app = await createAppWithLocalIdentity({
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: f.store,
+    });
     expect(await decide(f, 'accepted', 'review-accepted-page')).toEqual(first);
     expect(currentNotebookRevision(f)).toBe(afterAnalysis);
     expect(currentPage(f, f.knowledgePageId)).toBeUndefined();
@@ -736,7 +740,11 @@ describe('knowledge proposal authority', () => {
     expect(edited).toContain('manual_note: "preserve this edit"');
     f.store = new FsStore({ dataRoot: f.dataRoot });
     await f.store.updateWorkspace(f.workspaceId, { name: 'Persist unrelated workspace change' });
-    f.app = createAppWithLocalIdentity({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+    f.app = await createAppWithLocalIdentity({
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: f.store,
+    });
     await expectAuthorityFailure(
       async () => await reverse(f, accepted.review.reviewId),
       'conflict'

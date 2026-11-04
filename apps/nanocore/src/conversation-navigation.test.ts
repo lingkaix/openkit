@@ -115,7 +115,7 @@ describe('conversation navigation', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       mode: 'server',
       coreDb,
       store,
@@ -172,7 +172,7 @@ describe('conversation navigation', () => {
         privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80',
       }
     );
-    const app = createAppWithWorkspaceAuthority({
+    const app = await createAppWithWorkspaceAuthority({
       mode: 'server',
       coreDb,
       store,

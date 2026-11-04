@@ -46,7 +46,7 @@ async function fixture() {
     actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     acceptedAt: new Date().toISOString(),
   });
-  const app = createApp({ coreDb, dataRoot, store });
+  const app = await createApp({ coreDb, dataRoot, store });
   return { coreDb, db, store, app, materialId, revisionId, content, contentDigest };
 }
 

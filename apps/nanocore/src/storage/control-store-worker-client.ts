@@ -4,6 +4,7 @@ import {
   PreservedWorkspaceCaptureRefusal,
   WorkspaceCaptureRecoveryRequired,
 } from '../runtime/workspace-snapshot-chain.js';
+import type { ControlAttention, ControlAttentionResult } from './attention-codecs.js';
 import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
@@ -2712,6 +2713,12 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Publishes one exact original Attention stage and acknowledges only after the covering FULL commit. */
+  async attention(database: string, input: ControlAttention): Promise<ControlAttentionResult> {
+    const reply = await this.request({ operation: 'attention', database, input });
+    return (reply as Extract<Success, { operation: 'attention' }>).result;
+  }
+
   /** Publishes one immutable preflight Plan only after the existing covering FULL commit. */
   async workspaceApplyPlan(
     database: string,
@@ -3820,6 +3827,7 @@ class ControlStoreWorkerClient {
         (entry.command.operation === 'products' || entry.command.operation === 'transition') &&
           value.commit === 'not-committed' &&
           value.domain &&
+          (value.domain.operation === 'products' || value.domain.operation === 'transition') &&
           ['request_executing', 'thread_busy', 'conflict'].includes(value.domain.code)
           ? new PendingRequestCommandError(
               value.domain.code,

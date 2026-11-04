@@ -278,11 +278,13 @@ it('forwards typed filters through the native operation and records supplied fil
   });
   // The public native operation owns request forwarding, without request-selected authority.
   const { createApp } = await import('../test-support/app.js');
-  const response = await createApp({
-    coreDb: f.coreDb,
-    dataRoot: f.dataRoot,
-    store: f.store,
-  }).request('/api/app/operations/knowledge.retrieval', {
+  const response = await (
+    await createApp({
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      store: f.store,
+    })
+  ).request('/api/app/operations/knowledge.retrieval', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
     body: JSON.stringify({ workspaceId: f.workspace.id, query: 'domain-selector', ...filters }),
@@ -342,7 +344,7 @@ it('retains selector mismatch separately from an actual Source audience denial w
     { visibility: 'workspace' }
   );
   // Publish valid shared evidence first, then revoke only its exact Source Thread audience.
-  const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+  const app = await createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
   const owner = { kind: 'workspace' as const, workspaceId: f.workspace.id };
   const requested = await app.request(
     ...operationRequest(

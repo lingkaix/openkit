@@ -31,7 +31,7 @@ describe('retired host repository routes', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     try {
-      const app = createApp({ coreDb, dataRoot, store });
+      const app = await createApp({ coreDb, dataRoot, store });
       if (suffix === '/git-push-records/gpr_retired') {
         const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {

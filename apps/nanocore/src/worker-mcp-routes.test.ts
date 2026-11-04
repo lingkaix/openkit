@@ -2068,7 +2068,7 @@ describe('worker MCP routes', () => {
       mode: 'server',
       env: { BETTER_AUTH_URL: 'http://nanocore.test', BETTER_AUTH_SECRET: randomUUID() },
     });
-    const taskApp = createApp({
+    const taskApp = await createApp({
       mode: 'server',
       auth,
       coreDb,
@@ -2875,7 +2875,7 @@ describe('worker MCP routes', () => {
       readRuntimeConfig: () => runtimeConfig,
     });
     admitTestNativeEnvironment(coreDb, setup.manifest);
-    const taskApp = createApp({
+    const taskApp = await createApp({
       coreDb,
       store,
       workerMcpGateway,
@@ -3288,7 +3288,7 @@ describe('worker MCP routes', () => {
     admitTestNativeEnvironment(coreDb, setup.manifest);
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const callTool = vi.spyOn(workerMcpGateway, 'callTool');
-    const app = createApp({
+    const app = await createApp({
       auth,
       coreDb,
       store,
@@ -3688,7 +3688,7 @@ describe('worker MCP routes', () => {
     let nativeRestore: Promise<void> | undefined;
     const restoreNative = () => (nativeRestore ??= native.restore());
     admitTestNativeEnvironment(coreDb, snapshot.agentManifests[0]!);
-    const captureApp = createApp({
+    const captureApp = await createApp({
       coreDb,
       store,
       workerMcpGateway,
@@ -5614,7 +5614,7 @@ describe('worker MCP routes', () => {
         expect(
           workspaceDb.sqlite.prepare('SELECT category, unit, quantity FROM usage_records').all()
         ).toEqual([{ category: 'tool', quantity: 1, unit: 'tool_calls' }]);
-        const exportApp = createApp({
+        const exportApp = await createApp({
           coreDb,
           dataRoot,
           store,

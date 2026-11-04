@@ -159,7 +159,7 @@ describe('work observation portable closure', () => {
         store,
         workspaceId: workspace.id,
       });
-      const app = createApp({ coreDb, dataRoot, store });
+      const app = await createApp({ coreDb, dataRoot, store });
       const archive = await app.request(
         `/api/app/workspaces/${workspace.id}/exports/${exported.verified.manifest.id}/archive`
       );
@@ -325,7 +325,7 @@ describe('work observation portable closure', () => {
         JSON.parse(exported.verified.fileContents.get(observationFile)!.split('\n')[0]!).payload
           .assistantSkillAdmission
       ).toEqual(environment.assistantSkillAdmission);
-      const app = createApp({ coreDb, dataRoot, store });
+      const app = await createApp({ coreDb, dataRoot, store });
       const archive = await app.request(
         `/api/app/workspaces/${demo.workspace.id}/exports/${exported.verified.manifest.id}/archive`
       );

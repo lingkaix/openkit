@@ -207,11 +207,14 @@ function createObservedProviderSubscriptionManager(coreDb: CoreDb) {
  * @param manager Provider-subscription manager under observation.
  * @returns NanoCore app using the supplied manager.
  */
-function createProviderSubscriptionApp(
+async function createProviderSubscriptionApp(
   input: CreateAppOptions,
   manager: ProviderSubscriptionAccountManager
 ) {
-  return createApp({ ...input, providerSubscriptionAccountManager: manager } as CreateAppOptions);
+  return await createApp({
+    ...input,
+    providerSubscriptionAccountManager: manager,
+  } as CreateAppOptions);
 }
 
 describe('deployment-admin routes', () => {
@@ -241,7 +244,7 @@ describe('deployment-admin routes', () => {
     });
     const { manager, observed, vaultBackendAccess } =
       createObservedProviderSubscriptionManager(coreDb);
-    const app = createProviderSubscriptionApp(
+    const app = await createProviderSubscriptionApp(
       {
         auth: createSignedInAuth(),
         coreDb,
@@ -301,8 +304,8 @@ describe('deployment-admin routes', () => {
       workspaceIds: [],
     });
     const { manager } = createObservedProviderSubscriptionManager(coreDb);
-    const localApp = createProviderSubscriptionApp({ coreDb, dataRoot }, manager);
-    const serverApp = createProviderSubscriptionApp(
+    const localApp = await createProviderSubscriptionApp({ coreDb, dataRoot }, manager);
+    const serverApp = await createProviderSubscriptionApp(
       {
         auth: createSignedInAuth(),
         coreDb,

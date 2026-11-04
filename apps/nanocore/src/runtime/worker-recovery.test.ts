@@ -504,7 +504,7 @@ async function createCheckpointCloseoutFixture(
             },
           });
           if (outcome === 'failed') {
-            const app = createApp({
+            const app = await createApp({
               coreDb,
               store,
               turnExecutor: runtime.turnExecutor,

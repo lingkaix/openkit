@@ -335,7 +335,7 @@ describe('FsStore workspace persistence scope', () => {
       await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const notebook = readTestWorkspaceNotebookSelection(dataRoot, workspace.id).notebook;
     const timestamp = new Date().toISOString();
     const knowledge = knowledgePageFixture(

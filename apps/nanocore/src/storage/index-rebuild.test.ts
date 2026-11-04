@@ -1208,7 +1208,7 @@ describe('workspace derived index rebuild', () => {
     });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const access = localRetrievalAccess(dataRoot, store, 'ws_00000000-0000-7000-8000-000000000001');
-    const app = createApp({ dataRoot, coreDb: access.coreDb, store });
+    const app = await createApp({ dataRoot, coreDb: access.coreDb, store });
     const selected = readTestWorkspaceNotebookSelection(
       dataRoot,
       'ws_00000000-0000-7000-8000-000000000001'

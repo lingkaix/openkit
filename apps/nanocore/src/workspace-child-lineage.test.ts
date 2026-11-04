@@ -34,7 +34,7 @@ async function createLineageFixture() {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const allowedWorkspace = await store.createWorkspace('Allowed lineage Workspace');
     const foreignWorkspace = await store.createWorkspace('Foreign lineage Workspace');
 
@@ -162,7 +162,7 @@ async function createLineageFixture() {
 
 /** Sends one request and requires the uniform Workspace access denial response. */
 async function expectWorkspaceAccessDenied(
-  app: ReturnType<typeof createApp>,
+  app: Awaited<ReturnType<typeof createApp>>,
   request: LineageRequest
 ): Promise<void> {
   const response = await sendLineageRequest(app, request);
@@ -172,7 +172,7 @@ async function expectWorkspaceAccessDenied(
 
 /** Sends one request and requires the uniform missing-or-inaccessible Thread failure. */
 async function expectThreadNotFound(
-  app: ReturnType<typeof createApp>,
+  app: Awaited<ReturnType<typeof createApp>>,
   request: LineageRequest
 ): Promise<void> {
   const response = await sendLineageRequest(app, request);
@@ -185,7 +185,7 @@ async function expectThreadNotFound(
 
 /** Issues one lineage request with optional JSON body. */
 async function sendLineageRequest(
-  app: ReturnType<typeof createApp>,
+  app: Awaited<ReturnType<typeof createApp>>,
   request: LineageRequest
 ): Promise<Response> {
   if (

@@ -138,7 +138,7 @@ async function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
     .spyOn(executor, 'prepareAgentSessionForTurn')
     .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
   const execute = vi.spyOn(executor, 'startTurn');
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

@@ -84,7 +84,7 @@ it.each(
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const admission = new WorkspaceMutationAdmission();
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       store,

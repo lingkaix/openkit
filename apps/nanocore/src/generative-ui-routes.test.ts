@@ -73,7 +73,7 @@ describe('Generative UI App API', () => {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const publishResponse = await app.request(
@@ -166,7 +166,7 @@ describe('Generative UI App API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const response = await app.request(

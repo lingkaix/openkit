@@ -213,7 +213,7 @@ describe('Generative UI Thread audience', () => {
       completedAt: sharedTurn.startedAt ?? stamp,
     });
 
-    const app = createApp({
+    const app = await createApp({
       auth: createBetterAuth(coreDb),
       coreDb,
       dataRoot,

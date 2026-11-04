@@ -78,7 +78,7 @@ async function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
     root,
     db,
     store,
-    app: createApp({
+    app: await createApp({
       dataRoot: root,
       coreDb: db,
       store,
@@ -287,7 +287,7 @@ describe('Workspace JSON transfer cutover', () => {
     // A fresh Store must export the same canonical Turn without a prior candidate cache.
     const freshStore = new FsStore({ dataRoot: root });
     expect(freshStore.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toEqual([turn]);
-    const freshApp = createApp({ dataRoot: root, coreDb: db, store: freshStore });
+    const freshApp = await createApp({ dataRoot: root, coreDb: db, store: freshStore });
     const withoutCache = await freshApp.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
@@ -324,8 +324,8 @@ describe('Workspace JSON transfer cutover', () => {
   it('round-trips actual archive bytes and Knowledge through the Web session streaming bindings', async () => {
     const source = await fixture();
     // The test controls only session admission; export and archive download use real owners.
-    const sessionApp = (f: Awaited<ReturnType<typeof fixture>>) =>
-      createApp({
+    const sessionApp = async (f: Awaited<ReturnType<typeof fixture>>) =>
+      await createApp({
         dataRoot: f.root,
         coreDb: f.db,
         store: f.store,
@@ -346,7 +346,7 @@ describe('Workspace JSON transfer cutover', () => {
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const sourceWeb = sessionApp(source);
+    const sourceWeb = await sessionApp(source);
     const content = 'Web session archive: café and exact retained content.';
     const notebookResponse = await sourceWeb.request(
       ...request('/api/app/operations/knowledge.notebook.list', { workspaceId: DEMO_WORKSPACE_ID })
@@ -410,7 +410,7 @@ describe('Workspace JSON transfer cutover', () => {
       workspaceIds: [],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const app = createApp({
+    const app = await createApp({
       dataRoot: root,
       coreDb: db,
       store,
@@ -565,7 +565,7 @@ describe('Workspace JSON transfer cutover', () => {
 
   it('refuses read-only and revoked export credentials before export usage or tree writes', async () => {
     const { db, root, store } = await fixture();
-    const app = createApp({ dataRoot: root, coreDb: db, store, mode: 'server' });
+    const app = await createApp({ dataRoot: root, coreDb: db, store, mode: 'server' });
     const readonly = createOpenKitAccessTokenRecord(db, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace-readonly',
@@ -642,7 +642,7 @@ describe('Workspace JSON transfer cutover', () => {
     );
     expect(exported.status, await exported.clone().text()).toBe(200);
     const { exportId } = await exported.json();
-    const ownerApp = createApp({
+    const ownerApp = await createApp({
       dataRoot: root,
       coreDb: db,
       store,

@@ -42,12 +42,12 @@ async function createSearchFixture(dataRoot: string) {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { store, app: createApp({ coreDb, dataRoot, store }) };
+  return { store, app: await createApp({ coreDb, dataRoot, store }) };
 }
 
 /** Seeds a page through current human admission and the native fixed-base Notebook publisher. */
 async function createKnowledgeFixture(
-  app: ReturnType<typeof createApp>,
+  app: Awaited<ReturnType<typeof createApp>>,
   dataRoot: string,
   workspaceId: string,
   input: { knowledgePageId: string; title: string; content: string }
@@ -262,7 +262,7 @@ describe('search app API', () => {
       });
     }
 
-    const publisherApp = createApp({ coreDb, dataRoot, store });
+    const publisherApp = await createApp({ coreDb, dataRoot, store });
     for (const [workspace, prefix] of [
       [allowedWorkspace, 'allowed'],
       [deniedWorkspace, 'denied'],
@@ -330,7 +330,7 @@ describe('search app API', () => {
       api: { getSession: async () => null },
       handler: async () => new Response(null, { status: 404 }),
     };
-    let app = createApp({
+    let app = await createApp({
       auth,
       coreDb,
       dataRoot,
@@ -408,7 +408,7 @@ describe('search app API', () => {
             'usr_00000000-0000-7000-8000-000000000001'
           );
       })();
-      app = createApp({ auth, coreDb, dataRoot, mode: 'server', store });
+      app = await createApp({ auth, coreDb, dataRoot, mode: 'server', store });
 
       const hiddenResponse = await app.request(
         ...operationRequest(

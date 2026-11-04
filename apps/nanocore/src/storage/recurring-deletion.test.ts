@@ -78,7 +78,7 @@ it('seals the complete recurring graph before deletion removes its Core rows and
     });
     const requestId = randomUUID();
     const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       store,

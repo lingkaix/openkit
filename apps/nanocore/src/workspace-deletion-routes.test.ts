@@ -108,7 +108,7 @@ it.each([
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const admission = new WorkspaceMutationAdmission();
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'server',
@@ -224,7 +224,7 @@ it.each([
       await heldClose;
       await closeWorkspace(id);
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'server',
@@ -317,7 +317,7 @@ it('resumes an exact fenced request after its registry transition without ordina
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
     const admission = new WorkspaceMutationAdmission();
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'server',
@@ -562,7 +562,7 @@ it.each(
     } finally {
       workspaceDb.sqlite.close();
     }
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'local',
@@ -623,7 +623,7 @@ it('refuses running work before admission and preserves exact deletion retry aft
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Deletion fixture');
-    const app = createApp({
+    const app = await createApp({
       releaseIdentity: {
         releaseTag: null,
         sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -1014,7 +1014,7 @@ it.each([
         workspaceDb.sqlite.close();
       }
     }
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'local',
@@ -1247,7 +1247,7 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
       });
       await closeDeletionQuiescenceAttempt(coreDb, suffix);
     }
-    const app = createApp({
+    const app = await createApp({
       releaseIdentity: {
         releaseTag: null,
         sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -1347,7 +1347,7 @@ it('refuses deletion when one of five failed attempts remains closing without re
         await closeDeletionQuiescenceAttempt(coreDb, suffix);
       }
     }
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'local',
@@ -1530,7 +1530,7 @@ it.each([
         )
         .run(testEntityId('attempt', `lease_${fixture.suffix}`));
     }
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'local',
@@ -1625,7 +1625,7 @@ it('terminates a pre-transition deletion request when its original owner is disa
     )();
     const mutationAdmission = new WorkspaceMutationAdmission();
 
-    createApp({
+    await createApp({
       coreDb,
       dataRoot,
       mode: 'server',
@@ -1680,7 +1680,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
     const requestId = '00000000-0000-4000-8000-000000000023';
     const deletingRequestId = '00000000-0000-4000-8000-000000000025';
     const mutationAdmission = new WorkspaceMutationAdmission();
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'server',
@@ -1828,7 +1828,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
     )();
     const mutationAdmission = new WorkspaceMutationAdmission();
 
-    createApp({
+    await createApp({
       coreDb,
       dataRoot,
       mode: 'server',
@@ -1907,7 +1907,7 @@ it('restores registry-owned boot fences without relying on a nonterminal request
     });
     const mutationAdmission = new WorkspaceMutationAdmission();
 
-    createApp({
+    await createApp({
       coreDb,
       dataRoot,
       mode: 'server',
@@ -1948,7 +1948,7 @@ it.each([
     const canonicalRoot = join(dataRoot, 'workspaces', workspace.id);
     const originalRoot = join(backupParent, 'workspace');
     cpSync(canonicalRoot, originalRoot, { recursive: true });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'local',
@@ -2082,7 +2082,7 @@ it('preserves private Thread ownership only through the exact current deletion r
       'conversation',
       { visibility: 'private', privateOwnerUserId }
     );
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       mode: 'local',
@@ -2202,7 +2202,7 @@ it('retains a Thread-owned retrieval trace in the verified operational deletion 
       applyScopedMigrations(workspaceDb);
       return workspaceDb;
     };
-    const app = createApp({
+    const app = await createApp({
       releaseIdentity: {
         releaseTag: null,
         sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -2359,7 +2359,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const workspace = await store.createWorkspace('Terminal deletion fixture');
-    const app = createApp({
+    const app = await createApp({
       releaseIdentity: {
         releaseTag: null,
         sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -2837,7 +2837,7 @@ async function nativeDeletionRouteFixture() {
   store.setWorkspaceMutationAdmission(gate);
   const workspace = await store.createWorkspace('Native deletion route');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actorId, workspaceId: workspace.id });
-  const app = createApp({
+  const app = await createApp({
     coreDb,
     dataRoot,
     store,

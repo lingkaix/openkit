@@ -5,6 +5,7 @@ import type { ChannelServices } from './channel-services.js';
 import { discordPrivateReply, verifyDiscordInteraction } from './channels/discord.js';
 import type { OpenKitConfig } from './config/openkit-config.js';
 import { OperationError } from './operation-error.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 
 /** Registers Discord's separately signed entry before ordinary App authentication middleware. */
 export function registerDiscordInteractionRoutes(input: {
@@ -33,14 +34,13 @@ export function registerDiscordInteractionRoutes(input: {
           applicationId: input.config.applicationId,
           publicKey: input.config.publicKey,
         });
-        const work = discord.handleVerified(verified).then((reply) => {
-          queueMicrotask(() => {
-            try {
-              input.services()?.recoverAttention();
-            } catch {
-              /* A transport projection never decides a Core request. */
-            }
-          });
+        const work = getControlStoreWorkerClient().runOperation(async () => {
+          const reply = await discord.handleVerified(verified);
+          try {
+            await input.services()?.recoverAttention();
+          } catch {
+            /* A transport projection never decides a Core request. */
+          }
           return reply;
         });
         let timer: ReturnType<typeof setTimeout> | undefined;
