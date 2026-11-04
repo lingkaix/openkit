@@ -6,6 +6,10 @@ import {
 } from './_lib/servers.js';
 
 const password = 'OpenKit-browser-password-2026!';
+const bootstrapAdministrator = {
+  email: 'bootstrap-admin@example.test',
+  name: 'Bootstrap Administrator',
+};
 const owner = { email: 'owner@example.test', name: 'Owner User' };
 const accepting = { email: 'accepting@example.test', name: 'Accepting User' };
 const declining = { email: 'declining@example.test', name: 'Declining User' };
@@ -220,9 +224,9 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   const runtimeErrors = watchRuntimeErrors(page);
   await page.goto(stack.webUrl);
 
-  // The first server owner exists only through legitimate bootstrap consumption.
-  const ownerId = await completeServerBootstrap(stack, { ...owner, password });
-  await signIn(page, owner);
+  // Bootstrap creates only the deployment administrator. The sharing owner signs up afterwards.
+  await completeServerBootstrap(stack, { ...bootstrapAdministrator, password });
+  const ownerId = await signUp(page, owner);
   const workspaceId = await createWorkspace(page, stack.webUrl);
   await signOut(page, stack.webUrl);
 
