@@ -288,24 +288,32 @@ export function createCatalogOperationImplementations(
       throw new CatalogConflictError();
     }
   };
+  /** Publishes the original post-file completion evidence before reload and the separate receipt. */
   const auditResult = (
     workspaceDb: WorkspaceDb,
-    operation: string,
+    operation:
+      | 'catalog.skill-candidate-submit'
+      | 'catalog.skill-candidate-decide'
+      | 'catalog.skill-candidate-withdraw',
     input: { workspaceId: string; requestId: string },
     context: AdmittedOperationContext,
     candidateId: string,
     revision: number
   ) =>
-    recordWorkspaceAuditEvent({
-      workspaceDb,
+    getControlStoreWorkerClient().standaloneAudit(workspaceDb, {
       workspaceId: input.workspaceId,
-      requestId: input.requestId,
-      actor: context.actorRef,
-      action: operation,
-      resource: `skill-candidate:${candidateId}`,
-      resourceRevision: revision,
-      outcome: 'succeeded',
-      summary: 'Skill candidate command completed.',
+      stage: operation,
+      event: prepareWorkspaceAuditEvent({
+        workspaceDb,
+        workspaceId: input.workspaceId,
+        requestId: input.requestId,
+        actor: context.actorRef,
+        action: operation,
+        resource: `skill-candidate:${candidateId}`,
+        resourceRevision: revision,
+        outcome: 'succeeded',
+        summary: 'Skill candidate command completed.',
+      }),
     });
   const decision = async (
     operation: 'catalog.skill-candidate-decide' | 'catalog.skill-candidate-withdraw',
@@ -423,21 +431,14 @@ export function createCatalogOperationImplementations(
             workspaceId: input.workspaceId,
           });
           published = true;
-          const resumeCompletion = await getControlStoreWorkerClient().pauseForDataRootBackup(
-            `workspace:${owners.workspaceDb.sqlite.name}`
+          await auditResult(
+            owners.workspaceDb,
+            operation,
+            input,
+            context,
+            input.candidateId,
+            catalog.revision
           );
-          try {
-            auditResult(
-              owners.workspaceDb,
-              operation,
-              input,
-              context,
-              input.candidateId,
-              catalog.revision
-            );
-          } finally {
-            resumeCompletion();
-          }
           await afterMutation(input.workspaceId);
           return { revision: catalog.revision };
         },
@@ -750,21 +751,14 @@ export function createCatalogOperationImplementations(
               workspaceId: input.workspaceId,
             });
             published = true;
-            const resumeCompletion = await getControlStoreWorkerClient().pauseForDataRootBackup(
-              `workspace:${owners.workspaceDb.sqlite.name}`
+            await auditResult(
+              owners.workspaceDb,
+              'catalog.skill-candidate-submit',
+              input,
+              context,
+              result.candidate.id,
+              result.catalog.revision
             );
-            try {
-              auditResult(
-                owners.workspaceDb,
-                'catalog.skill-candidate-submit',
-                input,
-                context,
-                result.candidate.id,
-                result.catalog.revision
-              );
-            } finally {
-              resumeCompletion();
-            }
             await afterMutation(input.workspaceId);
             return {
               candidate: publicSkillCandidate(result.candidate),
@@ -784,7 +778,12 @@ export function createCatalogOperationImplementations(
       } finally {
         owners.workspaceDb.sqlite.close();
       }
-      revalidate(input.workspaceId, 'catalog.skill-candidate-submit', context);
+      // Classify current response refusal after preserving the completed historical settlement.
+      try {
+        revalidate(input.workspaceId, 'catalog.skill-candidate-submit', context);
+      } catch (error) {
+        catalogFailure(error, 'skill_candidate_failed');
+      }
       if (input.artifact !== undefined)
         requireArtifactAccess({ workspaceId: input.workspaceId, ...input.artifact }, context);
       return response;

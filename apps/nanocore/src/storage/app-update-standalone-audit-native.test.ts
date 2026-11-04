@@ -413,8 +413,11 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'catalog.light-app-import',
     'catalog.light-app-pin',
     'catalog.light-app-select',
+    'catalog.skill-candidate-decide',
     'catalog.skill-candidate-decide.admit',
+    'catalog.skill-candidate-submit',
     'catalog.skill-candidate-submit.admit',
+    'catalog.skill-candidate-withdraw',
     'catalog.skill-candidate-withdraw.admit',
   ]);
 });
