@@ -2141,7 +2141,8 @@ function flush(owner: OwnedDatabase): void {
               result,
             };
           } else if (request.operation === 'standalone-audit') {
-            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            if (owner.scopeDb?.scope !== 'workspace' && owner.scopeDb?.scope !== 'core')
+              throw new ControlProductPreconditionError();
             applyStandaloneAuditInDb(owner.scopeDb, request.input);
             outcome = {
               version: CONTROL_WORKER_VERSION,

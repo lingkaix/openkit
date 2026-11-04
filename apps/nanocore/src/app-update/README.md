@@ -18,3 +18,5 @@ Prepare, start, and the supervised apply job still require the compatibility ass
 ## Verification
 
 Run the focused transport and parser checks with `pnpm --filter @openkit/nanocore exec vitest run src/app-update/host-transport.test.ts src/app-update/host-request.test.ts --maxWorkers=1 --no-file-parallelism`. Run the helper filesystem and host-double suite with `python3 -I -B scripts/docker/app-update-helper.test.py`. These checks do not establish selected-host update success; that evidence requires a separately authorized deployment.
+
+The original authorized-start and returned-handoff Audit stages use the existing Core physical writer and covering FULL acknowledgement. The host is contacted only after the first acknowledgement and the existing current-entry recheck; the returned observation is recorded before public projection. A failed or unknown acknowledgement is not retried, and a completed host effect is not re-authorized during settlement. Core Audit and the host receipt remain separate effect domains.

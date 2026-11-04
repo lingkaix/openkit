@@ -201,11 +201,20 @@ export function recordAppAuditEvent(
  * @returns Protocol audit event stored in SQLite.
  */
 export function recordServerAuditEvent(input: RecordServerAuditEventInput): AuditEvent {
+  const event = prepareServerAuditEvent(input);
+  insertAuditEvent(input.coreDb.sqlite, event);
+  return event;
+}
+
+/** Prepares the original exact server Audit tuple without publishing it on Main. */
+export function prepareServerAuditEvent(
+  input: RecordServerAuditEventInput
+): ReturnType<typeof prepareAuditEvent> {
   const { coreDb: _coreDb, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
   assertNoUnsafeAuditValue(safeInput);
   assertNotebookAuditScope(input.notebookAdmission, { kind: 'server' });
 
-  return recordAuditEvent(input.coreDb.sqlite, {
+  return prepareAuditEvent({
     ...input,
     workspaceId: input.workspaceId ?? null,
   });

@@ -261,6 +261,8 @@ it('publishes the original Audit identity and timestamps without adding a receip
   expect(STANDALONE_AUDIT_STAGES).toEqual([
     'catalog.skill-candidate-decide.admit',
     'catalog.skill-candidate-withdraw.admit',
+    'app.update.start',
+    'app.update.start.handoff',
   ]);
   const f = await fixture();
   f.queryOnly();

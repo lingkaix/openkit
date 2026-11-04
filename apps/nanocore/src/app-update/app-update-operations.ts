@@ -1,9 +1,10 @@
 import type { APP_UPDATE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 
-import { recordServerAuditEvent } from '../audit-events.js';
+import { prepareServerAuditEvent } from '../audit-events.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import type { AppUpdateHostCommand } from './host-request.js';
 import type { AppUpdateHostResult, AppUpdateHostTransport } from './host-transport.js';
@@ -99,17 +100,21 @@ export function createAppUpdateOperationImplementations(input: {
       const actor = publicOperationActor(context);
       const auditActor = actor ? { actor: { id: actor.userId, kind: 'user' as const } } : {};
       if (coreDb) {
-        recordServerAuditEvent({
-          action: 'app.update.start',
-          category: 'system',
-          coreDb,
-          outcome: 'succeeded',
-          requestId: input.requestId,
-          resource: `app-update:${input.requestId}`,
-          severity: 'info',
-          summary: 'Authorized App-update start request was accepted.',
-          ...auditActor,
+        await getControlStoreWorkerClient().standaloneAudit(coreDb, {
+          stage: 'app.update.start',
+          event: prepareServerAuditEvent({
+            action: 'app.update.start',
+            category: 'system',
+            coreDb,
+            outcome: 'succeeded',
+            requestId: input.requestId,
+            resource: `app-update:${input.requestId}`,
+            severity: 'info',
+            summary: 'Authorized App-update start request was accepted.',
+            ...auditActor,
+          }),
         });
+        await context.recheckAdmission?.();
       }
 
       const result = await invoke({
@@ -118,20 +123,23 @@ export function createAppUpdateOperationImplementations(input: {
         requestId: input.requestId,
       });
       if (coreDb) {
-        recordServerAuditEvent({
-          action: 'app.update.start.handoff',
-          category: 'system',
-          coreDb,
-          ...(result.ok
-            ? { outcome: 'succeeded' as const }
-            : { errorCode: result.code, outcome: 'failed' as const }),
-          requestId: input.requestId,
-          resource: `app-update:${input.requestId}`,
-          severity: result.ok ? 'info' : 'error',
-          summary: result.ok
-            ? 'App-update start host handoff returned a receipt.'
-            : 'App-update start host handoff did not return a receipt.',
-          ...auditActor,
+        await getControlStoreWorkerClient().standaloneAudit(coreDb, {
+          stage: 'app.update.start.handoff',
+          event: prepareServerAuditEvent({
+            action: 'app.update.start.handoff',
+            category: 'system',
+            coreDb,
+            ...(result.ok
+              ? { outcome: 'succeeded' as const }
+              : { errorCode: result.code, outcome: 'failed' as const }),
+            requestId: input.requestId,
+            resource: `app-update:${input.requestId}`,
+            severity: result.ok ? 'info' : 'error',
+            summary: result.ok
+              ? 'App-update start host handoff returned a receipt.'
+              : 'App-update start host handoff did not return a receipt.',
+            ...auditActor,
+          }),
         });
       }
 

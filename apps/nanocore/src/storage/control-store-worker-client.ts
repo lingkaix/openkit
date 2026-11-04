@@ -2080,15 +2080,23 @@ class ControlStoreWorkerClient {
     return result as ControlWorkspaceCapabilityCommandResult;
   }
 
-  /** Reuses the exact physical Workspace owner for a closed originally standalone Audit commit. */
-  async standaloneAudit(db: WorkspaceDb, input: ControlStandaloneAuditInput): Promise<void> {
-    const scope = nativeProductScope(db.dataRoot, {
-      kind: 'workspace',
-      workspaceId: db.workspaceId,
-    });
-    if (input.workspaceId !== db.workspaceId || db.sqlite.name !== scope.path)
+  /** Reuses the exact physical owner for a closed originally standalone Core or Workspace Audit. */
+  async standaloneAudit(
+    db: CoreDb | WorkspaceDb,
+    input: ControlStandaloneAuditInput
+  ): Promise<void> {
+    const scope = nativeProductScope(
+      db.dataRoot,
+      db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId }
+    );
+    if (
+      (db.scope === 'core'
+        ? input.workspaceId !== undefined
+        : input.workspaceId !== db.workspaceId) ||
+      db.sqlite.name !== scope.path
+    )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `workspace:${scope.path}`;
+    const database = `${db.scope}:${scope.path}`;
     const admitted = this.openings.get(database);
     let reply: Success;
     if (!admitted) {
@@ -2099,7 +2107,7 @@ class ControlStoreWorkerClient {
             path: scope.path,
             dataRoot: db.dataRoot,
             create: false,
-            initialize: 'workspace',
+            initialize: db.scope,
             productOwner: scope.owner,
             contentMount: scope.contentMount,
           }),
