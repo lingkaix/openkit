@@ -18,6 +18,7 @@ import { useWorkspaceStore } from '../screens/workspace-store';
 import { AssistantEntry } from './AssistantEntry';
 import { ConversationGoalGroups, type ConversationRow } from './ConversationGoalGroups';
 import { useCoreClient } from './core-client';
+import { NewGoalDialog, NewTaskDialog } from './StartWorkDialogs';
 import { type NavGroup, SURFACES, type Surface, surfacesInGroup } from './surfaces';
 
 /** Static wordmark for the brand row (DESIGN.md §8.2). Height matches the Search control. */
@@ -236,6 +237,11 @@ export function ThreadLists({ segment = 'all' }: { segment?: ListSegment }) {
       {showTasks ? (
         <>
           {segment === 'all' ? <SectionLabel>Tasks</SectionLabel> : null}
+          <NewTaskDialog
+            key={`task:${workspace.id}`}
+            workspaceId={workspace.id}
+            workspaceLabel={workspace.name}
+          />
           {listedTasks.map((row) => (
             <Fragment key={row.thread.id}>{renderConversation(row)}</Fragment>
           ))}
@@ -244,6 +250,7 @@ export function ThreadLists({ segment = 'all' }: { segment?: ListSegment }) {
       {showGoals ? (
         <>
           {segment === 'all' ? <SectionLabel>Goals</SectionLabel> : null}
+          <NewGoalDialog key={`goal:${workspace.id}`} workspaceId={workspace.id} />
           <ConversationGoalGroups
             key={workspace.id}
             workspaceId={workspace.id}

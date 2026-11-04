@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useConnection } from '../../app/core-client';
+import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Composer,
   type ComposerDraft,
@@ -45,6 +45,12 @@ export function ChatStarter() {
   currentWorkspace.current = workspaceId;
   const mounted = useRef(true);
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, null);
+  const client = useCoreClient();
+  const [routeError, setRouteError] = useState<string | null>(null);
+  const pendingRoute = useRef<{
+    receivingWorkspaceId: string;
+    receivingThreadId: string;
+  } | null>(null);
   const { failed: disconnected, retry: retryConnection } = useConnection();
   const createOwner = create.variables?.workspaceId === workspaceId;
   const conversations = navigation.data ?? [];
@@ -64,8 +70,50 @@ export function ChatStarter() {
    *
    * @param draft - The exact first-message request retained for visible retry.
    */
+  async function openReceivingThread(receivingWorkspaceId: string, receivingThreadId: string) {
+    const listed = await client.operations['conversation.navigation']({
+      workspaceId: receivingWorkspaceId,
+    });
+    if (!mounted.current || currentWorkspace.current !== workspaceId) return false;
+    const item = listed.items.find((row) => row.thread.id === receivingThreadId);
+    if (!item) {
+      pendingRoute.current = { receivingWorkspaceId, receivingThreadId };
+      setRouteError('The server did not classify that thread.');
+      throw new Error('The server did not classify that thread.');
+    }
+    pendingRoute.current = null;
+    setRouteError(null);
+    navigate(conversationThreadPath(receivingWorkspaceId, receivingThreadId, item.activity));
+    return true;
+  }
+
+  async function retryClassification() {
+    const pending = pendingRoute.current;
+    if (!pending) return;
+    try {
+      await openReceivingThread(pending.receivingWorkspaceId, pending.receivingThreadId);
+    } catch {
+      // The classification error stays visible. This retry does not submit again.
+    }
+  }
+
   async function start(draft: ComposerDraft) {
     if (!workspaceId) return;
+    // A missing or failed navigation read is not proof that the Workspace has no Assistant.
+    if (!navigation.isSuccess) {
+      throw new Error('Assistant navigation is not ready.');
+    }
+    const assistant = navigation.data.find((row) => row.activity === 'chat');
+    if (assistant) {
+      const response = await send.mutateAsync({
+        workspaceId,
+        threadId: assistant.thread.id,
+        draft,
+      });
+      if (!mounted.current || currentWorkspace.current !== workspaceId) return;
+      await openReceivingThread(response.receivingWorkspaceId, response.receivingThreadId);
+      return;
+    }
     const thread = await create.mutateAsync({ workspaceId, draft });
     const submission = send.mutateAsync({ workspaceId, threadId: thread.id, draft });
     if (mounted.current && currentWorkspace.current === workspaceId) {
@@ -92,8 +140,21 @@ export function ChatStarter() {
           onRetry={() => create.reset()}
         />
       ) : null}
+      {routeError ? (
+        <ErrorBanner message={routeError} onRetry={() => void retryClassification()} />
+      ) : null}
 
       <Composer
+        variant="assistant"
+        holdSubmit={
+          !workspaceId || disconnected || targets.isError
+            ? undefined
+            : navigation.isSuccess
+              ? undefined
+              : navigation.isError
+                ? "Couldn't load the Assistant."
+                : 'Checking the Assistant.'
+        }
         fileWorkspaceLabel={
           workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name
         }

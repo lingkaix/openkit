@@ -389,10 +389,9 @@ describe.each([
     );
     const trigger = await screen.findByRole('button', { name: /Reasoning effort/ });
     await user.click(screen.getByRole('textbox', { name: 'Message' }));
-    await user.tab();
-    await user.tab();
-    await user.tab();
-    await user.tab();
+    for (let step = 0; step < 8 && document.activeElement !== trigger; step += 1) {
+      await user.tab();
+    }
     expect(trigger).toHaveFocus();
     expect(trigger).toHaveClass('focus-visible:ring-2', 'focus-visible:ring-focus');
     await user.keyboard('{Enter}');

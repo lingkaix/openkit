@@ -140,6 +140,16 @@ export interface ComposerProps {
   /** Current authorized destination label used by file handoff confirmation. */
   fileWorkspaceLabel?: string;
   workerEnvironments?: ComposerWorkerEnvironments;
+  /**
+   * Assistant timeline. The person does not pick a target or a Sandbox here.
+   * Those choices belong to New Task.
+   */
+  variant?: 'assistant';
+  /**
+   * Blocks Send without disabling the draft. Used while a prerequisite read is
+   * unresolved. The Assistant variant also blocks when no Assistant target is available.
+   */
+  holdSubmit?: string;
   onSubmit?: (draft: ComposerDraft) => unknown;
 }
 
@@ -156,6 +166,8 @@ export function Composer({
   artifacts = [],
   fileWorkspaceLabel,
   workerEnvironments,
+  variant,
+  holdSubmit,
   onSubmit,
 }: ComposerProps) {
   const [value, setValue] = useState(initialDraft?.input ?? '');
@@ -234,10 +246,22 @@ export function Composer({
         : undefined));
   const environmentApplicable = isWorkerEnvironmentTarget(selectedTarget?.kind);
   const environmentReady = selectedEnvironment === null || environmentApplicable;
+  const assistantMissing =
+    variant === 'assistant' &&
+    targetCatalog != null &&
+    !targetCatalog.targets.some(
+      (target) => target.kind === 'assistant' && target.availability === 'available'
+    );
+  const submitHold = disabledReason
+    ? undefined
+    : (holdSubmit ?? (assistantMissing ? 'The Assistant is not available.' : undefined));
+  const assistantAdmitted = variant !== 'assistant' || selectedTarget?.kind === 'assistant';
   const canSubmit =
     !disabled &&
+    !submitHold &&
     !pending &&
     environmentReady &&
+    assistantAdmitted &&
     Boolean(value.trim() || selectedArtifacts.length || files.length) &&
     selectedTarget?.availability === 'available' &&
     (!logicalModelId || selectedTarget.logicalModels.some((model) => model.id === logicalModelId));
@@ -261,14 +285,30 @@ export function Composer({
   }, [clearSentDraft, completedRequestId, requestId]);
 
   useEffect(() => {
-    if (targetRef || !targetCatalog) return;
+    if (!targetCatalog) return;
+    if (variant === 'assistant') {
+      const assistant = targetCatalog.targets.find(
+        (target) => target.kind === 'assistant' && target.availability === 'available'
+      );
+      const current = targetCatalog.targets.find((target) => target.targetRef === targetRef);
+      if (!assistant) {
+        if (current && current.kind !== 'assistant') setTargetRef('');
+        return;
+      }
+      if (targetRef === assistant.targetRef) return;
+      if (current?.kind === 'assistant' && current.availability === 'available') return;
+      setTargetRef(assistant.targetRef);
+      setLogicalModelId(assistant.defaultLogicalModelId ?? '');
+      return;
+    }
+    if (targetRef) return;
     const initial = targetCatalog.targets.find(
       (target) => target.targetRef === targetCatalog.defaultTargetRef
     );
     if (!initial) return;
     setTargetRef(initial.targetRef);
     setLogicalModelId(initial.defaultLogicalModelId ?? '');
-  }, [targetCatalog, targetRef]);
+  }, [targetCatalog, targetRef, variant]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: textarea scroll height changes after value renders.
   useLayoutEffect(() => {
@@ -514,7 +554,7 @@ export function Composer({
                   </button>
                 </>
               }
-              {environmentApplicable || selectedEnvironment ? (
+              {variant !== 'assistant' && (environmentApplicable || selectedEnvironment) ? (
                 <WorkerEnvironmentPicker
                   environments={workerEnvironments}
                   selected={selectedEnvironment}
@@ -524,14 +564,16 @@ export function Composer({
             </Dialog>
           </Popover>
         </DialogTrigger>
-        <InlineSelect
-          isDisabled={disabled}
-          ariaLabel="Conversation agent"
-          selectedKey={targetRef}
-          placeholder="Agent"
-          items={targetCatalog?.targets ?? []}
-          onChange={selectTarget}
-        />
+        {variant === 'assistant' ? null : (
+          <InlineSelect
+            isDisabled={disabled}
+            ariaLabel="Conversation agent"
+            selectedKey={targetRef}
+            placeholder="Agent"
+            items={targetCatalog?.targets ?? []}
+            onChange={selectTarget}
+          />
+        )}
         <span className="min-w-2 flex-1" />
         <InlineSelect
           isDisabled={disabled}
@@ -637,6 +679,7 @@ export function Composer({
           </button>
         </div>
       ) : null}
+      {submitHold ? <p className="mt-2 text-xs text-fg-muted">{submitHold}</p> : null}
     </form>
   );
 }

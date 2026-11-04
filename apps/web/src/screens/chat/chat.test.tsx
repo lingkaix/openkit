@@ -588,21 +588,29 @@ describe.each([
   ['starter with immediate acceptance', '/chat', 'th_00000000-0000-75c2-bada-0a01c17d153e'],
   [
     'Thread',
-    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+    '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
     'th_00000000-0000-70a0-9cde-4561f64881c6',
   ],
 ])('successful %s submission selection', (_surface, path, threadId) => {
   it('retains the chosen agent and model for a fresh second request', async () => {
     const user = userEvent.setup();
     const first = createDeferred<typeof CHAT_MODE_RESPONSE>();
+    const logicalModels = [
+      { id: 'worker-default', label: 'Worker default', capabilities: ['chat'] },
+      { id: 'orcarouter', label: 'OrcaRouter', capabilities: ['chat'] },
+    ];
     const selectedTarget = {
       ...CONVERSATION_TARGET.targets[1],
-      logicalModels: [
-        { id: 'worker-default', label: 'Worker default', capabilities: ['chat'] },
-        { id: 'orcarouter', label: 'OrcaRouter', capabilities: ['chat'] },
-      ],
+      logicalModels,
       defaultLogicalModelId: 'worker-default',
     };
+    const assistantTarget = {
+      ...CONVERSATION_TARGET.targets[0],
+      logicalModels,
+      defaultLogicalModelId: 'worker-default',
+    };
+    const sentTargetRef =
+      _surface === 'Thread' ? selectedTarget.targetRef : assistantTarget.targetRef;
     const submitConversation = vi
       .fn()
       .mockReturnValueOnce(
@@ -638,14 +646,19 @@ describe.each([
           'conversation.submit': submitConversation,
           'conversation.targets': vi.fn().mockResolvedValue({
             ...CONVERSATION_TARGET,
-            targets: [CONVERSATION_TARGET.targets[0], selectedTarget],
+            targets: [assistantTarget, selectedTarget],
           }),
         }
       )
     );
-    await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
-    await user.click(await screen.findByRole('option', { name: 'Codex Agent' }));
-    await user.click(screen.getByRole('button', { name: /Logical model/ }));
+    await screen.findByRole('textbox', { name: 'Message' });
+    if (_surface === 'Thread') {
+      await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+      await user.click(await screen.findByRole('option', { name: 'Codex Agent' }));
+    } else {
+      expect(screen.queryByRole('button', { name: /Conversation agent/ })).not.toBeInTheDocument();
+    }
+    await user.click(await screen.findByRole('button', { name: /Logical model/ }));
     await user.click(await screen.findByRole('option', { name: 'OrcaRouter' }));
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
@@ -655,7 +668,7 @@ describe.each([
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
     const firstDraft = submitConversation.mock.calls[0]?.[0];
     expect(firstDraft).toMatchObject({
-      targetRef: selectedTarget.targetRef,
+      targetRef: sentTargetRef,
       logicalModelId: 'orcarouter',
       artifactRefs: [{ artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e', artifactVersion: 2 }],
     });
@@ -668,9 +681,13 @@ describe.each([
       await first.promise;
     });
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(''));
-    expect(
-      screen.getByRole('button', { name: /Codex Agent.*Conversation agent/ })
-    ).toBeInTheDocument();
+    if (_surface === 'Thread') {
+      expect(
+        screen.getByRole('button', { name: /Codex Agent.*Conversation agent/ })
+      ).toBeInTheDocument();
+    } else {
+      expect(screen.queryByRole('button', { name: /Conversation agent/ })).not.toBeInTheDocument();
+    }
     expect(screen.getByRole('button', { name: /OrcaRouter.*Logical model/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Remove Existing brief' })).not.toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Second message');
@@ -682,7 +699,7 @@ describe.each([
         threadId: threadId,
         ...{
           input: 'Second message',
-          targetRef: selectedTarget.targetRef,
+          targetRef: sentTargetRef,
           logicalModelId: 'orcarouter',
           artifactRefs: [],
           requestId: expect.any(String),
@@ -716,7 +733,9 @@ describe('conversation failure identity', () => {
     const user = userEvent.setup();
     const submitConversation = vi.fn().mockRejectedValue(error);
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      targetRef === 'new-task-worker'
+        ? '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6'
+        : '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({}, { 'conversation.submit': submitConversation })
     );
     if (targetRef === 'new-task-worker') await chooseNewTaskWorker(user);
@@ -1440,12 +1459,13 @@ describe('chat starter (board 01)', () => {
           workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' ? destination : origin
         )
       );
+    const createThread = vi.fn().mockResolvedValue(origin);
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     renderApp(
       '/chat',
       makeClient(
         {
-          'thread.create': vi.fn().mockResolvedValue(origin),
+          'thread.create': createThread,
           'thread.read': getThread,
           'thread.list': vi.fn().mockImplementation(({ workspaceId }: { workspaceId: string }) =>
             Promise.resolve({
@@ -1460,7 +1480,6 @@ describe('chat starter (board 01)', () => {
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Hand off this work');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(await screen.findByRole('heading', { name: 'Origin Chat' })).toBeInTheDocument();
     await act(async () => {
       started.resolve({
         ...STARTER_CHAT_MODE_RESPONSE,
@@ -1469,6 +1488,10 @@ describe('chat starter (board 01)', () => {
       });
       await started.promise;
     });
+    expect(createThread).not.toHaveBeenCalled();
+    expect(submitConversation).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: origin.id, input: 'Hand off this work' })
+    );
     expect(await screen.findByRole('heading', { name: 'Receiving Task' })).toBeInTheDocument();
     expect(getThread).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
@@ -1521,7 +1544,6 @@ describe('chat starter (board 01)', () => {
     );
     await user.type(await screen.findByRole('textbox', { name: 'Message' }), 'Original draft');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
-    expect(await screen.findByRole('heading', { name: 'Origin Chat' })).toBeInTheDocument();
     await switchToThread(user, 'Market research', 'Second workspace', 'Other Chat');
     expect(await screen.findByRole('heading', { name: 'Other Chat' })).toBeInTheDocument();
     await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Unsent other draft');
@@ -3482,7 +3504,9 @@ describe('thread lifecycle and attribution (S7)', () => {
       client
     );
 
-    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
+    });
     expect(screen.queryByText(/^by\s/)).not.toBeInTheDocument();
   });
 });
@@ -4526,7 +4550,9 @@ describe('live turn subscription (S6)', () => {
       client
     );
 
-    expect(await screen.findByText('Already authoritative')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('Already authoritative')).toBeInTheDocument();
+    });
     releaseReplay();
     expect(await screen.findByText('Offline')).toBeInTheDocument();
     expect(screen.getByText('Already authoritative')).toBeInTheDocument();
@@ -4690,7 +4716,7 @@ describe('open thread external activity', () => {
       getConversationTargets.mock.calls.every(
         ([{ workspaceId, threadId }]) =>
           workspaceId === 'ws_00000000-0000-7b10-9af8-12fd37a880e0' &&
-          threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6'
+          (threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6' || threadId == null)
       )
     ).toBe(true);
   });
@@ -4708,7 +4734,9 @@ describe('open thread external activity', () => {
         { 'thread.dashboard': getThreadDashboard }
       )
     );
-    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
+    });
     expect(screen.queryByText('CATALOG_OK_GROK')).not.toBeInTheDocument();
     const itemCallsAfterBaseline = listThreadItems.mock.calls.length;
     const dashboardCallsAfterBaseline = getThreadDashboard.mock.calls.length;
@@ -4862,7 +4890,9 @@ describe('open thread external activity', () => {
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
-    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
+    });
     expect(screen.queryByRole('region', { name: 'Runtime activity' })).not.toBeInTheDocument();
     reported = true;
     await act(async () => {
@@ -4882,7 +4912,9 @@ describe('open thread external activity', () => {
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
-    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
+    });
     expect(screen.queryByText('CATALOG_OK_GROK')).not.toBeInTheDocument();
     const itemCallsAfterItems = listThreadItems.mock.calls.length;
 
@@ -5136,7 +5168,9 @@ describe('open thread external activity', () => {
       <OpenChatRoute path="/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7c00-b9fc-382312fdf476" />
     );
 
-    expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('On it — gathering the details.')).toBeInTheDocument();
+    });
     const th1ItemCalls = listThreadItems.mock.calls.filter(
       ([{ threadId }]) => threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6'
     ).length;
@@ -6440,7 +6474,7 @@ describe('Worker environment Advanced choice', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await chooseNewTaskWorker(user);
@@ -6491,7 +6525,7 @@ describe('Worker environment Advanced choice', () => {
       nextCursor: null,
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -6560,7 +6594,7 @@ describe('Worker environment Advanced choice', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await chooseNewTaskWorker(user);
@@ -6641,7 +6675,10 @@ describe('Worker environment Advanced choice', () => {
         'conversation.submit': submitConversation,
       }
     );
-    renderApp('/chat', client);
+    renderApp(
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-75c2-bada-0a01c17d153e',
+      client
+    );
     await chooseNewTaskWorker(user);
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
     await user.click(screen.getByText('Advanced settings'));
@@ -6660,8 +6697,10 @@ describe('Worker environment Advanced choice', () => {
       screen.getByRole('combobox', { name: 'Worker environment' }),
       WORKER_STORAGE_REF
     );
-    expect(screen.getByText('Permission is checked when you send.')).toBeInTheDocument();
-    expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText('Preview passed. Task permissions are checked again when you send.')
+    ).toBeInTheDocument();
+    expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
     await user.click(await screen.findByRole('button', { name: 'Existing brief' }));
     await user.keyboard('{Escape}');
     const input = await screen.findByRole('textbox', { name: 'Message' });
@@ -6669,10 +6708,8 @@ describe('Worker environment Advanced choice', () => {
     await user.click(screen.getByRole('button', { name: 'Send message' }));
     expect(await screen.findByText("Couldn't send that message. Try again.")).toBeInTheDocument();
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
-    expect(createThread.mock.invocationCallOrder[0]).toBeLessThan(
-      submitConversation.mock.invocationCallOrder[0] ?? 0
-    );
-    expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+    expect(createThread).not.toHaveBeenCalled();
+    expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
     const submitted = submitConversation.mock.calls[0]?.[0] as { requestId: string };
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Starter reuse');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
@@ -6690,19 +6727,18 @@ describe('Worker environment Advanced choice', () => {
       },
     });
     expect(submitConversation.mock.calls[1]).toEqual(submitConversation.mock.calls[0]);
-    expect(createThread).toHaveBeenCalledTimes(1);
-    expect(selectWorkerEnvironment).not.toHaveBeenCalled();
+    expect(createThread).not.toHaveBeenCalled();
+    expect(selectWorkerEnvironment).toHaveBeenCalledTimes(1);
   });
 
   it.each([
-    '/chat',
-    '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+    '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-75c2-bada-0a01c17d153e',
+    '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
   ])('starts a fresh request only on explicit Send from %s after definitive Chat cancellation and retries that identity after transport uncertainty', async (path) => {
     const user = userEvent.setup();
-    const threadId =
-      path === '/chat'
-        ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
-        : 'th_00000000-0000-70a0-9cde-4561f64881c6';
+    const threadId = path.endsWith('th_00000000-0000-75c2-bada-0a01c17d153e')
+      ? 'th_00000000-0000-75c2-bada-0a01c17d153e'
+      : 'th_00000000-0000-70a0-9cde-4561f64881c6';
     const originalId = '00000000-0000-4000-8000-000000000911';
     const freshId = '00000000-0000-4000-8000-000000000912';
     const randomUUID = vi
@@ -6752,6 +6788,8 @@ describe('Worker environment Advanced choice', () => {
         }
       )
     );
+    await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
+    await user.click(await screen.findByRole('option', { name: 'Assistant' }));
     await user.click(await screen.findByRole('button', { name: /Logical model/ }));
     await user.click(await screen.findByRole('option', { name: 'Alternate model' }));
     await user.click(screen.getByRole('button', { name: 'Add artifact or upload attachment' }));
@@ -6836,7 +6874,7 @@ describe('Worker environment Advanced choice', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await chooseNewTaskWorker(user);
@@ -6885,7 +6923,7 @@ describe('Worker environment Advanced choice', () => {
       }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await chooseNewTaskWorker(user);
@@ -6929,7 +6967,7 @@ describe('Worker environment Advanced choice', () => {
       .mockResolvedValue({ items: [other], nextCursor: null });
     const selectWorkerEnvironment = vi.fn().mockResolvedValue({ selected: WORKER_ENVIRONMENT });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -6987,7 +7025,7 @@ describe('Worker environment Advanced choice', () => {
       nextCursor: null,
     });
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient(
         {
           'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
@@ -7034,7 +7072,7 @@ describe('Worker environment Advanced choice', () => {
       { 'worker-environment.list': listWorkerEnvironments }
     );
     renderApp(
-      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       client
     );
     await chooseNewTaskWorker(user);

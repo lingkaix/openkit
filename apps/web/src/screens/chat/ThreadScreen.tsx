@@ -632,6 +632,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   version: artifact.version,
                   label: artifact.title,
                 }))}
+                variant={mode === 'chat' ? 'assistant' : undefined}
                 workerEnvironments={workerEnvironments}
                 disabledReason={
                   disconnected

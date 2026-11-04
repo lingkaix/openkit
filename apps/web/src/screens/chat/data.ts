@@ -910,7 +910,7 @@ export function useCreateThread() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (input: { workspaceId: string; draft: ConversationDraft }) => {
-      const name = input.draft.input.trim().slice(0, 60) || 'Artifact task';
+      const name = input.draft.input.trim().split('\n', 1)[0]?.trim().slice(0, 60) || 'Task';
       return client.operations['thread.create']({
         workspaceId: input.workspaceId,
         name,
