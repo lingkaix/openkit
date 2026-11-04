@@ -1,10 +1,10 @@
-import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import {
   KnowledgePackageImportResponseSchema,
   OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
+import { createPrivateMetadataDirectory } from '@openkit/storage';
 import type { Context, Hono } from 'hono';
 import { apiErrorPayload } from '../../api-errors.js';
 import type { AuthVariables } from '../../auth/middleware.js';
@@ -98,7 +98,7 @@ export function registerKnowledgePackageRoutes(
         };
         const directory = join(staging.root, 'package');
         if (id === 'knowledge.package.import') {
-          await mkdir(directory, { mode: 0o700 });
+          await createPrivateMetadataDirectory(directory);
           await stageKnowledgePackage(context.req.raw, directory, dependencies.fileAdmission);
           const result = await importKnowledgePackage({
             ...dependencies,
