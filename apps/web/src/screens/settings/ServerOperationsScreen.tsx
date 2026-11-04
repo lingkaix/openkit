@@ -10,7 +10,7 @@ const MAINTENANCE = [
     hint: 'Inspect the authored configuration and apply supported reloads. Policy decisions remain in Server audit.',
   },
   {
-    path: '/settings/ai-interface',
+    path: '/settings/gateway',
     title: 'Gateway',
     hint: 'Inspect Providers, accounts, models and logical routes.',
   },

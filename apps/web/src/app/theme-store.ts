@@ -41,6 +41,9 @@ export function useDocumentTheme() {
     const root = document.documentElement;
     const themeClass = THEME_CLASS[theme];
     if (themeClass) root.classList.add(themeClass);
+    const canvas = getComputedStyle(root).getPropertyValue('--surface-page').trim();
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    if (canvas && themeColor) themeColor.setAttribute('content', canvas);
     return () => {
       if (themeClass) root.classList.remove(themeClass);
     };

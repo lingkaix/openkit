@@ -361,19 +361,15 @@ describe('app shell — disconnected affordance (DESIGN.md §9.12)', () => {
   it('shows a global banner when the runtime is unreachable', async () => {
     await renderAt('/', { metaOk: false });
     // useConnection retries once, so the error (and banner) can arrive after ~1s.
-    expect(
-      await screen.findByText(/Couldn't reach the local runtime\./i, undefined, { timeout: 3000 })
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/Offline/i, undefined, { timeout: 3000 })).toBeInTheDocument();
   });
 
   it('stays silent while connected', async () => {
     await renderAt('/', { metaOk: true });
-    await waitFor(() =>
-      expect(screen.queryByText(/Couldn't reach the local runtime\./i)).not.toBeInTheDocument()
-    );
+    await waitFor(() => expect(screen.queryByText(/Offline/i)).not.toBeInTheDocument());
   });
 
-  it('holds the 600x600 workbench floor', async () => {
+  it('has no 600x600 workbench floor', async () => {
     const { container } = render(
       <QueryClientProvider
         client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
@@ -386,8 +382,8 @@ describe('app shell — disconnected affordance (DESIGN.md §9.12)', () => {
       </QueryClientProvider>
     );
     await screen.findByRole('navigation');
-    expect(container.querySelector('.min-w-\\[600px\\]')).not.toBeNull();
-    expect(container.querySelector('.min-h-\\[600px\\]')).not.toBeNull();
+    expect(container.querySelector('.min-w-\\[600px\\]')).toBeNull();
+    expect(container.querySelector('.min-h-\\[600px\\]')).toBeNull();
     expect(container.querySelector('.min-w-\\[800px\\]')).toBeNull();
   });
 });

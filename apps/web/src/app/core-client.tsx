@@ -119,7 +119,7 @@ export function useConnection(): Connection {
   return {
     connected: query.isSuccess && !stream.failure,
     checking: query.isLoading,
-    failed: query.isError || Boolean(stream.failure),
+    failed: query.isError || Boolean(stream.failure) || navigator.onLine === false,
     retry: () => {
       void query.refetch();
       stream.failure?.retry();

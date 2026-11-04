@@ -17,7 +17,7 @@ import { useCurrentWorkspaceId, useSettingsWorkspace, useUpdateWorkspaceName } f
  * General settings (WP-7, board 10).
  *
  * The shell sidebar owns category navigation; this page contains only Workspace-authorized settings.
- * Appearance lives at `/settings/appearance` (ThemePicker). Deployment administration for Configuration and AI interface is a separately gated Settings workflow.
+ * Appearance lives at `/settings/appearance` (ThemePicker). Deployment administration for Configuration and Gateway is a separately gated Settings workflow.
  * Honors §9.13: skeleton form, inline save error, and Save disabled when disconnected.
  */
 export function GeneralSettingsScreen() {

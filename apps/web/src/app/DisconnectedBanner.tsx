@@ -15,10 +15,10 @@ export function DisconnectedBanner() {
   return (
     <div
       role="status"
-      className="flex items-center gap-2 border-b border-separator bg-negative-bg px-4 py-1.5 text-xs font-medium text-negative-fg"
+      className="flex items-center gap-2 border-b border-separator bg-negative-bg px-4 py-3 text-sm font-medium text-negative-fg"
     >
       <Icon name="disconnected" size="sm" />
-      <span className="flex-1">Couldn't reach the local runtime.</span>
+      <span className="flex-1">Offline</span>
       <button
         type="button"
         onClick={retry}

@@ -2,6 +2,7 @@ import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
+import { retainShellCacheOnLogout } from '../../pwa/shell-cache';
 import { useWorkspaceStore } from '../workspace-store';
 
 /** The single TanStack owner for protected account admission reads. */
@@ -105,7 +106,8 @@ export function useAccountMutation() {
         request.name = '';
       }
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
+      if (variables.operation === 'signOut') void retainShellCacheOnLogout();
       const mutationCache = queryClient.getMutationCache();
       for (const mutation of mutationCache.findAll({ mutationKey: accountChannelsKey }))
         mutationCache.remove(mutation);

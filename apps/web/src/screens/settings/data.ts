@@ -117,7 +117,7 @@ export function effectiveCodexSubscriptionSettings(
   };
 }
 
-/** Safe connected-app row for the AI interface surface. */
+/** Safe connected-app row for the Gateway surface. */
 export interface ConnectedAppRow {
   identity: string;
   accountSlotId: string;
@@ -147,7 +147,7 @@ export interface ConnectedAppRow {
   updatedAt: string;
 }
 
-/** Safe provider section for the AI interface surface. */
+/** Safe provider section for the Gateway surface. */
 export interface ConnectedAppProviderRow {
   subscriptionProviderId: ProviderSubscriptionDescriptor['subscriptionProviderId'];
   displayName: string;
@@ -752,7 +752,7 @@ function observationMillis(value: string | null): number | null {
  * Replaces one matching slot's quota observation when identity matches and the
  * observation is not older than the cached value.
  *
- * @param providers Current AI interface account cache.
+ * @param providers Current Gateway account cache.
  * @param quota Typed quota payload, or identity alone to clear a failed account observation.
  * @returns Updated provider rows; unmatched or stale payloads leave cache unchanged.
  */

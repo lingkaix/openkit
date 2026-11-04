@@ -4174,7 +4174,7 @@ describe('live turn subscription (S6)', () => {
     await waitFor(() =>
       expect(screen.getByText('Authoritative interleaved result')).toBeInTheDocument()
     );
-    expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
+    expect(await screen.findByText('Offline')).toBeInTheDocument();
 
     await act(async () => {
       resolveStaleItems({ items: ITEMS, nextCursor: null });
@@ -4380,7 +4380,7 @@ describe('live turn subscription (S6)', () => {
       client
     );
 
-    expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
+    expect(await screen.findByText('Offline')).toBeInTheDocument();
     expect(subscribeTurnEvents).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
@@ -4389,9 +4389,7 @@ describe('live turn subscription (S6)', () => {
 
     expect(await screen.findByText('Reconnected result')).toBeInTheDocument();
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(2));
-    await waitFor(() =>
-      expect(screen.queryByText("Couldn't reach the local runtime.")).not.toBeInTheDocument()
-    );
+    await waitFor(() => expect(screen.queryByText('Offline')).not.toBeInTheDocument());
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
   });
 
@@ -4446,16 +4444,14 @@ describe('live turn subscription (S6)', () => {
       client
     );
 
-    expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
+    expect(await screen.findByText('Offline')).toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
 
     await waitFor(() => expect(subscribeTurnEvents).toHaveBeenCalledTimes(2));
-    await waitFor(() =>
-      expect(screen.queryByText("Couldn't reach the local runtime.")).not.toBeInTheDocument()
-    );
+    await waitFor(() => expect(screen.queryByText('Offline')).not.toBeInTheDocument());
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
   });
@@ -4514,7 +4510,7 @@ describe('live turn subscription (S6)', () => {
 
     expect(await screen.findByText('Already authoritative')).toBeInTheDocument();
     releaseReplay();
-    expect(await screen.findByText("Couldn't reach the local runtime.")).toBeInTheDocument();
+    expect(await screen.findByText('Offline')).toBeInTheDocument();
     expect(screen.getByText('Already authoritative')).toBeInTheDocument();
   });
 });

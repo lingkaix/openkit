@@ -98,7 +98,7 @@ export const SURFACES: Surface[] = [
   {
     id: 'settings',
     title: 'General',
-    path: '/workspace',
+    path: '/settings/general',
     tier: 'A',
     nav: 'settings-workspace',
     icon: 'settings',
@@ -299,7 +299,7 @@ export const SURFACES: Surface[] = [
   {
     id: 'ai-interface',
     title: 'Gateway',
-    path: '/settings/ai-interface',
+    path: '/settings/gateway',
     tier: 'A',
     nav: 'settings-server',
     icon: 'connect',

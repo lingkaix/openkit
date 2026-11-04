@@ -31,7 +31,7 @@ function BrandMark() {
 /** True when a surface's route is the one currently shown. */
 function isActive(surface: Surface, pathname: string): boolean {
   if (surface.path === '/') return pathname === '/';
-  if (surface.path === '/workspace') return pathname === '/workspace';
+  if (surface.path === '/settings/general') return pathname === '/settings/general';
   if (surface.path.startsWith('/settings')) return pathname === surface.path;
   return pathname === surface.path || pathname.startsWith(`${surface.path}/`);
 }
@@ -63,9 +63,7 @@ function NavSection({
   return (
     <div className="flex flex-col gap-0.5">
       {heading ? (
-        <p className="px-3 pb-1 pt-3 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
-          {heading}
-        </p>
+        <p className="px-3 pb-1 pt-3 text-eyebrow font-bold text-fg-muted">{heading}</p>
       ) : null}
       {items.map((surface) => (
         <NavRow
@@ -100,7 +98,7 @@ function BrandSearch() {
         aria-expanded={open}
         aria-label="Search"
         title="Search"
-        className="h-8 w-8 shrink-0 px-0!"
+        className="size-11 shrink-0 px-0!"
         onPress={() => setOpen((current) => !current)}
       >
         <Icon name="search" />
@@ -239,7 +237,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
               variant="quiet"
               aria-label="Close navigation"
               title="Close navigation"
-              className="h-8 w-8 shrink-0 px-0!"
+              className="size-11 shrink-0 px-0!"
               onPress={onClose}
             >
               <Icon name="close" />
@@ -286,9 +284,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
             <>
               <hr className="my-2 border-0 border-t border-separator" />
               <div className="flex flex-col gap-0.5">
-                <p className="px-3 pb-1 pt-3 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
-                  Conversations
-                </p>
+                <p className="px-3 pb-1 pt-3 text-eyebrow font-bold text-fg-muted">Conversations</p>
                 <AssistantEntry key={`assistant:${workspace.id}`} workspaceId={workspace.id} />
                 {navigation.isPending ? (
                   <p className="px-3 text-xs text-fg-muted">Loading conversations…</p>
@@ -331,7 +327,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                 variant="quiet"
                 title="Settings"
                 aria-label="Settings"
-                className="h-8 w-8 shrink-0 px-0!"
+                className="size-11 shrink-0 px-0!"
                 onPress={() => go('/settings/account')}
               >
                 <Icon name="settings" />
@@ -344,7 +340,7 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
                   aria-label={surface.title}
                   aria-current={isActive(surface, pathname) ? 'page' : undefined}
                   className={[
-                    'h-8 w-8 shrink-0 px-0!',
+                    'size-11 shrink-0 px-0!',
                     isActive(surface, pathname) ? 'bg-selected text-accent-content' : '',
                   ].join(' ')}
                   onPress={() => go(surface.path)}

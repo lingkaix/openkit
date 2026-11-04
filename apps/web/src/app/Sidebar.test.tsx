@@ -382,7 +382,7 @@ describe('conversation navigation sidebar', () => {
     expect(screen.getByRole('navigation', { name: 'Settings sections' })).toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: 'Workspace settings' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'General' }));
-    expect(screen.getByLabelText('Location')).toHaveTextContent('/workspace');
+    expect(screen.getByLabelText('Location')).toHaveTextContent('/settings/general');
     expect(screen.getByRole('button', { name: 'General' })).toHaveAttribute('aria-current', 'page');
     await user.click(screen.getByRole('button', { name: 'Account' }));
     expect(screen.getByLabelText('Location')).toHaveTextContent('/settings/account');

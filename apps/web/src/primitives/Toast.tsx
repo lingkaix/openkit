@@ -19,14 +19,15 @@ export interface ToastProps {
 /**
  * Toast (`ok-toast`, DESIGN.md §9.10).
  *
- * The only floating layer. Dark, ≥340px, with a "View" action and a close
- * button. Transient, dismissible, non-blocking — for events that finished while
- * the user was elsewhere (D-006 #3). This component is presentational; the
- * mounted provider owns announcements. Keeps an explicit dark fill under Noir.
+ * The only floating layer. It wraps within the page padding, with a "View"
+ * action and a close button. Transient, dismissible, non-blocking — for events
+ * that finished while the user was elsewhere (D-006 #3). This component is
+ * presentational; the mounted provider owns announcements. Keeps an explicit
+ * dark fill under Noir.
  */
 export function Toast({ message, actionLabel = 'View', onAction, onDismissAction }: ToastProps) {
   return (
-    <div className="flex min-w-[340px] items-center gap-3 rounded-ok-lg bg-toast-bg px-4 py-2.5 text-sm text-toast-fg shadow-ok-menu">
+    <div className="ok-toast flex items-center gap-3 rounded-ok-lg bg-toast-bg px-4 py-2.5 text-sm text-toast-fg shadow-ok-menu">
       <span className="flex-1">{message}</span>
       {onAction ? (
         <button
@@ -68,7 +69,7 @@ export function ToastProvider({
     <AriaToastRegion
       queue={queue}
       aria-label="Notifications"
-      className="fixed inset-x-0 bottom-6 z-50 flex flex-col items-center gap-2 outline-none"
+      className="ok-toast-region fixed inset-x-0 z-50 flex flex-col items-center gap-2 px-4 outline-none"
     >
       {({ toast }) => (
         <AriaToast toast={toast} className="outline-none">

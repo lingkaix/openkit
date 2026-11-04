@@ -20,7 +20,29 @@ import { defineConfig } from 'vitest/config';
  * https://vite.dev/config/
  */
 export default defineConfig({
-  plugins: [react(), tailwindcss(), Icons({ compiler: 'jsx', jsx: 'react' })],
+  plugins: [
+    react(),
+    tailwindcss(),
+    Icons({ compiler: 'jsx', jsx: 'react' }),
+    {
+      name: 'openkit-shell-worker',
+      apply: 'build',
+      async generateBundle(_options, bundle) {
+        const { spawnSync } = await import('node:child_process');
+        const script = fileURLToPath(new URL('./src/pwa/emit-shell-worker.mjs', import.meta.url));
+        const result = spawnSync(process.execPath, [script], {
+          input: JSON.stringify(Object.keys(bundle)),
+          encoding: 'utf8',
+          cwd: fileURLToPath(new URL('.', import.meta.url)),
+        });
+        if (result.status !== 0) {
+          this.error(result.stderr || 'shell worker emit failed');
+          return;
+        }
+        this.emitFile({ type: 'asset', fileName: 'sw.js', source: result.stdout });
+      },
+    },
+  ],
   build: {
     rollupOptions: {
       output: {

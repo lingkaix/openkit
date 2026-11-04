@@ -26,6 +26,7 @@ import {
   SelectValue,
   Text,
 } from 'react-aria-components';
+import { setUnsentDraft } from '../pwa/unsent-draft';
 import { Dialog as ConfirmationDialog } from './Dialog';
 import { Icon } from './Icon';
 import { ErrorBanner } from './states';
@@ -204,6 +205,11 @@ export function Composer({
   );
   const [importFailed, setImportFailed] = useState(false);
   const [requestId, setRequestId] = useState(() => initialDraft?.requestId ?? crypto.randomUUID());
+  useEffect(() => {
+    const draft = value.trim().length > 0 || files.length > 0 || selectedArtifacts.length > 0;
+    setUnsentDraft(draft);
+    return () => setUnsentDraft(false);
+  }, [files.length, selectedArtifacts.length, value]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled = Boolean(disabledReason) || isSubmitting || pending || fileHandoff !== null;

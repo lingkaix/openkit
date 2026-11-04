@@ -213,8 +213,9 @@
 }
 
 /* ===========================================================================
-   NOIR — dark. Warm charcoal canvas (#1E1B14), gold ink + accent. Status tints
-   and diff ink are retuned to a warm auxiliary palette in harmony with the gold.
+   NOIR — dark. Warm charcoal canvas (#1E1B14). Body text is warm off-white so
+   a conversation is readable; gold stays the accent, focus, and selected mark.
+   Status tints stay on their own backgrounds at a readable contrast.
    =========================================================================== */
 .ok-theme-noir {
   color-scheme: dark;
@@ -227,9 +228,9 @@
   --text-color-on-accent: #1e1b14; /* dark ink on gold fills */
   --focus-indicator-color: #c6a24c;
 
-  --text-color-primary: #ebce7a;
-  --text-color-default: #d4b15a;
-  --text-color-secondary: #a18c52;
+  --text-color-primary: #f4efe4;
+  --text-color-default: #f4efe4;
+  --text-color-secondary: #cfc4ab;
   --text-color-disabled: #6b6249;
 
   --surface-page: #1e1b14;
@@ -262,7 +263,7 @@
   --ok-negative-bg: #331f22;
   --ok-negative-fg: #cfa4ab;
   --ok-neutral-bg: #3a3427;
-  --ok-neutral-fg: #a18c52;
+  --ok-neutral-fg: #cfc4ab;
 
   --ok-diff-add: #9db456;
   --ok-diff-del: #c99aa0;

@@ -34,11 +34,11 @@ export function FirstRunScreen() {
   if (failed || !connected) {
     return (
       <Page>
-        <PageHeader eyebrow="Welcome" title="Connect the local runtime" />
+        <PageHeader eyebrow="Welcome" title="Connect this OpenKit deployment" />
         <EmptyState
           icon="connect"
-          title="Couldn't reach the local runtime"
-          hint="Start NanoCore, then retry the connection."
+          title="OpenKit is not connected"
+          hint="Start OpenKit, then retry the connection."
           action={
             <Button size="sm" onPress={retry}>
               Retry

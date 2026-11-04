@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Dialog, Modal, ModalOverlay } from 'react-aria-components';
 import { Outlet, useLocation } from 'react-router-dom';
 import { Button, ToastProvider } from '../primitives';
+import { AppUpdatePrompt } from '../pwa/AppUpdatePrompt';
 import { DisconnectedBanner } from './DisconnectedBanner';
 import { Sidebar } from './Sidebar';
 
@@ -43,10 +44,10 @@ function usePersistentNavigation(): boolean {
  * (§3.3, Principle 8), so a surface that has an index renders its own rail (e.g.
  * the chat thread's artifacts rail) rather than the shell reserving dead space.
  * The document theme scopes the whole shell so every semantic utility retints
- * at once (§4.6). The shell holds its structure down to the 600×600 workbench
- * floor (§3.4, §12) with no horizontal body overflow — wide content scrolls
- * inside its own region. Below 800px the left navigation starts closed and opens
- * as a React Aria modal overlay drawer from a labelled Navigation control.
+ * at once (§4.6). The shell has no minimum viewport: a phone uses the full
+ * width, and wide content scrolls inside its own region. Safe-area insets pad
+ * the shell. Below 800px the left navigation starts closed and opens as a
+ * React Aria modal overlay drawer from a labelled Navigation control.
  * The global disconnected banner sits above the work area (§9.12). Search lives
  * on the sidebar brand row, not as a pinned main-view strip.
  */
@@ -70,7 +71,7 @@ export function AppShell() {
   const sidebar = persistentNav ? <Sidebar /> : <Sidebar onClose={() => setDrawerOpen(false)} />;
 
   return (
-    <div className="flex h-full min-h-[600px] min-w-[600px] bg-canvas text-fg">
+    <div className="ok-safe-shell flex h-full min-h-0 min-w-0 bg-canvas text-fg">
       {persistentNav ? sidebar : null}
       {!persistentNav ? (
         <ModalOverlay
@@ -89,11 +90,17 @@ export function AppShell() {
       <div className="flex min-w-0 flex-1 flex-col">
         {!persistentNav ? (
           <div className="flex shrink-0 items-center border-b border-separator px-3 py-2">
-            <Button variant="quiet" aria-expanded={drawerOpen} onPress={() => setDrawerOpen(true)}>
+            <Button
+              variant="quiet"
+              aria-expanded={drawerOpen}
+              className="min-h-11"
+              onPress={() => setDrawerOpen(true)}
+            >
               Navigation
             </Button>
           </div>
         ) : null}
+        <AppUpdatePrompt />
         <DisconnectedBanner />
         <main aria-label="Workspace" className="min-h-0 flex-1 overflow-y-auto">
           <Outlet />

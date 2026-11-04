@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { useLayoutEffect } from 'react';
+import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { EmptyState, Page, PageHeader } from '../primitives';
 import { AccountBoundary, AccountScreen } from '../screens/account';
 import { ArtifactsScreen } from '../screens/artifacts';
@@ -107,12 +108,30 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
 };
 
 /**
+ * Host shared by a retired address and its catalog screen.
+ *
+ * Necessity: each path is its own route, and a second screen detaches a field already in use.
+ * Ablation: `<Navigate>` paints an empty frame, then mounts that second screen.
+ */
+function AliasedScreen({ to, children }: { to?: string; children: ReactNode }) {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  useLayoutEffect(() => {
+    if (to && pathname !== to) navigate(to, { replace: true });
+  }, [navigate, pathname, to]);
+  return children;
+}
+
+/**
  * The concrete element for a cataloged surface.
  */
 function elementFor(surface: Surface) {
   const content = SURFACE_ELEMENTS[surface.id];
   if (!content) {
     throw new Error(`No screen registered for surface "${surface.id}" (board ${surface.board}).`);
+  }
+  if (surface.id === 'settings' || surface.id === 'ai-interface') {
+    return <AliasedScreen>{content}</AliasedScreen>;
   }
   return content;
 }
@@ -133,6 +152,20 @@ export function AppRoutes() {
           ))}
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={<Navigate to="/settings/account" replace />} />
+          <Route
+            path="/settings/ai-interface"
+            element={
+              <AliasedScreen to="/settings/gateway">
+                {SURFACE_ELEMENTS['ai-interface']}
+              </AliasedScreen>
+            }
+          />
+          <Route
+            path="/workspace"
+            element={
+              <AliasedScreen to="/settings/general">{SURFACE_ELEMENTS.settings}</AliasedScreen>
+            }
+          />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

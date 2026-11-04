@@ -6033,9 +6033,7 @@ describe('Knowledge (board 14)', () => {
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ['core', 'meta'] });
     });
-    await waitFor(() =>
-      expect(screen.getByText(/couldn't reach the local runtime/i)).toBeInTheDocument()
-    );
+    await waitFor(() => expect(screen.getByText(/Offline/i)).toBeInTheDocument());
     const retry = within(alert).getByRole('button', { name: /try again/i });
     expect(retry).toBeDisabled();
     await user.click(retry);
@@ -6069,11 +6067,9 @@ describe('First run (board 18)', () => {
       },
     });
     renderApp('/first-run', client);
-    await waitFor(
-      () =>
-        expect(screen.getAllByText(/Couldn't reach the local runtime/i).length).toBeGreaterThan(0),
-      { timeout: 3000 }
-    );
+    await waitFor(() => expect(screen.getAllByText(/Offline/i).length).toBeGreaterThan(0), {
+      timeout: 3000,
+    });
     await user.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(meta.mock.calls.length).toBeGreaterThan(2));
   });

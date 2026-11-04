@@ -125,10 +125,10 @@ afterEach(() => {
 });
 
 describe('AppShell narrow navigation (DESIGN.md §3.4 / §12)', () => {
-  it('holds the 600×600 floor and keeps persistent navigation at 800px', async () => {
+  it('has no 600px floor and keeps persistent navigation at 800px', async () => {
     const { container } = await renderShell('/');
-    expect(container.querySelector('.min-w-\\[600px\\]')).not.toBeNull();
-    expect(container.querySelector('.min-h-\\[600px\\]')).not.toBeNull();
+    expect(container.querySelector('.min-w-\\[600px\\]')).toBeNull();
+    expect(container.querySelector('.min-h-\\[600px\\]')).toBeNull();
     expect(container.querySelector('.min-w-\\[800px\\]')).toBeNull();
     expect(
       screen.getByRole('navigation', { name: 'Primary workspace navigation' })

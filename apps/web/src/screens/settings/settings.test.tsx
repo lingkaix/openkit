@@ -1976,7 +1976,7 @@ describe('Gateway (board 20)', () => {
     expect(surface).toMatchObject({
       tier: 'A',
       nav: 'settings-server',
-      path: '/settings/ai-interface',
+      path: '/settings/gateway',
     });
     expect(isSurfaceLive(surface!)).toBe(true);
 

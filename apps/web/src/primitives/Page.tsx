@@ -37,11 +37,7 @@ export function PageHeader({ eyebrow, title, subtitle, actions }: PageHeaderProp
   return (
     <header className="flex items-start justify-between gap-4">
       <div className="min-w-0">
-        {eyebrow ? (
-          <p className="mb-1 text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
-            {eyebrow}
-          </p>
-        ) : null}
+        {eyebrow ? <p className="mb-1 text-eyebrow font-bold text-fg-muted">{eyebrow}</p> : null}
         <h1 className="text-title font-extrabold text-fg-strong">{title}</h1>
         {subtitle ? <p className="mt-1 text-sm text-fg-muted">{subtitle}</p> : null}
       </div>
@@ -58,11 +54,9 @@ export interface EyebrowProps {
   children: ReactNode;
 }
 
-/** All-caps section kicker (`ok-eyebrow`), +0.06em tracking. */
+/** Section label (`ok-eyebrow`) in the secondary type role. */
 export function Eyebrow({ children }: EyebrowProps) {
-  return (
-    <p className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">{children}</p>
-  );
+  return <p className="text-eyebrow font-bold text-fg-muted">{children}</p>;
 }
 
 export interface CardProps {
