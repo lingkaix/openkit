@@ -1,13 +1,5 @@
 import { createHash } from 'node:crypto';
-import {
-  existsSync,
-  lstatSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  statSync,
-} from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import {
@@ -54,6 +46,7 @@ import {
   ensureCanonicalDirectory,
   populatePrivateOverlayContentsSync,
   readCanonicalTextFile,
+  removeAuthoredFileSync,
   removePrivateTreeSync,
 } from '@openkit/storage';
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
@@ -405,7 +398,7 @@ export class RuntimeConfigFileService {
         409
       );
     try {
-      rmSync(spec.absolutePath);
+      removeAuthoredFileSync(spec.absolutePath);
     } catch {
       throw new RuntimeConfigFileServiceError(
         'config_file_delete_failed',

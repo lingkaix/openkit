@@ -1291,6 +1291,17 @@ export function populatePrivateOverlayContentsSync(
   }
 }
 
+/**
+ * Removes one caller-admitted authored file with the original native error semantics.
+ * The caller retains containment, revision checks and credential-effect ordering.
+ *
+ * @param path Exact authored file selected by its domain owner.
+ * @throws The native removal error; absence and directories are not forced.
+ */
+export function removeAuthoredFileSync(path: string): void {
+  rmSync(path);
+}
+
 /** Synchronizes complete staged bytes and child entries before their containing tree is published. */
 export function syncCanonicalTree(path: string): void {
   const metadata = lstatSync(path);
