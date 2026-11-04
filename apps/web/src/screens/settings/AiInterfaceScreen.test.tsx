@@ -1115,6 +1115,7 @@ describe('AI interface deployment-admin workflow', () => {
       id: 'providers/codex-work.provider.jsonc',
       kind: 'provider',
     });
+    expect(created?.content).toContain('"schemaVersion": 1');
     expect(created?.content).toContain('"kind": "oauth"');
     expect(created?.content).toContain('"vendor": "openai_codex"');
     expect(created?.content).toContain('"accountSlotId": "primary"');
