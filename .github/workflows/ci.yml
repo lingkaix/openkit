@@ -396,11 +396,11 @@ jobs:
         run: |
           chown -R node:node "${GITHUB_WORKSPACE}" "${HOME}" "/pnpm/store" "/usr/local/cargo" "/usr/local/rustup"
           case "${SHARD_ID}" in
-            nanocore-*)
-              printf 'NanoCore shard disk space before execution\n'
+            nanocore-*|native-nanohost)
+              printf 'Shard disk space before execution\n'
               df -B1 "${GITHUB_WORKSPACE}" "${TMPDIR:-/tmp}" || true
-              du -sb target/ "${TMPDIR:-/tmp}" || true
-              trap 'printf "NanoCore shard disk space after execution\n"; df -B1 "${GITHUB_WORKSPACE}" "${TMPDIR:-/tmp}" || true; du -sb target/ "${TMPDIR:-/tmp}" || true' EXIT
+              du -sb target/ apps/nanohost/target "${TMPDIR:-/tmp}" || true
+              trap 'printf "Shard disk space after execution\n"; df -B1 "${GITHUB_WORKSPACE}" "${TMPDIR:-/tmp}" || true; du -sb target/ apps/nanohost/target "${TMPDIR:-/tmp}" || true' EXIT
               ;;
           esac
           runuser -u node -- env HOME="${HOME}" node scripts/ci-l0-l2.mjs --run "${SHARD_ID}"

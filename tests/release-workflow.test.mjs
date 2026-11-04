@@ -567,7 +567,7 @@ const candidateJobBaseline = {
 const shardJobBaseline = {
   'l0-l2-plan': '041f28521062d0b5417be4096c278e31f9b1174eaee27a7f9340d5fb0fe57874',
   'l0-l2-build': '0a29f3aa1e44e2b6889a3d8901fd3cd06d77f7cdeed7d7b221647bd936aba1d9',
-  'l0-l2-shards': 'c57acd0f94c43211eb09fcfe0eb539568978ba44ff11743ffa3cb6f1172aab0a',
+  'l0-l2-shards': '16695cb0db751d6a783377926db3a49503e0ab28e0f9c6e1d2acc074bb325b26',
   'l0-l2-coverage': '815e7651ee3bb7a02949fac3b46354f19d0877d1132bf75495dfc7def61e229f',
   'l0-l2': '2818f9a769eb36de77473ed949c3ed74284cd51c734e68985325430526b8dcc3',
 };
@@ -842,12 +842,17 @@ test('CI keeps NanoHost scheduling in its package and preserves inherited harnes
   assert.doesNotMatch(setup, /chown|runuser/u);
   for (const id of ['native-nanohost', 'native-other', 'root', 'web']) {
     for (const inherited of [undefined, '7']) {
-      const env = { ...process.env, SHARD_ID: id };
+      const env = { ...process.env, SHARD_ID: id, GITHUB_WORKSPACE: process.cwd() };
       if (inherited === undefined) delete env.RUST_TEST_THREADS;
       else env.RUST_TEST_THREADS = inherited;
       const result = spawnSync(
         'sh',
-        ['-eu', '-c', `${setup}\nprintf %s "\${RUST_TEST_THREADS-unset}"`],
+        // Keep diagnostic output separate from the inherited-setting result channel.
+        [
+          '-eu',
+          '-c',
+          `exec 3>&1\nexec >/dev/null\n${setup}\nprintf %s "\${RUST_TEST_THREADS-unset}" >&3`,
+        ],
         { env, encoding: 'utf8' }
       );
       assert.equal(result.status, 0, id);
