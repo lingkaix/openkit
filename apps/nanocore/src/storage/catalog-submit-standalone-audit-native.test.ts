@@ -437,6 +437,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'administration.server-mcp-update-binding',
     'app.update.start',
     'app.update.start.handoff',
+    'auth.bootstrap.consume',
     'catalog.light-app-history-import',
     'catalog.light-app-import',
     'catalog.light-app-pin',

@@ -27,6 +27,7 @@ export const STANDALONE_AUDIT_STAGES = [
   'catalog.mcp-select',
   'catalog.mcp-binding',
   'catalog.plugin-import',
+  'auth.bootstrap.consume',
 ] as const;
 /** One original prepared Audit, bound to its exact existing scope and admitted stage. */
 export const ControlStandaloneAuditInputSchema = z
@@ -61,6 +62,28 @@ export const ControlStandaloneAuditInputSchema = z
               event.actor.kind === 'agent' ||
               event.actor.kind === 'system')
           : event.resource === `light-app-definition:${workspaceId}`)
+      );
+    if (stage === 'auth.bootstrap.consume')
+      return (
+        workspaceId === undefined &&
+        event.workspaceId === null &&
+        event.threadId === null &&
+        event.turnId === null &&
+        event.itemId === null &&
+        event.capabilityCallId === null &&
+        event.permissionDecisionId === null &&
+        event.vaultGrantId === null &&
+        event.requestId === null &&
+        event.resourceRevision === null &&
+        event.actor === null &&
+        event.subject === null &&
+        event.agentId === null &&
+        event.agentSessionId === null &&
+        event.authentication === undefined &&
+        event.category === 'system' &&
+        event.outcome === 'succeeded' &&
+        event.severity === 'info' &&
+        event.resource?.startsWith('auth-token:') === true
       );
     if (event.actor?.kind !== 'user') return false;
     if (

@@ -409,6 +409,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'administration.server-mcp-update-binding',
     'app.update.start',
     'app.update.start.handoff',
+    'auth.bootstrap.consume',
     'catalog.light-app-history-import',
     'catalog.light-app-import',
     'catalog.light-app-pin',

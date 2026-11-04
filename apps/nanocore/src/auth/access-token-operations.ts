@@ -1,8 +1,9 @@
 import type { ACCESS_TOKEN_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-import { recordServerAuditEvent } from '../audit-events.js';
+import { prepareServerAuditEvent, recordServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
 import { AccessTokenScopeError } from './access-token.js';
@@ -52,16 +53,13 @@ function accessTokenLifecycleActorSuffix(actor: Actor | undefined): string {
  */
 function recordAccessTokenLifecycleAuditEvent(
   coreDb: CoreDb,
-  action: 'auth.bootstrap.consume' | 'auth.token.issue' | 'auth.token.revoke' | 'auth.token.rotate',
+  action: 'auth.token.issue' | 'auth.token.revoke' | 'auth.token.rotate',
   record: OpenKitAccessTokenRecord,
   actor: Actor | undefined
 ): void {
   const actorSuffix = accessTokenLifecycleActorSuffix(actor);
   let summary: string;
   switch (action) {
-    case 'auth.bootstrap.consume':
-      summary = `Bootstrap token consumed for owner ${record.ownerUserId}.${actorSuffix}`;
-      break;
     case 'auth.token.issue':
       summary = `Access token ${record.tokenId} issued with ${record.scope} scope for ${record.ownerUserId}.${actorSuffix}`;
       break;
@@ -136,12 +134,21 @@ export function createAccessTokenOperationImplementations({
           );
         throw new OperationError('bootstrap_invalid', 'Invalid bootstrap token.', 401);
       }
-      recordAccessTokenLifecycleAuditEvent(
-        coreDb,
-        'auth.bootstrap.consume',
-        consumed.record,
-        undefined
-      );
+      const record = consumed.record;
+      const actorSuffix = accessTokenLifecycleActorSuffix(undefined);
+      await getControlStoreWorkerClient().standaloneAudit(coreDb, {
+        stage: 'auth.bootstrap.consume',
+        event: prepareServerAuditEvent({
+          coreDb,
+          action: 'auth.bootstrap.consume',
+          category: 'system',
+          actor: null,
+          outcome: 'succeeded',
+          resource: `auth-token:${record.tokenId}`,
+          severity: 'info',
+          summary: `Bootstrap token consumed for owner ${record.ownerUserId}.${actorSuffix}`,
+        }),
+      });
       return { record: consumed.record, token: consumed.secret };
     },
     'token.list': () => ({ items: listOpenKitAccessTokenRecords(administratorStorage()) }),
