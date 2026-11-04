@@ -136,6 +136,7 @@ const otherClosedDomains = () => ({
   catalog: { exports: 0, crossDirectoryImports: 0 },
   policy: { exports: 0, crossDirectoryImports: 0 },
   'scheduler-recurring': { exports: 0, crossDirectoryImports: 0 },
+  'worker-runtime': { exports: 0, crossDirectoryImports: 0 },
 });
 
 const artifactsPath = 'apps/nanocore/src/storage/artifacts';
@@ -604,13 +605,14 @@ test('CLI and measurement fail on an unparsable domain file', () => {
   });
 });
 
-/** All five closed domains at zero unless a caller overrides one ceiling. */
+/** All six closed domains at zero unless a caller overrides one ceiling. */
 const allDomainCeilings = (overrides = {}) => ({
   artifacts: { exports: 0, crossDirectoryImports: 0 },
   'artifact-zip-snapshots': { exports: 0, crossDirectoryImports: 0 },
   catalog: { exports: 0, crossDirectoryImports: 0 },
   policy: { exports: 0, crossDirectoryImports: 0 },
   'scheduler-recurring': { exports: 0, crossDirectoryImports: 0 },
+  'worker-runtime': { exports: 0, crossDirectoryImports: 0 },
   ...overrides,
 });
 
@@ -836,6 +838,169 @@ test('CLI refuses a baseline missing the policy domain', () => {
     const result = run();
     assert.equal(result.status, 1);
     assert.match(combinedOutput(result), /policy|module domain|moduleDomains|baseline/i);
+    assert.equal(readFileSync(join(root, domainBaselinePath), 'utf8'), before);
+    assert.equal(run('--refresh-shrink').status, 1);
+    assert.equal(readFileSync(join(root, domainBaselinePath), 'utf8'), before);
+  });
+});
+
+test('worker-runtime selection honors storage prefixes and schema priority', () => {
+  withTree(({ root, put }) => {
+    const selected = [
+      'apps/nanocore/src/storage/worker-runtime.ts',
+      'apps/nanocore/src/storage/runtime-target.ts',
+      'apps/nanocore/src/storage/harness-runner.ts',
+      'apps/nanocore/src/storage/schema/worker-state.ts',
+      'apps/nanocore/src/storage/schema/nanohost-state.ts',
+      'apps/nanocore/src/storage/schema/worker-scheduler.ts',
+    ];
+    for (const name of selected) put(name, 'export const value = 1;\n');
+    const excluded = [
+      'apps/nanocore/src/storage/schema/vault-worker.ts',
+      'apps/nanocore/src/storage/schema/permission-worker.ts',
+      'apps/nanocore/src/storage/schema/server-settings-nanohost.ts',
+      'apps/nanocore/src/storage/schema/workspace-worker.ts',
+      'apps/nanocore/src/storage/schema/quarantine-nanohost.ts',
+      'apps/nanocore/src/runtime/worker-host.ts',
+    ];
+    for (const name of excluded) put(name, 'export const value = 1;\n');
+    const domains = measureDomains(root);
+    assert.deepEqual(domains['worker-runtime'], {
+      exports: selected.length,
+      crossDirectoryImports: 0,
+      externalImporters: 0,
+    });
+    assert.deepEqual(domains.policy, {
+      exports: 2,
+      crossDirectoryImports: 0,
+      externalImporters: 0,
+    });
+  });
+});
+
+test('worker-runtime exports include signature-reachable private types', () => {
+  withTree(({ root, put }) => {
+    put(
+      'apps/nanocore/src/storage/worker-runtime.ts',
+      `interface WorkerHandle { id: string }
+interface WorkerResult { handle: WorkerHandle }
+export interface WorkerSnapshot { result: WorkerResult }
+export function readWorker(): WorkerResult { return { handle: { id: 'x' } }; }
+`
+    );
+    assert.deepEqual(measureDomains(root)['worker-runtime'], {
+      exports: 4,
+      crossDirectoryImports: 0,
+      externalImporters: 0,
+    });
+  });
+});
+
+test('worker-runtime cross-directory imports count unique importer-target pairs', () => {
+  withTree(({ root, put }) => {
+    put('apps/nanocore/src/storage/worker-runtime.ts', 'export const target = 1;\n');
+    put('apps/nanocore/src/storage/worker-helper.ts', 'export const helper = 2;\n');
+    put(
+      'apps/nanocore/src/storage/core-reader.ts',
+      "import { target } from './worker-runtime.js';\nexport const read = target;\n"
+    );
+    put(
+      'apps/nanocore/src/consumers/one.ts',
+      `import { target } from '../storage/worker-runtime.js';
+import { target as again } from '../storage/worker-runtime.js';
+import { helper } from '../storage/worker-helper.js';
+void target; void again; void helper;
+`
+    );
+    put(
+      'apps/nanocore/src/consumers/two.ts',
+      "import { target } from '../storage/worker-runtime.js';\nvoid target;\n"
+    );
+    put(
+      'apps/nanocore/src/consumers/test-support/setup.ts',
+      "import { target } from '../../storage/worker-runtime.js';\nvoid target;\n"
+    );
+    put(
+      'apps/nanocore/src/consumers/fixtures/sample.ts',
+      "import { target } from '../../storage/worker-runtime.js';\nvoid target;\n"
+    );
+    put(
+      'apps/nanocore/src/storage/worker-runtime.test.ts',
+      "import { target } from './worker-runtime.js';\nvoid target;\n"
+    );
+    assert.deepEqual(measureDomains(root)['worker-runtime'], {
+      exports: 2,
+      crossDirectoryImports: 3,
+      externalImporters: 3,
+    });
+  });
+});
+
+test('CLI fails on worker-runtime export and import growth alone', () => {
+  withTree(({ put, run, writeBaseline }) => {
+    put(
+      'apps/nanocore/src/storage/worker-runtime.ts',
+      'export const a = 1;\nexport const b = 2;\n'
+    );
+    writeBaseline(
+      allDomainCeilings({ 'worker-runtime': { exports: 1, crossDirectoryImports: 0 } })
+    );
+    const result = run();
+    assert.equal(result.status, 1);
+    const text = combinedOutput(result);
+    assert.match(text, /worker-runtime/);
+    assert.match(text, /(?:exports|\bE\b)/);
+  });
+  withTree(({ put, run, writeBaseline }) => {
+    put('apps/nanocore/src/storage/worker-runtime.ts', 'export const target = 1;\n');
+    put(
+      'apps/nanocore/src/consumers/one.ts',
+      "import { target } from '../storage/worker-runtime.js';\nvoid target;\n"
+    );
+    writeBaseline(
+      allDomainCeilings({ 'worker-runtime': { exports: 1, crossDirectoryImports: 0 } })
+    );
+    const result = run();
+    assert.equal(result.status, 1);
+    const text = combinedOutput(result);
+    assert.match(text, /worker-runtime/);
+    assert.match(text, /(?:crossDirectoryImports|\bI\b)/);
+  });
+});
+
+test('CLI refresh lowers worker-runtime ceilings to measurement', () => {
+  withTree(({ root, put, run, writeBaseline }) => {
+    put('apps/nanocore/src/storage/worker-runtime.ts', 'export const value = 1;\n');
+    writeBaseline(
+      allDomainCeilings({
+        'worker-runtime': { exports: 2, crossDirectoryImports: 1 },
+      })
+    );
+    const first = run();
+    assert.equal(first.status, 1);
+    assert.match(combinedOutput(first), /--refresh-shrink/);
+    const refresh = run('--refresh-shrink');
+    assert.equal(refresh.status, 0);
+    const saved = JSON.parse(readFileSync(join(root, domainBaselinePath), 'utf8'));
+    assert.deepEqual(
+      saved.moduleDomains,
+      allDomainCeilings({ 'worker-runtime': { exports: 1, crossDirectoryImports: 0 } })
+    );
+    assert.match(combinedOutput(refresh), /worker-runtime/);
+    assert.equal(run().status, 0);
+  });
+});
+
+test('CLI refuses a baseline missing the worker-runtime domain', () => {
+  withTree(({ root, put, run, writeBaseline }) => {
+    put('apps/nanocore/src/storage/inert.ts', 'const value = 1;\nvoid value;\n');
+    const domains = allDomainCeilings();
+    delete domains['worker-runtime'];
+    writeBaseline(domains);
+    const before = readFileSync(join(root, domainBaselinePath), 'utf8');
+    const result = run();
+    assert.equal(result.status, 1);
+    assert.match(combinedOutput(result), /worker-runtime|module domain|moduleDomains|baseline/i);
     assert.equal(readFileSync(join(root, domainBaselinePath), 'utf8'), before);
     assert.equal(run('--refresh-shrink').status, 1);
     assert.equal(readFileSync(join(root, domainBaselinePath), 'utf8'), before);

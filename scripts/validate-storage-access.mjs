@@ -196,6 +196,7 @@ const closedDomains = [
   'catalog',
   'policy',
   'scheduler-recurring',
+  'worker-runtime',
 ];
 const nanocoreDirectory = 'apps/nanocore/src/';
 const storageDirectory = `${nanocoreDirectory}storage/`;
@@ -216,13 +217,15 @@ const domainOf = (path) => {
     const name = path.slice(schemaDirectory.length);
     if (/vault/.test(name)) return undefined;
     if (/permission|server-settings/.test(name)) return 'policy';
-    if (/workspace-|quarantine|worker|nanohost/.test(name)) return undefined;
+    if (/workspace-|quarantine/.test(name)) return undefined;
+    if (/worker|nanohost/.test(name)) return 'worker-runtime';
     if (/scheduler|external-trigger/.test(name)) return 'scheduler-recurring';
     return undefined;
   }
   if (!path.startsWith(storageDirectory)) return undefined;
   const name = path.slice(storageDirectory.length);
   if (/^(core-policy|policy)/.test(name)) return 'policy';
+  if (/^(worker-|runtime-target|harness-)/.test(name)) return 'worker-runtime';
   if (/^(recurring-|automation-|scheduler-|execution-attempt|external-trigger)/.test(name))
     return 'scheduler-recurring';
   return undefined;
