@@ -18,6 +18,7 @@ import {
   readFileSync,
   readSync,
   renameSync,
+  rmdirSync,
   rmSync,
   statSync,
   utimesSync,
@@ -2338,6 +2339,41 @@ export function copyPortableOriginalFile(
   } finally {
     if (release) reservation?.release();
   }
+}
+
+/**
+ * @internal Installs the caller-selected Knowledge originals and preserves its existing progress on every native failure.
+ * Admission, later copy verification, compensation eligibility and reservation release remain caller-owned.
+ */
+export function installKnowledgePackageFilesSync(
+  workspaceRoot: string,
+  payloadFiles: ReadonlyMap<string, string>,
+  copied: string[],
+  createdDirectories: Set<string>,
+  reservation: { recordWritten(byteLength: number): void }
+): void {
+  for (const [path, source] of payloadFiles) {
+    const target = join(workspaceRoot, path);
+    let parent = dirname(target);
+    while (!existsSync(parent)) {
+      createdDirectories.add(parent);
+      parent = dirname(parent);
+    }
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    copyFileSync(source, target, constants.COPYFILE_EXCL);
+    copied.push(target);
+    reservation.recordWritten(measureCanonicalFile(target).byteLength);
+  }
+}
+
+/** @internal Removes only the caller's selected copies and missing directories, retaining native failure order and residue. */
+export function removeKnowledgePackageFilesSync(
+  copied: readonly string[],
+  createdDirectories: ReadonlySet<string>
+): void {
+  for (const path of copied) rmSync(path, { force: true });
+  for (const path of [...createdDirectories].sort((left, right) => right.length - left.length))
+    rmdirSync(path);
 }
 
 /** @internal Copies only missing retained definition files for the caller-selected captured app paths; source selection and coverage verification stay caller-owned. */

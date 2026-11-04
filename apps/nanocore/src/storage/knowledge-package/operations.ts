@@ -1,21 +1,14 @@
 import { createHash } from 'node:crypto';
-import {
-  constants,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  rmdirSync,
-  rmSync,
-} from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { formatReferenceUri, parseReferenceUri } from '@openkit/protocol';
 import {
   assertCanonicalDirectory,
   createPrivateMetadataDirectory,
-  measureCanonicalFile,
+  installKnowledgePackageFilesSync,
   readCanonicalTextFile,
+  removeKnowledgePackageFilesSync,
   writePrivateMetadataText,
 } from '@openkit/storage';
 import { applyEdits, modify } from 'jsonc-parser';
@@ -587,18 +580,13 @@ export async function importKnowledgePackage(input: {
     )
       throw new NotebookError('conflict');
     requireBootstrapOnly({ ...input, root, selection: current });
-    for (const [path, source] of transfer.payloadFiles) {
-      const target = join(input.dataRoot, 'workspaces', input.workspaceId, path);
-      let parent = dirname(target);
-      while (!existsSync(parent)) {
-        createdDirectories.add(parent);
-        parent = dirname(parent);
-      }
-      mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-      copyFileSync(source, target, constants.COPYFILE_EXCL);
-      copied.push(target);
-      reservation.recordWritten(measureCanonicalFile(target).byteLength);
-    }
+    installKnowledgePackageFilesSync(
+      workspaceRoot,
+      transfer.payloadFiles,
+      copied,
+      createdDirectories,
+      reservation
+    );
     transfer.verifyCopies(join(input.dataRoot, 'workspaces', input.workspaceId));
     writeFileAtomic(schemaPath, schema);
     writeFileAtomic(configPath, config);
@@ -654,9 +642,7 @@ export async function importKnowledgePackage(input: {
       writeFileAtomic(schemaPath, oldSchema);
       writeFileAtomic(configPath, oldConfig);
     });
-    for (const path of copied) rmSync(path, { force: true });
-    for (const path of [...createdDirectories].sort((left, right) => right.length - left.length))
-      rmdirSync(path);
+    removeKnowledgePackageFilesSync(copied, createdDirectories);
     throw error;
   } finally {
     reservation.release();
