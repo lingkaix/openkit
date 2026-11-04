@@ -65,7 +65,7 @@ import {
 import { createSkillManagementCommands } from './skill-management-commands.js';
 import { SkillSourceInputError } from './skill-source.js';
 
-/** Existing Audit and retention owners supply authority; absent proof blocks the affected effect. */
+/** Existing Audit owners supply decision authority; absent proof blocks the affected effect. */
 export interface CatalogOperationHooks {
   /** Publishes current authenticated decision evidence through the existing Audit owner. */
   readonly prepareSkillDecision?: (
@@ -79,12 +79,6 @@ export interface CatalogOperationHooks {
     },
     context: AdmittedOperationContext
   ) => SkillCandidateDecisionContext | Promise<SkillCandidateDecisionContext>;
-  /** Complete current external reference causes; null means the owner cannot establish them. */
-  readonly retainedSkillReferences?: (input: {
-    readonly digest: string;
-    readonly entryId: string;
-    readonly workspaceId: string;
-  }) => readonly string[] | null;
 }
 
 /** Records a real current human decision admission through the existing Workspace Audit owner. */
@@ -155,7 +149,7 @@ export function createCatalogOperationImplementations(
     await dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
     void dependencies.closeWorkspaceMcpSessions?.(workspaceId);
   };
-  const management = createSkillManagementCommands(dependencies, hooks, afterMutation);
+  const management = createSkillManagementCommands(dependencies, afterMutation);
   const administrator = (context: AdmittedOperationContext) => {
     if (!dependencies.coreDb) return false;
     try {

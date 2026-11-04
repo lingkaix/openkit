@@ -2,14 +2,15 @@ import { CATALOG_OPERATION_DEFINITIONS, type OperationInput } from '@openkit/app
 import type { ResourceCatalogDocument, SkillVersionRecord } from '@openkit/config-schema';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
+import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type AdmittedOperationContext, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
+import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import type { CatalogOperationHooks } from './catalog-operations.js';
 import {
   CatalogConflictError,
   CatalogForbiddenError,
@@ -23,6 +24,33 @@ import {
   validateCatalogTree,
 } from './resource-catalog.js';
 import type { AcquiredSkillSupply } from './skill-ecosystem-source.js';
+
+/** Reads retained Skill references from the existing Workspace AEP and evidence owners. */
+function retainedWorkspaceSkillReferences(
+  workspaceDb: WorkspaceDb,
+  input: { readonly workspaceId: string; readonly entryId: string; readonly digest: string }
+): readonly string[] {
+  const references: string[] = [];
+  for (const record of listExportableAgentEnvironmentPackageSnapshots(
+    workspaceDb,
+    input.workspaceId
+  )) {
+    if (
+      record.snapshot.supply.skills.some(
+        (skill) => skill.id === input.entryId && skill.integrity?.sha256 === input.digest
+      )
+    )
+      references.push(`aep:${record.snapshotId}`);
+  }
+  for (const record of listStoredWorkspaceEvidenceBundles(workspaceDb, input.workspaceId)) {
+    if (
+      (record.importStatus !== 'expired' || record.retentionClass === 'legal-hold') &&
+      record.contentDigests.includes(input.digest)
+    )
+      references.push(`evidence:${record.id}`);
+  }
+  return references;
+}
 
 type PointerOperation =
   | 'catalog.skill-select'
@@ -44,7 +72,6 @@ type ImportResult = { catalog: ResourceCatalogDocument; version: SkillVersionRec
  */
 export function createSkillManagementCommands(
   dependencies: OperationInvocationDependencies,
-  hooks: CatalogOperationHooks,
   afterMutation: (workspaceId: string) => void | Promise<void>
 ) {
   const dataRoot = dependencies.dataRoot ?? dependencies.store?.getDataRoot();
@@ -360,7 +387,15 @@ export function createSkillManagementCommands(
               next = purgeWorkspaceSkillVersion({
                 ...base,
                 digest: input.digest,
-                retainedReferences: hooks.retainedSkillReferences?.(selected) ?? null,
+                retainedReferences: ((input) => {
+                  if (!dependencies.repositoryWorkspaceDb) return null;
+                  const workspaceDb = dependencies.repositoryWorkspaceDb(input.workspaceId);
+                  try {
+                    return retainedWorkspaceSkillReferences(workspaceDb, input);
+                  } finally {
+                    workspaceDb.sqlite.close();
+                  }
+                })(selected),
                 admitDeletion: admit,
               });
             } else {

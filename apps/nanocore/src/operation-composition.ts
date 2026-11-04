@@ -18,7 +18,6 @@ import {
   createCatalogOperationImplementations,
   prepareCatalogSkillDecision,
 } from './catalog/catalog-operations.js';
-import { retainedWorkspaceSkillReferences } from './catalog/skill-retention.js';
 import { type ChannelServices, createChannelOperationImplementations } from './channel-services.js';
 import type { CoreMode } from './config/mode.js';
 import type { RuntimeConfigManager } from './config/runtime-config.js';
@@ -227,15 +226,6 @@ export function createOperationImplementations(dependencies: OperationInvocation
     createCatalogOperationImplementations(dependencies, {
       prepareSkillDecision: (input, context) =>
         prepareCatalogSkillDecision(dependencies, input, context),
-      retainedSkillReferences: (input) => {
-        if (!dependencies.repositoryWorkspaceDb) return null;
-        const workspaceDb = dependencies.repositoryWorkspaceDb(input.workspaceId);
-        try {
-          return retainedWorkspaceSkillReferences(workspaceDb, input);
-        } finally {
-          workspaceDb.sqlite.close();
-        }
-      },
     }),
     createServerMcpOperationImplementations(dependencies),
     createVaultOperationImplementations(dependencies),
