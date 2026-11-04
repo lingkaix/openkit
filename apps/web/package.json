@@ -22,6 +22,7 @@
     "@noble/hashes": "2.4.0",
     "@openkit/app-api-schemas": "workspace:*",
     "@openkit/core-client": "workspace:*",
+    "@openkit/knowledge-ui": "workspace:*",
     "@openkit/protocol": "workspace:*",
     "@tanstack/react-query": "^5.101.3",
     "jsonc-parser": "^3.3.1",

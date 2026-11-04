@@ -1,0 +1,79 @@
+.knowledge-ui {
+  display: grid;
+  grid-template-columns: minmax(12rem, 20rem) minmax(0, 1fr);
+  gap: 1rem;
+  color: var(--text-color-default);
+  background: var(--surface-page);
+}
+
+.knowledge-ui-phone {
+  grid-template-columns: 1fr;
+}
+
+.knowledge-ui button,
+.knowledge-ui input,
+.knowledge-ui textarea {
+  min-height: 2.75rem;
+  color: var(--text-color-default);
+  background: var(--surface-card);
+  border: 1px solid var(--border-color-default);
+  border-radius: 0.375rem;
+}
+
+.knowledge-ui button {
+  padding: 0.25rem 0.75rem;
+}
+
+.knowledge-ui-list,
+.knowledge-ui-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.knowledge-ui-phone.knowledge-ui-reading .knowledge-ui-list {
+  display: none;
+}
+
+.knowledge-ui-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  padding-block: 0.25rem;
+  border-bottom: 1px solid var(--separator-color);
+}
+
+.knowledge-ui-title {
+  font-weight: 700;
+  color: var(--text-color-primary);
+}
+
+.knowledge-ui time,
+.knowledge-ui-snippet,
+.knowledge-ui-status {
+  color: var(--text-color-secondary);
+  font-size: 0.875rem;
+}
+
+.knowledge-ui-conflict {
+  color: var(--text-color-primary);
+}
+
+.knowledge-ui-download {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.25rem 0.75rem;
+  color: var(--text-color-primary);
+  background: var(--surface-card);
+  border: 1px solid var(--border-color-default);
+  border-radius: 0.375rem;
+  text-decoration: none;
+}
+
+.knowledge-ui img {
+  max-width: 100%;
+  height: auto;
+}

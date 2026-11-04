@@ -1,4 +1,5 @@
 import { createRequestId } from '@openkit/core-client';
+import { KnowledgeBrowser } from '@openkit/knowledge-ui';
 import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-aria-components';
@@ -57,6 +58,7 @@ import {
   workspaceKnowledgePageScopeId,
 } from './data';
 import { KnowledgeProposalRow } from './KnowledgeProposalRow';
+import { useOpenKitKnowledgeClient } from './knowledge-client';
 import {
   composeUserAuthoredKnowledgePage,
   isKnowledgePageState,
@@ -223,6 +225,9 @@ const EMPTY_EDIT_DRAFT: EditDraft = {
 export function KnowledgeScreen() {
   const workspaceId = useCurrentWorkspaceId();
   const knowledge = useKnowledge(workspaceId);
+  const knowledgeClient = useOpenKitKnowledgeClient(workspaceId);
+  const [maintainOpen, setMaintainOpen] = useState(false);
+  const [detailsPageId, setDetailsPageId] = useState<string | null>(null);
   const sourcesCatalog = useKnowledgeSources(workspaceId);
   const indexesCatalog = useKnowledgeIndexes(workspaceId);
   const create = useCreateKnowledge();
@@ -592,88 +597,101 @@ export function KnowledgeScreen() {
         ) : (
           <section className="flex flex-col gap-2">
             <Eyebrow>Notebook pages</Eyebrow>
-            <Card className="p-0 px-4">
-              {pages.map((page) => {
-                const display = readKnowledgePageDisplay(page.path, page.content);
-                return (
-                  <ListRow key={page.id}>
-                    <div
-                      id={knowledgeContentId(workspaceId, page.id)}
-                      tabIndex={-1}
-                      className="min-w-0 flex-1 rounded-ok py-1 outline-none focus-visible:ring-2 focus-visible:ring-focus"
-                    >
-                      <div className="flex items-start gap-3">
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-bold text-fg-strong">{display.title}</p>
-                          <p className="mt-0.5 text-xs text-fg-muted">{display.body}</p>
+            <KnowledgeBrowser
+              client={knowledgeClient}
+              parentId={null}
+              extensions={{
+                rowId: (node) => knowledgeContentId(workspaceId, node.id),
+                node: (node) => {
+                  const page = pages.find((candidate) => candidate.id === node.id);
+                  if (!page) return null;
+                  const display = readKnowledgePageDisplay(page.path, page.content);
+                  const detailsOpen = detailsPageId === page.id;
+                  return (
+                    <div>
+                      <p className="mt-1 text-sm text-fg">{display.body}</p>
+                      <p className="mt-1 text-xs text-fg-muted">
+                        State: {display.state ?? 'unstated'}
+                      </p>
+                      <div className="flex shrink-0 gap-2">
+                        <Button
+                          size="sm"
+                          variant="quiet"
+                          aria-label={`Edit ${display.title}`}
+                          isDisabled={entryWriteBlocked}
+                          onPress={() => startEditing(page)}
+                        >
+                          {'Edit '}
+                        </Button>
+                        <Modal
+                          trigger={
+                            <Button
+                              size="sm"
+                              variant="negative-outline"
+                              aria-label={`Remove ${display.title}`}
+                              isDisabled={entryWriteBlocked}
+                            >
+                              {'Remove '}
+                            </Button>
+                          }
+                        >
+                          <Dialog title="Remove knowledge">
+                            <p className="text-sm text-fg-muted">
+                              This removes the page from the workspace knowledge notebook.
+                            </p>
+                            <div className="flex justify-end gap-2">
+                              <Button slot="close" size="sm" variant="quiet">
+                                Cancel
+                              </Button>
+                              <Button
+                                slot="close"
+                                size="sm"
+                                variant="negative"
+                                isDisabled={entryWriteBlocked}
+                                onPress={() => {
+                                  if (!workspaceId || !knowledge.data?.notebookRevision) return;
+                                  removeEntry({
+                                    workspaceId,
+                                    input: {
+                                      requestId: createRequestId(),
+                                      baseRevision: knowledge.data.notebookRevision,
+                                      path: page.path,
+                                      expectedContentDigest: page.contentDigest,
+                                      confirmRemoval: true,
+                                      summary: `Remove ${page.path}`,
+                                    },
+                                  });
+                                }}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          </Dialog>
+                        </Modal>
+                        <Button
+                          size="sm"
+                          variant="quiet"
+                          className="min-h-11"
+                          aria-expanded={detailsOpen}
+                          aria-label={`Details for ${display.title}`}
+                          onPress={() =>
+                            setDetailsPageId((current) => (current === page.id ? null : page.id))
+                          }
+                        >
+                          Details
+                        </Button>
+                      </div>
+                      {detailsOpen ? (
+                        <div>
                           <p className="mt-1 text-xs text-fg-muted">{page.path}</p>
                           {display.type ? (
                             <p className="mt-1 text-xs text-fg-muted">Type: {display.type}</p>
                           ) : null}
                           <p className="mt-1 text-xs text-fg-muted">
-                            State: {display.state ?? 'unstated'}
-                          </p>
-                          <p className="mt-1 text-xs text-fg-muted">
                             Content digest: {page.contentDigest}
                           </p>
                         </div>
-                        <div className="flex shrink-0 gap-2">
-                          <Button
-                            size="sm"
-                            variant="quiet"
-                            aria-label={`Edit ${display.title}`}
-                            isDisabled={entryWriteBlocked}
-                            onPress={() => startEditing(page)}
-                          >
-                            {'Edit '}
-                          </Button>
-                          <Modal
-                            trigger={
-                              <Button
-                                size="sm"
-                                variant="negative-outline"
-                                aria-label={`Remove ${display.title}`}
-                                isDisabled={entryWriteBlocked}
-                              >
-                                {'Remove '}
-                              </Button>
-                            }
-                          >
-                            <Dialog title="Remove knowledge">
-                              <p className="text-sm text-fg-muted">
-                                This removes the page from the workspace knowledge notebook.
-                              </p>
-                              <div className="flex justify-end gap-2">
-                                <Button slot="close" size="sm" variant="quiet">
-                                  Cancel
-                                </Button>
-                                <Button
-                                  slot="close"
-                                  size="sm"
-                                  variant="negative"
-                                  isDisabled={entryWriteBlocked}
-                                  onPress={() => {
-                                    if (!workspaceId || !knowledge.data?.notebookRevision) return;
-                                    removeEntry({
-                                      workspaceId,
-                                      input: {
-                                        requestId: createRequestId(),
-                                        baseRevision: knowledge.data.notebookRevision,
-                                        path: page.path,
-                                        expectedContentDigest: page.contentDigest,
-                                        confirmRemoval: true,
-                                        summary: `Remove ${page.path}`,
-                                      },
-                                    });
-                                  }}
-                                >
-                                  Remove
-                                </Button>
-                              </div>
-                            </Dialog>
-                          </Modal>
-                        </div>
-                      </div>
+                      ) : null}
                       {editing?.id === page.id ? (
                         <div className="mt-3 flex flex-col gap-3 border-t border-separator pt-3">
                           <TextField
@@ -725,12 +743,32 @@ export function KnowledgeScreen() {
                         </div>
                       ) : null}
                     </div>
-                  </ListRow>
-                );
-              })}
-            </Card>
+                  );
+                },
+              }}
+            />
           </section>
         )}
+
+        <div className="flex flex-col gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            className="min-h-11"
+            aria-expanded={maintainOpen}
+            onPress={() => setMaintainOpen((open) => !open)}
+          >
+            Maintain
+          </Button>
+          {maintainOpen ? (
+            <section aria-label="Maintain">
+              <p className="text-sm text-fg-muted">
+                Health, repair, and indexes stay in Retrieval and Manager so those operations remain
+                reachable.
+              </p>
+            </section>
+          ) : null}
+        </div>
 
         <KnowledgeSourcesPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
         <KnowledgeRetrievalPanel
