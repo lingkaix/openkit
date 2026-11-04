@@ -114,10 +114,33 @@ test('unchanged skip guard refuses an injected TAP skip and command failure', (t
     )
   );
 });
+test('unit-only Vitest owners are admitted without inventing an overlapping coverage command', (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), 'release-unit-only-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(path.join(root, 'apps'));
+  const directory = path.join(root, 'packages/unit');
+  mkdirSync(directory, { recursive: true });
+  const manifest = path.join(directory, 'package.json');
+  const scripts = { test: 'vitest run --reporter=tap-flat' };
+  const publish = () => writeFileSync(manifest, JSON.stringify({ name: '@fixture/unit', scripts }));
+  publish();
+  assert.deepEqual(testOwners(root), [{ name: '@fixture/unit', cwd: directory, vitest: false }]);
+  scripts['test:coverage'] = 'vitest run --coverage';
+  publish();
+  assert.deepEqual(testOwners(root), [{ name: '@fixture/unit', cwd: directory, vitest: true }]);
+  scripts['test:coverage'] = 'vitest run --coverage --changed';
+  publish();
+  assert.throws(() => testOwners(root), /unproved overlapping commands/);
+  delete scripts['test:coverage'];
+  scripts.test = 'vitest run';
+  publish();
+  assert.throws(() => testOwners(root), /unproved overlapping commands/);
+});
 test('root and native suites remain distinct discovered owners', () => {
   const owners = testOwners(process.cwd());
   assert.equal(owners.filter((o) => o.vitest).length, 11);
   assert(owners.some((o) => o.name === '@openkit/storage' && o.vitest));
+  assert(owners.some((o) => o.name === '@openkit/knowledge-ui' && !o.vitest));
   assert(owners.some((o) => o.name === '@openkit/nanohost' && !o.vitest));
   assert(owners.some((o) => o.name === '@openkit/models-dev-catalog' && !o.vitest));
 });

@@ -18,7 +18,7 @@ function guardedExecution({ cwd, command, env }) {
     : [];
 }
 
-/** Derive owners from existing workspace scripts; refuse an unaccounted coverage suite. */
+/** Discover package tests; deduplicate only a declared unit/coverage pair. */
 export function testOwners(root) {
   return ['apps', 'packages'].flatMap((group) =>
     readdirSync(join(root, group), { withFileTypes: true })
@@ -35,7 +35,10 @@ export function testOwners(root) {
         const unit = pkg.scripts.test,
           coverage = pkg.scripts['test:coverage'];
         if (coverage || unit.startsWith('vitest ')) {
-          if (unit !== 'vitest run --reporter=tap-flat' || coverage !== 'vitest run --coverage')
+          if (
+            unit !== 'vitest run --reporter=tap-flat' ||
+            (coverage !== undefined && coverage !== 'vitest run --coverage')
+          )
             throw Error(`Test Strategy: unproved overlapping commands for ${pkg.name}`);
         }
         return [{ name: pkg.name, cwd: join(root, group, entry.name), vitest: Boolean(coverage) }];
