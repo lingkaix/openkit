@@ -11,6 +11,7 @@ import type {
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
 import type { ControlScopedNotebookSqlInput } from './scoped-notebook-sql-codecs.js';
+import type { ControlStandaloneAuditInput } from './standalone-audit-codecs.js';
 import type {
   ControlWorkspaceBackendHandoff,
   ControlWorkspaceBackendHandoffResult,
@@ -2055,6 +2056,45 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Reuses the exact physical Workspace owner for a closed originally standalone Audit commit. */
+  async standaloneAudit(db: WorkspaceDb, input: ControlStandaloneAuditInput): Promise<void> {
+    const scope = nativeProductScope(db.dataRoot, {
+      kind: 'workspace',
+      workspaceId: db.workspaceId,
+    });
+    if (input.workspaceId !== db.workspaceId || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `workspace:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'workspace',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'standalone-audit', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({ operation: 'standalone-audit', database, input });
+    }
+    if (reply.operation !== 'standalone-audit' || reply.result !== null)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
   }
 
   /** Posts one closed Notebook stage to its already opened physical owner; no callback crosses the wire. */

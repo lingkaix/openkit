@@ -216,6 +216,7 @@ import {
 } from './scheduler-admission-codecs.js';
 import { applyControlSchedulerAdmission } from './scheduler-admission-native.js';
 import { applyScopedNotebookSqlInDb } from './scoped-notebook-sql-native.js';
+import { applyStandaloneAuditInDb } from './standalone-audit-native.js';
 import {
   THREAD_READ_RECEIPT_INVALID,
   ThreadReadItemIdsSchema,
@@ -328,6 +329,7 @@ type WriteCommand = Extract<
       | 'worker-control-record'
       | 'thread-read-membership'
       | 'boot-audit'
+      | 'standalone-audit'
       | 'scoped-notebook-sql'
       | 'admin-recovery'
       | 'better-auth'
@@ -2125,6 +2127,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'runtime-target',
               result,
             };
+          } else if (request.operation === 'standalone-audit') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            applyStandaloneAuditInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'standalone-audit',
+              result: null,
+            };
           } else if (request.operation === 'scoped-notebook-sql') {
             const db =
               request.input.action === 'user-receipt'
@@ -3404,6 +3416,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'workspace-review-decision' ||
       value.operation === 'private-workspace' ||
       value.operation === 'workspace-review-finish' ||
+      value.operation === 'standalone-audit' ||
       value.operation === 'scoped-notebook-sql' ||
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||

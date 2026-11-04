@@ -3,7 +3,7 @@ import { CATALOG_OPERATION_DEFINITIONS, type OperationInput } from '@openkit/app
 import { createPrivateTreeSync, removePrivateTreeSync } from '@openkit/storage';
 import { z } from 'zod';
 import { publishedErrorMessage } from '../api-errors.js';
-import { recordWorkspaceAuditEvent } from '../audit-events.js';
+import { prepareWorkspaceAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import {
   DeploymentAdminRequiredError,
@@ -78,7 +78,7 @@ export interface CatalogOperationHooks {
       readonly operation: 'catalog.skill-candidate-decide' | 'catalog.skill-candidate-withdraw';
     },
     context: AdmittedOperationContext
-  ) => SkillCandidateDecisionContext;
+  ) => SkillCandidateDecisionContext | Promise<SkillCandidateDecisionContext>;
   /** Complete current external reference causes; null means the owner cannot establish them. */
   readonly retainedSkillReferences?: (input: {
     readonly digest: string;
@@ -88,11 +88,11 @@ export interface CatalogOperationHooks {
 }
 
 /** Records a real current human decision admission through the existing Workspace Audit owner. */
-export function prepareCatalogSkillDecision(
+export async function prepareCatalogSkillDecision(
   dependencies: OperationInvocationDependencies,
   input: Parameters<NonNullable<CatalogOperationHooks['prepareSkillDecision']>>[0],
   context: AdmittedOperationContext
-): SkillCandidateDecisionContext {
+): Promise<SkillCandidateDecisionContext> {
   const actor = publicOperationActor(context);
   const policyOperation = CATALOG_OPERATION_DEFINITIONS[input.operation].policyOperation;
   if (
@@ -107,7 +107,7 @@ export function prepareCatalogSkillDecision(
     throw new CatalogForbiddenError('Current Skill decision authority is unavailable.');
   const workspaceDb = dependencies.repositoryWorkspaceDb(input.workspaceId);
   try {
-    const event = recordWorkspaceAuditEvent({
+    const event = prepareWorkspaceAuditEvent({
       workspaceDb,
       workspaceId: input.workspaceId,
       requestId: input.requestId,
@@ -117,6 +117,11 @@ export function prepareCatalogSkillDecision(
       resourceRevision: input.expectedRevision > 0 ? input.expectedRevision : null,
       outcome: 'succeeded',
       summary: `Human Skill candidate ${input.decision} admission.`,
+    });
+    await getControlStoreWorkerClient().standaloneAudit(workspaceDb, {
+      workspaceId: input.workspaceId,
+      stage: `${input.operation}.admit`,
+      event,
     });
     return {
       actor: { kind: 'user', id: actor.userId },
@@ -376,11 +381,8 @@ export function createCatalogOperationImplementations(
           return { revision: catalog.revision };
         },
         execute: async () => {
-          const resumeAdmission = await getControlStoreWorkerClient().pauseForDataRootBackup(
-            `workspace:${owners.workspaceDb.sqlite.name}`
-          );
           let decisionContext: SkillCandidateDecisionContext;
-          try {
+          {
             const { catalog: current, candidate } = currentCandidate();
             refuseInterrupted(owners.workspaceDb, operation, input, context);
             if (candidate.disposition !== 'proposed')
@@ -397,13 +399,13 @@ export function createCatalogOperationImplementations(
               );
             if (!hooks.prepareSkillDecision)
               throw new CatalogIntegrityError('Skill decision Audit authority is unavailable.');
-            decisionContext = hooks.prepareSkillDecision(
+            decisionContext = await hooks.prepareSkillDecision(
               { ...input, operation, decision: selectedDecision },
               context
             );
-          } finally {
-            resumeAdmission();
           }
+          // Native Audit acknowledgement is not current authority to mutate the catalog.
+          currentCandidate();
           const catalog = decideWorkspaceSkillCandidate({
             candidateId: input.candidateId,
             dataRoot: root(),

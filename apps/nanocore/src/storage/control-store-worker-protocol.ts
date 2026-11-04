@@ -196,6 +196,10 @@ import {
   ControlScopedNotebookSqlRefusalSchema,
 } from './scoped-notebook-sql-codecs.js';
 import {
+  type ControlStandaloneAuditInput,
+  ControlStandaloneAuditInputSchema,
+} from './standalone-audit-codecs.js';
+import {
   type ControlThreadReadMembershipWire,
   ControlThreadReadMembershipWireSchema,
   THREAD_READ_RECEIPT_INVALID,
@@ -332,7 +336,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 59;
+export const CONTROL_WORKER_VERSION = 60;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -606,6 +610,7 @@ export type ControlWorkerCommand =
           readonly operation: 'workspace-recovery-decision';
           readonly input: ControlWorkspaceRecoveryDecision;
         }
+      | { readonly operation: 'standalone-audit'; readonly input: ControlStandaloneAuditInput }
       | { readonly operation: 'scoped-notebook-sql'; readonly input: ControlScopedNotebookSqlInput }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
@@ -919,6 +924,7 @@ export type ControlWorkerReply = {
       readonly operation: 'workspace-backend-handoff';
       readonly result: ControlWorkspaceBackendHandoffResult;
     }
+  | { readonly status: 'ok'; readonly operation: 'standalone-audit'; readonly result: null }
   | { readonly status: 'ok'; readonly operation: 'scoped-notebook-sql'; readonly result: null }
   | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
   | {
@@ -1473,6 +1479,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlRuntimeTargetResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'private-workspace')
     return ControlPrivateWorkspaceResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'standalone-audit') return reply.result === null;
   if (reply.operation === 'scoped-notebook-sql') return reply.result === null;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
@@ -1984,6 +1991,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlPrivateWorkspaceInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'standalone-audit')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlStandaloneAuditInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'scoped-notebook-sql')

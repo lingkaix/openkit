@@ -146,6 +146,13 @@ export interface RecordWorkspaceAuditEventInput {
  * @returns Protocol audit event stored in SQLite.
  */
 export function recordWorkspaceAuditEvent(input: RecordWorkspaceAuditEventInput): AuditEvent {
+  const event = prepareWorkspaceAuditEvent(input);
+  insertAuditEvent(input.workspaceDb.sqlite, event);
+  return event;
+}
+
+/** Preserves the original Workspace redaction, scope checks and Audit identity without writing. */
+export function prepareWorkspaceAuditEvent(input: RecordWorkspaceAuditEventInput) {
   const { workspaceDb: _workspaceDb, now: _now, occurredAt: _occurredAt, ...safeInput } = input;
   assertNoUnsafeAuditValue(safeInput);
   assertNotebookAuditScope(input.notebookAdmission, {
@@ -155,10 +162,7 @@ export function recordWorkspaceAuditEvent(input: RecordWorkspaceAuditEventInput)
   if (input.notebookAdmission && input.workspaceId !== input.workspaceDb.workspaceId)
     throw new Error('Notebook Audit owner does not match its Workspace database.');
 
-  return recordAuditEvent(input.workspaceDb.sqlite, {
-    ...input,
-    workspaceId: input.workspaceId,
-  });
+  return prepareAuditEvent({ ...input, workspaceId: input.workspaceId });
 }
 
 /** Records existing-Audit facts in the original User database without changing Memory ownership. */
