@@ -360,6 +360,17 @@ export async function previewMcpDiscovery(
       if (transport.kind === 'stdio')
         temporaryDirectory = createPrivateTreeSync(tmpdir(), 'openkit-mcp-preview-');
       const connection: WorkerMcpGatewayServerInput = {
+        // The invocation owns authority; the Gateway repeats this after its starting Audit wait.
+        recheckAdmission: async () => {
+          await context.recheckAdmission?.();
+          assertCurrentInjections();
+          if (signal.aborted)
+            throw new OperationError(
+              'mcp_preview_unavailable',
+              'MCP preview was interrupted.',
+              503
+            );
+        },
         workspaceId: workspaceId ?? previewId,
         server: {
           id: input.mcpId,

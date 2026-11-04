@@ -1928,6 +1928,17 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       // Untyped gateway failures after dispatch cannot prove that the Tool was not contacted.
       upstreamEffect = 'unknown';
       const result = await input.input.workerMcpGateway.callTool({
+        recheckAdmission: () => {
+          if (
+            input.signal.aborted ||
+            policyInput?.stillCurrent() !== true ||
+            !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
+            !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
+          )
+            throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+          if (observed.credentials || input.resolved.scope === 'server')
+            assertCurrentMcpVaultBindings(input, observed.injections);
+        },
         arguments: input.arguments,
         ...(dispatchCredentials ? { credentials: dispatchCredentials } : {}),
         credentialGrantIds: observed.injections.map((injection) => injection.grant.grantId),
@@ -2071,7 +2082,10 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
       terminalCommitted = true;
       status = terminalStatus === 'denied' ? 'declined' : 'failed';
-      const projection = projectOperationError(normalized) ?? { code: normalized.code };
+      const projection = projectOperationError(normalized) ?? {
+        code: normalized.code,
+        status: normalized.status,
+      };
       let certain = false;
       if (upstreamEffect === 'not-contacted' && terminalStatus === 'failed') {
         try {
@@ -2338,7 +2352,7 @@ function currentWorkerMcpPermissions(
   })();
 }
 
-/** Captures actual current Kernel facts through the existing Worker admission owner. */
+/** Captures current Kernel facts, preserving strict dependency errors and typing only uncaptured authority refusal. */
 function currentMcpPolicyAuthority(
   input: Pick<
     WorkerMcpToolCallInput,
@@ -2347,7 +2361,7 @@ function currentMcpPolicyAuthority(
   decision?: PolicyUseDecision
 ) {
   let evaluated: { decision: PolicyDecision; facts: unknown } | null = null;
-  currentWorkerLineageWorkspaceAuthority(
+  const authority = currentWorkerLineageWorkspaceAuthority(
     input.input.coreDb!,
     { ...input.environmentPackage.scope, packageSnapshotId: input.environmentPackage.snapshotId },
     'tool.use',
@@ -2360,7 +2374,12 @@ function currentMcpPolicyAuthority(
     }
   );
   const captured = evaluated as { decision: PolicyDecision; facts: unknown } | null;
-  if (!captured) throw new Error('Current MCP authority was unavailable before Kernel evaluation.');
+  if (!captured) {
+    if (authority === null) {
+      throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+    }
+    throw new Error('Current MCP authority was unavailable before Kernel evaluation.');
+  }
   const scope = input.environmentPackage.scope;
   const lineage = { ...scope, packageSnapshotId: input.environmentPackage.snapshotId };
   const context = readGoalTaskPolicyContext({
@@ -2827,6 +2846,16 @@ async function observeWorkerMcpTools(input: {
   )
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   const gatewayInput = {
+    recheckAdmission: () => {
+      if (
+        input.signal.aborted ||
+        input.current?.() === false ||
+        !hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true) ||
+        !hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
+      )
+        throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+      assertCurrentMcpVaultBindings(input, resolvedCredentials.injections, input.operation);
+    },
     ...(resolvedCredentials.credentials ? { credentials: resolvedCredentials.credentials } : {}),
     credentialGrantIds: resolvedCredentials.injections.map((injection) => injection.grant.grantId),
     server: input.resolved,

@@ -30,6 +30,11 @@ export const STANDALONE_AUDIT_STAGES = [
   'auth.bootstrap.consume',
   'policy.write',
   'administration.configuration.apply',
+  'mcp.server.lifecycle.degraded',
+  'mcp.server.lifecycle.failed',
+  'mcp.server.lifecycle.inactive',
+  'mcp.server.lifecycle.ready',
+  'mcp.server.lifecycle.starting',
 ] as const;
 /** One original prepared Audit, bound to its exact existing scope and admitted stage. */
 export const ControlStandaloneAuditInputSchema = z
@@ -87,6 +92,30 @@ export const ControlStandaloneAuditInputSchema = z
         event.severity === 'info' &&
         event.resource?.startsWith('auth-token:') === true
       );
+    if (
+      stage === 'mcp.server.lifecycle.inactive' ||
+      stage === 'mcp.server.lifecycle.starting' ||
+      stage === 'mcp.server.lifecycle.ready' ||
+      stage === 'mcp.server.lifecycle.degraded' ||
+      stage === 'mcp.server.lifecycle.failed'
+    ) {
+      const failed =
+        stage === 'mcp.server.lifecycle.degraded' || stage === 'mcp.server.lifecycle.failed';
+      return (
+        (workspaceId === undefined
+          ? event.actor?.kind === 'user' && typeof event.requestId === 'string'
+          : event.workspaceId === workspaceId &&
+            event.actor === null &&
+            event.requestId === null) &&
+        event.category === 'capability' &&
+        event.resource?.startsWith('mcp-server:') === true &&
+        event.resource.length > 'mcp-server:'.length &&
+        event.resourceRevision === null &&
+        event.outcome === (failed ? 'failed' : 'succeeded') &&
+        event.severity === (failed ? 'warning' : 'info') &&
+        event.errorCode === (failed ? 'mcp-server-unavailable' : null)
+      );
+    }
     if (event.actor?.kind !== 'user') return false;
     if (stage === 'policy.write' || stage === 'administration.configuration.apply') {
       if (

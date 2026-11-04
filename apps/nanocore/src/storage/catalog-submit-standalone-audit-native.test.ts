@@ -456,6 +456,11 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'catalog.skill-candidate-withdraw',
     'catalog.skill-candidate-withdraw.admit',
     'data_source_catalog.authority.update',
+    'mcp.server.lifecycle.degraded',
+    'mcp.server.lifecycle.failed',
+    'mcp.server.lifecycle.inactive',
+    'mcp.server.lifecycle.ready',
+    'mcp.server.lifecycle.starting',
     'policy.write',
   ]);
 });

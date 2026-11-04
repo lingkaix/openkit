@@ -286,6 +286,11 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'auth.bootstrap.consume',
     'policy.write',
     'administration.configuration.apply',
+    'mcp.server.lifecycle.degraded',
+    'mcp.server.lifecycle.failed',
+    'mcp.server.lifecycle.inactive',
+    'mcp.server.lifecycle.ready',
+    'mcp.server.lifecycle.starting',
   ]);
   const f = await fixture();
   f.queryOnly();

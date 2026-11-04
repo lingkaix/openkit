@@ -15,11 +15,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import type { ResolvedWorkspaceMcpServer } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 
-import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
+import { prepareAuditEvent } from '../audit-events.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
+import { OperationError } from '../operation-error.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
 /** Maximum complete MCP result or explicit discovery observation, including metadata. */
@@ -120,6 +121,8 @@ export interface WorkerMcpGatewayServerInput {
   readonly credentials?: WorkerMcpGatewayCredentials;
   /** Trusted grant identities captured when the credentials were resolved; never public input. */
   readonly credentialGrantIds?: readonly string[];
+  /** Invocation-only current authority check; never cached or sent to the native writer. */
+  readonly recheckAdmission?: () => void | Promise<void>;
   /** Cancellation signal for this operation only. */
   readonly signal?: AbortSignal;
   /** Current strict catalog entry. */
@@ -158,7 +161,14 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   private readonly toolRequests = new WeakMap<AbortSignal, { requestEntered: boolean }>();
   private readonly sessions = new Map<string, Promise<WorkerMcpSession>>();
   private readonly sessionInputs = new Map<string, WorkerMcpGatewayServerInput>();
-  private readonly health = new Map<string, WorkerMcpServerHealth>();
+  // The existing health owner keeps only its projection and one content-free publication tail.
+  private readonly health = new Map<
+    string,
+    {
+      published?: WorkerMcpServerHealth;
+      pending?: { state: WorkerMcpServerHealth; promise: Promise<void> };
+    }
+  >();
   private readonly healthTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly sessionTeardowns = new Map<string, () => Promise<void>>();
@@ -192,6 +202,21 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     try {
       const session = await pending;
       connected = true;
+      const admission = input.recheckAdmission?.();
+      if (admission !== undefined) await admission;
+      if (
+        this.sessions.get(key) !== pending ||
+        this.teardownRequired.has(key) ||
+        cancellation.signal.aborted
+      )
+        throw new WorkerMcpGatewayCallError(
+          'mcp-server-unavailable',
+          'MCP server is unavailable.',
+          503,
+          'not-contacted',
+          cancellation.signal.aborted,
+          hasCredentials(input)
+        );
       let page: Awaited<ReturnType<Client['listTools']>>;
       try {
         page = await session.client.listTools(undefined, {
@@ -255,11 +280,11 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           true
         );
       }
-      this.transition(input, 'ready');
+      await this.transition(input, 'ready');
       return live;
     } catch (error) {
       if (this.sessions.get(key) === pending) {
-        this.transition(input, connected ? 'degraded' : 'failed');
+        await this.transition(input, connected ? 'degraded' : 'failed');
         try {
           await this.discard(key, undefined, pending);
         } catch {
@@ -304,7 +329,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       session = await pending;
     } catch (error) {
       if (this.sessions.get(key) === pending) {
-        this.transition(input, 'failed');
+        await this.transition(input, 'failed');
         await this.discard(key, undefined, pending);
       }
       try {
@@ -318,6 +343,37 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     const requestEvidence = { requestEntered: false };
     this.toolRequests.set(cancellation.signal, requestEvidence);
     try {
+      try {
+        const admission = input.recheckAdmission?.();
+        if (admission !== undefined) await admission;
+      } catch (error) {
+        throw normalizeMcpCallError(error, 'not-contacted', error === cancellationReason);
+      }
+      if (
+        this.sessions.get(key) !== pending ||
+        this.teardownRequired.has(key) ||
+        cancellation.signal.aborted
+      ) {
+        const refused = new WorkerMcpGatewayCallError(
+          'mcp-call-failed',
+          'MCP tool call failed.',
+          503,
+          'not-contacted',
+          cancellation.signal.aborted,
+          hasCredentials(input)
+        );
+        // No Tool request was entered, but the original process group can still require recovery.
+        if (this.sessions.get(key) === pending && this.teardownRequired.has(key)) {
+          const teardown = this.teardowns.get(key);
+          if (!teardown) throw cleanupRecoveryError(refused, 'not-contacted', input);
+          try {
+            await teardown;
+          } catch {
+            throw cleanupRecoveryError(refused, 'not-contacted', input);
+          }
+        }
+        throw refused;
+      }
       let result: Awaited<ReturnType<Client['callTool']>>;
       try {
         result = await session.client.callTool(
@@ -335,7 +391,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           error === cancellationReason
         );
         if (this.sessions.get(key) === pending) {
-          this.transition(input, 'degraded');
+          await this.transition(input, 'degraded');
           try {
             await this.discard(key, undefined, pending);
           } catch {
@@ -361,7 +417,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         );
       }
       if (containsCredential(result, input.credentials)) {
-        this.transition(input, 'degraded');
+        await this.transition(input, 'degraded');
         const rejected = new WorkerMcpGatewayCallError(
           'mcp-call-failed',
           'MCP tool result was rejected.',
@@ -377,7 +433,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
         }
         throw rejected;
       }
-      this.transition(input, 'ready');
+      await this.transition(input, 'ready');
       if (result.isError === true) {
         throw new WorkerMcpGatewayCallError(
           'mcp-call-failed',
@@ -401,6 +457,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   public async close(): Promise<void> {
     this.closed = true;
     await Promise.all([...this.sessions.keys()].map((key) => this.discard(key, 'inactive')));
+    // A concurrent explicit close can publish without a cached transport. Drain that same owner too.
+    for (const entry of this.health.values()) {
+      while (entry.pending) await entry.pending.promise.catch(() => undefined);
+    }
     this.health.clear();
   }
 
@@ -415,7 +475,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       );
     });
     await Promise.all(keys.map((key) => this.discard(key, 'inactive')));
-    if (keys.length === 0) this.transition(input, 'inactive');
+    if (keys.length === 0) await this.transition(input, 'inactive');
   }
 
   /** Stops only idle sessions so one operation cannot terminate another in-flight call. */
@@ -468,7 +528,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
 
   /** Reads health without contacting the server. */
   public getServerHealth(input: WorkerMcpGatewayServerInput): WorkerMcpServerHealth {
-    return this.health.get(workerMcpSessionPrefix(input)) ?? 'inactive';
+    return this.health.get(workerMcpSessionPrefix(input))?.published ?? 'inactive';
   }
 
   /** Returns the shared initialized session for one exact resolved server. */
@@ -502,17 +562,20 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     this.activeUses.set(key, (this.activeUses.get(key) ?? 0) + 1);
     let pending = this.sessions.get(key);
     if (!pending) {
-      pending = this.connect(input);
+      // Register the original pending owner before starting can wait for native evidence.
+      pending = Promise.resolve().then(() => this.connect(input));
       this.sessions.set(key, pending);
-      this.sessionInputs.set(key, {
+      const sessionInput = {
         ...input,
         ...(input.credentialGrantIds ? { credentialGrantIds: [...input.credentialGrantIds] } : {}),
-      });
+      };
+      delete sessionInput.recheckAdmission;
+      this.sessionInputs.set(key, sessionInput);
       const started = pending;
       void started.then(
         (session) => {
           if (this.sessions.get(key) === started && !this.teardownRequired.has(key)) {
-            this.scheduleHealthCheck(key, input, started, session.client);
+            this.scheduleHealthCheck(key, sessionInput, started, session.client);
           }
         },
         () => undefined
@@ -551,7 +614,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   }
 
   /** Connects one catalog-declared transport through the official MCP SDK. */
-  private async connect(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpSession> {
+  private async connect(operationInput: WorkerMcpGatewayServerInput): Promise<WorkerMcpSession> {
+    // Transport callbacks outlive this invocation; retain no caller admission closure in them.
+    const input = { ...operationInput };
+    delete input.recheckAdmission;
     if (
       (input.credentials?.bearer !== undefined && input.server.transport.kind !== 'http') ||
       Object.values(input.credentials?.environment ?? {}).some((value) => value.includes('\0'))
@@ -564,13 +630,24 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       );
     }
     const headers = input.server.transport.kind === 'http' ? httpHeaders(input) : undefined;
-    this.transition(input, 'starting');
+    const key = workerMcpSessionKey(input);
+    await this.transition(input, 'starting');
+    const admission = operationInput.recheckAdmission?.();
+    if (admission !== undefined) await admission;
+    if (this.closed || this.teardownRequired.has(key) || input.signal?.aborted) {
+      throw new WorkerMcpGatewayCallError(
+        'mcp-server-unavailable',
+        'MCP server is unavailable.',
+        503,
+        'not-contacted',
+        input.signal?.aborted === true
+      );
+    }
     const client = new Client(
       { name: 'openkit-nanocore', version: '1.0.0' },
       { listMaxPages: MCP_TOOL_LIST_MAX_PAGES, versionNegotiation: { mode: 'auto' } }
     );
     this.observeToolRequestEntry(client);
-    const key = workerMcpSessionKey(input);
     let transportClosed = false;
     client.onclose = () => {
       transportClosed = true;
@@ -578,10 +655,10 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       const pending = this.sessions.get(key);
       if (!pending) return;
       void pending.then(
-        (session) => {
+        async (session) => {
           if (this.sessions.get(key) !== pending || session.client !== client) return;
-          this.transition(input, 'degraded');
-          void this.discard(key, undefined, pending).catch(() => this.transition(input, 'failed'));
+          await this.transition(input, 'degraded');
+          await this.discard(key, undefined, pending).catch(() => this.transition(input, 'failed'));
         },
         () => undefined
       );
@@ -718,12 +795,18 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       // Close the registered transport first: initialization may be waiting on that same child.
       await this.sessionTeardowns.get(key)?.();
       await pending?.catch(() => null);
+      // Retain the existing input and teardown fence until the original close publication settles.
+      if (input && nextHealth) await this.transition(input, nextHealth);
+      // Late failure settlement still belongs to this teardown, not to a detached Audit lifetime.
+      if (input) {
+        const entry = this.health.get(workerMcpSessionPrefix(input));
+        while (entry?.pending) await entry.pending.promise.catch(() => undefined);
+      }
       this.sessions.delete(key);
       this.sessionInputs.delete(key);
       this.sessionTeardowns.delete(key);
       this.activeUses.delete(key);
       this.teardownRequired.delete(key);
-      if (input && nextHealth) this.transition(input, nextHealth);
     });
     this.teardowns.set(key, teardown);
     try {
@@ -749,12 +832,12 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       await probeMcpSession(client, input.server.timeoutMs);
     } catch {
       if (this.sessions.get(key) !== pending) return;
-      this.transition(input, 'degraded');
+      await this.transition(input, 'degraded');
       await this.discard(key, undefined, pending);
       return;
     }
     if (this.sessions.get(key) === pending && !this.teardownRequired.has(key)) {
-      this.transition(input, 'ready');
+      await this.transition(input, 'ready');
       this.scheduleHealthCheck(key, input, pending, client);
     }
   }
@@ -769,7 +852,9 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
     const previous = this.healthTimers.get(key);
     if (previous) clearTimeout(previous);
     const timer = setTimeout(() => {
-      void this.checkHealth(key, input, pending, client);
+      void this.checkHealth(key, input, pending, client).catch(() => {
+        if (this.sessions.get(key) === pending) return this.transition(input, 'failed');
+      });
     }, MCP_HEALTH_CHECK_MS);
     timer.unref();
     this.healthTimers.set(key, timer);
@@ -794,15 +879,15 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       try {
         await this.discard(key, 'inactive', pending);
       } catch (error) {
-        this.transition(input, 'failed');
+        await this.transition(input, 'failed');
         throw cleanupRecoveryError(error, 'contacted', input);
       }
       return;
     }
     const timer = setTimeout(
       () => {
-        void this.discard(key, 'inactive', pending).catch(() => {
-          if (input) this.transition(input, 'failed');
+        void this.discard(key, 'inactive', pending).catch(async () => {
+          if (input) await this.transition(input, 'failed');
         });
       },
       input && hasCredentials(input) ? 0 : MCP_SESSION_IDLE_MS
@@ -812,63 +897,88 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   }
 
   /** Records changed health under the consuming Workspace or the actual administrator preview actor. */
-  private transition(input: WorkerMcpGatewayServerInput, state: WorkerMcpServerHealth): void {
+  private async transition(
+    input: WorkerMcpGatewayServerInput,
+    state: WorkerMcpServerHealth
+  ): Promise<void> {
     const key = workerMcpSessionPrefix(input);
-    if (this.health.get(key) === state) return;
-    if (!this.coreDb?.sqlite.open) {
-      if (state === 'starting' && hasCredentials(input)) {
-        throw new WorkerControlGatewayError(
-          'mcp-server-unavailable',
-          'MCP credential-bearing server start could not be audited.',
-          503
-        );
-      }
-      this.health.set(key, state);
-      return;
+    let entry = this.health.get(key);
+    if (!entry) {
+      entry = {};
+      this.health.set(key, entry);
     }
-    try {
-      if (this.previewAudit) {
-        // Preview is a Core-owned administration effect; it must not open a synthetic Workspace.
-        recordServerAuditEvent({
-          coreDb: this.coreDb,
-          ...this.previewAudit,
+    let publication = entry.pending;
+    if (!publication && entry.published === state) return;
+    if (!publication || publication.state !== state) {
+      const predecessor = publication?.promise;
+      const coreDb = this.coreDb;
+      const workspaceId = input.workspaceId;
+      const preview = this.previewAudit !== undefined;
+      let event: ReturnType<typeof prepareAuditEvent> | undefined;
+      let preparationError: unknown;
+      try {
+        if (!coreDb?.sqlite.open) throw new Error('MCP lifecycle Audit owner is unavailable.');
+        event = prepareAuditEvent({
+          ...(this.previewAudit ?? { workspaceId }),
           action: `mcp.server.lifecycle.${state}`,
           category: 'capability',
           errorCode: state === 'degraded' || state === 'failed' ? 'mcp-server-unavailable' : null,
           outcome: state === 'degraded' || state === 'failed' ? 'failed' : 'succeeded',
           resource: `mcp-server:${input.server.id}`,
           severity: state === 'degraded' || state === 'failed' ? 'warning' : 'info',
-          summary: `Temporary MCP preview server entered ${state}${hasCredentials(input) && state === 'starting' ? ' with gateway-only credentials' : ''}.`,
+          summary: preview
+            ? `Temporary MCP preview server entered ${state}${hasCredentials(input) && state === 'starting' ? ' with gateway-only credentials' : ''}.`
+            : `MCP server ${input.server.id} entered ${state}${hasCredentials(input) && state === 'starting' ? ' with gateway-only credentials' : ''}.`,
         });
-      } else {
-        const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, input.workspaceId);
-        try {
-          applyScopedMigrations(workspaceDb);
-          recordWorkspaceAuditEvent({
-            action: `mcp.server.lifecycle.${state}`,
-            category: 'capability',
-            errorCode: state === 'degraded' || state === 'failed' ? 'mcp-server-unavailable' : null,
-            outcome: state === 'degraded' || state === 'failed' ? 'failed' : 'succeeded',
-            resource: `mcp-server:${input.server.id}`,
-            severity: state === 'degraded' || state === 'failed' ? 'warning' : 'info',
-            summary: `MCP server ${input.server.id} entered ${state}${hasCredentials(input) && state === 'starting' ? ' with gateway-only credentials' : ''}.`,
-            workspaceDb,
-            workspaceId: input.workspaceId,
-          });
-        } finally {
-          workspaceDb.sqlite.close();
+      } catch (error) {
+        preparationError = error;
+      }
+      // Only adjacent equal states join. Distinct states retain their original order and identity.
+      // Observing a predecessor's failure orders this different event; its callers keep that rejection.
+      const promise = (predecessor ?? Promise.resolve())
+        .catch(() => undefined)
+        .then(async () => {
+          if (!coreDb || !event) throw preparationError;
+          const preparedEvent = event;
+          // This closure retains only the original prepared Audit and storage scope, never input.
+          const db = preview ? coreDb : openWorkspaceDb(coreDb.dataRoot, workspaceId);
+          try {
+            const client = getControlStoreWorkerClient();
+            await client.runOperation(() =>
+              client.standaloneAudit(db, {
+                ...(preview ? {} : { workspaceId }),
+                stage: `mcp.server.lifecycle.${state}`,
+                event: preparedEvent,
+              })
+            );
+          } finally {
+            if (db !== coreDb) db.sqlite.close();
+          }
+        });
+      publication = { state, promise };
+      entry.pending = publication;
+    }
+    try {
+      try {
+        // The shared promise preserves the raw failure. Each caller applies its own original fence.
+        await publication.promise;
+      } catch {
+        if (state === 'starting' && hasCredentials(input)) {
+          throw new WorkerControlGatewayError(
+            'mcp-server-unavailable',
+            'MCP credential-bearing server start could not be audited.',
+            503
+          );
         }
       }
-    } catch {
-      if (state === 'starting' && hasCredentials(input)) {
-        throw new WorkerControlGatewayError(
-          'mcp-server-unavailable',
-          'MCP credential-bearing server start could not be audited.',
-          503
-        );
-      }
+      // Best-effort failure retains its original health semantics, but never publishes before settlement.
+      if (this.health.get(key) === entry) entry.published = state;
+    } finally {
+      // Startup retains this same result only through the existing initialization lifetime.
+      // A different credential key must not mistake best-effort failed startup for an ACK.
+      // The original ready/failed/inactive transition supersedes it; close joins that transition.
+      if (entry.pending === publication && state !== 'starting') delete entry.pending;
     }
-    this.health.set(key, state);
   }
 }
 
@@ -1222,8 +1332,12 @@ function requestOptions(
  * @param toolList Whether the failed request was tools/list after initialization.
  * @returns Existing typed capability failure.
  */
-function normalizeMcpListError(error: unknown, toolList = false): WorkerControlGatewayError {
-  if (error instanceof WorkerControlGatewayError) return error;
+function normalizeMcpListError(
+  error: unknown,
+  toolList = false
+): WorkerControlGatewayError | OperationError {
+  // A caller-owned admission refusal is not an SDK failure or evidence of contact.
+  if (error instanceof WorkerControlGatewayError || error instanceof OperationError) return error;
   if (error instanceof McpHttpResponseTooLargeError) {
     return new WorkerMcpGatewayCallError(
       toolList ? 'mcp-result-too-large' : 'mcp-server-unavailable',

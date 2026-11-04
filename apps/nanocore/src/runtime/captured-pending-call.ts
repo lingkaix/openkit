@@ -444,41 +444,52 @@ export async function executeCapturedPendingCall(input: {
       result: null,
     });
   }
-  if (
-    resolved.catalogDigest !== record.catalogRevision ||
-    !credentialsStillValid(input.coreDb, resolved, record, input.prepared) ||
-    (resolved.scope === 'server' &&
-      resolved.credentialBindings.some((binding) => {
-        const grant = input.coreDb ? getVaultGrant(input.coreDb, binding.vaultGrantId) : null;
-        const reference =
-          grant && input.coreDb ? getVaultReference(input.coreDb, grant.vaultReferenceId) : null;
-        try {
-          const backend = input.vaultBackend?.();
-          return !backend || !reference || !isCurrentServerMcpMaterial(backend, reference);
-        } catch {
-          return true;
-        }
-      }))
-  ) {
-    await refuseSubmission('credentials-invalid');
-    return observeOutcome({
-      disposition: 'execution-error',
-      reason: 'credentials-invalid',
-      result: null,
-    });
-  }
-  const refusal =
-    input.current?.() ??
-    (input.prepared?.mediation && !input.prepared.mediation.current()
-      ? 'policy-changed'
-      : undefined);
+  // Reuse these exact deciding reads after the Gateway's new starting wait, without caching allow.
+  const currentSubmissionRefusal = () => {
+    if (
+      resolved.catalogDigest !== record.catalogRevision ||
+      !credentialsStillValid(input.coreDb, resolved, record, input.prepared) ||
+      (resolved.scope === 'server' &&
+        resolved.credentialBindings.some((binding) => {
+          const grant = input.coreDb ? getVaultGrant(input.coreDb, binding.vaultGrantId) : null;
+          const reference =
+            grant && input.coreDb ? getVaultReference(input.coreDb, grant.vaultReferenceId) : null;
+          try {
+            const backend = input.vaultBackend?.();
+            return !backend || !reference || !isCurrentServerMcpMaterial(backend, reference);
+          } catch {
+            return true;
+          }
+        }))
+    )
+      return 'credentials-invalid';
+    return (
+      input.current?.() ??
+      (input.prepared?.mediation && !input.prepared.mediation.current()
+        ? 'policy-changed'
+        : undefined)
+    );
+  };
+  const refusal = currentSubmissionRefusal();
   if (refusal) {
     await refuseSubmission(refusal);
     return observeOutcome({ disposition: 'execution-error', reason: refusal, result: null });
   }
+  // This is a no-contact refusal to settle, not retained authority for a later operation.
+  let submissionRefusal: string | undefined;
   let outcome: CapturedPendingCallExecution;
   try {
     const result = await input.workerMcpGateway.callTool({
+      recheckAdmission: () => {
+        submissionRefusal = currentSubmissionRefusal();
+        if (submissionRefusal)
+          throw new WorkerMcpGatewayCallError(
+            submissionRefusal,
+            'Captured MCP call was refused.',
+            403,
+            'not-contacted'
+          );
+      },
       ...(input.prepared?.credentials ? { credentials: input.prepared.credentials } : {}),
       credentialGrantIds:
         input.prepared?.injections?.map((injection) => injection.grant.grantId) ?? [],
@@ -502,6 +513,14 @@ export async function executeCapturedPendingCall(input: {
     );
     outcome = { disposition: 'approved-executed', reason: null, result };
   } catch (error) {
+    if (submissionRefusal) {
+      await refuseSubmission(submissionRefusal);
+      return observeOutcome({
+        disposition: 'execution-error',
+        reason: submissionRefusal,
+        result: null,
+      });
+    }
     const known = error instanceof WorkerMcpGatewayCallError && error.upstreamEffect !== 'unknown';
     if (
       input.executionCall &&

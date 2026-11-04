@@ -28,6 +28,65 @@ import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
+// F1 fault-owner adapter: the same real after-INSERT rollback seam as the sealed
+// standalone-Audit observer, scoped to this original preview identity and otherwise disarmed.
+const nativeStartupFault = vi.hoisted(
+  () => new SharedArrayBuffer(4 * Int32Array.BYTES_PER_ELEMENT)
+);
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
+        const prelude = `
+          const {workerData}=require('node:worker_threads');
+          const Database=require(workerData.previewAuditSqlModule);
+          const gate=workerData.previewAuditFault;
+          const originalPrepare=Database.prototype.prepare;
+          Database.prototype.prepare=function(sql) {
+            const statement=originalPrepare.call(this,sql);
+            if (!/^\\s*INSERT\\s+INTO\\s+audit_events\\b/i.test(sql)) return statement;
+            const run=statement.run.bind(statement);
+            statement.run=(...args)=>{
+              const result=run(...args);
+              if (Atomics.load(gate,0)!==1) return result;
+              const rowid=originalPrepare.call(this,'SELECT last_insert_rowid() AS id').get().id;
+              const row=originalPrepare.call(this,
+                'SELECT action,outcome,resource FROM audit_events WHERE rowid=?').get(rowid);
+              if (row && row.action==='mcp.server.lifecycle.starting' &&
+                  row.outcome==='succeeded' && row.resource==='mcp-server:preview-example' &&
+                  Atomics.compareExchange(gate,0,1,0)===1) {
+                Atomics.add(gate,1,1);
+                Atomics.store(gate,2,this.pragma('synchronous',{simple:true}));
+                Atomics.store(gate,3,this.inTransaction ? 1 : 0);
+                // Real original INSERT ran; the actual native transaction must roll it back.
+                throw new Error('injected failure after real original Audit INSERT');
+              }
+              return result;
+            };
+            return statement;
+          };
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            previewAuditSqlModule: require.resolve('better-sqlite3'),
+            previewAuditFault: new Int32Array(nativeStartupFault),
+          },
+        });
+      }
+    },
+  };
+});
+
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -643,25 +702,39 @@ describe('explicit administrator MCP discovery preview', () => {
       requestId: randomUUID(),
       referenceId: reference.referenceId,
     });
-    const record = auditEvents.recordServerAuditEvent;
-    vi.spyOn(auditEvents, 'recordServerAuditEvent').mockImplementation((event) => {
-      if (event.action === 'mcp.server.lifecycle.starting')
-        throw new Error('synthetic audit storage failure');
-      return record(event);
-    });
-    await expect(
-      f.call('administration.mcp-discovery-preview', {
-        ...input,
-        credentialBindings: [
-          {
-            slot: 'authorization',
-            vaultGrantId: grant.grantId,
-            sink: { kind: 'header', name: 'Authorization' },
-          },
-        ],
-      })
-    ).rejects.toMatchObject({ status: 503 });
-    expect(upstream.observed).toEqual([]);
+    const fault = new Int32Array(nativeStartupFault);
+    fault.fill(0);
+    Atomics.store(fault, 0, 1);
+    try {
+      await expect(
+        f.call('administration.mcp-discovery-preview', {
+          ...input,
+          credentialBindings: [
+            {
+              slot: 'authorization',
+              vaultGrantId: grant.grantId,
+              sink: { kind: 'header', name: 'Authorization' },
+            },
+          ],
+        })
+      ).rejects.toMatchObject({ status: 503 });
+      expect(upstream.observed).toEqual([]);
+      // Admission proof for the fault instrument, not an alternative semantic predicate.
+      expect(Atomics.load(fault, 1)).toBe(1);
+      expect(Atomics.load(fault, 2)).toBe(2);
+      expect(Atomics.load(fault, 3)).toBe(1);
+    } finally {
+      Atomics.store(fault, 0, 0);
+      console.info(
+        'F1_NATIVE_ROLLBACK',
+        JSON.stringify({
+          selectedInserts: Atomics.load(fault, 1),
+          synchronous: Atomics.load(fault, 2),
+          outerTransaction: Atomics.load(fault, 3),
+          upstreamRequests: upstream.observed.length,
+        })
+      );
+    }
   });
   it('rejects reflected material after real credentialed discovery without publishing it', async () => {
     const f = fixture();

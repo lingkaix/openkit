@@ -6988,8 +6988,8 @@ describe('MCP proved failure and admitted schema observation', () => {
       });
       const response = await f.call();
       expect(revoked).toBe(true);
-      // MCP supply Error normalization: unavailable authority uses the typed safe fallback after terminal ACK.
-      expect(response).toMatchObject({ error: { data: { code: 'mcp-call-failed' } } });
+      // MCP supply Policy binding: known authority loss denies disclosure, not the committed review outcome.
+      expect(response).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
       expect(response).not.toHaveProperty('result');
       const publicBytes = JSON.stringify(response);
       expect(publicBytes).not.toContain('WorkerControlGatewayError');

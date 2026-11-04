@@ -428,6 +428,11 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'catalog.skill-candidate-withdraw',
     'catalog.skill-candidate-withdraw.admit',
     'data_source_catalog.authority.update',
+    'mcp.server.lifecycle.degraded',
+    'mcp.server.lifecycle.failed',
+    'mcp.server.lifecycle.inactive',
+    'mcp.server.lifecycle.ready',
+    'mcp.server.lifecycle.starting',
     'policy.write',
   ]);
 });
