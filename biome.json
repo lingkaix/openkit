@@ -75,5 +75,15 @@
       "!**/*.min.js",
       "!**/*.bundle.js"
     ]
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["apps/web/**"],
+      "linter": {
+        "domains": {
+          "react": "recommended"
+        }
+      }
+    }
+  ]
 }

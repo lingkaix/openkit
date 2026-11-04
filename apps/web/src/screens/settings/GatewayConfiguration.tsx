@@ -660,6 +660,7 @@ function RouteChainEditor({
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
+  const rowKeys = useRef<string[]>([]);
   const routes = tryParseRoutes(draft);
   if (!routes) {
     return (
@@ -670,25 +671,38 @@ function RouteChainEditor({
     );
   }
   const commit = (next: Array<Record<string, unknown>>) => onChange(JSON.stringify(next, null, 2));
+  // Draft rows can have an empty id, and that id is edited in place. The key stays on the row,
+  // moves with it, and is not written into the route JSON.
+  const keysFor = (count: number) => {
+    const keys = rowKeys.current;
+    while (keys.length < count) keys.push(crypto.randomUUID());
+    if (keys.length > count) keys.splice(count);
+    return keys;
+  };
   const move = (index: number, direction: -1 | 1) => {
     const target = index + direction;
     if (target < 0 || target >= routes.length) return;
     const next = routes.slice();
     const [item] = next.splice(index, 1);
     next.splice(target, 0, item!);
+    const keys = keysFor(routes.length);
+    const [rowKey] = keys.splice(index, 1);
+    keys.splice(target, 0, rowKey!);
     commit(next);
   };
+  const keys = keysFor(routes.length);
   return (
     <ol aria-label="Route members" className="flex flex-col gap-3">
       {routes.map((route, index) => {
         const place = memberPlace(index);
+        const rowKey = keys[index]!;
         const update = (key: string, value: string) => {
           const next = routes.slice();
           next[index] = { ...route, [key]: value };
           commit(next);
         };
         return (
-          <li key={`${index}:${String(route.id ?? '')}`} className="flex flex-col gap-2">
+          <li key={rowKey} className="flex flex-col gap-2">
             <p className="text-base text-fg">
               {index + 1} {place}
             </p>
@@ -728,7 +742,10 @@ function RouteChainEditor({
                 variant="negative-outline"
                 isDisabled={disabled || routes.length < 2}
                 aria-label={`Remove ${place}`}
-                onPress={() => commit(routes.filter((_, item) => item !== index))}
+                onPress={() => {
+                  keysFor(routes.length).splice(index, 1);
+                  commit(routes.filter((_, item) => item !== index));
+                }}
               >
                 Remove
               </Button>
@@ -750,7 +767,10 @@ function RouteChainEditor({
           className="min-h-11"
           variant="outline"
           isDisabled={disabled}
-          onPress={() => commit([...routes, { id: '', providerProfileId: '', providerModel: '' }])}
+          onPress={() => {
+            keysFor(routes.length).push(crypto.randomUUID());
+            commit([...routes, { id: '', providerProfileId: '', providerModel: '' }]);
+          }}
         >
           Add member
         </Button>
@@ -1171,7 +1191,7 @@ function LogicalModelCard({
               const slot = slotLabel(profile, slotNames);
               const rotation = accountRotationLabel(routes, registry, index);
               return (
-                <div key={`${route.id}:${index}`} className="flex flex-col gap-1">
+                <div key={route.id} className="flex flex-col gap-1">
                   {rotation ? <p className="text-sm text-fg">{rotation}</p> : null}
                   <ol className="flex flex-col gap-1" start={index + 1}>
                     <li className="flex flex-col gap-1">
@@ -1200,7 +1220,7 @@ function LogicalModelCard({
             <summary className="cursor-pointer text-sm text-fg">Member ids</summary>
             <ul className="mt-2 flex flex-col gap-1">
               {routes.map((route, index) => (
-                <li key={`member-id:${route.id}:${index}`} className="text-sm text-fg">
+                <li key={route.id} className="text-sm text-fg">
                   {memberPlace(index)}: {route.id}
                 </li>
               ))}
