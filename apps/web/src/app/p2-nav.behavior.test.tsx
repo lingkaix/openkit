@@ -374,6 +374,39 @@ describe('P2 desktop navigation and lists', () => {
 });
 
 describe('P2 phone navigation', () => {
+  it('creates the missing Assistant timeline from the phone home without submitting', async () => {
+    setViewportWidth(360);
+    const user = userEvent.setup();
+    const created = threadRecord('th_019a0000-0000-7000-8000-000000000190', 'Assistant');
+    const createThread = vi.fn().mockResolvedValue(created);
+    const client = makeClient({ createThread });
+    renderAt('/', client);
+
+    await waitFor(() => expect(screen.getByLabelText('Location')).toHaveTextContent('/attention'));
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Action Center' })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('navigation', { name: 'Primary workspace navigation' })
+    ).not.toBeInTheDocument();
+    expect(createThread).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Personal Assistant' }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Location')).toHaveTextContent(
+        `/chat/${WORKSPACE_ID}/${created.id}`
+      )
+    );
+    expect(createThread).toHaveBeenCalledTimes(1);
+    expect(createThread).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      name: 'Assistant',
+      requestId: expect.any(String),
+    });
+    expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
+  });
+
   it('shows exactly Assistant, Work, Needs you, Knowledge, and More below 800px', async () => {
     const user = userEvent.setup();
     setViewportWidth(360);

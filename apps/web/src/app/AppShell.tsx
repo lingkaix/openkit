@@ -25,7 +25,7 @@ function readPersistentNavigation(): boolean {
  *
  * @returns Whether the left navigation should stay in the layout.
  */
-function usePersistentNavigation(): boolean {
+export function usePersistentNavigation(): boolean {
   const [persistent, setPersistent] = useState(readPersistentNavigation);
   useEffect(() => {
     const media = window.matchMedia?.(PERSISTENT_NAV_QUERY);
