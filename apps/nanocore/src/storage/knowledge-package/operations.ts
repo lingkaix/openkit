@@ -8,14 +8,15 @@ import {
   rmdirSync,
   rmSync,
 } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, posix, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { formatReferenceUri, parseReferenceUri } from '@openkit/protocol';
 import {
   assertCanonicalDirectory,
+  createPrivateMetadataDirectory,
   measureCanonicalFile,
   readCanonicalTextFile,
+  writePrivateMetadataText,
 } from '@openkit/storage';
 import { applyEdits, modify } from 'jsonc-parser';
 import { parseJsoncObject } from '../../config/jsonc.js';
@@ -165,12 +166,11 @@ export async function exportKnowledgePackage(input: {
   });
   try {
     const metadataDirectory = `${input.directory}-metadata`;
-    await mkdir(metadataDirectory, { mode: 0o700 });
+    await createPrivateMetadataDirectory(metadataDirectory);
     const files: KnowledgePackageFile[] = [];
     const capture = async (path: string, content: string) => {
       const sourcePath = join(metadataDirectory, path);
-      await mkdir(dirname(sourcePath), { recursive: true, mode: 0o700 });
-      await writeFile(sourcePath, content, { flag: 'wx', mode: 0o600 });
+      await writePrivateMetadataText(sourcePath, content);
       files.push({
         path,
         sourcePath,

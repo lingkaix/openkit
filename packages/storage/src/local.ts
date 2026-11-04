@@ -39,6 +39,7 @@ import fs, {
   rmdir,
   stat,
   unlink,
+  writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { type Readable, Transform, Writable } from 'node:stream';
@@ -1072,6 +1073,17 @@ export async function createPrivateTree(parent: string, prefix: string): Promise
 /** @internal Creates private member directories; path admission remains with the caller. */
 export async function makePrivateTreeDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
+}
+
+/** @internal Creates the exact caller-selected metadata root; existing paths and missing parents refuse. */
+export async function createPrivateMetadataDirectory(path: string): Promise<void> {
+  await mkdir(path, { mode: 0o700 });
+}
+
+/** @internal Captures caller-selected text exclusively; private parents and partial writes keep native failure semantics. */
+export async function writePrivateMetadataText(path: string, content: string): Promise<void> {
+  await makePrivateTreeDirectory(dirname(path));
+  await writeFile(path, content, { flag: 'wx', mode: 0o600 });
 }
 
 /** @internal Moves a complete caller-owned tree; its publication owner orders directory syncs. */
