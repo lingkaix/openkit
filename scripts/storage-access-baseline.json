@@ -25,7 +25,6 @@
     "apps/nanocore/src/bootstrap/lock.ts\tfs:writeFileSync\t447c6b4d250e31db1fce59f57c2daad679264f678350fdedbd7097a037f71f70": 1,
     "apps/nanocore/src/bootstrap/workspace-recovery.ts\tsqlite\t45e758a28ee073cb13955d0fc739892a81ac1b0a2f06580528f7fb2cebd9a252": 1,
     "apps/nanocore/src/bootstrap/workspace-recovery.ts\tsqlite\t586462bf03f76adbcb152885147b745f702a18063ff66ff9c1a036e2732c1e9a": 1,
-    "apps/nanocore/src/context/worker-context-package.ts\tfs:mkdirSync\t333598b1eb4b2004235854c92bdaface8595c51ef0403447761075ea16e2dcc5": 1,
     "apps/nanocore/src/context/worker-context-package.ts\tfs:rmSync\t09fddd394e85c7c13a2a84382ed22cb9e316259f05e1a809e156208df2760c5b": 1,
     "apps/nanocore/src/evidence-bundles.ts\tfs:rmSync\td96250c2d2de79b745fc0dc811f7fd00321e6b83afa5c154bd5fd80a92ccaef1": 1,
     "apps/nanocore/src/generative-kernel/commands.ts\tfs:mkdirSync\t43cde3c3ff54ff6c6d09faedf23f810c85aa0025c869fd0115c6e47f9065ed68": 1,

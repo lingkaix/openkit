@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { setImmediate as yieldToIo } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -29,7 +29,11 @@ import {
   WorkspaceIdSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
-import { assertContextPackageFileProof, publishContextPackageMember } from '@openkit/storage';
+import {
+  assertContextPackageFileProof,
+  createDirectoryExclusive,
+  publishContextPackageMember,
+} from '@openkit/storage';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-review-follow-up.js';
@@ -2284,7 +2288,7 @@ function canonicalWorkspaceDirectory(
       if (!create) {
         throw new Error('Worker Context Package directory is unavailable.');
       }
-      mkdirSync(current);
+      createDirectoryExclusive(current, 0o777);
     }
     assertCanonicalDirectory(current);
   }
