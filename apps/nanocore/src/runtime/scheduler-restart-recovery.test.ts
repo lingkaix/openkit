@@ -59,6 +59,7 @@ import { createAppWithLocalIdentity as createApp } from '../test-support/app.js'
 import {
   createDemoStore,
   createDemoWorkspaceForUser,
+  seedDemoWorkspace,
   seedRetainedPersonalWorkspace,
 } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -74,7 +75,7 @@ import { asPiAiGatewayClientDouble } from '../test-support/pi-ai-gateway-client-
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
@@ -3199,8 +3200,15 @@ describe('scheduler restart recovery', () => {
       'sequence',
       'epoch',
     ] as const) {
-      const coreDb = await createMigratedCoreDb();
+      const coreDb = await createMigratedCoreDb(false);
       try {
+        // These seven isolated adoption variants use only Demo, not a private Quick Chat home.
+        await seedDemoWorkspace(createTestStore({ dataRoot: coreDb.dataRoot }));
+        recordWorkspaceOwnerMembership({
+          coreDb,
+          ownerUserId: LOCAL_USER_ID,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
         const suffix = `lineage_${mismatch}`;
         const fixture = await prepareReconnectLease(coreDb, suffix);
         await recoverTestStartup(coreDb, {
