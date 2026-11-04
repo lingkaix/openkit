@@ -557,10 +557,7 @@ async function dispatchSchedulerAdmission(
         agentManifests: input.agentManifests,
         agentSetupLedger: {
           workspaceDb,
-          pauseForWrite: () =>
-            getControlStoreWorkerClient().pauseForDataRootBackup(
-              `workspace:${workspaceDb.sqlite.name}`
-            ),
+          writer: getControlStoreWorkerClient(),
         },
         gatewayConfig: input.gatewayConfig,
         input: entry.turnInput,

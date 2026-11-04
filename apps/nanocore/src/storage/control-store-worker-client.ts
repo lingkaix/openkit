@@ -10,6 +10,11 @@ import type {
 } from './automation-scanner-codecs.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
+import type {
+  ControlResolvedAgentSetupInput,
+  ControlResolvedAgentSetupRecord,
+  ControlResolvedAgentSetupResult,
+} from './resolved-agent-setup-codecs.js';
 import type { ControlScopedNotebookSqlInput } from './scoped-notebook-sql-codecs.js';
 import type { ControlStandaloneAuditInput } from './standalone-audit-codecs.js';
 import type {
@@ -41,6 +46,23 @@ import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { AuditEvent } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
+import {
+  createPrivateTreeSync,
+  ensureCanonicalDirectory,
+  removePrivateTreeSync,
+  STORAGE_LIMITS,
+  writePrivateTextFileExclusive,
+} from '@openkit/storage';
+import type {
+  RecordResolvedAgentSetupInput,
+  ResolvedAgentSetupRecord,
+} from '../agents/setup-ledger.js';
+import {
+  guardExistingResolvedAgentSetup,
+  redactResolvedAgentSetup,
+} from '../agents/setup-ledger-records.js';
+import { StoredResolvedAgentSetupV1Schema } from '../agents/setup-retained-v1.js';
 import {
   ArtifactReviewError,
   type ControlReviewCommandInput,
@@ -2097,6 +2119,164 @@ class ControlStoreWorkerClient {
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
   }
 
+  /**
+   * Persists the original redacted setup tuple through its physical Workspace owner.
+   * @param workspaceDb Actual caller-owned Workspace connection and root identity.
+   * @param input Existing resolved setup and retained attribution.
+   * @returns The dependent validated record after the covering FULL acknowledgement.
+   */
+  async recordResolvedAgentSetup(
+    workspaceDb: WorkspaceDb,
+    input: RecordResolvedAgentSetupInput
+  ): Promise<ResolvedAgentSetupRecord> {
+    // Retain the original early refusal order; the native guard repeats this decisively.
+    guardExistingResolvedAgentSetup(workspaceDb, input.recordId);
+    const setup = StoredResolvedAgentSetupV1Schema.parse(redactResolvedAgentSetup(input.setup));
+    const scope = nativeProductScope(workspaceDb.dataRoot, {
+      kind: 'workspace',
+      workspaceId: workspaceDb.workspaceId,
+    });
+    const database = `workspace:${scope.path}`;
+    return this.runOperation(async () => {
+      await this.open({
+        database,
+        path: scope.path,
+        dataRoot: workspaceDb.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      });
+      try {
+        return await this.resolvedAgentSetup(database, workspaceDb.workspaceId, {
+          recordId: input.recordId,
+          workspaceId: input.workspaceId,
+          turnId: input.turnId ?? null,
+          requestId: input.requestId ?? null,
+          setup,
+          createdAt: input.createdAt,
+        });
+      } catch (error) {
+        if (
+          error instanceof ControlStoreWorkerError &&
+          error.commit === 'not-committed' &&
+          error.domain?.operation === 'resolved-agent-setup' &&
+          error.domain.code === 'unsupported_retained_format'
+        )
+          throw new TypeError('Unsupported retained record format.', { cause: error });
+        throw error;
+      }
+    });
+  }
+
+  /** Prepares the complete redacted row outside the wire and keeps its existing physical forecasts through ACK or cleanup. */
+  private async resolvedAgentSetup(
+    database: string,
+    scopeWorkspaceId: string,
+    record: ControlResolvedAgentSetupRecord
+  ): Promise<ControlResolvedAgentSetupResult> {
+    this.assertAccepting();
+    const opening = this.openings.get(database);
+    if (
+      !opening?.command.dataRoot ||
+      opening.command.productOwner?.kind !== 'workspace' ||
+      opening.command.productOwner.workspaceId !== scopeWorkspaceId
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    this.assertFrozenCall({ operation: 'close', database }, undefined, opening);
+    const text = JSON.stringify(record);
+    const byteLength = Buffer.byteLength(text);
+    if (byteLength > STORAGE_LIMITS.contentBytes)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const staging = join(dirname(dirname(opening.path)), 'runtime', 'staging');
+    ensureCanonicalDirectory(staging);
+    const root = resolve(opening.command.dataRoot);
+    let admission = this.fileAdmissions.get(root);
+    if (!admission) {
+      admission = new FileStorageAdmission(root, () => 1_000_000_000n);
+      this.fileAdmissions.set(root, admission);
+    }
+    const stagedCapacity = admission.forPath(staging).reserve({
+      stagingBytes: BigInt(byteLength),
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: 0n,
+    });
+    let rowCapacity: FileStorageReservation | undefined;
+    let privateRoot: string | undefined;
+    let posted = false;
+    let failed = false;
+    let failure: unknown;
+    let result: ControlResolvedAgentSetupResult | undefined;
+    try {
+      // Existing per-database WAL forecast remains shared. This is this row's actual additional worst-case growth, not another max-WAL credit.
+      rowCapacity = admission.forPath(opening.path).reserve({
+        stagingBytes: 0n,
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+        publicationBytes: BigInt(byteLength) * 4n,
+      });
+      privateRoot = createPrivateTreeSync(staging, 'resolved-setup-');
+      const path = join(privateRoot, 'setup.json');
+      stagedCapacity.assertAvailable();
+      await writePrivateTextFileExclusive(path, text);
+      stagedCapacity.recordWritten(byteLength);
+      const metadata = lstatSync(path, { bigint: true });
+      const input: ControlResolvedAgentSetupInput = {
+        scopeWorkspaceId,
+        file: {
+          name: `${basename(privateRoot)}/setup.json`,
+          byteLength,
+          digest: `sha256:${sha256Hex(text)}`,
+          identity: `${metadata.dev}:${metadata.ino}`,
+        },
+      };
+      const pending = this.request(
+        { operation: 'resolved-agent-setup', database, input },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [rowCapacity]
+      );
+      // If admission fails before the request takes capacity, release it here; failed/unknown hosts retain accepted capacity until actual exit.
+      posted = opening.host.capacity.has(rowCapacity);
+      const reply = await pending;
+      if (reply.operation !== 'resolved-agent-setup')
+        throw new ControlStoreWorkerError('invalid-request', 'unknown');
+      result = reply.result;
+    } catch (error) {
+      failed = true;
+      failure = error;
+    }
+    if (rowCapacity && !posted) rowCapacity.release();
+    try {
+      if (privateRoot) removePrivateTreeSync(privateRoot);
+      stagedCapacity.release();
+    } catch (cleanupError) {
+      // Preserve native commit/domain evidence. A failed removal keeps its forecast and cannot authorize launch.
+      if (failed && failure instanceof Error) {
+        failure.cause =
+          failure.cause === undefined
+            ? cleanupError
+            : new AggregateError([failure.cause, cleanupError], 'Resolved setup cleanup failed.');
+      } else if (failed) {
+        failure = new AggregateError(
+          [failure, cleanupError],
+          'Resolved setup failed and cleanup is unproved.'
+        );
+      } else {
+        failed = true;
+        const error = new ControlStoreWorkerError('unavailable', 'unknown');
+        error.cause = cleanupError;
+        failure = error;
+      }
+    }
+    if (failed) throw failure;
+    if (!result) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return result;
+  }
+
   /** Posts one closed Notebook stage to its already opened physical owner; no callback crosses the wire. */
   async scopedNotebookSql(database: string, input: ControlScopedNotebookSqlInput): Promise<void> {
     try {
@@ -3820,6 +4000,7 @@ class ControlStoreWorkerClient {
         (entry.command.operation === 'products' || entry.command.operation === 'transition') &&
           value.commit === 'not-committed' &&
           value.domain &&
+          value.domain.operation !== 'resolved-agent-setup' &&
           ['request_executing', 'thread_busy', 'conflict'].includes(value.domain.code)
           ? new PendingRequestCommandError(
               value.domain.code,

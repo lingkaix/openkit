@@ -206,6 +206,11 @@ import { prepareRetainedProductJson } from './immutable-content.js';
 import { applyAppMigrations, applyNativeScopeMigrations } from './migrate.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
+import {
+  applyResolvedAgentSetupInDb,
+  type PreparedResolvedAgentSetup,
+  prepareResolvedAgentSetup,
+} from './resolved-agent-setup-native.js';
 import { RuntimeTargetRefusal } from './runtime-target-codecs.js';
 import { applyControlRuntimeTarget } from './runtime-target-native.js';
 import {
@@ -330,6 +335,7 @@ type WriteCommand = Extract<
       | 'thread-read-membership'
       | 'boot-audit'
       | 'standalone-audit'
+      | 'resolved-agent-setup'
       | 'scoped-notebook-sql'
       | 'admin-recovery'
       | 'better-auth'
@@ -394,6 +400,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedTargetProof?: ReturnType<typeof prepareControlRecoveryTargetPreparation>;
   readonly preparedProvenance?: WorkerRuntimeProvenanceMetadataInput | undefined;
   readonly preparedObservation?: ControlWorkObservationInput | undefined;
+  readonly preparedResolvedSetup?: PreparedResolvedAgentSetup;
   /** Verified NEW parent paths are synchronized once for this request's actual selected SQL batch. */
   readonly preparedDirectories?: readonly string[];
   readonly preparedPublications?: readonly string[];
@@ -517,6 +524,12 @@ function failure(
 
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
+  if (
+    operation === 'resolved-agent-setup' &&
+    error instanceof TypeError &&
+    error.message === 'Unsupported retained record format.'
+  )
+    return { operation, code: 'unsupported_retained_format' };
   if (operation === 'scoped-notebook-sql' && error instanceof IdempotencyKeyConflictError)
     return {
       operation,
@@ -2137,6 +2150,23 @@ function flush(owner: OwnedDatabase): void {
               operation: 'standalone-audit',
               result: null,
             };
+          } else if (request.operation === 'resolved-agent-setup') {
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              owner.scopeDb.workspaceId !== request.input.scopeWorkspaceId
+            )
+              throw new ControlProductPreconditionError();
+            const result = applyResolvedAgentSetupInDb(
+              owner.scopeDb,
+              request.preparedResolvedSetup!
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'resolved-agent-setup',
+              result,
+            };
           } else if (request.operation === 'scoped-notebook-sql') {
             const db =
               request.input.action === 'user-receipt'
@@ -3417,6 +3447,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'private-workspace' ||
       value.operation === 'workspace-review-finish' ||
       value.operation === 'standalone-audit' ||
+      value.operation === 'resolved-agent-setup' ||
       value.operation === 'scoped-notebook-sql' ||
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||
@@ -3520,7 +3551,12 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedTargetProof: ReturnType<typeof prepareControlRecoveryTargetPreparation>;
           let preparedProvenance: WorkerRuntimeProvenanceMetadataInput | undefined;
           let preparedObservation: ControlWorkObservationInput | undefined;
+          let preparedResolvedSetup: PreparedResolvedAgentSetup | undefined;
           try {
+            if (value.operation === 'resolved-agent-setup') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              preparedResolvedSetup = await prepareResolvedAgentSetup(owner.scopeDb, value.input);
+            }
             if (value.operation === 'workspace-capture') {
               if (
                 owner.scopeDb?.scope !== 'workspace' ||
@@ -3827,6 +3863,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedTargetProof,
               preparedRecoveryHistory,
               preparedObservation,
+              preparedResolvedSetup,
               preparedProvenance,
               preparedMaterial,
               preparedCapability,

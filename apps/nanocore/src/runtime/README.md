@@ -503,3 +503,5 @@ Workspace capture and recovery publication uses the original physical Workspace 
 Backend takeover recovery publishes each original missing-handle reconciliation stage through the Workspace physical owner and acknowledges it before the next stage. A later refusal preserves earlier committed evidence. The final current retained disposition is read there before external cleanup; unknown publication never retries or proves absence.
 
 Operator Workspace recovery decides from the current reconciliation and output manifests inside the Workspace native writer. Current Core authority is checked after its open and again after the command response. The original reconciliation commit precedes its separate command receipt commit; receipt refusal preserves that durable prefix, and unknown acknowledgements never retry automatically.
+
+Worker Turn setup records use the existing physical Workspace owner. Orchestration awaits the redacted setup tuple before its separate callback and executor start; a refused or unknown setup acknowledgement starts neither effect and is not retried. The former setup-only posting exclusion is retired.

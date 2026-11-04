@@ -19,7 +19,6 @@ import {
   type AgentSelectionResult,
   selectAgent,
 } from '../agents/selector.js';
-import { recordResolvedAgentSetup } from '../agents/setup-ledger.js';
 import {
   type AgentSetupDiagnostic,
   type AgentSetupResolverDependencies,
@@ -28,6 +27,7 @@ import {
 } from '../agents/setup-resolver.js';
 import type { FsStore } from '../lib/store.js';
 import type { ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
+import type { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { IdempotentCommandReceipt } from './idempotent-command.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
@@ -84,12 +84,12 @@ export interface StartTurnInput
   agentId?: string | null;
   /** Resolved User, Workspace, or Server Agent fallback. */
   defaultAgentId?: string | null;
-  /** Exact setup ledger and its owning database's native-writer exclusion. */
+  /** Actual Workspace ledger connection; its native owner acknowledges setup before launch. */
   agentSetupLedger?: {
     /** Workspace connection whose lifetime belongs to the caller. */
     workspaceDb: WorkspaceDb;
-    /** Settles posted ACKs and excludes this database until the returned release. */
-    pauseForWrite: () => Promise<() => void>;
+    /** Existing physical publisher supplied at the already-owned scheduler composition boundary. */
+    writer: Pick<ReturnType<typeof getControlStoreWorkerClient>, 'recordResolvedAgentSetup'>;
   };
   /** Available agent manifests. */
   agentManifests: AgentManifest[];
@@ -361,20 +361,19 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   if (existing) await input.store.updateTurn(turn.id, { status: 'running' });
   let agentSetupRecordId: string | null = null;
   if (agentSetupResult.setup && input.agentSetupLedger) {
-    // The setup family is still Main-owned; DX104 excludes this database's native writer until its complete migration.
-    const resume = await input.agentSetupLedger.pauseForWrite();
-    try {
-      agentSetupRecordId = recordResolvedAgentSetup(input.agentSetupLedger.workspaceDb, {
-        recordId: `ras_${turn.id}`,
-        workspaceId: input.workspaceId,
-        turnId: turn.id,
-        requestId: input.requestId ?? null,
-        setup: agentSetupResult.setup,
-        createdAt: turn.startedAt ?? new Date().toISOString(),
-      }).id;
-    } finally {
-      resume();
-    }
+    agentSetupRecordId = (
+      await input.agentSetupLedger.writer.recordResolvedAgentSetup(
+        input.agentSetupLedger.workspaceDb,
+        {
+          recordId: `ras_${turn.id}`,
+          workspaceId: input.workspaceId,
+          turnId: turn.id,
+          requestId: input.requestId ?? null,
+          setup: agentSetupResult.setup,
+          createdAt: turn.startedAt ?? new Date().toISOString(),
+        }
+      )
+    ).id;
   }
 
   await input.onTurnCreated?.(input.store.getTurnById(turn.id));

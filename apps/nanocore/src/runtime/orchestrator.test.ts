@@ -630,10 +630,7 @@ describe('startTurn orchestrator', () => {
         agentManifests: [configuredManifest],
         agentSetupLedger: {
           workspaceDb,
-          pauseForWrite: () =>
-            getControlStoreWorkerClient().pauseForDataRootBackup(
-              `workspace:${workspaceDb!.sqlite.name}`
-            ),
+          writer: getControlStoreWorkerClient(),
         },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });

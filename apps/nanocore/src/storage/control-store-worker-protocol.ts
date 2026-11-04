@@ -174,6 +174,13 @@ import {
   type ControlRemoteMcpAudit,
   ControlRemoteMcpAuditSchema,
 } from './remote-mcp-audit-codecs.js';
+import {
+  type ControlResolvedAgentSetupInput,
+  ControlResolvedAgentSetupInputSchema,
+  ControlResolvedAgentSetupRefusalSchema,
+  type ControlResolvedAgentSetupResult,
+  ControlResolvedAgentSetupResultSchema,
+} from './resolved-agent-setup-codecs.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
   type ControlRuntimeTargetInput,
@@ -336,7 +343,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 60;
+export const CONTROL_WORKER_VERSION = 61;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -611,6 +618,10 @@ export type ControlWorkerCommand =
           readonly input: ControlWorkspaceRecoveryDecision;
         }
       | { readonly operation: 'standalone-audit'; readonly input: ControlStandaloneAuditInput }
+      | {
+          readonly operation: 'resolved-agent-setup';
+          readonly input: ControlResolvedAgentSetupInput;
+        }
       | { readonly operation: 'scoped-notebook-sql'; readonly input: ControlScopedNotebookSqlInput }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
@@ -829,6 +840,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlWorkspaceCaptureRefusalSchema>
   | z.infer<typeof ControlWorkspaceTakeoverRefusalSchema>
   | z.infer<typeof ControlWorkspaceRecoveryDecisionRefusalSchema>
+  | z.infer<typeof ControlResolvedAgentSetupRefusalSchema>
   | z.infer<typeof ControlScopedNotebookSqlRefusalSchema>
   | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
@@ -925,6 +937,11 @@ export type ControlWorkerReply = {
       readonly result: ControlWorkspaceBackendHandoffResult;
     }
   | { readonly status: 'ok'; readonly operation: 'standalone-audit'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'resolved-agent-setup';
+      readonly result: ControlResolvedAgentSetupResult;
+    }
   | { readonly status: 'ok'; readonly operation: 'scoped-notebook-sql'; readonly result: null }
   | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
   | {
@@ -1174,6 +1191,8 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlRecoveryTargetRegistrationRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'private-workspace')
     return ControlPrivateWorkspaceRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'resolved-agent-setup')
+    return ControlResolvedAgentSetupRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'scoped-notebook-sql')
     return ControlScopedNotebookSqlRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-stage-review')
@@ -1480,6 +1499,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'private-workspace')
     return ControlPrivateWorkspaceResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'standalone-audit') return reply.result === null;
+  if (reply.operation === 'resolved-agent-setup')
+    return ControlResolvedAgentSetupResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'scoped-notebook-sql') return reply.result === null;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
@@ -1997,6 +2018,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlStandaloneAuditInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'resolved-agent-setup')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlResolvedAgentSetupInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'scoped-notebook-sql')

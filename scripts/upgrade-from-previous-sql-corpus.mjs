@@ -853,14 +853,21 @@ export async function seedSqlCorpus({
     sql.goalId = goal.goal.goalId;
     sql.goalThreadId = goal.goal.threadId;
     sql.setupId = 'ras_upgrade-corpus';
-    o.setup.recordResolvedAgentSetup(workspace, {
+    const setupInput = {
       recordId: sql.setupId,
       workspaceId,
       turnId,
       requestId: 'upgrade-corpus-worker',
       setup: syntheticAgentSetup(),
       createdAt: NOW,
-    });
+    };
+    // Producer role is explicit: historical guests keep their own original writer API.
+    if (corpusProducer === 'historical') {
+      await o.setup.recordResolvedAgentSetup(workspace, setupInput);
+    } else {
+      const { getControlStoreWorkerClient } = await o.load('storage/control-store-worker-client');
+      await getControlStoreWorkerClient().recordResolvedAgentSetup(workspace, setupInput);
+    }
     sql.syncSnapshotId = 'wis_upgrade-corpus';
     o.sync.recordWorkspaceInputSnapshots(workspace, [
       {

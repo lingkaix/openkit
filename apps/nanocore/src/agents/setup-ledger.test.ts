@@ -3,14 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkerSandboxAccessSchema } from '@openkit/config-schema';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import {
-  listExportableResolvedAgentSetups,
-  recordResolvedAgentSetup,
-  requireResolvedAgentSetup,
-} from './setup-ledger.js';
+import { listExportableResolvedAgentSetups, requireResolvedAgentSetup } from './setup-ledger.js';
 import type { ResolvedAgentSetup } from './setup-resolver.js';
 
 /**
@@ -21,7 +21,8 @@ import type { ResolvedAgentSetup } from './setup-resolver.js';
 function createWorkspaceDb() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agent-setup-ledger-'));
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
     rmSync(dataRoot, { force: true, recursive: true });
   });
@@ -51,7 +52,7 @@ describe('resolved agent setup ledger', () => {
     undefined,
     false,
     true,
-  ])('retains encoded-slash %s in resolved setup evidence', (allowEncodedSlash) => {
+  ])('retains encoded-slash %s in resolved setup evidence', async (allowEncodedSlash) => {
     const workspaceDb = createWorkspaceDb();
     const network = WorkerSandboxAccessSchema.parse({
       network: [
@@ -68,7 +69,7 @@ describe('resolved agent setup ledger', () => {
       ],
     }).network;
     try {
-      const record = recordResolvedAgentSetup(workspaceDb, {
+      const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_encoding',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         setup: createTestAgentSetup({ network }),
@@ -79,15 +80,16 @@ describe('resolved agent setup ledger', () => {
         requireResolvedAgentSetup(workspaceDb, 'ws_00000000-0000-73c3-900f-8d310e4ba201', record.id)
       ).toEqual(record);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('persists and reopens one v1 workspace-scoped resolved setup without rewriting annotations', () => {
+  it('persists and reopens one v1 workspace-scoped resolved setup without rewriting annotations', async () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
-      const record = recordResolvedAgentSetup(workspaceDb, {
+      const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_1',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
@@ -125,6 +127,7 @@ describe('resolved agent setup ledger', () => {
         .prepare(`SELECT schema_version AS schemaVersion,
         required_features_json, setup_json FROM resolved_agent_setups`)
         .get();
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       const reopened = openWorkspaceDb(workspaceDb.dataRoot, record.workspaceId);
       try {
@@ -140,11 +143,12 @@ describe('resolved agent setup ledger', () => {
         reopened.sqlite.close();
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
     }
   });
 
-  it('refuses an unknown setup version before JSON decode or replacement', () => {
+  it('refuses an unknown setup version before JSON decode or replacement', async () => {
     const workspaceDb = createWorkspaceDb();
     const setup = resolvedSetup();
     const input = {
@@ -154,7 +158,10 @@ describe('resolved agent setup ledger', () => {
       createdAt: '2026-07-06T00:00:00.000Z',
     };
     try {
-      const record = recordResolvedAgentSetup(workspaceDb, input);
+      const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(
+        workspaceDb,
+        input
+      );
       workspaceDb.sqlite
         .prepare(`UPDATE resolved_agent_setups SET schema_version = 2,
         required_features_json = '{', setup_json = '{' WHERE setup_record_id = ?`)
@@ -168,12 +175,12 @@ describe('resolved agent setup ledger', () => {
       expect(() => listExportableResolvedAgentSetups(workspaceDb, record.workspaceId)).toThrow(
         'Unsupported retained record format.'
       );
-      expect(() =>
-        recordResolvedAgentSetup(workspaceDb, {
+      await expect(
+        getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
           ...input,
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         })
-      ).toThrow('Unsupported retained record format.');
+      ).rejects.toThrow('Unsupported retained record format.');
       expect(
         workspaceDb.sqlite
           .prepare(`SELECT schema_version AS schemaVersion, workspace_id,
@@ -188,11 +195,12 @@ describe('resolved agent setup ledger', () => {
         },
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('persists a null logical-model family as unknown rather than inventing an identifier', () => {
+  it('persists a null logical-model family as unknown rather than inventing an identifier', async () => {
     const workspaceDb = createWorkspaceDb();
     const base = resolvedSetup();
     const setup: ResolvedAgentSetup = {
@@ -204,7 +212,7 @@ describe('resolved agent setup ledger', () => {
     };
 
     try {
-      const record = recordResolvedAgentSetup(workspaceDb, {
+      const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_unknown_family',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         setup,
@@ -216,11 +224,12 @@ describe('resolved agent setup ledger', () => {
       ]);
       expect(JSON.stringify(record.setup)).not.toContain('unlisted:');
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('persists only the deliberate redacted setup projection', () => {
+  it('persists only the deliberate redacted setup projection', async () => {
     const workspaceDb = createWorkspaceDb();
     const base = resolvedSetup();
     const setup: ResolvedAgentSetup = {
@@ -293,7 +302,7 @@ describe('resolved agent setup ledger', () => {
     } as ResolvedAgentSetup;
 
     try {
-      const record = recordResolvedAgentSetup(workspaceDb, {
+      const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_redacted',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         setup,
@@ -348,15 +357,16 @@ describe('resolved agent setup ledger', () => {
         expect(exportableJson).not.toContain(secret);
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('reprojects stored setup JSON before workspace export', () => {
+  it('reprojects stored setup JSON before workspace export', async () => {
     const workspaceDb = createWorkspaceDb();
 
     try {
-      const record = recordResolvedAgentSetup(workspaceDb, {
+      const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
         recordId: 'ras_stored',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
         setup: resolvedSetup(),
@@ -401,6 +411,7 @@ describe('resolved agent setup ledger', () => {
         expect(exportableJson).not.toContain(secret);
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
