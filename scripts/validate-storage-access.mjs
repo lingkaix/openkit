@@ -190,17 +190,41 @@ export function scanStorageAccess(root) {
   return Object.fromEntries(Object.entries(sites).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
-const closedDomains = ['artifacts', 'artifact-zip-snapshots'];
-const artifactDirectory = 'apps/nanocore/src/storage/artifacts/';
+const closedDomains = [
+  'artifacts',
+  'artifact-zip-snapshots',
+  'catalog',
+  'policy',
+  'scheduler-recurring',
+];
+const nanocoreDirectory = 'apps/nanocore/src/';
+const storageDirectory = `${nanocoreDirectory}storage/`;
+const schemaDirectory = `${storageDirectory}schema/`;
+const artifactDirectory = `${storageDirectory}artifacts/`;
 const zipFiles = ['artifact-folder-cache.ts', 'zip-snapshot.ts'];
 const domainOf = (path) => {
   if (zipFiles.some((name) => path === artifactDirectory + name)) return 'artifact-zip-snapshots';
   if (
     (path.startsWith(artifactDirectory) &&
       /^[^/]+\.ts$/.test(path.slice(artifactDirectory.length))) ||
-    path === 'apps/nanocore/src/storage/schema/artifact-reviews.ts'
+    path === `${schemaDirectory}artifact-reviews.ts`
   )
     return 'artifacts';
+  if (path.startsWith(`${nanocoreDirectory}catalog/`)) return 'catalog';
+  if (path.startsWith(`${nanocoreDirectory}policy/`)) return 'policy';
+  if (path.startsWith(schemaDirectory)) {
+    const name = path.slice(schemaDirectory.length);
+    if (/vault/.test(name)) return undefined;
+    if (/permission|server-settings/.test(name)) return 'policy';
+    if (/workspace-|quarantine|worker|nanohost/.test(name)) return undefined;
+    if (/scheduler|external-trigger/.test(name)) return 'scheduler-recurring';
+    return undefined;
+  }
+  if (!path.startsWith(storageDirectory)) return undefined;
+  const name = path.slice(storageDirectory.length);
+  if (/^(core-policy|policy)/.test(name)) return 'policy';
+  if (/^(recurring-|automation-|scheduler-|execution-attempt|external-trigger)/.test(name))
+    return 'scheduler-recurring';
   return undefined;
 };
 
@@ -228,7 +252,7 @@ function moduleReferences(source) {
   return references;
 }
 
-/** Measures the two closed domains without executing product code or writing declarations. */
+/** Measures the closed domains without executing product code or writing declarations. */
 export function measureModuleDomains(root) {
   root = resolve(root);
   const files = productionFiles(root);

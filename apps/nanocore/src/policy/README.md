@@ -2,6 +2,8 @@
 
 This directory owns NanoCore's product Policy projection, authored Policy admission, I16 mediation and pending-request admission.
 
+The `policy` interface domain (this directory plus the permission-decision and server-settings Storage schemas) is CLOSED for the migration and deep-module close-out. CorePolicy and the two deep-module cuts are complete; the storage-access ratchet enforces E105/I73 from this commit (F41 is a diagnostic). Future work may shrink these ceilings.
+
 ## Boundaries
 
 - `permission-decisions.ts` maps policy-kernel outcomes into redacted, scope-owned decision and audit records.

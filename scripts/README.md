@@ -12,10 +12,15 @@ NanoCore's Vitest config selects `ci-vitest-sequencer.mjs` when the existing CI 
 
 ## Storage Access Ratchet
 
-`node scripts/validate-storage-access.mjs [--root PATH] [--refresh-shrink]` keeps the existing direct physical-access allowances and enforces interface ceilings for two CLOSED domains in `storage-access-baseline.json` version 2. Version 1, unknown keys, missing or extra domains, and invalid ceilings are refused. E/I ceilings are nonnegative safe integers; zero remains CLOSED. Site allowances retain their positive safe-integer rule.
+`node scripts/validate-storage-access.mjs [--root PATH] [--refresh-shrink]` keeps the existing direct physical-access allowances and enforces interface ceilings for five CLOSED domains in `storage-access-baseline.json` version 2. Version 1, unknown keys, missing or extra domains, and invalid ceilings are refused. E/I ceilings are nonnegative safe integers; zero remains CLOSED. Site allowances retain their positive safe-integer rule.
 
 - `artifact-zip-snapshots`: `apps/nanocore/src/storage/artifacts/artifact-folder-cache.ts` and `zip-snapshot.ts`.
 - `artifacts`: every other production `*.ts` file directly in that directory, plus `apps/nanocore/src/storage/schema/artifact-reviews.ts`. New production files in these paths join automatically.
+- `catalog`: every production file under `apps/nanocore/src/catalog/`.
+- `policy`: every production file under `apps/nanocore/src/policy/`, Storage schema files named for permission or server settings, and Storage files whose names start with `core-policy` or `policy`.
+- `scheduler-recurring`: Storage files whose names start with `recurring-`, `automation-`, `scheduler-`, `execution-attempt` or `external-trigger`, plus Storage schema files named for scheduler or external triggers that are not Vault, permission, server-settings, Workspace, quarantine, Worker or NanoHost files.
+
+Catalog, Policy and Scheduler/Recurring are CLOSED for the migration and deep-module close-out from this commit: Catalog E87/I21, Policy E105/I73, Scheduler/Recurring E85/I26 (F17/F41/F26 are diagnostics). The selectors match the deep-module census ownership map; new production files in these paths join automatically. Future work may shrink these ceilings.
 
 E counts per-file exported name slots, including aliases, defaults and expanded star re-exports, plus each non-exported named interface, type alias, enum or class reachable from an exported type or signature. Explicit and inferred parameters, returns, properties, unions, generics and transitive aliases participate. An aliased declaration is not charged again as private. Private runtime values used through `typeof` or `z.infer` and types used only in function bodies add no charge. The installed TypeScript checker and in-memory declaration emission supply this measurement; parse failures and unresolved relative signature imports refuse measurement.
 
@@ -23,7 +28,7 @@ I counts unique `(importer file, target file)` pairs into each domain when their
 
 Both modes print E/I/F for each domain. Every site, E and I growth check runs before any shrink write; shrink in another metric cannot offset growth. Ordinary mode also refuses stale higher allowances and asks for `--refresh-shrink`. Refresh only lowers existing site allowances and E/I ceilings to measured values, removes spent site entries, and atomically replaces the baseline through a same-directory temporary file and rename. It never initializes v2 from v1, raises a limit, or adds or removes a domain. Failed growth checks leave baseline bytes unchanged.
 
-Interface and baseline changes still need review against the pinned parent. A candidate's own baseline cannot prove that its limits did not increase. Hiding a signature-reachable type name, inlining a contract, returning an anonymous copy, or moving code outside a selector earns no interface reduction. General anonymous-contract equivalence remains a review rule, not a compiler claim. Future close-outs must add their fixed domain selector, reviewed ceilings and closure declaration together; only the two domains above are CLOSED here.
+Interface and baseline changes still need review against the pinned parent. A candidate's own baseline cannot prove that its limits did not increase. Hiding a signature-reachable type name, inlining a contract, returning an anonymous copy, or moving code outside a selector earns no interface reduction. General anonymous-contract equivalence remains a review rule, not a compiler claim. Future close-outs must add their fixed domain selector, reviewed ceilings and closure declaration together; only the five domains above are CLOSED here.
 
 ## Release Inputs And Verification
 

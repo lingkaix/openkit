@@ -325,6 +325,18 @@
     "artifact-zip-snapshots": {
       "exports": 10,
       "crossDirectoryImports": 1
+    },
+    "catalog": {
+      "exports": 87,
+      "crossDirectoryImports": 21
+    },
+    "policy": {
+      "exports": 105,
+      "crossDirectoryImports": 73
+    },
+    "scheduler-recurring": {
+      "exports": 85,
+      "crossDirectoryImports": 26
     }
   }
 }

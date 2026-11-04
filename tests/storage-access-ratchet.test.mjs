@@ -103,6 +103,7 @@ test('CLI refuses new sites, duplicate increases and growing refresh; removed si
     const moduleDomains = {
       artifacts: { exports: 0, crossDirectoryImports: 0 },
       'artifact-zip-snapshots': { exports: 0, crossDirectoryImports: 0 },
+      ...otherClosedDomains(),
     };
     put(
       baselinePath,
@@ -130,12 +131,20 @@ test('CLI refuses new sites, duplicate increases and growing refresh; removed si
   }
 });
 
+/** Zero ceilings for the closed domains these fixtures do not populate. */
+const otherClosedDomains = () => ({
+  catalog: { exports: 0, crossDirectoryImports: 0 },
+  policy: { exports: 0, crossDirectoryImports: 0 },
+  'scheduler-recurring': { exports: 0, crossDirectoryImports: 0 },
+});
+
 const artifactsPath = 'apps/nanocore/src/storage/artifacts';
 const consumersPath = 'apps/nanocore/src/consumers';
 const domainBaselinePath = 'scripts/storage-access-baseline.json';
 const zeroCeilings = () => ({
   artifacts: { exports: 0, crossDirectoryImports: 0 },
   'artifact-zip-snapshots': { exports: 0, crossDirectoryImports: 0 },
+  ...otherClosedDomains(),
 });
 const ceilingsFor = (
   artifacts,
@@ -143,6 +152,7 @@ const ceilingsFor = (
 ) => ({
   artifacts,
   'artifact-zip-snapshots': artifactZipSnapshots,
+  ...otherClosedDomains(),
 });
 const combinedOutput = (result) => `${result.stdout}${result.stderr}`;
 
@@ -501,6 +511,7 @@ test('CLI refresh lowers ceilings to measurement and then passes', () => {
     assert.deepEqual(saved.moduleDomains, {
       artifacts: { exports: 1, crossDirectoryImports: 1 },
       'artifact-zip-snapshots': { exports: 0, crossDirectoryImports: 0 },
+      ...otherClosedDomains(),
     });
     assert.match(combinedOutput(refresh), /artifacts/);
     assert.match(combinedOutput(refresh), /artifact-zip-snapshots/);
@@ -590,5 +601,243 @@ test('CLI and measurement fail on an unparsable domain file', () => {
     assert.equal(result.status, 1);
     assert.match(combinedOutput(result), /parse/i);
     assert.throws(() => measureDomains(root), /parse/i);
+  });
+});
+
+/** All five closed domains at zero unless a caller overrides one ceiling. */
+const allDomainCeilings = (overrides = {}) => ({
+  artifacts: { exports: 0, crossDirectoryImports: 0 },
+  'artifact-zip-snapshots': { exports: 0, crossDirectoryImports: 0 },
+  catalog: { exports: 0, crossDirectoryImports: 0 },
+  policy: { exports: 0, crossDirectoryImports: 0 },
+  'scheduler-recurring': { exports: 0, crossDirectoryImports: 0 },
+  ...overrides,
+});
+
+test('catalog directory files count in the catalog domain', () => {
+  withTree(({ root, put }) => {
+    put(
+      'apps/nanocore/src/catalog/entry.ts',
+      `export const entry = 1;
+export interface CatalogEntry { id: string }
+`
+    );
+    put(
+      `${consumersPath}/catalog-reader.ts`,
+      "import { entry } from '../catalog/entry.js';\nvoid entry;\n"
+    );
+    assert.deepEqual(measureDomains(root).catalog, {
+      exports: 2,
+      crossDirectoryImports: 1,
+      externalImporters: 1,
+    });
+  });
+});
+
+test('policy directory files count in the policy domain', () => {
+  withTree(({ root, put }) => {
+    put(
+      'apps/nanocore/src/policy/entry.ts',
+      `export const applyPolicy = 1;
+export type PolicyDecision = string;
+`
+    );
+    put(
+      `${consumersPath}/policy-reader.ts`,
+      "import { applyPolicy } from '../policy/entry.js';\nvoid applyPolicy;\n"
+    );
+    assert.deepEqual(measureDomains(root).policy, {
+      exports: 2,
+      crossDirectoryImports: 1,
+      externalImporters: 1,
+    });
+  });
+});
+
+test('policy schema permission and server-settings files count in the policy domain', () => {
+  withTree(({ root, put }) => {
+    put(
+      'apps/nanocore/src/storage/schema/permission-grants.ts',
+      'export const permissionGrant = 1;\n'
+    );
+    put(
+      `${consumersPath}/policy-reader.ts`,
+      "import { permissionGrant } from '../storage/schema/permission-grants.js';\nvoid permissionGrant;\n"
+    );
+    assert.deepEqual(measureDomains(root).policy, {
+      exports: 1,
+      crossDirectoryImports: 1,
+      externalImporters: 1,
+    });
+  });
+});
+
+test('policy-prefixed storage files count in the policy domain', () => {
+  withTree(({ root, put }) => {
+    put('apps/nanocore/src/storage/core-policy-decisions.ts', 'export const policyDecision = 1;\n');
+    put(
+      `${consumersPath}/policy-reader.ts`,
+      "import { policyDecision } from '../storage/core-policy-decisions.js';\nvoid policyDecision;\n"
+    );
+    assert.deepEqual(measureDomains(root).policy, {
+      exports: 1,
+      crossDirectoryImports: 1,
+      externalImporters: 1,
+    });
+  });
+});
+
+test('recurring-prefixed storage files count in the scheduler-recurring domain', () => {
+  withTree(({ root, put }) => {
+    put('apps/nanocore/src/storage/recurring-runs.ts', 'export const recurringRun = 1;\n');
+    put(
+      `${consumersPath}/scheduler-reader.ts`,
+      "import { recurringRun } from '../storage/recurring-runs.js';\nvoid recurringRun;\n"
+    );
+    assert.deepEqual(measureDomains(root)['scheduler-recurring'], {
+      exports: 1,
+      crossDirectoryImports: 1,
+      externalImporters: 1,
+    });
+  });
+});
+
+test('scheduler and external-trigger schema files count in the scheduler-recurring domain', () => {
+  withTree(({ root, put }) => {
+    put(
+      'apps/nanocore/src/storage/schema/external-trigger-state.ts',
+      'export const externalTrigger = 1;\n'
+    );
+    put(
+      `${consumersPath}/scheduler-reader.ts`,
+      "import { externalTrigger } from '../storage/schema/external-trigger-state.js';\nvoid externalTrigger;\n"
+    );
+    assert.deepEqual(measureDomains(root)['scheduler-recurring'], {
+      exports: 1,
+      crossDirectoryImports: 1,
+      externalImporters: 1,
+    });
+  });
+});
+
+test('unmatched neighboring paths stay outside all three new domains', () => {
+  withTree(({ root, put }) => {
+    const negatives = [
+      'apps/nanocore/src/storage/worker-scheduler-x.ts',
+      'apps/nanocore/src/storage/schema/worker-scheduler.ts',
+      'apps/nanocore/src/catalogue/x.ts',
+      'apps/nanocore/src/storage/my-policy.ts',
+    ];
+    for (const name of negatives) put(name, 'export const value = 1;\n');
+    put(
+      `${consumersPath}/negative-reader.ts`,
+      `import { value as a } from '../storage/worker-scheduler-x.js';
+import { value as b } from '../storage/schema/worker-scheduler.js';
+import { value as c } from '../catalogue/x.js';
+import { value as d } from '../storage/my-policy.js';
+void a; void b; void c; void d;
+`
+    );
+    const domains = measureDomains(root);
+    for (const domain of ['catalog', 'policy', 'scheduler-recurring'])
+      assert.deepEqual(domains[domain], {
+        exports: 0,
+        crossDirectoryImports: 0,
+        externalImporters: 0,
+      });
+  });
+});
+
+test('nested catalog and policy paths count at any depth', () => {
+  withTree(({ root, put }) => {
+    put(
+      'apps/nanocore/src/catalog/nested/deep/item.ts',
+      'export const deepCatalog = 1;\nexport type DeepCatalog = string;\n'
+    );
+    put(
+      'apps/nanocore/src/policy/nested/deep/rule.ts',
+      'export const deepPolicy = 1;\nexport type DeepPolicy = string;\n'
+    );
+    const domains = measureDomains(root);
+    assert.deepEqual(domains.catalog, {
+      exports: 2,
+      crossDirectoryImports: 0,
+      externalImporters: 0,
+    });
+    assert.deepEqual(domains.policy, {
+      exports: 2,
+      crossDirectoryImports: 0,
+      externalImporters: 0,
+    });
+  });
+});
+
+test('CLI fails on catalog export growth alone', () => {
+  withTree(({ put, run, writeBaseline }) => {
+    put('apps/nanocore/src/catalog/growth.ts', 'export const a = 1;\nexport const b = 2;\n');
+    writeBaseline(allDomainCeilings({ catalog: { exports: 1, crossDirectoryImports: 0 } }));
+    const result = run();
+    assert.equal(result.status, 1);
+    const text = combinedOutput(result);
+    assert.match(text, /catalog/);
+    assert.match(text, /(?:exports|\bE\b)/);
+  });
+});
+
+test('CLI fails on policy cross-directory import growth alone', () => {
+  withTree(({ put, run, writeBaseline }) => {
+    put('apps/nanocore/src/policy/target.ts', 'export const target = 1;\n');
+    put(
+      `${consumersPath}/policy-reader.ts`,
+      "import { target } from '../policy/target.js';\nvoid target;\n"
+    );
+    writeBaseline(allDomainCeilings({ policy: { exports: 1, crossDirectoryImports: 0 } }));
+    const result = run();
+    assert.equal(result.status, 1);
+    const text = combinedOutput(result);
+    assert.match(text, /policy/);
+    assert.match(text, /(?:crossDirectoryImports|\bI\b)/);
+  });
+});
+
+test('CLI requires refresh for a scheduler-recurring shrink and lowers only that ceiling', () => {
+  withTree(({ root, put, run, writeBaseline }) => {
+    put('apps/nanocore/src/storage/recurring-runs.ts', 'export const recurringRun = 1;\n');
+    writeBaseline(
+      allDomainCeilings({
+        'scheduler-recurring': { exports: 2, crossDirectoryImports: 0 },
+      })
+    );
+    const result = run();
+    assert.equal(result.status, 1);
+    assert.match(combinedOutput(result), /--refresh-shrink/);
+    const refresh = run('--refresh-shrink');
+    assert.equal(refresh.status, 0);
+    const saved = JSON.parse(readFileSync(join(root, domainBaselinePath), 'utf8'));
+    assert.deepEqual(
+      saved.moduleDomains,
+      allDomainCeilings({
+        'scheduler-recurring': { exports: 1, crossDirectoryImports: 0 },
+      })
+    );
+    assert.equal(run().status, 0);
+  });
+});
+
+test('CLI refuses a baseline missing the policy domain', () => {
+  withTree(({ root, put, run, writeBaseline }) => {
+    put('apps/nanocore/src/catalog/inert.ts', 'const value = 1;\nvoid value;\n');
+    writeBaseline(allDomainCeilings());
+    assert.equal(run().status, 0);
+    const domains = allDomainCeilings();
+    delete domains.policy;
+    writeBaseline(domains);
+    const before = readFileSync(join(root, domainBaselinePath), 'utf8');
+    const result = run();
+    assert.equal(result.status, 1);
+    assert.match(combinedOutput(result), /policy|module domain|moduleDomains|baseline/i);
+    assert.equal(readFileSync(join(root, domainBaselinePath), 'utf8'), before);
+    assert.equal(run('--refresh-shrink').status, 1);
+    assert.equal(readFileSync(join(root, domainBaselinePath), 'utf8'), before);
   });
 });
