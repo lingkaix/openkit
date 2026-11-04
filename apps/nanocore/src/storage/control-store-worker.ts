@@ -106,6 +106,7 @@ import {
 } from '../workspace-materials.js';
 import { type AppDb, assertAppAuthority, lightAppDbPath } from './app-db.js';
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
+import { applyCatalogCommandReceiptInDb } from './command-request-records.js';
 import {
   ControlStoreBusyError,
   ControlStoreNoSpaceError,
@@ -337,6 +338,7 @@ type WriteCommand = Extract<
       | 'standalone-audit'
       | 'resolved-agent-setup'
       | 'scoped-notebook-sql'
+      | 'catalog-command-receipt'
       | 'admin-recovery'
       | 'better-auth'
       | 'vault'
@@ -2168,6 +2170,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'resolved-agent-setup',
               result,
             };
+          } else if (request.operation === 'catalog-command-receipt') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            applyCatalogCommandReceiptInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'catalog-command-receipt',
+              result: null,
+            };
           } else if (request.operation === 'scoped-notebook-sql') {
             const db =
               request.input.action === 'user-receipt'
@@ -3450,6 +3462,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'standalone-audit' ||
       value.operation === 'resolved-agent-setup' ||
       value.operation === 'scoped-notebook-sql' ||
+      value.operation === 'catalog-command-receipt' ||
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||
       value.operation === 'workspace-baseline' ||

@@ -91,6 +91,10 @@ import {
   ControlAutomationScannerSchema,
 } from './automation-scanner-codecs.js';
 import {
+  type ControlCatalogCommandReceiptInput,
+  ControlCatalogCommandReceiptInputSchema,
+} from './catalog-command-receipt-codecs.js';
+import {
   type ControlAdmission,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
@@ -343,7 +347,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 68;
+export const CONTROL_WORKER_VERSION = 69;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -623,6 +627,10 @@ export type ControlWorkerCommand =
           readonly input: ControlResolvedAgentSetupInput;
         }
       | { readonly operation: 'scoped-notebook-sql'; readonly input: ControlScopedNotebookSqlInput }
+      | {
+          readonly operation: 'catalog-command-receipt';
+          readonly input: ControlCatalogCommandReceiptInput;
+        }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
       | {
@@ -943,6 +951,7 @@ export type ControlWorkerReply = {
       readonly result: ControlResolvedAgentSetupResult;
     }
   | { readonly status: 'ok'; readonly operation: 'scoped-notebook-sql'; readonly result: null }
+  | { readonly status: 'ok'; readonly operation: 'catalog-command-receipt'; readonly result: null }
   | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1502,6 +1511,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'resolved-agent-setup')
     return ControlResolvedAgentSetupResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'scoped-notebook-sql') return reply.result === null;
+  if (reply.operation === 'catalog-command-receipt') return reply.result === null;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
   if (reply.operation === 'workspace-recovery-decision')
@@ -2024,6 +2034,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlResolvedAgentSetupInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'catalog-command-receipt')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlCatalogCommandReceiptInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'scoped-notebook-sql')

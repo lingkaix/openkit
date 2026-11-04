@@ -392,7 +392,7 @@ export function createCatalogOperationImplementations(
             throw new CatalogIntegrityError('Skill decision receipt does not match its candidate.');
           return { revision: catalog.revision };
         },
-        execute: async () => {
+        execute: async (receipt) => {
           let decisionContext: SkillCandidateDecisionContext;
           {
             const { catalog: current, candidate } = currentCandidate();
@@ -450,6 +450,20 @@ export function createCatalogOperationImplementations(
             catalog.revision
           );
           await afterMutation(input.workspaceId);
+          await getControlStoreWorkerClient().recordCatalogCommandReceipt(owners.workspaceDb, {
+            key: receipt.key,
+            command: operation,
+            requestId: receipt.requestId,
+            inputHash: receipt.inputHash,
+            createdAt: receipt.createdAt,
+            expiresAt: receipt.expiresAt,
+            scope: {
+              workspaceId: input.workspaceId,
+              actorId: publicOperationActor(context).userId,
+              candidateId: input.candidateId,
+            },
+            response: { kind: 'skill_candidate', id: input.candidateId },
+          });
           return { revision: catalog.revision };
         },
       });
@@ -716,7 +730,7 @@ export function createCatalogOperationImplementations(
               );
             return { candidate: publicSkillCandidate(candidate), revision: catalog.revision };
           },
-          execute: async () => {
+          execute: async (receipt) => {
             let admitted = source();
             refuseInterrupted(owners.workspaceDb, 'catalog.skill-candidate-submit', input, context);
             const event = prepareWorkspaceAuditEvent({
@@ -770,6 +784,19 @@ export function createCatalogOperationImplementations(
               result.catalog.revision
             );
             await afterMutation(input.workspaceId);
+            await getControlStoreWorkerClient().recordCatalogCommandReceipt(owners.workspaceDb, {
+              key: receipt.key,
+              command: 'catalog.skill-candidate-submit',
+              requestId: receipt.requestId,
+              inputHash: receipt.inputHash,
+              createdAt: receipt.createdAt,
+              expiresAt: receipt.expiresAt,
+              scope: {
+                workspaceId: input.workspaceId,
+                actorId: publicOperationActor(context).userId,
+              },
+              response: { kind: 'skill_candidate', id: result.candidate.id },
+            });
             return {
               candidate: publicSkillCandidate(result.candidate),
               revision: result.catalog.revision,

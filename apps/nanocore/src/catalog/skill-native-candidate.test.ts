@@ -327,15 +327,22 @@ describe('native Artifact-origin Skill candidates', () => {
 
   it('reports an interrupted receipt without replaying a completed catalog effect', async () => {
     const f = await fixture();
-    vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(() => {
-      throw new Error('Synthetic receipt failure.');
-    });
+    const receiptDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
+    cleanups.push(() => receiptDb.sqlite.close());
+    // Fault the real receipt INSERT after genuine Artifact setup, not the retired Main writer.
+    receiptDb.sqlite.exec(`CREATE TRIGGER refuse_native_candidate_receipt
+      BEFORE INSERT ON idempotency_requests
+      WHEN NEW.command_name = 'catalog.skill-candidate-submit'
+        AND NEW.request_id = '${f.input.requestId}'
+      BEGIN SELECT RAISE(ABORT, 'Synthetic receipt failure.'); END`);
     const response = await call(f, 'catalog.skill-candidate-submit', f.input);
     expect(response.status, await response.clone().text()).toBe(409);
     expect((await response.json()).code).toBe('recovery_required');
     const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
     expect(catalog.skills.candidates).toHaveLength(1);
     expect(catalog.skills.entries[0]?.currentDigest).toBeNull();
+    // The original mock failed once; replay must refuse after the real fault is removed.
+    receiptDb.sqlite.exec('DROP TRIGGER refuse_native_candidate_receipt');
     const retry = await call(f, 'catalog.skill-candidate-submit', f.input);
     expect(retry.status, await retry.clone().text()).toBe(409);
     expect((await retry.json()).code).toBe('recovery_required');

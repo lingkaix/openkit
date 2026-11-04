@@ -8,6 +8,7 @@ import {
   commandRequestKey,
 } from '../lib/store.js';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-requests.js';
+import { CATALOG_COMMAND_RECEIPTS } from './catalog-command-receipt-codecs.js';
 import {
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
@@ -118,7 +119,8 @@ export function isControlNativeReceiptCommand(
     CONTROL_NATIVE_RECEIPT_COMMANDS.some((name) => name === command) ||
     (scope === 'core' && SCOPED_NOTEBOOK_SERVER_RECEIPTS.some((name) => name === command)) ||
     (scope === 'workspace' &&
-      CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS.some((name) => name === command))
+      (CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS.some((name) => name === command) ||
+        CATALOG_COMMAND_RECEIPTS.some((name) => name === command)))
   );
 }
 
@@ -212,7 +214,11 @@ export function pruneControlAdmissionReceipts(
       : "json_extract(scope_json,'$.workspaceId')=? AND json_extract(scope_json,'$.coreId') IS NULL";
   const commands =
     owner.kind === 'workspace'
-      ? [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS]
+      ? [
+          ...CONTROL_NATIVE_RECEIPT_COMMANDS,
+          ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
+          ...CATALOG_COMMAND_RECEIPTS,
+        ]
       : [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...SCOPED_NOTEBOOK_SERVER_RECEIPTS];
   sqlite
     .prepare(

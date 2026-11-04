@@ -8,6 +8,7 @@ import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
 } from './automation-scanner-codecs.js';
+import type { ControlCatalogCommandReceiptInput } from './catalog-command-receipt-codecs.js';
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
 import type {
@@ -2283,6 +2284,48 @@ class ControlStoreWorkerClient {
     if (failed) throw failure;
     if (!result) throw new ControlStoreWorkerError('invalid-request', 'unknown');
     return result;
+  }
+
+  /** Preserves the three Candidate commands' separate record and later expiry-maintenance FULL acknowledgements. */
+  async recordCatalogCommandReceipt(
+    db: WorkspaceDb,
+    receipt: Extract<ControlCatalogCommandReceiptInput, { stage: 'record' }>['receipt']
+  ): Promise<void> {
+    const scope = nativeProductScope(db.dataRoot, {
+      kind: 'workspace',
+      workspaceId: db.workspaceId,
+    });
+    if (receipt.scope.workspaceId !== db.workspaceId || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `workspace:${scope.path}`;
+    await this.open({
+      database,
+      path: scope.path,
+      dataRoot: db.dataRoot,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    const record = await this.request({
+      operation: 'catalog-command-receipt',
+      database,
+      input: { stage: 'record', workspaceId: db.workspaceId, receipt },
+    });
+    if (record.operation !== 'catalog-command-receipt' || record.result !== null)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    // Sample the original maintenance clock only after the record is durably acknowledged.
+    const maintenance = await this.request({
+      operation: 'catalog-command-receipt',
+      database,
+      input: {
+        stage: 'maintenance',
+        workspaceId: db.workspaceId,
+        referenceTime: new Date().toISOString(),
+      },
+    });
+    if (maintenance.operation !== 'catalog-command-receipt' || maintenance.result !== null)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
   }
 
   /** Posts one closed Notebook stage to its already opened physical owner; no callback crosses the wire. */

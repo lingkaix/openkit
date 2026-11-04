@@ -13,6 +13,11 @@ import type {
 import type { AppDb } from './app-db.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import {
+  CATALOG_COMMAND_RECEIPTS,
+  type ControlCatalogCommandReceiptInput,
+  ControlCatalogCommandReceiptInputSchema,
+} from './catalog-command-receipt-codecs.js';
+import {
   type CommandRequestOwner,
   commandRequestOwner,
   commandRequestValues,
@@ -28,7 +33,10 @@ import {
   isControlNativeReceiptCommand,
   pruneControlAdmissionReceipts,
 } from './control-store-admission.js';
-import { openControlStoreProductReadHandle } from './control-store-product-records.js';
+import {
+  ControlProductPreconditionError,
+  openControlStoreProductReadHandle,
+} from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import {
   bindCoreSqlite,
@@ -187,6 +195,34 @@ export function recordControlCommandRequestRecordInDb(
         : { kind: 'workspace', workspaceId: db.workspaceId },
     record.createdAt
   );
+}
+
+/** Applies only the two original Candidate receipt stages on the supplied physical writer. */
+export function applyCatalogCommandReceiptInDb(
+  db: WorkspaceDb,
+  value: ControlCatalogCommandReceiptInput
+): void {
+  assertControlProductWriter(db.sqlite);
+  const input = ControlCatalogCommandReceiptInputSchema.parse(value);
+  if (!db.sqlite.inTransaction || db.workspaceId !== input.workspaceId)
+    throw new ControlProductPreconditionError();
+  if (input.stage === 'maintenance') {
+    // The old producer pruned ordinary expired rows after its receipt committed.
+    // Only these three moved names rejoin that original partition here.
+    pruneCommandRequestRecords(db, input.referenceTime, true);
+    return;
+  }
+  const record = { ...input.receipt, scope: parseStoredCommandScope(input.receipt.scope) };
+  assertCommandRequestDbOwner(db, record.scope);
+  if (
+    record.key !== commandRequestKey(record.command, record.requestId, record.scope) ||
+    record.expiresAt !== commandRequestExpiresAt(record.createdAt) ||
+    (record.command === 'catalog.skill-candidate-submit'
+      ? record.scope.candidateId !== undefined
+      : record.scope.candidateId !== record.response.id)
+  )
+    throw new ControlProductPreconditionError();
+  writeCommandRequestRecordInDb(db, record);
 }
 
 /** Preserves the existing complete row read/check/write body; public entry points own authority and disjoint pruning. */
@@ -626,14 +662,23 @@ function assertCommandRequestDbOwner(db: CommandRequestDb, scope: CommandRequest
  *
  * @param db Scoped database to prune.
  * @param referenceTime Current ISO timestamp used for expiry.
+ * @param catalogMaintenance Preserves the original Candidate maintenance partition after its separate record ACK.
  */
-function pruneCommandRequestRecords(db: CommandRequestDb, referenceTime: string): void {
+function pruneCommandRequestRecords(
+  db: CommandRequestDb,
+  referenceTime: string,
+  catalogMaintenance = false
+): void {
   if (db.scope === 'app') {
     return;
   }
   const commands =
     db.scope === 'workspace'
-      ? [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS]
+      ? [
+          ...CONTROL_NATIVE_RECEIPT_COMMANDS,
+          ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
+          ...(catalogMaintenance ? [] : CATALOG_COMMAND_RECEIPTS),
+        ]
       : db.scope === 'user'
         ? SCOPED_NOTEBOOK_USER_RECEIPTS
         : [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...SCOPED_NOTEBOOK_SERVER_RECEIPTS];
