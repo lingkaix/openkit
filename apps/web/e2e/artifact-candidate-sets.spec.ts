@@ -58,6 +58,7 @@ test('compares two retained versions and sends the selected older candidate expl
     await expect(history.getByText('Current head: version 2')).toBeVisible();
     await history.getByRole('button', { name: 'Add exact version to comparison' }).click();
     await history.getByRole('button', { name: 'View version 1', exact: true }).click();
+    await history.getByRole('button', { name: 'Details', exact: true }).click();
     await expect(history.getByText(contentDigest, { exact: true })).toBeVisible();
     const assessment = history.getByRole('region', { name: 'Artifact version assessments' });
     await assessment.getByRole('button', { name: 'Assess exact version' }).click();

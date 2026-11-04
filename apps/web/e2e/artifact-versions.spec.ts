@@ -24,9 +24,8 @@ test('creates a second Artifact version and inspects and downloads the first ori
     await page.goto(`${stack.webUrl}/artifacts?workspaceId=${workspace.id}`);
     const firstContent = '# Exact original\n\nKeep the first version.\n';
     const firstDigest = `sha256:${createHash('sha256').update(firstContent).digest('hex')}`;
-    await page.getByRole('button', { name: 'Import artifact', exact: true }).click();
+    await page.getByRole('button', { name: 'Import', exact: true }).click();
     await page.getByRole('textbox', { name: 'Title', exact: true }).fill('Versioned report');
-    await page.getByRole('textbox', { name: 'Media type', exact: true }).fill('text/markdown');
     await page.getByRole('textbox', { name: 'Content', exact: true }).fill(firstContent);
     const importing = page.waitForResponse(
       (response) => new URL(response.url()).pathname === '/api/app/operations/artifact.import'
@@ -38,6 +37,7 @@ test('creates a second Artifact version and inspects and downloads the first ori
     await page.getByRole('button', { name: /Versioned report/ }).click();
     const history = page.getByRole('region', { name: 'Artifact version history' });
     await expect(history.getByText('Current head: version 1')).toBeVisible();
+    await history.getByRole('button', { name: 'Details', exact: true }).click();
     await expect(history.getByText(firstDigest, { exact: true })).toBeVisible();
     await history.getByRole('button', { name: 'Create next version', exact: true }).click();
     const draft = page.getByRole('region', { name: 'Create next Artifact version' });
@@ -64,6 +64,7 @@ test('creates a second Artifact version and inspects and downloads the first ori
     await expect(history.getByText(result.version.turnId, { exact: true })).toBeVisible();
     await history.getByRole('button', { name: 'View version 1', exact: true }).click();
     await expect(history.getByText('Viewing version 1', { exact: true })).toBeVisible();
+    await history.getByRole('button', { name: 'Details', exact: true }).click();
     await expect(history.getByText(firstDigest, { exact: true })).toBeVisible();
     await expect(history.getByText('No parent', { exact: true })).toBeVisible();
     await expect(history.getByText(secondContent, { exact: true })).toHaveCount(0);
