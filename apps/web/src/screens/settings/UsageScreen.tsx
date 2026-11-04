@@ -10,7 +10,14 @@ import {
   Skeleton,
   StatusChip,
 } from '../../primitives';
-import { AuditEventRow, evidenceStatus, PermissionDecisionRow, RecordedTime } from './AuditRows';
+import {
+  AuditEventRow,
+  evidenceStatus,
+  PermissionDecisionRow,
+  RecordedTime,
+  ThreadLink,
+  useThreadActivity,
+} from './AuditRows';
 import {
   type CapabilityUsageCallRow,
   type UsageRecordRow,
@@ -18,6 +25,13 @@ import {
   useUsageAndAudit,
   useWorkspaces,
 } from './data';
+import {
+  attentionClause,
+  attentionSentence,
+  isAttention,
+  LongList,
+  matchesLoadedRow,
+} from './LongList';
 import { projectSafeValue } from './secret-safe';
 
 /** Live, read-only selected-Workspace usage and governance projection for board 17. */
@@ -26,9 +40,13 @@ export function UsageScreen() {
   const workspaceId = useCurrentWorkspaceId();
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
   const evidence = useUsageAndAudit(workspaceId);
+  const activity = useThreadActivity([
+    workspaceId,
+    ...(evidence.data?.auditEvents.map((event) => event.workspaceId) ?? []),
+  ]);
   const { failed: disconnected } = useConnection();
 
-  if (workspaces.isLoading || evidence.isLoading) {
+  if (workspaces.isLoading || evidence.isLoading || activity.pending) {
     return (
       <Page>
         <Skeleton lines={8} />
@@ -78,90 +96,7 @@ export function UsageScreen() {
           onRetry={() => void evidence.refetch()}
         />
       ) : evidence.data ? (
-        <>
-          <section className="flex flex-col gap-3" aria-labelledby="usage-records">
-            <h2
-              id="usage-records"
-              className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
-            >
-              Usage
-            </h2>
-            {evidence.data.capabilityCalls.length === 0 &&
-            evidence.data.usageRecords.length === 0 ? (
-              <EmptyState
-                icon="usage"
-                title="No usage recorded"
-                hint="Capability calls and measured usage for this Workspace will appear here."
-              />
-            ) : (
-              <>
-                {evidence.data.usageRecords.length > 0 ? (
-                  <Card className="py-0">
-                    {evidence.data.usageRecords.map((record) => (
-                      <UsageRow key={record.id} record={record} />
-                    ))}
-                  </Card>
-                ) : null}
-                {evidence.data.capabilityCalls.length > 0 ? (
-                  <details>
-                    <summary className="cursor-pointer py-3 text-sm font-bold text-fg-strong">
-                      Capability calls
-                    </summary>
-                    <Card className="py-0">
-                      {evidence.data.capabilityCalls.map((call) => (
-                        <CapabilityCallRow key={call.id} call={call} />
-                      ))}
-                    </Card>
-                  </details>
-                ) : null}
-              </>
-            )}
-          </section>
-
-          <section className="flex flex-col gap-3" aria-labelledby="workspace-audit-events">
-            <h2
-              id="workspace-audit-events"
-              className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
-            >
-              Audit events
-            </h2>
-            {evidence.data.auditEvents.length === 0 ? (
-              <EmptyState
-                icon="usage"
-                title="No audit events"
-                hint="Workspace audit events will appear here as Core records them."
-              />
-            ) : (
-              <Card className="py-0">
-                {evidence.data.auditEvents.map((event) => (
-                  <AuditEventRow key={event.id} event={event} />
-                ))}
-              </Card>
-            )}
-          </section>
-
-          <section className="flex flex-col gap-3" aria-labelledby="permission-decisions">
-            <h2
-              id="permission-decisions"
-              className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted"
-            >
-              Permission decisions
-            </h2>
-            {evidence.data.permissionDecisions.length === 0 ? (
-              <EmptyState
-                icon="usage"
-                title="No permission decisions"
-                hint="Workspace permission decisions will appear here as policy is evaluated."
-              />
-            ) : (
-              <Card className="py-0">
-                {evidence.data.permissionDecisions.map((decision) => (
-                  <PermissionDecisionRow key={decision.decisionId} decision={decision} />
-                ))}
-              </Card>
-            )}
-          </section>
-        </>
+        <UsageRecords evidence={evidence.data} activity={activity} />
       ) : null}
     </Page>
   );
@@ -172,6 +107,213 @@ export function UsageScreen() {
  *
  * @param props Optional Workspace and connection-status chips.
  */
+function UsageRecords({
+  evidence,
+  activity,
+}: {
+  evidence: NonNullable<ReturnType<typeof useUsageAndAudit>['data']>;
+  activity: ReturnType<typeof useThreadActivity>;
+}) {
+  const empty =
+    evidence.capabilityCalls.length === 0 &&
+    evidence.usageRecords.length === 0 &&
+    evidence.auditEvents.length === 0 &&
+    evidence.permissionDecisions.length === 0;
+  if (empty) {
+    return (
+      <>
+        <EmptyState
+          icon="usage"
+          title="No usage recorded"
+          hint="Capability calls and measured usage for this Workspace will appear here."
+        />
+        <EmptyState
+          icon="usage"
+          title="No audit events"
+          hint="Workspace audit events will appear here as Core records them."
+        />
+        <EmptyState
+          icon="usage"
+          title="No permission decisions"
+          hint="Workspace permission decisions will appear here as policy is evaluated."
+        />
+      </>
+    );
+  }
+  return (
+    <LongList
+      summary={(filter) => {
+        const lines = [
+          ...evidence.capabilityCalls
+            .filter(
+              (call) =>
+                isAttention(call.status) &&
+                matchesLoadedRow(filter, {
+                  outcome: call.status,
+                  title: call.operation,
+                  at: call.startedAt,
+                })
+            )
+            .map((call) => (
+              <p key={call.id}>
+                {attentionSentence(attentionClause(call.status), call.operation, call.startedAt)}
+              </p>
+            )),
+          ...evidence.auditEvents
+            .filter(
+              (event) =>
+                isAttention(event.outcome) &&
+                matchesLoadedRow(filter, {
+                  outcome: event.outcome,
+                  title: event.summary || event.action,
+                  at: event.recordedAt,
+                })
+            )
+            .map((event) => (
+              <div key={event.id} className="flex flex-col gap-1">
+                <p>
+                  {attentionSentence(
+                    attentionClause(event.outcome),
+                    event.summary || event.action,
+                    event.recordedAt
+                  )}
+                </p>
+                <ThreadLink
+                  workspaceId={event.workspaceId}
+                  threadId={event.threadId}
+                  activity={activity.activityFor(event.threadId)}
+                />
+              </div>
+            )),
+          ...evidence.permissionDecisions
+            .filter(
+              (decision) =>
+                isAttention(decision.result) &&
+                matchesLoadedRow(filter, {
+                  outcome: decision.result,
+                  title: decision.action,
+                  at: decision.createdAt,
+                })
+            )
+            .map((decision) => (
+              <p key={decision.decisionId}>
+                {attentionSentence(
+                  attentionClause(decision.result),
+                  decision.action,
+                  decision.createdAt
+                )}
+              </p>
+            )),
+        ];
+        return lines.length > 0 ? lines : <p>Nothing failed, was denied, or needs a decision.</p>;
+      }}
+      records={(filter) => (
+        <>
+          <UsageSection
+            id="usage-records"
+            title="Usage"
+            empty={evidence.usageRecords.length === 0 && evidence.capabilityCalls.length === 0}
+          >
+            {evidence.usageRecords
+              .filter((record) =>
+                matchesLoadedRow(filter, {
+                  outcome: 'succeeded',
+                  title: record.measurement,
+                  at: record.recordedAt,
+                })
+              )
+              .map((record) => (
+                <UsageRow key={record.id} record={record} />
+              ))}
+            {evidence.capabilityCalls
+              .filter((call) =>
+                matchesLoadedRow(filter, {
+                  outcome: call.status,
+                  title: call.operation,
+                  at: call.startedAt,
+                })
+              )
+              .map((call) => (
+                <CapabilityCallRow key={call.id} call={call} />
+              ))}
+          </UsageSection>
+          <UsageSection
+            id="workspace-audit-events"
+            title="Audit events"
+            empty={evidence.auditEvents.length === 0}
+            emptyTitle="No audit events"
+            emptyHint="Workspace audit events will appear here as Core records them."
+          >
+            {evidence.auditEvents
+              .filter((event) =>
+                matchesLoadedRow(filter, {
+                  outcome: event.outcome,
+                  title: event.summary || event.action,
+                  at: event.recordedAt,
+                })
+              )
+              .map((event) => (
+                <AuditEventRow
+                  key={event.id}
+                  event={event}
+                  activity={activity.activityFor(event.threadId)}
+                />
+              ))}
+          </UsageSection>
+          <UsageSection
+            id="permission-decisions"
+            title="Permission decisions"
+            empty={evidence.permissionDecisions.length === 0}
+            emptyTitle="No permission decisions"
+            emptyHint="Workspace permission decisions will appear here as policy is evaluated."
+          >
+            {evidence.permissionDecisions
+              .filter((decision) =>
+                matchesLoadedRow(filter, {
+                  outcome: decision.result,
+                  title: decision.action,
+                  at: decision.createdAt,
+                })
+              )
+              .map((decision) => (
+                <PermissionDecisionRow key={decision.decisionId} decision={decision} />
+              ))}
+          </UsageSection>
+        </>
+      )}
+    />
+  );
+}
+
+function UsageSection({
+  id,
+  title,
+  empty,
+  emptyTitle,
+  emptyHint,
+  children,
+}: {
+  id: string;
+  title: string;
+  empty?: boolean;
+  emptyTitle?: string;
+  emptyHint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-3" aria-labelledby={id}>
+      <h2 id={id} className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
+        {title}
+      </h2>
+      {empty ? (
+        <EmptyState icon="usage" title={emptyTitle ?? 'No usage recorded'} hint={emptyHint ?? ''} />
+      ) : (
+        <Card className="py-0">{children}</Card>
+      )}
+    </section>
+  );
+}
+
 function UsageHeader({ actions }: { actions?: React.ReactNode }) {
   return (
     <PageHeader

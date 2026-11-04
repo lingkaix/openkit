@@ -19,6 +19,11 @@ function formatRecordedTime(value: string) {
   return new Date(value).toLocaleString(undefined, { timeZoneName: 'short' });
 }
 
+/** Opens the loaded raw rows. The default view is the attention summary. */
+async function openRecords() {
+  await userEvent.click(await screen.findByRole('button', { name: 'Records' }));
+}
+
 /** Provides only the two authorized server reads; any other client call fails. */
 function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
   return {
@@ -109,17 +114,14 @@ describe('Server audit administration', () => {
         }),
       })
     );
-    expect(await screen.findByText('Actor: agent · agent_recorded')).toBeVisible();
+    await openRecords();
+    expect(screen.getByText('Actor: agent · agent_recorded')).toBeVisible();
     expect(screen.getByText('Actor not recorded')).toBeVisible();
-    expect(
-      screen.getByRole('link', {
-        name: 'Open Thread th_019a0000-0000-7000-8000-000000000012 in Workspace ws_019a0000-0000-7000-8000-000000000011',
-      })
-    ).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Open the Assistant' })).toHaveAttribute(
       'href',
       '/chat/ws_019a0000-0000-7000-8000-000000000011/th_019a0000-0000-7000-8000-000000000012'
     );
-    expect(screen.getAllByRole('link', { name: /^Open Thread / })).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: 'Open the Assistant' })).toHaveLength(1);
     expect(screen.getByText('Turn: tu_019a0000-0000-7000-8000-000000000013')).toBeVisible();
     expect(screen.getByText('Request: 019a0000-0000-7000-8000-000000000014')).toBeVisible();
     expect(document.body.textContent).not.toContain('th_019a0000-0000-7000-8000-000000000019');
@@ -136,8 +138,9 @@ describe('Server audit administration', () => {
     expect(surfacesInGroup('settings-admin').map(({ id }) => id)).toContain('server-audit');
     const client = makeClient();
     renderScreen(client);
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
-    expect(screen.getByText('server.read [redacted]')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
+    expect(screen.getAllByText('server.read [redacted]').length).toBeGreaterThan(0);
     expect(screen.getByText('Done')).toBeInTheDocument();
     expect(screen.getByText('Rejected')).toBeInTheDocument();
     expect(client.operations['audit.server-list']).toHaveBeenCalledExactlyOnceWith({});
@@ -146,7 +149,8 @@ describe('Server audit administration', () => {
 
   it('whitelists and redacts records before rendering or caching', async () => {
     const { container, queryClient } = renderScreen(makeClient());
-    expect(await screen.findByText('Inspection [redacted]')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('Inspection [redacted]')).toBeInTheDocument();
     const cached = JSON.stringify(
       queryClient
         .getQueryCache()
@@ -187,14 +191,16 @@ describe('Server audit administration', () => {
       PRIVATE
     );
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
     expect(client.operations[method]).toHaveBeenCalledTimes(2);
   });
 
   it('hides previously loaded records when a refetch loses session authority', async () => {
     const client = makeClient();
     const { queryClient, container } = renderScreen(client);
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
     vi.mocked(client.operations['permission.server-list']).mockRejectedValue(
       new ApiCallError(401, PRIVATE, { code: 'core.auth.unauthenticated' })
     );
@@ -213,7 +219,8 @@ describe('Server audit administration', () => {
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     });
     const first = renderScreen(client, queryClient);
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
     first.unmount();
 
     let deny!: () => void;
@@ -234,7 +241,8 @@ describe('Server audit administration', () => {
     expect(screen.queryByText('server.inspect')).not.toBeInTheDocument();
     expect(container.innerHTML).not.toContain(PRIVATE);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
     for (const method of ['audit.server-list', 'permission.server-list'] as const) {
       expect(vi.mocked(client.operations[method]).mock.calls).toEqual([[{}], [{}], [{}]]);
     }
@@ -260,7 +268,8 @@ describe('Server audit administration', () => {
     await waitFor(() =>
       expect(currentClient.operations['audit.server-list']).toHaveBeenCalledExactlyOnceWith({})
     );
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
     await act(async () => finishPrevious());
     expect(first.queryClient.isFetching()).toBe(0);
     expect(screen.getByText('server.inspect')).toBeInTheDocument();
@@ -271,7 +280,8 @@ describe('Server audit administration', () => {
   it('refreshes both read-only lists and prevents repeat refresh while pending', async () => {
     const client = makeClient();
     renderScreen(client);
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
     let finish!: () => void;
     vi.mocked(client.operations['audit.server-list']).mockImplementationOnce(
       () =>
@@ -303,13 +313,14 @@ describe('Server audit administration', () => {
   ])('hides prior rows after a failed refresh (%s), then retries only the two safe reads', async (status) => {
     const client = makeClient();
     const { container, queryClient } = renderScreen(client);
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
     expect(
       screen.getByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
     ).toBeVisible();
     expect(
       screen.getByRole('link', {
-        name: 'Open Thread th_019a0000-0000-7000-8000-000000000012 in Workspace ws_019a0000-0000-7000-8000-000000000011',
+        name: 'Open the Assistant',
       })
     ).toBeVisible();
     vi.mocked(client.operations['audit.server-list']).mockRejectedValueOnce(
@@ -333,7 +344,7 @@ describe('Server audit administration', () => {
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole('link', {
-        name: 'Open Thread th_019a0000-0000-7000-8000-000000000012 in Workspace ws_019a0000-0000-7000-8000-000000000011',
+        name: 'Open the Assistant',
       })
     ).not.toBeInTheDocument();
     expect(screen.queryByText('server.read [redacted]')).not.toBeInTheDocument();
@@ -345,7 +356,8 @@ describe('Server audit administration', () => {
     await userEvent.click(
       screen.getByRole('button', { name: status === 500 ? 'Try again' : 'Retry' })
     );
-    expect(await screen.findByText('server.inspect')).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
     for (const method of ['audit.server-list', 'permission.server-list'] as const) {
       expect(vi.mocked(client.operations[method]).mock.calls).toEqual([[{}], [{}], [{}]]);
     }
@@ -398,7 +410,8 @@ describe('Server audit administration', () => {
     });
     const { container, queryClient } = renderScreen(client);
 
-    const preferred = (await screen.findByText('boot.start')).parentElement!;
+    await openRecords();
+    const preferred = screen.getByText('boot.start').parentElement!;
     const preferredTime = within(preferred).getByText(formatRecordedTime(OCCURRED_AT));
     expect(preferredTime.tagName).toBe('TIME');
     expect(preferredTime).toHaveAttribute('datetime', OCCURRED_AT);
@@ -414,7 +427,10 @@ describe('Server audit administration', () => {
     expect(within(missing).getByText('Not recorded')).toBeInTheDocument();
     expect(missing.querySelector('time')).toBeNull();
 
-    const decision = screen.getByText('server.read [redacted]').parentElement!;
+    const decision = screen
+      .getAllByText('server.read [redacted]')
+      .map((node) => node.parentElement)
+      .find((node) => node?.querySelector('time'))!;
     const decisionTime = within(decision).getByText(formatRecordedTime(DECISION_AT));
     expect(decisionTime.tagName).toBe('TIME');
     expect(decisionTime).toHaveAttribute('datetime', DECISION_AT);
@@ -447,6 +463,7 @@ describe('Server audit administration', () => {
       PRIVATE
     );
     await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    await waitFor(() => expect(screen.getByText('server.inspect')).toBeInTheDocument());
+    await openRecords();
+    expect(screen.getByText('server.inspect')).toBeInTheDocument();
   });
 });

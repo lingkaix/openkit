@@ -914,6 +914,30 @@ function renderApp(path: string, client: CoreClient, content: ReactNode = <AppRo
   return client;
 }
 
+/** Opens raw rows. The default view is the attention summary. */
+async function openRecords(scope?: HTMLElement) {
+  const root = scope ? within(scope) : screen;
+  await userEvent.click(await root.findByRole('button', { name: 'Records' }));
+}
+
+/** Chip text on the list row, not the summary sentence that quotes the same title. */
+function rowChip(scope: HTMLElement, label: string) {
+  const chip = within(scope)
+    .getAllByText(label)
+    .map((node) => node.parentElement?.parentElement?.lastElementChild?.textContent?.trim())
+    .find(
+      (text) =>
+        text === 'Ready' ||
+        text === 'Cancelled' ||
+        text === 'Blocked' ||
+        text === 'Done' ||
+        text === 'Rejected' ||
+        text === 'Failed' ||
+        text === 'Stale session'
+    );
+  return chip;
+}
+
 beforeEach(() => {
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
@@ -1107,6 +1131,11 @@ describe('Vault settings (board 15)', () => {
     const uses = screen.getByRole('region', { name: 'Recent use' });
     const plans = screen.getByRole('region', { name: 'Injection plans' });
     const receipts = screen.getByRole('region', { name: 'Injection receipts' });
+    await openRecords(references);
+    await openRecords(grants);
+    await openRecords(uses);
+    await openRecords(plans);
+    await openRecords(receipts);
     expect(
       within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4', { exact: true })
     ).toBeInTheDocument();
@@ -1153,12 +1182,9 @@ describe('Vault settings (board 15)', () => {
           ?.textContent,
       ],
       uses: [
-        within(uses).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4').parentElement!
-          .parentElement!.lastElementChild?.textContent,
-        within(uses).getByText('vault_00000000-0000-7a31-b0e1-45f0875d4f6f').parentElement!
-          .parentElement!.lastElementChild?.textContent,
-        within(uses).getByText('vault_00000000-0000-718b-bed8-d5cdaac28798').parentElement!
-          .parentElement!.lastElementChild?.textContent,
+        rowChip(uses, 'vault_00000000-0000-7fce-81f5-bbcd6886eec4'),
+        rowChip(uses, 'vault_00000000-0000-7a31-b0e1-45f0875d4f6f'),
+        rowChip(uses, 'vault_00000000-0000-718b-bed8-d5cdaac28798'),
       ],
       plans: [
         within(plans).getByText('plan_release_worker').parentElement!.parentElement!
@@ -1247,7 +1273,9 @@ describe('Vault settings (board 15)', () => {
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText('Done')).toBeInTheDocument();
+    const uses = await screen.findByRole('region', { name: 'Recent use' });
+    await openRecords(uses);
+    expect(within(uses).getByText('Done')).toBeInTheDocument();
     const validatedAt = listWorkspaces.mock.invocationCallOrder[1];
     expect({
       deploymentAdminStatusCalls: vi.mocked(client.operations['vault.status']).mock.calls,
@@ -1329,6 +1357,7 @@ describe('Vault settings (board 15)', () => {
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaceVaultReferences).toHaveBeenCalledTimes(2));
     const references = await screen.findByRole('region', { name: 'References' });
+    await openRecords(references);
     expect(
       within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4', { exact: true })
     ).toBeInTheDocument();
@@ -1361,8 +1390,10 @@ describe('Vault settings (board 15)', () => {
     await waitFor(() => expect(listWorkspaceVaultInjectionPlans).toHaveBeenCalledTimes(2));
     expect(listWorkspaceVaultInjectionPlans).toHaveBeenCalledWith({ workspaceId: WORKSPACE.id });
     const plans = await screen.findByRole('region', { name: 'Injection plans' });
+    await openRecords(plans);
     expect(within(plans).getByText('plan_release_worker', { exact: true })).toBeInTheDocument();
     const references = screen.getByRole('region', { name: 'References' });
+    await openRecords(references);
     expect(
       within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4', { exact: true })
     ).toBeInTheDocument();
@@ -1378,6 +1409,7 @@ describe('Vault settings (board 15)', () => {
     renderApp('/workspace/vault', client);
 
     const references = await screen.findByRole('region', { name: 'References' });
+    await openRecords(references);
     expect(
       within(references).getByText('vault_00000000-0000-7fce-81f5-bbcd6886eec4', { exact: true })
     ).toBeInTheDocument();
@@ -1629,25 +1661,26 @@ describe('Usage and audit settings (board 17)', () => {
       },
     });
     renderApp('/workspace/usage', client);
+    await openRecords();
     expect(
-      await screen.findByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
+      screen.getByText('Actor: user · usr_019a0000-0000-7000-8000-000000000015')
     ).toBeVisible();
     expect(screen.getByText('Actor not recorded')).toBeVisible();
-    expect(
-      screen.getByRole('link', { name: `Open Thread ${threadId} in Workspace ${WORKSPACE.id}` })
-    ).toHaveAttribute('href', `/chat/${WORKSPACE.id}/${threadId}`);
+    expect(screen.getByRole('link', { name: 'Open the Assistant' })).toHaveAttribute(
+      'href',
+      `/chat/${WORKSPACE.id}/${threadId}`
+    );
     expect(screen.getByText(`Turn: ${turnId}`)).toBeVisible();
     expect(screen.getByText(`Request: ${requestId}`)).toBeVisible();
     expect(
       screen.getByText('Stop request accepted. Runtime cleanup is not confirmed by this event.')
     ).toBeVisible();
-    expect(screen.getAllByRole('link', { name: /^Open Thread / })).toHaveLength(1);
+    expect(screen.getAllByRole('link', { name: 'Open the Assistant' })).toHaveLength(1);
     expect(document.body.textContent).not.toContain('usr_019a0000-0000-7000-8000-000000000016');
     expect(document.documentElement.outerHTML).not.toContain(POISON_SECRET);
   });
 
   it('labels recorded measurements and keeps capability details collapsed until opened', async () => {
-    const user = userEvent.setup();
     const sources = ['input', 'output', 'cache_read', 'cache_write', 'total', 'cost_estimate'];
     const client = makeClient({
       app: {},
@@ -1672,6 +1705,10 @@ describe('Usage and audit settings (board 17)', () => {
       },
     });
     renderApp('/workspace/usage', client);
+    expect(await screen.findByRole('button', { name: 'Records' })).toBeInTheDocument();
+    expect(screen.queryByText('chat_completions', { exact: true })).not.toBeInTheDocument();
+    expect(document.querySelectorAll(`time[datetime="${TIMESTAMP}"]`)).toHaveLength(0);
+    await openRecords();
     for (const label of [
       'Input',
       'Output',
@@ -1680,18 +1717,12 @@ describe('Usage and audit settings (board 17)', () => {
       'Total',
       'Estimated cost',
     ]) {
-      expect(await screen.findByText(label, { exact: true })).toBeVisible();
+      expect(screen.getByText(label, { exact: true })).toBeVisible();
     }
     expect(screen.getAllByText('Logical model: gpt-5')).toHaveLength(6);
     expect(screen.getByText('Logical model: Not recorded')).toBeVisible();
-    const call = screen.getByText('chat_completions', { exact: true });
-    const disclosure = call.closest('details');
-    expect(disclosure).not.toHaveAttribute('open');
-    expect(call).not.toBeVisible();
+    expect(screen.getByText('chat_completions', { exact: true })).toBeVisible();
     expect(document.querySelectorAll(`time[datetime="${TIMESTAMP}"]`)).toHaveLength(10);
-    await user.click(screen.getByText('Capability calls', { exact: true }));
-    expect(disclosure).toHaveAttribute('open');
-    expect(call).toBeVisible();
     expect(document.body.textContent).not.toContain('untrusted:input');
     expect(document.body.textContent).not.toContain('llm-gateway-adapter-reported');
   });
@@ -1707,6 +1738,7 @@ describe('Usage and audit settings (board 17)', () => {
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Usage & audit' })
     ).toBeInTheDocument();
+    await openRecords();
     const main = screen.getByRole('main');
     expect(screen.queryByText(/not yet backed by the kernel/i)).not.toBeInTheDocument();
     expect(within(main).getByText('Market research', { exact: true })).toBeInTheDocument();
@@ -1780,7 +1812,8 @@ describe('Usage and audit settings (board 17)', () => {
     expect(alert).not.toHaveTextContent('ws_00000000-0000-7641-ba4a-a1306b8c904a failure');
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText('chat_completions', { exact: true })).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('chat_completions', { exact: true })).toBeInTheDocument();
     const validatedAt = listWorkspaces.mock.invocationCallOrder[1];
     expect({
       usage: {
@@ -1870,14 +1903,16 @@ describe('Usage and audit settings (board 17)', () => {
     expect(screen.queryByText('chat_completions', { exact: true })).not.toBeInTheDocument();
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaceAuditEvents).toHaveBeenCalledTimes(2));
-    expect(await screen.findByText('chat_completions', { exact: true })).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('chat_completions', { exact: true })).toBeInTheDocument();
   });
 
   it('keeps the selected-Workspace projection visible but marks it stale when disconnected', async () => {
     const client = makeClient({ core: { meta: vi.fn().mockRejectedValue(new Error('down')) } });
     renderApp('/workspace/usage', client);
 
-    expect(await screen.findByText('chat_completions', { exact: true })).toBeInTheDocument();
+    await openRecords();
+    expect(screen.getByText('chat_completions', { exact: true })).toBeInTheDocument();
     expect(await screen.findByText('Status may be stale', { exact: true })).toBeInTheDocument();
   });
 });

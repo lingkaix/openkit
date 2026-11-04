@@ -58,7 +58,8 @@ describe('Access tokens administration', () => {
     const client = makeClient();
     const { queryClient } = renderScreen(client);
 
-    expect(await screen.findByText('tok_00000000-0000-71d2-a336-a862021357ff')).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: 'Records' }));
+    expect(screen.getByText('tok_00000000-0000-71d2-a336-a862021357ff')).toBeInTheDocument();
     await user.type(
       screen.getByLabelText('Owner user id'),
       'usr_00000000-0000-7011-88df-c2b1e8466b6f'
@@ -102,7 +103,8 @@ describe('Access tokens administration', () => {
     const client = makeClient();
     const { queryClient } = renderScreen(client);
 
-    expect(await screen.findByText('tok_00000000-0000-71d2-a336-a862021357ff')).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: 'Records' }));
+    expect(screen.getByText('tok_00000000-0000-71d2-a336-a862021357ff')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Revoke' }));
     await waitFor(() =>
       expect(client.operations['token.revoke']).toHaveBeenCalledWith({

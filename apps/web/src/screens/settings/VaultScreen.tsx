@@ -1,3 +1,4 @@
+import { Fragment, type ReactNode } from 'react';
 import { useConnection } from '../../app/core-client';
 import {
   Card,
@@ -22,6 +23,13 @@ import {
   type VaultReferenceRow,
   type VaultUseRow,
 } from './data';
+import {
+  attentionClause,
+  attentionSentence,
+  isAttention,
+  LongList,
+  matchesLoadedRow,
+} from './LongList';
 import { VaultGrantRequestsPanel } from './VaultGrantRequestsPanel';
 
 /**
@@ -120,33 +128,40 @@ export function VaultScreen() {
             title="References"
             emptyTitle="No credential references"
             emptyHint="Workspace credential references will appear here when configured."
-          >
-            {vault.data.references.map((reference) => (
-              <ReferenceRow key={reference.referenceId} reference={reference} />
-            ))}
-          </VaultList>
+            rows={vault.data.references.map((reference) => ({
+              key: reference.referenceId,
+              outcome: reference.status,
+              title: reference.referenceId,
+              node: <ReferenceRow reference={reference} />,
+            }))}
+          />
 
           <VaultList
             id="vault-grants"
             title="Grants"
             emptyTitle="No active or historical grants"
             emptyHint="Governed credential-use grants will appear here."
-          >
-            {vault.data.grants.map((grant) => (
-              <GrantRow key={grant.grantId} grant={grant} />
-            ))}
-          </VaultList>
+            rows={vault.data.grants.map((grant) => ({
+              key: grant.grantId,
+              outcome: grant.status,
+              title: grant.subjectSummary ?? grant.grantId,
+              node: <GrantRow grant={grant} />,
+            }))}
+          />
 
           <VaultList
             id="vault-use"
             title="Recent use"
             emptyTitle="No credential use recorded"
             emptyHint="Redacted credential-use evidence will appear here."
-          >
-            {vault.data.uses.map((use) => (
-              <UseRow key={use.useId} use={use} />
-            ))}
-          </VaultList>
+            rows={vault.data.uses.map((use) => ({
+              key: use.useId,
+              outcome: use.outcome,
+              title: use.vaultReferenceId,
+              at: use.usedAt,
+              node: <UseRow use={use} />,
+            }))}
+          />
         </>
       ) : null}
 
@@ -159,11 +174,13 @@ export function VaultScreen() {
         isError={plans.isError}
         errorMessage="Couldn't load injection plans."
         onRetry={() => void plans.refetch()}
-      >
-        {(plans.data ?? []).map((plan) => (
-          <PlanRow key={plan.planId} plan={plan} />
-        ))}
-      </VaultList>
+        rows={(plans.data ?? []).map((plan) => ({
+          key: plan.planId,
+          outcome: plan.status,
+          title: plan.planId,
+          node: <PlanRow plan={plan} />,
+        }))}
+      />
 
       <VaultList
         id="vault-injection-receipts"
@@ -174,11 +191,13 @@ export function VaultScreen() {
         isError={receipts.isError}
         errorMessage="Couldn't load injection receipts."
         onRetry={() => void receipts.refetch()}
-      >
-        {(receipts.data ?? []).map((receipt) => (
-          <ReceiptRow key={receipt.receiptId} receipt={receipt} />
-        ))}
-      </VaultList>
+        rows={(receipts.data ?? []).map((receipt) => ({
+          key: receipt.receiptId,
+          outcome: receipt.revocationStatus,
+          title: receipt.receiptId,
+          node: <ReceiptRow receipt={receipt} />,
+        }))}
+      />
     </Page>
   );
 }
@@ -211,7 +230,7 @@ function VaultList({
   isError = false,
   errorMessage,
   onRetry,
-  children,
+  rows,
 }: {
   id: string;
   title: string;
@@ -221,9 +240,14 @@ function VaultList({
   isError?: boolean;
   errorMessage?: string;
   onRetry?: () => void;
-  children: React.ReactNode;
+  rows: Array<{
+    key: string;
+    outcome: string;
+    title: string;
+    at?: string;
+    node: ReactNode;
+  }>;
 }) {
-  const empty = !Array.isArray(children) || children.length === 0;
   return (
     <section className="flex flex-col gap-3" aria-labelledby={id}>
       <h2 id={id} className="text-eyebrow font-bold uppercase tracking-eyebrow text-fg-muted">
@@ -233,10 +257,48 @@ function VaultList({
         <Skeleton lines={3} />
       ) : isError ? (
         <ErrorBanner message={errorMessage ?? "Couldn't load Vault records."} onRetry={onRetry} />
-      ) : empty ? (
+      ) : rows.length === 0 ? (
         <EmptyState icon="key" title={emptyTitle} hint={emptyHint} />
       ) : (
-        <Card className="py-0">{children}</Card>
+        <LongList
+          summary={(filter) => {
+            const lines = rows
+              .filter(
+                (row) =>
+                  isAttention(row.outcome) &&
+                  matchesLoadedRow(filter, {
+                    outcome: row.outcome,
+                    title: row.title,
+                    at: row.at,
+                  })
+              )
+              .map((row) => (
+                <p key={row.key}>
+                  {attentionSentence(attentionClause(row.outcome), row.title, row.at)}
+                </p>
+              ));
+            return lines.length > 0 ? (
+              lines
+            ) : (
+              <p>Nothing failed, was denied, or needs a decision.</p>
+            );
+          }}
+          records={(filter) => (
+            <Card className="py-0">
+              {rows
+                .filter((row) =>
+                  matchesLoadedRow(filter, {
+                    outcome: row.outcome,
+                    title: row.title,
+                    at: row.at,
+                  })
+                )
+                .map((row) => (
+                  <Fragment key={row.key}>{row.node}</Fragment>
+                ))}
+            </Card>
+          )}
+        />
       )}
     </section>
   );

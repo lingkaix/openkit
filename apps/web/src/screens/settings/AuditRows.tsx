@@ -1,7 +1,72 @@
+import { useQueries } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
+import { useCoreClient } from '../../app/core-client';
 import { ListRow, StatusChip, type StatusTone } from '../../primitives';
-import { chatThreadPath } from '../chat/data';
+import { chatKeys, conversationThreadPath } from '../chat/data';
 import type { AuditEventDisplayRow, PermissionDecisionDisplayRow } from './data';
+
+type ThreadActivity = Parameters<typeof conversationThreadPath>[2];
+
+/**
+ * Reads conversation.navigation for the workspaces on the loaded rows.
+ * A client without that operation stays on the chat route and does not invent a Task.
+ *
+ * @param workspaceIds Workspace ids recorded on the current rows.
+ * @returns A lookup that is pending only while a real navigation read is in flight.
+ */
+export function useThreadActivity(workspaceIds: readonly (string | null | undefined)[]) {
+  const client = useCoreClient();
+  const ids = [...new Set(workspaceIds.filter((id): id is string => Boolean(id)))].sort();
+  const navigable = typeof client.operations['conversation.navigation'] === 'function';
+  const queries = useQueries({
+    queries: ids.map((workspaceId) => ({
+      queryKey: chatKeys.navigation(workspaceId),
+      enabled: navigable,
+      retry: false,
+      queryFn: async () =>
+        (await client.operations['conversation.navigation']({ workspaceId })).items,
+    })),
+  });
+  const byThread = new Map<string, ThreadActivity>();
+  for (const query of queries) {
+    for (const item of query.data ?? []) byThread.set(item.thread.id, item.activity);
+  }
+  const pending = navigable && ids.length > 0 && queries.some((query) => query.isPending);
+  return {
+    pending,
+    activityFor(threadId: string | null): ThreadActivity | 'pending' {
+      if (!threadId || pending) return pending ? 'pending' : 'unknown';
+      return byThread.get(threadId) ?? 'unknown';
+    },
+  };
+}
+
+const threadLinkClass =
+  'inline-flex min-h-11 items-center break-all text-xs font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus';
+
+/** Activity route for one recorded thread. Pending navigation renders nothing. */
+export function ThreadLink({
+  workspaceId,
+  threadId,
+  activity,
+}: {
+  workspaceId: string | null;
+  threadId: string | null;
+  activity: ThreadActivity | 'pending';
+}) {
+  if (!workspaceId || !threadId || activity === 'pending') return null;
+  return (
+    <Link to={conversationThreadPath(workspaceId, threadId, activity)} className={threadLinkClass}>
+      {activityLinkName(activity)}
+    </Link>
+  );
+}
+
+function activityLinkName(activity: ThreadActivity): string {
+  if (activity === 'task') return 'Open the Task';
+  if (activity === 'goal') return 'Open the Goal';
+  return 'Open the Assistant';
+}
 
 /**
  * Maps producer status values to the fixed Design vocabulary.
@@ -58,8 +123,15 @@ export function RecordedTime({ value }: { value?: string }) {
  *
  * @param props Safe audit metadata.
  */
-export function AuditEventRow({ event }: { event: AuditEventDisplayRow }) {
+export function AuditEventRow({
+  event,
+  activity = 'unknown',
+}: {
+  event: AuditEventDisplayRow;
+  activity?: ThreadActivity | 'pending';
+}) {
   const status = evidenceStatus(event.outcome);
+  const linkActivity = activity === 'pending' ? null : activity;
   return (
     <ListRow>
       <div className="min-w-0 flex-1">
@@ -69,14 +141,11 @@ export function AuditEventRow({ event }: { event: AuditEventDisplayRow }) {
         <p className="break-all text-xs text-fg-muted">
           {event.actor ? `Actor: ${event.actor.kind} · ${event.actor.id}` : 'Actor not recorded'}
         </p>
-        {event.workspaceId && event.threadId ? (
-          <Link
-            to={chatThreadPath(event.workspaceId, event.threadId)}
-            className="break-all text-xs font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus"
-          >
-            Open Thread {event.threadId} in Workspace {event.workspaceId}
-          </Link>
-        ) : null}
+        <ThreadLink
+          workspaceId={event.workspaceId}
+          threadId={event.threadId}
+          activity={linkActivity ?? 'pending'}
+        />
         {event.turnId ? (
           <p className="break-all text-xs text-fg-muted">Turn: {event.turnId}</p>
         ) : null}
@@ -87,6 +156,9 @@ export function AuditEventRow({ event }: { event: AuditEventDisplayRow }) {
           <p className="text-xs text-fg-muted">
             Stop request accepted. Runtime cleanup is not confirmed by this event.
           </p>
+        ) : null}
+        {event.recordedAt ? (
+          <p className="break-all text-xs text-fg-muted">{event.recordedAt}</p>
         ) : null}
         <RecordedTime value={event.recordedAt} />
       </div>
@@ -108,6 +180,9 @@ export function PermissionDecisionRow({ decision }: { decision: PermissionDecisi
     <ListRow>
       <div className="min-w-0 flex-1">
         <p className="text-sm font-bold text-fg-strong">{decision.action}</p>
+        {decision.createdAt ? (
+          <p className="break-all text-xs text-fg-muted">{decision.createdAt}</p>
+        ) : null}
         <RecordedTime value={decision.createdAt} />
       </div>
       <StatusChip tone={status.tone} dot>

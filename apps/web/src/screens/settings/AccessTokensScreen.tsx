@@ -6,15 +6,25 @@ import { useCoreClient } from '../../app/core-client';
 import {
   Button,
   Card,
+  Dialog,
   EmptyState,
   ErrorBanner,
   ListRow,
+  Modal,
   Page,
   PageHeader,
   Select,
   Skeleton,
   TextField,
 } from '../../primitives';
+import {
+  attentionClause,
+  attentionSentence,
+  isAttention,
+  LongList,
+  matchesLoadedRow,
+  usePhoneLayout,
+} from './LongList';
 
 const QUERY_KEY = ['settings', 'access-tokens'] as const;
 const SCOPE_ITEMS = [
@@ -68,8 +78,14 @@ export function AccessTokensScreen() {
     },
   });
 
+  const phone = usePhoneLayout();
   const denied = isAccessDenied(listed.error);
   const canIssue = Boolean(ownerUserId.trim() && expiresAt.trim());
+  const dismissIssued = () => {
+    setIssuedSecret(null);
+    issue.reset();
+    rotate.reset();
+  };
 
   return (
     <Page>
@@ -80,28 +96,45 @@ export function AccessTokensScreen() {
       />
 
       {issuedSecret ? (
-        <Card className="flex flex-col gap-3">
-          <div>
-            <h2 className="text-sm font-bold text-fg-strong">Copy this token now</h2>
-            <p className="mt-1 text-sm text-fg-muted">
-              The plaintext secret is shown once and is not stored in this page after you dismiss
-              it.
-            </p>
-          </div>
-          <TextField label="Issued token" value={issuedSecret} isReadOnly />
-          <div className="flex justify-end">
-            <Button
-              variant="outline"
-              onPress={() => {
-                setIssuedSecret(null);
-                issue.reset();
-                rotate.reset();
-              }}
-            >
-              Dismiss
-            </Button>
-          </div>
-        </Card>
+        phone ? (
+          <Modal trigger={<Button className="min-h-11">Show issued token</Button>}>
+            <Dialog title="Copy this token now">
+              <p>
+                The plaintext secret is shown once and is not stored in this page after you dismiss
+                it.
+              </p>
+              <TextField label="Issued token" value={issuedSecret} isReadOnly />
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  className="min-h-11"
+                  onPress={() => void navigator.clipboard?.writeText(issuedSecret)}
+                >
+                  Copy
+                </Button>
+                <Button variant="outline" className="min-h-11" onPress={dismissIssued}>
+                  Dismiss
+                </Button>
+              </div>
+            </Dialog>
+          </Modal>
+        ) : (
+          <Card className="flex flex-col gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-fg-strong">Copy this token now</h2>
+              <p className="mt-1 text-sm text-fg-muted">
+                The plaintext secret is shown once and is not stored in this page after you dismiss
+                it.
+              </p>
+            </div>
+            <TextField label="Issued token" value={issuedSecret} isReadOnly />
+            <div className="flex justify-end">
+              <Button variant="outline" className="min-h-11" onPress={dismissIssued}>
+                Dismiss
+              </Button>
+            </div>
+          </Card>
+        )
       ) : null}
 
       {listed.isSuccess ? (
@@ -162,17 +195,49 @@ export function AccessTokensScreen() {
           hint="Issued tokens appear here with redacted metadata only."
         />
       ) : (
-        <div>
-          {(listed.data?.items ?? []).map((item) => (
-            <TokenRow
-              key={item.tokenId}
-              item={item}
-              busy={revoke.isPending || rotate.isPending}
-              onRevoke={() => revoke.mutate(item.tokenId)}
-              onRotate={() => rotate.mutate(item.tokenId)}
-            />
-          ))}
-        </div>
+        <LongList
+          summary={(filter) => {
+            const lines = (listed.data?.items ?? [])
+              .filter(
+                (item) =>
+                  isAttention(item.status) &&
+                  matchesLoadedRow(filter, {
+                    outcome: item.status,
+                    title: item.scope,
+                    at: item.issuedAt,
+                  })
+              )
+              .map((item) => (
+                <p key={item.tokenId}>
+                  {attentionSentence(attentionClause(item.status), item.scope, item.issuedAt)}
+                </p>
+              ));
+            return lines.length > 0 ? (
+              lines
+            ) : (
+              <p>Nothing failed, was denied, or needs a decision.</p>
+            );
+          }}
+          records={(filter) =>
+            (listed.data?.items ?? [])
+              .filter((item) =>
+                matchesLoadedRow(filter, {
+                  outcome: item.status,
+                  title: item.tokenId,
+                  at: item.issuedAt,
+                })
+              )
+              .map((item) => (
+                <TokenRow
+                  key={item.tokenId}
+                  item={item}
+                  busy={revoke.isPending || rotate.isPending}
+                  onRevoke={() => revoke.mutate(item.tokenId)}
+                  onRotate={() => rotate.mutate(item.tokenId)}
+                />
+              ))
+          }
+        />
       )}
     </Page>
   );
@@ -200,6 +265,7 @@ function TokenRow({
       <Button
         size="sm"
         variant="outline"
+        className="min-h-11"
         isDisabled={busy || item.status !== 'active'}
         onPress={onRotate}
       >
@@ -208,6 +274,7 @@ function TokenRow({
       <Button
         size="sm"
         variant="quiet"
+        className="min-h-11"
         isDisabled={busy || item.status === 'revoked'}
         onPress={onRevoke}
       >

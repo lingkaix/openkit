@@ -77,8 +77,9 @@ describe('Discord settings', () => {
       }),
     });
     show(value);
+    await userEvent.click(await screen.findByRole('button', { name: 'Records' }));
     expect(
-      await screen.findByText(
+      screen.getByText(
         `/openkit inspect workspace:${workspaceId} thread:${threadId} request:req_channels`
       )
     ).toBeInTheDocument();
@@ -212,7 +213,8 @@ describe('Discord settings', () => {
       'notification.send': vi.fn().mockResolvedValue({ ...base, status: 'sent' }),
     });
     show(value);
-    expect(await screen.findByText('Delivery unknown')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'Records' }));
+    expect(screen.getByText('Delivery unknown')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Retry send' })).toHaveLength(1);
     await userEvent.click(screen.getByRole('button', { name: 'Retry send' }));
     await waitFor(() =>

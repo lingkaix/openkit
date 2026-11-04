@@ -13,6 +13,7 @@ import {
   StatusChip,
 } from '../../primitives';
 import { accountChannelsKey } from '../account/session';
+import { attentionSentence, isAttention, LongList, matchesLoadedRow } from './LongList';
 
 const channelKey = [...accountChannelsKey, 'status'] as const;
 const notificationKey = [...accountChannelsKey, 'deliveries'] as const;
@@ -179,47 +180,94 @@ export function ChannelsScreen() {
             hint="Current Pending Request attention appears here."
           />
         ) : (
-          deliveries.data.items.map((delivery) => (
-            <Card key={delivery.id} className="flex flex-col gap-2">
-              <p role="status" className="text-sm font-bold">
-                {labels[delivery.status]}
-              </p>
-              <Link to={delivery.appPath} className="text-sm text-accent underline">
-                Inspect request
-              </Link>
-              {status.data?.configured && status.data.binding ? (
-                <div className="flex flex-col gap-2">
-                  <p className="text-sm text-fg-muted">
-                    Copy this command to a private message with the bot:
-                  </p>
-                  <code className="break-all">
-                    {`/openkit inspect workspace:${delivery.source.workspaceId} thread:${delivery.source.threadId} request:${delivery.source.requestId}`}
-                  </code>
-                </div>
-              ) : null}
-              {delivery.status === 'delivery-unknown' ? (
-                <p className="text-sm text-fg-muted">
-                  The channel might have received this message. Automatic resend is disabled.
-                </p>
-              ) : null}
-              {delivery.status === 'queued' || delivery.status === 'failed-no-send' ? (
-                <Button
-                  size="sm"
-                  isDisabled={
-                    disconnected || busy || !status.data?.binding || !status.data.sendingAvailable
-                  }
-                  onPress={() =>
-                    send.mutate({
-                      deliveryId: delivery.id,
-                      expectedAttemptId: delivery.attempt?.id ?? null,
+          <LongList
+            summary={(filter) => {
+              const lines = (deliveries.data?.items ?? [])
+                .filter(
+                  (delivery) =>
+                    isAttention(delivery.status) &&
+                    matchesLoadedRow(filter, {
+                      outcome: delivery.status,
+                      title: 'an attention link',
+                      at: delivery.createdAt,
                     })
-                  }
-                >
-                  {delivery.status === 'queued' ? 'Send attention link' : 'Retry send'}
-                </Button>
-              ) : null}
-            </Card>
-          ))
+                )
+                .map((delivery) => (
+                  <p key={delivery.id}>
+                    {attentionSentence(
+                      delivery.status === 'failed-no-send'
+                        ? 'A delivery failed'
+                        : 'A delivery needs a decision',
+                      'an attention link',
+                      delivery.createdAt
+                    )}
+                  </p>
+                ));
+              return lines.length > 0 ? (
+                lines
+              ) : (
+                <p>Nothing failed, was denied, or needs a decision.</p>
+              );
+            }}
+            records={(filter) =>
+              (deliveries.data?.items ?? [])
+                .filter((delivery) =>
+                  matchesLoadedRow(filter, {
+                    outcome: delivery.status,
+                    title: 'an attention link',
+                    at: delivery.createdAt,
+                  })
+                )
+                .map((delivery) => (
+                  <Card key={delivery.id} className="flex flex-col gap-2">
+                    <p role="status" className="text-sm font-bold">
+                      {labels[delivery.status]}
+                    </p>
+                    <Link
+                      to={delivery.appPath}
+                      className="inline-flex min-h-11 items-center text-sm text-accent underline"
+                    >
+                      Inspect request
+                    </Link>
+                    {status.data?.configured && status.data.binding ? (
+                      <div className="flex flex-col gap-2">
+                        <p className="text-sm text-fg-muted">
+                          Copy this command to a private message with the bot:
+                        </p>
+                        <code className="break-all">
+                          {`/openkit inspect workspace:${delivery.source.workspaceId} thread:${delivery.source.threadId} request:${delivery.source.requestId}`}
+                        </code>
+                      </div>
+                    ) : null}
+                    {delivery.status === 'delivery-unknown' ? (
+                      <p className="text-sm text-fg-muted">
+                        The channel might have received this message. Automatic resend is disabled.
+                      </p>
+                    ) : null}
+                    {delivery.status === 'queued' || delivery.status === 'failed-no-send' ? (
+                      <Button
+                        size="sm"
+                        className="min-h-11"
+                        isDisabled={
+                          disconnected ||
+                          busy ||
+                          !status.data?.binding ||
+                          !status.data.sendingAvailable
+                        }
+                        onPress={() =>
+                          send.mutate({
+                            deliveryId: delivery.id,
+                            expectedAttemptId: delivery.attempt?.id ?? null,
+                          })
+                        }
+                      >
+                        {delivery.status === 'queued' ? 'Send attention link' : 'Retry send'}
+                      </Button>
+                    ) : null}
+                  </Card>
+                ))
+            }
+          />
         )}
       </section>
     </Page>
