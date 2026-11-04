@@ -61,6 +61,38 @@ const ARTIFACT_STATUS: Record<ArtifactListItem['status'], { label: string; tone:
 };
 
 /**
+ * Pasted import has no media-type field. The admitted import still requires one.
+ * `{` or `[` is JSON, `#` is Markdown, and every other paste is plain text.
+ */
+function inferImportMediaType(content: string): ArtifactImportInput['mediaType'] {
+  const trimmed = content.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) return 'application/json';
+  if (trimmed.startsWith('#')) return 'text/markdown';
+  return 'text/plain';
+}
+
+/** Local updated time for a list row. An unreadable timestamp stays an honest unknown. */
+function formatUpdatedAt(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Updated time unknown';
+  return date.toLocaleString();
+}
+
+/** Phone preview below the shell's 800px navigation break. Absent matchMedia stays desktop. */
+function usePhoneLayout(): boolean {
+  const [phone, setPhone] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia?.('(max-width: 799px)');
+    if (!media) return undefined;
+    const sync = () => setPhone(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+  return phone;
+}
+
+/**
  * Returns whether the exact Artifact read is an importable introduction target.
  *
  * Eligibility is the detail origin only: `imported` with null Thread and Turn,
@@ -131,10 +163,12 @@ export function ArtifactsScreen() {
   const introduceArtifact = useIntroduceWorkspaceArtifact();
   const { connected } = useConnection();
   const disconnected = !connected;
+  const phone = usePhoneLayout();
   const [importing, setImporting] = useState(false);
   const [title, setTitle] = useState('');
   const [mediaType, setMediaType] = useState('');
   const [content, setContent] = useState('');
+  const [filter, setFilter] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [threadId, setThreadId] = useState('');
   const [comparisonOpen, setComparisonOpen] = useState(false);
@@ -213,6 +247,7 @@ export function ArtifactsScreen() {
     setMediaType('');
     setContent('');
     setFile(null);
+    setFilter('');
     setThreadId('');
     setListDeniedUntilSettled(false);
     importArtifact.reset();
@@ -345,6 +380,11 @@ export function ArtifactsScreen() {
     navigate(artifactInventoryPath(workspaceId, id));
   }
 
+  function closePreview() {
+    if (!workspaceId) return;
+    navigate(`/artifacts?${new URLSearchParams({ workspaceId }).toString()}`);
+  }
+
   if (!workspaces.isSuccess) {
     return (
       <Page>
@@ -402,6 +442,19 @@ export function ArtifactsScreen() {
   }
 
   const items = artifacts.data;
+  const filterQuery = filter.trim().toLowerCase();
+  const shownItems = filterQuery
+    ? items.filter((item) => {
+        const kindLabel = ARTIFACT_KIND_LABEL[item.kind].toLowerCase();
+        return (
+          item.title.toLowerCase().includes(filterQuery) ||
+          item.kind.toLowerCase().includes(filterQuery) ||
+          kindLabel.includes(filterQuery)
+        );
+      })
+    : items;
+  const previewOpen = Boolean(selectedId || unavailableArtifact);
+  const showList = !phone || !previewOpen;
   const listedItem = selectedId ? (items.find((item) => item.id === selectedId) ?? null) : null;
   const importBound = importArtifact.variables?.workspaceId === workspaceId;
   const introduceBound =
@@ -471,9 +524,16 @@ export function ArtifactsScreen() {
             <Button size="sm" variant="outline" onPress={() => setComparisonOpen(true)}>
               Compare candidates
             </Button>
-            <Button size="sm" isDisabled={importActionBlocked} onPress={() => setImporting(true)}>
-              Import artifact
-            </Button>
+            {importing ? null : (
+              <Button
+                size="sm"
+                className="min-h-11"
+                isDisabled={importActionBlocked}
+                onPress={() => setImporting(true)}
+              >
+                Import
+              </Button>
+            )}
           </>
         }
       />
@@ -523,21 +583,25 @@ export function ArtifactsScreen() {
             onChange={setTitle}
             isDisabled={importActionBlocked}
           />
-          <TextField
-            label="Media type"
-            value={mediaType}
-            onChange={setMediaType}
-            isDisabled={importActionBlocked}
-            placeholder="text/markdown"
-          />
+          {file || content.trim() ? <p className="text-sm text-fg-muted">{mediaType}</p> : null}
           {!file ? (
             <ImportContentField
               value={content}
-              onChange={setContent}
+              onChange={(value) => {
+                setContent(value);
+                setMediaType(value.trim() ? inferImportMediaType(value) : '');
+              }}
               isDisabled={importActionBlocked}
             />
           ) : (
-            <Button variant="quiet" isDisabled={importActionBlocked} onPress={() => setFile(null)}>
+            <Button
+              variant="quiet"
+              isDisabled={importActionBlocked}
+              onPress={() => {
+                setFile(null);
+                setMediaType(content.trim() ? inferImportMediaType(content) : '');
+              }}
+            >
               Remove selected file
             </Button>
           )}
@@ -550,7 +614,12 @@ export function ArtifactsScreen() {
             </fieldset>
           ) : null}
           <div className="flex gap-2">
-            <Button size="sm" isDisabled={importSubmitBlocked} onPress={tryImport}>
+            <Button
+              size="sm"
+              className="min-h-11"
+              isDisabled={importSubmitBlocked}
+              onPress={tryImport}
+            >
               Import
             </Button>
             <Button size="sm" variant="outline" onPress={resetImportForm}>
@@ -559,36 +628,6 @@ export function ArtifactsScreen() {
           </div>
         </Card>
       ) : null}
-
-      {items.length === 0 && !importing ? (
-        <EmptyState
-          icon="file"
-          title="No artifacts yet"
-          hint="Import a file or ask an agent to submit a document or report as an artifact."
-        />
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {items.map((item) => {
-            const status = ARTIFACT_STATUS[item.status];
-            return (
-              <li key={item.id}>
-                <div className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1">
-                    <ArtifactRow name={item.title} onOpen={() => openArtifact(item.id)} />
-                  </div>
-                  <StatusChip tone={status.tone}>{status.label}</StatusChip>
-                </div>
-                <p className="px-2 text-xs text-fg-muted">
-                  {ARTIFACT_KIND_LABEL[item.kind]} · v{item.version}
-                </p>
-                {item.summary ? (
-                  <p className="px-2 pb-2 text-xs text-fg-muted">{item.summary}</p>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-      )}
 
       {comparisonOpen ? (
         <Card>
@@ -611,91 +650,147 @@ export function ArtifactsScreen() {
         </Card>
       ) : null}
 
-      {selectedId || unavailableArtifact ? (
-        <Card className="flex flex-col gap-3">
-          {listedItem ? (
-            <p className="text-xs text-fg-muted">Version {listedItem.version}</p>
-          ) : null}
-          {unavailableArtifact ? (
-            <EmptyState icon="file" title="That artifact isn't available" />
-          ) : listedItem && selected.isError ? (
-            <ErrorBanner
-              message="Couldn't load that artifact."
-              onRetry={() => void selected.refetch()}
+      <div
+        className={
+          !phone && previewOpen ? 'grid grid-cols-2 items-start gap-4' : 'flex flex-col gap-4'
+        }
+      >
+        {showList ? (
+          items.length === 0 && !importing ? (
+            <EmptyState
+              icon="file"
+              title="No artifacts yet"
+              hint="Import a file or ask an agent to submit a document or report as an artifact."
             />
-          ) : listedItem && selected.isLoading && selected.data === undefined ? (
-            <Skeleton lines={4} />
-          ) : null}
-          {historyArtifact ? (
-            <ArtifactVersionHistory
-              key={`${workspaceId}:${selectedId}`}
-              currentArtifact={historyArtifact}
-              disabled={writeBlocked}
-              unavailable={!detail || selected.isFetching}
-              onVersionChange={onInspectedVersionChange}
-              onAddCandidate={addComparisonCandidate}
-              comparisonDisabled={comparisonLocked}
-            />
-          ) : null}
-          {historicalSelection ? (
-            <p className="text-sm text-fg-muted">
-              Historical versions are available for inspection and download. Select the current head
-              to add it to a conversation.
-            </p>
-          ) : null}
-          {detail ? (
-            <p className="text-sm text-fg-muted">
-              {detail.origin.kind === 'turn-output'
-                ? 'This output is already linked to its producing conversation. To ask an agent to use it, attach it in the conversation composer.'
-                : 'Add a reference to this imported file in the selected conversation. This does not send a message to an agent or start work.'}
-            </p>
-          ) : null}
-          {threads.isError ? (
-            <ErrorBanner
-              message="Couldn't load conversations."
-              onRetry={() => void threads.refetch()}
-            />
-          ) : threads.isLoading && threads.data === undefined ? (
-            <Skeleton lines={2} />
-          ) : !threads.data?.length ? (
-            <p className="text-sm text-fg-muted">No conversations in this Workspace.</p>
           ) : (
-            <Select
-              label="Conversation"
-              placeholder=""
-              items={threads.data.map((thread) => ({
-                id: thread.id,
-                label: thread.name ?? 'Untitled thread',
-              }))}
-              selectedKey={threadId || null}
-              isDisabled={introduceActionBlocked}
-              onSelectionChange={(key) => setThreadId(key == null ? '' : String(key))}
-            />
-          )}
-          {introduceBound && introduceArtifact.isError ? (
-            <fieldset disabled={disconnected} className="contents">
-              <ErrorBanner
-                message={artifactIntroduceErrorMessage(introduceArtifact.error)}
-                onRetry={
-                  isRetryableIntroduceError(introduceArtifact.error) ? retryIntroduce : undefined
-                }
-              />
-            </fieldset>
-          ) : null}
-          {introducedThreadName ? (
-            <p className="text-sm text-fg">Added to {introducedThreadName}.</p>
-          ) : null}
-          <Button
-            size="sm"
-            isDisabled={introduceActionBlocked || !canIntroduce}
-            onPress={() => {
-              if (listedItem) tryIntroduce(listedItem);
-            }}
-          >
-            Add to conversation
-          </Button>
-        </Card>
-      ) : null}
+            <div className="flex min-w-0 flex-col gap-3">
+              {items.length > 0 ? (
+                <TextField label="Filter" value={filter} onChange={setFilter} />
+              ) : null}
+              <ul className="flex flex-col gap-1">
+                {shownItems.map((item) => {
+                  const status = ARTIFACT_STATUS[item.status];
+                  return (
+                    <li key={item.id}>
+                      <div className="flex items-center gap-2">
+                        <div className="min-w-0 flex-1">
+                          <ArtifactRow
+                            name={item.title}
+                            time={formatUpdatedAt(item.updatedAt)}
+                            onOpen={() => openArtifact(item.id)}
+                          />
+                        </div>
+                        <StatusChip tone={status.tone}>{status.label}</StatusChip>
+                      </div>
+                      <p className="px-2 text-sm text-fg-muted">
+                        {ARTIFACT_KIND_LABEL[item.kind]} · v{item.version}
+                      </p>
+                      {item.summary ? (
+                        <p className="px-2 pb-2 text-sm text-fg-muted">{item.summary}</p>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )
+        ) : null}
+
+        {previewOpen ? (
+          <div className="flex min-w-0 flex-col gap-3">
+            {phone ? (
+              <Button className="min-h-11" variant="outline" onPress={closePreview}>
+                Back
+              </Button>
+            ) : null}
+            <Card className="flex flex-col gap-3">
+              {listedItem ? (
+                <p className="text-xs text-fg-muted">Version {listedItem.version}</p>
+              ) : null}
+              {unavailableArtifact ? (
+                <EmptyState icon="file" title="That artifact isn't available" />
+              ) : listedItem && selected.isError ? (
+                <ErrorBanner
+                  message="Couldn't load that artifact."
+                  onRetry={() => void selected.refetch()}
+                />
+              ) : listedItem && selected.isLoading && selected.data === undefined ? (
+                <Skeleton lines={4} />
+              ) : null}
+              {historyArtifact ? (
+                <ArtifactVersionHistory
+                  key={`${workspaceId}:${selectedId}`}
+                  currentArtifact={historyArtifact}
+                  disabled={writeBlocked}
+                  unavailable={!detail || selected.isFetching}
+                  onVersionChange={onInspectedVersionChange}
+                  onAddCandidate={addComparisonCandidate}
+                  comparisonDisabled={comparisonLocked}
+                />
+              ) : null}
+              {historicalSelection ? (
+                <p className="text-sm text-fg-muted">
+                  Historical versions are available for inspection and download. Select the current
+                  head to add it to a conversation.
+                </p>
+              ) : null}
+              {detail ? (
+                <p className="text-sm text-fg-muted">
+                  {detail.origin.kind === 'turn-output'
+                    ? 'This output is already linked to its producing conversation. To ask an agent to use it, attach it in the conversation composer.'
+                    : 'Add a reference to this imported file in the selected conversation. This does not send a message to an agent or start work.'}
+                </p>
+              ) : null}
+              {threads.isError ? (
+                <ErrorBanner
+                  message="Couldn't load conversations."
+                  onRetry={() => void threads.refetch()}
+                />
+              ) : threads.isLoading && threads.data === undefined ? (
+                <Skeleton lines={2} />
+              ) : !threads.data?.length ? (
+                <p className="text-sm text-fg-muted">No conversations in this Workspace.</p>
+              ) : (
+                <Select
+                  label="Conversation"
+                  placeholder=""
+                  items={threads.data.map((thread) => ({
+                    id: thread.id,
+                    label: thread.name ?? 'Untitled thread',
+                  }))}
+                  selectedKey={threadId || null}
+                  isDisabled={introduceActionBlocked}
+                  onSelectionChange={(key) => setThreadId(key == null ? '' : String(key))}
+                />
+              )}
+              {introduceBound && introduceArtifact.isError ? (
+                <fieldset disabled={disconnected} className="contents">
+                  <ErrorBanner
+                    message={artifactIntroduceErrorMessage(introduceArtifact.error)}
+                    onRetry={
+                      isRetryableIntroduceError(introduceArtifact.error)
+                        ? retryIntroduce
+                        : undefined
+                    }
+                  />
+                </fieldset>
+              ) : null}
+              {introducedThreadName ? (
+                <p className="text-sm text-fg">Added to {introducedThreadName}.</p>
+              ) : null}
+              <Button
+                size="sm"
+                isDisabled={introduceActionBlocked || !canIntroduce}
+                onPress={() => {
+                  if (listedItem) tryIntroduce(listedItem);
+                }}
+              >
+                Add to conversation
+              </Button>
+            </Card>
+          </div>
+        ) : null}
+      </div>
     </Page>
   );
 }

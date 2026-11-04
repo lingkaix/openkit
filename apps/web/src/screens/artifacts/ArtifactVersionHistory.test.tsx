@@ -225,13 +225,15 @@ describe('Artifact version history', () => {
         content: { format: 'file', mediaType: 'application/octet-stream', byteLength: 5 },
       })
     );
-    expect(await screen.findByText('application/octet-stream')).toBeInTheDocument();
-    expect(screen.getByText('5 bytes')).toBeInTheDocument();
+    expect(await screen.findByText('5 bytes')).toBeInTheDocument();
+    expect(screen.queryByText('application/octet-stream')).not.toBeInTheDocument();
     expect(screen.queryByText('# Exact second version')).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Download original' })).toHaveAttribute(
       'href',
       `/download/${current.id}/2`
     );
+    await userEvent.click(screen.getByRole('button', { name: /^details$/i }));
+    expect(screen.getByText('application/octet-stream')).toBeInTheDocument();
   });
 
   it('requires a current read and explicit parent choice after a version conflict', async () => {
@@ -296,6 +298,8 @@ describe('Artifact version history', () => {
     expect(await screen.findByText('# Exact first version')).toBeInTheDocument();
     expect(screen.queryByText('# Exact second version')).not.toBeInTheDocument();
     expect(screen.getByText('No parent')).toBeInTheDocument();
+    expect(screen.queryByText(first.contentDigest)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^details$/i }));
     expect(screen.getByText(first.contentDigest)).toBeInTheDocument();
     expect(screen.getByText(recordedAt)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Download original' })).toHaveAttribute(

@@ -520,10 +520,10 @@ async function submitImport(
     content: IMPORT_CONTENT,
   }
 ) {
-  await user.click(screen.getByRole('button', { name: /import artifact/i }));
+  await user.click(screen.getByRole('button', { name: /^import$/i }));
   await user.type(screen.getByRole('textbox', { name: 'Title' }), input.title);
-  await user.type(screen.getByRole('textbox', { name: 'Media type' }), input.mediaType);
   await user.type(screen.getByRole('textbox', { name: 'Content' }), input.content);
+  expect(screen.getByText(input.mediaType)).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: /^import$/i }));
 }
 
@@ -546,15 +546,15 @@ async function submitMultilineImport(
   user: ReturnType<typeof userEvent.setup>,
   input: { title: string; mediaType: string; content: string }
 ) {
-  await user.click(screen.getByRole('button', { name: /import artifact/i }));
+  await user.click(screen.getByRole('button', { name: /^import$/i }));
   await user.type(screen.getByRole('textbox', { name: 'Title' }), input.title);
-  await user.type(screen.getByRole('textbox', { name: 'Media type' }), input.mediaType);
   const content = screen.getByRole('textbox', { name: 'Content' });
   expect(content.tagName).toBe('TEXTAREA');
   expect(content).toHaveAccessibleName('Content');
   await user.click(content);
   await user.paste(input.content);
   expect(content).toHaveValue(input.content);
+  expect(screen.getByText(input.mediaType)).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: /^import$/i }));
 }
 
@@ -835,7 +835,7 @@ describe('Artifacts', () => {
     );
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     expect(await screen.findByText('Status may be stale', { exact: true })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /import artifact/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^import$/i })).toBeDisabled();
     assertNoLeakedInternals();
   });
 
@@ -918,7 +918,7 @@ describe('Artifacts', () => {
         },
       })
     );
-    await user.click(await screen.findByRole('button', { name: /import artifact/i }));
+    await user.click(await screen.findByRole('button', { name: /^import$/i }));
     await user.upload(
       document.querySelector('input[type="file"]') as HTMLInputElement,
       file as unknown as File
@@ -951,7 +951,7 @@ describe('Artifacts', () => {
       .mockRejectedValueOnce(new Error('Acknowledgement unavailable'))
       .mockResolvedValue(IMPORT_MUTATION);
     renderApp('/artifacts', makeClient({ operations: { 'artifact.import': fileImport } }));
-    await user.click(await screen.findByRole('button', { name: /import artifact/i }));
+    await user.click(await screen.findByRole('button', { name: /^import$/i }));
     await user.upload(
       document.querySelector('input[type="file"]') as HTMLInputElement,
       file as unknown as File
@@ -1528,7 +1528,7 @@ describe('Artifacts', () => {
       ).toBe(true)
     );
 
-    await user.click(screen.getByRole('button', { name: /import artifact/i }));
+    await user.click(screen.getByRole('button', { name: /^import$/i }));
     await user.type(screen.getByRole('textbox', { name: 'Title' }), 'Ops import draft');
     importRead.resolve(IMPORT_MUTATION);
     await waitFor(() => expect(importWorkspaceArtifact).toHaveBeenCalledTimes(1));
@@ -1976,7 +1976,7 @@ describe('Artifacts', () => {
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/couldn't load artifacts|status may be stale/i);
     expect(alert).not.toHaveTextContent('list-refetch-private failure');
-    expect(screen.getByRole('button', { name: /import artifact/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^import$/i })).toBeDisabled();
 
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listArtifacts).toHaveBeenCalledTimes(3));
@@ -1987,9 +1987,7 @@ describe('Artifacts', () => {
       [{ workspaceId: WORKSPACE.id }],
     ]);
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /import artifact/i })).toBeEnabled()
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /^import$/i })).toBeEnabled());
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     assertNoLeakedInternals();
   });
@@ -2052,7 +2050,7 @@ describe('Artifacts', () => {
     expect(screen.queryByText(PREVIEW_BODY)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORT_MUTATION.artifactId)).not.toBeInTheDocument();
     expect(screen.queryByText(IMPORT_TITLE)).not.toBeInTheDocument();
-    for (const name of [/import artifact/i, /add to conversation/i, /^import$/i]) {
+    for (const name of [/^import$/i, /add to conversation/i]) {
       const action = screen.queryByRole('button', { name });
       if (action) expect(action).toBeDisabled();
     }
@@ -2072,9 +2070,7 @@ describe('Artifacts', () => {
     expect(await screen.findByText(ARTIFACT.title)).toBeInTheDocument();
     expect(screen.getByText(ARTIFACT.summary as string)).toBeInTheDocument();
     expect(screen.queryByText(PREVIEW_BODY)).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: /import artifact/i })).toBeEnabled()
-    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /^import$/i })).toBeEnabled());
     await openArtifact(user, ARTIFACT.title);
     await waitFor(() => expect(getArtifact).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(PREVIEW_BODY)).toBeInTheDocument();

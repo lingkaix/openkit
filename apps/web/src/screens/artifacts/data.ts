@@ -10,7 +10,7 @@ import { sha256ArtifactFile } from './file-digest';
 /** Product-safe Artifact list fields; list payloads never carry preview bytes. */
 export type ArtifactListItem = Pick<
   Awaited<ReturnType<CoreClient['operations']['artifact.list']>>['items'][number],
-  'id' | 'kind' | 'status' | 'summary' | 'title' | 'version'
+  'id' | 'kind' | 'status' | 'summary' | 'title' | 'version' | 'updatedAt'
 >;
 
 /** Media types admitted by the exact original streaming import. */
@@ -389,6 +389,7 @@ export function useArtifacts(workspaceId: string | null) {
         summary: item.summary,
         title: item.title,
         version: item.version,
+        updatedAt: item.updatedAt,
       }));
     },
     enabled: Boolean(workspaceId),
