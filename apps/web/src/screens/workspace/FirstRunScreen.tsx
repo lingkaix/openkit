@@ -17,7 +17,7 @@ import { useWorkspaces } from './data';
  * First-run welcome (WP-6, board 18) — the app-level empty / onboarding state.
  *
  * Surfaces connect/runtime readiness with retry, then workspace creation. When a
- * workspace already exists, offers a short "you're set" path back to Overview.
+ * workspace already exists, offers a short "you're set" path back to Action Center.
  */
 export function FirstRunScreen() {
   const { connected, checking, failed, retry } = useConnection();
@@ -69,18 +69,18 @@ export function FirstRunScreen() {
         <PageHeader
           eyebrow="Welcome"
           title="You're set"
-          subtitle="A workspace is ready. Head to Overview to see what needs you."
+          subtitle="A workspace is ready. Head to Action Center to see what needs you."
         />
         <EmptyState
           icon="home"
-          title="Go to Overview"
-          hint="Overview is the home for Needs-you and work in motion."
+          title="Go to Action Center"
+          hint="Action Center is the home for Needs you and work in motion."
           action={
             <Link
               to="/"
-              className="inline-flex h-8 items-center rounded-full bg-accent px-4 text-sm font-bold text-on-accent outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              className="inline-flex min-h-11 items-center rounded-full bg-accent px-4 text-sm font-bold text-on-accent outline-none focus-visible:ring-2 focus-visible:ring-focus"
             >
-              Overview
+              Action Center
             </Link>
           }
         />

@@ -47,10 +47,10 @@ export const SURFACES: Surface[] = [
   // Tier A — primary destinations
   {
     id: 'overview',
-    title: 'Overview',
-    path: '/',
+    title: 'Action Center',
+    path: '/attention',
     tier: 'A',
-    nav: 'primary',
+    nav: 'route-only',
     icon: 'home',
     board: '07',
     wp: 'WP-6',
@@ -60,7 +60,7 @@ export const SURFACES: Surface[] = [
     title: 'Agents',
     path: '/agents',
     tier: 'A',
-    nav: 'primary',
+    nav: 'route-only',
     icon: 'agents',
     board: '08',
     wp: 'WP-6',

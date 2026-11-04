@@ -27,7 +27,7 @@ test('inspects retained Skill bytes and explicitly selects a different version',
   const created = await creation;
   expect(created.ok(), `Workspace creation returned HTTP ${created.status()}.`).toBe(true);
   const { id: workspaceId } = (await created.json()) as { id: string };
-  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
 
   const client = createCoreClient({ baseUrl: stack.coreUrl });
   const binary = Buffer.from([0xff, 0xfe, 0x00, 0x80]);

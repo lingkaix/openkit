@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,6 +43,7 @@ function makeClient(): CoreClient {
       ),
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+      'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.list': vi.fn().mockResolvedValue({
         items: [{ id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' }].map(
           (workspace) => ({
@@ -124,7 +125,7 @@ afterEach(() => {
   window.matchMedia = originalMatchMedia;
 });
 
-describe('AppShell narrow navigation (DESIGN.md §3.4 / §12)', () => {
+describe('AppShell navigation breakpoints (DESIGN.md §3.4 / §12)', () => {
   it('has no 600px floor and keeps persistent navigation at 800px', async () => {
     const { container } = await renderShell('/');
     expect(container.querySelector('.min-w-\\[600px\\]')).toBeNull();
@@ -136,53 +137,56 @@ describe('AppShell narrow navigation (DESIGN.md §3.4 / §12)', () => {
     expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
   });
 
-  it('starts with the left navigation closed below 800px and restores it at 800px', async () => {
+  it('shows the five phone destinations below 800px and opens the More drawer', async () => {
     const user = userEvent.setup();
     setViewportWidth(600);
     await renderShell('/');
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
-    const opener = screen.getByRole('button', { name: 'Navigation' });
-    expect(opener).toHaveAttribute('aria-expanded', 'false');
+    const phoneNavigation = screen.getByRole('navigation');
+    const destinations = within(phoneNavigation).getAllByRole('button');
+    expect(destinations).toHaveLength(5);
+    expect(destinations[0]).toHaveAccessibleName('Assistant');
+    expect(destinations[1]).toHaveAccessibleName('Work');
+    expect(destinations[2]).toHaveAccessibleName(/^Needs you/);
+    expect(destinations[3]).toHaveAccessibleName('Knowledge');
+    expect(destinations[4]).toHaveAccessibleName('More');
+    expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
 
-    await user.click(opener);
-    const dialog = await screen.findByRole('dialog', { name: 'Navigation' });
-    expect(
-      screen.getByRole('navigation', { name: 'Primary workspace navigation' })
-    ).toBeInTheDocument();
+    await user.click(destinations[4]!);
+    const dialog = await screen.findByRole('dialog');
     await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
-    expect(opener).toHaveAttribute('aria-expanded', 'true');
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    await waitFor(() => expect(opener).toHaveFocus());
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+    await waitFor(() => expect(destinations[4]).toHaveFocus());
 
-    await user.click(opener);
-    await screen.findByRole('dialog', { name: 'Navigation' });
+    await user.click(destinations[4]!);
+    await screen.findByRole('dialog');
     await user.click(screen.getByRole('button', { name: 'Close navigation' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    await waitFor(() => expect(opener).toHaveFocus());
+    await waitFor(() => expect(destinations[4]).toHaveFocus());
 
-    await user.click(opener);
+    await user.click(destinations[4]!);
     await user.click(await screen.findByRole('button', { name: 'Settings' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(await screen.findByRole('heading', { name: 'Account' })).toBeInTheDocument();
   });
 
-  it('keeps Settings closed at 742px until the labelled Navigation button opens the drawer', async () => {
+  it('keeps the phone destinations on Settings at 742px until More opens the drawer', async () => {
     setViewportWidth(742);
     await renderShell('/settings/account');
-    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'More' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(await screen.findByRole('heading', { name: 'Account' })).toBeInTheDocument();
   });
 
-  it('dismisses an open drawer at 800px and starts closed when narrowing again', async () => {
+  it('drops the phone row when the sidebar returns at 800px and restores it when narrowing', async () => {
     const user = userEvent.setup();
     setViewportWidth(600);
     await renderShell('/chat');
-    await user.click(screen.getByRole('button', { name: 'Navigation' }));
-    await screen.findByRole('dialog', { name: 'Navigation' });
+    await user.click(screen.getByRole('button', { name: 'More' }));
+    await screen.findByRole('dialog');
 
     await act(async () => {
       setViewportWidth(800);
@@ -191,16 +195,13 @@ describe('AppShell narrow navigation (DESIGN.md §3.4 / §12)', () => {
     expect(
       screen.getByRole('navigation', { name: 'Primary workspace navigation' })
     ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
 
     await act(async () => {
       setViewportWidth(600);
     });
-    await waitFor(() => expect(screen.queryByRole('navigation')).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'More' })).toBeVisible();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Navigation' })).toHaveAttribute(
-      'aria-expanded',
-      'false'
-    );
   });
 });

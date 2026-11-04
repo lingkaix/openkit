@@ -104,13 +104,13 @@ export async function seedSyntheticLocalSchedulerTarget(dataRoot: string): Promi
 
   try {
     const observedAt = new Date().toISOString();
-    const runtimeTarget = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    const runtimeTarget = await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
       deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
       identityId: 'identity_local',
       observedAt,
       targetId: 'target_local',
     });
-    upsertNanoHostRuntimeTarget(coreDb, {
+    await upsertNanoHostRuntimeTarget(coreDb, {
       ...runtimeTarget,
       freshEmpty: true,
       observedAt,
@@ -204,13 +204,13 @@ async function seedSimulatorAgent(dataRoot: string): Promise<void> {
       authoredContentDigest: inputDigest,
       inputDigest,
     };
-    writeWorkerImageSettlement(coreDb, {
+    await writeWorkerImageSettlement(coreDb, {
       ...candidate,
       requestId,
       operation: 'image.acquire',
       outcome: { kind: 'success', imageDigest },
     });
-    admitWorkerImageEnvironment(coreDb, candidate, {
+    await admitWorkerImageEnvironment(coreDb, candidate, {
       imageDigest,
       defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
       values: {},

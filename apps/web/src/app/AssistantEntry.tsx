@@ -37,7 +37,7 @@ export function AssistantEntry({ workspaceId }: { workspaceId: string }) {
         onPress={() => open({ workspaceId, requestId: createRequestId() })}
       >
         <Icon name="chat" />
-        Assistant
+        Personal Assistant
       </Button>
       {opening.isPending ? (
         <p role="status" className="px-3 text-xs text-fg-muted">

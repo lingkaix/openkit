@@ -11,7 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
@@ -431,7 +431,8 @@ function renderApp(
   path: string,
   client: CoreClient,
   prepareQueryClient?: (queryClient: QueryClient) => void,
-  initialState?: unknown
+  initialState?: unknown,
+  extra?: ReactNode
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   prepareQueryClient?.(queryClient);
@@ -448,8 +449,25 @@ function renderApp(
       </CoreClientProvider>
     </QueryClientProvider>
   );
-  render(wrapper(<AppRoutes />));
+  render(
+    wrapper(
+      <>
+        <AppRoutes />
+        {extra}
+      </>
+    )
+  );
   return queryClient;
+}
+
+/** Opens one chat route. The Assistant list keeps a single row, so a second chat has no sidebar button. */
+function OpenChatRoute({ path }: { path: string }) {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate(path)}>
+      Open the other thread
+    </button>
+  );
 }
 
 /** Returns the persistent selected-Workspace switcher after discovery settles. */
@@ -5112,14 +5130,17 @@ describe('open thread external activity', () => {
           'conversation.navigation': listConversationNavigation,
           'thread.dashboard': vi.fn(async () => ({ turns: [idleTurn] })),
         }
-      )
+      ),
+      undefined,
+      undefined,
+      <OpenChatRoute path="/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7c00-b9fc-382312fdf476" />
     );
 
     expect(await screen.findByText('On it — gathering the details.')).toBeInTheDocument();
     const th1ItemCalls = listThreadItems.mock.calls.filter(
       ([{ threadId }]) => threadId === 'th_00000000-0000-70a0-9cde-4561f64881c6'
     ).length;
-    await user.click(await screen.findByRole('button', { name: 'Workspace B teardown' }));
+    await user.click(screen.getByRole('button', { name: 'Open the other thread' }));
     expect(await screen.findByText('Other thread baseline.')).toBeInTheDocument();
     expect(
       listThreadItems.mock.calls.filter(

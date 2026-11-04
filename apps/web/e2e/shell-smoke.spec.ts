@@ -36,48 +36,62 @@ test('contains long conversation previews and keeps the next row clickable', asy
   await page.setViewportSize({ width: 824, height: 803 });
   await page.goto(stack.webUrl);
   const row = page.getByRole('button', { name: title, exact: true });
-  const next = page.getByRole('button', { name: 'Next conversation', exact: true });
+  // A second chat is the one Assistant row. Its button label is Personal Assistant.
+  const next = page.getByRole('button', { name: 'Personal Assistant', exact: true });
   const navigation = page.getByRole('navigation', { name: 'Primary workspace navigation' });
   const expander = page.getByRole('button', { name: `Show tasks for ${title}`, exact: true });
-  for (const width of [824, 600]) {
-    await page.setViewportSize({ width, height: 803 });
-    if (width < 800) await page.getByRole('button', { name: 'Navigation', exact: true }).click();
-    await expect(row).toBeVisible();
-    await expect(expander).toBeVisible();
-    const navigationBounds = await navigation.boundingBox();
-    const expanderBounds = await expander.boundingBox();
-    expect(navigationBounds).not.toBeNull();
-    expect(expanderBounds).not.toBeNull();
-    expect(expanderBounds!.x).toBeGreaterThanOrEqual(navigationBounds!.x);
-    expect(expanderBounds!.x + expanderBounds!.width).toBeLessThanOrEqual(
-      navigationBounds!.x + navigationBounds!.width
+  await expect(row).toBeVisible();
+  await expect(expander).toBeVisible();
+  const navigationBounds = await navigation.boundingBox();
+  const expanderBounds = await expander.boundingBox();
+  expect(navigationBounds).not.toBeNull();
+  expect(expanderBounds).not.toBeNull();
+  expect(expanderBounds!.x).toBeGreaterThanOrEqual(navigationBounds!.x);
+  expect(expanderBounds!.x + expanderBounds!.width).toBeLessThanOrEqual(
+    navigationBounds!.x + navigationBounds!.width
+  );
+  const navigationOverflow = await navigation.evaluate((element) => ({
+    client: element.clientWidth,
+    scroll: element.scrollWidth,
+  }));
+  expect(navigationOverflow.scroll).toBeLessThanOrEqual(navigationOverflow.client);
+  await page.mouse.move(824 - 20, 100);
+  await row.hover();
+  const tooltip = page.getByRole('tooltip');
+  await expect(tooltip).toBeVisible();
+  const bounds = await tooltip.boundingBox();
+  expect(bounds!.height).toBeLessThan(160);
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(824);
+  expect(bounds!.y).toBeGreaterThanOrEqual(0);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(803);
+  await expect(tooltip).toHaveCSS('pointer-events', 'none');
+  const hit = await next.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return element.contains(
+      document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
     );
-    const navigationOverflow = await navigation.evaluate((element) => ({
-      client: element.clientWidth,
-      scroll: element.scrollWidth,
-    }));
-    expect(navigationOverflow.scroll).toBeLessThanOrEqual(navigationOverflow.client);
-    await page.mouse.move(width - 20, 100);
-    await row.hover();
-    const tooltip = page.getByRole('tooltip');
-    await expect(tooltip).toBeVisible();
-    const bounds = await tooltip.boundingBox();
-    expect(bounds!.height).toBeLessThan(160);
-    expect(bounds!.x).toBeGreaterThanOrEqual(0);
-    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
-    expect(bounds!.y).toBeGreaterThanOrEqual(0);
-    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(803);
-    await expect(tooltip).toHaveCSS('pointer-events', 'none');
-    const hit = await next.evaluate((element) => {
-      const rect = element.getBoundingClientRect();
-      return element.contains(
-        document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)
-      );
-    });
-    expect(hit).toBe(true);
-    await next.click({ timeout: 2000 });
-    await expect(page).toHaveURL(new RegExp(`/chat/[^/]+/${threadIds[1]}$`));
-  }
+  });
+  expect(hit).toBe(true);
+  await next.click({ timeout: 2000 });
+  await expect(page).toHaveURL(new RegExp(`/chat/[^/]+/${threadIds[1]}$`));
+
+  // Below 800px the sidebar is replaced by the phone row; the Goal list is under Work.
+  await page.setViewportSize({ width: 600, height: 803 });
+  await page.getByRole('button', { name: 'Work', exact: true }).click();
+  await page.getByRole('tab', { name: 'Goals', exact: true }).click();
+  await expect(row).toBeVisible();
+  await expect(expander).toBeVisible();
+  const phoneRowBounds = await row.boundingBox();
+  expect(phoneRowBounds).not.toBeNull();
+  expect(phoneRowBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(phoneRowBounds!.x + phoneRowBounds!.width).toBeLessThanOrEqual(600);
+  await page.mouse.move(600 - 20, 100);
+  await row.hover();
+  await expect(tooltip).toBeVisible();
+  const phoneTooltipBounds = await tooltip.boundingBox();
+  expect(phoneTooltipBounds!.x).toBeGreaterThanOrEqual(0);
+  expect(phoneTooltipBounds!.x + phoneTooltipBounds!.width).toBeLessThanOrEqual(600);
 });
 
 test.afterEach(async () => {
@@ -108,8 +122,8 @@ test('loads the rebuilt shell against a live NanoCore', async ({ page }) => {
     page.getByRole('navigation', { name: 'Primary workspace navigation' })
   ).toBeVisible();
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Overview$/ })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Action Center$/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible();
 
   const sidebar = page.getByRole('navigation', { name: 'Primary workspace navigation' });
   const sidebarSize = await sidebar.evaluate((element) => ({
@@ -159,7 +173,7 @@ async function pageOverflow(page: Page) {
 }
 
 /**
- * Narrow workbench: 600×600 floor, overlay drawer below 800px, persistent nav at 800px.
+ * Narrow workbench: no minimum floor, phone row below 800px, persistent nav at 800px.
  */
 test('keeps Settings and Chat usable at 600 and 742 without page overflow', async ({ page }) => {
   stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
@@ -167,33 +181,46 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   await page.setViewportSize({ width: 600, height: 600 });
   await page.goto(stack.webUrl);
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Navigation' })).toBeVisible();
-  await expect(page.getByRole('navigation')).toHaveCount(0);
+  const phoneDestinations = page.getByRole('navigation').getByRole('button');
+  await expect(phoneDestinations).toHaveCount(5);
+  await expect(page.getByRole('button', { name: 'Work', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Navigation' })).toHaveCount(0);
   let overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
 
-  const opener = page.getByRole('button', { name: 'Navigation' });
-  await opener.click();
-  const dialog = page.getByRole('dialog', { name: 'Navigation' });
+  await page.setViewportSize({ width: 360, height: 640 });
+  await expect(phoneDestinations).toHaveCount(5);
+  await expect(page.getByRole('button', { name: 'Assistant', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Needs you/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Navigation' })).toHaveCount(0);
+  overflow = await pageOverflow(page);
+  expect(overflow.viewportWidth).toBeLessThanOrEqual(360);
+  expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
+  await page.setViewportSize({ width: 600, height: 600 });
+
+  const more = page.getByRole('button', { name: 'More', exact: true });
+  await more.click();
+  const dialog = page.getByRole('dialog');
   await expect(dialog).toBeVisible();
   await expect(
     page.getByRole('navigation', { name: 'Primary workspace navigation' })
   ).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
-  await expect(opener).toBeFocused();
+  await expect(more).toBeFocused();
 
-  await opener.click();
+  await more.click();
   await page.getByRole('button', { name: 'Close navigation' }).click();
   await expect(dialog).toBeHidden();
 
-  await opener.click();
+  await more.click();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
 
   await page.goto(`${stack.webUrl}/settings/account`);
   await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+  await expect(more).toBeVisible();
   overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
 
@@ -205,8 +232,8 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   await page.setViewportSize({ width: 742, height: 600 });
   await page.goto(`${stack.webUrl}/settings/account`);
   await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Navigation' })).toBeVisible();
-  await expect(page.getByRole('navigation')).toHaveCount(0);
+  await expect(more).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
 
@@ -215,21 +242,20 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
 
-  await opener.click();
+  await more.click();
   await expect(dialog).toBeVisible();
   await page.setViewportSize({ width: 800, height: 600 });
   await expect(dialog).toBeHidden();
   await expect(
     page.getByRole('navigation', { name: 'Primary workspace navigation' })
   ).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Navigation' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'More' })).toHaveCount(0);
   overflow = await pageOverflow(page);
   expect(overflow.bodyWidth).toBeLessThanOrEqual(overflow.viewportWidth);
 
   await page.setViewportSize({ width: 600, height: 600 });
-  await expect(page.getByRole('navigation')).toHaveCount(0);
-  await expect(page.getByRole('dialog', { name: 'Navigation' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Navigation' })).toBeVisible();
+  await expect(phoneDestinations).toHaveCount(5);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
 /**

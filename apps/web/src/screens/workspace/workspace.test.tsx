@@ -1089,7 +1089,7 @@ async function proveWriteDoesNotRetarget(
   expect(method.mock.calls.every((call) => call[0]?.workspaceId === workspaceId)).toBe(true);
 }
 
-/** Viewer-authorized conversation activity used by Overview ongoing work. */
+/** Viewer-authorized conversation activity used by Action Center ongoing work. */
 function overviewConversation(input: {
   id: string;
   name: string;
@@ -1133,17 +1133,17 @@ beforeEach(() => {
   useWorkspaceStore.setState({ currentWorkspaceId: null });
 });
 
-describe('Overview / Action Center (board 07)', () => {
+describe('Action Center (board 07)', () => {
   it('shows a loading skeleton while Needs-you rows load', async () => {
     const client = makeClient({
       operations: { 'attention.list': vi.fn().mockReturnValue(new Promise(() => {})) },
     });
-    renderApp('/', client);
+    renderApp('/attention', client);
     await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(0));
   });
 
   it('shows the empty "caught up" state when nothing needs you', async () => {
-    renderApp('/', makeClient());
+    renderApp('/attention', makeClient());
     expect(await screen.findByText("You're all caught up")).toBeInTheDocument();
     expect(screen.queryByText('Competitive pricing report')).not.toBeInTheDocument();
     expect(screen.queryByText('4 of 6 steps moving')).not.toBeInTheDocument();
@@ -1158,7 +1158,7 @@ describe('Overview / Action Center (board 07)', () => {
         'thread.dashboard': vi.fn().mockReturnValue(detail.promise),
       },
     });
-    renderApp('/', client);
+    renderApp('/attention', client);
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
@@ -1218,7 +1218,7 @@ describe('Overview / Action Center (board 07)', () => {
         }),
       },
     });
-    renderApp('/', client);
+    renderApp('/attention', client);
     expect(
       await screen.findByText(
         'Exact effect unavailable; approval disabled: Complete detail cannot be loaded.'
@@ -1259,7 +1259,7 @@ describe('Overview / Action Center (board 07)', () => {
         }),
       },
     });
-    renderApp('/', client);
+    renderApp('/attention', client);
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
@@ -1279,7 +1279,7 @@ describe('Overview / Action Center (board 07)', () => {
 
       core: {},
     });
-    renderApp('/', client);
+    renderApp('/attention', client);
 
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
@@ -1311,7 +1311,7 @@ describe('Overview / Action Center (board 07)', () => {
     const client = makeClient({
       operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [OPEN_ONLY_ROW] }) },
     });
-    renderApp('/', client);
+    renderApp('/attention', client);
     expect(await screen.findByText('Answer required')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open thread' })).toHaveAttribute(
       'href',
@@ -1335,7 +1335,7 @@ describe('Overview / Action Center (board 07)', () => {
       actions: [{ kind: 'open_artifact', label: 'Open review', method: 'GET' }],
     };
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         operations: { 'attention.list': vi.fn().mockResolvedValue({ items: [row] }) },
       })
@@ -1357,7 +1357,7 @@ describe('Overview / Action Center (board 07)', () => {
     const client = makeClient({
       operations: { 'attention.list': listHumanAttention },
     });
-    renderApp('/', client);
+    renderApp('/attention', client);
     expect(await screen.findByText(/Couldn't load what needs you/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listHumanAttention).toHaveBeenCalledTimes(2));
@@ -1369,7 +1369,7 @@ describe('Overview / Action Center (board 07)', () => {
 
       core: { meta: vi.fn().mockRejectedValue(new Error('down')) },
     });
-    renderApp('/', client);
+    renderApp('/attention', client);
     expect(
       await screen.findByText('Scout asks to sign in to the vendor portal')
     ).toBeInTheDocument();
@@ -1418,7 +1418,7 @@ describe('Overview / Action Center (board 07)', () => {
       }),
     ];
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         operations: { 'conversation.navigation': vi.fn().mockResolvedValue({ items }) },
 
@@ -1442,7 +1442,7 @@ describe('Overview / Action Center (board 07)', () => {
     expect(screen.getAllByText('Working').length).toBeGreaterThanOrEqual(7);
     expect(screen.getByRole('heading', { name: 'Task 4' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Goal 3' })).toBeInTheDocument();
-    expect(within(screen.getByRole('main')).getAllByText('Worker task · Working')).toHaveLength(4);
+    expect(within(screen.getByRole('main')).getAllByText('Task · Working')).toHaveLength(4);
     expect(screen.queryByRole('heading', { name: 'Idle chat' })).not.toBeInTheDocument();
     expect(screen.queryByText('Competitive pricing report')).not.toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 3 })).toHaveLength(8);
@@ -1461,7 +1461,7 @@ describe('Overview / Action Center (board 07)', () => {
       state: 'working',
     });
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         core: {},
         app: {},
@@ -1502,7 +1502,7 @@ describe('Overview / Action Center (board 07)', () => {
       state: 'working',
     });
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         operations: {
           'conversation.navigation': vi
@@ -1514,7 +1514,7 @@ describe('Overview / Action Center (board 07)', () => {
       })
     );
     const main = await screen.findByRole('main', { name: 'Workspace' });
-    expect(await within(main).findByRole('heading', { name: 'Worker task' })).toBeInTheDocument();
+    expect(await within(main).findByRole('heading', { name: 'Task' })).toBeInTheDocument();
     expect(main).not.toHaveTextContent('raw-input');
   });
 
@@ -1522,7 +1522,7 @@ describe('Overview / Action Center (board 07)', () => {
     const user = userEvent.setup();
     const respondApproval = vi.fn().mockResolvedValue({});
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         operations: {
           'approval.respond': respondApproval,
@@ -1571,7 +1571,7 @@ describe('Overview / Action Center (board 07)', () => {
       .mockRejectedValueOnce(new ApiCallError(500, 'private-approval-failure', { code: 'failed' }))
       .mockResolvedValue({});
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         operations: {
           'approval.respond': respondApproval,
@@ -1605,7 +1605,7 @@ describe('Overview / Action Center (board 07)', () => {
       .mockResolvedValueOnce({ items: [APPROVAL_ROW] })
       .mockResolvedValue({ items: [] });
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         operations: { 'approval.respond': respondApproval, 'attention.list': listHumanAttention },
 
@@ -1628,7 +1628,7 @@ describe('Overview / Action Center (board 07)', () => {
     const user = userEvent.setup();
     const respondApproval = vi.fn().mockReturnValue(new Promise(() => {}));
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         operations: {
           'approval.respond': respondApproval,
@@ -1663,7 +1663,7 @@ describe('Overview / Action Center (board 07)', () => {
       }));
     const listConversationNavigation = vi.fn().mockResolvedValue({ items: [] });
     const queryClient = renderApp(
-      '/',
+      '/attention',
       makeClient({
         core: {},
         app: {},
@@ -1718,7 +1718,7 @@ describe('Overview / Action Center (board 07)', () => {
       source: { ...APPROVAL_ROW.source, approvalRequestId: 'ap2' },
     };
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         core: {},
         app: {},
@@ -1782,7 +1782,7 @@ describe('Overview / Action Center (board 07)', () => {
       actions: [{ kind: 'accept_review', label: 'Accept', disabled: false }],
     };
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         app: {},
 
@@ -1808,7 +1808,7 @@ describe('Overview / Action Center (board 07)', () => {
 
   it('opens an Artifact Review for inspection and does not decide it inline', async () => {
     renderApp(
-      '/',
+      '/attention',
       makeClient({
         operations: {
           'attention.list': vi.fn().mockResolvedValue({ items: [ARTIFACT_INSPECTION_ROW] }),
@@ -1885,7 +1885,7 @@ describe('Overview / Action Center (board 07)', () => {
       },
     });
     useWorkspaceStore.setState({ currentWorkspaceId: workspaceId });
-    renderApp('/', client);
+    renderApp('/attention', client);
 
     await user.click(await screen.findByRole('link', { name: 'Open goal' }));
 
@@ -5877,8 +5877,10 @@ describe('Knowledge (board 14)', () => {
       expect(await screen.findByText(workspaceB.source)).toBeInTheDocument();
       act(() => useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_A.id }));
     } else {
-      await user.click(screen.getByRole('button', { name: 'Agents' }));
-      expect(await screen.findByRole('heading', { level: 1, name: 'Agents' })).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Artifacts' }));
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'Artifacts' })
+      ).toBeInTheDocument();
       await user.click(screen.getByRole('button', { name: 'Knowledge' }));
     }
 
@@ -6101,7 +6103,9 @@ describe('First run (board 18)', () => {
   it('offers a calm ready path when a workspace already exists', async () => {
     renderApp('/first-run', makeClient());
     expect(await screen.findByText(/You're set/i)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Overview/i })).toHaveAttribute('href', '/');
+    expect(screen.queryByRole('link', { name: /Overview/i })).not.toBeInTheDocument();
+    const homeLink = screen.getAllByRole('link').find((link) => link.getAttribute('href') === '/');
+    expect(homeLink).toBeTruthy();
   });
 });
 

@@ -111,7 +111,7 @@ const WEB_OPERATION_GROUPS = {
   'App utilities': {
     'caller.read': { disposition: 'workflow', surface: 'Account' },
     'agent.health-refresh': { disposition: 'live', surface: 'Agents' },
-    'app.search': { disposition: 'workflow', surface: 'Overview' },
+    'app.search': { disposition: 'workflow', surface: 'Action Center' },
     'turn.feedback': { disposition: 'live', surface: 'Chat' },
   },
   Artifacts: {
@@ -212,8 +212,8 @@ const WEB_OPERATION_GROUPS = {
     'conversation.targets': { disposition: 'live', surface: 'Chat' },
     'conversation.navigation': { disposition: 'live', surface: 'Chat' },
     'thread.dashboard': { disposition: 'live', surface: 'Chat' },
-    'workspace.dashboard': { disposition: 'live', surface: 'Overview' },
-    'attention.list': { disposition: 'live', surface: 'Overview' },
+    'workspace.dashboard': { disposition: 'live', surface: 'Action Center' },
+    'attention.list': { disposition: 'live', surface: 'Action Center' },
     'thread.items': { disposition: 'live', surface: 'Chat' },
     'thread.read-state': { disposition: 'live', surface: 'Chat' },
     'thread.mark-read': { disposition: 'live', surface: 'Chat' },
@@ -361,14 +361,14 @@ const WEB_OPERATION_GROUPS = {
     'token.my-admin-default': { disposition: 'live', surface: 'My admin access' },
   },
   'Core approval': {
-    'approval.respond': { disposition: 'live', surface: 'Overview' },
+    'approval.respond': { disposition: 'live', surface: 'Action Center' },
     'question.answer': {
       disposition: 'live',
       surface: 'Chat',
     },
     'pending-request.withdraw': {
       disposition: 'live',
-      surface: 'Overview',
+      surface: 'Action Center',
     },
   },
   'Core artifacts': {
@@ -407,7 +407,7 @@ const WEB_OPERATION_GROUPS = {
   },
   'Core workspace lifecycle and reads': {
     'workspace.read': { disposition: 'live', surface: 'General' },
-    'workspace.resources': { disposition: 'workflow', surface: 'Overview' },
+    'workspace.resources': { disposition: 'workflow', surface: 'Action Center' },
     'workspace.update': { disposition: 'live', surface: 'General' },
   },
   'Core workspace and Thread writes': {

@@ -45,6 +45,7 @@ function makeClient(
       ),
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+      'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.resources': vi.fn().mockResolvedValue({
         knowledge: [],
         skills: [],
@@ -152,9 +153,17 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 
   it('keeps unpublished app surfaces out of navigation', async () => {
     await renderAt('/');
-    for (const label of ['Overview', 'Knowledge', 'Artifacts', 'Agents', 'Automations']) {
+    for (const label of [
+      'Personal Assistant',
+      'Knowledge',
+      'Artifacts',
+      'Action Center',
+      'Automations',
+    ]) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument();
     }
+    expect(screen.queryByRole('button', { name: 'Overview' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Chat' })).not.toBeInTheDocument();
     expect(screen.queryByText('Concept demos')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Generative UI' })).not.toBeInTheDocument();
@@ -245,13 +254,13 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(
       await screen.findByRole('button', { name: 'Authoritative Workspace' })
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Assistant' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Personal Assistant' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Knowledge' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Artifacts' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Search' })).toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'OpenKit' })).toBeInTheDocument();
     expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
-    expect(screen.getByText('Conversations')).toBeInTheDocument();
+    expect(screen.queryByText('Conversations')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Portability' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument();
     const destinations = screen.getByRole('group', { name: 'Sidebar shortcuts' });
@@ -327,9 +336,9 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
 });
 
 describe('app shell — theme lives in Settings, not a header (DESIGN.md §4.5)', () => {
-  it('redirects an admitted /login visit to Overview', async () => {
+  it('redirects an admitted /login visit to Action Center', async () => {
     await renderAt('/login');
-    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Action Center' })).toBeInTheDocument();
   });
 
   it('syncs themes from another tab onto the document root', async () => {
@@ -342,7 +351,7 @@ describe('app shell — theme lives in Settings, not a header (DESIGN.md §4.5)'
     expect(screen.getByRole('radio', { name: /Noir/ })).toBeChecked();
   });
 
-  it('offers no theme switcher on the Overview surface', async () => {
+  it('offers no theme switcher on the home surface', async () => {
     await renderAt('/');
     expect(screen.queryByRole('radio', { name: /Noir/ })).not.toBeInTheDocument();
   });

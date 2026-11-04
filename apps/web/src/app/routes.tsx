@@ -42,10 +42,12 @@ import {
 } from '../screens/workspace';
 import { WorkspaceChangesScreen } from '../screens/workspace-sync';
 import { AppShell } from './AppShell';
+import { AssistantHome } from './AssistantHome';
 import { isSurfaceLive } from './flags';
 import { SURFACES, type Surface } from './surfaces';
 import { ThemePicker } from './ThemePicker';
 import { useDocumentTheme } from './theme-store';
+import { WorkScreen } from './WorkScreen';
 
 function NotFound() {
   return (
@@ -54,7 +56,7 @@ function NotFound() {
       <EmptyState
         icon="search"
         title="This page doesn't exist"
-        hint="Check the address, or head back to Overview."
+        hint="Check the address, or head back to Action Center."
       />
     </Page>
   );
@@ -147,9 +149,16 @@ export function AppRoutes() {
     <AccountBoundary>
       <Routes>
         <Route element={<AppShell />}>
-          {SURFACES.filter(isSurfaceLive).map((surface) => (
-            <Route key={surface.id} path={surface.path} element={elementFor(surface)} />
-          ))}
+          <Route element={<AssistantHome />}>
+            <Route path="/" />
+            <Route path="/attention" />
+          </Route>
+          <Route path="/work" element={<WorkScreen />} />
+          {SURFACES.filter((surface) => isSurfaceLive(surface) && surface.id !== 'overview').map(
+            (surface) => (
+              <Route key={surface.id} path={surface.path} element={elementFor(surface)} />
+            )
+          )}
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="/settings" element={<Navigate to="/settings/account" replace />} />
           <Route

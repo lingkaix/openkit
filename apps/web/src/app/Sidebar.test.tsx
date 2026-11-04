@@ -102,7 +102,7 @@ function Lifecycle() {
   const restore = useRestoreThread();
   const owner = {
     workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
-    threadId: 'th_00000000-0000-7c00-b9fc-382312fdf476',
+    threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
   };
   return (
     <>
@@ -125,7 +125,7 @@ function Lifecycle() {
 beforeEach(() => useWorkspaceStore.setState({ currentWorkspaceId: null }));
 
 describe('conversation navigation sidebar', () => {
-  it('opens the returned Assistant history without a message and retries the same request before reaching Members', async () => {
+  it('opens the returned Assistant history without a message and retries the same request before reaching Settings', async () => {
     const user = userEvent.setup();
     const thread = {
       id: 'th_019a0000-0000-7000-8000-000000000103',
@@ -148,9 +148,9 @@ describe('conversation navigation sidebar', () => {
       .mockReturnValueOnce(pending)
       .mockResolvedValue(thread);
     const { client, queryClient } = renderAssistantNavigation(create);
-    const assistant = await screen.findByRole('button', { name: 'Assistant' });
+    const assistant = await screen.findByRole('button', { name: 'Personal Assistant' });
     expect(screen.queryByRole('button', { name: 'New conversation' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Members' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeVisible();
     await user.click(assistant);
     expect(await screen.findByText('Opening Assistant…')).toBeVisible();
     expect(assistant).toBeDisabled();
@@ -178,12 +178,12 @@ describe('conversation navigation sidebar', () => {
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     expect(client.operations['turn.start']).not.toHaveBeenCalled();
     expect(client.operations['thread.update']).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Members' }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByLabelText('Location')).toHaveTextContent('/settings/account');
     queryClient.clear();
   });
 
-  it('drops a departed Workspace opening result and omits Members for the personal Workspace', async () => {
+  it('drops a departed Workspace opening result and omits the Members shortcut for the personal Workspace', async () => {
     const user = userEvent.setup();
     let finishOpening!: (
       thread: Awaited<ReturnType<CoreClient['operations']['thread.create']>>
@@ -195,12 +195,12 @@ describe('conversation navigation sidebar', () => {
     );
     const create = vi.fn<CoreClient['operations']['thread.create']>().mockReturnValueOnce(pending);
     const { queryClient } = renderAssistantNavigation(create);
-    await user.click(await screen.findByRole('button', { name: 'Assistant' }));
+    await user.click(await screen.findByRole('button', { name: 'Personal Assistant' }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('button', { name: 'Project alpha' }));
     await user.click(screen.getByRole('menuitem', { name: 'Personal notes' }));
     expect(screen.queryByRole('button', { name: 'Members' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Assistant' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Personal Assistant' })).toBeEnabled();
     await act(async () => {
       finishOpening({
         id: 'th_019a0000-0000-7000-8000-000000000103',
@@ -226,7 +226,7 @@ describe('conversation navigation sidebar', () => {
     queryClient.clear();
   });
 
-  it('preserves authoritative order, describes activity and state, and reaches the matching work surface', async () => {
+  it('groups Goal, Task, Personal Assistant, and unknown rows while reaching the matching work surface', async () => {
     const kinds = ['goal', 'task', 'chat', 'unknown'] as const;
     const threadIds = [
       'th_00000000-0000-70ad-bcb6-3098e81b33d6',
@@ -269,17 +269,21 @@ describe('conversation navigation sidebar', () => {
       app: {},
 
       operations: {
-        'thread.update': async (input: { name?: string; status?: 'active' }) => {
-          rows[2]!.thread = {
-            ...rows[2]!.thread,
+        'thread.update': async (input: { threadId: string; name?: string; status?: 'active' }) => {
+          const target = rows.find((row) => row.thread.id === input.threadId);
+          if (!target) throw new Error('unknown thread');
+          target.thread = {
+            ...target.thread,
             ...(input.name ? { name: input.name } : {}),
             ...(input.status ? { status: input.status } : {}),
           };
-          return rows[2]!.thread;
+          return target.thread;
         },
-        'thread.archive': async () => {
-          rows[2]!.thread = { ...rows[2]!.thread, status: 'archived' };
-          return rows[2]!.thread;
+        'thread.archive': async (input: { threadId: string }) => {
+          const target = rows.find((row) => row.thread.id === input.threadId);
+          if (!target) throw new Error('unknown thread');
+          target.thread = { ...target.thread, status: 'archived' };
+          return target.thread;
         },
         'conversation.submit': submitConversation,
 
@@ -313,34 +317,50 @@ describe('conversation navigation sidebar', () => {
         </CoreClientProvider>
       </QueryClientProvider>
     );
-    const buttons = await screen.findAllByRole('button', { name: /^Conversation \d$/ });
-    expect(buttons.map((button) => button.querySelector('.truncate')?.textContent)).toEqual(
-      rows.map((row) => row.thread.name)
-    );
-    expect(buttons[0]).toHaveAccessibleDescription('Goal · Needs your attention');
-    expect(buttons[1]).toHaveAccessibleDescription('Worker task · Working');
-    expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies');
-    expect(within(buttons[2]!).getByText('2')).toBeVisible();
-    expect(buttons[3]).toHaveAccessibleDescription('Activity type unknown · Idle');
+    const navigation = await screen.findByRole('navigation', {
+      name: 'Primary workspace navigation',
+    });
+    const goalRow = await within(navigation).findByRole('button', { name: 'Conversation 0' });
+    const taskRow = within(navigation).getByRole('button', { name: 'Conversation 1' });
+    const assistantRow = within(navigation).getByRole('button', { name: 'Personal Assistant' });
+    const unknownRow = within(navigation).getByRole('button', { name: 'Conversation 3' });
+    expect(goalRow).toHaveAccessibleDescription('Goal · Needs you');
+    expect(taskRow).toHaveAccessibleDescription('Task · Working');
+    expect(assistantRow).toHaveAccessibleDescription(/Idle · 2 unread replies/);
+    expect(assistantRow).not.toHaveAccessibleDescription(/Assistant chat/);
+    expect(within(assistantRow).getByText('2')).toBeVisible();
+    expect(unknownRow).toHaveAccessibleDescription('Activity type unknown · Idle');
+    expect(within(navigation).queryByText(/Assistant chat/)).not.toBeInTheDocument();
+    expect(within(navigation).queryByText(/Worker task/)).not.toBeInTheDocument();
+    const tasksLabel = within(navigation).getAllByText('Tasks', { exact: true })[0];
+    const goalsLabel = within(navigation).getAllByText('Goals', { exact: true })[0];
+    expect(tasksLabel).toBeTruthy();
+    expect(goalsLabel).toBeTruthy();
+    expect(
+      tasksLabel!.compareDocumentPosition(taskRow) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(
+      goalsLabel!.compareDocumentPosition(goalRow) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
     const user = userEvent.setup();
-    await user.click(buttons[0]!);
+    await user.click(goalRow);
     expect(screen.getByLabelText('Location')).toHaveTextContent(
       '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70ad-bcb6-3098e81b33d6'
     );
-    expect(buttons[0]).toHaveAttribute('aria-current', 'page');
-    await user.click(buttons[1]!);
+    expect(goalRow).toHaveAttribute('aria-current', 'page');
+    await user.click(taskRow);
     expect(screen.getByLabelText('Location')).toHaveTextContent(
       '/tasks/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6'
     );
-    await user.click(buttons[2]!);
+    await user.click(assistantRow);
     expect(screen.getByLabelText('Location')).toHaveTextContent(
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7c00-b9fc-382312fdf476'
     );
-    await user.click(buttons[3]!);
+    await user.click(unknownRow);
     expect(screen.getByLabelText('Location')).toHaveTextContent(
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-7b52-ab1a-ac5e81206bc1'
     );
-    expect(buttons[3]).toHaveAttribute('aria-current', 'page');
+    expect(unknownRow).toHaveAttribute('aria-current', 'page');
 
     list.mockRejectedValueOnce(new Error('offline'));
     await act(async () => {
@@ -349,17 +369,24 @@ describe('conversation navigation sidebar', () => {
       });
     });
     expect(await screen.findByText(/Conversation status unavailable/)).toBeInTheDocument();
-    expect(buttons[1]).toHaveAccessibleDescription('Worker task · Status unavailable');
-    expect(within(buttons[2]!).queryByText('2')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Conversation 1' })).toHaveAccessibleDescription(
+      'Task · Status unavailable'
+    );
+    expect(
+      within(screen.getByRole('button', { name: 'Personal Assistant' })).queryByText('2')
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Retry conversations' }));
-    await waitFor(() => expect(buttons[1]).toHaveAccessibleDescription('Worker task · Working'));
-    await user.click(screen.getByRole('button', { name: 'Send pending request' }));
     await waitFor(() =>
-      expect(buttons[2]).toHaveAccessibleDescription(
-        'Assistant chat · Waiting for response · 2 unread replies'
+      expect(screen.getByRole('button', { name: 'Conversation 1' })).toHaveAccessibleDescription(
+        'Task · Working'
       )
     );
-    expect(screen.getAllByRole('button', { name: /^Conversation \d$/ })[0]).toBe(buttons[2]);
+    await user.click(screen.getByRole('button', { name: 'Send pending request' }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Personal Assistant' })
+      ).toHaveAccessibleDescription(/Waiting for response/)
+    );
     await act(async () => {
       finishRequest({
         receivingWorkspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
@@ -367,7 +394,9 @@ describe('conversation navigation sidebar', () => {
       });
     });
     await waitFor(() =>
-      expect(buttons[2]).toHaveAccessibleDescription('Assistant chat · Idle · 2 unread replies')
+      expect(
+        screen.getByRole('button', { name: 'Personal Assistant' })
+      ).toHaveAccessibleDescription(/Idle · 2 unread replies/)
     );
     await user.click(screen.getByRole('button', { name: 'Rename conversation' }));
     expect(await screen.findByRole('button', { name: 'Updated conversation' })).toBeInTheDocument();

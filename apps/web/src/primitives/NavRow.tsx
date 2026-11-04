@@ -74,10 +74,10 @@ export function NavRow({
       {button}
       <Tooltip
         placement="right top"
-        className="pointer-events-none z-50 flex max-h-[100vh] max-w-[min(20rem,100vw)] flex-col overflow-hidden rounded-ok border border-border bg-elevated px-2 py-1 text-xs text-fg shadow-ok-menu"
+        className="pointer-events-none z-50 flex max-h-[100vh] min-w-0 max-w-[min(20rem,calc(100vw-1rem))] flex-col overflow-hidden break-all rounded-ok border border-border bg-elevated px-2 py-1 text-xs text-fg shadow-ok-menu"
       >
-        <span className="line-clamp-3 break-words">{label}</span>
-        <span className="break-words">{description}</span>
+        <span className="line-clamp-3 break-all">{label}</span>
+        <span className="break-all">{description}</span>
       </Tooltip>
     </TooltipTrigger>
   ) : (

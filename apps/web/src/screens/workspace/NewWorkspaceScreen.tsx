@@ -39,13 +39,13 @@ export function NewWorkspaceScreen() {
         <EmptyState
           icon="folder"
           title="Runtime unreachable"
-          hint="Reconnect to create a workspace, or head back to Overview."
+          hint="Reconnect to create a workspace, or head back to Action Center."
           action={
             <Link
-              to="/"
-              className="inline-flex h-8 items-center rounded-full border border-border bg-card px-4 text-sm font-bold text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+              to="/attention"
+              className="inline-flex min-h-11 items-center rounded-full border border-border bg-card px-4 text-sm font-bold text-fg outline-none focus-visible:ring-2 focus-visible:ring-focus"
             >
-              Overview
+              Action Center
             </Link>
           }
         />

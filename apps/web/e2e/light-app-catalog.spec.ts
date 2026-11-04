@@ -34,7 +34,7 @@ test('imports a definition, creates and activates a Light App, then restores its
   const { id: workspaceId } = OPERATION_DEFINITIONS['workspace.create'].outputSchema.parse(
     await created.json()
   );
-  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
   const client = createCoreClient({ baseUrl: stack.coreUrl });
   const definition = LightAppSchemaInputSchema.parse({
     format: 'openkit.light-app',

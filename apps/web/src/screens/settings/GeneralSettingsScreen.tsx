@@ -80,7 +80,7 @@ export function GeneralSettingsScreen() {
                 value={displayName}
                 onChange={setDisplayName}
                 isDisabled={disconnected}
-                description="Shown in the sidebar and Overview for this workspace."
+                description="Shown in the sidebar and Action Center for this workspace."
               />
               <p className="text-xs text-fg-muted">
                 Theme and density live under{' '}

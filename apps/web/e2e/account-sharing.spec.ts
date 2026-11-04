@@ -155,7 +155,7 @@ async function createWorkspace(page: Page, webUrl: string): Promise<string> {
   );
   await page.getByRole('button', { name: 'Create workspace' }).click();
   const body = (await (await response).json()) as { id: string };
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible();
   await expect(page.getByText(workspaceName, { exact: true })).toBeVisible();
   return body.id;
 }

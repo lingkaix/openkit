@@ -49,13 +49,17 @@ test('completes the local Workspace self-check', async ({ page }) => {
     workspaceResponse.ok(),
     `Workspace creation returned HTTP ${workspaceResponse.status()}.`
   ).toBe(true);
-  await expect(page.getByRole('heading', { name: 'Overview' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Action Center' })).toBeVisible();
 
+  let threadCreates = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/app/operations/thread.create') threadCreates += 1;
+  });
   const firstOpening = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
   );
-  await page.getByRole('button', { name: /^Assistant$/ }).click();
+  await page.getByRole('button', { name: /^Personal Assistant$/ }).click();
   const assistant = ThreadSchema.parse(await (await firstOpening).json());
   expect(assistant.visibility).toBe('private');
   const assistantWorkspaceId = workspaceIdForOwner(assistant.owner);
@@ -63,19 +67,12 @@ test('completes the local Workspace self-check', async ({ page }) => {
   const client = createCoreClient({ baseUrl: stack.coreUrl });
   expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
 
-  await page.getByRole('button', { name: /^Members$/ }).click();
+  await page.getByRole('button', { name: /^Settings$/ }).click();
   await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
   await page.getByRole('button', { name: /^Back to app$/ }).click();
-  const secondOpening = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === '/api/app/operations/thread.create' && response.ok()
-  );
-  // The opener precedes the retained Timeline row with the same visible title.
-  await page
-    .getByRole('button', { name: /^Assistant$/ })
-    .first()
-    .click();
-  expect(ThreadSchema.parse(await (await secondOpening).json()).id).toBe(assistant.id);
+  await page.getByRole('button', { name: /^Personal Assistant$/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/chat/[^/]+/${assistant.id}$`));
+  expect(threadCreates).toBe(1);
   expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
   await page.getByRole('button', { name: /Conversation agent$/ }).click();

@@ -44,14 +44,14 @@ const ACTIVITY_ICON: Record<ConversationItem['activity'], IconName> = {
 };
 
 const ACTIVITY_LABEL: Record<ConversationItem['activity'], string> = {
-  chat: 'Assistant chat',
-  task: 'Worker task',
+  chat: 'Personal Assistant',
+  task: 'Task',
   goal: 'Goal',
   unknown: 'Activity type unknown',
 };
 
 /**
- * Overview / Action Center (WP-6, board 07) — the 1:N supervision home.
+ * Action Center (WP-6, board 07) — decisions and ongoing Tasks and Goals.
  *
  * Leads with Needs-you attention, then every ongoing Task and Goal from viewer
  * conversation navigation. Approvals Allow or Deny inline; Goal and Workspace
@@ -106,7 +106,7 @@ export function OverviewScreen() {
   return (
     <Page>
       <PageHeader
-        title="Overview"
+        title="Action Center"
         subtitle="Ongoing Tasks and Goals, and anything that needs a decision."
         actions={
           <span className="flex items-center gap-2">
@@ -328,7 +328,7 @@ function ConversationWorkRow({ item }: { item: ConversationItem }) {
 /** Labels the current navigation state. */
 function statusLabel(state: ConversationItem['state']): string {
   if (state === 'working') return 'Working';
-  if (state === 'needs-you') return 'Needs your attention';
+  if (state === 'needs-you') return 'Needs you';
   return 'Idle';
 }
 

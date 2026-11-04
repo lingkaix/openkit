@@ -1,5 +1,5 @@
-import { useMutationState } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useMutationState, useQueries } from '@tanstack/react-query';
+import { Fragment, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button, CountBadge, Icon, type IconName, Menu, NavRow } from '../primitives';
 import {
@@ -11,11 +11,14 @@ import {
   useWorkspaces,
   workspaceBelongsToCaller,
 } from '../screens/chat/data';
+import { goalKeys } from '../screens/goal/data';
 import { AppSearch } from '../screens/operations';
+import { useHumanAttention } from '../screens/workspace/data';
 import { useWorkspaceStore } from '../screens/workspace-store';
 import { AssistantEntry } from './AssistantEntry';
 import { ConversationGoalGroups, type ConversationRow } from './ConversationGoalGroups';
-import { type NavGroup, type Surface, surfacesInGroup } from './surfaces';
+import { useCoreClient } from './core-client';
+import { type NavGroup, SURFACES, type Surface, surfacesInGroup } from './surfaces';
 
 /** Static wordmark for the brand row (DESIGN.md §8.2). Height matches the Search control. */
 function BrandMark() {
@@ -30,7 +33,6 @@ function BrandMark() {
 
 /** True when a surface's route is the one currently shown. */
 function isActive(surface: Surface, pathname: string): boolean {
-  if (surface.path === '/') return pathname === '/';
   if (surface.path === '/settings/general') return pathname === '/settings/general';
   if (surface.path.startsWith('/settings')) return pathname === surface.path;
   return pathname === surface.path || pathname.startsWith(`${surface.path}/`);
@@ -78,6 +80,193 @@ function NavSection({
   );
 }
 
+function SectionLabel({ children }: { children: string }) {
+  return <p className="px-3 pb-1 pt-3 text-eyebrow font-bold text-fg-muted">{children}</p>;
+}
+
+type ListSegment = 'all' | 'tasks' | 'goals';
+
+/**
+ * Assistant, Tasks, and Goals as separate lists.
+ *
+ * Necessity: the phone Work tab and the desktop sidebar show the same rows.
+ * Ablation: a second copy of the row renderer would drift from the route each activity opens.
+ */
+export function ThreadLists({ segment = 'all' }: { segment?: ListSegment }) {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const workspaceId = useCurrentWorkspaceId();
+  const workspaces = useWorkspaces();
+  const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
+  const navigation = useConversationNavigation(workspaceId);
+  const go = (path: string) => navigate(path);
+  const submissions = useMutationState({
+    filters: { mutationKey: chatKeys.submitMutation, status: 'pending' },
+    select: (mutation) => mutation.state.variables as { workspaceId: string; threadId: string },
+  });
+  const waiting = new Set(
+    submissions.filter((input) => input.workspaceId === workspaceId).map((input) => input.threadId)
+  );
+  const conversations = [...(navigation.data ?? [])].sort(
+    (a, b) => Number(waiting.has(b.thread.id)) - Number(waiting.has(a.thread.id))
+  );
+  const chats = conversations.filter((row) => row.activity === 'chat');
+  const assistant = chats.find((row) => row.thread.name === 'Assistant') ?? chats[0];
+  const tasks = conversations.filter((row) => row.activity === 'task');
+  const goals = conversations.filter((row) => row.activity === 'goal');
+  const unknown = conversations.filter((row) => row.activity === 'unknown');
+  const client = useCoreClient();
+  const goalViews = useQueries({
+    queries: goals.map(({ thread }) => ({
+      queryKey: goalKeys.view(workspaceId ?? '', thread.id),
+      queryFn: () =>
+        client.operations['goal.read']({
+          workspaceId: workspaceId as string,
+          threadId: thread.id,
+        }),
+      enabled: Boolean(workspaceId),
+      retry: false,
+      refetchInterval: 5_000,
+      refetchIntervalInBackground: false,
+    })),
+  });
+  const linkedTaskIds = new Set(
+    goalViews.flatMap((view) => view.data?.tasks.map((task) => task.threadId) ?? [])
+  );
+  const listedTasks = tasks.filter((row) => !linkedTaskIds.has(row.thread.id));
+
+  function renderConversation(
+    { thread, activity: observedActivity, state: serverState, unreadCount }: ConversationRow,
+    indent: 0 | 1 = 0,
+    linkedTask = false,
+    labelOverride?: string
+  ) {
+    if (!workspace) return null;
+    const activity = linkedTask ? 'task' : observedActivity;
+    const awaitingReply = waiting.has(thread.id);
+    const state =
+      serverState === 'needs-you' ? serverState : awaitingReply ? 'working' : serverState;
+    const icons: Record<typeof activity, IconName> = {
+      chat: 'chat',
+      task: 'agents',
+      goal: 'goal',
+      unknown: 'info',
+    };
+    const labels = {
+      chat: 'Personal Assistant',
+      task: 'Task',
+      goal: 'Goal',
+      unknown: 'Activity type unknown',
+    };
+    const status = navigation.isError
+      ? 'Status unavailable'
+      : state === 'working'
+        ? awaitingReply
+          ? 'Waiting for response'
+          : 'Working'
+        : state === 'needs-you'
+          ? 'Needs you'
+          : 'Idle';
+    const suffix = `/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`;
+    return (
+      <NavRow
+        key={thread.id}
+        indent={indent}
+        icon={icons[activity]}
+        label={labelOverride ?? thread.name ?? thread.preview}
+        description={`${labels[activity]} · ${status}${!navigation.isError && unreadCount > 0 ? ` · ${unreadCount} unread ${unreadCount === 1 ? 'reply' : 'replies'}` : ''}`}
+        trailing={
+          !navigation.isError && unreadCount > 0 ? (
+            <CountBadge count={unreadCount} tone="neutral" />
+          ) : undefined
+        }
+        iconBadge={
+          !navigation.isError && state !== 'idle' ? (
+            <span
+              aria-hidden
+              className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ring-1 ring-sunken ${state === 'working' ? 'bg-info-fg' : 'border border-notice-fg bg-attention-dot'}`}
+            />
+          ) : undefined
+        }
+        active={['chat', 'tasks', 'goals'].some(
+          (route) => pathname === `/${route}${suffix}` || pathname.startsWith(`/${route}${suffix}/`)
+        )}
+        onPress={() => go(conversationThreadPath(workspace.id, thread.id, activity))}
+      />
+    );
+  }
+
+  if (!workspace) return null;
+  const showAssistant = segment === 'all';
+  const showTasks = segment === 'all' || segment === 'tasks';
+  const showGoals = segment === 'all' || segment === 'goals';
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {showAssistant ? (
+        <>
+          <SectionLabel>Assistant</SectionLabel>
+          {assistant ? (
+            renderConversation(assistant, 0, false, 'Personal Assistant')
+          ) : (
+            <AssistantEntry key={`assistant:${workspace.id}`} workspaceId={workspace.id} />
+          )}
+        </>
+      ) : null}
+      {navigation.isPending ? (
+        <p className="px-3 text-xs text-fg-muted">Loading conversations…</p>
+      ) : null}
+      {navigation.isError ? (
+        <div className="px-3 text-xs text-notice-fg">
+          <p>
+            Conversation status unavailable
+            {conversations.length ? ' — showing the last update.' : '.'}
+          </p>
+          <Button
+            variant="quiet"
+            size="sm"
+            onPress={() => {
+              void navigation.refetch();
+            }}
+          >
+            Retry conversations
+          </Button>
+        </div>
+      ) : null}
+      {showTasks ? (
+        <>
+          {segment === 'all' ? <SectionLabel>Tasks</SectionLabel> : null}
+          {listedTasks.map((row) => (
+            <Fragment key={row.thread.id}>{renderConversation(row)}</Fragment>
+          ))}
+        </>
+      ) : null}
+      {showGoals ? (
+        <>
+          {segment === 'all' ? <SectionLabel>Goals</SectionLabel> : null}
+          <ConversationGoalGroups
+            key={workspace.id}
+            workspaceId={workspace.id}
+            rows={goals}
+            unavailable={navigation.isError}
+            pathname={pathname}
+            go={go}
+            renderConversation={renderConversation}
+          />
+        </>
+      ) : null}
+      {segment === 'all' && unknown.length > 0 ? (
+        <>
+          <SectionLabel>Recovery</SectionLabel>
+          {unknown.map((row) => (
+            <Fragment key={row.thread.id}>{renderConversation(row)}</Fragment>
+          ))}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 /** Brand-row Search command that opens the existing search overlay. */
 function BrandSearch() {
   const [open, setOpen] = useState(false);
@@ -119,17 +308,19 @@ function BrandSearch() {
 export interface SidebarProps {
   /** When set, the sidebar shows an explicit Close control. */
   onClose?: () => void;
+  /** `more` is the phone drawer: Artifacts and supporting screens, not the five bottom-nav items. */
+  variant?: 'sidebar' | 'more';
 }
 
 /**
  * Left sidebar — navigation and persistent context (DESIGN.md §3.1).
  *
- * Two modes that never mix: App mode (brand and primary destinations) and Settings mode (Back to app and Settings categories).
- * The same quiet row grammar applies throughout.
+ * Desktop keeps Assistant, Tasks, Goals, Knowledge, Artifacts, and Action Center.
+ * The phone More drawer lists Artifacts and the supporting screens.
  * Theme selection is NOT here — it lives in Settings → Appearance (§4.5).
  * Identity lives inside Settings, not a stacked user row (D-002).
  */
-export function Sidebar({ onClose }: SidebarProps = {}) {
+export function Sidebar({ onClose, variant = 'sidebar' }: SidebarProps = {}) {
   const { pathname, search } = useLocation();
   const navigate = useNavigate();
   const workspaces = useWorkspaces();
@@ -138,80 +329,10 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
   const setWorkspaceId = useWorkspaceStore((state) => state.setCurrentWorkspaceId);
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
   const inSettings = pathname === '/workspace' || pathname.startsWith('/settings');
-  const navigation = useConversationNavigation(inSettings ? null : workspaceId);
+  const attention = useHumanAttention(inSettings ? null : workspaceId);
   const go = (path: string) => navigate(path);
   const compactSurfaces = surfacesInGroup('workspace-compact', workspace?.kind);
-  const submissions = useMutationState({
-    filters: { mutationKey: chatKeys.submitMutation, status: 'pending' },
-    select: (mutation) => mutation.state.variables as { workspaceId: string; threadId: string },
-  });
-  const waiting = new Set(
-    submissions.filter((input) => input.workspaceId === workspaceId).map((input) => input.threadId)
-  );
-  const conversations = [...(navigation.data ?? [])].sort(
-    (a, b) => Number(waiting.has(b.thread.id)) - Number(waiting.has(a.thread.id))
-  );
-
-  /** Preserve current activity, attention and unread indicators inside canonical Goal groups. */
-  function renderConversation(
-    { thread, activity: observedActivity, state: serverState, unreadCount }: ConversationRow,
-    indent: 0 | 1 = 0,
-    linkedTask = false
-  ) {
-    if (!workspace) return null;
-    const activity = linkedTask ? 'task' : observedActivity;
-    const awaitingReply = waiting.has(thread.id);
-    const state =
-      serverState === 'needs-you' ? serverState : awaitingReply ? 'working' : serverState;
-    const icons: Record<typeof activity, IconName> = {
-      chat: 'chat',
-      task: 'agents',
-      goal: 'goal',
-      unknown: 'info',
-    };
-    const labels = {
-      chat: 'Assistant chat',
-      task: 'Worker task',
-      goal: 'Goal',
-      unknown: 'Activity type unknown',
-    };
-    const status = navigation.isError
-      ? 'Status unavailable'
-      : state === 'working'
-        ? awaitingReply
-          ? 'Waiting for response'
-          : 'Working'
-        : state === 'needs-you'
-          ? 'Needs your attention'
-          : 'Idle';
-    const suffix = `/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`;
-    return (
-      <NavRow
-        key={thread.id}
-        indent={indent}
-        icon={icons[activity]}
-        label={thread.name ?? thread.preview}
-        description={`${labels[activity]} · ${status}${!navigation.isError && unreadCount > 0 ? ` · ${unreadCount} unread ${unreadCount === 1 ? 'reply' : 'replies'}` : ''}`}
-        trailing={
-          !navigation.isError && unreadCount > 0 ? (
-            <CountBadge count={unreadCount} tone="neutral" />
-          ) : undefined
-        }
-        iconBadge={
-          !navigation.isError && state !== 'idle' ? (
-            <span
-              aria-hidden
-              className={`absolute -right-0.5 -top-0.5 size-1.5 rounded-full ring-1 ring-sunken ${state === 'working' ? 'bg-info-fg' : 'border border-notice-fg bg-attention-dot'}`}
-            />
-          ) : undefined
-        }
-        active={['chat', 'tasks', 'goals'].some(
-          (route) => pathname === `/${route}${suffix}` || pathname.startsWith(`/${route}${suffix}/`)
-        )}
-        onPress={() => go(conversationThreadPath(workspace.id, thread.id, activity))}
-      />
-    );
-  }
+  const artifacts = SURFACES.find((surface) => surface.id === 'artifacts');
 
   function switchWorkspace(nextWorkspaceId: string) {
     if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
@@ -222,6 +343,33 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
       navigate('/artifacts');
     }
   }
+
+  const moreDestinations =
+    variant === 'more' && !inSettings ? (
+      <>
+        {artifacts ? (
+          <NavRow
+            icon={artifacts.icon}
+            label={artifacts.title}
+            active={isActive(artifacts, pathname)}
+            onPress={() => go(artifacts.path)}
+          />
+        ) : null}
+        {compactSurfaces.map((surface) => (
+          <NavRow
+            key={surface.id}
+            icon={surface.icon}
+            label={surface.title}
+            active={isActive(surface, pathname)}
+            onPress={() => go(surface.path)}
+          />
+        ))}
+        {workspace?.kind === 'general' ? (
+          <NavRow icon="settings" label="Members" onPress={() => go('/settings/account')} />
+        ) : null}
+        <NavRow icon="settings" label="Settings" onPress={() => go('/settings/account')} />
+      </>
+    ) : null;
 
   return (
     <nav
@@ -274,49 +422,25 @@ export function Sidebar({ onClose }: SidebarProps = {}) {
           <NavSection group="settings-server" heading="Server" pathname={pathname} go={go} />
           <NavSection group="settings-admin" heading="Administration" pathname={pathname} go={go} />
         </>
+      ) : variant === 'more' ? (
+        moreDestinations
       ) : (
         <>
+          <ThreadLists />
           <NavSection group="primary" pathname={pathname} go={go} />
+          {workspace ? (
+            <NavRow
+              icon="home"
+              label="Action Center"
+              active={pathname === '/attention' || pathname.startsWith('/attention/')}
+              trailing={
+                <CountBadge count={attention.data?.length ?? 0} label="need you" tone="notice" />
+              }
+              onPress={() => go('/attention')}
+            />
+          ) : null}
           {workspace?.kind === 'general' ? (
             <NavRow icon="settings" label="Members" onPress={() => go('/settings/account')} />
-          ) : null}
-          {workspace ? (
-            <>
-              <hr className="my-2 border-0 border-t border-separator" />
-              <div className="flex flex-col gap-0.5">
-                <p className="px-3 pb-1 pt-3 text-eyebrow font-bold text-fg-muted">Conversations</p>
-                <AssistantEntry key={`assistant:${workspace.id}`} workspaceId={workspace.id} />
-                {navigation.isPending ? (
-                  <p className="px-3 text-xs text-fg-muted">Loading conversations…</p>
-                ) : null}
-                {navigation.isError ? (
-                  <div className="px-3 text-xs text-notice-fg">
-                    <p>
-                      Conversation status unavailable
-                      {conversations.length ? ' — showing the last update.' : '.'}
-                    </p>
-                    <Button
-                      variant="quiet"
-                      size="sm"
-                      onPress={() => {
-                        void navigation.refetch();
-                      }}
-                    >
-                      Retry conversations
-                    </Button>
-                  </div>
-                ) : null}
-                <ConversationGoalGroups
-                  key={workspace.id}
-                  workspaceId={workspace.id}
-                  rows={conversations}
-                  unavailable={navigation.isError}
-                  pathname={pathname}
-                  go={go}
-                  renderConversation={renderConversation}
-                />
-              </div>
-            </>
           ) : null}
           <div className="mt-auto border-t border-separator pt-2">
             <fieldset
