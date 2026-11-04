@@ -1139,6 +1139,20 @@ export async function removePrivateTreeInventory(
   }
 }
 
+/**
+ * @internal Writes caller-selected private text exclusively with close-only completion.
+ * Path admission, parent preparation and failure cleanup stay with the caller.
+ * The original finally-close error takes precedence over a simultaneous write error.
+ */
+export async function writePrivateTextFileExclusive(path: string, text: string): Promise<void> {
+  const file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  try {
+    await file.writeFile(text, 'utf8');
+  } finally {
+    await file.close();
+  }
+}
+
 /** @internal Streams private member bytes; the caller retains caps, integrity and capacity accounting. */
 export async function writePrivateTreeFile(input: {
   readonly path: string;

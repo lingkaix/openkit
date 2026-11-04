@@ -76,6 +76,7 @@ export {
   writeDerivedIndexFile,
   writePortableTextFile,
   writePrivateMetadataText,
+  writePrivateTextFileExclusive,
   writePrivateTreeFile,
   writePrivateTreeMetadata,
   writeRetainedPrivateFile,

@@ -9,7 +9,7 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { verifyPrivateFileCopy } from '@openkit/storage';
+import { verifyPrivateFileCopy, writePrivateTextFileExclusive } from '@openkit/storage';
 import { z } from 'zod';
 
 /** Identifies the interchange family; the shared retained marker owns its format version. */
@@ -335,16 +335,7 @@ export async function writeKnowledgePackageFormat(input: {
     const sources = new Map(files.map((file) => [file.path, file.sourcePath]));
     for (const file of manifest.contentInventory)
       await verifyPrivateFileCopy(sources.get(file.path)!, file, join(directory, file.path));
-    const output = await open(
-      join(directory, 'manifest.json'),
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
-      0o600
-    );
-    try {
-      await output.writeFile(text, 'utf8');
-    } finally {
-      await output.close();
-    }
+    await writePrivateTextFileExclusive(join(directory, 'manifest.json'), text);
     await verifyKnowledgePackageFormat({ directory, limits });
     return manifest;
   } catch (error) {
