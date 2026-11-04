@@ -1,6 +1,10 @@
 import { allocateEntityId } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
-import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
+import {
+  completeServerBootstrap,
+  type IsolatedWebStack,
+  startIsolatedWebStack,
+} from './_lib/servers.js';
 
 let stack: IsolatedWebStack | null = null;
 
@@ -273,17 +277,21 @@ test('keeps a tall dialog action reachable by normal pointer interaction', async
   await page.goto(stack.webUrl);
   expect((await admission).status()).toBe(401);
   await expect(page.getByRole('heading', { name: 'Account access' })).toBeVisible();
-  await page.getByRole('button', { name: 'Sign up' }).click();
-  await page.getByRole('textbox', { name: 'Name' }).fill('Dialog Test User');
-  await page.getByRole('textbox', { name: 'Email' }).fill('dialog@example.test');
-  await page.getByLabel('Password').fill('OpenKit-dialog-test-password-2026!');
+  const owner = {
+    email: 'dialog@example.test',
+    name: 'Dialog Test User',
+    password: 'OpenKit-dialog-test-password-2026!',
+  };
+  await completeServerBootstrap(stack, owner);
+  await page.getByRole('textbox', { name: 'Email' }).fill(owner.email);
+  await page.getByLabel('Password').fill(owner.password);
   // Start the layout assertion after account creation, as in the account-sharing fixture.
-  const signUpResponse = page.waitForResponse(
+  const signInResponse = page.waitForResponse(
     (response) =>
-      response.url().endsWith('/api/auth/sign-up/email') && response.request().method() === 'POST'
+      response.url().endsWith('/api/auth/sign-in/email') && response.request().method() === 'POST'
   );
-  await page.getByRole('button', { name: 'Sign up' }).last().click();
-  expect((await signUpResponse).status()).toBe(200);
+  await page.getByRole('button', { name: 'Sign in' }).last().click();
+  expect((await signInResponse).status()).toBe(200);
   await expect(page.getByRole('main', { name: 'Workspace' })).toBeVisible();
   await page.getByRole('button', { name: /^Settings$/ }).click();
   await page.getByRole('button', { name: /^Debug$/ }).click();

@@ -1,5 +1,9 @@
 import { expect, type Page, test } from '@playwright/test';
-import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
+import {
+  completeServerBootstrap,
+  type IsolatedWebStack,
+  startIsolatedWebStack,
+} from './_lib/servers.js';
 
 const password = 'OpenKit-browser-password-2026!';
 const owner = { email: 'owner@example.test', name: 'Owner User' };
@@ -216,7 +220,9 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   const runtimeErrors = watchRuntimeErrors(page);
   await page.goto(stack.webUrl);
 
-  const ownerId = await signUp(page, owner);
+  // The first server owner exists only through legitimate bootstrap consumption.
+  const ownerId = await completeServerBootstrap(stack, { ...owner, password });
+  await signIn(page, owner);
   const workspaceId = await createWorkspace(page, stack.webUrl);
   await signOut(page, stack.webUrl);
 

@@ -1,9 +1,10 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { allocateEntityId } from '@openkit/protocol';
 import { seedDemoWorkspaceDataRoot, seedSyntheticLocalSchedulerTarget } from './demo-data.js';
 
 const webRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -37,6 +38,16 @@ export interface IsolatedWebStackOptions {
   mode?: 'local' | 'server';
   /** Whether the simulator should be used. */
   useSimulator?: boolean;
+}
+
+/** Owner identity created by the disposable server bootstrap ceremony. */
+export interface ServerBootstrapOwner {
+  /** Owner Browser sign-in email. */
+  email: string;
+  /** Owner display name. */
+  name: string;
+  /** Owner Browser sign-in password. */
+  password: string;
 }
 
 /**
@@ -205,6 +216,62 @@ export async function startIsolatedWebStack(
     restartCore,
     stop,
   };
+}
+
+/**
+ * Completes the disposable server's first-owner bootstrap through the public operation.
+ *
+ * The stack-owned emission file is ephemeral test material. The returned administrator
+ * token is never retained; only the created owner id crosses this boundary.
+ *
+ * @param stack Running isolated server stack.
+ * @param owner Owner identity to create.
+ * @returns Created owner user id.
+ */
+export async function completeServerBootstrap(
+  stack: IsolatedWebStack,
+  owner: ServerBootstrapOwner
+): Promise<string> {
+  const refused = await fetch(`${stack.coreUrl}/api/auth/sign-up/email`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(owner),
+  });
+  await refused.body?.cancel();
+  if (refused.status !== 403) {
+    throw new Error(`Pre-bootstrap signup must refuse; received ${refused.status}.`);
+  }
+
+  const emission = await readFile(
+    join(stack.dataRoot, 'server', 'files', 'auth', 'bootstrap-token.txt'),
+    'utf8'
+  );
+  const token = /^Token: (\S+)$/m.exec(emission)?.[1];
+  if (!token) throw new Error('Disposable server bootstrap emission is unavailable.');
+
+  const response = await fetch(`${stack.coreUrl}/api/app/operations/bootstrap.consume`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      token,
+      ownerUserId: allocateEntityId('usr'),
+      displayName: owner.name,
+      email: owner.email,
+      password: owner.password,
+      tokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    }),
+  });
+  if (response.status !== 201) {
+    await response.body?.cancel();
+    throw new Error(`Public server bootstrap must succeed; received ${response.status}.`);
+  }
+
+  const body = (await response.json()) as { record?: { ownerUserId?: unknown } };
+  const ownerUserId = body.record?.ownerUserId;
+  if (typeof ownerUserId !== 'string' || ownerUserId.length === 0) {
+    throw new Error('Public server bootstrap did not return a created owner.');
+  }
+  return ownerUserId;
 }
 
 /**
