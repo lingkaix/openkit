@@ -4,7 +4,7 @@ import {
   type ProviderSubscriptionResetResponse,
 } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useConnection, useCoreClient } from '../../app/core-client';
@@ -1723,7 +1723,7 @@ function ProviderProfileForm({
           profile.secretRef = `vault://${vaultCandidate.current.referenceId}`;
         }
       }
-      const content = `${JSON.stringify(profile, null, 2)}\n`;
+      const content = `${JSON.stringify(writeRetainedV1(profile), null, 2)}\n`;
       return client.operations['runtime.file-create']({
         id: `providers/${providerId}.provider.jsonc`,
         kind: 'provider',

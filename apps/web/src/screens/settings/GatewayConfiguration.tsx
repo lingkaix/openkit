@@ -1,6 +1,7 @@
 import type { AppDiagnosticsResponse, ProviderRegistryEntry } from '@openkit/app-api-schemas';
 import { ProviderApiKeyProfileIdSchema } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { writeRetainedV1 } from '@openkit/protocol';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { applyEdits, modify, type ParseError, parse } from 'jsonc-parser';
 import { useEffect, useRef, useState } from 'react';
@@ -423,7 +424,21 @@ export function GuidedSubscriptionSetup({
           const result = await client.operations['runtime.file-create']({
             id: `providers/${input.id}.provider.jsonc`,
             kind: 'provider',
-            content: `${JSON.stringify({ id: input.id, displayName: input.id, kind: 'oauth', vendor: VENDORS[input.provider], models: input.models, defaultModel: input.models[0], extensions: { openkit: { subscriptionAccount: { accountSlotId: input.slot } } } }, null, 2)}\n`,
+            content: `${JSON.stringify(
+              writeRetainedV1({
+                id: input.id,
+                displayName: input.id,
+                kind: 'oauth',
+                vendor: VENDORS[input.provider],
+                models: input.models,
+                defaultModel: input.models[0],
+                extensions: {
+                  openkit: { subscriptionAccount: { accountSlotId: input.slot } },
+                },
+              }),
+              null,
+              2
+            )}\n`,
           });
           setRevision(result.file.revision);
         }
