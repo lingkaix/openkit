@@ -6,13 +6,14 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactCandidateSets } from './ArtifactCandidateSets';
 
-const { create, list, read, select, versionRead, threads } = vi.hoisted(() => ({
+const { create, list, read, select, versionRead, threads, navigation } = vi.hoisted(() => ({
   create: vi.fn(),
   list: vi.fn(),
   read: vi.fn(),
   select: vi.fn(),
   versionRead: vi.fn(),
   threads: vi.fn(),
+  navigation: vi.fn(),
 }));
 vi.mock('../../app/core-client', () => ({
   useCoreClient: () => ({
@@ -23,6 +24,7 @@ vi.mock('../../app/core-client', () => ({
       'evaluation.candidate-set-select': select,
       'artifact.version-read': versionRead,
       'thread.list': threads,
+      'conversation.navigation': navigation,
     },
     artifactFiles: {
       browserDownloadUrl: (input: { artifactVersion: number }) =>
@@ -96,6 +98,14 @@ beforeEach(() => {
   threads.mockResolvedValue({
     items: [{ id: threadId, name: 'Continue report', status: 'active' }],
   });
+  navigation.mockResolvedValue({
+    items: [
+      {
+        thread: { id: threadId, owner: { kind: 'workspace', workspaceId } },
+        activity: 'task',
+      },
+    ],
+  });
   const judgements: JudgementRecord[] = [];
   select.mockImplementation((input) => {
     judgements.push({
@@ -119,7 +129,13 @@ beforeEach(() => {
 
 /** Observes the existing navigation-state contract without submitting a Turn. */
 function DraftHandoff() {
-  return <output aria-label="Draft handoff">{JSON.stringify(useLocation().state)}</output>;
+  const location = useLocation();
+  return (
+    <>
+      <output aria-label="Draft handoff">{JSON.stringify(location.state)}</output>
+      <output aria-label="Draft path">{location.pathname}</output>
+    </>
+  );
 }
 
 /** Runs real comparison query/mutation and router behavior around controlled public operations. */
@@ -145,6 +161,7 @@ function mount() {
             }
           />
           <Route path="/chat/:workspaceId/:threadId" element={<DraftHandoff />} />
+          <Route path="/tasks/:workspaceId/:threadId" element={<DraftHandoff />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>
@@ -288,6 +305,84 @@ describe('exact Artifact candidate comparison', () => {
     expect(JSON.parse(screen.getByLabelText('Draft handoff').textContent ?? '{}')).toEqual({
       candidateInput: { workspaceId, threadId, ...first },
     });
+    expect(screen.getByLabelText('Draft path')).toHaveTextContent(
+      `/tasks/${workspaceId}/${threadId}`
+    );
     expect(versionRead).toHaveBeenCalledWith({ workspaceId, artifactId, artifactVersion: 1 });
+  });
+
+  it('opens an unknown classification in Chat and does not invent a Task', async () => {
+    navigation.mockResolvedValue({
+      items: [
+        {
+          thread: { id: threadId, owner: { kind: 'workspace', workspaceId } },
+          activity: 'unknown',
+        },
+      ],
+    });
+    mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Create comparison' }));
+    await screen.findByText('# First exact original');
+    await user.click(screen.getByRole('button', { name: /Candidate choice/ }));
+    await user.click(await screen.findByRole('option', { name: /Report · version 1/ }));
+    await user.click(screen.getByRole('button', { name: 'Record choice' }));
+    await waitFor(() => expect(select).toHaveBeenCalled());
+    await user.click(screen.getByRole('button', { name: /Next conversation/ }));
+    await user.click(await screen.findByRole('option', { name: 'Continue report' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Use selected in next Turn' })).toBeEnabled()
+    );
+    await user.click(screen.getByRole('button', { name: 'Use selected in next Turn' }));
+    expect(screen.getByLabelText('Draft path')).toHaveTextContent(
+      `/chat/${workspaceId}/${threadId}`
+    );
+    expect(JSON.parse(screen.getByLabelText('Draft handoff').textContent ?? '{}')).toEqual({
+      candidateInput: { workspaceId, threadId, ...first },
+    });
+  });
+
+  it('does not navigate when the selected Thread is unclassified', async () => {
+    navigation.mockResolvedValue({ items: [] });
+    mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Create comparison' }));
+    await screen.findByText('# First exact original');
+    await user.click(screen.getByRole('button', { name: /Candidate choice/ }));
+    await user.click(await screen.findByRole('option', { name: /Report · version 1/ }));
+    await user.click(screen.getByRole('button', { name: 'Record choice' }));
+    await waitFor(() => expect(select).toHaveBeenCalled());
+    await user.click(screen.getByRole('button', { name: /Next conversation/ }));
+    await user.click(await screen.findByRole('option', { name: 'Continue report' }));
+    await waitFor(() => expect(navigation).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Use selected in next Turn' })).toBeDisabled();
+    expect(screen.queryByLabelText('Draft handoff')).not.toBeInTheDocument();
+  });
+
+  it('does not navigate when the selected Thread belongs to another Workspace', async () => {
+    navigation.mockResolvedValue({
+      items: [
+        {
+          thread: {
+            id: threadId,
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000099' },
+          },
+          activity: 'task',
+        },
+      ],
+    });
+    mount();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Create comparison' }));
+    await screen.findByText('# First exact original');
+    await user.click(screen.getByRole('button', { name: /Candidate choice/ }));
+    await user.click(await screen.findByRole('option', { name: /Report · version 1/ }));
+    await user.click(screen.getByRole('button', { name: 'Record choice' }));
+    await waitFor(() => expect(select).toHaveBeenCalled());
+    await user.click(screen.getByRole('button', { name: /Next conversation/ }));
+    await user.click(await screen.findByRole('option', { name: 'Continue report' }));
+    await waitFor(() => expect(navigation).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Use selected in next Turn' })).toBeDisabled();
+    expect(screen.queryByLabelText('Draft handoff')).not.toBeInTheDocument();
   });
 });

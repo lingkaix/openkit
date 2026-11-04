@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { CandidateSetRecordSchema, JudgementRecordSchema } from '@openkit/app-api-schemas';
+import {
+  CandidateSetRecordSchema,
+  JudgementRecordSchema,
+  SubmitConversationResponseSchema,
+} from '@openkit/app-api-schemas';
 import { createCoreClient, createRequestId } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './_lib/servers.js';
@@ -8,6 +12,7 @@ import { startIsolatedWebStack } from './_lib/servers.js';
 test('compares two retained versions and sends the selected older candidate explicitly', async ({
   page,
 }) => {
+  test.setTimeout(120_000);
   const stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
   const client = createCoreClient({ baseUrl: stack.coreUrl });
   const submissions: unknown[] = [];
@@ -51,6 +56,42 @@ test('compares two retained versions and sends the selected older candidate expl
       content: { format: 'markdown', body: '# Newer candidate head\n' },
       requestId: createRequestId(),
     });
+    await page.goto(
+      `${stack.webUrl}/artifacts?workspaceId=${workspace.id}&artifact=${imported.artifactId}`
+    );
+    const navigationBar = page.getByRole('navigation', { name: 'Primary workspace navigation' });
+    await expect(
+      navigationBar.getByRole('button', { name: workspace.name, exact: true })
+    ).toBeVisible();
+    await navigationBar.getByRole('button', { name: 'New Task', exact: true }).click();
+    const newTask = page.getByRole('dialog', { name: 'New Task' });
+    await newTask.getByRole('textbox', { name: 'Brief' }).fill('Candidate handoff');
+    const started = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
+        response.request().method() === 'POST'
+    );
+    await newTask.getByRole('button', { name: 'Start Task', exact: true }).click();
+    const startedResponse = await started;
+    const startedText = await startedResponse.text();
+    const handoff = SubmitConversationResponseSchema.parse(JSON.parse(startedText));
+    expect(startedResponse.status(), `${handoff.outcome}: ${handoff.explanation}`).toBe(202);
+    expect(handoff.receivingWorkspaceId).toBe(workspace.id);
+    await expect
+      .poll(
+        async () => {
+          const listed = await client.operations['conversation.navigation']({
+            workspaceId: workspace.id,
+          });
+          const row = listed.items.find((item) => item.thread.id === handoff.receivingThreadId);
+          return row?.thread.owner.kind === 'workspace' &&
+            row.thread.owner.workspaceId === workspace.id
+            ? row.activity
+            : 'unbound';
+        },
+        { timeout: 15_000 }
+      )
+      .toBe('task');
     await page.goto(
       `${stack.webUrl}/artifacts?workspaceId=${workspace.id}&artifact=${imported.artifactId}`
     );
@@ -109,26 +150,34 @@ test('compares two retained versions and sends the selected older candidate expl
       contentDigest,
     });
     await comparison.getByRole('button', { name: /Next conversation/ }).click();
-    await page.getByRole('option', { name: 'Candidate continuation', exact: true }).click();
+    await page.getByRole('option', { name: 'Candidate handoff', exact: true }).click();
+    const submitsBeforeUse = submissions.length;
     await comparison
       .getByRole('button', { name: 'Use selected in next Turn', exact: true })
       .click();
+    await expect(page).toHaveURL(
+      new RegExp(`/tasks/${workspace.id}/${handoff.receivingThreadId}$`)
+    );
     await expect(page.getByRole('button', { name: 'Remove Comparison report' })).toBeVisible();
-    expect(submissions).toEqual([]);
+    expect(submissions).toHaveLength(submitsBeforeUse);
     await page
       .getByRole('textbox', { name: 'Message' })
       .fill('Continue from the selected exact version.');
-    await page.getByRole('button', { name: /Conversation agent$/ }).click();
-    await page.getByRole('option', { name: 'New Shard + Worker', exact: true }).click();
     const sending = page.waitForResponse(
       (response) => new URL(response.url()).pathname === '/api/app/operations/conversation.submit'
     );
     await page.getByRole('button', { name: 'Send message', exact: true }).click();
     const sent = await sending;
     expect(sent.status()).toBe(202);
-    expect(sent.request().postDataJSON().artifactRefs).toEqual([
-      { artifactId: imported.artifactId, artifactVersion: 1 },
-    ]);
+    const payload = sent.request().postDataJSON();
+    expect(payload.artifactRefs).toEqual([{ artifactId: imported.artifactId, artifactVersion: 1 }]);
+    const catalog = await client.operations['conversation.targets']({
+      workspaceId: workspace.id,
+      threadId: handoff.receivingThreadId,
+    });
+    const admitted = catalog.targets.find((target) => target.targetRef === payload.targetRef);
+    expect(admitted?.availability).toBe('available');
+    expect(['new-task-worker', 'warm-worker', 'running-worker']).toContain(admitted?.kind);
     expect(runtimeErrors).toEqual([]);
   } finally {
     await stack.stop();

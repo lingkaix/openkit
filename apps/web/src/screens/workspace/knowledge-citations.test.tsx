@@ -161,9 +161,19 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
   };
 }
 
+/**
+ * Opens Maintain, which owns the Manager panel and starts collapsed (A-Q2, A3).
+ * Testing Library skips the hidden section, so the panel is unreachable before this step.
+ */
+async function openMaintain(user: ReturnType<typeof userEvent.setup>) {
+  const toggle = await screen.findByRole('button', { name: 'Maintain' });
+  if (toggle.getAttribute('aria-expanded') === 'false') await user.click(toggle);
+}
+
 /** Submits the question through the visible Manager controls. */
 async function askManager() {
   const user = userEvent.setup();
+  await openMaintain(user);
   const manager = await screen.findByRole('region', { name: 'Manager' });
   const question = within(manager).getByRole('textbox', { name: 'Question' });
   await waitFor(() => expect(question).toBeEnabled());
@@ -290,6 +300,7 @@ describe('Knowledge Manager answer citations', () => {
         })
     );
     const user = userEvent.setup();
+    await openMaintain(user);
     const manager = await screen.findByRole('region', { name: 'Manager' });
     const question = within(manager).getByRole('textbox', { name: 'Question' });
     await waitFor(() => expect(question).toBeEnabled());

@@ -318,6 +318,26 @@ export function conversationThreadPath(
   return chatThreadPath(workspaceId, threadId);
 }
 
+/**
+ * Routes Use only when navigation classifies that same Workspace Thread.
+ * A missing row or another owner does not fall through to Chat.
+ */
+export function classifiedThreadPath(
+  workspaceId: string,
+  threadId: string,
+  items: ConversationNavigationResponse['items'] | undefined
+): string | null {
+  const item = items?.find((row) => row.thread.id === threadId);
+  if (
+    !item ||
+    item.thread.owner.kind !== 'workspace' ||
+    item.thread.owner.workspaceId !== workspaceId
+  ) {
+    return null;
+  }
+  return conversationThreadPath(workspaceId, threadId, item.activity);
+}
+
 /** List the workspaces the user can act in. */
 export function useWorkspaces() {
   const client = useCoreClient();

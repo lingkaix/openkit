@@ -13,7 +13,7 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
-import { chatThreadPath } from '../chat/data';
+import { chatThreadPath, classifiedThreadPath, useConversationNavigation } from '../chat/data';
 import { useThreads } from './data';
 import {
   candidateCommandError,
@@ -52,6 +52,7 @@ export function ArtifactCandidateSets(props: {
       : undefined;
   const originals = useCandidateVersions(workspaceId, visibleSet);
   const threads = useThreads(workspaceId);
+  const navigation = useConversationNavigation(workspaceId);
   const create = useCreateCandidateSet();
   const select = useSelectCandidate();
   const [draft, setDraft] = useState<{
@@ -89,6 +90,13 @@ export function ArtifactCandidateSets(props: {
       ? originals.data.find((record) => sameCandidate(record.version, currentCandidate))
       : null;
   const nextThread = authorizedThreads.find((thread) => thread.id === local?.threadId);
+  const nextDestination = nextThread
+    ? classifiedThreadPath(
+        workspaceId,
+        nextThread.id,
+        navigation.isSuccess ? navigation.data : undefined
+      )
+    : null;
 
   /** Keeps local controls bound to the inspected set without rewriting a frozen command. */
   function changeDraft(change: Partial<NonNullable<typeof draft>>) {
@@ -470,18 +478,19 @@ export function ArtifactCandidateSets(props: {
                     isDisabled={
                       writeBlocked ||
                       !currentCandidate ||
-                      !nextThread ||
+                      !nextDestination ||
                       selectedOriginal?.artifact.status !== 'ready'
                     }
                     onPress={() => {
                       if (
                         !currentCandidate ||
                         !nextThread ||
+                        !nextDestination ||
                         writeBlocked ||
                         selectedOriginal?.artifact.status !== 'ready'
                       )
                         return;
-                      navigate(chatThreadPath(workspaceId, nextThread.id), {
+                      navigate(nextDestination, {
                         state: {
                           candidateInput: {
                             workspaceId,

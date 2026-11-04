@@ -143,6 +143,17 @@ function makeClient(
         followUpTurnId: null,
       }),
       'thread.items': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+      'conversation.navigation': vi.fn().mockResolvedValue({
+        items: [
+          {
+            thread: {
+              id: ARTIFACT.threadId,
+              owner: { kind: 'workspace', workspaceId: ARTIFACT.workspaceId },
+            },
+            activity: 'task',
+          },
+        ],
+      }),
       ...overrides.operations,
       'workspace.list': vi
         .fn()
@@ -935,7 +946,66 @@ describe('Review read and selection failure boundaries', () => {
       },
     });
     renderApp(path, client, location);
-    await user.click(await screen.findByRole('button', { name: 'Use in next Turn' }));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Use in next Turn' })).toBeEnabled()
+    );
+    await user.click(screen.getByRole('button', { name: 'Use in next Turn' }));
+    await waitFor(() =>
+      expect(location).toHaveBeenCalledWith(
+        '',
+        `/tasks/${ARTIFACT.workspaceId}/${ARTIFACT.threadId}`,
+        {
+          candidateInput: {
+            workspaceId: ARTIFACT.workspaceId,
+            threadId: ARTIFACT.threadId,
+            artifactId: ARTIFACT.id,
+            artifactVersion: 1,
+            contentDigest: ARTIFACT.contentDigest,
+          },
+        }
+      )
+    );
+    expect(client.operations['turn.start']).not.toHaveBeenCalled();
+  });
+
+  it('follows an unknown classification to Chat without inventing a Task', async () => {
+    const user = userEvent.setup();
+    const location = vi.fn();
+    const client = makeClient({
+      operations: {
+        'artifact.review-list': vi.fn().mockResolvedValue({
+          reviews: [
+            {
+              ...REVIEW,
+              candidateSelections: [
+                {
+                  actorId: 'other-user',
+                  requestId: 'req_choice',
+                  reason: null,
+                  selectedAt: TIMESTAMP,
+                },
+              ],
+            },
+          ],
+        }),
+        'conversation.navigation': vi.fn().mockResolvedValue({
+          items: [
+            {
+              thread: {
+                id: ARTIFACT.threadId,
+                owner: { kind: 'workspace', workspaceId: ARTIFACT.workspaceId },
+              },
+              activity: 'unknown',
+            },
+          ],
+        }),
+      },
+    });
+    renderApp(path, client, location);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Use in next Turn' })).toBeEnabled()
+    );
+    await user.click(screen.getByRole('button', { name: 'Use in next Turn' }));
     await waitFor(() =>
       expect(location).toHaveBeenCalledWith(
         '',
@@ -951,7 +1021,75 @@ describe('Review read and selection failure boundaries', () => {
         }
       )
     );
+    expect(location.mock.calls.some((call) => String(call[1]).includes('/tasks/'))).toBe(false);
     expect(client.operations['turn.start']).not.toHaveBeenCalled();
+  });
+
+  it('does not navigate when the source Thread is missing or owned by another Workspace', async () => {
+    const location = vi.fn();
+    const missing = makeClient({
+      operations: {
+        'artifact.review-list': vi.fn().mockResolvedValue({
+          reviews: [
+            {
+              ...REVIEW,
+              candidateSelections: [
+                {
+                  actorId: 'other-user',
+                  requestId: 'req_choice',
+                  reason: null,
+                  selectedAt: TIMESTAMP,
+                },
+              ],
+            },
+          ],
+        }),
+        'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
+      },
+    });
+    renderApp(path, missing, location);
+    expect(await screen.findByRole('button', { name: 'Use in next Turn' })).toBeDisabled();
+    const elsewhere = makeClient({
+      operations: {
+        'artifact.review-list': vi.fn().mockResolvedValue({
+          reviews: [
+            {
+              ...REVIEW,
+              candidateSelections: [
+                {
+                  actorId: 'other-user',
+                  requestId: 'req_choice',
+                  reason: null,
+                  selectedAt: TIMESTAMP,
+                },
+              ],
+            },
+          ],
+        }),
+        'conversation.navigation': vi.fn().mockResolvedValue({
+          items: [
+            {
+              thread: {
+                id: ARTIFACT.threadId,
+                owner: {
+                  kind: 'workspace',
+                  workspaceId: 'ws_00000000-0000-7000-8000-000000000099',
+                },
+              },
+              activity: 'task',
+            },
+          ],
+        }),
+      },
+    });
+    cleanup();
+    renderApp(path, elsewhere, location);
+    expect(await screen.findByRole('button', { name: 'Use in next Turn' })).toBeDisabled();
+    expect(location.mock.calls.some((call) => /\/(tasks|chat)\//.test(String(call[1])))).toBe(
+      false
+    );
+    expect(missing.operations['turn.start']).not.toHaveBeenCalled();
+    expect(elsewhere.operations['turn.start']).not.toHaveBeenCalled();
   });
 });
 

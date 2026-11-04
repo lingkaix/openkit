@@ -75,15 +75,31 @@ test('completes the local Workspace self-check', async ({ page }) => {
   expect(threadCreates).toBe(1);
   expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
   await page.getByRole('textbox', { name: 'Message' }).fill('Story thread');
-  await page.getByRole('button', { name: /Conversation agent$/ }).click();
-  await page.getByRole('option', { name: 'New Shard + Worker' }).click();
-  await page.getByRole('button', { name: /^Send message$/ }).click();
-  await expect(
-    page.getByText(
-      'Explicit disclosure admission is required before private Assistant input becomes shared Task work.',
-      { exact: true }
-    )
-  ).toBeVisible({ timeout: 15_000 });
+  // The accepted Assistant composer offers no Worker target and never falls back to one.
+  await expect(page.getByRole('button', { name: /Conversation agent$/ })).toHaveCount(0);
+  await expect(page.getByText('The Assistant is not available.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Send message$/ })).toBeDisabled();
+  // The browser can no longer address the private Thread as Worker work, so the same public
+  // operation proves the refused undisclosed handoff directly against the isolated server.
+  const targets = await client.operations['conversation.targets']({
+    workspaceId: assistantWorkspaceId,
+    threadId: assistant.id,
+  });
+  const worker = targets.targets.find(
+    (target) => target.kind === 'new-task-worker' && target.availability === 'available'
+  );
+  expect(worker, 'The isolated stack must offer an available Worker target.').toBeTruthy();
+  const refused = await client.operations['conversation.submit']({
+    workspaceId: assistantWorkspaceId,
+    threadId: assistant.id,
+    input: 'Story thread',
+    targetRef: worker!.targetRef,
+    requestId: createRequestId(),
+  });
+  expect(refused.outcome).toBe('refused');
+  expect(refused.explanation).toBe(
+    'Explicit disclosure admission is required before private Assistant input becomes shared Task work.'
+  );
   await expect(page.getByRole('heading', { name: assistant.name })).toBeVisible();
   expect(
     (await client.operations['thread.list']({ workspaceId: assistantWorkspaceId })).items.map(
@@ -789,17 +805,24 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   expect(recoveredReview.rangeFeedback).toEqual(chosenRange);
   expect(recoveredReview.candidateSelections).toEqual(decidedReview.candidateSelections);
   const beforeUse = await threadTurnIds(threadId);
+  const sourceWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const projected = (
+    await getJson<{
+      items: Array<{
+        thread: { id: string; owner: { kind: string; workspaceId?: string } };
+        activity: string;
+      }>;
+    }>('/api/app/operations/conversation.navigation', { workspaceId: sourceWorkspaceId })
+  ).items.find((row) => row.thread.id === threadId);
+  expect(projected?.thread.owner).toEqual({ kind: 'workspace', workspaceId: sourceWorkspaceId });
+  expect(projected?.activity).toBe('task');
   await page.getByRole('button', { name: 'Use in next Turn', exact: true }).click();
-  await expect(page).toHaveURL(
-    `${stack.webUrl}/chat/ws_00000000-0000-7000-8000-000000000001/${threadId}`
-  );
+  await expect(page).toHaveURL(`${stack.webUrl}/tasks/${sourceWorkspaceId}/${threadId}`);
   await expect(page.getByRole('group', { name: 'Selected artifacts' })).toBeVisible();
   expect(await threadTurnIds(threadId)).toEqual(beforeUse);
   await page
     .getByRole('textbox', { name: 'Message', exact: true })
     .fill('Continue from this exact candidate.');
-  await page.getByRole('button', { name: /Conversation agent$/ }).click();
-  await page.getByRole('option', { name: 'New Shard + Worker', exact: true }).click();
   const nextTurnResponse = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
@@ -808,9 +831,21 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   const nextResponse = await nextTurnResponse;
   expect(nextResponse.status(), await nextResponse.text()).toBe(202);
-  expect(nextResponse.request().postDataJSON().artifactRefs).toEqual([
+  const handoffPayload = nextResponse.request().postDataJSON();
+  expect(handoffPayload.artifactRefs).toEqual([
     { artifactId: proposals[0]!.id, artifactVersion: proposals[0]!.version },
   ]);
+  const handoffTargets = await getJson<{
+    targets: Array<{ targetRef: string; kind: string; availability: string }>;
+  }>('/api/app/operations/conversation.targets', {
+    workspaceId: sourceWorkspaceId,
+    threadId,
+  });
+  const admittedTarget = handoffTargets.targets.find(
+    (target) => target.targetRef === handoffPayload.targetRef
+  );
+  expect(admittedTarget?.availability).toBe('available');
+  expect(['new-task-worker', 'warm-worker', 'running-worker']).toContain(admittedTarget?.kind);
   const nextTurn = SubmitConversationResponseSchema.parse(await nextResponse.json());
   let nextItems: Array<{
     id: string;

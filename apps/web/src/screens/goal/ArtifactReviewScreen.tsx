@@ -14,7 +14,7 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
-import { chatThreadPath } from '../chat/data';
+import { classifiedThreadPath, useConversationNavigation } from '../chat/data';
 import { useMaterialProposalText, useWorkspaceMaterialRevision } from '../material/data';
 import { MaterialRangeFeedback } from '../material/MaterialRangeFeedback';
 import { ProposalReview } from '../material/ProposalReview';
@@ -129,6 +129,15 @@ function ExactArtifactReview({
 }) {
   const client = useCoreClient();
   const navigate = useNavigate();
+  const navigation = useConversationNavigation(workspaceId);
+  const sourceDestination =
+    review.sourceThreadId === null
+      ? null
+      : classifiedThreadPath(
+          workspaceId,
+          review.sourceThreadId,
+          navigation.isSuccess ? navigation.data : undefined
+        );
   const { checking, failed: disconnected } = useConnection();
   const [feedback, setFeedback] = useState('');
   const [reason, setReason] = useState('');
@@ -405,12 +414,12 @@ function ExactArtifactReview({
             isDisabled={
               writeBlocked ||
               !exactArtifact ||
-              !review.sourceThreadId ||
+              !sourceDestination ||
               !review.candidateSelections?.length
             }
             onPress={() => {
-              if (!review.sourceThreadId || !exactArtifact) return;
-              navigate(chatThreadPath(workspaceId, review.sourceThreadId), {
+              if (!review.sourceThreadId || !exactArtifact || !sourceDestination) return;
+              navigate(sourceDestination, {
                 state: {
                   candidateInput: {
                     workspaceId,

@@ -64,24 +64,17 @@ test('keeps files as local drafts and publishes exact originals only on the rece
     },
     { name: 'empty-original.data', mimeType: 'application/octet-stream', buffer: Buffer.alloc(0) },
   ];
-  await page.getByRole('button', { name: 'Add artifact or upload attachment' }).click();
-  await page.locator('input[type="file"]').setInputFiles(originals);
-  for (const file of originals)
-    await expect(page.getByRole('button', { name: `Remove file ${file.name}` })).toBeVisible();
+  // The Assistant composer offers no Worker target, so shared Worker work starts from New Task.
+  await navigation.getByRole('button', { name: 'New Task', exact: true }).click();
+  const newTask = page.getByRole('dialog', { name: 'New Task' });
+  await newTask
+    .getByRole('textbox', { name: 'Brief' })
+    .fill('Inspect the attached exact originals.');
+  await newTask.getByLabel('Task files').setInputFiles(originals);
   expect(artifactImports).toEqual([]);
   expect(await artifactInventory()).toEqual(before);
 
-  await page
-    .getByRole('textbox', { name: 'Message' })
-    .fill('Inspect the attached exact originals.');
-  await page.getByRole('button', { name: /Conversation agent$/ }).click();
-  await page.getByRole('option', { name: 'New Shard + Worker' }).click();
-  const accepted = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
-      response.request().headers()['content-type'] === 'application/vnd.openkit.conversation-files'
-  );
-  await page.getByRole('button', { name: /^Send message$/ }).click();
+  await newTask.getByRole('button', { name: 'Start Task', exact: true }).click();
   const disclosure = page.getByRole('dialog', { name: 'Share selected files with Worker' });
   await expect(disclosure.getByLabel('Work brief')).toHaveText(
     'Inspect the attached exact originals.'
@@ -89,6 +82,11 @@ test('keeps files as local drafts and publishes exact originals only on the rece
   for (const file of originals)
     await expect(disclosure.getByText(file.name, { exact: true })).toBeVisible();
   expect(await artifactInventory()).toEqual(before);
+  const accepted = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
+      response.request().headers()['content-type'] === 'application/vnd.openkit.conversation-files'
+  );
   await disclosure.getByRole('button', { name: 'Share files and send' }).click();
   const response = await accepted;
   expect(response.status(), await response.text()).toBe(202);
