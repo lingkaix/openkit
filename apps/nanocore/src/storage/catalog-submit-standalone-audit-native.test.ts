@@ -430,6 +430,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     }).entries[0]?.content?.toString('base64')
   ).toBe(tree[0]!.contentBase64);
   expect([...STANDALONE_AUDIT_STAGES].sort()).toEqual([
+    'administration.configuration.apply',
     'administration.server-mcp-create',
     'administration.server-mcp-remove',
     'administration.server-mcp-select-version',
@@ -455,6 +456,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'catalog.skill-candidate-withdraw',
     'catalog.skill-candidate-withdraw.admit',
     'data_source_catalog.authority.update',
+    'policy.write',
   ]);
 });
 

@@ -284,6 +284,8 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'catalog.mcp-binding',
     'catalog.plugin-import',
     'auth.bootstrap.consume',
+    'policy.write',
+    'administration.configuration.apply',
   ]);
   const f = await fixture();
   f.queryOnly();

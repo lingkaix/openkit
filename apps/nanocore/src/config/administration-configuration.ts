@@ -27,7 +27,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { recordServerAuditEvent } from '../audit-events.js';
+import { prepareServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
   isCurrentServerPolicyAuthor,
@@ -50,6 +50,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { parseJsoncObject } from './jsonc.js';
 import type { RuntimeConfigManager, RuntimeConfigSnapshot } from './runtime-config.js';
@@ -512,13 +513,14 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
                     : 'failed',
             })
           : undefined;
-        recordServerAuditEvent({
+        const stage = body.targetFamily === 'policy' ? 'policy.write' : body.command;
+        const event = prepareServerAuditEvent({
           coreDb,
           actor: { kind: 'user', id: actor.userId },
           requestId: request.requestId,
           ...(permissionDecisionId ? { permissionDecisionId } : {}),
           ...(policyWriteOutcome ? { policyWriteOutcome } : {}),
-          action: body.targetFamily === 'policy' ? 'policy.write' : body.command,
+          action: stage,
           category: 'system',
           resource: `${body.targetFamily}:${body.targetId}`,
           outcome: policyWriteOutcome
@@ -532,6 +534,8 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
               : 'failed',
           summary: `Candidate ${request.candidate.contentDigest}; base ${body.expectedRevision}; persisted ${persisted}; reload ${reload}; restart required ${restartRequired}.`,
         });
+        // Settle this original outcome after reload, before its separate Artifact and receipt.
+        await getControlStoreWorkerClient().standaloneAudit(coreDb, { stage, event });
         await publish(
           result,
           threadId,

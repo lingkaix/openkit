@@ -402,6 +402,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
   expect(original.receipts).toEqual([]); // Both original commits are Audit-only, without a receipt.
   expect(await f.coldRows()).toEqual(original);
   expect([...STANDALONE_AUDIT_STAGES].sort()).toEqual([
+    'administration.configuration.apply',
     'administration.server-mcp-create',
     'administration.server-mcp-remove',
     'administration.server-mcp-select-version',
@@ -427,6 +428,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'catalog.skill-candidate-withdraw',
     'catalog.skill-candidate-withdraw.admit',
     'data_source_catalog.authority.update',
+    'policy.write',
   ]);
 });
 

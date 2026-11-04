@@ -1,7 +1,7 @@
 import { AuditEventSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** Originally standalone Catalog, Data Source, App-update and Server MCP stages; never arbitrary Audit actions. */
+/** Originally standalone Catalog, Data Source, App-update, Server MCP and configuration outcomes; never arbitrary Audit actions. */
 export const STANDALONE_AUDIT_STAGES = [
   'catalog.skill-candidate-decide.admit',
   'catalog.skill-candidate-withdraw.admit',
@@ -28,6 +28,8 @@ export const STANDALONE_AUDIT_STAGES = [
   'catalog.mcp-binding',
   'catalog.plugin-import',
   'auth.bootstrap.consume',
+  'policy.write',
+  'administration.configuration.apply',
 ] as const;
 /** One original prepared Audit, bound to its exact existing scope and admitted stage. */
 export const ControlStandaloneAuditInputSchema = z
@@ -86,6 +88,56 @@ export const ControlStandaloneAuditInputSchema = z
         event.resource?.startsWith('auth-token:') === true
       );
     if (event.actor?.kind !== 'user') return false;
+    if (stage === 'policy.write' || stage === 'administration.configuration.apply') {
+      if (
+        workspaceId !== undefined ||
+        event.workspaceId !== null ||
+        typeof event.requestId !== 'string' ||
+        event.category !== 'system' ||
+        event.severity !== 'info' ||
+        event.threadId !== null ||
+        event.turnId !== null ||
+        event.itemId !== null ||
+        event.capabilityCallId !== null ||
+        event.agentId !== null ||
+        event.agentSessionId !== null ||
+        event.subject !== null ||
+        event.resourceRevision !== null ||
+        event.errorCode !== null ||
+        event.vaultGrantId !== null ||
+        event.authentication !== undefined ||
+        event.policyInvocation !== undefined
+      )
+        return false;
+      if (stage === 'policy.write') {
+        const outcome = event.policyWriteOutcome;
+        return (
+          event.resource === 'policy:server' &&
+          typeof event.permissionDecisionId === 'string' &&
+          outcome !== undefined &&
+          outcome.decider.kind === 'human' &&
+          outcome.decider.id === event.actor.id &&
+          outcome.validation === 'valid' &&
+          outcome.persistedRevision !== null &&
+          event.outcome ===
+            (outcome.outcome === 'active'
+              ? 'succeeded'
+              : outcome.outcome === 'unknown'
+                ? 'unknown'
+                : 'failed')
+        );
+      }
+      return (
+        event.policyWriteOutcome === undefined &&
+        (event.outcome === 'succeeded' || event.outcome === 'failed') &&
+        ((event.resource?.startsWith('provider:') === true &&
+          event.resource.length > 'provider:'.length &&
+          event.permissionDecisionId === null) ||
+          (event.resource === 'gateway:gateway' && event.permissionDecisionId === null) ||
+          (event.resource?.startsWith('agent:') === true &&
+            event.resource.length > 'agent:'.length))
+      );
+    }
     if (
       stage === 'administration.server-mcp-create' ||
       stage === 'administration.server-mcp-stage-version' ||
