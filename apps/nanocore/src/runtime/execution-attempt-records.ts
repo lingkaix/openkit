@@ -53,12 +53,48 @@ export function listSchedulerExecutionAttemptsForTurn(
   coreDb: CoreDb,
   input: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
 ): SchedulerExecutionAttemptRecord[] {
+  // Preserve the original single-SELECT snapshot for synchronous authority consumers.
   return coreDb.sqlite
-    .prepare(
-      `${attemptSelect} WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? ORDER BY rowid`
-    )
-    .all(input.workspaceId, input.threadId, input.turnId)
-    .map((row) => readRetainedV1(row, (value) => AttemptSchema.parse(value)));
+    .transaction(() => {
+      const result: SchedulerExecutionAttemptRecord[] = [];
+      for (const page of readSchedulerExecutionAttemptPagesForTurn(coreDb, input))
+        result.push(...page);
+      return result;
+    })
+    .deferred();
+}
+
+/**
+ * Reads the exact Turn's complete attempts in bounded creation-rowid pages through the same decoder.
+ * Every SELECT ends before yielding; cooperative callers must not hold an enclosing transaction.
+ * Rowid is a local continuation only and does not enter the retained attempt or public projection.
+ */
+export function* readSchedulerExecutionAttemptPagesForTurn(
+  coreDb: CoreDb,
+  input: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
+): Generator<readonly SchedulerExecutionAttemptRecord[], void, void> {
+  let after: string | undefined;
+  for (;;) {
+    const rows = coreDb.sqlite
+      .prepare(
+        `${attemptSelect.replace('SELECT ', 'SELECT CAST(rowid AS TEXT) AS pageRowid, ')}
+        WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?
+          ${after === undefined ? '' : 'AND rowid > ?'}
+        ORDER BY rowid LIMIT 128`
+      )
+      .all(
+        input.workspaceId,
+        input.threadId,
+        input.turnId,
+        ...(after === undefined ? [] : [after])
+      ) as Array<{ pageRowid: string } & Record<string, unknown>>;
+    if (!rows.length) return;
+    const page = rows.map(({ pageRowid: _pageRowid, ...row }) =>
+      readRetainedV1(row, (value) => AttemptSchema.parse(value))
+    );
+    after = rows.at(-1)!.pageRowid;
+    yield page;
+  }
 }
 
 /** Lists every retained owner of one Turn id so exclusion checks cannot hide conflicting scope. */
