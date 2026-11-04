@@ -4,6 +4,7 @@ import {
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
 } from './generative-operations.js';
+import type { OperationDefinition } from './operation-contract.js';
 import {
   ARTIFACT_OPERATION_DEFINITIONS,
   assertOperationNames,
@@ -74,6 +75,37 @@ it('rejects duplicate operation ids instead of silently overwriting an included 
 });
 
 describe('operation definitions', () => {
+  it('keeps declared API framing and status facts consistent', () => {
+    const successStatuses = [200, 201, 202, 204];
+    for (const [id, declared] of Object.entries(OPERATION_DEFINITIONS)) {
+      const definition: OperationDefinition = declared;
+      expect(['json', 'streaming'], id).toContain(definition.binding);
+      expect(definition.returnsOneTimeSecret, id).toBeTypeOf('boolean');
+      expect(definition.mutating, id).toBeTypeOf('boolean');
+      expect(successStatuses, id).toContain(definition.successStatus);
+      if (definition.successStatuses !== undefined) {
+        expect(definition.successStatuses.length, id).toBeGreaterThan(0);
+        expect(new Set(definition.successStatuses).size, id).toBe(
+          definition.successStatuses.length
+        );
+        expect(definition.successStatuses, id).toContain(definition.successStatus);
+        for (const status of definition.successStatuses)
+          expect(successStatuses, id).toContain(status);
+      }
+      if (definition.invalidInputCode !== undefined)
+        expect(definition.invalidInputCode.length, id).toBeGreaterThan(0);
+    }
+  });
+
+  it('admits logical null for a declared bodyless JSON success', () => {
+    for (const [id, declared] of Object.entries(OPERATION_DEFINITIONS)) {
+      const definition: OperationDefinition = declared;
+      const statuses = definition.successStatuses ?? [definition.successStatus];
+      if (definition.binding === 'json' && statuses.includes(204))
+        expect(definition.outputSchema.safeParse(null).success, id).toBe(true);
+    }
+  });
+
   it('derives model views from complete schemas without bound identities', () => {
     for (const [id, definition] of Object.entries(KERNEL_OPERATION_DEFINITIONS)) {
       expect(operationHttpPath(id)).toBe(`/api/app/operations/${id}`);

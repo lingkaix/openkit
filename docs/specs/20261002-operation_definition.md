@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 date: "2026-10-02"
-updated: "2026-10-03"
+updated: "2026-11-04"
 ---
 # Operation Definition
 
@@ -73,6 +73,38 @@ Core record and command schemas stay the protocol package's schemas. The declara
 The table does not hold private executable configuration, the policy graph, memberships, credentials, deployment paths, or any other live authority fact. Those facts and their procedures stay on the server. A descriptor selects a trusted procedure. It does not replace that procedure and it does not carry the procedure's secret or its result.
 
 The following are not part of the definition and are not built. There is no runtime registration API, no plugin mechanism inside the NanoCore process, no durable operation-registry state, no new permission engine, no generic RPC dependency, no alias for an old id, and no second effect-risk taxonomy. The existing mutation posture remains separate from the Policy-owned crossing attributes. The lifecycle field, the retirement mechanism, and a data-defined operation source wait for the conditions in Lifecycle and Data-Defined Sources. Blocking is the deployment decision Lifecycle states, not a definition mechanism waiting in that list.
+
+### Common API Conventions
+
+These conventions constrain declarations and their projections. They do not transfer domain records, replay, effect commitment or retained formats from their existing owners. The App API remains release-coupled under [Contract Evolution](../core/contract-evolution.md).
+
+#### Pagination
+
+A cursor is an owner-validated continuation position, not authority. Clients return it unchanged with the same selectors and filters. Each paged operation owns its cursor grammar, order and tie-break, limit omission and bounds, completion marker, and behavior under concurrent change. Continuation follows that order; it does not universally mean newer or older. Each invocation still needs current authority and audience checks. No cursor registry, generic snapshot, default limit or global cap is introduced.
+
+`thread.items` retains chronological forward traversal with its decimal positional cursor. Omitted limit remains unlimited, and `nextCursor: null` marks completion. Positions do not promise a stable snapshot after insertion, deletion or trimming. Its accepted numeric `since` input gains no filtering meaning from this convention. `audit.workspace-list` retains its descending keyset traversal toward older events, including its owner-defined tie-break, cursor and limit rules. That public API order does not reverse the retained or portable Audit readers. The two independent `usage.read` arrays, `capabilityCalls` and `usageRecords`, acquire no common cursor. Existing offset-based reads and the Core Turn stream keep their separate contracts.
+
+#### Errors
+
+Use the classified operation failure and projections in Invocation below. Invalid input, missing authentication, denied authority, missing or concealed resources, state conflicts and dependency failures are useful semantic groups, not a new error-code enum or status remapping table. Owner codes and exceptions stay intact, including the HTTP 403 bound-input conflict. HTTP carries the semantic status; operation-error MCP data preserves it in its own framing. Protocol, authentication and worker transport failures retain their separate owners. Messages and optional details must be safe for their admitted audience; causes and stacks remain private. A status alone establishes neither rollback nor safe retry, and HTTP 202 admission does not prove completion.
+
+#### Request Identity And Replay
+
+The definition-derived client supplies a request identity only for a mutating operation whose schema declares that field. It preserves a supplied identity and uses `x-openkit-request-id`; HTTP rejects a conflicting body identity and validates through the declared schema. Trusted native and model identities remain invocation-context inputs. A second client call without a supplied identity can create a new command, not a retry of the first one.
+
+Where an owner provides idempotent execution, a logical retry keeps the original command, owner scope, request identity and admitted input. The owner's receipt and input comparison decide replay or conflict. Replay can return a current resource view rather than the first response bytes. Current admission, receipt retention, unknown outcomes and recovery remain owner rules. A mutation declaration alone promises no receipt, exactly-once effect or automatic retry. This convention creates no ledger or new replay mechanism.
+
+#### Identifier And Time Formats
+
+Named entity fields reuse [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md) and their kind-specific schemas. The actual text form is `<kind>_<lowercase UUID>`, with the existing UUIDv7 allocator and only the owner's declared UUIDv5 derivations. Selectors, native identifiers and command or correlation identities retain their own validators; not every field named `requestId` is a Protocol UUID. Encoded identity time grants no authority.
+
+New instant producers use the owning timestamp contract and canonical UTC ISO serialization where that format is declared. Numeric clocks and durations state their units. Existing retained readers and accepted representations remain unchanged. In particular, the shared `TimestampSchema` accepts a nonempty string; this convention does not tighten it to a strict datetime reader or claim that it already enforces ISO syntax.
+
+#### Declaration Checks And Behavioral Evidence
+
+The existing `check:repo` pipeline builds the cached Protocol, Worker Protocol, config-schema and app-api-schemas TypeScript closure and runs the schema package's focused operation-definition checks. Public API framing uses the existing JSON or streaming binding, secret-result and mutation facts, and success statuses 200, 201, 202 or 204. An explicit allowed-status set is nonempty, unique and contains its default status; an invalid-input code override is nonempty. A JSON binding that declares HTTP 204 admits logical `null`, while HTTP emits no body. This rule imposes no JSON null requirement on streaming bindings or other success statuses.
+
+These are checks of actual declarations and schemas, not product source text. They cannot prove row direction, visibility, page completeness, non-mutation or durable replay. Those invariants remain observable checks at the affected owner. No handler inspection, schema-vocabulary expansion, full integration run or unrelated runtime replay is added to this focused check.
 
 ### Mediation Registry Extension
 
