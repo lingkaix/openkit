@@ -145,7 +145,7 @@ describe('authored configuration tolerance', () => {
     );
   });
 
-  it('loads an unknown optional Server key, reports its location, and preserves authored bytes on edit', () => {
+  it('loads an unknown optional Server key, reports its location, and preserves authored bytes on edit', async () => {
     const content =
       '{\n  "schemaVersion": 1,\n  "mode": "server",\n  "futureDisplayHint": "compact" // newer release\n}\n';
     const { dataRoot, path } = authoredFile('config/server.jsonc', content);
@@ -186,8 +186,14 @@ describe('authored configuration tolerance', () => {
       )
     ).toEqual([expect.objectContaining({ fileId: 'server.jsonc', severity: 'warning' })]);
     expect(
-      files.updateFile({ id: 'server.jsonc', kind: 'server', content, expectedRevision: revision })
-        .diagnostics
+      (
+        await files.updateFile({
+          id: 'server.jsonc',
+          kind: 'server',
+          content,
+          expectedRevision: revision,
+        })
+      ).diagnostics
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -327,7 +333,7 @@ describe('authored configuration tolerance', () => {
     }
   });
 
-  it('blocks an editor write that declares a registered but unsupported data-source feature', () => {
+  it('blocks an editor write that declares a registered but unsupported data-source feature', async () => {
     const original = JSON.stringify({ schemaVersion: 1, sources: [] });
     const { dataRoot, path } = authoredFile(
       'workspaces/ws_00000000-0000-7000-8000-000000000001/config/data-sources.jsonc',
@@ -359,14 +365,14 @@ describe('authored configuration tolerance', () => {
         }),
       ])
     );
-    expect(() =>
+    await expect(
       files.updateFile({
         id,
         kind: 'data-source',
         content,
         expectedRevision: files.readFile(id).file.revision,
       })
-    ).toThrow(/workspace\.mount\.fuse/);
+    ).rejects.toThrow(/workspace\.mount\.fuse/);
     expect(readFileSync(path, 'utf8')).toBe(original);
   });
 
@@ -654,7 +660,7 @@ describe('descriptive configuration extension loading', () => {
         jsonPath: expectedPath,
       }),
     ]);
-    files.updateFile({
+    await files.updateFile({
       id: file,
       kind: kind as Parameters<typeof files.updateFile>[0]['kind'],
       content,

@@ -171,7 +171,7 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
   it.each([
     'create',
     'update',
-  ] as const)('refuses historical gateway on Provider %s and persists only the canonical gateway kind', (operation) => {
+  ] as const)('refuses historical gateway on Provider %s and persists only the canonical gateway kind', async (operation) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-kind-write-v5-'));
     try {
       const providersRoot = join(dataRoot, 'config', 'providers');
@@ -196,18 +196,20 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
       const original = `${JSON.stringify(profile, null, 2)}\n`;
       if (operation === 'update') writeFileSync(path, original);
       const revision = operation === 'update' ? files.readFile(id).file.revision : null;
-      const write = (kind: string) => {
+      const write = async (kind: string) => {
         const input = {
           id,
           kind: 'provider' as const,
           content: `${JSON.stringify({ ...profile, kind }, null, 2)}\n`,
           expectedRevision: revision,
         };
-        return operation === 'create' ? files.createFile(input) : files.updateFile(input);
+        return operation === 'create'
+          ? await files.createFile(input)
+          : await files.updateFile(input);
       };
       let refusal: unknown = null;
       try {
-        write('gateway');
+        await write('gateway');
       } catch (error) {
         refusal = error;
       }
@@ -215,7 +217,7 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
       expect(refusal).toMatchObject({ code: 'config_file_invalid', status: 400 });
       if (operation === 'create') expect(existsSync(path)).toBe(false);
       else expect(readFileSync(path, 'utf8')).toBe(original);
-      expect(write('llm-gateway').file.id).toBe(id);
+      expect((await write('llm-gateway')).file.id).toBe(id);
       expect(parseJsoncObject(readFileSync(path, 'utf8'), path)).toEqual({
         ...profile,
         kind: 'llm-gateway',

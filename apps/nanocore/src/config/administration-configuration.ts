@@ -448,7 +448,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         let restartRequired = body.restartRequired;
         try {
           requireAdministratorOperation(coreDb, actor, 'workspace.configure');
-          const written = files.updateFile(
+          const written = await files.updateFile(
             {
               id: prepared.current.read.file.id,
               kind: body.targetFamily === 'policy' ? 'server' : body.targetFamily,

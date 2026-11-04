@@ -2666,7 +2666,7 @@ describe('worker MCP routes', () => {
           {}
         )
       );
-      files.updateFile({
+      await files.updateFile({
         id: configId,
         kind: 'workspace',
         content,

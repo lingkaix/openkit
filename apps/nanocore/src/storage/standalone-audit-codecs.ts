@@ -1,7 +1,7 @@
 import { AuditEventSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** Originally standalone Catalog, App-update and Server MCP stages; never arbitrary Audit actions. */
+/** Originally standalone Catalog, Data Source, App-update and Server MCP stages; never arbitrary Audit actions. */
 export const STANDALONE_AUDIT_STAGES = [
   'catalog.skill-candidate-decide.admit',
   'catalog.skill-candidate-withdraw.admit',
@@ -13,6 +13,7 @@ export const STANDALONE_AUDIT_STAGES = [
   'catalog.light-app-history-import',
   'catalog.light-app-select',
   'catalog.light-app-pin',
+  'data_source_catalog.authority.update',
   'app.update.start',
   'app.update.start.handoff',
   'administration.server-mcp-create',
@@ -96,6 +97,15 @@ export const ControlStandaloneAuditInputSchema = z
         event.severity === 'info' &&
         typeof event.resourceRevision === 'number' &&
         event.resource?.startsWith(stage === 'catalog.plugin-import' ? 'plugin:' : 'mcp:') === true
+      );
+    if (stage === 'data_source_catalog.authority.update')
+      return (
+        workspaceId !== undefined &&
+        event.workspaceId === workspaceId &&
+        event.category === 'system' &&
+        event.outcome === 'succeeded' &&
+        event.severity === 'info' &&
+        event.resource?.startsWith('data-source-catalog:') === true
       );
     if (stage === 'app.update.start' || stage === 'app.update.start.handoff')
       return (

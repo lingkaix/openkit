@@ -453,6 +453,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'catalog.skill-candidate-submit.admit',
     'catalog.skill-candidate-withdraw',
     'catalog.skill-candidate-withdraw.admit',
+    'data_source_catalog.authority.update',
   ]);
 });
 

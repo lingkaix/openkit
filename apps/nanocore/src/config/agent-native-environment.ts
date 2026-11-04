@@ -173,7 +173,7 @@ export function createAgentNativeEnvironmentService(input: {
         })
       );
       requireCurrentDeploymentAdmin(input.coreDb, actor);
-      input.filesForActor(actor).updateFile({
+      await input.filesForActor(actor).updateFile({
         id: request.fileId,
         kind: 'agent',
         expectedRevision: request.expectedRevision,

@@ -425,6 +425,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'catalog.skill-candidate-submit.admit',
     'catalog.skill-candidate-withdraw',
     'catalog.skill-candidate-withdraw.admit',
+    'data_source_catalog.authority.update',
   ]);
 });
 

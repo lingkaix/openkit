@@ -402,9 +402,9 @@ describe('Agent public native environment administration', () => {
     expect(result.applied).toEqual([]);
     expect(f.manager.current().agentManifests[0]!.runtime.environment).toBeUndefined();
     expect(readFileSync(f.path, 'utf8')).toContain('// preserved comment');
-    expect(() =>
+    await expect(
       f.files.updateFile({ id: f.fileId, kind: 'agent', expectedRevision: previous, content: '{}' })
-    ).toThrow();
+    ).rejects.toThrow();
     const restored = await f.service.update(actor, {
       fileId: f.fileId,
       expectedRevision: result.persistedRevision,

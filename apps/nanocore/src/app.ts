@@ -37,7 +37,7 @@ import {
   createSshAppUpdateHostTransport,
 } from './app-update/host-transport.js';
 import { registerArtifactFileRoutes } from './artifact-file-routes.js';
-import { recordWorkspaceAuditEvent } from './audit-events.js';
+import { prepareWorkspaceAuditEvent } from './audit-events.js';
 import { resolveSessionDeploymentAdminTokenId } from './auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from './auth/access-token-verification.js';
 import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
@@ -1397,20 +1397,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       },
       ...(options.coreDb
         ? {
-            onDataSourceAuthorityChange: (change) => {
+            onDataSourceAuthorityChange: async (change) => {
               const workspaceDb = repositoryWorkspaceDb(change.workspaceId);
               try {
-                recordWorkspaceAuditEvent({
-                  workspaceDb,
+                await getControlStoreWorkerClient().standaloneAudit(workspaceDb, {
                   workspaceId: change.workspaceId,
-                  category: 'system',
-                  action: 'data_source_catalog.authority.update',
-                  actor: { kind: 'user', id: actor.userId },
-                  authentication: auditAuthenticationFromActor(actor),
-                  resource: `data-source-catalog:${change.sourceId}`,
-                  outcome: 'succeeded',
-                  severity: 'info',
-                  summary: `Workspace data source catalog authority changed for ${change.sourceId}: ${change.fields.join(', ')}.`,
+                  stage: 'data_source_catalog.authority.update',
+                  event: prepareWorkspaceAuditEvent({
+                    workspaceDb,
+                    workspaceId: change.workspaceId,
+                    category: 'system',
+                    action: 'data_source_catalog.authority.update',
+                    actor: { kind: 'user', id: actor.userId },
+                    authentication: auditAuthenticationFromActor(actor),
+                    resource: `data-source-catalog:${change.sourceId}`,
+                    outcome: 'succeeded',
+                    severity: 'info',
+                    summary: `Workspace data source catalog authority changed for ${change.sourceId}: ${change.fields.join(', ')}.`,
+                  }),
                 });
               } finally {
                 workspaceDb.sqlite.close();

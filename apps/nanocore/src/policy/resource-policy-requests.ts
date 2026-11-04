@@ -405,7 +405,7 @@ export async function applyResourcePolicyRequest(
     );
   let effectAttempted = false;
   let result: {
-    saved: ReturnType<ResourcePolicyRequestDependencies['files']['updateFile']>;
+    saved: Awaited<ReturnType<ResourcePolicyRequestDependencies['files']['updateFile']>>;
     reload: Awaited<ReturnType<ResourcePolicyRequestDependencies['manager']['reload']>>;
   };
 
@@ -419,7 +419,7 @@ export async function applyResourcePolicyRequest(
       );
     checkResourcePolicyCommandIntent(dependencies, record, record.decidingActorContext);
     effectAttempted = true;
-    const saved = dependencies.files.updateFile({
+    const saved = await dependencies.files.updateFile({
       id,
       kind: 'workspace',
       content,

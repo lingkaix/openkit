@@ -224,7 +224,7 @@ describe('public Gateway decision Audit call linkage', () => {
         expect(evidence[0]).toMatchObject({ action, result: 'allow' });
         if (endpoint === 'responses') {
           const current = f.files!.readFile('gateway.jsonc');
-          f.files!.updateFile({
+          await f.files!.updateFile({
             id: 'gateway.jsonc',
             kind: 'gateway',
             expectedRevision: current.file.revision!,

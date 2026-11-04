@@ -287,7 +287,7 @@ export function createWorkerEnvironmentActivation(
               requireExactAffectedStorage(request.affectedStorage, currentGroup.affectedStorage);
             }
             if (configurationUpdate.content !== null) {
-              const written = configFiles.updateFile({
+              const written = await configFiles.updateFile({
                 content: configurationUpdate.content,
                 expectedRevision: request.configuration.expectedRevision,
                 id: request.configuration.fileId,

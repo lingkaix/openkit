@@ -149,20 +149,20 @@ describe('deployment model extension catalog', () => {
       service.validate({ files: [{ id: 'model-catalog.jsonc', kind: 'model-catalog', content }] })
         .valid
     ).toBe(true);
-    service.updateFile({
+    await service.updateFile({
       id: 'model-catalog.jsonc',
       kind: 'model-catalog',
       content,
       expectedRevision: revision,
     });
-    expect(() =>
+    await expect(
       service.updateFile({
         id: 'model-catalog.jsonc',
         kind: 'model-catalog',
         content,
         expectedRevision: revision,
       })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(
       (await manager.reload({ mode: 'safe', dryRun: false })).plan.requiresRestart
     ).toContainEqual(expect.objectContaining({ path: 'modelCatalog' }));
@@ -186,7 +186,7 @@ describe('deployment model extension catalog', () => {
     expect((await manager.reload({ mode: 'safe', dryRun: false })).status).toBe('failed');
     expect(manager.current()).toBe(active);
   });
-  it('creates catalog files through the generic service and rejects malformed writes without changing bytes', () => {
+  it('creates catalog files through the generic service and rejects malformed writes without changing bytes', async () => {
     const { root, path } = fixture();
     const manager = createRuntimeConfigManager({ dataRoot: root });
     const service = new RuntimeConfigFileService({
@@ -197,7 +197,7 @@ describe('deployment model extension catalog', () => {
       readRuntimeConfigStatus: () => manager.status(),
     });
     rmSync(path);
-    service.createFile({ id: 'model-catalog.jsonc', kind: 'model-catalog' });
+    await service.createFile({ id: 'model-catalog.jsonc', kind: 'model-catalog' });
     const before = readFileSync(path, 'utf8');
     expect(JSON.parse(before)).toEqual({ schemaVersion: 1, providers: {} });
     const content =
@@ -205,17 +205,17 @@ describe('deployment model extension catalog', () => {
     expect(
       service.validate({ files: [{ id: 'model-catalog.jsonc', content }], mode: 'safe' }).valid
     ).toBe(false);
-    expect(() =>
+    await expect(
       service.updateFile({
         id: 'model-catalog.jsonc',
         kind: 'model-catalog',
         content,
         expectedRevision: service.readFile('model-catalog.jsonc').file.revision,
       })
-    ).toThrow();
-    expect(() =>
+    ).rejects.toThrow();
+    await expect(
       service.createFile({ id: '../model-catalog.jsonc', kind: 'model-catalog' })
-    ).toThrow();
+    ).rejects.toThrow();
     expect(readFileSync(path, 'utf8')).toBe(before);
   });
 

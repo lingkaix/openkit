@@ -83,7 +83,7 @@ describe('retained default Knowledge Base identity', () => {
       kind: 'server',
       content: '{"schemaVersion":1}',
     },
-  ] as const)('refuses removal or replacement of the $kind binding through ordinary configuration editing', ({
+  ] as const)('refuses removal or replacement of the $kind binding through ordinary configuration editing', async ({
     scope,
     path,
     id,
@@ -107,14 +107,16 @@ describe('retained default Knowledge Base identity', () => {
     const expectedRevision = service.readFile(id).file.revision;
     const replacement = retained.replaceAll(retainedId, 'kb_0190f4c8-0000-7000-8000-0000000000ff');
     for (const draft of [replacement, content]) {
-      expect(() => service.updateFile({ id, kind, content: draft, expectedRevision })).toThrow(
+      await expect(
+        service.updateFile({ id, kind, content: draft, expectedRevision })
+      ).rejects.toThrow(
         'Default Knowledge Base identity is assigned at creation and cannot be edited.'
       );
       expect(readFileSync(target, 'utf8')).toBe(retained);
     }
-    expect(service.updateFile({ id, kind, content: retained, expectedRevision }).file.exists).toBe(
-      true
-    );
+    expect(
+      (await service.updateFile({ id, kind, content: retained, expectedRevision })).file.exists
+    ).toBe(true);
   });
 
   it('retains the reminted import binding through unpublished staging and publication', () => {

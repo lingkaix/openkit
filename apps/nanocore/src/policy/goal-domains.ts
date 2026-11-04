@@ -502,7 +502,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
     currentAuthority();
     if ((context.actor || context.administration) && loaded().revision !== current.revision)
       throw new Error('Goal-domain Policy revision changed.');
-    deps.files.updateFile(
+    await deps.files.updateFile(
       { id: 'server.jsonc', kind: 'server', content, expectedRevision: current.file.file.revision },
       { policyWrite: true }
     );

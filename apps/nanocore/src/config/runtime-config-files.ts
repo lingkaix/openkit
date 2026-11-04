@@ -95,7 +95,9 @@ export interface RuntimeConfigFileServiceOptions {
   /** Revokes a key profile reference through the existing Vault lifecycle before file removal. */
   revokeProviderSecret?: (secretRef: string) => void | Promise<void>;
   /** Optional hook for durable audit of authority-bearing catalog edits. */
-  onDataSourceAuthorityChange?: (change: RuntimeConfigDataSourceAuthorityChange) => void;
+  onDataSourceAuthorityChange?: (
+    change: RuntimeConfigDataSourceAuthorityChange
+  ) => void | Promise<void>;
 }
 
 /**
@@ -146,7 +148,7 @@ export class RuntimeConfigFileService {
   private readonly readRuntimeConfigStatus: () => RuntimeConfigStatus;
   private readonly revokeProviderSecret: ((secretRef: string) => void | Promise<void>) | undefined;
   private readonly onDataSourceAuthorityChange:
-    | ((change: RuntimeConfigDataSourceAuthorityChange) => void)
+    | ((change: RuntimeConfigDataSourceAuthorityChange) => void | Promise<void>)
     | undefined;
 
   /**
@@ -227,7 +229,9 @@ export class RuntimeConfigFileService {
    * @param input Create request.
    * @returns Write response with the created file summary.
    */
-  public createFile(input: RuntimeConfigFileWriteInput): RuntimeConfigFileWriteResponse {
+  public async createFile(
+    input: RuntimeConfigFileWriteInput
+  ): Promise<RuntimeConfigFileWriteResponse> {
     const spec = this.resolveFileSpec(input.id, input.kind);
 
     if (spec.kind === 'server') {
@@ -263,10 +267,10 @@ export class RuntimeConfigFileService {
 
     this.assertSupportedWorkspaceMaterialization(spec, content);
     this.writeFileAtomically(spec, content);
-    this.auditCatalogAuthorityChanges(spec, null, content);
+    await this.auditCatalogAuthorityChanges(spec, null, content);
 
     return RuntimeConfigFileWriteResponseSchema.parse({
-      file: this.summaryForSpec(spec),
+      file: this.summaryForSpec(spec, content),
       diagnostics,
     });
   }
@@ -278,10 +282,10 @@ export class RuntimeConfigFileService {
    * @param admission Internal Policy-owner admission after the current human decision; transports cannot supply it.
    * @returns Write response with the updated file summary.
    */
-  public updateFile(
+  public async updateFile(
     input: RuntimeConfigFileWriteInput,
     admission?: { readonly policyWrite: true }
-  ): RuntimeConfigFileWriteResponse {
+  ): Promise<RuntimeConfigFileWriteResponse> {
     if (input.content === undefined) {
       throw new RuntimeConfigFileServiceError(
         'config_file_content_required',
@@ -331,10 +335,10 @@ export class RuntimeConfigFileService {
     }
     this.assertSupportedWorkspaceMaterialization(spec, input.content);
     this.writeFileAtomically(spec, input.content);
-    this.auditCatalogAuthorityChanges(spec, currentContent, input.content);
+    await this.auditCatalogAuthorityChanges(spec, currentContent, input.content);
 
     return RuntimeConfigFileWriteResponseSchema.parse({
-      file: this.summaryForSpec(spec),
+      file: this.summaryForSpec(spec, input.content),
       diagnostics,
     });
   }
@@ -968,11 +972,11 @@ export class RuntimeConfigFileService {
    * @param previousContent Previous file content, or null when creating.
    * @param nextContent Written file content.
    */
-  private auditCatalogAuthorityChanges(
+  private async auditCatalogAuthorityChanges(
     spec: RuntimeConfigFileSpec,
     previousContent: string | null,
     nextContent: string
-  ): void {
+  ): Promise<void> {
     if (!spec.workspaceId) {
       return;
     }
@@ -982,7 +986,7 @@ export class RuntimeConfigFileService {
         previousContent,
         nextContent
       )) {
-        this.onDataSourceAuthorityChange(change);
+        await this.onDataSourceAuthorityChange(change);
       }
     }
   }

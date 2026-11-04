@@ -292,8 +292,8 @@ describe('configuration-stage work-slot source refusal', () => {
     for (const input of inputs) {
       const result =
         mode === 'create'
-          ? f.files.createFile(input)
-          : f.files.updateFile({
+          ? await f.files.createFile(input)
+          : await f.files.updateFile({
               ...input,
               expectedRevision: f.files.readFile(input.id).file.revision,
             });
@@ -328,9 +328,9 @@ describe('configuration-stage work-slot source refusal', () => {
       content,
       expectedRevision: mode === 'update' ? f.files.readFile(id).file.revision : null,
     };
-    expect(() =>
+    await expect(
       mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
-    ).toThrowError(
+    ).rejects.toThrowError(
       expect.objectContaining({
         code: 'workspace_data_source_blocked',
         message: MESSAGE,
@@ -375,21 +375,21 @@ describe('configuration-stage work-slot source refusal', () => {
     const input = { id, kind: 'agent' as const, content };
     const written =
       mode === 'create'
-        ? f.files.createFile(input)
-        : f.files.updateFile({
+        ? await f.files.createFile(input)
+        : await f.files.updateFile({
             ...input,
             expectedRevision: f.files.readFile(id).file.revision,
           });
     expect(written.file.exists).toBe(true);
     expect(f.files.readFile(id).content).toBe(content);
-    expect(() =>
+    await expect(
       f.files.updateFile({
         id: unsupportedId,
         kind: 'agent',
         content: unsupported,
         expectedRevision: f.files.readFile(unsupportedId).file.revision,
       })
-    ).toThrowError(
+    ).rejects.toThrowError(
       expect.objectContaining({
         code: 'workspace_data_source_blocked',
         message: MESSAGE,
@@ -417,9 +417,9 @@ describe('configuration-stage work-slot source refusal', () => {
       content: agent(selection),
       expectedRevision: mode === 'update' ? f.files.readFile(id).file.revision : null,
     };
-    expect(() =>
+    await expect(
       mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
-    ).toThrowError(
+    ).rejects.toThrowError(
       expect.objectContaining({
         code: 'workspace_data_source_blocked',
         message: MESSAGE,
@@ -458,9 +458,9 @@ describe('configuration-stage work-slot source refusal', () => {
       }),
       expectedRevision: revision,
     };
-    expect(() =>
+    await expect(
       mode === 'create' ? f.files.createFile(input) : f.files.updateFile(input)
-    ).toThrowError(
+    ).rejects.toThrowError(
       expect.objectContaining({
         code: 'workspace_data_source_blocked',
         message: MESSAGE,
@@ -474,23 +474,27 @@ describe('configuration-stage work-slot source refusal', () => {
   it('keeps unselected non-Git catalog registration valid but refuses changing a selected Git source to a folder', async () => {
     const f = await fixture();
     const id = 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc';
-    const created = f.files.createFile({
+    const created = await f.files.createFile({
       id,
       kind: 'data-source',
       content: catalog('workspace-dir'),
     });
     expect(created.file.exists).toBe(true);
     f.write(id, catalog('git'));
-    f.files.createFile({ id: 'agents/team.agent.jsonc', kind: 'agent', content: agent(selection) });
+    await f.files.createFile({
+      id: 'agents/team.agent.jsonc',
+      kind: 'agent',
+      content: agent(selection),
+    });
     const previous = f.files.readFile(id);
-    expect(() =>
+    await expect(
       f.files.updateFile({
         id,
         kind: 'data-source',
         content: catalog('workspace-dir'),
         expectedRevision: previous.file.revision,
       })
-    ).toThrowError(
+    ).rejects.toThrowError(
       expect.objectContaining({
         code: 'workspace_data_source_blocked',
         message: MESSAGE,
@@ -503,13 +507,13 @@ describe('configuration-stage work-slot source refusal', () => {
   it('refuses catalog creation that would activate an already authored non-Git materialization selection', async () => {
     const f = await fixture();
     f.write('agents/team.agent.jsonc', agent(selection));
-    expect(() =>
+    await expect(
       f.files.createFile({
         id: 'workspaces/ws_00000000-0000-7000-8000-000000000001/data-sources.jsonc',
         kind: 'data-source',
         content: catalog('workspace-dir'),
       })
-    ).toThrowError(
+    ).rejects.toThrowError(
       expect.objectContaining({
         code: 'workspace_data_source_blocked',
         message: MESSAGE,
@@ -593,14 +597,18 @@ describe('configuration-stage work-slot source refusal', () => {
       catalog('git')
     );
     const content = agent([{ ...selection[0], kind: 'directory' }]);
-    const created = f.files.createFile({ id: 'agents/team.agent.jsonc', kind: 'agent', content });
+    const created = await f.files.createFile({
+      id: 'agents/team.agent.jsonc',
+      kind: 'agent',
+      content,
+    });
     expect(created.file.exists).toBe(true);
   });
 
   it('refuses an inline folder input without a catalog reference before storage', async () => {
     const f = await fixture();
     const id = 'agents/team.agent.jsonc';
-    expect(() =>
+    await expect(
       f.files.createFile({
         id,
         kind: 'agent',
@@ -612,7 +620,7 @@ describe('configuration-stage work-slot source refusal', () => {
           },
         ]),
       })
-    ).toThrowError(
+    ).rejects.toThrowError(
       expect.objectContaining({
         code: 'workspace_data_source_blocked',
         message: MESSAGE,
@@ -626,8 +634,8 @@ describe('configuration-stage work-slot source refusal', () => {
     const f = await fixture();
     const id = 'agents/team.agent.jsonc';
     const content = agent([]);
-    const created = f.files.createFile({ id, kind: 'agent', content });
-    const updated = f.files.updateFile({
+    const created = await f.files.createFile({ id, kind: 'agent', content });
+    const updated = await f.files.updateFile({
       id,
       kind: 'agent',
       content,
@@ -647,7 +655,7 @@ describe('authored configuration durability', () => {
     chmodSync(path, 0o640);
     const replacement = agent([], 'agent_durable_replacement');
     durability.events.length = 0;
-    f.files.updateFile({
+    await f.files.updateFile({
       id,
       kind: 'agent',
       content: replacement,
@@ -695,14 +703,14 @@ describe('authored configuration durability', () => {
           candidate === dirname(path) &&
           durability.events.some((event) => event.op === 'rename' && event.path === path);
     try {
-      expect(() =>
+      await expect(
         f.files.updateFile({
           id,
           kind: 'agent',
           content: replacement,
           expectedRevision: f.files.readFile(id).file.revision,
         })
-      ).toThrow();
+      ).rejects.toThrow();
       expect(f.files.readFile(id).content).toBe(boundary === 'before' ? original : replacement);
     } finally {
       durability.fail = undefined;
@@ -764,10 +772,10 @@ async function assistantSelectionFixture(mode: 'create' | 'update') {
   f.write(id, previous);
   const revision = f.files.readFile(id).file.revision;
   if (mode === 'create') rmSync(path);
-  const write = (content: string) =>
+  const write = async (content: string) =>
     mode === 'create'
-      ? f.files.createFile({ id, kind: 'workspace', content })
-      : f.files.updateFile({ id, kind: 'workspace', content, expectedRevision: revision });
+      ? await f.files.createFile({ id, kind: 'workspace', content })
+      : await f.files.updateFile({ id, kind: 'workspace', content, expectedRevision: revision });
   return { ...f, id, path, previous, revision, write };
 }
 
@@ -794,7 +802,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
     const catalogBefore = readFileSync(localCatalog);
     const foreignBefore = readFileSync(foreignCatalog);
     const content = assistantSelectionContent(ids);
-    expect(() => f.write(content)).toThrowError(
+    await expect(f.write(content)).rejects.toThrowError(
       expect.objectContaining({ code: 'config_file_invalid', status: 400 })
     );
     if (mode === 'create') expect(existsSync(f.path)).toBe(false);
@@ -832,7 +840,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
     const ids =
       selection === 'absent' ? undefined : selection === 'empty' ? [] : ['local-guidance'];
     const content = assistantSelectionContent(ids);
-    f.write(content);
+    await f.write(content);
     expect(f.files.readFile(f.id).content).toBe(content);
     expect(readFileSync(catalogPath)).toEqual(catalogBefore);
     const loaded = loadRuntimeConfig(f.dataRoot).workspaceConfigs.find(
@@ -847,7 +855,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
   it('rejects a reference deleted from current catalog after a prior valid selection without discarding authored selection', async () => {
     const f = await assistantSelectionFixture('update');
     const selected = assistantSelectionContent(['local-guidance']);
-    f.write(selected);
+    await f.write(selected);
     const current = loadWorkspaceResourceCatalog(
       f.dataRoot,
       'ws_00000000-0000-7000-8000-000000000001'
@@ -859,14 +867,14 @@ describe('Workspace Assistant Skill selection configuration', () => {
       catalog: { ...current, skills: { entries: [], versions: [], pins: [], candidates: [] } },
     });
     expect(readFileSync(f.path, 'utf8')).toBe(selected);
-    expect(() =>
+    await expect(
       f.files.updateFile({
         id: f.id,
         kind: 'workspace',
         content: selected,
         expectedRevision: f.files.readFile(f.id).file.revision,
       })
-    ).toThrowError(expect.objectContaining({ code: 'config_file_invalid', status: 400 }));
+    ).rejects.toThrowError(expect.objectContaining({ code: 'config_file_invalid', status: 400 }));
     expect(readFileSync(f.path, 'utf8')).toBe(selected);
   });
 
@@ -884,7 +892,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
     else rmSync(catalogPath);
     let failure: unknown;
     try {
-      f.write(assistantSelectionContent(['local-guidance']));
+      await f.write(assistantSelectionContent(['local-guidance']));
     } catch (error) {
       failure = error;
     }
@@ -902,7 +910,7 @@ describe('Workspace Assistant Skill selection configuration', () => {
     const f = await assistantSelectionFixture('update');
     const newer = `${f.previous}\n// Concurrent authored edit\n`;
     writeFileSync(f.path, newer);
-    expect(() => f.write(assistantSelectionContent(['local-guidance']))).toThrowError(
+    await expect(f.write(assistantSelectionContent(['local-guidance']))).rejects.toThrowError(
       expect.objectContaining({ code: 'config_revision_conflict', status: 409 })
     );
     expect(readFileSync(f.path, 'utf8')).toBe(newer);
@@ -962,7 +970,7 @@ describe('Workspace Assistant Skill read-only validation', () => {
     );
     const catalogBefore = readFileSync(catalogPath);
     rmSync(unrelated, { recursive: true });
-    expect(() => f.write(assistantSelectionContent(['missing-guidance']))).toThrowError(
+    await expect(f.write(assistantSelectionContent(['missing-guidance']))).rejects.toThrowError(
       expect.objectContaining({ code: 'config_file_invalid', status: 400 })
     );
     expect(existsSync(unrelated)).toBe(false);
@@ -1029,7 +1037,7 @@ describe('Workspace Assistant Skill catalog confinement', () => {
     const linkTarget = redirect === 'directory' ? foreignDirectory : foreignCatalog;
     rmSync(linkPath, { recursive: redirect === 'directory' });
     symlinkSync(linkTarget, linkPath, redirect === 'directory' ? 'dir' : 'file');
-    expect(() => f.write(assistantSelectionContent(['foreign-guidance']))).toThrowError(
+    await expect(f.write(assistantSelectionContent(['foreign-guidance']))).rejects.toThrowError(
       expect.objectContaining({ code: 'config_file_invalid', status: 400 })
     );
     if (mode === 'create') expect(existsSync(f.path)).toBe(false);
