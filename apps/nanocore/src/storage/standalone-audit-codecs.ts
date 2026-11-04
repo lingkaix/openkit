@@ -1,7 +1,7 @@
-import { AuditEventSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import { AccessTokenIdSchema, AuditEventSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
-/** Originally standalone Catalog, Data Source, App-update, Server MCP and configuration outcomes; never arbitrary Audit actions. */
+/** Originally standalone Catalog, Data Source, App-update, Server MCP, token and configuration outcomes; never arbitrary Audit actions. */
 export const STANDALONE_AUDIT_STAGES = [
   'catalog.skill-candidate-decide.admit',
   'catalog.skill-candidate-withdraw.admit',
@@ -28,6 +28,9 @@ export const STANDALONE_AUDIT_STAGES = [
   'catalog.mcp-binding',
   'catalog.plugin-import',
   'auth.bootstrap.consume',
+  'auth.token.issue',
+  'auth.token.revoke',
+  'auth.token.rotate',
   'policy.write',
   'administration.configuration.apply',
   'mcp.server.lifecycle.degraded',
@@ -117,6 +120,34 @@ export const ControlStandaloneAuditInputSchema = z
       );
     }
     if (event.actor?.kind !== 'user') return false;
+    if (
+      stage === 'auth.token.issue' ||
+      stage === 'auth.token.revoke' ||
+      stage === 'auth.token.rotate'
+    )
+      return (
+        workspaceId === undefined &&
+        event.workspaceId === null &&
+        event.threadId === null &&
+        event.turnId === null &&
+        event.itemId === null &&
+        event.capabilityCallId === null &&
+        event.permissionDecisionId === null &&
+        event.vaultGrantId === null &&
+        event.requestId === null &&
+        event.resourceRevision === null &&
+        event.subject === null &&
+        event.agentId === null &&
+        event.agentSessionId === null &&
+        event.errorCode === null &&
+        event.policyInvocation === undefined &&
+        event.policyWriteOutcome === undefined &&
+        event.category === 'system' &&
+        event.outcome === 'succeeded' &&
+        event.severity === 'info' &&
+        event.resource?.startsWith('auth-token:') === true &&
+        AccessTokenIdSchema.safeParse(event.resource.slice('auth-token:'.length)).success
+      );
     if (stage === 'policy.write' || stage === 'administration.configuration.apply') {
       if (
         workspaceId !== undefined ||

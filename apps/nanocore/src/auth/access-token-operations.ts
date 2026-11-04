@@ -1,5 +1,5 @@
 import type { ACCESS_TOKEN_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-import { prepareServerAuditEvent, recordServerAuditEvent } from '../audit-events.js';
+import { prepareServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
@@ -51,12 +51,12 @@ function accessTokenLifecycleActorSuffix(actor: Actor | undefined): string {
  * @param record Redacted access-token record affected by the operation.
  * @param actor Request actor used for user and non-secret admin-token attribution.
  */
-function recordAccessTokenLifecycleAuditEvent(
+async function recordAccessTokenLifecycleAuditEvent(
   coreDb: CoreDb,
   action: 'auth.token.issue' | 'auth.token.revoke' | 'auth.token.rotate',
   record: OpenKitAccessTokenRecord,
   actor: Actor | undefined
-): void {
+): Promise<void> {
   const actorSuffix = accessTokenLifecycleActorSuffix(actor);
   let summary: string;
   switch (action) {
@@ -71,16 +71,20 @@ function recordAccessTokenLifecycleAuditEvent(
       break;
   }
 
-  recordServerAuditEvent({
-    action,
-    category: 'system',
-    coreDb,
-    actor: actor ? { kind: 'user', id: actor.userId } : null,
-    ...(actor ? { authentication: auditAuthenticationFromActor(actor) } : {}),
-    outcome: 'succeeded',
-    resource: `auth-token:${record.tokenId}`,
-    severity: 'info',
-    summary,
+  // The canonical token mutation has already returned; only this later Audit moves.
+  await getControlStoreWorkerClient().standaloneAudit(coreDb, {
+    stage: action,
+    event: prepareServerAuditEvent({
+      action,
+      coreDb,
+      category: 'system',
+      actor: actor ? { kind: 'user', id: actor.userId } : null,
+      ...(actor ? { authentication: auditAuthenticationFromActor(actor) } : {}),
+      outcome: 'succeeded',
+      resource: `auth-token:${record.tokenId}`,
+      severity: 'info',
+      summary,
+    }),
   });
 }
 
@@ -152,7 +156,7 @@ export function createAccessTokenOperationImplementations({
       return { record: consumed.record, token: consumed.secret };
     },
     'token.list': () => ({ items: listOpenKitAccessTokenRecords(administratorStorage()) }),
-    'token.create': (input, context) => {
+    'token.create': async (input, context) => {
       const db = administratorStorage();
       const actor = publicOperationActor(context);
       const ownerUserId = input.ownerUserId ?? actor.userId;
@@ -183,15 +187,15 @@ export function createAccessTokenOperationImplementations({
           });
         throw error;
       }
-      recordAccessTokenLifecycleAuditEvent(db, 'auth.token.issue', issued.record, actor);
+      await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.issue', issued.record, actor);
       return { record: issued.record, token: issued.secret };
     },
-    'token.revoke': (input, context) => {
+    'token.revoke': async (input, context) => {
       const db = administratorStorage();
       const record = revokeOpenKitAccessTokenRecord(db, input.tokenId);
       if (!record)
         throw new OperationError('access_token_not_found', 'Access token not found.', 404);
-      recordAccessTokenLifecycleAuditEvent(
+      await recordAccessTokenLifecycleAuditEvent(
         db,
         'auth.token.revoke',
         record,
@@ -199,7 +203,7 @@ export function createAccessTokenOperationImplementations({
       );
       return { record };
     },
-    'token.rotate': (input, context) => {
+    'token.rotate': async (input, context) => {
       const db = administratorStorage();
       const rotated = rotateOpenKitAccessTokenRecord(db, input.tokenId, input);
       if (!rotated)
@@ -208,7 +212,7 @@ export function createAccessTokenOperationImplementations({
           'Access token not found or not rotatable.',
           404
         );
-      recordAccessTokenLifecycleAuditEvent(
+      await recordAccessTokenLifecycleAuditEvent(
         db,
         'auth.token.rotate',
         rotated.record,

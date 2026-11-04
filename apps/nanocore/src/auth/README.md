@@ -109,4 +109,6 @@ The configured Better Auth adapter keeps its SDK read, conversion and asynchrono
 
 
 Workspace deletion's native Core stages reuse current actor, credential and registry predicates. Retry selection still reads its original file-owned request on Main; the native transaction consumes only those already admitted owner/initiator facts and rechecks current Core eligibility before effects.
+The original `token.create`, `token.revoke` and `token.rotate` mutations retain their Main Token owner and original admission and order. Their later `auth.token.issue`, `auth.token.revoke` and `auth.token.rotate` Audit events await the existing native standalone-Audit owner before public success. Original actor, authentication, summary and token resource stay unchanged; secret and hash material never enter this command. Audit refusal or an unavailable acknowledgement does not undo or replay the already completed canonical mutation.
+
 The original ENSURE and consume SQL/file stages retain their Main owner. Only the later `auth.bootstrap.consume` lifecycle Audit uses the existing native standalone-Audit writer and covering FULL acknowledgement before the secret response. Its historical actor and request lineage stay null; it grants no authority to the newly created owner and does not add an ENSURE Audit or receipt.
