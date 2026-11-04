@@ -5,6 +5,7 @@ import { z } from 'zod';
 export const STANDALONE_AUDIT_STAGES = [
   'catalog.skill-candidate-decide.admit',
   'catalog.skill-candidate-withdraw.admit',
+  'catalog.skill-candidate-submit.admit',
   'app.update.start',
   'app.update.start.handoff',
 ] as const;
@@ -43,7 +44,9 @@ export const ControlStandaloneAuditInputSchema = z
       workspaceId !== undefined &&
       event.workspaceId === workspaceId &&
       event.outcome === 'succeeded' &&
-      event.resource?.startsWith('skill-candidate:') === true
+      (stage === 'catalog.skill-candidate-submit.admit'
+        ? /^skill:[^@]+@sha256:[0-9a-f]{64}$/.test(event.resource ?? '')
+        : event.resource?.startsWith('skill-candidate:') === true)
     );
   });
 /** Closed internal publication input, not an authorization proof or a public format. */

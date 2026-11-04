@@ -405,6 +405,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'app.update.start',
     'app.update.start.handoff',
     'catalog.skill-candidate-decide.admit',
+    'catalog.skill-candidate-submit.admit',
     'catalog.skill-candidate-withdraw.admit',
   ]);
 });

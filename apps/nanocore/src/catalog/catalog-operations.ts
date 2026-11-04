@@ -706,39 +706,35 @@ export function createCatalogOperationImplementations(
             return { candidate: publicSkillCandidate(candidate), revision: catalog.revision };
           },
           execute: async () => {
-            const resumeAdmission = await getControlStoreWorkerClient().pauseForDataRootBackup(
-              `workspace:${owners.workspaceDb.sqlite.name}`
-            );
-            let admitted: ReturnType<typeof source>;
-            try {
-              admitted = source();
-              refuseInterrupted(
-                owners.workspaceDb,
-                'catalog.skill-candidate-submit',
-                input,
-                context
-              );
-              recordWorkspaceAuditEvent({
-                workspaceDb: owners.workspaceDb,
-                workspaceId: input.workspaceId,
-                requestId: input.requestId,
-                actor: context.actorRef,
-                ...(admitted.admitted?.producingTurn
-                  ? {
-                      threadId: admitted.admitted.producingTurn.threadId,
-                      turnId: admitted.admitted.producingTurn.turnId,
-                      agentId: admitted.admitted.producingTurn.agentId,
-                    }
-                  : {}),
-                action: 'catalog.skill-candidate-submit.admit',
-                resource: `skill:${input.skillId}@${admitted.digest}`,
-                resourceRevision: input.expectedRevision > 0 ? input.expectedRevision : null,
-                outcome: 'succeeded',
-                summary: `Skill candidate admission from ${input.baseDigest ?? 'none'} to ${admitted.digest}.`,
-              });
-            } finally {
-              resumeAdmission();
-            }
+            let admitted = source();
+            refuseInterrupted(owners.workspaceDb, 'catalog.skill-candidate-submit', input, context);
+            const event = prepareWorkspaceAuditEvent({
+              workspaceDb: owners.workspaceDb,
+              workspaceId: input.workspaceId,
+              requestId: input.requestId,
+              actor: context.actorRef,
+              ...(admitted.admitted?.producingTurn
+                ? {
+                    threadId: admitted.admitted.producingTurn.threadId,
+                    turnId: admitted.admitted.producingTurn.turnId,
+                    agentId: admitted.admitted.producingTurn.agentId,
+                  }
+                : {}),
+              action: 'catalog.skill-candidate-submit.admit',
+              resource: `skill:${input.skillId}@${admitted.digest}`,
+              resourceRevision: input.expectedRevision > 0 ? input.expectedRevision : null,
+              outcome: 'succeeded',
+              summary: `Skill candidate admission from ${input.baseDigest ?? 'none'} to ${admitted.digest}.`,
+            });
+            await getControlStoreWorkerClient().standaloneAudit(owners.workspaceDb, {
+              workspaceId: input.workspaceId,
+              stage: 'catalog.skill-candidate-submit.admit',
+              event,
+            });
+            // Audit is historical evidence, not authority for the later physical publication.
+            revalidate(input.workspaceId, 'catalog.skill-candidate-submit', context);
+            await context.recheckAdmission?.();
+            admitted = source();
             const result = submitWorkspaceSkillCandidate({
               baseDigest: input.baseDigest,
               createdAt: new Date().toISOString(),
