@@ -198,7 +198,11 @@ export function NewTaskDialog({
     try {
       let threadId = createdThreadId;
       if (!threadId) {
-        const thread = await create.mutateAsync({ workspaceId: origin, draft });
+        const thread = await create.mutateAsync({
+          workspaceId: origin,
+          draft,
+          visibility: 'workspace',
+        });
         if (!stillHere(origin)) return;
         threadId = thread.id;
         setCreatedThreadId(threadId);

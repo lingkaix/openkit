@@ -5,6 +5,7 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { createCoreClient, createRequestId } from '@openkit/core-client';
+import { ThreadSchema } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
@@ -66,12 +67,30 @@ test('compares two retained versions and sends the selected older candidate expl
     await navigationBar.getByRole('button', { name: 'New Task', exact: true }).click();
     const newTask = page.getByRole('dialog', { name: 'New Task' });
     await newTask.getByRole('textbox', { name: 'Brief' }).fill('Candidate handoff');
+    const provisionalThread = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === '/api/app/operations/thread.create' &&
+        response.request().method() === 'POST'
+    );
     const started = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
         response.request().method() === 'POST'
     );
     await newTask.getByRole('button', { name: 'Start Task', exact: true }).click();
+    const createdResponse = await provisionalThread;
+    expect(createdResponse.status()).toBe(200);
+    const createdRequest = createdResponse.request().postDataJSON();
+    expect(createdRequest).toMatchObject({
+      workspaceId: workspace.id,
+      name: 'Candidate handoff',
+      visibility: 'workspace',
+    });
+    expect(createdRequest).not.toHaveProperty('threadId');
+    const createdThread = ThreadSchema.parse(await createdResponse.json());
+    expect(createdThread.visibility).toBe('workspace');
+    expect(createdThread.owner).toEqual({ kind: 'workspace', workspaceId: workspace.id });
+    expect(createdThread.name).toBe('Candidate handoff');
     const startedResponse = await started;
     const startedText = await startedResponse.text();
     const handoff = SubmitConversationResponseSchema.parse(JSON.parse(startedText));
@@ -150,7 +169,12 @@ test('compares two retained versions and sends the selected older candidate expl
       contentDigest,
     });
     await comparison.getByRole('button', { name: /Next conversation/ }).click();
-    await page.getByRole('option', { name: 'Candidate handoff', exact: true }).click();
+    const receivingOption = page.locator(
+      `[role="option"][data-key="${handoff.receivingThreadId}"]`
+    );
+    await expect(receivingOption).toHaveCount(1);
+    await expect(receivingOption).toHaveAccessibleName('Candidate handoff');
+    await receivingOption.click();
     const submitsBeforeUse = submissions.length;
     await comparison
       .getByRole('button', { name: 'Use selected in next Turn', exact: true })

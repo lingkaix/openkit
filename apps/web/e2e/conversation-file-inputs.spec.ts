@@ -5,7 +5,7 @@ import {
   ListAuthorizedWorkspacesResponseSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import { workspaceIdForOwner } from '@openkit/protocol';
+import { ThreadSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
@@ -82,12 +82,23 @@ test('keeps files as local drafts and publishes exact originals only on the rece
   for (const file of originals)
     await expect(disclosure.getByText(file.name, { exact: true })).toBeVisible();
   expect(await artifactInventory()).toEqual(before);
+  const provisionalThread = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/app/operations/thread.create' &&
+      response.request().method() === 'POST'
+  );
   const accepted = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === '/api/app/operations/conversation.submit' &&
       response.request().headers()['content-type'] === 'application/vnd.openkit.conversation-files'
   );
   await disclosure.getByRole('button', { name: 'Share files and send' }).click();
+  const createdResponse = await provisionalThread;
+  expect(createdResponse.request().postDataJSON()).toMatchObject({
+    name: 'Inspect the attached exact originals.',
+    visibility: 'workspace',
+  });
+  expect(ThreadSchema.parse(await createdResponse.json()).visibility).toBe('workspace');
   const response = await accepted;
   expect(response.status(), await response.text()).toBe(202);
   const result = SubmitConversationResponseSchema.parse(await response.json());

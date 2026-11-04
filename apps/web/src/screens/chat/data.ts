@@ -994,6 +994,8 @@ export function useInterruptTurn() {
 
 /**
  * Create the ordinary Thread before submitting its first conversation message.
+ * Omitted visibility stays the private Assistant default from `thread.create`.
+ * New Task passes the public `workspace` value for its new empty provisional Thread.
  *
  * @returns A mutation whose variables retain the original Workspace identity.
  */
@@ -1001,12 +1003,17 @@ export function useCreateThread() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { workspaceId: string; draft: ConversationDraft }) => {
+    mutationFn: async (input: {
+      workspaceId: string;
+      draft: ConversationDraft;
+      visibility?: Parameters<CoreClient['operations']['thread.create']>[0]['visibility'];
+    }) => {
       const name = input.draft.input.trim().split('\n', 1)[0]?.trim().slice(0, 60) || 'Task';
       return client.operations['thread.create']({
         workspaceId: input.workspaceId,
         name,
         requestId: input.draft.requestId,
+        ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
       });
     },
     onSettled: (_thread, _error, input) => {

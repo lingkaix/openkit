@@ -482,6 +482,7 @@ describe('P3 New Task dialog', () => {
       expect.objectContaining({
         workspaceId: WORKSPACE_ID,
         name: 'Fix the export',
+        visibility: 'workspace',
       })
     );
     expect(createThread).not.toHaveBeenCalledWith(
@@ -841,9 +842,11 @@ describe('P3 review: Assistant admission', () => {
 describe('P3 review: New Task admission and Workspace scope', () => {
   it('confirms file handoff before a Worker submission and reuses that consent', async () => {
     const user = userEvent.setup();
+    const createThread = vi.fn().mockResolvedValue(threadRecord(DRAFT_THREAD_ID, 'Ship the notes'));
     const submitConversation = vi.fn().mockRejectedValue(new Error('Submit failed'));
     const client = makeClient({
       navigation: [navigationRow(RECEIVING_THREAD_ID, 'Task', 'task')],
+      createThread,
       submitConversation,
       targets: {
         ...targetCatalog(),
@@ -872,10 +875,18 @@ describe('P3 review: New Task admission and Workspace scope', () => {
     expect(within(confirmation).getByLabelText('Work brief')).toHaveTextContent('Ship the notes');
     expect(within(confirmation).getByText('export.txt', { exact: true })).toBeInTheDocument();
     expect(submitConversation).not.toHaveBeenCalled();
+    expect(createThread).not.toHaveBeenCalled();
     expect(confirmation).not.toHaveTextContent(/shard/i);
 
     await user.click(within(confirmation).getByRole('button', { name: 'Share files and send' }));
     await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
+    expect(createThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        name: 'Ship the notes',
+        visibility: 'workspace',
+      })
+    );
     const first = submitConversation.mock.calls[0]?.[0];
     expect(first).toEqual(
       expect.objectContaining({
