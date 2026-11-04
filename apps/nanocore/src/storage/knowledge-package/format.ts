@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, opendir, rm } from 'node:fs/promises';
+import { lstat, open, opendir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   KnowledgeBaseIdSchema,
@@ -9,7 +9,13 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { verifyPrivateFileCopy, writePrivateTextFileExclusive } from '@openkit/storage';
+import {
+  createPrivateMetadataDirectory,
+  makePrivateTreeDirectory,
+  removePrivateTree,
+  verifyPrivateFileCopy,
+  writePrivateTextFileExclusive,
+} from '@openkit/storage';
 import { z } from 'zod';
 
 /** Identifies the interchange family; the shared retained marker owns its format version. */
@@ -328,10 +334,10 @@ export async function writeKnowledgePackageFormat(input: {
     limits
   );
   // Creation is exclusive. Cleanup below can remove only this call's new private staging tree.
-  await mkdir(directory, { mode: 0o700 });
+  await createPrivateMetadataDirectory(directory);
   try {
     for (const parent of [...parents].sort())
-      await mkdir(join(directory, parent), { recursive: true, mode: 0o700 });
+      await makePrivateTreeDirectory(join(directory, parent));
     const sources = new Map(files.map((file) => [file.path, file.sourcePath]));
     for (const file of manifest.contentInventory)
       await verifyPrivateFileCopy(sources.get(file.path)!, file, join(directory, file.path));
@@ -339,7 +345,7 @@ export async function writeKnowledgePackageFormat(input: {
     await verifyKnowledgePackageFormat({ directory, limits });
     return manifest;
   } catch (error) {
-    await rm(directory, { recursive: true, force: true });
+    await removePrivateTree(directory);
     throw error;
   }
 }

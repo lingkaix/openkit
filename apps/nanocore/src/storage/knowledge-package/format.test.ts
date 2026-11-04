@@ -1,9 +1,10 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import {
+import fs, {
   cp,
   link,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -12,10 +13,11 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { testEntityId } from '../../test-support/entity-ids.js';
 import { verifyKnowledgePackageFormat, writeKnowledgePackageFormat } from './format.js';
 
@@ -359,7 +361,22 @@ describe('Knowledge package v1 format', () => {
     }
     const directory = await writeFixture();
     const prior = await readFile(join(directory, 'manifest.json'));
-    await expect(writeKnowledgePackageFormat(await packageInput(directory))).rejects.toThrow();
+    const rootBefore = await lstat(directory);
+    const manifestBefore = await lstat(join(directory, 'manifest.json'));
+    const replacement = writeKnowledgePackageFormat(await packageInput(directory));
+    await expect(replacement).rejects.toThrow();
+    await expect(replacement).rejects.toMatchObject({ code: 'EEXIST' });
+    const rootAfter = await lstat(directory);
+    const manifestAfter = await lstat(join(directory, 'manifest.json'));
+    expect([rootAfter.dev, rootAfter.ino, rootAfter.mode]).toEqual([
+      rootBefore.dev,
+      rootBefore.ino,
+      rootBefore.mode,
+    ]);
+    expect([manifestAfter.dev, manifestAfter.ino]).toEqual([
+      manifestBefore.dev,
+      manifestBefore.ino,
+    ]);
     expect(await readFile(join(directory, 'manifest.json'))).toEqual(prior);
     await expect(verifyKnowledgePackageFormat({ directory, limits })).resolves.toBeDefined();
   });
@@ -690,6 +707,53 @@ describe('Knowledge package v1 format', () => {
       })
     ).rejects.toThrow('Knowledge package manifest is too large.');
     expect(existsSync(overDirectory)).toBe(false);
+  });
+
+  it('preserves cleanup failure precedence after a real member copy fails', async () => {
+    const parent = await temporaryRoot();
+    const directory = join(parent, 'package');
+    const input = await packageInput(directory);
+    const member = input.files.find((file) => file.path === 'raw/original.bin')!;
+    const originalBytes = await readFile(member.sourcePath);
+    const cleanupFailure = new Error('Selected Knowledge package cleanup failure.');
+    let cleanupCalls = 0;
+    let copiedBeforeCleanup = false;
+    const remove = fs.rm;
+    const cleanup = vi
+      .spyOn(fs, 'rm')
+      .mockImplementation(async (...args: Parameters<typeof fs.rm>) => {
+        if (String(args[0]) === directory) {
+          cleanupCalls++;
+          copiedBeforeCleanup = (await readFile(join(directory, 'raw/deep/member.bin'))).equals(
+            originalBytes
+          );
+          throw cleanupFailure;
+        }
+        return remove(...args);
+      });
+    syncBuiltinESMExports();
+    try {
+      await expect(
+        writeKnowledgePackageFormat({
+          ...input,
+          files: [
+            {
+              ...member,
+              path: 'raw/deep/member.bin',
+              contentDigest: flipDigest(member.contentDigest),
+            },
+          ],
+        })
+      ).rejects.toBe(cleanupFailure);
+      expect(cleanupCalls).toBe(1);
+      expect(copiedBeforeCleanup).toBe(true);
+      expect(existsSync(directory)).toBe(true);
+      expect(await readdir(parent)).toEqual(['package']);
+      expect(await readFile(member.sourcePath)).toEqual(originalBytes);
+    } finally {
+      cleanup.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
 
   it('removes every partially written path when a fresh write fails', async () => {
