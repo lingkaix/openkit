@@ -257,7 +257,7 @@ export async function runAssistantModel(input: {
     'store' | 'turn' | 'readEvidence' | 'environmentFacts' | 'prefixMessages'
   >;
 }): Promise<AssistantCommandResult> {
-  const overview = input.knowledge ? prepareKnowledgeOverview(input.knowledge) : undefined;
+  const overview = input.knowledge ? await prepareKnowledgeOverview(input.knowledge) : undefined;
   const overviewMessages: AgentMessage[] = overview?.text
     ? [{ role: 'user', content: [{ type: 'text', text: overview.text }] }]
     : [];

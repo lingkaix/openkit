@@ -76,7 +76,7 @@ it('delivers a bounded UTF-8 overview at its source revision, stays pinned after
   const f = await fixture();
   const content = `---\nokf_version: "0.2"\n---\n# Admissions\n${'€'.repeat(2000)}`;
   const revision = await publishIndex(f, content);
-  const result = prepareKnowledgeOverview(f);
+  const result = await prepareKnowledgeOverview(f);
   const payload = JSON.parse(
     result.text.split('<knowledge_overviews>')[1]!.split('</knowledge_overviews>')[0]!
   );
@@ -109,8 +109,8 @@ it('delivers a bounded UTF-8 overview at its source revision, stays pinned after
     )
     .run(f.userId);
   expect(() => result.assertCurrent()).toThrow();
-  expect(prepareKnowledgeOverview(f).text).not.toContain('# Restricted');
-  expect(prepareKnowledgeOverview(f).text).toContain('"unavailable":true');
+  expect((await prepareKnowledgeOverview(f)).text).not.toContain('# Restricted');
+  expect((await prepareKnowledgeOverview(f)).text).toContain('"unavailable":true');
   f.coreDb.sqlite
     .prepare("UPDATE users SET status = 'active', disabled_at = NULL WHERE id = ?")
     .run(f.userId);
@@ -132,13 +132,13 @@ it('includes Server navigation only with the admitted current credential and mar
     target: { kind: 'server' },
     initialization: { requestId: randomUUID(), instructionReference: 'test:overview' },
   });
-  const withoutServer = prepareKnowledgeOverview(f);
+  const withoutServer = await prepareKnowledgeOverview(f);
   expect(withoutServer.text).not.toContain('"scope":"server"');
-  const admitted = prepareKnowledgeOverview({ ...f, requestActor });
+  const admitted = await prepareKnowledgeOverview({ ...f, requestActor });
   expect(admitted.text).toContain('"scope":"server"');
   expect(admitted.text).not.toContain('"unavailable":true');
   expect(() => admitted.assertCurrent()).not.toThrow();
-  const unavailable = prepareKnowledgeOverview({ ...f, threadId: 'not-admitted' });
+  const unavailable = await prepareKnowledgeOverview({ ...f, threadId: 'not-admitted' });
   expect(unavailable.text).toContain('"unavailable":true');
   expect(unavailable.text).not.toContain(f.coreDb.dataRoot);
 });

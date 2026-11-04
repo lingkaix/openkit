@@ -9111,7 +9111,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const workspaceId = workspaceIdForOwner(fixture.turn.owner);
     const notebook = fixture.notebook;
     const baseRevision = notebook.publishedRevision();
-    const admitted = knowledgeOverviewReader.prepareKnowledgeOverview({
+    const admitted = await knowledgeOverviewReader.prepareKnowledgeOverview({
       coreDb: fixture.coreDb,
       store: fixture.store,
       workspaceId,
@@ -9211,12 +9211,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('refuses an overview revoked during awaited %s before later disclosure', async (boundary) => {
     const fixture = await createWorkerContextExecutorFixture(`overview-revoked-${boundary}`);
     let current = true;
-    const overview = vi.spyOn(knowledgeOverviewReader, 'prepareKnowledgeOverview').mockReturnValue({
-      text: 'Bounded overview from a source admitted at preparation.',
-      assertCurrent: () => {
-        if (!current) throw new Error('Overview source revoked.');
-      },
-    });
+    const overview = vi
+      .spyOn(knowledgeOverviewReader, 'prepareKnowledgeOverview')
+      .mockResolvedValue({
+        text: 'Bounded overview from a source admitted at preparation.',
+        assertCurrent: () => {
+          if (!current) throw new Error('Overview source revoked.');
+        },
+      });
     const backend = new FakeWorkerGovernanceBackend();
     const barrier =
       boundary === 'validation'

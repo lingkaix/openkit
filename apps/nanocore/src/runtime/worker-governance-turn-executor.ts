@@ -461,7 +461,7 @@ export async function prepareWorkerTurnContextPackage(
           userId: sourceAdmission.triggerActor.id,
         }
       : undefined;
-  const knowledgeOverview = prepareKnowledgeOverview({
+  const knowledgeOverview = await prepareKnowledgeOverview({
     store,
     coreDb,
     workspaceId: input.workspaceId,
