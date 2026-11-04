@@ -64,7 +64,6 @@
     "apps/nanocore/src/runtime/worker-mcp-gateway.ts\tfs:mkdirSync\t885a2bd7347cb6892d7f99fd5bfdc93a05c2b41b5b3e718a448a38ba7af1b4f1": 1,
     "apps/nanocore/src/runtime/worker-runtime-provenance.ts\tfs:copyFile\t09b5884ab5588b2570d660b08b06bd57912883115fb6f82e2b177ce05ed53729": 1,
     "apps/nanocore/src/runtime/worker-runtime-provenance.ts\tfs:mkdir\t7425f4fd8faeb6f8ff0413d8fbbe235bf2ea02ad3f0eea6b413060f9db19854a": 1,
-    "apps/nanocore/src/runtime/worker-runtime-provenance.ts\tfs:rm\t5af279f37d3022925bcf40ab3c538944f34e9e1ec58d972ecbc26ef8afce04d3": 1,
     "apps/nanocore/src/runtime/worker-runtime-provenance.ts\tfs:writeFile\tf8d2ffe09c4345983ba4ffdededeb61ab529863823a0731eefc71cbe67a28c21": 1,
     "apps/nanocore/src/runtime/workspace-snapshot-chain.ts\tfs:writeFile\t3db05b2661d99628956e239b119950f133b30a1a26651b93ab0894696ef3bcf5": 1,
     "apps/nanocore/src/storage/app-db.ts\tfs:fsyncSync\t1912157a0a40988855bcf5c47869d444ef9fd7d8f0031624e22e512f0c4d820d": 1,

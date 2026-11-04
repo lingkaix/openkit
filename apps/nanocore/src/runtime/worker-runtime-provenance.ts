@@ -1,16 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import {
-  copyFile,
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { copyFile, lstat, mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -22,6 +12,7 @@ import {
   createDirectoryExclusive,
   ensureCanonicalDirectoryAsync,
   publishCanonicalPathAsync,
+  removePrivateTree,
   syncCanonicalDirectoryAsync,
   syncCanonicalTreeAsync,
 } from '@openkit/storage';
@@ -501,7 +492,7 @@ export async function prepareWorkerRuntimeProvenance(
       },
     };
   } finally {
-    await removeEvidenceStagingDirectory(stagingRoot);
+    await removePrivateTree(stagingRoot);
   }
 }
 
@@ -978,7 +969,7 @@ async function adoptEvidenceDirectory(
     }
     await publishCanonicalPathAsync(temporaryRoot, targetRoot);
   } catch (error) {
-    await removeEvidenceStagingDirectory(temporaryRoot);
+    await removePrivateTree(temporaryRoot);
     const code = (error as NodeJS.ErrnoException).code;
     if (
       (code === 'EEXIST' || code === 'ENOTEMPTY') &&
@@ -991,11 +982,6 @@ async function adoptEvidenceDirectory(
     }
     throw error;
   }
-}
-
-/** Disposes only the existing request-private publication directory on failure or completed adoption. */
-async function removeEvidenceStagingDirectory(temporaryRoot: string): Promise<void> {
-  await rm(temporaryRoot, { force: true, recursive: true });
 }
 
 /** Compares an existing deterministic evidence directory with one replay candidate. */
