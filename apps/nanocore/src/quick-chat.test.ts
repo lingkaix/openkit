@@ -6,6 +6,7 @@ import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-work
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import {
   ConversationTargetCatalogSchema,
+  ListAuthorizedWorkspacesResponseSchema,
   operationToolName,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
@@ -39,13 +40,18 @@ import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
 import { artifactReferenceItemId, nativeProductScope } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
-import { type CreateAppOptions, createAppWithWorkspaceAuthority } from './test-support/app.js';
+import {
+  type CreateAppOptions,
+  createAppWithLocalIdentity,
+  createAppWithWorkspaceAuthority,
+} from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -3624,4 +3630,35 @@ describe('Assistant execution deadline', () => {
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+});
+
+describe('personal Workspace mode', () => {
+  it('provisions the ordinary owner-only personal Workspace', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-personal-workspace-'));
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      applyMigrations(coreDb);
+      const userId = ensureLocalUser(coreDb);
+      const store = createTestStore({ dataRoot });
+      await ensureUserQuickChatWorkspace({ coreDb, store, userId });
+      const app = createAppWithLocalIdentity({ coreDb, dataRoot, store });
+      const res = await app.request('/api/app/operations/workspace.list', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const body = ListAuthorizedWorkspacesResponseSchema.parse(await res.json());
+
+      expect(body.items.map((entry) => entry.workspace)).toContainEqual(
+        expect.objectContaining({
+          id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+          name: 'Personal',
+          kind: 'personal',
+        })
+      );
+    } finally {
+      coreDb.sqlite.close();
+      await disposeTestStore(dataRoot);
+    }
+  });
 });
