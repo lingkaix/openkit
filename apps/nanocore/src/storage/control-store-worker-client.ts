@@ -4,6 +4,11 @@ import {
   type ControlAccessTokenLifecycleResult,
   ControlAccessTokenLifecycleResultSchema,
 } from '../auth/access-token-lifecycle-codecs.js';
+import {
+  type ControlBootstrapEnsure,
+  type ControlBootstrapEnsureResult,
+  ControlBootstrapEnsureResultSchema,
+} from '../auth/bootstrap-ensure-codecs.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import {
   PreservedWorkspaceCaptureRefusal,
@@ -2085,6 +2090,48 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Ensures only the original startup Bootstrap setting through the admitted Core FULL writer. */
+  async bootstrapEnsure(
+    db: CoreDb,
+    input: ControlBootstrapEnsure
+  ): Promise<ControlBootstrapEnsureResult> {
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'bootstrap-ensure', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({ operation: 'bootstrap-ensure', database, input });
+    }
+    if (reply.operation !== 'bootstrap-ensure')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = ControlBootstrapEnsureResultSchema.safeParse(reply.result);
+    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return result.data;
   }
 
   /** Performs only canonical revoke/rotation through the existing admitted Core FULL writer. */

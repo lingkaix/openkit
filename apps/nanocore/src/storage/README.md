@@ -1,5 +1,7 @@
 # Storage
 
+Server startup Bootstrap ENSURE uses a closed `bootstrap-ensure` command on the same admitted Core owner. Its only payload field is the Main-prepared hash; no raw secret, clock/TTL override, role, SQL or callback crosses. The original all-User count and retained pending/expiry checks plus original setting upsert run in the existing native Core savepoint, and only issue timestamps/null return after covering FULL commit. Main then publishes its original separate emission file. Lost ACK withholds emission/success without reposting or claiming rollback; file failure after ACK leaves the original durable pending setting. No new table/store/authority/projection is added. Legacy synchronous ENSURE, consume's original complete SQL tuple/files and its later Audit remain distinct.
+
 `control-store-maintenance-native.ts` contains the existing synchronous Knowledge maintenance admission tuple. Its worker import excludes the model, editor and provider orchestration in `knowledge-agent-maintenance.ts`; authority, savepoint and FULL acknowledgement stay unchanged.
 
 Token bearer verification stays on Main. Only its exact existing identity/hash proof and last-use options enter the Core owner; the deciding section rereads current token and User facts, checks revocation, expiry and rotation grace, and records use before FULL acknowledgement. The reply is the existing redacted record or null. Other credential writes remain with their current owners.

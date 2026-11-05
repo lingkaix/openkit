@@ -34,6 +34,7 @@ import { ADMIN_RECOVERY_REQUIRED, AdminRecoveryError } from '../auth/admin-recov
 import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
 import { BETTER_AUTH_REFUSALS, BetterAuthNativeError } from '../auth/better-auth-codecs.js';
 import { applyControlBetterAuth } from '../auth/better-auth-native.js';
+import { applyControlBootstrapEnsure } from '../auth/bootstrap-ensure-native.js';
 import { isNanoHostTransportAdminRefusal } from '../auth/nanohost-transport-codecs.js';
 import { applyControlNanoHostTransport } from '../auth/nanohost-transport-native.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
@@ -334,6 +335,7 @@ type WriteCommand = Extract<
       | 'runtime-target'
       | 'backend-session'
       | 'remote-mcp-audit'
+      | 'bootstrap-ensure'
       | 'access-token-lifecycle'
       | 'server-admin-token-default'
       | 'access-token-verification'
@@ -2102,6 +2104,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-image',
               result,
             };
+          } else if (request.operation === 'bootstrap-ensure') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlBootstrapEnsure(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'bootstrap-ensure',
+              result,
+            };
           } else if (request.operation === 'access-token-lifecycle') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlAccessTokenLifecycle(owner.scopeDb, request.input);
@@ -3511,6 +3523,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'runtime-target' ||
       value.operation === 'backend-session' ||
       value.operation === 'remote-mcp-audit' ||
+      value.operation === 'bootstrap-ensure' ||
       value.operation === 'access-token-lifecycle' ||
       value.operation === 'server-admin-token-default' ||
       value.operation === 'access-token-verification' ||

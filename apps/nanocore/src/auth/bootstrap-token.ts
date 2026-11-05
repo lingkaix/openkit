@@ -28,6 +28,14 @@ export interface ServerBootstrapTokenIssue {
   expiresAt: string;
 }
 
+/** Prepared ENSURE material for the native deciding section; never a plaintext credential. */
+export interface PreparedServerBootstrapToken {
+  readonly tokenHash: string;
+}
+
+/** Original issuance facts without the Main-owned one-time secret. */
+export type ServerBootstrapTokenIssueMetadata = Omit<ServerBootstrapTokenIssue, 'token'>;
+
 /** Server bootstrap emission file summary. */
 export interface ServerBootstrapTokenEmission {
   /** File path that received the one-time operator emission. */
@@ -78,8 +86,18 @@ type BootstrapSetting = z.infer<typeof BootstrapSettingV1Schema>;
  */
 export function ensureServerBootstrapToken(
   coreDb: CoreDb,
-  options: { now?: Date; ttlMs?: number } = {}
-): ServerBootstrapTokenIssue | null {
+  options: { now?: Date; ttlMs?: number },
+  prepared: PreparedServerBootstrapToken
+): ServerBootstrapTokenIssueMetadata | null;
+export function ensureServerBootstrapToken(
+  coreDb: CoreDb,
+  options?: { now?: Date; ttlMs?: number }
+): ServerBootstrapTokenIssue | null;
+export function ensureServerBootstrapToken(
+  coreDb: CoreDb,
+  options: { now?: Date; ttlMs?: number } = {},
+  prepared?: PreparedServerBootstrapToken
+): ServerBootstrapTokenIssue | ServerBootstrapTokenIssueMetadata | null {
   const now = options.now ?? new Date();
   if (countUsers(coreDb) > 0) {
     return null;
@@ -90,17 +108,17 @@ export function ensureServerBootstrapToken(
     return null;
   }
 
-  const token = createOpenKitAccessTokenSecret();
+  const token = prepared ? '' : createOpenKitAccessTokenSecret();
   const issuedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + (options.ttlMs ?? BOOTSTRAP_TTL_MS)).toISOString();
   writeBootstrapSetting(coreDb, {
     consumedAt: null,
     expiresAt,
     issuedAt,
-    tokenHash: hashOpenKitAccessTokenSecret(token),
+    tokenHash: prepared ? prepared.tokenHash : hashOpenKitAccessTokenSecret(token),
   });
 
-  return { expiresAt, issuedAt, token };
+  return prepared ? { expiresAt, issuedAt } : { expiresAt, issuedAt, token };
 }
 
 /** Reports completed bootstrap independently of current administrator Token usability. */

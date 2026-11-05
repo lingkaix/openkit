@@ -16,10 +16,8 @@ import {
   restoreWorkspaceDeletionMutationAdmission,
 } from './app.js';
 import { createBetterAuth, resolveBetterAuthSecret } from './auth/better-auth.js';
-import {
-  ensureServerBootstrapToken,
-  writeServerBootstrapTokenEmission,
-} from './auth/bootstrap-token.js';
+import { ensureServerBootstrapTokenForStartup } from './auth/bootstrap-ensure.js';
+import { writeServerBootstrapTokenEmission } from './auth/bootstrap-token.js';
 import { ensureLocalUser } from './auth/identity.js';
 import {
   bindRequiresServerAuthenticatedTls,
@@ -622,7 +620,7 @@ if (mode === 'local') {
   if (shutdownCompletion) await shutdownCompletion;
 }
 if (mode === 'server') {
-  const bootstrap = ensureServerBootstrapToken(coreDb);
+  const bootstrap = await ensureServerBootstrapTokenForStartup(coreDb);
   if (bootstrap) {
     writeServerBootstrapTokenEmission(dataRoot, bootstrap);
   }

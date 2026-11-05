@@ -35,6 +35,12 @@ import {
   isBetterAuthRefusal,
 } from '../auth/better-auth-codecs.js';
 import {
+  type ControlBootstrapEnsure,
+  type ControlBootstrapEnsureResult,
+  ControlBootstrapEnsureResultSchema,
+  ControlBootstrapEnsureSchema,
+} from '../auth/bootstrap-ensure-codecs.js';
+import {
   type ControlNanoHostTransportInput,
   ControlNanoHostTransportInputSchema,
   type ControlNanoHostTransportResult,
@@ -357,7 +363,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 75;
+export const CONTROL_WORKER_VERSION = 76;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -650,6 +656,10 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'workspace-review-decision';
           readonly input: ControlWorkspaceReviewDecision;
+        }
+      | {
+          readonly operation: 'bootstrap-ensure';
+          readonly input: ControlBootstrapEnsure;
         }
       | {
           readonly operation: 'access-token-lifecycle';
@@ -1041,6 +1051,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'bootstrap-ensure';
+      readonly result: ControlBootstrapEnsureResult;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'access-token-lifecycle';
@@ -1529,6 +1544,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
     return reply.result === null;
+  if (reply.operation === 'bootstrap-ensure')
+    return ControlBootstrapEnsureResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'access-token-lifecycle')
     return ControlAccessTokenLifecycleResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'server-admin-token-default') return typeof reply.result === 'boolean';
@@ -2029,6 +2046,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkerImageInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'bootstrap-ensure')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlBootstrapEnsureSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'access-token-lifecycle')
