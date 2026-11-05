@@ -111,6 +111,12 @@ import {
   ControlAccessTokenVerificationSchema,
 } from './access-token-verification-codecs.js';
 import {
+  type ControlAttentionAttemptCompletion,
+  type ControlAttentionAttemptCompletionResult,
+  ControlAttentionAttemptCompletionResultSchema,
+  ControlAttentionAttemptCompletionSchema,
+} from './attention-attempt-completion-codecs.js';
+import {
   type ControlAutomationScanner,
   type ControlAutomationScannerResult,
   ControlAutomationScannerResultSchema,
@@ -383,7 +389,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 78;
+export const CONTROL_WORKER_VERSION = 79;
 
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
@@ -788,6 +794,10 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'workspace-review-decision';
           readonly input: ControlWorkspaceReviewDecision;
+        }
+      | {
+          readonly operation: 'attention-attempt-completion';
+          readonly input: ControlAttentionAttemptCompletion;
         }
       | {
           readonly operation: 'bootstrap-ensure';
@@ -1230,6 +1240,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'attention-attempt-completion';
+      readonly result: ControlAttentionAttemptCompletionResult;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'bootstrap-ensure';
@@ -1731,6 +1746,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
     return reply.result === null;
+  if (reply.operation === 'attention-attempt-completion')
+    return ControlAttentionAttemptCompletionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'bootstrap-ensure')
     return ControlBootstrapEnsureResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'access-token-lifecycle')
@@ -2244,6 +2261,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkerImageInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'attention-attempt-completion')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlAttentionAttemptCompletionSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'bootstrap-ensure')

@@ -142,7 +142,10 @@ export function createChannelServices(input: {
     const route = thread.visibility === 'private' ? 'chat' : 'tasks';
     return `/${route}/${encodeURIComponent(source.workspaceId)}/${encodeURIComponent(source.threadId)}?requestId=${encodeURIComponent(source.requestId)}`;
   };
-  const notifications = new AttentionNotifications(coreDb.sqlite, { buildAppPath: attentionPath });
+  const notifications = new AttentionNotifications(coreDb.sqlite, {
+    buildAppPath: attentionPath,
+    nativeCoreDb: coreDb,
+  });
   notifications.reconcileIncompleteAttempts();
   if (input.discordConfig && !input.publicBaseUrl)
     throw new OperationError(

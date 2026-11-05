@@ -9,6 +9,7 @@ import {
 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
+import type { CoreDb } from '../storage/db.js';
 
 const ChannelSchema = z.enum(['discord', 'email']);
 const AttemptStatusSchema = z.enum(['sending', 'sent', 'failed-no-send', 'delivery-unknown']);
@@ -160,6 +161,26 @@ function decodeRow(value: unknown): AttentionDelivery {
   };
 }
 
+/** Exact original attempt outcome/pointer and completion clock, without transport or source content. */
+export interface AttentionAttemptCompletion {
+  readonly deliveryId: string;
+  readonly attemptId: number;
+  readonly status: Exclude<AttentionAttempt['status'], 'sending'>;
+  readonly failureCode: AttentionAttempt['failureCode'];
+  readonly finishedAt: string;
+}
+
+/** Owns the original single-statement completion commit; projection remains a later stage. */
+export function completeAttentionAttemptInDb(
+  sqlite: Database.Database,
+  input: AttentionAttemptCompletion
+): void {
+  sqlite
+    .prepare(`UPDATE notification_delivery_attempts SET status = ?, failure_code = ?, finished_at = ?
+        WHERE id = ? AND attention_id = ? AND status = 'sending'`)
+    .run(input.status, input.failureCode, input.finishedAt, input.attemptId, input.deliveryId);
+}
+
 /** Owns attention delivery only; the injected Core database must already be migrated. */
 export class AttentionNotifications {
   constructor(
@@ -167,6 +188,8 @@ export class AttentionNotifications {
     private readonly options: {
       now?: () => string;
       buildAppPath?: (source: AttentionSource) => string;
+      /** Canonical runtime binding for only the original completion commit. */
+      nativeCoreDb?: CoreDb;
     } = {}
   ) {}
 
@@ -294,7 +317,7 @@ export class AttentionNotifications {
         throw new Error('Invalid App path');
       }
     } catch {
-      this.finish(delivery, 'failed-no-send', 'transport-refused');
+      await this.finish(delivery, 'failed-no-send', 'transport-refused');
       throw new AttentionError('invalid_attention_input');
     }
     let eligible = false;
@@ -304,7 +327,7 @@ export class AttentionNotifications {
       // Current authority is unavailable before transport; no external contact occurred.
     }
     if (!eligible) {
-      this.finish(delivery, 'failed-no-send', 'authority-unavailable');
+      await this.finish(delivery, 'failed-no-send', 'authority-unavailable');
       throw new AttentionError('attention_not_eligible');
     }
     // No await, mutable-source read, or external work occurs between admission and transport.
@@ -348,15 +371,33 @@ export class AttentionNotifications {
   }
 
   /** Settles only the exact live claim; an already-reconciled attempt can never become sent. */
-  private finish(
+  private async finish(
     delivery: AttentionDelivery,
     status: Exclude<AttentionAttempt['status'], 'sending'>,
     failureCode: AttentionAttempt['failureCode']
-  ): AttentionDelivery {
-    this.sqlite
-      .prepare(`UPDATE notification_delivery_attempts SET status = ?, failure_code = ?, finished_at = ?
-        WHERE id = ? AND attention_id = ? AND status = 'sending'`)
-      .run(status, failureCode, this.now(), delivery.attempt!.id, delivery.id);
+  ): Promise<AttentionDelivery> {
+    const input: AttentionAttemptCompletion = {
+      deliveryId: delivery.id,
+      attemptId: delivery.attempt!.id,
+      status,
+      failureCode,
+      finishedAt: this.now(),
+    };
+    const coreDb = this.options.nativeCoreDb;
+    if (coreDb) {
+      const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
+        '../storage/control-store-worker-client.js'
+      );
+      // Bind the actual owner connection before any native open/post. The client
+      // independently binds the supplied Core scope and canonical physical path.
+      if (coreDb.sqlite !== this.sqlite)
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      await getControlStoreWorkerClient().attentionAttemptCompletion(coreDb, input);
+    } else {
+      // Original raw-database owners/fixtures retain their existing statement.
+      completeAttentionAttemptInDb(this.sqlite, input);
+    }
+    // This was always a separate post-commit projection, never part of the UPDATE.
     return this.get(delivery.id)!;
   }
 

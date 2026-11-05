@@ -14,6 +14,12 @@ import {
   PreservedWorkspaceCaptureRefusal,
   WorkspaceCaptureRecoveryRequired,
 } from '../runtime/workspace-snapshot-chain.js';
+import {
+  type ControlAttentionAttemptCompletion,
+  type ControlAttentionAttemptCompletionResult,
+  ControlAttentionAttemptCompletionResultSchema,
+  ControlAttentionAttemptCompletionSchema,
+} from './attention-attempt-completion-codecs.js';
 import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
@@ -1958,6 +1964,49 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Commits only the original attempt completion; Main's following projection stays separate. */
+  async attentionAttemptCompletion(
+    db: CoreDb,
+    value: ControlAttentionAttemptCompletion
+  ): Promise<ControlAttentionAttemptCompletionResult> {
+    const input = ControlAttentionAttemptCompletionSchema.parse(value);
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'attention-attempt-completion', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({ operation: 'attention-attempt-completion', database, input });
+    }
+    if (reply.operation !== 'attention-attempt-completion')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = ControlAttentionAttemptCompletionResultSchema.safeParse(reply.result);
+    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return result.data;
   }
 
   /** Ensures only the original startup Bootstrap setting through the admitted Core FULL writer. */
