@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const SCHEMA = {
@@ -57,6 +57,7 @@ describe('Kernel App API', () => {
   it('creates an app and record through the public routes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-kernel-routes-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -67,67 +68,64 @@ describe('Kernel App API', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
 
-    try {
-      const createResponse = await app.request(
-        ...operationRequest(
-          'kernel.apps.create',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              'x-openkit-request-id': randomUUID(),
-            },
-            body: JSON.stringify(SCHEMA),
-          }
-        )
-      );
-      expect(createResponse.status).toBe(201);
-      const created = (await createResponse.json()) as {
-        appId: string;
-        schemaRevision: number;
-      };
-      const recordResponse = await app.request('/api/app/operations/kernel.records.create', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-openkit-request-id': randomUUID(),
-        },
-        body: JSON.stringify({
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          appId: created.appId,
-          collection: 'mappings',
-          schemaRevision: created.schemaRevision,
-          data: {
-            membership_id: 'mem_1',
-            crm_id: 'crm_1',
-            annotation: 'note',
-            active: true,
+    const createResponse = await app.request(
+      ...operationRequest(
+        'kernel.apps.create',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-openkit-request-id': randomUUID(),
           },
-        }),
-      });
-      expect(recordResponse.status).toBe(200);
-      const listed = await app.request(
-        ...operationRequest('kernel.records.list', {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          appId: created.appId,
-          collection: 'mappings',
-          schemaRevision: created.schemaRevision,
-        })
-      );
-      expect(listed.status).toBe(200);
-      await expect(listed.json()).resolves.toMatchObject({
-        completeResult: true,
-        totalItems: 1,
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
+          body: JSON.stringify(SCHEMA),
+        }
+      )
+    );
+    expect(createResponse.status).toBe(201);
+    const created = (await createResponse.json()) as {
+      appId: string;
+      schemaRevision: number;
+    };
+    const recordResponse = await app.request('/api/app/operations/kernel.records.create', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-openkit-request-id': randomUUID(),
+      },
+      body: JSON.stringify({
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: created.appId,
+        collection: 'mappings',
+        schemaRevision: created.schemaRevision,
+        data: {
+          membership_id: 'mem_1',
+          crm_id: 'crm_1',
+          annotation: 'note',
+          active: true,
+        },
+      }),
+    });
+    expect(recordResponse.status).toBe(200);
+    const listed = await app.request(
+      ...operationRequest('kernel.records.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        appId: created.appId,
+        collection: 'mappings',
+        schemaRevision: created.schemaRevision,
+      })
+    );
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toMatchObject({
+      completeResult: true,
+      totalItems: 1,
+    });
   });
 
   it('denies a non-member Workspace Light App list', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-kernel-routes-deny-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -138,20 +136,11 @@ describe('Kernel App API', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
 
-    try {
-      const response = await app.request(
-        ...operationRequest('kernel.apps.list', {
-          workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
-        })
-      );
-      expect(response.status).toBeGreaterThanOrEqual(400);
-    } finally {
-      coreDb.sqlite.close();
-    }
+    const response = await app.request(
+      ...operationRequest('kernel.apps.list', {
+        workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+      })
+    );
+    expect(response.status).toBeGreaterThanOrEqual(400);
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

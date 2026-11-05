@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
@@ -7,27 +7,22 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createApp } from './test-support/app.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
+import { createTestCoreDb, createTestStore, disposeTestStore } from './test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 it('admits only a current human writer and refuses a stale schema preview base without effects', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'schema-preview-operation-'));
   const coreDb = createTestCoreDb(dataRoot);
+  onTestFinished(() => disposeTestStore(dataRoot, coreDb));
   const userId = ensureLocalUser(coreDb);
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Public schema preview');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const app = createApp({ mode: 'server', coreDb, dataRoot, store });
-  onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
-  });
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
   const schemaPath = join(root, 'schema', 'scope-schema.yaml');
   const schemaText = readFileSync(schemaPath, 'utf8');

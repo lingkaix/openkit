@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
@@ -8,7 +8,6 @@ import type { AuthVariables } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -17,24 +16,24 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const corpus = JSON.parse(
   readFileSync(new URL('../../../tests/fixtures/large-context/cases.json', import.meta.url), 'utf8')
 ) as { archives: Array<{ id: string; base64: string }> };
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 /** Exercises the real upload, canonical original, JSON composition and ZIP processor together. */
 async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-folder-route-'));
-  cleanups.push(() => rmSync(dataRoot, { recursive: true, force: true }));
-  const coreDb = openCoreDb(dataRoot);
-  cleanups.push(() => coreDb.sqlite.close());
+  let coreDb: ReturnType<typeof openCoreDb> | undefined;
+  cleanups.push(() => disposeTestStore(dataRoot, ...(coreDb ? [coreDb] : [])));
+  coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
@@ -45,7 +44,7 @@ async function fixture() {
 }
 
 /** Uploads frozen independently generated ZIP bytes through the exact-file operation. */
-async function upload(state: ReturnType<typeof fixture>, id: string) {
+async function upload(state: Awaited<ReturnType<typeof fixture>>, id: string) {
   const bytes = Buffer.from(corpus.archives.find((entry) => entry.id === id)!.base64, 'base64');
   const query = new URLSearchParams({
     workspaceId: state.workspace.id,
@@ -67,7 +66,7 @@ async function upload(state: ReturnType<typeof fixture>, id: string) {
 
 /** Uses governed JSON operations; no test-only folder route is mounted. */
 function folder(
-  state: ReturnType<typeof fixture>,
+  state: Awaited<ReturnType<typeof fixture>>,
   operation: 'read' | 'extract',
   input: { workspaceId: string; artifactId: string; artifactVersion: number }
 ) {
@@ -83,7 +82,7 @@ function folder(
 }
 
 /** Injects an ordinary authenticated session while retaining real native authorization and JSON dispatch. */
-function ordinarySessionApp(state: ReturnType<typeof fixture>) {
+function ordinarySessionApp(state: Awaited<ReturnType<typeof fixture>>) {
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use('*', async (context, next) => {
     context.set('actor', { kind: 'session', userId: LOCAL_USER_ID });

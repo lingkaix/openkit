@@ -6,8 +6,7 @@ import {
   GENERATIVE_UI_NATIVE_CATALOG_ID,
   GENERATIVE_UI_PROTOCOL_VERSION,
 } from '@openkit/app-api-schemas';
-import { afterEach, describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -15,6 +14,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -45,6 +45,7 @@ describe('Generative UI App API', () => {
   it('publishes, reads, and refreshes one item-source presentation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-ui-routes-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -75,89 +76,86 @@ describe('Generative UI App API', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
 
-    try {
-      const publishResponse = await app.request(
-        ...operationRequest(
-          'generative-ui.publish',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-          {
-            method: 'POST',
-            headers: {
-              'content-type': 'application/json',
-              'x-openkit-request-id': randomUUID(),
+    const publishResponse = await app.request(
+      ...operationRequest(
+        'generative-ui.publish',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-openkit-request-id': randomUUID(),
+          },
+          body: JSON.stringify({
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+            turnId: turn.id,
+            title: 'Mapping view',
+            fallbackText: 'Membership 1 maps to CRM 1.',
+            messages: nativeMessages('surface-item', [
+              {
+                id: 'root',
+                component: 'Column',
+                children: ['body', 'refresh'],
+              },
+              { id: 'body', component: 'Text', text: { path: '/text' } },
+              {
+                id: 'refresh',
+                component: 'Button',
+                child: 'refreshLabel',
+                action: { event: { name: 'refreshNow' } },
+              },
+              {
+                id: 'refreshLabel',
+                component: 'Text',
+                text: 'Refresh',
+              },
+            ]),
+            source: {
+              kind: 'item',
+              itemId: sourceItem.id,
+              contentDigest: `sha256:${createHash('sha256').update(sourceItem.text, 'utf8').digest('hex')}`,
             },
-            body: JSON.stringify({
-              threadId: 'th_00000000-0000-7000-8000-000000000001',
-              turnId: turn.id,
-              title: 'Mapping view',
-              fallbackText: 'Membership 1 maps to CRM 1.',
-              messages: nativeMessages('surface-item', [
-                {
-                  id: 'root',
-                  component: 'Column',
-                  children: ['body', 'refresh'],
-                },
-                { id: 'body', component: 'Text', text: { path: '/text' } },
-                {
-                  id: 'refresh',
-                  component: 'Button',
-                  child: 'refreshLabel',
-                  action: { event: { name: 'refreshNow' } },
-                },
-                {
-                  id: 'refreshLabel',
-                  component: 'Text',
-                  text: 'Refresh',
-                },
-              ]),
-              source: {
-                kind: 'item',
-                itemId: sourceItem.id,
-                contentDigest: `sha256:${createHash('sha256').update(sourceItem.text, 'utf8').digest('hex')}`,
-              },
-              actions: [{ name: 'refreshNow', componentId: 'refresh', kind: 'refresh' }],
-            }),
-          }
-        )
-      );
-      expect(publishResponse.status).toBe(201);
-      const published = (await publishResponse.json()) as { id: string; publication: string };
-      expect(published.publication).toBe('published');
-      const getResponse = await app.request(
-        ...operationRequest('generative-ui.get', {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          presentationId: published.id,
-        })
-      );
-      expect(getResponse.status).toBe(200);
-      const refreshResponse = await app.request(
-        ...operationRequest(
-          'generative-ui.refresh',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', presentationId: published.id },
-          {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-              version: GENERATIVE_UI_PROTOCOL_VERSION,
-              action: {
-                name: 'refreshNow',
-                surfaceId: 'surface-item',
-                sourceComponentId: 'refresh',
-                timestamp: new Date().toISOString(),
-              },
-            }),
-          }
-        )
-      );
-      expect(refreshResponse.status).toBe(200);
-    } finally {
-      coreDb.sqlite.close();
-    }
+            actions: [{ name: 'refreshNow', componentId: 'refresh', kind: 'refresh' }],
+          }),
+        }
+      )
+    );
+    expect(publishResponse.status).toBe(201);
+    const published = (await publishResponse.json()) as { id: string; publication: string };
+    expect(published.publication).toBe('published');
+    const getResponse = await app.request(
+      ...operationRequest('generative-ui.get', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        presentationId: published.id,
+      })
+    );
+    expect(getResponse.status).toBe(200);
+    const refreshResponse = await app.request(
+      ...operationRequest(
+        'generative-ui.refresh',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', presentationId: published.id },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            version: GENERATIVE_UI_PROTOCOL_VERSION,
+            action: {
+              name: 'refreshNow',
+              surfaceId: 'surface-item',
+              sourceComponentId: 'refresh',
+              timestamp: new Date().toISOString(),
+            },
+          }),
+        }
+      )
+    );
+    expect(refreshResponse.status).toBe(200);
   });
 
   it('denies a non-member Workspace presentation read', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-ui-deny-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -168,21 +166,12 @@ describe('Generative UI App API', () => {
     });
     const app = createApp({ coreDb, dataRoot, store });
 
-    try {
-      const response = await app.request(
-        ...operationRequest('generative-ui.get', {
-          workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
-          presentationId: randomUUID(),
-        })
-      );
-      expect(response.status).toBeGreaterThanOrEqual(400);
-    } finally {
-      coreDb.sqlite.close();
-    }
+    const response = await app.request(
+      ...operationRequest('generative-ui.get', {
+        workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+        presentationId: randomUUID(),
+      })
+    );
+    expect(response.status).toBeGreaterThanOrEqual(400);
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

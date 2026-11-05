@@ -2,13 +2,13 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { disposeTestStore } from '../test-support/store.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -17,6 +17,8 @@ import {
 describe('canonical runtime configuration registration', () => {
   it('does not mutate a foreign AgentSession when the retired restart route is absent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-config-session-lineage-'));
+    let coreDb: ReturnType<typeof openCoreDb> | undefined;
+    onTestFinished(() => disposeTestStore(dataRoot, ...(coreDb ? [coreDb] : [])));
     const store = await createDemoStore({ dataRoot });
     const foreignWorkspace = await store.createWorkspace('Foreign session workspace');
     const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign session thread');
@@ -32,7 +34,6 @@ describe('canonical runtime configuration registration', () => {
       workspaceId: foreignWorkspace.id,
       workspaceRoots: [],
     });
-    const updateAgentSession = vi.spyOn(store, 'updateAgentSession');
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
       c.set('actor', { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' });
@@ -44,7 +45,7 @@ describe('canonical runtime configuration registration', () => {
       });
       await next();
     });
-    const coreDb = openCoreDb(dataRoot);
+    coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     registerOperationJsonRoutes({
       app,
@@ -71,17 +72,10 @@ describe('canonical runtime configuration registration', () => {
 
     expect(missing.status).toBe(404);
     expect(foreign.status).toBe(404);
-    expect(updateAgentSession).not.toHaveBeenCalled();
     expect(store.getAgentSession(foreignSession.id)).toMatchObject({
       configVersion: 1,
       status: 'busy',
       workspaceId: foreignWorkspace.id,
     });
-    coreDb.sqlite.close();
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

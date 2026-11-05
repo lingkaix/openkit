@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,12 +11,11 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
+import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { closeRevokedCredentialBindings } from '../vault/vault-operation-implementations.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
@@ -24,9 +23,10 @@ const roots: string[] = [];
 const executorCoreDbs: ReturnType<typeof createTestCoreDb>[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  await shutdownControlStoreWorkerClient();
-  for (const coreDb of executorCoreDbs.splice(0)) closeTestCoreDb(coreDb);
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  const databases = executorCoreDbs.splice(0);
+  for (const root of roots.splice(0)) {
+    await disposeTestStore(root, ...databases.filter((db) => db.dataRoot === root));
+  }
 });
 
 /** Explicit local authority exercises real HTTP registration rather than an unauthenticated rejection. */
@@ -134,6 +134,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b4-gating-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
+  executorCoreDbs.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const vault = createVaultUnlockState({
@@ -489,7 +490,6 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
     expect(backend.listReferences()).toEqual(inventory);
   } finally {
     vault.lock();
-    coreDb.sqlite.close();
   }
 });
 
