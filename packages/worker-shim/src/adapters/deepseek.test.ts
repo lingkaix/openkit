@@ -81,16 +81,24 @@ function spawnedNativeChild(): ChildProcessWithoutNullStreams {
   return child as ChildProcessWithoutNullStreams;
 }
 
-/** Correlates a peer reply with the actual UTF-8 request written to its public stdio port. */
-function observedPromptId(child: ChildProcessWithoutNullStreams): string | number {
+/** Decodes the existing UTF-8 write observations on a concrete native peer. */
+function observedNativeFrames(child: ChildProcessWithoutNullStreams): unknown[] {
   const bytes = Buffer.concat(
     vi
       .mocked(child.stdin.write)
       .mock.calls.map(([chunk]) => (Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
   );
+  return bytes
+    .toString('utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line): unknown => JSON.parse(line));
+}
+
+/** Correlates a peer reply with the actual request written to its public stdio port. */
+function observedPromptId(child: ChildProcessWithoutNullStreams): string | number {
   let id: string | number | undefined;
-  for (const line of bytes.toString('utf8').split('\n').filter(Boolean)) {
-    const frame: unknown = JSON.parse(line);
+  for (const frame of observedNativeFrames(child)) {
     if (
       typeof frame === 'object' &&
       frame !== null &&
@@ -2522,16 +2530,18 @@ describe('deepseek resident adapter', () => {
         );
         await waitFor(() => inference.requests.length > 0);
         const sessionId = await nativeSessionId(session);
-        const internals = session as unknown as { onPermission(params: unknown): unknown };
-        const outcomes: unknown[] = [];
-        const originalPermission = internals.onPermission.bind(session);
-        internals.onPermission = (params: unknown) => {
-          const outcome = originalPermission(params);
-          outcomes.push(outcome);
-          return outcome;
-        };
+        const child = spawnedNativeChild();
+        const response = (id: number) =>
+          observedNativeFrames(child).find(
+            (frame): frame is { result: unknown } =>
+              typeof frame === 'object' &&
+              frame !== null &&
+              'id' in frame &&
+              frame.id === id &&
+              'result' in frame
+          );
         deliver(
-          spawnedNativeChild(),
+          child,
           JSON.stringify({
             id: 77,
             jsonrpc: '2.0',
@@ -2546,10 +2556,12 @@ describe('deepseek resident adapter', () => {
             },
           })
         );
-        await waitFor(() => outcomes.length === 1);
-        expect(outcomes[0]).toEqual({ outcome: { outcome: 'selected', optionId: INFERENCE } });
+        await waitFor(() => response(77) !== undefined);
+        expect(response(77)?.result).toEqual({
+          outcome: { outcome: 'selected', optionId: INFERENCE },
+        });
         deliver(
-          spawnedNativeChild(),
+          child,
           JSON.stringify({
             id: 78,
             jsonrpc: '2.0',
@@ -2561,7 +2573,7 @@ describe('deepseek resident adapter', () => {
             },
           })
         );
-        await waitFor(() => outcomes.length === 2);
+        await waitFor(() => response(78) !== undefined);
         await active.interrupt();
         const result = await active.settled;
         expect(result.diagnostics?.permission).toBe('allow_once');
