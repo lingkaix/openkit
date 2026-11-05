@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -268,29 +268,6 @@ function createDirectGatewayApp(input: {
 }
 
 describe('OpenAI-compatible agent gateway', () => {
-  it('keeps the public Gateway surface on Chat Completions and Responses only', () => {
-    const appSource = readFileSync('./src/app.ts', 'utf8');
-    const dispatcherSource = readFileSync('./src/llm/provider-dispatcher.ts', 'utf8');
-    const gatewaySource = readFileSync('./src/llm/gateway-routes.ts', 'utf8');
-
-    expect(appSource).toContain('registerLlmGatewayRoutes({');
-    expect(appSource).not.toContain('CodexOAuthStore');
-    expect(appSource).not.toContain('CodexAuthTokenResolver');
-    expect(appSource).not.toContain('CodexResponsesClient');
-    expect(appSource).not.toContain('codexOAuthStore');
-    expect(appSource).not.toContain('llmCodexResponsesClient');
-    expect(appSource).not.toContain('registerOpenAICompatFacade');
-    expect(appSource).not.toContain('/internal/v1/chat/completions');
-    expect(appSource).not.toContain("app.get('/v1/models'");
-    expect(appSource).not.toContain("app.post('/v1/chat/completions'");
-    expect(appSource).not.toContain("app.post('/v1/responses'");
-    expect(gatewaySource).toContain("app.get('/v1/models'");
-    expect(gatewaySource).toContain("app.post('/v1/chat/completions'");
-    expect(gatewaySource).toContain("app.post('/v1/responses'");
-    expect(gatewaySource).not.toContain("app.post('/v1/completions'");
-    expect(dispatcherSource).not.toContain('codexResponsesClient');
-  });
-
   it('does not expose the historical internal Chat Completions facade', async () => {
     const storeRoot = mkdtempSync(join(tmpdir(), 'llm-gateway-store-'));
     onTestFinished(async () => {

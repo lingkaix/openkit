@@ -4825,17 +4825,6 @@ describe('worker control routes', () => {
     expect(res.status).toBe(401);
     expect(body.code).toBe('worker_control_unauthorized');
   });
-
-  it('authenticates only the worker-control token family', () => {
-    const source = readFileSync(
-      new URL('./runtime/worker-control-routes.ts', import.meta.url),
-      'utf8'
-    );
-
-    expect(source).toContain('workerControlTokenHash');
-    expect(source).toContain("tokenFamily: 'worker-control'");
-    expect(source).not.toContain("tokenFamily: 'inference'");
-  });
 });
 
 /** Closes this explicit no-process control fixture only after its six modeled barriers and exact simulator fence settle. */

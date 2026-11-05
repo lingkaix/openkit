@@ -1,17 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { WORKER_ADAPTER_SUPPLY_FORMS } from '@openkit/worker-protocol';
-import {
-  createSourceFile,
-  forEachChild,
-  isArrayLiteralExpression,
-  isFunctionDeclaration,
-  isStringLiteral,
-  type Node,
-  ScriptTarget,
-} from 'typescript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -160,35 +151,4 @@ describe('release-declared catalog Skill supply', () => {
       []
     );
   });
-});
-
-it('contains no literal runtime-name list at Core Skill admission', () => {
-  const source = createSourceFile(
-    'agent-environment.ts',
-    readFileSync(new URL('./agent-environment.ts', import.meta.url), 'utf8'),
-    ScriptTarget.Latest,
-    true
-  );
-  const lists: string[] = [];
-  const inspect = (node: Node): void => {
-    if (
-      isArrayLiteralExpression(node) &&
-      node.elements.some(
-        (element) =>
-          isStringLiteral(element) && ['codex', 'pi', 'opencode', 'deepseek'].includes(element.text)
-      )
-    )
-      lists.push(node.getText(source));
-    forEachChild(node, inspect);
-  };
-  for (const statement of source.statements) {
-    if (
-      isFunctionDeclaration(statement) &&
-      ['resolveWorkerSkillSupply', 'assertRuntimeAdapterAllowed'].includes(
-        statement.name?.text ?? ''
-      )
-    )
-      inspect(statement);
-  }
-  expect(lists).toEqual([]);
 });

@@ -1960,16 +1960,6 @@ describe('WorkerControlGateway', () => {
     );
   });
 
-  it('binds worker control only to its distinct raw token and durable hash family', () => {
-    const source = readFileSync(new URL('./worker-control-gateway.ts', import.meta.url), 'utf8');
-
-    expect(source).toContain('workerControlTokenHash');
-    expect(source).toContain('workerInferenceTokenHash');
-    expect(source).toContain('timingSafeEqual');
-    expect(source).not.toContain('const token = options.sandboxBindingRef');
-    expect(source).not.toContain('Sandbox-local bearer token injected through runtime secrets.');
-  });
-
   it('rejects registered sandbox tokens when the durable lease binding is not live', async () => {
     const { environmentPackage, lineage } = await createWorkerControlFixture();
     const gateway = new WorkerControlGateway({

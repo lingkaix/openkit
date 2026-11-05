@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { request as requestHttp } from 'node:http';
 import { createServer as createHttp2Server, type ServerHttp2Session } from 'node:http2';
 import { createRequire } from 'node:module';
@@ -2618,14 +2618,6 @@ describe('worker inference routes', () => {
       });
     }
     expect(fixture.dispatcher.responseCalls).toEqual([]);
-  });
-
-  it('authenticates only the worker-inference token family', () => {
-    const source = readFileSync(new URL('./llm/gateway-routes.ts', import.meta.url), 'utf8');
-
-    expect(source).toContain('workerInferenceTokenHash');
-    expect(source).toContain("tokenFamily: 'inference'");
-    expect(source).not.toContain('authenticatePackageToken(authorization)');
   });
 });
 

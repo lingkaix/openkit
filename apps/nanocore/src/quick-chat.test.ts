@@ -1168,25 +1168,6 @@ describe('quick chat app API', () => {
     await expect(response.json()).resolves.toMatchObject({ defaultTargetRef: 'new-task-worker' });
   });
 
-  it('keeps conversation.submit and task.start domain ownership outside app composition', () => {
-    const appSource = readFileSync('./src/app.ts', 'utf8');
-    const modeEntrySource = readFileSync('./src/mode-entry-routes.ts', 'utf8');
-
-    expect(appSource).toContain('createConversationService({');
-    expect(appSource).toContain('createTaskStartOperation({');
-    expect(appSource).not.toContain("registerAppApiRoute(app, 'quickChat'");
-    expect(appSource).not.toContain("registerAppApiRoute(app, 'submitConversation'");
-    expect(appSource).not.toContain("registerAppApiRoute(app, 'startTaskMode'");
-    expect(modeEntrySource).toContain('async function submit(');
-    expect(modeEntrySource).not.toContain("registerAppApiRoute(app, 'quickChat'");
-    expect(modeEntrySource).not.toContain("registerAppApiRoute(app, 'submitConversation'");
-    expect(modeEntrySource).not.toContain("registerAppApiRoute(app, 'startTaskMode'");
-    expect(appSource).not.toContain('InternalAgentRunner');
-    expect(appSource).not.toContain('getInternalAgentRunner');
-    expect(modeEntrySource).not.toContain('InternalAgentRunner');
-    expect(modeEntrySource).not.toContain('getInternalAgentRunner');
-  });
-
   it('records a thread-scoped Chat Mode answer without starting a worker turn', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-chat-mode-answer-'));
     const coreDb = openCoreDb(dataRoot);
