@@ -1,23 +1,23 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   type OperationId,
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { quickChatWorkspaceIdForUser } from './lib/store.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { disposeTestStore } from './test-support/store.js';
 import * as workerOwner from './worker-environments/worker-environment-operations.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -113,6 +113,7 @@ describe('B10 retired routes', () => {
   it.each(inputs)('removes authorized %s %s without an alias', async (method, path, input) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b10-retirement-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -133,7 +134,6 @@ describe('B10 retired routes', () => {
       expect(await response.text()).toBe('404 Not Found');
     } finally {
       coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });
@@ -142,6 +142,7 @@ describe('B10 retired routes', () => {
 async function admittedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b10-admission-'));
   const coreDb = openCoreDb(dataRoot);
+  onTestFinished(() => disposeTestStore(dataRoot, coreDb));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
@@ -180,7 +181,6 @@ async function admittedFixture() {
     },
     close: () => {
       coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
     },
     http: (operation: OperationId, input: Record<string, unknown>) =>
       app.request(
@@ -366,9 +366,4 @@ describe('B10 admission and family errors', () => {
       f.close();
     }
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

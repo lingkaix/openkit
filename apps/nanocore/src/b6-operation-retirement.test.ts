@@ -6,13 +6,12 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from './config/runtime-config.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { importUnboundWorkspaceVaultReference } from './storage/test-support/vault-retained-fixtures.js';
@@ -21,6 +20,7 @@ import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { disposeTestStore } from './test-support/store.js';
 import { createVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -430,15 +430,8 @@ describe('B6 binding retirement', () => {
     } finally {
       bootstrapRefresh?.mockRestore();
       vaultUnlockState.lock();
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot, coreDb);
       if (keyDirectory) rmSync(keyDirectory, { recursive: true, force: true });
     }
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

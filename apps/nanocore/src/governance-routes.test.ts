@@ -1,15 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import { recordWorkspaceEvidenceBundle } from './evidence-bundles.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { disposeTestStore } from './test-support/store.js';
 import { createVaultGrant } from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
@@ -92,10 +92,9 @@ it.each([
       db.sqlite.prepare('SELECT raw_evidence_refs_json AS bytes FROM evidence_bundles').get()
     ).toEqual({ bytes });
   } finally {
-    await shutdownControlStoreWorkerClient();
     db?.sqlite.close();
     coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
 });
 
@@ -151,13 +150,7 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
       items: [plan],
     });
   } finally {
-    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

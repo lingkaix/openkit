@@ -1,11 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -13,6 +11,7 @@ import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Navigation must project current activity rather than creation order or terminal success. */
@@ -22,12 +21,7 @@ describe('conversation navigation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(dataRoot);
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -150,12 +144,7 @@ describe('conversation navigation', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(dataRoot);
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -197,9 +186,4 @@ describe('conversation navigation', () => {
       (await adminResponse.json()).items.map((row: { thread: { id: string } }) => row.thread.id)
     ).toContain(outsider.id);
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

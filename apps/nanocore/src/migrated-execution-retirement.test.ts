@@ -2,19 +2,19 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationHttpPath } from '@openkit/app-api-schemas';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { AutomationStore } from './lib/automation-store.js';
 import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
+import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -33,6 +33,11 @@ describe('migrated execution route retirement', () => {
   ] as const)('retires %s without changing its owner', async (operation) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b9-retirement-'));
     const coreDb = openCoreDb(dataRoot);
+    let workspaceOwner: ReturnType<typeof openWorkspaceDb> | undefined;
+    onTestFinished(async () => {
+      if (workspaceOwner?.sqlite.open) workspaceOwner.sqlite.close();
+      await disposeTestStore(dataRoot, coreDb);
+    });
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -77,6 +82,7 @@ describe('migrated execution route retirement', () => {
     const beforeQueue = requireSchedulerAdmissionEntry(coreDb, 'queue_retirement');
     const beforeTurn = { ...store.getTurnById(turn.id) };
     const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+    workspaceOwner = workspaceDb;
     applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
     const recoveryScope = { workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id, turnId: turn.id };
     const app = createApp({ coreDb, dataRoot, store, automationStore, workspaceMutationAdmission });
@@ -211,9 +217,4 @@ describe('migrated execution route retirement', () => {
       coreDb.sqlite.close();
     }
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });
