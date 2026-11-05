@@ -155,6 +155,101 @@ test('invalidates the prior identity before a real failing TypeScript build emit
   assert.equal(existsSync(f.output), false);
 });
 
+test('keeps native build failures with the outer owner, not source compilation', (t) => {
+  const f = fixture(t);
+  const nano = join(f.repo, 'apps/nanocore');
+  const rust = join(f.repo, 'packages/retrieval-kernel');
+  mkdirSync(nano, { recursive: true });
+  mkdirSync(rust, { recursive: true });
+  writeFileSync(join(f.repo, '.gitignore'), 'node_modules/\n.turbo/\n**/dist/\n');
+  const tools = join(f.repo, 'node_modules/.bin');
+  mkdirSync(tools, { recursive: true });
+  const turbo = fileURLToPath(new URL('../node_modules/turbo/bin/turbo', import.meta.url));
+  writeFileSync(
+    join(tools, 'turbo'),
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(turbo)} "$@"\n`,
+    { mode: 0o755 }
+  );
+  writeFileSync(
+    join(f.repo, 'package.json'),
+    JSON.stringify({
+      name: 'source-build-caller-fixture',
+      private: true,
+      packageManager: 'pnpm@10.33.3',
+    })
+  );
+  writeFileSync(join(f.repo, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n  - packages/*\n');
+  writeFileSync(
+    join(f.repo, 'pnpm-lock.yaml'),
+    'lockfileVersion: "9.0"\nimporters:\n  .: {}\n  apps/nanocore: {}\n  packages/retrieval-kernel: {}\n'
+  );
+  const actualTasks = JSON.parse(
+    readFileSync(new URL('../turbo.json', import.meta.url), 'utf8')
+  ).tasks;
+  writeFileSync(
+    join(f.repo, 'turbo.json'),
+    JSON.stringify({
+      tasks: {
+        '@openkit/nanocore#build:compiled': actualTasks['@openkit/nanocore#build:compiled'],
+        '@openkit/nanocore#build': actualTasks['@openkit/nanocore#build'],
+        build: { outputs: [] },
+      },
+    })
+  );
+  const compiler = fileURLToPath(new URL('../node_modules/typescript/bin/tsc', import.meta.url));
+  writeFileSync(
+    join(nano, 'package.json'),
+    JSON.stringify({
+      name: '@openkit/nanocore',
+      scripts: {
+        build: 'node -e "process.exit(0)"',
+        'build:compiled': `${JSON.stringify(process.execPath)} ${JSON.stringify(compiler)} -p tsconfig.json`,
+      },
+    })
+  );
+  writeFileSync(
+    join(nano, 'tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: { target: 'es2022', module: 'esnext', types: [], outDir: 'dist' },
+      files: ['input.ts'],
+    })
+  );
+  writeFileSync(join(nano, 'input.ts'), 'export const sourceMarker: number = 42;\n');
+  const forbidden = join(f.repo, '..', 'prerequisite-ran');
+  writeFileSync(
+    join(rust, 'package.json'),
+    JSON.stringify({
+      name: '@openkit/retrieval-kernel',
+      scripts: {
+        build: `node -e ${JSON.stringify(`require('node:fs').writeFileSync(${JSON.stringify(forbidden)}, 'unexpected prerequisite rebuild'); process.exit(77);`)}`,
+      },
+    })
+  );
+  f.git('add', '.');
+  f.git(
+    '-c',
+    'user.name=Build fixture',
+    '-c',
+    `user.email=${f.git('show', '-s', '--format=%ae', 'HEAD')}`,
+    'commit',
+    '-qm',
+    'caller-owned prerequisite fixture'
+  );
+  assert.equal(buildSource({ repoRoot: f.repo, outputPath: f.output }), true);
+  assert.equal(existsSync(forbidden), false);
+  assert.match(readFileSync(join(nano, 'dist/input.js'), 'utf8'), /export const sourceMarker = 42/);
+  assert.equal(JSON.parse(readFileSync(f.output, 'utf8')).sourceCommit, f.git('rev-parse', 'HEAD'));
+  assert.throws(
+    () =>
+      execFileSync('pnpm', ['-w', 'exec', 'turbo', 'run', 'build', '--filter=@openkit/nanocore'], {
+        cwd: f.repo,
+        stdio: 'pipe',
+      }),
+    (error) => error.status === 77
+  );
+  assert.equal(existsSync(forbidden), true);
+});
+
 test('does not invent identity for a source tree without Git provenance', (t) => {
   const f = fixture(t, false);
   assert.equal(writeSourceBuildIdentity(f.repo, f.output), false);

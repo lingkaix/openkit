@@ -103,7 +103,7 @@
       "outputs": ["dist/**"]
     },
     "@openkit/nanocore#build:compiled": {
-      "dependsOn": ["^build", "@openkit/retrieval-kernel#build"],
+      "dependsOn": ["^build"],
       "inputs": ["$TURBO_DEFAULT$", "pnpm-lock.yaml", "tsconfig.base.json"],
       "outputs": ["dist/**", "!dist/source-build-identity.json"]
     }
