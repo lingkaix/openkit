@@ -1,16 +1,16 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { expect, it, vi } from 'vitest';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { refuseScope } from './bootstrap/readiness.js';
-import { FsStore } from './lib/store.js';
 import { admitOperation } from './operation-resolvers.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -34,7 +34,7 @@ it.each([
         VALUES (?, 'Search viewer', ?, 0, ?, ?, 'human', 'active')`)
         .run(id, email, Date.now(), Date.now());
     }
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const bad = await store.createWorkspace('Scope match quarantined');
     const good = await store.createWorkspace('Scope match healthy');
     const hidden = await store.createWorkspace('Scope match outside audience');
@@ -83,8 +83,6 @@ it.each([
       admitted.release?.();
     }
   } finally {
-    coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   }
 });

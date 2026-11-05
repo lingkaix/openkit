@@ -1,18 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MetaResponseSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { createApp as createNanoCoreApp } from './app.js';
-import type { FsStore } from './lib/store.js';
 import type { RuntimeCapabilities, RuntimeEventFamily, TurnExecutor } from './runtime/types.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
-import { createTestStore } from './test-support/store.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 
 class StubTurnExecutor implements TurnExecutor {
   public readonly eventFamilies: readonly RuntimeEventFamily[] = [
@@ -35,12 +32,19 @@ class StubTurnExecutor implements TurnExecutor {
   /**
    * No-op turn start implementation for metadata-only tests.
    */
-  public async startTurn(_store: FsStore, _turnId: string, _input: string): Promise<void> {}
+  public async startTurn(
+    _store: ReturnType<typeof createTestStore>,
+    _turnId: string,
+    _input: string
+  ): Promise<void> {}
 
   /**
    * No-op interrupt implementation for metadata-only tests.
    */
-  public async interruptTurn(_store: FsStore, _turnId: string): Promise<void> {}
+  public async interruptTurn(
+    _store: ReturnType<typeof createTestStore>,
+    _turnId: string
+  ): Promise<void> {}
 }
 
 describe('nanocore metadata', () => {
@@ -79,20 +83,13 @@ describe('nanocore metadata', () => {
       } else {
         process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = previousSelfCheckExecutor;
       }
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(dataRoot);
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot, coreDb);
     }
   });
 
   it('maps stubbed executor capabilities and advertised item metadata', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-meta-stub-worker-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(dataRoot);
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
+    onTestFinished(() => disposeTestStore(dataRoot));
     const store = createTestStore({ dataRoot });
     const app = createApp({
       store,

@@ -1,18 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { createBetterAuth } from './auth/better-auth.js';
 import { refuseScope } from './bootstrap/readiness.js';
-import { FsStore } from './lib/store.js';
 import { projectOperationError } from './operation-error.js';
 import { admitOperation } from './operation-resolvers.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -30,7 +29,7 @@ describe('quarantined Workspace native admission', () => {
       },
     });
     const outsiderId = outsider.user.id;
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Unreadable authority');
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId });
     const thread = await store.createThread(workspace.id, 'Do not disclose this history');
@@ -80,9 +79,7 @@ describe('quarantined Workspace native admission', () => {
       }
       reads.mockRestore();
     } finally {
-      await shutdownControlStoreWorkerClient();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot, coreDb);
     }
   });
 });
