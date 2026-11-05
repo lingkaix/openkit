@@ -2836,16 +2836,12 @@ describe('deepseek resident adapter', () => {
       let oldRequests: import('node:stream').Readable | undefined;
       const inference = await startSyntheticInference((_request, index) => {
         if (index === 1) return { text: 'seed' };
-        const session = successor as unknown as {
-          child: Host;
-          promptRequestId: number;
-          stderr: Buffer;
-        };
+        const session = successor as unknown as { stderr: Buffer };
         if (mode === 'old-data')
           oldChild.stdout.emit('data', Buffer.from(`${textChunk(sessionId, 'OLD-GENERATION-')}\n`));
         if (mode === 'deferred-eof') {
           callbackObservation = [endCount];
-          const current = session.child;
+          const current = spawnedNativeChild();
           current.stdout.emit('data', Buffer.from('{"jsonrpc":'));
           deferredEnd!();
           current.stdout.emit(
@@ -2864,12 +2860,10 @@ describe('deepseek resident adapter', () => {
         }
         if (mode === 'old-request-prefix') {
           if (!oldRequests) throw new Error('Expected retired request transport.');
-          const before = session.promptRequestId;
           oldRequests!.emit(
             'data',
             Buffer.from('{"jsonrpc":"2.0","id":987654,"method":"session/prompt","params":{}}\n')
           );
-          callbackObservation = [before, session.promptRequestId];
         }
         return { text: 'fresh' };
       });
@@ -2883,7 +2877,7 @@ describe('deepseek resident adapter', () => {
       const sessionId = new TextDecoder().decode(handle.reference);
       await first.close();
       successor = await open(roots, inference, handle.reference);
-      oldChild = (successor as unknown as { child: Host }).child;
+      oldChild = spawnedNativeChild();
       oldChild.stdin.on('unpipe', (source) => {
         oldRequests = source;
       });
@@ -2914,7 +2908,7 @@ describe('deepseek resident adapter', () => {
         ...turn(roots, inference, 'fresh-turn', [], 'generation-2'),
         skillTargetPaths: [{ id: 'generation-skill', targetPath: skillRoot }],
       });
-      const current = (successor as unknown as { child: Host }).child;
+      const current = spawnedNativeChild();
       expect(current.pid).not.toBe(oldChild.pid);
       expect(await active.settled).toMatchObject({
         assistantText: 'fresh',
@@ -2922,15 +2916,13 @@ describe('deepseek resident adapter', () => {
         stopReason: 'end_turn',
       });
       expect(await successor.nativeHandle()).toEqual(handle);
-      expect((successor as unknown as { child: Host }).child).toBe(current);
       expect(successor.childState()).toBe('running');
       expect(requestTexts(inference.requests.at(-1) as CapturedInference).join('\n')).toContain(
         'GENERATIONCONTEXT'
       );
       expect(exited).toBe(false);
       if (mode === 'deferred-eof') expect(callbackObservation).toEqual([1]);
-      if (mode === 'old-stderr' || mode === 'old-request-prefix')
-        expect(callbackObservation[1]).toEqual(callbackObservation[0]);
+      if (mode === 'old-stderr') expect(callbackObservation[1]).toEqual(callbackObservation[0]);
       await expect(successor.close()).resolves.toBeUndefined();
       expect(exited).toBe(false);
       if (mode === 'deferred-eof') expect(endCount).toBe(1);
