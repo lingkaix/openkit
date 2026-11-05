@@ -483,7 +483,7 @@ describe('native receipt ownership and replay', () => {
           undefined,
           {
             ...admission,
-            receipt: { ...receipt, inputHash: `sha256:${'b'.repeat(64)}` },
+            receipt: { ...admission.receipt, inputHash: `sha256:${'b'.repeat(64)}` },
           }
         )
       ).rejects.toThrow();
