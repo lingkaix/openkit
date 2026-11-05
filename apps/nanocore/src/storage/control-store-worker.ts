@@ -25,6 +25,7 @@ import {
   readControlReviewMaterialId,
 } from '../artifact-reviews.js';
 import { prepareAuditEventStatement, recordServerAuditEvent } from '../audit-events.js';
+import { applyControlAccessTokenLifecycle } from '../auth/access-token-lifecycle-native.js';
 import {
   recordVerifiedOpenKitAccessTokenUse,
   setDefaultServerAdminTokenId,
@@ -333,6 +334,7 @@ type WriteCommand = Extract<
       | 'runtime-target'
       | 'backend-session'
       | 'remote-mcp-audit'
+      | 'access-token-lifecycle'
       | 'server-admin-token-default'
       | 'access-token-verification'
       | 'worker-control-final-status'
@@ -2100,6 +2102,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-image',
               result,
             };
+          } else if (request.operation === 'access-token-lifecycle') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlAccessTokenLifecycle(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'access-token-lifecycle',
+              result,
+            };
           } else if (request.operation === 'server-admin-token-default') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             // The existing native savepoint keeps current eligibility and the original upsert
@@ -3499,6 +3511,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'runtime-target' ||
       value.operation === 'backend-session' ||
       value.operation === 'remote-mcp-audit' ||
+      value.operation === 'access-token-lifecycle' ||
       value.operation === 'server-admin-token-default' ||
       value.operation === 'access-token-verification' ||
       value.operation === 'worker-control-final-status' ||

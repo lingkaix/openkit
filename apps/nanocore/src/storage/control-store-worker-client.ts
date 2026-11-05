@@ -1,4 +1,9 @@
 import type { WorkspaceReconciliationRecord } from '@openkit/app-api-schemas';
+import {
+  type ControlAccessTokenLifecycle,
+  type ControlAccessTokenLifecycleResult,
+  ControlAccessTokenLifecycleResultSchema,
+} from '../auth/access-token-lifecycle-codecs.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import {
   PreservedWorkspaceCaptureRefusal,
@@ -2080,6 +2085,60 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Performs only canonical revoke/rotation through the existing admitted Core FULL writer. */
+  async accessTokenLifecycle(
+    db: CoreDb,
+    input: ControlAccessTokenLifecycle
+  ): Promise<ControlAccessTokenLifecycleResult> {
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'access-token-lifecycle', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({ operation: 'access-token-lifecycle', database, input });
+    }
+    if (reply.operation !== 'access-token-lifecycle')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = ControlAccessTokenLifecycleResultSchema.safeParse(reply.result);
+    if (!result.success || result.data.kind !== input.kind)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const value = result.data;
+    if (
+      (value.kind === 'revoke' && value.record && value.record.tokenId !== input.tokenId) ||
+      (value.kind === 'rotate' &&
+        input.kind === 'rotate' &&
+        value.value &&
+        (value.value.tokenId !== input.successor.tokenId ||
+          value.value.record.tokenId !== input.successor.tokenId ||
+          value.value.rotatedRecord.tokenId !== input.tokenId))
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return value;
   }
 
   /** Sets only this admitted owner's personal default through the existing Core FULL writer. */

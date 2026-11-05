@@ -17,6 +17,12 @@ import {
   ControlReviewCommandResultSchema,
 } from '../artifact-reviews.js';
 import {
+  type ControlAccessTokenLifecycle,
+  type ControlAccessTokenLifecycleResult,
+  ControlAccessTokenLifecycleResultSchema,
+  ControlAccessTokenLifecycleSchema,
+} from '../auth/access-token-lifecycle-codecs.js';
+import {
   ADMIN_RECOVERY_REQUIRED,
   type ControlAdminRecoveryInput,
   ControlAdminRecoveryInputSchema,
@@ -351,7 +357,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 74;
+export const CONTROL_WORKER_VERSION = 75;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -644,6 +650,10 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'workspace-review-decision';
           readonly input: ControlWorkspaceReviewDecision;
+        }
+      | {
+          readonly operation: 'access-token-lifecycle';
+          readonly input: ControlAccessTokenLifecycle;
         }
       | {
           readonly operation: 'server-admin-token-default';
@@ -1031,6 +1041,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'access-token-lifecycle';
+      readonly result: ControlAccessTokenLifecycleResult;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'server-admin-token-default';
@@ -1514,6 +1529,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
     return reply.result === null;
+  if (reply.operation === 'access-token-lifecycle')
+    return ControlAccessTokenLifecycleResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'server-admin-token-default') return typeof reply.result === 'boolean';
   if (reply.operation === 'access-token-verification')
     return ControlAccessTokenVerificationResultSchema.safeParse(reply.result).success;
@@ -2012,6 +2029,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkerImageInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'access-token-lifecycle')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlAccessTokenLifecycleSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'server-admin-token-default')

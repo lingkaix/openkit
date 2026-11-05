@@ -56,6 +56,21 @@ export interface RotateOpenKitAccessTokenRecordInput {
   now?: Date;
 }
 
+/** Hash-only successor material prepared outside the native deciding section. */
+export interface PreparedOpenKitAccessTokenRotationInput
+  extends RotateOpenKitAccessTokenRecordInput {
+  readonly successor: {
+    readonly tokenId: string;
+    readonly tokenHash: string;
+  };
+}
+
+/** Original mutation-time snapshots, without a plaintext credential. */
+export type PreparedOpenKitAccessTokenRotationResult = Omit<
+  OpenKitAccessTokenRotationResult,
+  'secret'
+>;
+
 /** Newly issued token plus the rotated predecessor record. */
 export interface OpenKitAccessTokenRotationResult extends OpenKitAccessTokenIssueResult {
   /** Redacted predecessor record after rotation. */
@@ -282,8 +297,18 @@ export function revokeOpenKitAccessTokenRecord(
 export function rotateOpenKitAccessTokenRecord(
   coreDb: CoreDb,
   tokenId: string,
+  input: PreparedOpenKitAccessTokenRotationInput
+): PreparedOpenKitAccessTokenRotationResult | null;
+export function rotateOpenKitAccessTokenRecord(
+  coreDb: CoreDb,
+  tokenId: string,
   input: RotateOpenKitAccessTokenRecordInput
-): OpenKitAccessTokenRotationResult | null {
+): OpenKitAccessTokenRotationResult | null;
+export function rotateOpenKitAccessTokenRecord(
+  coreDb: CoreDb,
+  tokenId: string,
+  input: RotateOpenKitAccessTokenRecordInput | PreparedOpenKitAccessTokenRotationInput
+): OpenKitAccessTokenRotationResult | PreparedOpenKitAccessTokenRotationResult | null {
   const current = getOpenKitAccessTokenRecord(coreDb, tokenId);
   const now = input.now ?? new Date();
 
@@ -312,14 +337,30 @@ export function rotateOpenKitAccessTokenRecord(
       )
       .run(graceExpiresAt, tokenId);
 
-    const issued = createOpenKitAccessTokenRecord(coreDb, {
-      expiresAt: current.expiresAt,
-      now,
-      ownerUserId: current.ownerUserId,
-      predecessorTokenId: current.tokenId,
-      scope: current.scope,
-      workspaceIds: current.workspaceIds,
-    });
+    // Both paths share this original predecessor-update/successor-insert transaction.
+    // The legacy path still generates its secret here; native callers supply only id/hash.
+    const issued =
+      'successor' in input
+        ? {
+            tokenId: input.successor.tokenId,
+            record: insertOpenKitAccessTokenRecord(coreDb, {
+              ...input.successor,
+              issuedAt: now.toISOString(),
+              expiresAt: current.expiresAt,
+              ownerUserId: current.ownerUserId,
+              predecessorTokenId: current.tokenId,
+              scope: current.scope,
+              workspaceIds: current.workspaceIds,
+            }),
+          }
+        : createOpenKitAccessTokenRecord(coreDb, {
+            expiresAt: current.expiresAt,
+            now,
+            ownerUserId: current.ownerUserId,
+            predecessorTokenId: current.tokenId,
+            scope: current.scope,
+            workspaceIds: current.workspaceIds,
+          });
     const rotatedRecord = getOpenKitAccessTokenRecord(coreDb, tokenId);
 
     if (!rotatedRecord) {

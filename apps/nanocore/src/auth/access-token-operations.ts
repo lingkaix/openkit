@@ -1,4 +1,5 @@
 import type { ACCESS_TOKEN_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { prepareServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
@@ -6,14 +7,16 @@ import { OperationError } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
-import { AccessTokenScopeError } from './access-token.js';
+import {
+  AccessTokenScopeError,
+  createOpenKitAccessTokenSecret,
+  hashOpenKitAccessTokenSecret,
+} from './access-token.js';
 import {
   createOpenKitAccessTokenRecord,
   listOpenKitAccessTokenRecords,
   listOwnedServerAdminAccessTokens,
   type OpenKitAccessTokenRecord,
-  revokeOpenKitAccessTokenRecord,
-  rotateOpenKitAccessTokenRecord,
 } from './access-token-store.js';
 import { auditAuthenticationFromActor } from './audit-attribution.js';
 import { consumeServerBootstrapToken } from './bootstrap-token.js';
@@ -191,7 +194,13 @@ export function createAccessTokenOperationImplementations({
     },
     'token.revoke': async (input, context) => {
       const db = administratorStorage();
-      const record = revokeOpenKitAccessTokenRecord(db, input.tokenId);
+      const mutation = await getControlStoreWorkerClient().accessTokenLifecycle(db, {
+        kind: 'revoke',
+        tokenId: input.tokenId,
+      });
+      if (mutation.kind !== 'revoke')
+        throw new Error('Unexpected canonical token mutation result.');
+      const record = mutation.record;
       if (!record)
         throw new OperationError('access_token_not_found', 'Access token not found.', 404);
       await recordAccessTokenLifecycleAuditEvent(
@@ -204,7 +213,19 @@ export function createAccessTokenOperationImplementations({
     },
     'token.rotate': async (input, context) => {
       const db = administratorStorage();
-      const rotated = rotateOpenKitAccessTokenRecord(db, input.tokenId, input);
+      const secret = createOpenKitAccessTokenSecret();
+      const mutation = await getControlStoreWorkerClient().accessTokenLifecycle(db, {
+        kind: 'rotate',
+        tokenId: input.tokenId,
+        graceSeconds: input.graceSeconds,
+        successor: {
+          tokenId: allocateEntityId('tok'),
+          tokenHash: hashOpenKitAccessTokenSecret(secret),
+        },
+      });
+      if (mutation.kind !== 'rotate')
+        throw new Error('Unexpected canonical token mutation result.');
+      const rotated = mutation.value;
       if (!rotated)
         throw new OperationError(
           'access_token_not_found',
@@ -220,7 +241,7 @@ export function createAccessTokenOperationImplementations({
       return {
         record: rotated.record,
         rotatedRecord: rotated.rotatedRecord,
-        token: rotated.secret,
+        token: secret,
       };
     },
     'token.my-admin-list': (_input, context) =>
