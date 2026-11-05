@@ -88,6 +88,7 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
+import { createTestStore } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { listWorkspaceDeletionRequests } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -107,7 +108,7 @@ import {
 } from './control-store-worker-client.js';
 import * as databaseOwner from './db.js';
 import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
-import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
+import { ensureLayout, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import * as migrationOwner from './migrate.js';
 import * as schedulerPublication from './scheduler-admission-publication.js';
 import {
@@ -2561,6 +2562,64 @@ describe('C-a capture and existing deletion ownership', () => {
   });
 });
 
+/** Evaluates the shipped automatic callback against the existing real capture fixture. */
+function entrypointSnapshotMaintenance(
+  f: Pick<Fixture, 'dataRoot' | 'coreDb' | 'store' | 'mutationAdmission'> & {
+    policy: Pick<Fixture['policy'], 'admission'>;
+  },
+  processShutdownAbort = new AbortController()
+) {
+  const source = createSourceFile(
+    'index.ts',
+    readFileSync(new URL('../index.ts', import.meta.url), 'utf8'),
+    ScriptTarget.Latest,
+    true
+  );
+  let argument: Node | undefined;
+  const visit = (node: Node): void => {
+    if (
+      isCallExpression(node) &&
+      node.expression.getText(source) === 'startSchedulerAttemptMaintenanceService'
+    )
+      argument = node.arguments[0];
+    forEachChild(node, visit);
+  };
+  visit(source);
+  if (!argument) throw new Error('Entrypoint attempt maintenance is missing.');
+  const releaseIdentity = {
+    releaseTag: release.version,
+    sourceCommit: release.buildId as string | undefined,
+  };
+  const bindings = {
+    runRecoveryMaintenance: {
+      scheduler: vi.fn(async () => undefined),
+      native: vi.fn(async () => undefined),
+      checkpoints: vi.fn(async () => undefined),
+    },
+    requireBootValue: <T>(value: T) => value,
+    SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS: 30_000,
+    releaseIdentity,
+    processShutdownAbort,
+    dataRoot: f.dataRoot,
+    activeCoreDb: f.coreDb,
+    store: f.store,
+    workspaceMutationAdmission: f.mutationAdmission,
+    fileAdmission: f.policy.admission,
+    WORKSPACE_BACKUP_POLICY,
+    join,
+    ensureCanonicalDirectory,
+    readDataRootLayoutMarker,
+    runWorkspaceSnapshotMaintenance,
+  };
+  const javascript = transpileModule(`const input = ${argument.getText(source)};`, {
+    compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
+  }).outputText;
+  const input = new Function(...Object.keys(bindings), `${javascript}\nreturn input;`)(
+    ...Object.values(bindings)
+  ) as SchedulerAttemptMaintenanceInput;
+  return { input, releaseIdentity };
+}
+
 describe('C-b daily snapshot policy and retention', () => {
   it('activates idle capture through the actual entrypoint maintenance callback', async () => {
     const f = await fixture();
@@ -2570,54 +2629,7 @@ describe('C-b daily snapshot policy and retention', () => {
       kind: 'user',
       id: f.ownerId,
     });
-    const source = createSourceFile(
-      'index.ts',
-      readFileSync(new URL('../index.ts', import.meta.url), 'utf8'),
-      ScriptTarget.Latest,
-      true
-    );
-    let argument: Node | undefined;
-    const visit = (node: Node): void => {
-      if (
-        isCallExpression(node) &&
-        node.expression.getText(source) === 'startSchedulerAttemptMaintenanceService'
-      )
-        argument = node.arguments[0];
-      forEachChild(node, visit);
-    };
-    visit(source);
-    if (!argument) throw new Error('Entrypoint attempt maintenance is missing.');
-    const releaseIdentity = {
-      releaseTag: release.version,
-      sourceCommit: release.buildId as string | undefined,
-    };
-    // Evaluate the shipped composition without booting unrelated process and network owners.
-    const bindings = {
-      runRecoveryMaintenance: {
-        scheduler: vi.fn(async () => undefined),
-        native: vi.fn(async () => undefined),
-        checkpoints: vi.fn(async () => undefined),
-      },
-      requireBootValue: <T>(value: T) => value,
-      SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS: 30_000,
-      releaseIdentity,
-      dataRoot: f.dataRoot,
-      activeCoreDb: f.coreDb,
-      store: f.store,
-      workspaceMutationAdmission: f.mutationAdmission,
-      fileAdmission: f.policy.admission,
-      WORKSPACE_BACKUP_POLICY,
-      join,
-      ensureCanonicalDirectory,
-      readDataRootLayoutMarker,
-      runWorkspaceSnapshotMaintenance,
-    };
-    const javascript = transpileModule(`const input = ${argument.getText(source)};`, {
-      compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2022 },
-    }).outputText;
-    const input = new Function(...Object.keys(bindings), `${javascript}\nreturn input;`)(
-      ...Object.values(bindings)
-    ) as SchedulerAttemptMaintenanceInput;
+    const { input, releaseIdentity } = entrypointSnapshotMaintenance(f);
     let tick = () => {};
     const pool = join(f.dataRoot, 'server/backups/workspaces', workspaceId);
     const sealed = () =>
@@ -2663,6 +2675,110 @@ describe('C-b daily snapshot policy and retention', () => {
     } finally {
       await service.stop();
       vi.useRealTimers();
+    }
+  });
+
+  it('joins cleanup of an already accepted automatic capture when process shutdown is requested', async ({
+    task,
+  }) => {
+    const setupStarted = performance.now();
+    const root = mkdtempSync(join(tmpdir(), 'c-b-shutdown-'));
+    roots.push(root);
+    const dataRoot = join(root, 'source');
+    const store = createTestStore({ dataRoot });
+    const coreDb = openCoreDb(dataRoot);
+    databaseHandles.push(coreDb);
+    const ownerId = ensureLocalUser(coreDb);
+    const { id: workspaceId } = await store.createWorkspace('Automatic capture shutdown', {
+      requestId: randomUUID(),
+      producer: { kind: 'user', id: ownerId },
+      instructionReference: 'test:automatic-capture-shutdown',
+    });
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
+    const f = {
+      dataRoot,
+      store,
+      coreDb,
+      mutationAdmission: new WorkspaceMutationAdmission(),
+      policy: { admission: new FileStorageAdmission(root, () => 0n) },
+    };
+    task.meta.freshWorkspaceSetupMs = performance.now() - setupStarted;
+    const processShutdownAbort = new AbortController();
+    const { input } = entrypointSnapshotMaintenance(f, processShutdownAbort);
+    const pool = join(f.dataRoot, 'server/backups/workspaces', workspaceId);
+    const reason = new Error('Automatic snapshot process shutdown requested.');
+    const phases: string[] = [];
+    let stagedAtAbort: string[] = [];
+    let stopped: Promise<void> | undefined;
+    let joinSettled = false;
+    let joinedBeforeCleanup: boolean | undefined;
+    captureWorkerProbe.onPhase = (_worker, message) => {
+      phases.push(message.phase);
+      if (message.phase === 'post-cut-validation') {
+        stagedAtAbort = readdirSync(pool)
+          .filter((name) => name.startsWith('workspace-capture-'))
+          .map((name) => join(pool, name, 'workspaces', workspaceId, 'db/workspace.sqlite'))
+          .filter(existsSync);
+        processShutdownAbort.abort(reason);
+        stopped = service.stop();
+        void stopped.then(
+          () => {
+            joinSettled = true;
+          },
+          () => {
+            joinSettled = true;
+          }
+        );
+      }
+      if (message.phase === 'cleanup') joinedBeforeCleanup = joinSettled;
+      return false;
+    };
+    const service = startSchedulerAttemptMaintenanceService({
+      ...input,
+      setInterval: () => 'existing-maintenance-timer',
+      clearInterval: vi.fn(),
+      onError: () => undefined,
+    });
+    const accepted = service.runOnce();
+    try {
+      const outcome = await accepted.then(
+        () => ({ status: 'fulfilled' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error })
+      );
+      expect(stagedAtAbort).toHaveLength(1);
+      expect(phases).toContain('cut');
+      expect.soft(outcome.status).toBe('rejected');
+      if (outcome.status === 'rejected') {
+        expect(outcome.error).toBeInstanceOf(AggregateError);
+        expect((outcome.error as AggregateError).errors).toContain(reason);
+      }
+      expect(stopped).toBe(accepted);
+      expect(joinSettled).toBe(true);
+      expect(joinedBeforeCleanup).toBe(false);
+      expect(phases).toContain('cleanup-end');
+      expect(stagedAtAbort.every((path) => !existsSync(path))).toBe(true);
+      expect(readdirSync(pool).filter((name) => name.startsWith('workspace-capture-'))).toEqual([]);
+      expect
+        .soft(readdirSync(pool).filter((name) => existsSync(join(pool, name, 'seal.json'))))
+        .toEqual([]);
+      expect(() => ensureLayout(f.dataRoot)).not.toThrow();
+      const db = openWorkspaceDb(f.dataRoot, workspaceId);
+      databaseHandles.push(db);
+      const rows = db.sqlite
+        .prepare('SELECT capture_id, state, origin FROM workspace_capture_records')
+        .all() as { capture_id: string; state: string; origin: string }[];
+      expect
+        .soft(rows)
+        .toEqual([{ capture_id: expect.any(String), state: 'active', origin: 'automatic' }]);
+      restoreWorkspaceRecoveryAdmission(f.coreDb, f.mutationAdmission);
+      expect.soft(inspectCapture(db, workspaceId, rows[0]!.capture_id)).toMatchObject({
+        state: 'abandoned',
+        origin: 'automatic',
+      });
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    } finally {
+      captureWorkerProbe.onPhase = undefined;
+      await service.stop().catch(() => undefined);
     }
   });
 
@@ -2734,8 +2850,59 @@ describe('C-b daily snapshot policy and retention', () => {
     }
   });
 
-  it('retains seven automatic daily generations plus manual bytes and collects only unreachable objects', async () => {
-    const f = await fixture();
+  it('retains seven automatic daily generations plus manual bytes and collects only unreachable objects', async ({
+    task,
+  }) => {
+    const setupStarted = performance.now();
+    const root = mkdtempSync(join(tmpdir(), 'c-b-retention-'));
+    roots.push(root);
+    const dataRoot = join(root, 'source');
+    const store = createTestStore({ dataRoot });
+    const coreDb = openCoreDb(dataRoot);
+    databaseHandles.push(coreDb);
+    const ownerId = ensureLocalUser(coreDb);
+    const { id: workspaceId } = await store.createWorkspace('Automatic snapshot retention', {
+      requestId: randomUUID(),
+      producer: { kind: 'user', id: ownerId },
+      instructionReference: 'test:automatic-snapshot-retention',
+    });
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
+    const mutationAdmission = new WorkspaceMutationAdmission();
+    const stagingParent = join(root, 'staging');
+    mkdirSync(stagingParent);
+    const policy = {
+      stagingParent,
+      admission: new FileStorageAdmission(root, () => 0n),
+      expectedRelease: release,
+      supportedDatabaseFormats: formats,
+    };
+    const source = { kind: 'live-workspace' as const, dataRoot, coreDb, store, mutationAdmission };
+    const deploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
+    const f = {
+      dataRoot,
+      workspaceRoot: join(dataRoot, 'workspaces', workspaceId),
+      policy,
+      source,
+      input: (backupId = allocateEntityId('wsbak')) => ({
+        ...policy,
+        source,
+        workspaceId,
+        expectedSourceDeploymentId: deploymentId,
+        backupId,
+        purpose: 'backup' as const,
+        bundleRoot: join(dataRoot, 'server', 'backups', 'workspaces', workspaceId, backupId),
+      }),
+      read: <T>(backupId: string, consume: (bundle: VerifiedWorkspaceBackupBundle) => Promise<T>) =>
+        withVerifiedWorkspaceSnapshotSource(
+          {
+            ...policy,
+            dataRoot,
+            source: { kind: 'local-snapshot' as const, workspaceId, backupId },
+          },
+          consume
+        ),
+    };
+    task.meta.freshWorkspaceSetupMs = performance.now() - setupStarted;
     const files = join(f.workspaceRoot, 'files');
     mkdirSync(files, { recursive: true });
     writeFileSync(join(files, 'retention-shared.bin'), 'shared original');

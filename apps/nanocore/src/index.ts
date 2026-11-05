@@ -868,6 +868,8 @@ schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
           coreDb: activeCoreDb,
           store,
           mutationAdmission: workspaceMutationAdmission,
+          // Refuse accepted work at its existing checkpoints, then join its owned cleanup.
+          currentAuthority: () => processShutdownAbort.signal.throwIfAborted(),
         },
         admission: fileAdmission,
         stagingParent,
