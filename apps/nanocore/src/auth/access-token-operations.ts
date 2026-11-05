@@ -14,7 +14,6 @@ import {
   type OpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
   rotateOpenKitAccessTokenRecord,
-  setDefaultServerAdminTokenId,
 } from './access-token-store.js';
 import { auditAuthenticationFromActor } from './audit-attribution.js';
 import { consumeServerBootstrapToken } from './bootstrap-token.js';
@@ -226,10 +225,15 @@ export function createAccessTokenOperationImplementations({
     },
     'token.my-admin-list': (_input, context) =>
       listOwnedServerAdminAccessTokens(storage(), publicOperationActor(context).userId),
-    'token.my-admin-default': (input, context) => {
+    'token.my-admin-default': async (input, context) => {
       const db = storage();
       const actor = publicOperationActor(context);
-      if (!setDefaultServerAdminTokenId(db, actor.userId, input.tokenId))
+      if (
+        !(await getControlStoreWorkerClient().serverAdminTokenDefault(db, {
+          ownerUserId: actor.userId,
+          tokenId: input.tokenId,
+        }))
+      )
         throw new OperationError(
           'access_token_default_invalid',
           'Default token must be an owned usable server-admin token.',

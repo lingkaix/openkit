@@ -25,13 +25,17 @@ import {
   readControlReviewMaterialId,
 } from '../artifact-reviews.js';
 import { prepareAuditEventStatement, recordServerAuditEvent } from '../audit-events.js';
-import { recordVerifiedOpenKitAccessTokenUse } from '../auth/access-token-store.js';
+import {
+  recordVerifiedOpenKitAccessTokenUse,
+  setDefaultServerAdminTokenId,
+} from '../auth/access-token-store.js';
 import { ADMIN_RECOVERY_REQUIRED, AdminRecoveryError } from '../auth/admin-recovery-codecs.js';
 import { applyControlAdminRecovery } from '../auth/admin-recovery-native.js';
 import { BETTER_AUTH_REFUSALS, BetterAuthNativeError } from '../auth/better-auth-codecs.js';
 import { applyControlBetterAuth } from '../auth/better-auth-native.js';
 import { isNanoHostTransportAdminRefusal } from '../auth/nanohost-transport-codecs.js';
 import { applyControlNanoHostTransport } from '../auth/nanohost-transport-native.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { assertWritable, mapAppSqliteError } from '../generative-kernel/app-model.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import {
@@ -329,6 +333,7 @@ type WriteCommand = Extract<
       | 'runtime-target'
       | 'backend-session'
       | 'remote-mcp-audit'
+      | 'server-admin-token-default'
       | 'access-token-verification'
       | 'worker-control-final-status'
       | 'worker-control-heartbeat'
@@ -2095,6 +2100,24 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-image',
               result,
             };
+          } else if (request.operation === 'server-admin-token-default') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            // The existing native savepoint keeps current eligibility and the original upsert
+            // together; no Main callback or later Audit joins this setting mutation.
+            const result =
+              isCanonicalUserActive(owner.scopeDb, request.input.ownerUserId) &&
+              setDefaultServerAdminTokenId(
+                owner.scopeDb,
+                request.input.ownerUserId,
+                request.input.tokenId
+              );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'server-admin-token-default',
+              result,
+            };
           } else if (request.operation === 'access-token-verification') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = recordVerifiedOpenKitAccessTokenUse(owner.scopeDb, request.input);
@@ -3476,6 +3499,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'runtime-target' ||
       value.operation === 'backend-session' ||
       value.operation === 'remote-mcp-audit' ||
+      value.operation === 'server-admin-token-default' ||
       value.operation === 'access-token-verification' ||
       value.operation === 'worker-control-final-status' ||
       value.operation === 'worker-control-heartbeat' ||

@@ -207,6 +207,10 @@ import {
   ControlScopedNotebookSqlRefusalSchema,
 } from './scoped-notebook-sql-codecs.js';
 import {
+  type ControlServerAdminTokenDefault,
+  ControlServerAdminTokenDefaultSchema,
+} from './server-admin-token-default-codecs.js';
+import {
   type ControlStandaloneAuditInput,
   ControlStandaloneAuditInputSchema,
 } from './standalone-audit-codecs.js';
@@ -347,7 +351,7 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 73;
+export const CONTROL_WORKER_VERSION = 74;
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -640,6 +644,10 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'workspace-review-decision';
           readonly input: ControlWorkspaceReviewDecision;
+        }
+      | {
+          readonly operation: 'server-admin-token-default';
+          readonly input: ControlServerAdminTokenDefault;
         }
       | {
           readonly operation: 'access-token-verification';
@@ -1023,6 +1031,11 @@ export type ControlWorkerReply = {
     }
   | { readonly status: 'ok'; readonly operation: 'core-journal'; readonly result: string | null }
   | { readonly status: 'ok'; readonly operation: 'worker-image'; readonly result: null }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'server-admin-token-default';
+      readonly result: boolean;
+    }
   | {
       readonly status: 'ok';
       readonly operation: 'access-token-verification';
@@ -1501,6 +1514,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return reply.result === null || typeof reply.result === 'string';
   if (reply.operation === 'worker-image' || reply.operation === 'remote-mcp-audit')
     return reply.result === null;
+  if (reply.operation === 'server-admin-token-default') return typeof reply.result === 'boolean';
   if (reply.operation === 'access-token-verification')
     return ControlAccessTokenVerificationResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'runtime-target')
@@ -1998,6 +2012,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkerImageInputSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+    );
+  if (value.operation === 'server-admin-token-default')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlServerAdminTokenDefaultSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'access-token-verification')

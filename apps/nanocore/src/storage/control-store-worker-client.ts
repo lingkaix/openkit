@@ -219,6 +219,7 @@ import {
   type ControlSchedulerAdmissionResult,
   SchedulerAdmissionTransitionError,
 } from './scheduler-admission-codecs.js';
+import type { ControlServerAdminTokenDefault } from './server-admin-token-default-codecs.js';
 import {
   type ControlThreadReadMembership,
   THREAD_READ_RECEIPT_INVALID,
@@ -2079,6 +2080,46 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Sets only this admitted owner's personal default through the existing Core FULL writer. */
+  async serverAdminTokenDefault(
+    db: CoreDb,
+    input: ControlServerAdminTokenDefault
+  ): Promise<boolean> {
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'server-admin-token-default', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({ operation: 'server-admin-token-default', database, input });
+    }
+    if (reply.operation !== 'server-admin-token-default' || typeof reply.result !== 'boolean')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return reply.result;
   }
 
   /** Reuses the exact physical owner for a closed originally standalone Core or Workspace Audit. */
