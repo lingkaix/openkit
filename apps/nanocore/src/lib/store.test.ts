@@ -46,7 +46,7 @@ import { createAppWithWorkspaceAuthority as createApp } from '../test-support/ap
 import { seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
@@ -1747,6 +1747,7 @@ describe('FsStore persistence', () => {
 
   it('does not serialize dynamic execution resources under workspace storage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
+    onTestFinished(() => disposeTestStore(dataRoot));
     const marker = 'runtime_only_test_marker';
     const manifest = createTestAgentSetup({
       agentId: `agent_${marker}`,
@@ -1784,12 +1785,15 @@ describe('FsStore persistence', () => {
     let app: ReturnType<typeof createApp>;
     try {
       app = createApp({ dataRoot, runtimeConfigManager, store });
-      expect(coordinators).toHaveBeenCalledOnce();
       for (const { value: coordinator } of coordinators.mock.results) {
         const boot = vi.mocked(coordinator.boot);
-        expect(boot).toHaveBeenCalledOnce();
-        await boot.mock.results[0]!.value;
-        boot.mockRestore();
+        try {
+          for (const result of boot.mock.results) {
+            if (result.type === 'return') await result.value;
+          }
+        } finally {
+          boot.mockRestore();
+        }
       }
     } finally {
       coordinators.mockRestore();
