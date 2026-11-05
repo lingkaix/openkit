@@ -1,15 +1,14 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
-import { FsStore } from './lib/store.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { readThreadReadState } from './thread-read-state.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -27,10 +26,9 @@ describe('User-owned Thread read receipts', () => {
     const localUserId = ensureLocalUser(coreDb);
     onTestFinished(async () => {
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot);
     });
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Shared conversations');
     recordWorkspaceOwnerMembership({
       coreDb,

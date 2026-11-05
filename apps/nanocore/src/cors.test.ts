@@ -1,16 +1,14 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { BetterAuthServer } from './auth/middleware.js';
-import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import {
   createAppWithWorkspaceAuthority as createApp,
   createApp as createPlainApp,
 } from './test-support/app.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { createTestStore, initializeTestCore } from './test-support/store.js';
+import { createTestStore, disposeTestStore, initializeTestCore } from './test-support/store.js';
 
 /**
  * Creates the smallest signed-out Better Auth surface needed by CORS tests.
@@ -27,11 +25,7 @@ function signedOutAuth(): BetterAuthServer {
 describe('browser CORS', () => {
   it('allows only exact configured origins with credentials in server mode', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cors-server-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(dataRoot);
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
+    onTestFinished(() => disposeTestStore(dataRoot));
     const store = createTestStore({ dataRoot });
     const app = createApp({
       store,
@@ -73,11 +67,7 @@ describe('browser CORS', () => {
 
   it('allows loopback browser origins by default in local mode', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cors-local-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(dataRoot);
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
+    onTestFinished(() => disposeTestStore(dataRoot));
     const store = createTestStore({ dataRoot });
     const app = createPlainApp({ store });
     const loopback = await app.request('/api/health', {
@@ -111,6 +101,7 @@ describe('browser CORS', () => {
 
   it('rejects a disallowed browser origin before a mutating handler runs', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-cors-mutation-'));
+    onTestFinished(() => disposeTestStore(dataRoot));
     initializeTestCore(dataRoot);
     const app = createApp({ dataRoot });
     const before = await app.request('/api/app/operations/workspace.list', {

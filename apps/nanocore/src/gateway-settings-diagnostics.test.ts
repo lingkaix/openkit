@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppDiagnosticsResponseSchema } from '@openkit/app-api-schemas';
@@ -6,20 +6,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { closeTestCoreDb, createTestCoreDb } from './test-support/store.js';
+import { createTestCoreDb, disposeTestStore } from './test-support/store.js';
 
-const roots: string[] = [];
 const executorCoreDbs: ReturnType<typeof createTestCoreDb>[] = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const coreDb of executorCoreDbs.splice(0)) closeTestCoreDb(coreDb);
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const coreDb of executorCoreDbs.splice(0)) {
+    await disposeTestStore(coreDb.dataRoot, coreDb);
+  }
 });
 
 /** Builds real authored files so active provenance and restart retention use the production loader. */
@@ -27,7 +25,6 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'gateway-settings-'));
   const executorCoreDb = createTestCoreDb(root);
   executorCoreDbs.push(executorCoreDb);
-  roots.push(root);
   mkdirSync(join(root, 'config', 'providers'), { recursive: true });
   writeFileSync(
     join(root, 'config', 'server.jsonc'),
@@ -171,7 +168,7 @@ describe('Gateway settings active diagnostics', () => {
 
   it('keeps the deployment-admin gate ahead of the new reads', async () => {
     const { manager } = fixture();
-    const coreDb = openCoreDb(roots.at(-1)!);
+    const coreDb = openCoreDb(executorCoreDbs.at(-1)!.dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const app = createApp({
