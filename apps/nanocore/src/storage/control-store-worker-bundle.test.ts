@@ -57,7 +57,7 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'native-bundle-data-'));
   roots.push(root);
   const path = join(root, 'control.sqlite');
-  const gate = new Int32Array(new SharedArrayBuffer(8));
+  const gate = new Int32Array(new SharedArrayBuffer(12));
   const worker = new Worker(
     `const { parentPort, workerData } = require('node:worker_threads');
      const Database = require(workerData.databaseModule);
@@ -71,11 +71,17 @@ function fixture() {
      };
      const exec = Database.prototype.exec;
      Database.prototype.exec = function(sql) {
-       if (/^COMMIT$/i.test(sql) && Atomics.compareExchange(workerData.gate, 0, 1, 2) === 1) {
+       const publishing = /^COMMIT$/i.test(sql) && Atomics.compareExchange(workerData.gate, 0, 1, 2) === 1;
+       if (publishing) {
          parentPort.postMessage({ fixture: 'held' });
          Atomics.wait(workerData.gate, 1, 0);
        }
-       return exec.call(this, sql);
+       const result = exec.call(this, sql);
+       if (publishing) {
+         Atomics.store(workerData.gate, 2, 1);
+         Atomics.notify(workerData.gate, 2);
+       }
+       return result;
      };
      import(workerData.entry);`,
     {
@@ -217,14 +223,42 @@ describe('shipped native worker bundle', () => {
     expect(writeAcknowledged).toBe(false);
     expect(closeAcknowledged).toBe(false);
     const before = new Database(f.path, { readonly: true, fileMustExist: true });
-    try {
-      expect(before.prepare('SELECT thread_id FROM thread_read_receipts').all()).toEqual([]);
-      expect(before.prepare('SELECT request_key FROM idempotency_requests').all()).toEqual([]);
-    } finally {
-      before.close();
-    }
-    Atomics.store(f.gate, 1, 1);
-    Atomics.notify(f.gate, 1);
+    const publicationCut = (): void => {
+      const started = performance.now();
+      try {
+        before.exec('BEGIN');
+        // Anchor the real WAL snapshot before allowing the real FULL COMMIT.
+        expect(before.prepare('SELECT thread_id FROM thread_read_receipts').all()).toEqual([]);
+        expect(before.prepare('SELECT request_key FROM idempotency_requests').all()).toEqual([]);
+        Atomics.store(f.gate, 1, 1);
+        Atomics.notify(f.gate, 1);
+        Atomics.wait(f.gate, 2, 0, Math.max(0, 250 - (performance.now() - started)));
+        expect(Atomics.load(f.gate, 2), 'the covering FULL COMMIT completed inside the cut').toBe(
+          1
+        );
+        expect(before.inTransaction).toBe(true);
+        expect(before.prepare('SELECT thread_id FROM thread_read_receipts').all()).toEqual([]);
+        expect(before.prepare('SELECT request_key FROM idempotency_requests').all()).toEqual([]);
+        // No await or ACK callback may intervene while this anchored read cut is held.
+        expect(writeAcknowledged).toBe(false);
+        expect(closeAcknowledged).toBe(false);
+      } finally {
+        try {
+          if (before.inTransaction) before.exec('ROLLBACK');
+        } finally {
+          before.close();
+          // Even a failed oracle must release the independently owned writer.
+          Atomics.store(f.gate, 1, 1);
+          Atomics.notify(f.gate, 1);
+        }
+      }
+      expect(
+        performance.now() - started,
+        'the entire anchored read cut is bounded'
+      ).toBeLessThanOrEqual(250);
+    };
+    // An async conversion would return a Promise instead of completing this cut synchronously.
+    expect(publicationCut()).toBeUndefined();
     expect(await write).toMatchObject({ status: 'ok', operation: 'write' });
     expect(await close).toMatchObject({ status: 'ok', operation: 'close' });
     const after = new Database(f.path, { readonly: true, fileMustExist: true });
@@ -242,6 +276,18 @@ describe('shipped native worker bundle', () => {
       status: 'error',
       code: 'not-open',
     });
+    const refused = new Database(f.path, { readonly: true, fileMustExist: true });
+    try {
+      // A caller without an open owner must not change either side of the durable tuple.
+      expect(refused.prepare('SELECT thread_id FROM thread_read_receipts').all()).toEqual([
+        { thread_id: 'bundled' },
+      ]);
+      expect(refused.prepare('SELECT request_key FROM idempotency_requests').all()).toEqual([
+        { request_key: 'bundled' },
+      ]);
+    } finally {
+      refused.close();
+    }
   }, 30_000);
 
   it('opens and closes through the compiled client with only the shipped worker bundle available', async () => {
