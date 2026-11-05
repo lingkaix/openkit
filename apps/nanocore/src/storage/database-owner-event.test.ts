@@ -20,7 +20,7 @@ afterEach(async () => {
   }
 });
 
-it('retains exact ordered Workspace events across reopen and preserves sealed replay', async () => {
+it('refuses foreign event payloads, retains exact ordered Workspace events across reopen and preserves sealed replay', async () => {
   const root = mkdtempSync(join(tmpdir(), 'database-owner-event-'));
   roots.push(root);
   const store = await createDemoStore({ dataRoot: root });
@@ -59,6 +59,31 @@ it('retains exact ordered Workspace events across reopen and preserves sealed re
   expect(acks).toEqual([1, 2]);
   expect(events.map((event) => event.sequence)).toEqual([1, 2]);
   expect(events.map((event) => event.data)).toEqual(inputs.map((input) => input.data));
+  for (const foreign of [
+    { ...items[0]!, owner: { kind: 'server' as const } },
+    { ...items[0]!, turnId: allocateEntityId('tu') },
+  ]) {
+    await expect(
+      store.persistTurnEvent(turn.id, {
+        ...inputs[0]!,
+        data: { type: 'item-created', item: foreign },
+      })
+    ).rejects.toThrow();
+    expect(store.getTurnEventsForExport(turn.id)).toEqual(events);
+  }
+  const nextItem = {
+    ...items[0]!,
+    id: allocateEntityId('it'),
+    text: 'Accepted after refused payloads.',
+  };
+  await store.createItem(nextItem);
+  items.push(nextItem);
+  const continued = await store.persistTurnEvent(turn.id, {
+    ...inputs[0]!,
+    data: { type: 'item-created', item: nextItem },
+  });
+  expect(continued.sequence).toBe(3);
+  expect(store.getTurnEventsForExport(turn.id)).toEqual([...events, continued]);
   await store.completeTurn(turn.id, { status: 'completed', completedAt: turn.startedAt! });
   const sealed = store.getTurnEventsForExport(turn.id);
   await expect(store.persistTurnEvent(turn.id, inputs[0]!)).resolves.toEqual(events[0]);
