@@ -1,16 +1,14 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
 let dataRoot: string | undefined;
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
+  if (dataRoot) await disposeTestStore(dataRoot);
   dataRoot = undefined;
 });
 

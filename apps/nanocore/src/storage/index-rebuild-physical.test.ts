@@ -14,8 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { rebuildWorkspaceDerivedIndexes } from './index-rebuild.js';
 
 const effect = vi.hoisted(() => ({
@@ -73,8 +73,7 @@ afterEach(async () => {
   effect.removePath = '';
   effect.writePath = '';
   effect.failure = undefined;
-  await shutdownControlStoreWorkerClient();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await disposeTestStore(root);
 });
 
 /** Publish a real empty Notebook through the owner before injecting disposable index faults. */

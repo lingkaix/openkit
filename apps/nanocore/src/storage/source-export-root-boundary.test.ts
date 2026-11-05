@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 // Compose the native Source publisher and export writer across an explicit snapshot root.
 import { createHash } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
@@ -13,10 +13,10 @@ import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-
 import { parseSourcePointer } from '../knowledge/source-pointers.js';
 import { FsStore } from '../lib/store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDbAtRoot } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -40,8 +40,7 @@ async function sourceSnapshot() {
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(root, { recursive: true, force: true });
+    await disposeTestStore(root);
   });
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);

@@ -10,8 +10,8 @@ import { createLightApp, createRecord } from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { collectionTableName } from '../generative-kernel/native.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { lightAppDbPath, openAppDbReadOnly, openExistingAppDb } from './app-db.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 
 const SCHEMA: LightAppSchemaInput = {
   format: 'openkit.light-app',
@@ -229,6 +229,5 @@ describe('AppDb', () => {
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of temporaryRoots.splice(0)) await disposeTestStore(root);
 });

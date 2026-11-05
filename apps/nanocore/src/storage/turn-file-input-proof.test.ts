@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   turnFilePayloadPath,
   verifyTurnFileInput,
@@ -16,8 +16,7 @@ import {
 
 const roots: string[] = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await disposeTestStore(root);
 });
 
 /** Uses the real Turn writer and exact original payloads, with names kept outside path identity. */

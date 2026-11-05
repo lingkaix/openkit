@@ -25,10 +25,10 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { prepareWorkspaceKnowledgeSelection } from './control-store-knowledge.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import { readAdmittedWorkspaceKnowledgeSelection } from './workspace-file-records.js';
@@ -96,9 +96,7 @@ async function admittedWorkspace(prefix: string): Promise<{
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
-    closeWorkspaceProductReadHandles(dataRoot);
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);

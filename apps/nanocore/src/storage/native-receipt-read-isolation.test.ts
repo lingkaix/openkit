@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -6,9 +6,8 @@ import { expect, it, onTestFinished, vi } from 'vitest';
 import { commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { createThread } from '../thread-routes.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
 
@@ -58,8 +57,7 @@ it('reads a native Workspace receipt and global inventory while a writer holds t
   onTestFinished(async () => {
     if (blocker.sqlite.inTransaction) blocker.sqlite.exec('ROLLBACK');
     if (blocker.sqlite.open) blocker.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   });
   blocker.sqlite.exec('BEGIN IMMEDIATE');
 

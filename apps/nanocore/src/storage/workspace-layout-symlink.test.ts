@@ -11,14 +11,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
-import { createTestStore } from '../test-support/store.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { ensureWorkspaceLayout } from './fs-layout.js';
 
 const roots: string[] = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await disposeTestStore(root);
 });
 
 describe('workspace layout symbolic-link boundaries', () => {

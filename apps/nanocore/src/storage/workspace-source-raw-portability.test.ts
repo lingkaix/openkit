@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 // Workspace transfer consumes actual canonical Sources, Git and managed Storage originals.
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { allocateEntityId, ContentReferenceSchema } from '@openkit/protocol';
@@ -18,10 +18,10 @@ import { parseSourcePointer } from '../knowledge/source-pointers.js';
 import { publishCapturedSource } from '../knowledge/source-publication.js';
 import { FsStore } from '../lib/store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { createVerifiedWorkspaceExport } from './workspace-transfer-routes.js';
@@ -43,8 +43,7 @@ function deployment() {
   const store = new FsStore({ dataRoot });
   onTestFinished(async () => {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   });
   return { dataRoot, coreDb, userId, store };
 }
