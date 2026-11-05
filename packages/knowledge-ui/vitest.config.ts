@@ -10,5 +10,8 @@ export default defineConfig({
   },
   test: {
     environment: 'jsdom',
+    globalSetup: [
+      fileURLToPath(new URL('../../tests/support/vitest-global-setup.mjs', import.meta.url)),
+    ],
   },
 });
