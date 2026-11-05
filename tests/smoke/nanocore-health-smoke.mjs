@@ -13,6 +13,7 @@ import { openCoreDb } from '../../apps/nanocore/dist/storage/db.js';
 import { applyMigrations } from '../../apps/nanocore/dist/storage/migrate.js';
 import { createWorkspaceDeletionRequest } from '../../apps/nanocore/dist/workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../../apps/nanocore/dist/workspace-membership.js';
+import { observeInitialMaintenance } from './nanocore-maintenance-observer.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -27,25 +28,41 @@ async function main() {
   const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-nano-smoke-'));
   const deletion = await seedWorkspaceDeletionRequest(dataRoot);
   await writeNanoHostConfig(dataRoot, nanoHostPort);
-  const child = spawn(process.execPath, [join(repoRoot, 'apps/nanocore/dist/index.js')], {
-    cwd: join(repoRoot, 'apps/nanocore'),
-    env: {
-      ...process.env,
-      OPENKIT_CORE_MODE: 'local',
-      OPENKIT_BIND_HOST: '127.0.0.1',
-      OPENKIT_DATA_ROOT: dataRoot,
-      OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1',
-      PORT: String(appPort),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      join(repoRoot, 'tests/smoke/nanocore-maintenance-preload.mjs'),
+      join(repoRoot, 'apps/nanocore/dist/index.js'),
+    ],
+    {
+      cwd: join(repoRoot, 'apps/nanocore'),
+      env: {
+        ...process.env,
+        OPENKIT_CORE_MODE: 'local',
+        OPENKIT_BIND_HOST: '127.0.0.1',
+        OPENKIT_DATA_ROOT: dataRoot,
+        OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1',
+        PORT: String(appPort),
+      },
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    }
+  );
+  const initialMaintenance = observeInitialMaintenance(child);
   const output = captureOutput(child);
   let nanoHostClient;
 
   try {
     const baseUrl = `http://127.0.0.1:${appPort}`;
 
-    await waitForHttp(`${baseUrl}/api/health`, child, output);
+    // HTTP readiness does not release the initial automatic capture's capacity-one owner.
+    const startupDeadline = Date.now() + 30_000;
+    await Promise.all([
+      waitForHttp(`${baseUrl}/api/health`, child, output, startupDeadline),
+      initialMaintenance.waitUntil(startupDeadline),
+    ]).catch((error) => {
+      throw new Error(`NanoCore startup failed: ${error.message}\n${output()}`, { cause: error });
+    });
     await assertOkJson(`${baseUrl}/api/health`, 'health');
     await assertOkJson(`${baseUrl}/api/meta`, 'meta');
     const fencedRead = await fetch(`${baseUrl}/api/app/operations/workspace.dashboard`, {
@@ -264,9 +281,7 @@ async function assertOkJson(url, label) {
  * @returns {Promise<void>} Resolves once the URL is reachable.
  * @throws {Error} When the process exits or the deadline is reached.
  */
-async function waitForHttp(url, child, output) {
-  const deadline = Date.now() + 30_000;
-
+async function waitForHttp(url, child, output, deadline = Date.now() + 30_000) {
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
