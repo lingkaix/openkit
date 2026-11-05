@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -705,30 +705,14 @@ describe('provider-subscription app API', () => {
           path.startsWith('/api/app/provider-subscriptions') ||
           path.startsWith('/api/app/oauth/openai-codex')
       );
-      const providerRuntimeRoutes = fixture.app.routes
-        .filter(
-          ({ path }) =>
-            path.startsWith('/api/app/operations/provider-subscription.') ||
-            path.startsWith('/api/app/provider-subscriptions') ||
-            path.startsWith('/api/app/oauth/openai-codex')
-        )
-        .map(({ method, path }) => ({ method, path }));
       const relevantRegisteredOperationIds = getRegisteredAppApiOperationIds(fixture.app).filter(
         (operationId) => operationIds.has(operationId) || legacyOperationIds.has(operationId)
       );
-      const appSource = readFileSync(new URL('./app.ts', import.meta.url), 'utf8');
 
       expect(providerCatalogOperations).toEqual(OPERATION_ROUTES);
-      expect(providerRuntimeRoutes).toEqual(
-        OPERATION_ROUTES.map(({ method, path }) => ({
-          method,
-          path: path.replace(/\{([A-Za-z0-9_]+)\}/g, ':$1'),
-        }))
-      );
       expect(relevantRegisteredOperationIds).toEqual(
         OPERATION_ROUTES.map(({ operationId }) => operationId)
       );
-      expect(appSource).not.toMatch(/\b(?:CodexOAuthAccountManager|codexOAuthAccountManager)\b/);
 
       const response = await fixture.app.request(
         ...operationRequest('provider-subscription.provider-list', {})

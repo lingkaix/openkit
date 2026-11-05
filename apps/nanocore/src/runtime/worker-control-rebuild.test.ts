@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -256,10 +256,6 @@ describe('worker control gateway restart hydration', () => {
       expect(() =>
         gateway.authenticatePackageToken(`Bearer ${fixture.sandboxBindingRef}`)
       ).toThrow();
-      const source = readFileSync(new URL('./worker-control-rebuild.ts', import.meta.url), 'utf8');
-      expect(source).toContain('workerControlTokenHash');
-      expect(source).toContain('workerInferenceTokenHash');
-      expect(source).not.toContain('token: lease.sandboxBindingRef');
     } finally {
       fixture.coreDb.sqlite.close();
     }

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { assertOperationNames } from '@openkit/app-api-schemas';
 import { expect, it, vi } from 'vitest';
 import { projectAgentCatalogEntries } from '../agents/catalog-projection.js';
 import { ensureLocalUser } from '../auth/identity.js';
@@ -24,9 +25,7 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
   const userId = ensureLocalUser(coreDb);
   const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('Discovery');
-  const other = await store.createWorkspace('Other authorized Workspace');
-  for (const entry of [workspace, other])
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId: entry.id, ownerUserId: userId });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   store.setWorkspaceAgentCatalogProjection(() =>
     projectAgentCatalogEntries([createTestAgentSetup({ agentId: 'selected-worker' }).manifest])
   );
@@ -122,6 +121,7 @@ it.each([
     expect(f.store.listThreadAgentSessions(f.workspace.id, f.goal.threadId)).toEqual([]);
     expect(readGoalView(f.store, f.db, f.goal.goalId).tasks).toEqual([]);
     const names = f.tools.map((tool) => tool.name);
+    assertOperationNames(names);
     expect(names).toEqual(
       expect.arrayContaining(['agent.list', 'goal.read', 'evidence.runtime-list'])
     );

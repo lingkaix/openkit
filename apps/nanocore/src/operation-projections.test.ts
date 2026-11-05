@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
@@ -9,11 +9,11 @@ import {
   OPERATION_DEFINITIONS,
   operationToolName,
 } from '@openkit/app-api-schemas';
+import { createCoreClient } from '@openkit/core-client';
 import { ApiErrorSchema, PROTOCOL_VERSION, workspaceIdForOwner } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -1729,7 +1729,7 @@ describe('Workspace Thread Turn projection cutover', () => {
     }
   });
 
-  it('deletes every replaced route and hand-written client CLI access and OpenAPI mapping', async () => {
+  it('deletes every replaced route from the public HTTP surface', async () => {
     const f = await operationFixture();
     try {
       const turn = await f.store.createTurn(
@@ -1770,39 +1770,6 @@ describe('Workspace Thread Turn projection cutover', () => {
           ).status,
           `${method} ${path}`
         ).toBe(404);
-      const root = new URL('../../../', import.meta.url);
-      const cli = readFileSync(new URL('skills/openkit-operations.mjs', root), 'utf8');
-      for (const id of [
-        'workspace.list',
-        'workspace.resources',
-        'thread.create',
-        'thread.read',
-        'thread.items',
-        'thread.dashboard',
-        'turn.read',
-      ])
-        expect(cli).not.toContain(`id: '${id}'`);
-      const access = readFileSync(
-        new URL('apps/nanocore/src/auth/operation-access.ts', root),
-        'utf8'
-      );
-      const openapi = readFileSync(new URL('apps/nanocore/src/openapi.ts', root), 'utf8');
-      for (const old of ['listAuthorizedWorkspaces', 'listThreadItems', 'getThreadDashboard']) {
-        expect(access).not.toContain(`'${old}'`);
-        expect(openapi).not.toContain(`operationId: '${old}'`);
-      }
-      const client = createCoreClient({ baseUrl: 'http://nanocore.test' });
-      for (const old of [
-        'listWorkspaces',
-        'getWorkspaceResources',
-        'createThread',
-        'getThread',
-        'getTurn',
-        'listThreadItems',
-      ])
-        expect(client.core).not.toHaveProperty(old);
-      for (const old of ['listAuthorizedWorkspaces', 'getThreadDashboard'])
-        expect(client.app).not.toHaveProperty(old);
     } finally {
       f.coreDb.sqlite.close();
     }

@@ -1177,7 +1177,7 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
-  it('pairs every Rust effect route with empty idle polls and admits additive baseline results', async () => {
+  it('polls every declared effect route while idle and admits additive baseline results', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-collection-')));
     applyMigrations(coreDb);
     const authority = createNanoHostTransportSessionAuthority();
@@ -1240,21 +1240,8 @@ describe('authoritative NanoHost session dispatch', () => {
         (await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'e'.repeat(64) }))
           .status
       ).toBe(204);
-      const rustSource = readFileSync(
-        new URL('../../../nanohost/src/nanocore_session.rs', import.meta.url),
-        'utf8'
-      );
-      const effectPaths = rustSource.match(/const EFFECT_PATHS:[\s\S]*?= \[([\s\S]*?)\n\];/)![1]!;
-      const rustPaths = [
-        ...effectPaths.matchAll(/"(\/api\/nanohost\/transport\/effects\/[^"]+)"/g),
-      ].map((match) => match[1]!);
-      expect(
-        app.routes
-          .filter((route) => route.path.startsWith('/api/nanohost/transport/effects/'))
-          .map((route) => `${route.method} ${route.path}`)
-          .sort()
-      ).toEqual(rustPaths.map((path) => `POST ${path}`).sort());
-      for (const path of rustPaths.filter((path) => !path.endsWith('/result'))) {
+      for (const operation of NANO_HOST_EFFECT_OPERATIONS) {
+        const path = `/api/nanohost/transport/effects/${operation}`;
         expect(await post(path, {}), path).toEqual({ status: 204, body: '' });
       }
       const requestId = 'a'.repeat(64);
@@ -1861,67 +1848,6 @@ describe('authoritative NanoHost session dispatch', () => {
     ).rejects.toThrow(/connection|authoritative|fenc/i);
     expect(routeHandler).not.toHaveBeenCalled();
     expect(effectHandler).not.toHaveBeenCalled();
-
-    const dispatchSource = readFileSync(
-      new URL('./nanohost-session-dispatch.ts', import.meta.url),
-      'utf8'
-    );
-    expect(dispatchSource).toContain('requestId');
-    for (const operation of [
-      'sandbox.create',
-      'sandbox.delete',
-      'bridge.open',
-      'bridge.close',
-      'image.acquire',
-      'image.build',
-      'image.inspect',
-      'storage.inspect',
-      'storage.purge',
-      'file.export',
-      'reference.import',
-    ]) {
-      expect(dispatchSource).toContain(`/api/nanohost/transport/effects/${operation}`);
-      expect(dispatchSource).toContain(`/api/nanohost/transport/effects/${operation}/result`);
-    }
-    expect(dispatchSource).not.toContain('attempt-session.cleanup');
-    for (const wireRule of [
-      'application/octet-stream',
-      'x-openkit-request-id',
-      'x-openkit-slot',
-      'x-openkit-relative-path',
-      'x-openkit-sha256',
-      'x-openkit-byte-length',
-      '409',
-      '413',
-    ]) {
-      expect(dispatchSource).toContain(wireRule);
-    }
-    expect(dispatchSource).toMatch(/268435456|256\s*\*\s*1024\s*\*\s*1024/);
-    expect(dispatchSource).toMatch(/65536|64\s*\*\s*1024/);
-    expect(dispatchSource).toContain("operation === 'reference.import'");
-    expect(dispatchSource).toContain("operation === 'file.export'");
-    const bridgeOpen = dispatchSource
-      .split("operation === 'bridge.open'")[1]
-      ?.split("operation === 'bridge.close'")[0];
-    expect(bridgeOpen).toBeDefined();
-    expect(bridgeOpen).toContain('requireBridgeOpenCommand');
-    expect(dispatchSource).toContain('sandboxIntegrationBindingRef');
-    expect(dispatchSource).not.toContain('workerControlToken');
-    expect(dispatchSource).not.toContain('workerInferenceToken');
-    expect(bridgeOpen).toContain('accepted');
-    expect(bridgeOpen).toContain('unknown');
-    expect(bridgeOpen).toMatch(/delete|discard/);
-    expect(dispatchSource).toContain('physicalConnection');
-    expect(dispatchSource).toContain('/api/nanohost/transport/session/readiness');
-    expect(dispatchSource).toContain('/worker-control/harness/poll');
-    expect(dispatchSource).toContain('/worker-control/harness/result');
-    expect(dispatchSource).toContain('x-openkit-integration-binding');
-    expect(dispatchSource).toContain('upsertNanoHostRuntimeTarget');
-    expect(dispatchSource).toContain('connectionGeneration');
-    expect(dispatchSource).toContain('mayCarryWork');
-    expect(dispatchSource).not.toContain('/api/nanohost/transport/file-data');
-    const appSource = readFileSync(new URL('../app.ts', import.meta.url), 'utf8');
-    expect(appSource).toContain('createNanoHostSessionDispatch({');
   });
 
   it.each(

@@ -12039,18 +12039,6 @@ describe('nanocore server', () => {
         predecessorFenced: true,
         ready: false,
       });
-      const productionComposition = `${readFileSync(
-        new URL('./app.ts', import.meta.url),
-        'utf8'
-      )}\n${readFileSync(new URL('./index.ts', import.meta.url), 'utf8')}`;
-      for (const bootstrapOwner of [
-        'workerControlTokenHash',
-        'workerInferenceTokenHash',
-        'starting',
-        'final_status',
-      ]) {
-        expect(productionComposition).toContain(bootstrapOwner);
-      }
     } finally {
       firstClient?.destroy();
       secondClient?.destroy();

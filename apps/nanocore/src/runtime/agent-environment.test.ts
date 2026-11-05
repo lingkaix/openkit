@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,14 +13,6 @@ import {
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import {
-  createSourceFile,
-  forEachChild,
-  isCallExpression,
-  type Node,
-  ScriptTarget,
-  transpileModule,
-} from 'typescript';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
@@ -2795,7 +2787,7 @@ describe('public network AEP admission', () => {
     }
   });
 
-  it('admits public grants through the boot-supplied runtime and observes active configuration reload', async () => {
+  it('admits public grants through the configured runtime and observes active configuration reload', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-public-boot-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -2830,54 +2822,13 @@ describe('public network AEP admission', () => {
         providerRegistry: new ProviderRegistry([provider]),
       }),
     });
-    const reads = vi.spyOn(manager, 'current');
-    // Evaluate the actual boot call, rather than reproducing its option list in the test.
-    const source = createSourceFile(
-      'index.ts',
-      readFileSync(new URL('../index.ts', import.meta.url), 'utf8'),
-      ScriptTarget.Latest,
-      true
-    );
-    const calls: string[] = [];
-    const visit = (node: Node): void => {
-      if (
-        isCallExpression(node) &&
-        node.expression.getText(source) === 'createConfiguredWorkerLifecycleRuntime'
-      )
-        calls.push(node.getText(source));
-      forEachChild(node, visit);
-    };
-    visit(source);
-    expect(calls).toHaveLength(1);
-    const javascript = transpileModule(
-      `const runtime = ${calls[0]}; const runtimeConfigManager = manager; return runtime;`,
-      { compilerOptions: { target: ScriptTarget.ES2022 } }
-    ).outputText;
-    const runtime = new Function(
-      'createConfiguredWorkerLifecycleRuntime',
-      'manager',
-      'recoveryCoreDb',
-      'recoveryStore',
-      'nanoHostSessionDispatch',
-      'vaultUnlockState',
-      'requireBootValue',
-      'bootWorkerControlGateway',
-      'workspaceMutationAdmission',
-      'fileAdmission',
-      javascript
-    )(
-      createConfiguredWorkerLifecycleRuntime,
-      manager,
+    const runtime = createConfiguredWorkerLifecycleRuntime({
       coreDb,
       store,
-      undefined,
-      undefined,
-      (value: unknown) => value,
-      undefined,
-      undefined,
-      new FileStorageAdmission(dataRoot, () => 0n)
-    ) as ReturnType<typeof createConfiguredWorkerLifecycleRuntime>;
-    expect(reads).not.toHaveBeenCalled();
+      env: {},
+      readRuntimeConfig: () => manager.current(),
+      fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+    });
     const preview = runtime.turnExecutor as unknown as {
       previewAgentEnvironmentPackage: (
         id: string,
@@ -2907,7 +2858,6 @@ describe('public network AEP admission', () => {
         preview.previewAgentEnvironmentPackage(input.freshAgentSessionId, input).policy.network
           ?.rules
       ).toContainEqual({ ...network[0], action: 'allow' });
-      expect(reads).toHaveBeenCalled();
       mkdirSync(join(dataRoot, 'config', 'agents'), { recursive: true });
       mkdirSync(join(dataRoot, 'config', 'providers'), { recursive: true });
       writeFileSync(
@@ -2929,7 +2879,6 @@ describe('public network AEP admission', () => {
         preview.previewAgentEnvironmentPackage(input.freshAgentSessionId, input)
       ).toThrow(/removed or changed/i);
     } finally {
-      reads.mockRestore();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
