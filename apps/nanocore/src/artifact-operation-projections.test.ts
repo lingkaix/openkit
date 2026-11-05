@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
+import { createCoreClient } from '@openkit/core-client';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCoreClient } from '../../../packages/core-client/src/index.js';
+import { describe, expect, it, vi } from 'vitest';
 import { registerArtifactFileRoutes } from './artifact-file-routes.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -14,12 +14,12 @@ import type { AuthVariables } from './auth/middleware.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { disposeTestStore } from './test-support/store.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -122,15 +122,16 @@ async function fixture(member = true, acceptingProductWork = true, privateOrigin
     dataRoot,
     store,
     options,
-    close: () => {
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    },
+    close: () => disposeTestStore(dataRoot, coreDb),
   };
 }
 
 /** Executes actual HTTP, typed client and CLI catalog projections against the same owners. */
-async function projections(f: ReturnType<typeof fixture>, token?: string, operationId?: string) {
+async function projections(
+  f: Awaited<ReturnType<typeof fixture>>,
+  token?: string,
+  operationId?: string
+) {
   const headers = {
     'content-type': 'application/json',
     ...(token ? { authorization: `Bearer ${token}` } : {}),
@@ -139,7 +140,7 @@ async function projections(f: ReturnType<typeof fixture>, token?: string, operat
   const client = createCoreClient({
     baseUrl: 'http://127.0.0.1',
     headers,
-    fetch: (input, init) => app.fetch(new Request(input, init)),
+    fetch: async (input, init) => app.fetch(new Request(input, init)),
   });
   const { operationCatalog } = await import(
     new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
@@ -391,7 +392,7 @@ describe('Artifact definition projections', () => {
       });
       expect(f.store.listThreadTurns(input.workspaceId, turns[0]!.threadId)).toEqual(turns);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -491,7 +492,7 @@ describe('Artifact definition projections', () => {
       expect(await changed.json()).toMatchObject({ code: 'idempotency_key_conflict' });
     } finally {
       db.sqlite.close();
-      f.close();
+      await f.close();
     }
   });
 
@@ -564,7 +565,7 @@ describe('Artifact definition projections', () => {
         ).status
       ).toBe(404);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -691,7 +692,7 @@ describe('Artifact definition projections', () => {
           })
         ).rejects.toMatchObject({ code: 'idempotency_key_conflict', status: 409 });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -741,7 +742,7 @@ describe('Artifact definition projections', () => {
         ).rejects.toMatchObject({ status: 404 });
       }
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -766,7 +767,7 @@ describe('Artifact definition projections', () => {
       );
       const client = createCoreClient({
         baseUrl: 'http://127.0.0.1',
-        fetch: (input, init) => f.app.fetch(new Request(input, init)),
+        fetch: async (input, init) => f.app.fetch(new Request(input, init)),
       });
       await expect(client.artifactFiles.import(metadata, retry)).resolves.toEqual(accepted);
       expect(reads).toBe(0);
@@ -776,7 +777,7 @@ describe('Artifact definition projections', () => {
           .filter((artifact) => artifact.lastMutationRequestId === metadata.requestId)
       ).toHaveLength(1);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -819,7 +820,7 @@ describe('Artifact definition projections', () => {
       }
     } finally {
       vi.restoreAllMocks();
-      f.close();
+      await f.close();
     }
   });
 
@@ -835,7 +836,7 @@ describe('Artifact definition projections', () => {
           })
         ).rejects.toMatchObject({ code: 'not_found', message: 'Thread not found.', status: 404 });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -890,7 +891,7 @@ describe('Artifact definition projections', () => {
         message: 'Internal Server Error',
       });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -907,7 +908,7 @@ describe('Artifact definition projections', () => {
           status: 403,
         });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -947,7 +948,7 @@ describe('Artifact definition projections', () => {
         ).rejects.toMatchObject({ message: 'Artifact not found.', status: 404 });
       }
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -1002,7 +1003,7 @@ describe('Artifact definition projections', () => {
         );
     } finally {
       reviewDb?.sqlite.close();
-      f.close();
+      await f.close();
     }
   });
 
@@ -1030,12 +1031,7 @@ describe('Artifact definition projections', () => {
         });
       expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual(artifacts);
     } finally {
-      f.close();
+      await f.close();
     }
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });
