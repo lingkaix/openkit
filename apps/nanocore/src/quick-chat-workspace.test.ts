@@ -1,14 +1,13 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ListAuthorizedWorkspacesResponseSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
-import { createTestStore } from './test-support/store.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 
 describe('personal Workspace mode', () => {
@@ -36,9 +35,8 @@ describe('personal Workspace mode', () => {
         })
       );
     } finally {
-      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot);
     }
   });
 });

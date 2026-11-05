@@ -1,13 +1,13 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { describe, expect, it } from 'vitest';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 describe('retired host repository routes', () => {
@@ -22,15 +22,15 @@ describe('retired host repository routes', () => {
   ])('leaves the authorized %s repositories%s route unavailable', async (method, suffix) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-retired-repository-'));
     const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
     try {
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
       const app = createApp({ coreDb, dataRoot, store });
       if (suffix === '/git-push-records/gpr_retired') {
         const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -86,12 +86,7 @@ describe('retired host repository routes', () => {
       expect(await response.text()).toBe('404 Not Found');
     } finally {
       coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot);
     }
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });
