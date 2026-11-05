@@ -8,15 +8,15 @@ import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js'
 import { canDiscloseThreadToAudience } from '../auth/thread-visibility.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
-import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authority.js';
+import {
+  verifyKnowledgeProposalWorkHistory,
+  verifyKnowledgeProposalWorkHistorySteps,
+} from '../knowledge-source-authority.js';
 import type { FsStore } from '../lib/store.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationAdmission, NotebookUpdate } from './notebook-publication.js';
 import {
@@ -37,28 +37,27 @@ interface WorkspacePublicationAuthority {
   /** Trusted Worker/schedule entry rechecks its existing admission instead of inventing a human session. */
   readonly currentAuthority?: () => void;
   readonly actor: Extract<ActorRef, { kind: 'user' }>;
-  readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
-  /** Exact reviewed-Schema lifecycle freeze; it admits no ordinary publication. */
-  readonly schemaFreeze?: WorkspaceFrozenAdmission;
   readonly notebook: KnowledgeNotebook;
   /** Exact SQL-selected schema bytes for activated Workspace readers. */
   readonly scopeSchemaText: string;
   readonly request: NotebookUpdate;
 }
 
-/** Rechecks current scope and exact source disclosure; a caller's private read grant is not a shared publication grant. */
-export function readWorkspaceNotebookAdmission(
-  input: WorkspacePublicationAuthority
-): NotebookPublicationAdmission {
+/** Rechecks the existing current requester mutation predicate without Notebook or Source traversal. */
+export function assertWorkspaceNotebookWrite(
+  input: Pick<
+    WorkspacePublicationAuthority,
+    'coreDb' | 'requestActor' | 'currentAuthority' | 'actor'
+  > & {
+    readonly request: Pick<NotebookUpdate, 'workspaceId'>;
+    readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
+  }
+): void {
   const { workspaceId } = input.request;
   input.currentAuthority?.();
-  const ownsSchemaFreeze =
-    input.schemaFreeze !== undefined &&
-    input.workspaceMutationAdmission.ownsFreeze(workspaceId, input.schemaFreeze);
   if (
-    (input.schemaFreeze !== undefined && !ownsSchemaFreeze) ||
-    (input.workspaceMutationAdmission.isClosed(workspaceId) && !ownsSchemaFreeze) ||
+    ('workspaceMutationAdmission' in input &&
+      input.workspaceMutationAdmission!.isClosed(workspaceId)) ||
     (input.requestActor
       ? input.actor.id !== input.requestActor.userId ||
         !isWorkspaceOperationAuthorized(input.coreDb, input.requestActor, workspaceId, {
@@ -67,11 +66,58 @@ export function readWorkspaceNotebookAdmission(
         })
       : !input.currentAuthority)
   )
-    throw new OperationError('workspace_access_denied', 'Notebook publication access denied.', 403);
+    throw new OperationError(
+      WORKSPACE_ACCESS_DENIED.code,
+      'Notebook publication access denied.',
+      403
+    );
+}
+
+/** Rechecks the original authorization and disclosure owners; native callers carry Main's current non-retained Review facts. */
+export function readWorkspaceNotebookAdmission(
+  input: WorkspacePublicationAuthority &
+    (
+      | {
+          readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
+          readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
+        }
+      | { readonly reviewRequiredPageIds: readonly string[] }
+    )
+): NotebookPublicationAdmission {
+  const steps = readWorkspaceNotebookAdmissionWithOwners(input, true);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* readWorkspaceNotebookAdmissionSteps(
+  input: WorkspacePublicationAuthority &
+    (
+      | {
+          readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
+          readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
+        }
+      | { readonly reviewRequiredPageIds: readonly string[] }
+    )
+): Generator<void, NotebookPublicationAdmission, void> {
+  return yield* readWorkspaceNotebookAdmissionWithOwners(input, false);
+}
+
+/** Ordinary publications retain nested work-history cuts; native preparation remains released. */
+function* readWorkspaceNotebookAdmissionWithOwners(
+  input: Parameters<typeof readWorkspaceNotebookAdmission>[0],
+  synchronousLeafReads: boolean
+): Generator<void, NotebookPublicationAdmission, void> {
+  const { workspaceId } = input.request;
+  assertWorkspaceNotebookWrite(input);
   const workspace = input.store.getWorkspace(workspaceId);
   const reviewRequiredPageIds =
-    findWorkspaceConfig(input.runtimeConfigManager.current(), workspaceId)?.config.workspace
-      .knowledgeMaintenance?.reviewRequiredPageIds ?? [];
+    'reviewRequiredPageIds' in input
+      ? [...input.reviewRequiredPageIds]
+      : (findWorkspaceConfig(input.runtimeConfigManager.current(), workspaceId)?.config.workspace
+          .knowledgeMaintenance?.reviewRequiredPageIds ?? []);
 
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot: input.coreDb.dataRoot,
@@ -104,9 +150,17 @@ export function readWorkspaceNotebookAdmission(
       return;
     // The personal Workspace has one fixed private audience under its existing owner-only membership contract.
     if (workspace.kind === 'personal' && thread.privateOwnerUserId === input.actor.id) return;
-    throw new OperationError('workspace_access_denied', 'Notebook source disclosure denied.', 403);
+    throw new OperationError(
+      WORKSPACE_ACCESS_DENIED.code,
+      'Notebook source disclosure denied.',
+      403
+    );
   };
-  const checkPage = (path: string, content: string, baseOnly = false): void => {
+  const checkPage = function* (
+    path: string,
+    content: string,
+    baseOnly = false
+  ): Generator<void, void, void> {
     // A removed page uses its original dependency graph; candidate edits use the resulting tree.
     const key = `${baseOnly ? 'base' : 'candidate'}:${path}`;
     if (visited.has(key)) return;
@@ -118,13 +172,17 @@ export function readWorkspaceNotebookAdmission(
     if (references === null && !parsed.document.reserved)
       throw new NotebookError('invalid_request');
     const refs = references ?? [];
-    const external = verifyKnowledgeProposalWorkHistory({
+    const workInput = {
       coreDb: input.coreDb,
       workspaceDb: input.workspaceDb,
       store: input.store,
       workspaceId,
       sourceReferences: refs,
-    }).verifiedExternalReferences;
+    };
+    const work = synchronousLeafReads
+      ? verifyKnowledgeProposalWorkHistory(workInput)
+      : yield* verifyKnowledgeProposalWorkHistorySteps(workInput);
+    const external = work.verifiedExternalReferences;
     const resolved = new Set(external);
     for (const reference of refs) {
       if (reference.startsWith('source:')) {
@@ -159,14 +217,14 @@ export function readWorkspaceNotebookAdmission(
           )
         )
           throw new OperationError(
-            'workspace_access_denied',
+            WORKSPACE_ACCESS_DENIED.code,
             'Notebook source disclosure denied.',
             403
           );
-        checkPage(sourcePath, sourceContent, baseOnly);
+        yield* checkPage(sourcePath, sourceContent, baseOnly);
         resolved.add(reference);
       } else if (reference.startsWith('turn:')) {
-        const turn = input.store.getTurnById(reference.slice('turn:'.length));
+        const turn = yield* input.store.getTurnByIdSteps(reference.slice('turn:'.length));
         if (workspaceIdForOwner(turn.owner) !== workspaceId || !resolved.has(reference))
           throw new NotebookError('invalid_request');
         permitThreadDisclosure(turn.threadId);
@@ -180,6 +238,7 @@ export function readWorkspaceNotebookAdmission(
   };
   // A summary edit admits the Source itself, even when its supporting source_refs list is empty.
   for (const { path, content } of input.request.changes) {
+    yield;
     if (!path.startsWith('@sources/')) continue;
     const id = path.slice('@sources/'.length, -3);
     const source = sourceRecords.get(id);
@@ -197,12 +256,13 @@ export function readWorkspaceNotebookAdmission(
   }
   // Deletion and its replay still require current access to the exact removed bytes and Sources.
   for (const { path, content } of input.request.changes) {
+    yield;
     if (content !== null || !base.entries[path]) continue;
     const previous = input.notebook.readRevision(base.revision, [path]).files[path];
-    if (previous !== undefined) checkPage(path, previous, true);
+    if (previous !== undefined) yield* checkPage(path, previous, true);
   }
   for (const { path, content } of input.request.changes)
-    if (content !== null) checkPage(path, content);
+    if (content !== null) yield* checkPage(path, content);
   return {
     pageScopeId,
     scopeSchemaText,

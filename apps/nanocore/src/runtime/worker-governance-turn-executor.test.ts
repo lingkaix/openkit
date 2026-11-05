@@ -25,6 +25,7 @@ import {
   ListWorkspaceAuditEventsResponseSchema,
   ListWorkspaceEvidenceBundlesResponseSchema,
   ListWorkspaceRuntimeEvidenceResponseSchema,
+  PreviewKnowledgeSchemaResponseSchema,
   type WorkspaceInputSnapshot,
   type WorkspaceMaterializationRecord,
 } from '@openkit/app-api-schemas';
@@ -40,9 +41,11 @@ import {
 import type { ActorRef } from '@openkit/protocol';
 import {
   allocateEntityId,
+  canonicalJsonText,
   deriveEntityId,
   RequestIdSchema,
   workspaceIdForOwner,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import {
   buildWorkerCanonicalTerminalEventRecord,
@@ -123,8 +126,9 @@ import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
+import { readRetrievalTrace, retrievalTraceRelativePath } from '../storage/retrieval-traces.js';
 import { readWorkObservations } from '../storage/work-observations.js';
-import { nativeProductScope } from '../storage/workspace-file-records.js';
+import { agentSessionsRoot, nativeProductScope } from '../storage/workspace-file-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import {
   createTestAgentSetup,
@@ -186,6 +190,8 @@ import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import * as attempts from './execution-attempt-records.js';
 import * as nativeExecutionAttempts from './execution-attempts.js';
+import { createExecutionStepJournalReader } from './execution-journal.js';
+import type { ExecutionJournalRef } from './execution-step-journal.js';
 import {
   commandInputHash,
   conversationTaskThreadId,
@@ -581,6 +587,8 @@ async function createWorkerContextExecutorFixture(
     /** Publishes the preceding question through its native owner before this receiving Turn exists. */
     readonly prepareThread?: (store: FsStore, threadId: string) => Promise<void>;
     readonly captureValue?: 'on' | 'off';
+    /** Exact owner-produced Artifact selected before admission and package preparation. */
+    readonly selectedArtifact?: { readonly id: string; readonly artifactVersion: number };
     /** Native outcome and turn.start delivery have no Task checkpoint to prepare. */
     readonly prepareTaskCheckpoint?: boolean;
     readonly materialContent?: string;
@@ -682,7 +690,10 @@ async function createWorkerContextExecutorFixture(
       schemaVersion: 1,
       objective: 'Prepare the accepted worker context.',
       acceptanceCriteria: ['The requested context is available.'],
-      contextRefs: [{ kind: 'item', id: contextItemId }],
+      contextRefs: [
+        { kind: 'item', id: contextItemId },
+        ...(options.selectedArtifact ? [{ kind: 'artifact', ...options.selectedArtifact }] : []),
+      ],
       resources: [],
       expectedArtifacts: [],
       constraints: { maxContextTokens, maxWorkerIterations: 1 },
@@ -10696,18 +10707,64 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   describe.sequential('direct-Task Knowledge delivery and completed-work lineage', () => {
-    // Keep the same completed Task for both observations; each runs without another physical launch.
-    let completed: {
+    // The original observations share one completed Task; the schema companion owns a fresh fixture.
+    type CompletedKnowledgeTask = {
       fixture: Awaited<ReturnType<typeof createWorkerContextExecutorFixture>>;
       app: ReturnType<typeof createApp>;
       launchSpy: MockInstance<FakeWorkerGovernanceBackend['submit']>;
+      admission: WorkspaceMutationAdmission;
+      selectedArtifact: ReturnType<FsStore['createArtifact']>;
+      selectedArtifactBytes: string;
+      journalRef: ExecutionJournalRef | null;
     };
-    beforeAll(async () => {
+    let completed: CompletedKnowledgeTask;
+    /** Produces one real completed Task and its governed Knowledge through the existing owners. */
+    async function prepareCompletedKnowledgeTask(
+      retainForCleanup: (value: CompletedKnowledgeTask) => void
+    ): Promise<CompletedKnowledgeTask> {
+      const admission = new WorkspaceMutationAdmission();
+      const selectedArtifactId = allocateEntityId('ar');
+      const selectedArtifactBytes = 'Exact selected Artifact history. '.repeat(300);
+      let selectedArtifact!: ReturnType<FsStore['createArtifact']>;
       const fixture = await createWorkerContextExecutorFixture('task-knowledge', {
         maxContextTokens: 240_000,
         skipInitialKnowledgeSelection: true,
+        selectedArtifact: { id: selectedArtifactId, artifactVersion: 1 },
+        prepareThread: async (store) => {
+          const recordedAt = new Date().toISOString();
+          selectedArtifact = withCanonicalFileWriteAdmission(
+            new FileStorageAdmission(store.getDataRoot()!, () => 0n),
+            () =>
+              store.createArtifact({
+                id: selectedArtifactId,
+                workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+                threadId: null,
+                turnId: null,
+                kind: 'file',
+                title: 'Schema application selected history',
+                status: 'ready',
+                summary: null,
+                version: 1,
+                content: { format: 'text', body: selectedArtifactBytes },
+                contentDigest: turnRuntimeSha256(Buffer.from(selectedArtifactBytes, 'utf8')),
+                lastMutationRequestId: 'schema598-selected-artifact',
+                origin: {
+                  kind: 'imported',
+                  sourceKind: 'direct-import',
+                  sourceId: 'schema598-selected-artifact',
+                  sourceDigest: turnRuntimeSha256(Buffer.from(selectedArtifactBytes, 'utf8')),
+                  actor: { kind: 'user', id: LOCAL_USER_ID },
+                  requestId: 'schema598-selected-artifact',
+                  recordedAt,
+                },
+                createdAt: recordedAt,
+                updatedAt: recordedAt,
+              })
+          );
+        },
       });
       const app = createApp({
+        workspaceMutationAdmission: admission,
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
         mode: 'local',
@@ -10903,7 +10960,19 @@ describe('WorkerGovernanceTurnExecutor', () => {
         now: () => '2026-07-15T00:00:03.000Z',
       });
 
-      completed = { fixture, app, launchSpy };
+      const completed: CompletedKnowledgeTask = {
+        fixture,
+        app,
+        launchSpy,
+        admission,
+        selectedArtifact,
+        selectedArtifactBytes,
+        journalRef: null,
+      };
+      // Preserve the existing cleanup owner if launch or later proof fails.
+      retainForCleanup(completed);
+      // Observe the real producer's admission; do not manufacture a journal identity.
+      const turnUpdates = vi.spyOn(fixture.store, 'updateTurn');
       await executor.startTurn(fixture.store, fixture.turn.id, fixture.workerRequest, {
         attemptId: testEntityId('attempt', `lease_${fixture.turn.id}`),
         agentSessionId: fixture.agentSessionId,
@@ -10913,6 +10982,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
         triggerActor: fixture.turn.triggerActor,
         workspaceRoots: [],
       });
+      const admissions = turnUpdates.mock.calls.flatMap(([id, , options]) =>
+        id === fixture.turn.id ? [...(options?.journalIntents ?? [])] : []
+      );
+      expect(admissions.length).toBeGreaterThan(0);
+      completed.journalRef = admissions[0]!.execution.ref;
+      expect(
+        admissions.every(
+          (row) => row.execution.ref.executionId === completed.journalRef!.executionId
+        )
+      ).toBe(true);
+      turnUpdates.mockRestore();
+      return completed;
+    }
+    beforeAll(async () => {
+      await prepareCompletedKnowledgeTask((value) => {
+        completed = value;
+      });
     }, 60_000);
     afterAll(() => {
       if (completed) {
@@ -10920,11 +11006,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         completed.fixture.coreDb.sqlite.close();
       }
     });
-    it('delivers selected Knowledge body and bounded excerpt through S39', () => {
-      const { launchSpy } = completed;
-      expect(launchSpy).toHaveBeenCalledTimes(1);
-    }, 60_000);
-    it('proves exact completed-work proposal lineage and refuses unavailable recovery evidence', async () => {
+
+    /** Proves the original exact lineage through public draft, human decision and retrieval. */
+    async function proveCompletedWorkLineage(completed: CompletedKnowledgeTask) {
       const { fixture, app } = completed;
 
       const completedTurn = fixture.store.getTurn(
@@ -11101,6 +11185,425 @@ describe('WorkerGovernanceTurnExecutor', () => {
           sourceReferences,
         }),
       ]);
+      return {
+        candidatePageBytes,
+        sourceReferences,
+        draftRequest,
+        drafted,
+        decisionRequestId,
+        decisionInput,
+      };
+    }
+
+    /** Proves #598 history preservation at the real schema/S39 seam while a public Task is live. */
+    async function assertLiveSchemaHistory(
+      completed: CompletedKnowledgeTask,
+      sourceReferences: string[],
+      candidatePageBytes: string
+    ) {
+      const { fixture, admission, selectedArtifact, selectedArtifactBytes, journalRef } = completed;
+      const workspaceId = workspaceIdForOwner(fixture.turn.owner);
+      const workspaceRoot = join(fixture.coreDb.dataRoot, 'workspaces', workspaceId);
+      const db = openTestWorkspaceDb(fixture.coreDb);
+      const target = getNanoHostRuntimeTarget(fixture.coreDb, 'runtime-target-test');
+      if (!target) throw new Error('The completed-work fixture RuntimeTarget is unavailable.');
+      const backend = new FakeWorkerGovernanceBackend();
+      const plan = backend.planSession.bind(backend);
+      backend.planSession = (pkg) => ({
+        ...plan(pkg),
+        deploymentId: target.deploymentId,
+        runtimeTargetId: target.targetId,
+      });
+      Object.assign(backend, { prepareAgentSessionContinuity: async () => 'absent' as const });
+      const reached = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const collect = backend.collectTranscript.bind(backend);
+      // External collection pauses after real submit acknowledgement and all S39 handoff writes.
+      const collection = vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
+        reached.resolve();
+        await release.promise;
+        return collect();
+      });
+      const turnUpdates = vi.spyOn(fixture.store, 'updateTurn');
+      const setup = createTestAgentSetup();
+      const executor = new WorkerGovernanceTurnExecutor({
+        backend,
+        coreDb: fixture.coreDb,
+        fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
+        now: () => new Date().toISOString(),
+      });
+      const app = createAppWithWorkspaceAuthority({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.coreDb.dataRoot,
+        store: fixture.store,
+        workspaceMutationAdmission: admission,
+        turnExecutor: executor,
+        agentManifests: [setup.manifest],
+        openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+      });
+      const thread = await fixture.store.createThread(workspaceId, 'Live schema history companion');
+      let liveTurnId: string | undefined;
+      const freeze = vi.spyOn(admission, 'tryFreeze');
+      try {
+        const accepted = await app.request(
+          ...operationRequest(
+            'task.start',
+            {
+              workspaceId,
+              threadId: thread.id,
+            },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId: randomUUID(),
+                input: 'Zygomorphic worker guidance',
+              }),
+            }
+          )
+        );
+        expect(accepted.status, await accepted.clone().text()).toBe(202);
+        const acceptedBody = (await accepted.json()) as { turn: { id: string } };
+        liveTurnId = acceptedBody.turn.id;
+        await Promise.race([
+          reached.promise,
+          delay(10_000).then(() => {
+            throw new Error('Live Task did not reach external collection after S39 delivery.');
+          }),
+        ]);
+        expect(backend.calls.filter((call) => call === 'submit')).toHaveLength(1);
+        const liveTurn = fixture.store.getTurnById(liveTurnId);
+        expect(['pending', 'running', 'cancel-requested']).toContain(liveTurn.status);
+        const liveAdmissions = turnUpdates.mock.calls.flatMap(([id, , options]) =>
+          id === liveTurnId ? [...(options?.journalIntents ?? [])] : []
+        );
+        expect(liveAdmissions.length).toBeGreaterThan(0);
+        const liveJournalRef = liveAdmissions[0]!.execution.ref;
+        expect(journalRef).not.toBeNull();
+
+        /** Reads exact produced authority and all delivered bytes; no lookup fallback supplies proof. */
+        const history = async (turnId: string, ref: ExecutionJournalRef) => {
+          const turn = fixture.store.getTurnById(turnId);
+          const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
+          const traceBytes = readFileSync(join(root, 'context-package.json'));
+          const packageBytes = readFileSync(join(root, 'context-package', 'package.json'));
+          const trace = parseWorkerContextPackageTrace(
+            JSON.parse(traceBytes.toString('utf8')),
+            packageBytes
+          );
+          const digest = readStrictWorkerContextPackageDigest({
+            coreDb: fixture.coreDb,
+            store: fixture.store,
+            workspaceDb: db,
+            threadId: turn.threadId,
+            turnId,
+          });
+          expect(digest).toBe(trace.contextPackageDigest);
+          expect(trace.agentSessionId).toBe(turn.agentSessionId);
+          const session = fixture.store.getAgentSession(trace.agentSessionId);
+          const aep = requireAgentEnvironmentPackageSnapshot(
+            db,
+            workspaceId,
+            trace.packageSnapshotId
+          );
+          expect(aep.snapshot.scope).toMatchObject({
+            workspaceId,
+            threadId: turn.threadId,
+            turnId,
+            agentSessionId: session.id,
+          });
+          const leases = attempts.listSchedulerExecutionAttemptsForTurn(fixture.coreDb, {
+            workspaceId,
+            threadId: turn.threadId,
+            turnId,
+          });
+          expect(leases).toHaveLength(1);
+          expect(leases[0]).toMatchObject({
+            agentSessionId: session.id,
+            inputRef: trace.packageSnapshotId,
+          });
+          const backendSession = getWorkerBackendSession(fixture.coreDb, leases[0]!.attemptId);
+          expect(backendSession).toMatchObject({
+            workspaceId,
+            threadId: turn.threadId,
+            turnId,
+            agentSessionId: session.id,
+            packageSnapshotId: trace.packageSnapshotId,
+            workspaceHandoffState: 'complete',
+          });
+          const journal = createExecutionStepJournalReader(db, ref.owner);
+          const execution = await journal.readExecution(ref);
+          expect(execution.workId).toBe(turnId);
+          expect(execution.definitionVersion).toBe('workspace-worker-turn/v1');
+          const ended = await journal.readEndedSteps(ref);
+          expect(ended.length).toBeGreaterThan(0);
+          const openInvocations = await Promise.all(
+            execution.openSteps.map(async (step) => {
+              // remainingMs is a derived clock view; every stored invocation field remains exact.
+              const { remainingMs: _remainingMs, ...stored } = await journal.readInvocation(step);
+              return stored;
+            })
+          );
+          const linkedInspections = await Promise.all(
+            [...execution.openSteps, ...ended.map((step) => step.ref)].map((step) =>
+              journal.readLinkedInspections(step)
+            )
+          );
+          const retrieval = trace.knowledgeSelectionInput!.retrievalTraceRef;
+          expect(readRetrievalTrace(workspaceRoot, retrieval)).not.toBeNull();
+          return {
+            trace,
+            traceBytes,
+            packageBytes,
+            turn,
+            session,
+            aep,
+            aepBytes: readFileSync(
+              join(
+                agentSessionsRoot(db),
+                session.id,
+                'aep-snapshots',
+                `${trace.packageSnapshotId}.json`
+              )
+            ),
+            leases,
+            backendSession,
+            execution,
+            ended,
+            openInvocations,
+            linkedInspections,
+            selectedArtifact: fixture.store.getArtifactVersion(
+              workspaceId,
+              selectedArtifact.id,
+              selectedArtifact.version
+            ).artifact,
+            inputs: listWorkspaceInputSnapshots(db, workspaceId),
+            materializations: listWorkspaceMaterializationRecords(db, workspaceId),
+            handles: listBackendWorkspaceHandles(db, workspaceId),
+            retrievalBytes: readFileSync(
+              join(workspaceRoot, retrievalTraceRelativePath(retrieval))
+            ),
+            files: trace.fileInventory.map((entry) => ({
+              path: entry.path,
+              bytes: readFileSync(join(root, 'context-package', entry.path)),
+            })),
+          };
+        };
+        const before = await history(fixture.turn.id, journalRef!);
+        const liveBefore = await history(liveTurnId, liveJournalRef);
+        expect(before.execution.phase).toBe('closed');
+        expect(['open', 'closing']).toContain(liveBefore.leases[0]!.phase);
+        expect(liveBefore.openInvocations.some((step) => step.control.kind === 'collect')).toBe(
+          true
+        );
+        expect(
+          liveBefore.openInvocations.every(
+            (step) =>
+              step.control.workId === liveTurnId &&
+              step.control.attemptId === liveBefore.leases[0]!.attemptId
+          )
+        ).toBe(true);
+        expect(before.trace.sourceFiles).toContainEqual(
+          expect.objectContaining({
+            source: expect.objectContaining({
+              kind: 'artifact',
+              artifactVersion: selectedArtifact.version,
+              reference: expect.objectContaining({ objectId: selectedArtifact.id }),
+            }),
+            originalDigest: selectedArtifact.contentDigest,
+            byteLength: Buffer.byteLength(selectedArtifactBytes),
+          })
+        );
+        expect(
+          fixture.store.getArtifactVersion(
+            workspaceId,
+            selectedArtifact.id,
+            selectedArtifact.version
+          ).artifact
+        ).toEqual(selectedArtifact);
+        expect(sourceReferences).toEqual([
+          `context-package:${fixture.turn.id}@${before.trace.contextPackageDigest}`,
+          `item:${
+            fixture.store
+              .listThreadItems(workspaceId, fixture.turn.threadId)
+              .filter(
+                (item) =>
+                  item.turnId === fixture.turn.id &&
+                  item.type === 'assistant-message' &&
+                  item.status === 'completed'
+              )
+              .at(-1)!.id
+          }`,
+          `turn:${fixture.turn.id}`,
+        ]);
+        const selected = readTestWorkspaceNotebookSelection(fixture.coreDb.dataRoot, workspaceId);
+        const notebookBytes = selected.notebook.readContent(selected.head.notebookCommit);
+        expect(notebookBytes['direct-task-lesson.md']).toBe(candidatePageBytes);
+        const originalSchema = selected.scopeSchemaText;
+        const candidate = `${originalSchema.trimEnd()}
+# Compatible schema with live Worker and immutable history.
+`;
+        const preview = await app.request(
+          ...operationRequest(
+            'knowledge.schema.preview',
+            { workspaceId },
+            {
+              body: JSON.stringify({
+                requestId: randomUUID(),
+                baseRevision: selected.head.notebookCommit,
+                schemaText: candidate,
+              }),
+            }
+          )
+        );
+        expect(preview.status, await preview.clone().text()).toBe(200);
+        const reviewed = PreviewKnowledgeSchemaResponseSchema.parse(await preview.json());
+        expect(reviewed.inventoryComplete).toBe(true);
+        expect(
+          reviewed.records.every((row) => row.status === 'valid' && row.diagnostics.length === 0)
+        ).toBe(true);
+        expect(reviewed.dependencyInventory.map((row) => row.family).sort()).toEqual([
+          'indexes',
+          'maintenance',
+          'proposals',
+          'trace-references',
+        ]);
+        expect(
+          reviewed.dependencyInventory.every(
+            (row) =>
+              row.complete &&
+              row.inventoryDigest &&
+              row.diagnostics.length === 0 &&
+              row.records.every(
+                (record) => record.status === 'valid' && record.diagnostics.length === 0
+              )
+          )
+        ).toBe(true);
+        const traces = reviewed.dependencyInventory.find(
+          (row) => row.family === 'trace-references'
+        )!;
+        expect(traces.records).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: `context-package:${fixture.turn.id}`, status: 'valid' }),
+            expect.objectContaining({ id: `context-package:${liveTurnId}`, status: 'valid' }),
+          ])
+        );
+        // Both strict reads and complete preview MUST pass before the intended old idle-only refusal.
+        const requestId = randomUUID();
+        const applyInput = {
+          requestId,
+          baseRevision: reviewed.notebookRevision,
+          schemaText: candidate,
+          reviewedReport: reviewed,
+        };
+        const apply = () =>
+          app.request(
+            ...knowledgeOperationRequest(
+              'knowledge.schema.apply',
+              { workspaceId },
+              { body: JSON.stringify(applyInput) }
+            )
+          );
+        const applied = await apply();
+        expect(applied.status, await applied.clone().text()).toBe(200);
+        const result = (await applied.json()) as { reportDigest: string };
+        expect(freeze).not.toHaveBeenCalled();
+        expect(admission.isClosed(workspaceId)).toBe(false);
+        expect(await history(fixture.turn.id, journalRef!)).toEqual(before);
+        expect(await history(liveTurnId, liveJournalRef)).toEqual(liveBefore);
+        const after = readTestWorkspaceNotebookSelection(fixture.coreDb.dataRoot, workspaceId);
+        expect(after.head.notebookCommit).toBe(selected.head.notebookCommit);
+        expect(after.scopeSchemaText).toBe(candidate);
+        expect(after.notebook.readContent(after.head.notebookCommit)).toEqual(notebookBytes);
+        const reportBytes = canonicalJsonText(
+          writeRetainedV1({
+            requiredFeatures: [],
+            reviewedReport: reviewed,
+            actualReport: reviewed,
+          })
+        );
+        expect(result).toEqual({
+          workspaceId,
+          notebookRevision: reviewed.notebookRevision,
+          baseSchemaDigest: reviewed.baseSchemaDigest,
+          candidateSchemaDigest: reviewed.candidateSchemaDigest,
+          reportDigest: turnRuntimeSha256(Buffer.from(reportBytes, 'utf8')),
+        });
+        const schemaHistory = join(workspaceRoot, 'knowledge', 'schema', 'history');
+        expect(
+          readFileSync(join(schemaHistory, `${reviewed.baseSchemaDigest.slice(7)}.yaml`), 'utf8')
+        ).toBe(originalSchema);
+        expect(
+          readFileSync(
+            join(schemaHistory, `${reviewed.candidateSchemaDigest.slice(7)}.yaml`),
+            'utf8'
+          )
+        ).toBe(candidate);
+        expect(
+          readFileSync(join(schemaHistory, `${result.reportDigest.slice(7)}.json`), 'utf8')
+        ).toBe(reportBytes);
+        const receipt = fixture.store.getCommandRequest(
+          'knowledge.schema.apply',
+          requestId,
+          { workspaceId, actorId: LOCAL_USER_ID },
+          db
+        );
+        expect(receipt?.response).toEqual({
+          kind: 'knowledge_schema_report',
+          id: result.reportDigest,
+        });
+        const audits = listWorkspaceAuditEvents(db, workspaceId).filter(
+          (row) => row.requestId === requestId
+        );
+        expect(audits).toHaveLength(1);
+        expect(audits[0]).toMatchObject({
+          outcome: 'succeeded',
+          resource: `knowledge-schema-report:${result.reportDigest}`,
+        });
+        const replay = await apply();
+        expect(replay.status, await replay.clone().text()).toBe(200);
+        expect(await replay.json()).toEqual(result);
+        expect(
+          fixture.store.getCommandRequest(
+            'knowledge.schema.apply',
+            requestId,
+            { workspaceId, actorId: LOCAL_USER_ID },
+            db
+          )
+        ).toEqual(receipt);
+        expect(
+          listWorkspaceAuditEvents(db, workspaceId).filter((row) => row.requestId === requestId)
+        ).toEqual(audits);
+        expect(await history(fixture.turn.id, journalRef!)).toEqual(before);
+        expect(await history(liveTurnId, liveJournalRef)).toEqual(liveBefore);
+      } finally {
+        release.resolve();
+        try {
+          if (liveTurnId)
+            await vi.waitFor(
+              () => {
+                expect(fixture.store.getTurnById(liveTurnId!).status).toBe('completed');
+              },
+              { timeout: 10_000 }
+            );
+        } finally {
+          collection.mockRestore();
+          turnUpdates.mockRestore();
+          freeze.mockRestore();
+          db.sqlite.close();
+        }
+      }
+    }
+
+    it('delivers selected Knowledge body and bounded excerpt through S39', () => {
+      const { launchSpy } = completed;
+      expect(launchSpy).toHaveBeenCalledTimes(1);
+    }, 60_000);
+    it('proves exact completed-work proposal lineage and refuses unavailable recovery evidence', async () => {
+      const { fixture, app } = completed;
+      const { candidatePageBytes, draftRequest, drafted, decisionRequestId, decisionInput } =
+        await proveCompletedWorkLineage(completed);
+
       const changedPageBytes = `${candidatePageBytes.replace('review_state: "accepted"', 'review_state: "user-authored"')}Intervening edit.\n`;
       const editedResponse = await app.request(
         ...knowledgeOperationRequest(
@@ -11179,6 +11682,29 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ]
       ).toBe(changedPageBytes);
     }, 60_000);
+    describe.sequential('live schema application with independent completed-work history', () => {
+      let companion: CompletedKnowledgeTask | undefined;
+      let lineage: Awaited<ReturnType<typeof proveCompletedWorkLineage>>;
+      beforeAll(async () => {
+        const prepared = await prepareCompletedKnowledgeTask((value) => {
+          companion = value;
+        });
+        lineage = await proveCompletedWorkLineage(prepared);
+      }, 60_000);
+      afterAll(() => {
+        if (companion) {
+          companion.launchSpy.mockRestore();
+          companion.fixture.coreDb.sqlite.close();
+        }
+      });
+      it('preserves exact completed and live Task history across schema application and replay', async () => {
+        await assertLiveSchemaHistory(
+          companion!,
+          lineage.sourceReferences,
+          lineage.candidatePageBytes
+        );
+      }, 60_000);
+    });
     // This harness covers real Kernel, Git, S39 launch and Review recovery; it is not a product latency oracle.
   });
 

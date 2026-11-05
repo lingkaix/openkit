@@ -1,11 +1,22 @@
 import { isAbsolute } from 'node:path';
-import { BootReadinessSnapshotSchema, GoalViewSchema } from '@openkit/app-api-schemas';
+import {
+  ApplyKnowledgeSchemaRequestSchema,
+  type ApplyKnowledgeSchemaResponse,
+  ApplyKnowledgeSchemaResponseSchema,
+  BootReadinessSnapshotSchema,
+  GoalViewSchema,
+  PreviewKnowledgeSchemaResponseSchema,
+} from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
   AuditEventSchema,
   deriveEntityId,
   ItemSchema,
+  KnowledgeBaseIdSchema,
+  PolicyDocumentV1Schema,
+  RequestIdSchema,
   SseEventEnvelopeSchema,
+  UserActorRefSchema,
   UserIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -40,6 +51,7 @@ import {
   ControlBootstrapEnsureResultSchema,
   ControlBootstrapEnsureSchema,
 } from '../auth/bootstrap-ensure-codecs.js';
+import type { Actor } from '../auth/identity.js';
 import {
   type ControlNanoHostTransportInput,
   ControlNanoHostTransportInputSchema,
@@ -47,6 +59,7 @@ import {
   ControlNanoHostTransportResultSchema,
   isNanoHostTransportAdminRefusal,
 } from '../auth/nanohost-transport-codecs.js';
+import type { ScopeAdmissionFailure } from '../bootstrap/readiness.js';
 import {
   ControlAppRefusalSchema,
   type ControlAppResult,
@@ -69,6 +82,7 @@ import {
   type ControlGoalInput,
   ControlGoalInputSchema,
 } from '../runtime/goal-owner.js';
+import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import {
   type ControlPendingCommandResult,
   ControlPendingCommandResultSchema,
@@ -118,6 +132,11 @@ import {
   ControlCapabilityWireInputSchema,
   controlCapabilityText,
 } from './control-store-capability.js';
+import { ControlScalarTextSchema, readControlScalarText } from './control-store-input.js';
+import {
+  controlKnowledgeContentSchema,
+  decodeControlKnowledgeHead,
+} from './control-store-knowledge-heads.js';
 import {
   type ControlMaintenanceAdmissionInput,
   ControlMaintenanceAdmissionInputSchema,
@@ -344,6 +363,7 @@ import {
 } from './workspace-review-codecs.js';
 import {
   type ControlCoreSharing,
+  ControlCoreSharingActorSchema,
   type ControlCoreSharingRefusal,
   ControlCoreSharingRefusalSchema,
   type ControlCoreSharingResult,
@@ -363,7 +383,114 @@ import {
 } from './workspace-takeover-codecs.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 77;
+export const CONTROL_WORKER_VERSION = 78;
+
+/** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
+const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
+  (actor): Actor => ({
+    kind: actor.kind,
+    userId: actor.userId,
+    ...(actor.sessionId !== undefined ? { sessionId: actor.sessionId } : {}),
+    ...(actor.tokenId !== undefined ? { tokenId: actor.tokenId } : {}),
+    ...(actor.tokenScope !== undefined ? { tokenScope: actor.tokenScope } : {}),
+    ...(actor.tokenWorkspaceIds !== undefined
+      ? { tokenWorkspaceIds: actor.tokenWorkspaceIds }
+      : {}),
+    ...(actor.adminTokenId !== undefined ? { adminTokenId: actor.adminTokenId } : {}),
+  })
+);
+
+export const ControlSchemaApplicationFactsSchema = z
+  .object({
+    presentedActor: schemaApplicationActor,
+    effectivePolicy: PolicyDocumentV1Schema,
+    reviewRequiredPageIds: z.array(z.string()),
+    scopeRefusals: z.array(
+      z
+        .object({
+          scope: z.enum(['workspace', 'user']),
+          id: z.string().min(1),
+          check: z.enum(['layout', 'database', 'records', 'recovery', 'index', 'retired']),
+          requiredFeature: z.string().optional(),
+        })
+        .strict()
+        .transform(
+          ({ requiredFeature, ...failure }): ScopeAdmissionFailure =>
+            requiredFeature === undefined ? failure : { ...failure, requiredFeature }
+        )
+    ),
+  })
+  .strict();
+
+/** The exact same synchronous supplier is used before posting and before physical admission. */
+export type ControlSchemaApplicationFacts = z.infer<typeof ControlSchemaApplicationFactsSchema>;
+
+const schemaApplicationReceipt = z
+  .object({
+    key: z.string().min(1),
+    command: z.literal('knowledge.schema.apply'),
+    requestId: RequestIdSchema,
+    scope: z.record(z.string(), z.string()),
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    responseKind: z.literal('knowledge_schema_report'),
+    createdAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+  })
+  .strict() satisfies z.ZodType<IdempotentCommandReceipt>;
+
+/** One closed schema application; current authority and dependency decisions remain in native owners. */
+export const ControlSchemaApplicationInputSchema = z
+  .object({
+    request: ApplyKnowledgeSchemaRequestSchema,
+    requestActor: schemaApplicationActor,
+    producer: UserActorRefSchema,
+    receipt: schemaApplicationReceipt,
+    candidateHead: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        knowledgeBaseId: KnowledgeBaseIdSchema,
+        notebookCommit: z.string().min(1),
+        schemaContent: controlKnowledgeContentSchema,
+      })
+      .strict()
+      .transform((head, context) => {
+        try {
+          return decodeControlKnowledgeHead({ ...head, requiredFeatures: [] });
+        } catch {
+          context.addIssue({ code: 'custom', message: 'Invalid Workspace Knowledge head.' });
+          return z.NEVER;
+        }
+      }),
+    facts: ControlSchemaApplicationFactsSchema,
+  })
+  .strict();
+
+/** Complete typed payload transported through the original binary content account. */
+export type ControlSchemaApplicationInput = z.infer<typeof ControlSchemaApplicationInputSchema>;
+
+/** Exact original scalar frame; reports have no new per-report maximum. */
+export const ControlSchemaApplicationWireSchema = ControlScalarTextSchema.extend({
+  workspaceId: WorkspaceIdSchema,
+}).strict();
+
+/** Closed native envelope, separate from the complete schema application payload. */
+export type ControlSchemaApplicationWire = z.infer<typeof ControlSchemaApplicationWireSchema>;
+
+/** Decodes exact UTF-8 bytes and the original domain codecs before native computation. */
+export function readControlSchemaApplicationInput(
+  wire: ControlSchemaApplicationWire,
+  content: ArrayBuffer
+): ControlSchemaApplicationInput {
+  const input = ControlSchemaApplicationInputSchema.parse(
+    JSON.parse(readControlScalarText(wire, content))
+  );
+  if (
+    input.request.workspaceId !== wire.workspaceId ||
+    input.candidateHead.workspaceId !== wire.workspaceId
+  )
+    throw new TypeError('Schema application Workspace does not match its native owner.');
+  return input;
+}
 
 /** The original boot row and Server Audit, committed on the existing Core native lifetime. */
 export const ControlBootAuditInputSchema = z
@@ -429,7 +556,7 @@ export const ControlPhysicalForecastDecisionSchema = z
     id: z.number().int().nonnegative().safe(),
     database: z.string().min(1),
     operation: z.literal('physical-forecast'),
-    decision: z.enum(['admitted', 'no-space', 'unavailable']),
+    decision: z.enum(['admitted', 'no-space', 'unavailable', 'precondition']),
   })
   .strict();
 
@@ -612,6 +739,11 @@ export type ControlWorkerCommand =
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
       | {
+          readonly operation: 'schema-application';
+          readonly input: ControlSchemaApplicationWire;
+          readonly content: ArrayBuffer;
+        }
+      | {
           readonly operation: 'material';
           readonly input: ControlMaterialWireInput;
           readonly content?: ArrayBuffer;
@@ -752,6 +884,7 @@ export function controlWorkerInputBytes(
               command.operation === 'scheduler-admission' ||
               command.operation === 'generative-presentation' ||
               command.operation === 'app-kernel' ||
+              command.operation === 'schema-application' ||
               command.operation === 'thread-read-membership' ||
               command.operation === 'execution-attempt' ||
               command.operation === 'worker-control-final-status' ||
@@ -847,6 +980,7 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'goal'
     | 'capability'
     | 'maintenance'
+    | 'schema-application'
     | 'material'
     | 'review'
     | 'pending'
@@ -880,6 +1014,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlScopedNotebookSqlRefusalSchema>
   | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
+  | z.infer<typeof ControlSchemaApplicationRefusalSchema>
   | z.infer<typeof ControlWorkerFinalStatusRefusalSchema>
   | z.infer<typeof ControlWorkerHeartbeatRefusalSchema>
   | z.infer<typeof ControlWorkerRecordRefusalSchema>
@@ -893,6 +1028,50 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlRecoverySourceReactivationRefusalSchema>
   | ControlCoreSharingRefusal
   | ControlSchedulerAdmissionRefusal;
+
+/** Safe current impact only; native exception diagnostics and input facts never leave the owner. */
+export const ControlSchemaApplicationRefusalSchema = z
+  .object({
+    operation: z.literal('schema-application'),
+    code: z.enum([
+      'invalid_request',
+      'conflict',
+      'review_required',
+      'recovery_required',
+      'idempotency_key_conflict',
+      'workspace_access_denied',
+      'schema_readset_changed',
+      'operation_storage_unavailable',
+    ]),
+    message: z.enum([
+      'Schema application invalid request.',
+      'Schema application conflict.',
+      'Schema application review required.',
+      'Schema application recovery required.',
+      'Schema application idempotency key conflict.',
+      'Schema application workspace access denied.',
+      'Schema application schema readset changed.',
+      'Schema application operation storage unavailable.',
+    ]),
+    status: z.union([z.literal(400), z.literal(403), z.literal(409), z.literal(503)]),
+    details: z
+      .union([
+        z
+          .object({
+            baseSchemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+            currentSchemaDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+          })
+          .strict(),
+        z
+          .object({
+            reviewedReport: PreviewKnowledgeSchemaResponseSchema,
+            actualReport: PreviewKnowledgeSchemaResponseSchema,
+          })
+          .strict(),
+      ])
+      .optional(),
+  })
+  .strict();
 
 /**
  * Worker reply. Success for writes follows the outer FULL-durability COMMIT.
@@ -1155,6 +1334,11 @@ export type ControlWorkerReply = {
     }
   | {
       readonly status: 'ok';
+      readonly operation: 'schema-application';
+      readonly result: ApplyKnowledgeSchemaResponse;
+    }
+  | {
+      readonly status: 'ok';
       readonly operation: 'material';
       readonly result: ControlMaterialCommandResult;
     }
@@ -1315,6 +1499,9 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     );
   if (isRecord(value) && value.operation === 'core-sharing')
     return ControlCoreSharingRefusalSchema.safeParse(value).success;
+  if (isRecord(value) && value.operation === 'schema-application')
+    return ControlSchemaApplicationRefusalSchema.safeParse(value).success;
+
   if (isRecord(value) && value.operation === 'app-kernel')
     return ControlAppRefusalSchema.safeParse(value).success;
 
@@ -1591,6 +1778,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlCoreSharingResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'evaluation-candidate')
     return ControlEvaluationCandidateResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'schema-application')
+    return ApplyKnowledgeSchemaResponseSchema.safeParse(reply.result).success;
   if (reply.operation === 'material')
     return ControlMaterialCommandResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'maintenance')
@@ -1990,6 +2179,15 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       ControlWorkerRejectedEvidenceSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
+  if (value.operation === 'schema-application') {
+    const parsed = ControlSchemaApplicationWireSchema.safeParse(value.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'input', 'content']) &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
   if (value.operation === 'app-kernel') {
     const parsed = ControlAppWireSchema.safeParse(value.input);
     return (

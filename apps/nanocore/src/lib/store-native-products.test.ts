@@ -1,10 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -21,9 +22,13 @@ import {
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { prepareAuditEvent } from '../audit-events.js';
+import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
+import type { WorkerContextPackageSourceFile } from '../context/worker-context-package.js';
 import { WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSpan } from '../runtime/execution-step-journal.js';
+import { artifactVersionRecordPath } from '../storage/artifacts/artifact-version-records.js';
 import {
   ControlProductPreconditionError,
   closeWorkspaceProductReadHandles,
@@ -947,4 +952,517 @@ describe('native Store authority and immutable closure', () => {
     },
     30_000
   );
+});
+
+// Schema #598 proposal: use the real FsStore on its caller's actual admitted connection.
+describe('FsStore borrowed native owner binding', () => {
+  it('keeps the caller transaction for every product read and sees native progress after rollback', async () => {
+    const f = await workspaceFixture();
+    const first = await f.store.createItem(message(f.turn, 'Original owner snapshot'));
+    const session = await f.store.createAgentSession({
+      id: allocateEntityId('as'),
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      agentId: 'agent_codex_host',
+      status: 'ready',
+      message: null,
+      createdAt: f.turn.startedAt!,
+      updatedAt: f.turn.startedAt!,
+    });
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    const scope = { ...f.scope, sqlite: db.sqlite };
+    const prepare = db.sqlite.prepare;
+    const observed: string[] = [];
+    // Observation only. Every query executes the original method on the same actual connection.
+    db.sqlite.prepare = function (this: typeof db.sqlite, sql: string) {
+      observed.push(sql);
+      return Reflect.apply(prepare, this, [sql]);
+    } as typeof prepare;
+    try {
+      db.sqlite.exec('BEGIN');
+      expect(db.sqlite.prepare('SELECT id FROM control_turns WHERE id=?').get(f.turn.id)).toEqual({
+        id: f.turn.id,
+      });
+      const bound = new FsStore({ dataRoot: f.root, nativeProductScope: scope });
+      expect(bound).toBeInstanceOf(FsStore);
+      expect(bound.getTurnById(f.turn.id).items).toEqual([first]);
+      const afterConstruction = observed.length;
+      const second = await f.store.createItem(message(f.turn, 'Native progress'));
+      await f.store.updateThread(f.workspace.id, f.thread.id, { name: 'New native name' });
+      await f.store.updateAgentSession(session.id, { status: 'busy', message: 'Native progress' });
+      await f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: f.turn.startedAt! });
+      await f.store.updateWorkspace(f.workspace.id, { status: 'archived' });
+      // Core Storage: current SQL, not Main's caches, owns this caller's selected view.
+      expect(f.store.getTurnById(f.turn.id).items).toEqual([first, second]);
+      expect(bound.getWorkspace(f.workspace.id).status).toBe('active');
+      expect(bound.listThreads(f.workspace.id).map(({ name }) => name)).toEqual([f.thread.name]);
+      expect(bound.getThread(f.workspace.id, f.thread.id).name).toBe(f.thread.name);
+      expect(bound.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id).status).toBe('running');
+      expect(bound.getTurn(f.workspace.id, f.thread.id, f.turn.id).items).toEqual([first]);
+      expect(bound.getTurnById(f.turn.id).items).toEqual([first]);
+      expect(bound.listThreadTurns(f.workspace.id, f.thread.id)[0]!.items).toEqual([first]);
+      expect(bound.listWorkspaceAgentSessions(f.workspace.id).map(({ status }) => status)).toEqual([
+        'ready',
+      ]);
+      expect(bound.getAgentSession(session.id).status).toBe('ready');
+      expect(observed.length).toBeGreaterThan(afterConstruction);
+      expect(db.sqlite.inTransaction).toBe(true);
+      expect(db.sqlite.open).toBe(true);
+      db.sqlite.exec('ROLLBACK');
+      expect(bound.getWorkspace(f.workspace.id).status).toBe('archived');
+      expect(bound.listThreads(f.workspace.id)[0]!.name).toBe('New native name');
+      expect(bound.getThread(f.workspace.id, f.thread.id).name).toBe('New native name');
+      expect(bound.getTurnMetadata(f.workspace.id, f.thread.id, f.turn.id).status).toBe(
+        'completed'
+      );
+      expect(bound.getTurnById(f.turn.id).items).toEqual([first, second]);
+      expect(bound.getAgentSession(session.id).status).toBe('busy');
+      expect(db.sqlite.open).toBe(true);
+      expect(db.sqlite.inTransaction).toBe(false);
+    } finally {
+      db.sqlite.prepare = prepare;
+      if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
+      db.sqlite.close();
+    }
+  }, 30_000);
+
+  it('rejects a mismatched physical binding without taking the caller connection', async () => {
+    const f = await workspaceFixture();
+    const other = await f.store.createWorkspace('Other physical owner');
+    const otherScope = nativeProductScope(f.root, { kind: 'workspace', workspaceId: other.id });
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    try {
+      expect(
+        () =>
+          new FsStore({
+            dataRoot: f.root,
+            nativeProductScope: { ...otherScope, sqlite: db.sqlite },
+          })
+      ).toThrow();
+      expect(db.sqlite.open).toBe(true);
+      expect(
+        db.sqlite.prepare('SELECT id FROM control_workspaces WHERE id=?').get(f.workspace.id)
+      ).toEqual({ id: f.workspace.id });
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it.each([
+    'root',
+    'mount',
+    'knowledgeBaseId',
+  ] as const)('refuses a contentMount-only %s contradiction before product metadata reads', async (field) => {
+    const f = await workspaceFixture();
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    // The original physical owner supplies this tuple; the test defines no default binding.
+    const contentMount = {
+      ...f.scope.contentMount,
+      ...(field === 'root'
+        ? { root: join(f.scope.contentMount.root, 'contradictory-root') }
+        : field === 'mount'
+          ? { mount: `${f.scope.contentMount.mount}-contradictory` }
+          : { knowledgeBaseId: allocateEntityId('kb') }),
+    };
+    const prepare = db.sqlite.prepare;
+    const metadataReads: string[] = [];
+    // Observe the original connection without substituting a query or its result.
+    db.sqlite.prepare = function (this: typeof db.sqlite, sql: string) {
+      if (/\bcontrol_(workspaces|threads|turns|agent_sessions)\b/i.test(sql))
+        metadataReads.push(sql);
+      return Reflect.apply(prepare, this, [sql]);
+    } as typeof prepare;
+    try {
+      db.sqlite.exec('BEGIN');
+      expect(
+        () =>
+          new FsStore({
+            dataRoot: f.root,
+            nativeProductScope: { ...f.scope, contentMount, sqlite: db.sqlite },
+          })
+      ).toThrow(expect.objectContaining({ code: 'recovery_required' }));
+      expect(metadataReads).toEqual([]);
+      expect(db.sqlite.open).toBe(true);
+      expect(db.sqlite.inTransaction).toBe(true);
+      const bound = new FsStore({
+        dataRoot: f.root,
+        nativeProductScope: { ...f.scope, sqlite: db.sqlite },
+      });
+      expect(bound.getWorkspace(f.workspace.id).name).toBe(f.workspace.name);
+      expect(db.sqlite.inTransaction).toBe(true);
+      db.sqlite.exec('ROLLBACK');
+      expect(db.sqlite.open).toBe(true);
+    } finally {
+      db.sqlite.prepare = prepare;
+      if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
+      db.sqlite.close();
+    }
+  });
+
+  it('reads both Artifact origins and exact Item-backed revisions through the original S39 owner', async () => {
+    const f = await workspaceFixture();
+    const timestamp = f.turn.startedAt!;
+    const original = '\uFEFFimported\r\noriginal\n';
+    const contentDigest = (body: string) =>
+      `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`;
+    const imported = await f.store.createArtifact({
+      id: allocateEntityId('ar'),
+      workspaceId: f.workspace.id,
+      threadId: null,
+      turnId: null,
+      kind: 'file',
+      title: 'Imported',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: original },
+      contentDigest: contentDigest(original),
+      lastMutationRequestId: 'bound-import',
+      origin: {
+        kind: 'imported',
+        sourceKind: 'direct-import',
+        sourceId: 'bound-import',
+        sourceDigest: contentDigest(original),
+        actor,
+        requestId: 'bound-import',
+        recordedAt: timestamp,
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    const output = await f.store.createArtifact({
+      id: allocateEntityId('ar'),
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      turnId: f.turn.id,
+      kind: 'summary',
+      title: 'Work output',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: 'Turn original\r\n' },
+      contentDigest: contentDigest('Turn original\r\n'),
+      lastMutationRequestId: 'bound-output',
+      origin: {
+        kind: 'turn-output',
+        threadId: f.thread.id,
+        turnId: f.turn.id,
+        requestId: 'bound-output',
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    const coreDb = openCoreDb(f.root);
+    try {
+      const bound = new FsStore({
+        dataRoot: f.root,
+        nativeProductScope: { ...f.scope, sqlite: db.sqlite },
+      });
+      expect(
+        bound
+          .listArtifacts(f.workspace.id)
+          .map(({ id }) => id)
+          .sort()
+      ).toEqual([imported.id, output.id].sort());
+      expect(bound.getArtifactVersion(f.workspace.id, imported.id, 1).artifact).toEqual(imported);
+      expect(bound.getArtifactVersion(f.workspace.id, output.id, 1).artifact).toEqual(output);
+      expect(bound.getTurnById(f.turn.id).items).toContainEqual(
+        expect.objectContaining({
+          type: 'artifact-reference',
+          artifactId: output.id,
+          artifactVersion: 1,
+          lastMutationRequestId: 'bound-output',
+          threadId: f.thread.id,
+          turnId: f.turn.id,
+        })
+      );
+      const revised = await f.store.commitArtifactVersion({
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        artifactId: imported.id,
+        expectedArtifactVersion: 1,
+        actor,
+        requestId: 'bound-revision',
+        recordedAt: timestamp,
+        title: 'Later current title',
+        summary: null,
+        content: { format: 'text', body: 'New original\n' },
+      });
+      expect(bound.getArtifact(f.workspace.id, imported.id)).toEqual(revised.artifact);
+      expect(bound.getArtifactVersion(f.workspace.id, imported.id, 1).artifact).toEqual(imported);
+      expect(bound.getArtifactVersion(f.workspace.id, imported.id, 2)).toEqual(revised);
+      expect(
+        bound
+          .listArtifactVersions(f.workspace.id, imported.id)
+          .map(({ artifactVersion }) => artifactVersion)
+      ).toEqual([1, 2]);
+      expect(bound.getTurnById(revised.version.turnId!).items).toContainEqual(
+        expect.objectContaining({
+          type: 'artifact-reference',
+          artifactId: imported.id,
+          artifactVersion: 2,
+          lastMutationRequestId: 'bound-revision',
+        })
+      );
+      const authority = createWorkerContextPackageAuthorityReader({
+        coreDb,
+        workspaceDb: db,
+        store: bound,
+      });
+      // Transient public selector input, not a retained trace or a hand-authored authority record.
+      const source: WorkerContextPackageSourceFile = {
+        source: {
+          kind: 'artifact',
+          artifactVersion: 1,
+          reference: {
+            scopeId: `artifact/workspace/${f.workspace.id}`,
+            objectId: imported.id,
+          },
+        },
+        originalDigest: imported.contentDigest,
+        byteLength: Buffer.byteLength(original),
+        mediaType: 'text/plain',
+        originalSnapshotPath: 'originals/source/payload',
+        packagePath: 'sources/source.txt',
+        projection: {
+          kind: 'descriptor',
+          sourceRevision: '1',
+          representationId: 'fixture',
+          representationDigest: imported.contentDigest,
+          representationByteLength: 0,
+          deliveredDigest: imported.contentDigest,
+          ranges: [],
+          byteLength: 0,
+          truncated: true,
+          availability: 'unavailable',
+          originalSnapshotPath: 'originals/source/payload',
+        },
+      };
+      expect(authority.readSourceFile!(source)).toEqual({
+        originalDigest: imported.contentDigest,
+        byteLength: Buffer.byteLength(original),
+        mediaType: 'text/plain',
+      });
+      // Exact retained bytes must be read again, even after a successful bound read.
+      const path = artifactVersionRecordPath(
+        join(f.root, 'workspaces', f.workspace.id),
+        imported.id,
+        1
+      );
+      const payload = join(path, '..', 'payload');
+      const before = readFileSync(payload);
+      chmodSync(payload, 0o600);
+      writeFileSync(payload, 'corrupt original');
+      expect(() => bound.getArtifactVersion(f.workspace.id, imported.id, 1)).toThrow(
+        expect.objectContaining({ code: 'recovery_required' })
+      );
+      expect(authority.readSourceFile!(source)).toBeNull();
+      expect(readFileSync(payload)).not.toEqual(before);
+      expect(readFileSync(payload, 'utf8')).toBe('corrupt original');
+      expect(db.sqlite.open).toBe(true);
+    } finally {
+      coreDb.sqlite.close();
+      db.sqlite.close();
+    }
+  }, 30_000);
+
+  it('refuses a real future Artifact directory without its selected head and Item witness', async () => {
+    const f = await workspaceFixture();
+    const timestamp = f.turn.startedAt!;
+    const body = 'Original output\n';
+    const artifact = await f.store.createArtifact({
+      id: allocateEntityId('ar'),
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      turnId: f.turn.id,
+      kind: 'summary',
+      title: 'Original',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body },
+      contentDigest: `sha256:${createHash('sha256').update(body).digest('hex')}`,
+      lastMutationRequestId: 'bound-gap-original',
+      origin: {
+        kind: 'turn-output',
+        threadId: f.thread.id,
+        turnId: f.turn.id,
+        requestId: 'bound-gap-original',
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    await f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
+    const workspaceRoot = join(f.root, 'workspaces', f.workspace.id);
+    const headPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
+    const acknowledgedHead = readFileSync(headPath);
+    const revised = await f.store.commitArtifactVersion({
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      artifactId: artifact.id,
+      expectedArtifactVersion: 1,
+      actor,
+      requestId: 'bound-gap-next',
+      recordedAt: timestamp,
+      title: 'Later',
+      summary: null,
+      content: { format: 'text', body: 'Later original\n' },
+    });
+    await shutdownControlStoreWorkerClient();
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    const path = artifactVersionRecordPath(workspaceRoot, artifact.id, 2);
+    const descriptor = readFileSync(path);
+    const payload = readFileSync(join(path, '..', 'payload'));
+    try {
+      const bound = new FsStore({
+        dataRoot: f.root,
+        nativeProductScope: { ...f.scope, sqlite: db.sqlite },
+      });
+      expect(bound.getArtifactVersion(f.workspace.id, artifact.id, 2)).toEqual(revised);
+      // Fault after owner-produced state: restore the exact previous head and remove later SQL proof.
+      // This models the file-only cut; it does not claim to have produced a real lost acknowledgement.
+      writeFileSync(headPath, acknowledgedHead);
+      db.sqlite
+        .prepare('DELETE FROM control_product_entries WHERE turn_id=?')
+        .run(revised.version.turnId!);
+      // Terminal publication also retains Turn-owned observations with enforced foreign keys.
+      db.sqlite
+        .prepare('DELETE FROM control_work_observations WHERE turn_id=?')
+        .run(revised.version.turnId!);
+      db.sqlite.prepare('DELETE FROM control_turns WHERE id=?').run(revised.version.turnId!);
+      expect(() => bound.getArtifactVersion(f.workspace.id, artifact.id, 1)).toThrow(
+        expect.objectContaining({ code: 'recovery_required' })
+      );
+      expect(() => bound.getArtifactVersion(f.workspace.id, artifact.id, 2)).toThrow();
+      expect(readFileSync(headPath)).toEqual(acknowledgedHead);
+      expect(readFileSync(path)).toEqual(descriptor);
+      expect(readFileSync(join(path, '..', 'payload'))).toEqual(payload);
+      expect(db.sqlite.open).toBe(true);
+    } finally {
+      db.sqlite.close();
+    }
+  }, 30_000);
+
+  it('keeps foreign opaque fallback and duplicate refusal without hydrating unrelated bodies', async () => {
+    const f = await workspaceFixture();
+    const foreign = await f.store.createWorkspace('Foreign owner');
+    const thread = await f.store.createThread(foreign.id, 'Foreign Thread');
+    const turn = await f.store.createTurn(foreign.id, thread.id, 'Foreign input', actor);
+    const session = await f.store.createAgentSession({
+      id: allocateEntityId('as'),
+      workspaceId: foreign.id,
+      threadId: thread.id,
+      agentId: 'agent_codex_host',
+      status: 'ready',
+      message: null,
+      createdAt: turn.startedAt!,
+      updatedAt: turn.startedAt!,
+    });
+    const brokenThread = await f.store.createThread(foreign.id, 'Unrelated corrupt body');
+    const brokenTurn = await f.store.createTurn(
+      foreign.id,
+      brokenThread.id,
+      'Unrelated input',
+      actor
+    );
+    await f.store.createItem(message(brokenTurn, 'Unrelated immutable body'.repeat(10_000)));
+    const foreignScope = nativeProductScope(f.root, { kind: 'workspace', workspaceId: foreign.id });
+    const reader = openControlStoreProductReadHandle(foreignScope.path, foreignScope.owner);
+    let bodyPath: string;
+    try {
+      bodyPath = join(
+        foreignScope.contentMount.root,
+        reader.entries(brokenTurn.id, 'item')[0]!.content.reference.locator.path
+      );
+    } finally {
+      reader.close();
+    }
+    chmodSync(bodyPath, 0o600);
+    writeFileSync(bodyPath, 'unrelated corrupt bytes');
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    try {
+      expect(isScopeAdmitted(f.root, 'workspace', foreign.id)).toBe(true);
+      const bound = new FsStore({
+        dataRoot: f.root,
+        nativeProductScope: { ...f.scope, sqlite: db.sqlite },
+      });
+      // A global constructor reload would read this unrelated body and quarantine its whole owner.
+      expect(isScopeAdmitted(f.root, 'workspace', foreign.id)).toBe(true);
+      expect(bound.getTurnById(f.turn.id).id).toBe(f.turn.id);
+      expect(bound.getTurnLineage(turn.id)).toEqual({
+        workspaceId: foreign.id,
+        threadId: thread.id,
+      });
+      expect(bound.getTurnById(turn.id).id).toBe(turn.id);
+      expect(bound.getAgentSession(session.id)).toEqual(session);
+      // Exact-selector miss retains the original foreign opaque fallback classification.
+      expect(bound.getTurnMetadata(f.workspace.id, f.thread.id, turn.id).id).toBe(turn.id);
+      expect(() => bound.getTurnById(brokenTurn.id)).toThrow(/immutable (size|digest)/);
+      await shutdownControlStoreWorkerClient();
+      const corruptor = openWorkspaceDb(f.root, foreign.id);
+      try {
+        // Unsupported retained selectors remain a refusal, not an opaque miss.
+        // Admit only this exact unsupported-header fault; restore CHECK enforcement before reads.
+        corruptor.sqlite.pragma('ignore_check_constraints = ON');
+        try {
+          corruptor.sqlite
+            .prepare('UPDATE control_turns SET schema_version=999 WHERE id=?')
+            .run(turn.id);
+        } finally {
+          corruptor.sqlite.pragma('ignore_check_constraints = OFF');
+        }
+        expect(() => bound.getTurnById(turn.id)).toThrow(/Unsupported native product selector/);
+        expect(bound.getTurnById(f.turn.id).id).toBe(f.turn.id);
+        corruptor.sqlite
+          .prepare('UPDATE control_turns SET schema_version=1 WHERE id=?')
+          .run(turn.id);
+        // Remove only this selector's dependent history before changing its primary key.
+        corruptor.sqlite
+          .prepare('DELETE FROM control_product_entries WHERE turn_id=?')
+          .run(turn.id);
+        corruptor.sqlite
+          .prepare('DELETE FROM control_work_observations WHERE turn_id=?')
+          .run(turn.id);
+        // Corrupt an existing native selector after real setup; never fabricate a successful SQL row.
+        expect(
+          corruptor.sqlite
+            .prepare('UPDATE control_turns SET id=? WHERE id=?')
+            .run(f.turn.id, turn.id).changes
+        ).toBe(1);
+        expect(() => bound.getTurnById(f.turn.id)).toThrow(/Conflicting native product owner/);
+        expect(db.sqlite.open).toBe(true);
+      } finally {
+        corruptor.sqlite.close();
+      }
+      expect(readFileSync(bodyPath, 'utf8')).toBe('unrelated corrupt bytes');
+    } finally {
+      db.sqlite.close();
+    }
+  }, 30_000);
+
+  it('keeps known healthy opaque reads beside quarantine and refuses an unprovable opaque miss', async () => {
+    const f = await workspaceFixture();
+    const foreign = await f.store.createWorkspace('Quarantined peer');
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    try {
+      const bound = new FsStore({
+        dataRoot: f.root,
+        nativeProductScope: { ...f.scope, sqlite: db.sqlite },
+      });
+      refuseScope(f.root, { scope: 'workspace', id: foreign.id, check: 'recovery' });
+      expect(bound.getTurnById(f.turn.id).id).toBe(f.turn.id);
+      expect(() => bound.getWorkspace(foreign.id)).toThrow(
+        expect.objectContaining({ code: 'recovery_required' })
+      );
+      expect(() => bound.getTurnById(allocateEntityId('tu'))).toThrow(
+        expect.objectContaining({ code: 'recovery_required' })
+      );
+      expect(isScopeAdmitted(f.root, 'workspace', foreign.id)).toBe(false);
+      expect(db.sqlite.open).toBe(true);
+    } finally {
+      db.sqlite.close();
+    }
+  });
 });

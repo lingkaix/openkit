@@ -2,8 +2,14 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
-import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
-import { readPortableWorkerContextPackageTrace } from './context/worker-context-package.js';
+import {
+  createWorkerContextPackageAuthorityReader,
+  createWorkerContextPackageAuthorityStepReader,
+} from './context/worker-context-authorities.js';
+import {
+  readPortableWorkerContextPackageTrace,
+  readPortableWorkerContextPackageTraceSteps,
+} from './context/worker-context-package.js';
 import { NotebookError } from './knowledge/notebook.js';
 import {
   currentWorkspaceNotebookRead,
@@ -49,6 +55,36 @@ export function verifyKnowledgeProposalWorkHistory(input: {
   /** Workspace that must own every completed-work record. */
   readonly workspaceId: string;
 }): KnowledgeProposalWorkHistoryVerification {
+  const steps = verifyKnowledgeProposalWorkHistoryWithOwners(input, true);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* verifyKnowledgeProposalWorkHistorySteps(input: {
+  /** Allows imported-history proof only while reading an already accepted imported Page. */
+  readonly allowImportedHistory?: boolean | undefined;
+  /** Core scheduler and worker-session authority when available. */
+  readonly coreDb: CoreDb | undefined;
+  /** Closed normalized references carried by the Knowledge record. */
+  readonly sourceReferences: readonly string[];
+  /** Product Turn and Item owner. */
+  readonly store: FsStore;
+  /** Workspace S39 authority when available. */
+  readonly workspaceDb: WorkspaceDb | undefined;
+  /** Workspace that must own every completed-work record. */
+  readonly workspaceId: string;
+}): Generator<void, KnowledgeProposalWorkHistoryVerification, void> {
+  return yield* verifyKnowledgeProposalWorkHistoryWithOwners(input, false);
+}
+
+/** Preserve ordinary owner selections without enclosing filesystem or S39 verification in SQL. */
+function* verifyKnowledgeProposalWorkHistoryWithOwners(
+  input: Parameters<typeof verifyKnowledgeProposalWorkHistory>[0],
+  synchronousLeafReads: boolean
+): Generator<void, KnowledgeProposalWorkHistoryVerification, void> {
   const workReferences = input.sourceReferences.filter((reference) =>
     /^(?:turn|item|context-package):/.test(reference)
   );
@@ -83,13 +119,18 @@ export function verifyKnowledgeProposalWorkHistory(input: {
     if (!contextMatch || contextMatch[1] !== turnId) {
       throw new Error('Completed-work reference lineage does not match.');
     }
-    const turn = input.store.getTurnById(turnId);
+    const turn = synchronousLeafReads
+      ? input.store.getTurnById(turnId)
+      : yield* input.store.getTurnByIdSteps(turnId);
     if (workspaceIdForOwner(turn.owner) !== input.workspaceId || turn.status !== 'completed') {
       throw new Error('Completed-work Turn is not eligible.');
     }
 
-    const finalAssistantItem = input.store
-      .listThreadItems(input.workspaceId, turn.threadId)
+    const threadTurns = synchronousLeafReads
+      ? input.store.listThreadTurns(input.workspaceId, turn.threadId)
+      : yield* input.store.listThreadTurnsSteps(input.workspaceId, turn.threadId);
+    const finalAssistantItem = threadTurns
+      .flatMap((turn) => turn.items)
       .filter(
         (item) =>
           item.turnId === turn.id &&
@@ -101,12 +142,12 @@ export function verifyKnowledgeProposalWorkHistory(input: {
       throw new Error('Completed-work Item is not the final assistant result.');
     }
 
-    const { trace, verification } = readPortableWorkerContextPackageTrace({
-      authorities: createWorkerContextPackageAuthorityReader({
-        coreDb: input.coreDb,
-        store: input.store,
-        workspaceDb: input.workspaceDb,
-      }),
+    const authorityInput = {
+      coreDb: input.coreDb,
+      store: input.store,
+      workspaceDb: input.workspaceDb,
+    };
+    const traceInput = {
       workspaceId: input.workspaceId,
       threadId: turn.threadId,
       turnId,
@@ -115,7 +156,16 @@ export function verifyKnowledgeProposalWorkHistory(input: {
         'workspaces',
         input.workspaceId
       ),
-    });
+    };
+    const { trace, verification } = synchronousLeafReads
+      ? readPortableWorkerContextPackageTrace({
+          ...traceInput,
+          authorities: createWorkerContextPackageAuthorityReader(authorityInput),
+        })
+      : yield* readPortableWorkerContextPackageTraceSteps({
+          ...traceInput,
+          authorities: createWorkerContextPackageAuthorityStepReader(authorityInput),
+        });
     if (
       (verification !== 'strict' && !input.allowImportedHistory) ||
       trace.goalId !== null ||
@@ -156,6 +206,38 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
   /** Exact content from this already loaded synchronous boundary, with no authority grant. */
   readonly notebookRead?: WorkspaceNotebookRead | undefined;
 }): ReadonlyMap<string, KnowledgePageReferenceProof> {
+  const steps = resolveWorkspaceKnowledgeReferenceProofsWithOwners(input, true);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* resolveWorkspaceKnowledgeReferenceProofsSteps(input: {
+  /** Core scheduler and worker-session authority when available. */
+  readonly coreDb: CoreDb | undefined;
+  /** Product Page, Source, Turn, and Item owner. */
+  readonly store: FsStore;
+  /** Workspace S39 authority when available. */
+  readonly workspaceDb: WorkspaceDb | undefined;
+  /** Workspace that must own every referenced record. */
+  readonly workspaceId: string;
+  /** Exact published commit selected by this request, or current published at initial admission. */
+  readonly notebookRevision?: string | undefined;
+  /** Exact selected page identities; omission requests the full current notebook inventory. */
+  readonly pageIds?: readonly string[] | undefined;
+  /** Exact content from this already loaded synchronous boundary, with no authority grant. */
+  readonly notebookRead?: WorkspaceNotebookRead | undefined;
+}): Generator<void, ReadonlyMap<string, KnowledgePageReferenceProof>, void> {
+  return yield* resolveWorkspaceKnowledgeReferenceProofsWithOwners(input, false);
+}
+
+/** Carries the ordinary-versus-released boundary through nested work-history proof. */
+function* resolveWorkspaceKnowledgeReferenceProofsWithOwners(
+  input: Parameters<typeof resolveWorkspaceKnowledgeReferenceProofs>[0],
+  synchronousLeafReads: boolean
+): Generator<void, ReadonlyMap<string, KnowledgePageReferenceProof>, void> {
   const referenceProofs = new Map<string, KnowledgePageReferenceProof>();
   const dataRoot = input.store.getDataRoot();
   if (!dataRoot) return referenceProofs;
@@ -191,6 +273,7 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
         ids.filter((id) => Object.hasOwn(entries, `${id}.md`)).map((id) => `${id}.md`)
       ).files;
   for (const id of ids) {
+    yield;
     const path = `${id}.md`;
     if (!Object.hasOwn(entries, path)) continue;
     // Read-integrity failures are not source ineligibility and must remain explicit.
@@ -203,14 +286,16 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
       Buffer.compare(Buffer.from(left), Buffer.from(right))
     );
     try {
-      const verified = new Set(
-        verifyKnowledgeProposalWorkHistory({
-          ...input,
-          sourceReferences,
-          // Import evidence remains read-only history, never a decision for another publication.
-          allowImportedHistory: Boolean(input.store.getWorkspace(input.workspaceId).importedFrom),
-        }).verifiedExternalReferences
-      );
+      const workInput = {
+        ...input,
+        sourceReferences,
+        // Import evidence remains read-only history, never a decision for another publication.
+        allowImportedHistory: Boolean(input.store.getWorkspace(input.workspaceId).importedFrom),
+      };
+      const work = synchronousLeafReads
+        ? verifyKnowledgeProposalWorkHistory(workInput)
+        : yield* verifyKnowledgeProposalWorkHistorySteps(workInput);
+      const verified = new Set(work.verifiedExternalReferences);
       for (const reference of sourceReferences) {
         if (reference.startsWith('source:')) {
           sources ??= new Map(

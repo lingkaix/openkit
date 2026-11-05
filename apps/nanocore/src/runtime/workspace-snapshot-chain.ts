@@ -210,6 +210,14 @@ export function readWorkspaceCollection(
     credentialCheck: 'passed',
   };
 }
+/** SQL candidate inventory only; each candidate still needs its original addressed retained proof. */
+type AcceptedCommitProofCandidate = {
+  schemaVersion: unknown;
+  kind: 'cursor' | 'collection';
+  storageRef: string;
+  identity: string;
+};
+
 /** Checks current or historical accepted commit context through the same validated durable readers used for replay. */
 export function workspaceSnapshotAcceptedCommitIsKnown(
   db: WorkspaceDb,
@@ -218,31 +226,108 @@ export function workspaceSnapshotAcceptedCommitIsKnown(
   threadId: string,
   commit: string
 ): boolean {
+  // Preserve the original UNION inventory cut, without extending it over proof rereads.
   const proofs = db.sqlite
     .prepare(`
-    SELECT schema_version AS schemaVersion, 'cursor' AS kind, storage_ref AS storageRef, baseline_identity_json AS identity
+    SELECT schema_version AS schemaVersion, 'cursor' AS kind,
+      storage_ref AS storageRef, baseline_identity_json AS identity
     FROM workspace_snapshot_cursors
     WHERE workspace_id=? AND work_slot=? AND accepted_commit=?
     UNION ALL
-    SELECT schema_version AS schemaVersion, 'collection' AS kind, storage_ref AS storageRef, identity_json AS identity
+    SELECT schema_version AS schemaVersion, 'collection' AS kind,
+      storage_ref AS storageRef, identity_json AS identity
     FROM workspace_snapshot_collections WHERE workspace_id=? AND work_slot=?
   `)
-    .all(workspaceId, workSlot, commit, workspaceId, workSlot) as {
-    schemaVersion: unknown;
-    kind: 'cursor' | 'collection';
-    storageRef: string;
-    identity: string;
-  }[];
+    .all(workspaceId, workSlot, commit, workspaceId, workSlot) as AcceptedCommitProofCandidate[];
   return proofs.some((proof) =>
-    readRetainedV1(proof, () => {
-      const identity = WorkspaceCollectionIdentitySchema.parse(JSON.parse(proof.identity));
-      if (identity.threadId !== threadId) return false;
-      return proof.kind === 'cursor'
-        ? readWorkspaceSnapshotCursor(db, { workspaceId, storageRef: proof.storageRef, workSlot })
-            ?.acceptedCommit === commit
-        : readWorkspaceCollection(db, identity)?.result.acceptedCommit === commit;
-    })
+    acceptedCommitProofMatches(db, workspaceId, workSlot, threadId, commit, proof)
   );
+}
+
+/**
+ * Reads all original cursor and historical collection proof candidates in bounded native key pages.
+ * Complete selection precedes the original short-circuit predicate. Each addressed original record
+ * still passes its existing retained, identity, digest and candidate-byte reader outside page SQL.
+ * Cooperative callers must not hold an enclosing transaction; no accepted-authority flag is retained.
+ */
+export function* workspaceSnapshotAcceptedCommitIsKnownSteps(
+  db: WorkspaceDb,
+  workspaceId: string,
+  workSlot: string,
+  threadId: string,
+  commit: string
+): Generator<void, boolean, void> {
+  const proofs: AcceptedCommitProofCandidate[] = [];
+  let afterCursor: string | undefined;
+  for (;;) {
+    const page = db.sqlite
+      .prepare(`
+        SELECT schema_version AS schemaVersion, 'cursor' AS kind,
+          storage_ref AS storageRef, baseline_identity_json AS identity
+        FROM workspace_snapshot_cursors
+        WHERE workspace_id=? AND work_slot=? AND accepted_commit=?
+          ${afterCursor === undefined ? '' : 'AND storage_ref > ?'}
+        ORDER BY storage_ref LIMIT 128
+      `)
+      .all(
+        workspaceId,
+        workSlot,
+        commit,
+        ...(afterCursor === undefined ? [] : [afterCursor])
+      ) as Array<(typeof proofs)[number]>;
+    if (!page.length) break;
+    proofs.push(...page);
+    afterCursor = page.at(-1)!.storageRef;
+    yield;
+  }
+  let afterCollection: { storageRef: string; collectionId: string } | undefined;
+  for (;;) {
+    const page = db.sqlite
+      .prepare(`
+        SELECT schema_version AS schemaVersion, 'collection' AS kind,
+          storage_ref AS storageRef, identity_json AS identity, collection_id AS collectionId
+        FROM workspace_snapshot_collections WHERE workspace_id=? AND work_slot=?
+          ${afterCollection ? 'AND (storage_ref > ? OR (storage_ref = ? AND collection_id > ?))' : ''}
+        ORDER BY storage_ref, collection_id LIMIT 128
+      `)
+      .all(
+        workspaceId,
+        workSlot,
+        ...(afterCollection
+          ? [afterCollection.storageRef, afterCollection.storageRef, afterCollection.collectionId]
+          : [])
+      ) as Array<(typeof proofs)[number] & { collectionId: string }>;
+    if (!page.length) break;
+    proofs.push(...page.map(({ collectionId: _collectionId, ...proof }) => proof));
+    const last = page.at(-1)!;
+    afterCollection = { storageRef: last.storageRef, collectionId: last.collectionId };
+    yield;
+  }
+  for (const proof of proofs) {
+    const known = acceptedCommitProofMatches(db, workspaceId, workSlot, threadId, commit, proof);
+    yield;
+    if (known) return true;
+  }
+  return false;
+}
+
+/** Rechecks original retained authority after candidate selection, with no new cross-read snapshot. */
+function acceptedCommitProofMatches(
+  db: WorkspaceDb,
+  workspaceId: string,
+  workSlot: string,
+  threadId: string,
+  commit: string,
+  proof: AcceptedCommitProofCandidate
+): boolean {
+  return readRetainedV1(proof, () => {
+    const identity = WorkspaceCollectionIdentitySchema.parse(JSON.parse(proof.identity));
+    if (identity.threadId !== threadId) return false;
+    return proof.kind === 'cursor'
+      ? readWorkspaceSnapshotCursor(db, { workspaceId, storageRef: proof.storageRef, workSlot })
+          ?.acceptedCommit === commit
+      : readWorkspaceCollection(db, identity)?.result.acceptedCommit === commit;
+  });
 }
 
 /** Records only the exact first initialization authority; it names no accepted pair or captured head. */

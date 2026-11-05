@@ -1,24 +1,39 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { parseReferenceScope } from '@openkit/protocol';
-import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
+import {
+  readAssistantTaskHandoffSource,
+  readAssistantTaskHandoffSourceSteps,
+} from '../internal-agents/assistant-handoff-source.js';
 import type { FsStore } from '../lib/store.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
   isSchedulerExecutionBusyRefusal,
   listSchedulerExecutionAttemptsForTurn,
+  readSchedulerExecutionAttemptPagesForTurn,
+  type SchedulerExecutionAttemptRecord,
 } from '../runtime/execution-attempt-records.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import {
-  listWorkspaceInputSnapshots,
-  listWorkspaceMaterializationRecords,
-  requireCompleteBackendWorkspaceHandleHandoff,
-} from '../runtime/workspace-sync-records.js';
-import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
+  listSchedulerAdmissionEntriesForWorkspace,
+  readSchedulerAdmissionPagesForWorkspace,
+  type SchedulerAdmissionEntryRecord,
+} from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { verifyTurnFileInput } from '../storage/workspace-file-records.js';
+import {
+  listWorkspaceInputSnapshots,
+  listWorkspaceMaterializationRecords,
+  readWorkspaceInputSnapshotsSteps,
+  readWorkspaceMaterializationRecordsSteps,
+  requireCompleteBackendWorkspaceHandleHandoff,
+  requireCompleteBackendWorkspaceHandleHandoffSteps,
+} from '../storage/workspace-handoff-read.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from '../workspace-materials.js';
-import type { WorkerContextPackageAuthorityReader } from './worker-context-package.js';
+import type {
+  WorkerContextPackageAuthorityReader,
+  WorkerContextPackageAuthorityStepReader,
+} from './worker-context-package.js';
 
 /** Dependencies for the shared read-only S39 authority map. */
 export interface WorkerContextPackageAuthorityReaderInput {
@@ -31,44 +46,18 @@ export interface WorkerContextPackageAuthorityReaderInput {
 }
 
 /**
- * Builds the one stateless authority reader used by S39 writers and read projections.
+ * Builds the live stateless authority reader with fresh reads at each original callback.
+ * Portable predicates share the lazy owner-step bodies; first-delivery original-source reads stay live.
  *
- * @param input Existing Core, Workspace, and product-store owners for one request scope.
- * @returns Read-only callbacks consumed by the canonical Context Package verifier.
- * @throws Error when the supplied owners belong to different data roots or Workspace lineage.
+ * @param input Existing Core, Workspace and product-store owners for one request scope.
+ * @returns Live read-only callbacks consumed by the canonical Context Package verifier.
+ * @throws Error when the supplied owners have different data roots or Workspace lineage.
  */
 export function createWorkerContextPackageAuthorityReader(
   input: WorkerContextPackageAuthorityReaderInput
 ): WorkerContextPackageAuthorityReader {
   const { coreDb, store, workspaceDb } = input;
-  const workspace = readOrNull(() => store.getWorkspace(workspaceDb.workspaceId));
-  if (
-    coreDb.dataRoot !== workspaceDb.dataRoot ||
-    store.getDataRoot() !== coreDb.dataRoot ||
-    workspace?.id !== workspaceDb.workspaceId
-  ) {
-    throw new Error('Worker Context Package authority owners have different scopes.');
-  }
-
-  // The trace names an immutable snapshot, including after a session's current pointer advances.
-  // Read only that filename under retained session owners; export validation stays workspace-wide.
-  const readAgentEnvironmentPackage: WorkerContextPackageAuthorityReader['readAgentEnvironmentPackage'] =
-    (workspaceId, packageSnapshotId) =>
-      readOrNull(() => {
-        const records = store
-          .listWorkspaceAgentSessions(workspaceId)
-          .map((session) =>
-            findNamedAgentEnvironmentPackageSnapshot(
-              workspaceDb,
-              workspaceId,
-              session.id,
-              packageSnapshotId
-            )
-          )
-          .filter((record) => record !== null);
-        return records.length === 1 ? records[0]!.snapshot : null;
-      });
-
+  const steps = workerContextAuthoritySteps(coreDb, store, workspaceDb, true);
   return {
     readSourceFile: (source) =>
       readOrNull(() => {
@@ -137,27 +126,115 @@ export function createWorkerContextPackageAuthorityReader(
           mediaType: original.mediaType,
         };
       }),
-    readAssistantTaskHandoffSource: (receiving) =>
-      receiving.workspaceId === workspaceDb.workspaceId
-        ? readAssistantTaskHandoffSource(store, workspaceDb, {
-            workspaceId: receiving.workspaceId,
-            threadId: receiving.threadId,
-            turnId: receiving.turnId,
-            requestId: receiving.requestId,
-            turnInput: receiving.workerRequest,
-          })
-        : null,
-    readAdmission: (workspaceId, threadId, turnId) => {
-      const matches = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-        workspaceId,
-        statuses: ['admitted'],
-      }).filter((entry) => entry.threadId === threadId && entry.turnId === turnId);
+    readAssistantTaskHandoffSource: (...args) =>
+      completeAuthoritySteps(steps.readAssistantTaskHandoffSource!(...args)),
+    readAdmission: (...args) => completeAuthoritySteps(steps.readAdmission(...args)),
+    readAgentEnvironmentPackage: (...args) =>
+      completeAuthoritySteps(steps.readAgentEnvironmentPackage(...args)),
+    readAgentSession: (...args) => completeAuthoritySteps(steps.readAgentSession(...args)),
+    readBackendHandoff: (...args) => completeAuthoritySteps(steps.readBackendHandoff(...args)),
+    readMaterialRevision: (...args) => completeAuthoritySteps(steps.readMaterialRevision(...args)),
+    readThreadParent: (...args) => completeAuthoritySteps(steps.readThreadParent(...args)),
+    readThreadItems: (...args) => completeAuthoritySteps(steps.readThreadItems(...args)),
+    readTurn: (...args) => completeAuthoritySteps(steps.readTurn(...args)),
+    readWorkspaceImportedFrom: (...args) =>
+      completeAuthoritySteps(steps.readWorkspaceImportedFrom(...args)),
+    readWorkspaceInputSnapshot: (...args) =>
+      completeAuthoritySteps(steps.readWorkspaceInputSnapshot(...args)),
+    readWorkspaceMaterializationRecord: (...args) =>
+      completeAuthoritySteps(steps.readWorkspaceMaterializationRecord(...args)),
+  };
+}
+
+/**
+ * Builds the same authority callbacks with lazy owner-step delegation at their original branches.
+ * Construction performs only the original scope check. No collection, snapshot or allow decision is
+ * captured; each invocation reads afresh. Cooperative callers must not hold an enclosing SQL cut.
+ *
+ * @param input The same existing Core, Workspace and product-store authority owners.
+ * @returns Lazy callbacks that preserve each original branch, result and owner-error boundary.
+ * @throws Error when the original construction-time scope check fails.
+ */
+export function createWorkerContextPackageAuthorityStepReader(
+  input: WorkerContextPackageAuthorityReaderInput
+): WorkerContextPackageAuthorityStepReader {
+  const { coreDb, store, workspaceDb } = input;
+  return workerContextAuthoritySteps(coreDb, store, workspaceDb, false);
+}
+
+/** Shares the original scope check and callback bodies without capturing any collection at creation. */
+function workerContextAuthoritySteps(
+  coreDb: CoreDb,
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  synchronousLeafReads: boolean
+): WorkerContextPackageAuthorityStepReader {
+  const workspace = readOrNull(() => store.getWorkspace(workspaceDb.workspaceId));
+  if (
+    coreDb.dataRoot !== workspaceDb.dataRoot ||
+    store.getDataRoot() !== coreDb.dataRoot ||
+    workspace?.id !== workspaceDb.workspaceId
+  ) {
+    throw new Error('Worker Context Package authority owners have different scopes.');
+  }
+
+  // The named snapshot lookup must inspect every retained Session, including definite absence.
+  const readAgentEnvironmentPackage: WorkerContextPackageAuthorityStepReader['readAgentEnvironmentPackage'] =
+    function* (workspaceId, packageSnapshotId) {
+      try {
+        const sessions = yield* store.listWorkspaceAgentSessionsSteps(workspaceId);
+        const records: Array<ReturnType<typeof findNamedAgentEnvironmentPackageSnapshot>> = [];
+        for (const session of sessions) {
+          records.push(
+            findNamedAgentEnvironmentPackageSnapshot(
+              workspaceDb,
+              workspaceId,
+              session.id,
+              packageSnapshotId
+            )
+          );
+          yield;
+        }
+        const matches = records.filter((record) => record !== null);
+        return matches.length === 1 ? matches[0]!.snapshot : null;
+      } catch {
+        return null;
+      }
+    };
+
+  return {
+    *readAssistantTaskHandoffSource(receiving) {
+      if (receiving.workspaceId !== workspaceDb.workspaceId) return null;
+      const source = {
+        workspaceId: receiving.workspaceId,
+        threadId: receiving.threadId,
+        turnId: receiving.turnId,
+        requestId: receiving.requestId,
+        turnInput: receiving.workerRequest,
+      };
+      return synchronousLeafReads
+        ? readAssistantTaskHandoffSource(store, workspaceDb, source)
+        : yield* readAssistantTaskHandoffSourceSteps(store, workspaceDb, source);
+    },
+    *readAdmission(workspaceId, threadId, turnId) {
+      const entries: SchedulerAdmissionEntryRecord[] = [];
+      const selection = { workspaceId, statuses: ['admitted'] as const };
+      const pages = synchronousLeafReads
+        ? [listSchedulerAdmissionEntriesForWorkspace(coreDb, selection)]
+        : readSchedulerAdmissionPagesForWorkspace(coreDb, selection);
+      for (const page of pages) {
+        entries.push(...page);
+        yield;
+      }
+      const matches = entries.filter(
+        (entry) => entry.threadId === threadId && entry.turnId === turnId
+      );
       return matches.length === 1 ? matches[0]! : null;
     },
     readAgentEnvironmentPackage,
-    readAgentSession: (workspaceId, agentSessionId) =>
-      readOrNull(() => {
-        const session = store.getAgentSession(agentSessionId);
+    *readAgentSession(workspaceId, agentSessionId) {
+      try {
+        const session = yield* store.getAgentSessionSteps(agentSessionId);
         return session.workspaceId === workspaceId && session.threadId !== null
           ? {
               id: session.id,
@@ -167,18 +244,34 @@ export function createWorkerContextPackageAuthorityReader(
               stale: session.stale,
             }
           : null;
-      }),
-    readBackendHandoff: (workspaceId, packageSnapshotId) =>
-      readOrNull(() => {
-        const environmentPackage = readAgentEnvironmentPackage(workspaceId, packageSnapshotId);
+      } catch {
+        return null;
+      }
+    },
+    *readBackendHandoff(workspaceId, packageSnapshotId) {
+      try {
+        // Preserve the original second fresh AEP lookup instead of retaining the verifier's result.
+        const environmentPackage = yield* readAgentEnvironmentPackage(
+          workspaceId,
+          packageSnapshotId
+        );
         if (!environmentPackage) {
           return null;
         }
-        const leases = listSchedulerExecutionAttemptsForTurn(coreDb, {
+        const attempts: SchedulerExecutionAttemptRecord[] = [];
+        const scope = {
           workspaceId,
           threadId: environmentPackage.scope.threadId,
           turnId: environmentPackage.scope.turnId,
-        })
+        };
+        const pages = synchronousLeafReads
+          ? [listSchedulerExecutionAttemptsForTurn(coreDb, scope)]
+          : readSchedulerExecutionAttemptPagesForTurn(coreDb, scope);
+        for (const page of pages) {
+          attempts.push(...page);
+          yield;
+        }
+        const leases = attempts
           .filter(
             (lease) =>
               lease.agentSessionId === environmentPackage.scope.agentSessionId &&
@@ -200,12 +293,24 @@ export function createWorkerContextPackageAuthorityReader(
         ) {
           return null;
         }
-        requireCompleteBackendWorkspaceHandleHandoff(workspaceDb, environmentPackage, {
+        const backend = {
           backendKind: session.backendKind,
           backendVersion: session.backendVersion,
           workerSessionId: session.backendSessionId,
-        });
-        const materialization = listWorkspaceMaterializationRecords(workspaceDb, workspaceId).find(
+        };
+        if (synchronousLeafReads)
+          requireCompleteBackendWorkspaceHandleHandoff(workspaceDb, environmentPackage, backend);
+        else
+          yield* requireCompleteBackendWorkspaceHandleHandoffSteps(
+            workspaceDb,
+            environmentPackage,
+            backend
+          );
+        const materialization = (
+          synchronousLeafReads
+            ? listWorkspaceMaterializationRecords(workspaceDb, workspaceId)
+            : yield* readWorkspaceMaterializationRecordsSteps(workspaceDb, workspaceId)
+        ).find(
           (record) =>
             record.id === `wmr_${packageSnapshotId}_context_${environmentPackage.scope.turnId}`
         );
@@ -222,9 +327,13 @@ export function createWorkerContextPackageAuthorityReader(
               readinessEvidence: materialization.readinessEvidence,
             }
           : null;
-      }),
-    readMaterialRevision: (workspaceId, materialId, revisionId) =>
-      readOrNull(() => {
+      } catch {
+        return null;
+      }
+    },
+    // biome-ignore lint/correctness/useYield: This original addressed owner read needs no collection or scheduling step.
+    *readMaterialRevision(workspaceId, materialId, revisionId) {
+      try {
         if (workspaceId !== workspaceDb.workspaceId) {
           return null;
         }
@@ -233,37 +342,85 @@ export function createWorkerContextPackageAuthorityReader(
         return revision.materialId === material.materialId
           ? { ...revision, sensitivity: material.sensitivity }
           : null;
-      }),
-    readThreadParent: (workspaceId, threadId) =>
-      readOrNull(() => store.getThread(workspaceId, threadId).parentThreadId ?? null),
-    readThreadItems: (workspaceId, threadId) =>
-      readOrNull(() => store.listThreadItems(workspaceId, threadId)) ?? [],
-    readTurn: (workspaceId, threadId, turnId) =>
-      readOrNull(() => {
-        const turn = store.getTurn(workspaceId, threadId, turnId);
+      } catch {
+        return null;
+      }
+    },
+    // biome-ignore lint/correctness/useYield: This original addressed owner read needs no collection or scheduling step.
+    *readThreadParent(workspaceId, threadId) {
+      try {
+        return store.getThread(workspaceId, threadId).parentThreadId ?? null;
+      } catch {
+        return null;
+      }
+    },
+    *readThreadItems(workspaceId, threadId) {
+      try {
+        const turns = yield* store.listThreadTurnsSteps(workspaceId, threadId);
+        return turns.flatMap((turn) => turn.items);
+      } catch {
+        return [];
+      }
+    },
+    *readTurn(workspaceId, threadId, turnId) {
+      try {
+        const turn = yield* store.getTurnSteps(workspaceId, threadId, turnId);
         return { ...turn, agentSessionId: turn.agentSessionId ?? null };
-      }),
-    readWorkspaceImportedFrom: (workspaceId) =>
-      readOrNull(() =>
-        workspaceId === workspaceDb.workspaceId
+      } catch {
+        return null;
+      }
+    },
+    // biome-ignore lint/correctness/useYield: This original addressed owner read needs no collection or scheduling step.
+    *readWorkspaceImportedFrom(workspaceId) {
+      try {
+        return workspaceId === workspaceDb.workspaceId
           ? (store.getWorkspace(workspaceId).importedFrom ?? null)
-          : null
-      ),
-    readWorkspaceInputSnapshot: (workspaceId, snapshotId) =>
-      readOrNull(
-        () =>
-          listWorkspaceInputSnapshots(workspaceDb, workspaceId).find(
-            (snapshot) => snapshot.id === snapshotId
-          ) ?? null
-      ),
-    readWorkspaceMaterializationRecord: (workspaceId, recordId) =>
-      readOrNull(
-        () =>
-          listWorkspaceMaterializationRecords(workspaceDb, workspaceId).find(
-            (record) => record.id === recordId
-          ) ?? null
-      ),
+          : null;
+      } catch {
+        return null;
+      }
+    },
+    *readWorkspaceInputSnapshot(workspaceId, snapshotId) {
+      try {
+        return (
+          (synchronousLeafReads
+            ? listWorkspaceInputSnapshots(workspaceDb, workspaceId)
+            : yield* readWorkspaceInputSnapshotsSteps(workspaceDb, workspaceId)
+          ).find((snapshot) => snapshot.id === snapshotId) ?? null
+        );
+      } catch {
+        return null;
+      }
+    },
+    *readWorkspaceMaterializationRecord(workspaceId, recordId) {
+      try {
+        return (
+          (synchronousLeafReads
+            ? listWorkspaceMaterializationRecords(workspaceDb, workspaceId)
+            : yield* readWorkspaceMaterializationRecordsSteps(workspaceDb, workspaceId)
+          ).find((record) => record.id === recordId) ?? null
+        );
+      } catch {
+        return null;
+      }
+    },
   };
+}
+
+/** Completes this owner's shared steps without scheduling and closes an interrupted child. */
+function completeAuthoritySteps<T>(steps: Generator<void, T, void>): T {
+  let complete = false;
+  try {
+    for (;;) {
+      const step = steps.next();
+      if (step.done) {
+        complete = true;
+        return step.value;
+      }
+    }
+  } finally {
+    if (!complete) steps.return(undefined as never);
+  }
 }
 
 /** Executes one authority read and converts absence or invalid authority to null. */

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 
@@ -12,40 +12,51 @@ vi.mock('./context/worker-context-package.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('./context/worker-context-package.js')>();
   return {
     ...original,
-    readPortableWorkerContextPackageTrace: vi.fn(() => ({
-      trace: {
-        contextPackageDigest: CONTEXT_PACKAGE_DIGEST,
-        goalId: null,
-        knowledgeSelectionInput: { query: 'Imported history is read-only evidence.' },
-        taskId: null,
-      },
-      verification: 'imported-history',
-    })),
+    readPortableWorkerContextPackageTrace: vi.fn(() => {
+      return {
+        trace: {
+          contextPackageDigest: CONTEXT_PACKAGE_DIGEST,
+          goalId: null,
+          knowledgeSelectionInput: { query: 'Imported history is read-only evidence.' },
+          taskId: null,
+        },
+        verification: 'imported-history' as const,
+      };
+    }),
   };
 });
 
 import { verifyKnowledgeProposalWorkHistory } from './knowledge-source-authority.js';
 
+// Load the subject before resolving the partial mock: importOriginal reaches it through Store.
+// Taking the mocked export afterward keeps the subject out of that original-import cycle.
+const { readPortableWorkerContextPackageTrace } = await import(
+  './context/worker-context-package.js'
+);
+
 /** Builds the minimum existing owners required before S39 branch classification. */
 function importedHistoryFixture() {
   const dataRoot = '/tmp/openkit-imported-knowledge-history';
+  const turn = {
+    id: TURN_ID,
+    threadId: THREAD_ID,
+    owner: { kind: 'workspace' as const, workspaceId: WORKSPACE_ID },
+    status: 'completed' as const,
+  };
+  const items = [
+    {
+      id: ITEM_ID,
+      turnId: TURN_ID,
+      type: 'assistant-message' as const,
+      status: 'completed' as const,
+    },
+  ];
   const store = {
     getDataRoot: () => dataRoot,
     getWorkspace: () => ({ id: WORKSPACE_ID }),
-    getTurnById: () => ({
-      id: TURN_ID,
-      threadId: THREAD_ID,
-      owner: { kind: 'workspace', workspaceId: WORKSPACE_ID },
-      status: 'completed',
-    }),
-    listThreadItems: () => [
-      {
-        id: ITEM_ID,
-        turnId: TURN_ID,
-        type: 'assistant-message',
-        status: 'completed',
-      },
-    ],
+    getTurnById: () => turn,
+    // Store listThreadItems flattens these same ordered Turn items.
+    listThreadTurns: () => [{ ...turn, items }],
   };
   return {
     coreDb: { dataRoot },
@@ -61,6 +72,9 @@ function importedHistoryFixture() {
 }
 
 describe('Knowledge proposal completed-work authority', () => {
+  beforeEach(() => {
+    vi.mocked(readPortableWorkerContextPackageTrace).mockClear();
+  });
   it('rejects imported history as new local completed worker output', () => {
     const fixture = importedHistoryFixture();
 
@@ -72,6 +86,10 @@ describe('Knowledge proposal completed-work authority', () => {
         workspaceDb: fixture.workspaceDb as never,
       })
     ).toThrow(KnowledgePageValidationError);
+    // The refusal must reach imported-history classification, not a missing fixture method.
+    expect(readPortableWorkerContextPackageTrace).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ workspaceId: WORKSPACE_ID, threadId: THREAD_ID, turnId: TURN_ID })
+    );
   });
 
   it('retains an explicit read-only allowance for imported accepted Page proof', () => {
@@ -86,5 +104,8 @@ describe('Knowledge proposal completed-work authority', () => {
         workspaceDb: fixture.workspaceDb as never,
       })
     ).toEqual({ verifiedExternalReferences: fixture.sourceReferences });
+    expect(readPortableWorkerContextPackageTrace).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ workspaceId: WORKSPACE_ID, threadId: THREAD_ID, turnId: TURN_ID })
+    );
   });
 });

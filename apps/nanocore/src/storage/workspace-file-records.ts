@@ -151,10 +151,7 @@ import {
   type ControlProductSnapshot,
   type ControlStoreProductReadHandle,
   getWorkspaceProductReadHandle,
-  listProducts,
   openControlStoreProductReadHandle,
-  readProduct,
-  readProductEntries,
 } from './control-store-product-records.js';
 import type { WorkspaceDb } from './db.js';
 import {
@@ -779,12 +776,11 @@ export function readNativeProduct(
   existingReader?: ControlStoreProductReadHandle
 ): ControlProductSnapshot | undefined {
   const reader =
-    existingReader ??
-    (scope.sqlite ? undefined : openControlStoreProductReadHandle(scope.path, scope.owner));
-  const sqlite = reader?.sqlite ?? scope.sqlite!;
+    existingReader ?? openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  const sqlite = reader.sqlite;
   try {
     return sqlite.transaction(() => {
-      const known = reader ? reader.get(kind, id) : readProduct(sqlite, scope.owner, kind, id);
+      const known = reader.get(kind, id);
       if (!known) return undefined;
       const table = {
         workspace: 'control_workspaces',
@@ -815,7 +811,7 @@ export function readNativeProduct(
       };
     })();
   } finally {
-    if (!existingReader) reader?.close();
+    if (!existingReader) reader.close();
   }
 }
 
@@ -824,18 +820,27 @@ export function listNativeProducts(
   scope: Pick<NativeProductScope, 'path' | 'owner' | 'sqlite'>,
   kind: ControlProductKind
 ): ControlProductSnapshot[] {
-  const reader = scope.sqlite
-    ? undefined
-    : openControlStoreProductReadHandle(scope.path, scope.owner);
-  const sqlite = reader?.sqlite ?? scope.sqlite!;
   const result: ControlProductSnapshot[] = [];
+  for (const page of readNativeProductPages(scope, kind)) result.push(...page);
+  return result;
+}
+
+/**
+ * Materializes bounded metadata pages with their original descriptive fields and headers.
+ * Each page transaction ends before yielding; cooperative callers must not hold an enclosing
+ * transaction. Closing the generator releases its owned read handle, never a borrowed connection.
+ */
+export function* readNativeProductPages(
+  scope: Pick<NativeProductScope, 'path' | 'owner' | 'sqlite'>,
+  kind: ControlProductKind
+): Generator<readonly ControlProductSnapshot[], void, void> {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  const sqlite = reader.sqlite;
   try {
     let after = '';
     for (;;) {
       const page = sqlite.transaction(() => {
-        const known = reader
-          ? reader.list(kind, after)
-          : listProducts(sqlite, scope.owner, kind, after);
+        const known = reader.list(kind, after);
         const table = {
           workspace: 'control_workspaces',
           thread: 'control_threads',
@@ -855,12 +860,12 @@ export function listNativeProducts(
           ) as Record<string, unknown>,
         }));
       })();
-      if (!page.length) return result;
-      result.push(...page);
+      if (!page.length) return;
       after = page.at(-1)!.record.id as string;
+      yield page;
     }
   } finally {
-    reader?.close();
+    reader.close();
   }
 }
 
@@ -870,23 +875,38 @@ export function readNativeProductEntries(
   turnId: string,
   kind: 'item' | 'event'
 ) {
-  const reader = scope.sqlite
-    ? undefined
-    : openControlStoreProductReadHandle(scope.path, scope.owner);
-  const sqlite = reader?.sqlite ?? scope.sqlite!;
+  const steps = readNativeProductEntriesSteps(scope, turnId, kind);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * Verifies the complete native stream, yielding after descriptor pages and immutable entries.
+ * Every SELECT ends before byte verification or a yield. Cooperative callers must not hold an
+ * enclosing transaction; closing the generator releases only its own read resources.
+ */
+export function* readNativeProductEntriesSteps(
+  scope: NativeProductScope,
+  turnId: string,
+  kind: 'item' | 'event'
+): Generator<
+  void,
+  Array<{ sequence: number; id: string; revision: number; value: unknown }>,
+  void
+> {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
   const entries: Array<{ sequence: number; id: string; revision: number; value: unknown }> = [];
   try {
-    const turn = reader
-      ? reader.get('turn', turnId)
-      : readProduct(sqlite, scope.owner, 'turn', turnId);
+    const turn = reader.get('turn', turnId);
     if (!turn) return entries;
     let after = 0;
     for (;;) {
-      const page = reader
-        ? reader.entries(turnId, kind, after)
-        : readProductEntries(sqlite, scope.owner, turnId, kind, after);
+      const page = reader.entries(turnId, kind, after);
       if (!page.length) return entries;
       // The page SELECT has ended before any byte reads. Its descriptors remain immutable.
+      yield;
       for (const row of page) {
         if (row.sequence !== after + 1)
           throw new Error('Control product sequence is recovery_required.');
@@ -930,10 +950,11 @@ export function readNativeProductEntries(
           throw new Error('Native product required semantics are unsupported.');
         entries.push({ sequence: row.sequence, id: row.id, revision: row.revision, value });
         after = row.sequence;
+        yield;
       }
     }
   } finally {
-    reader?.close();
+    reader.close();
   }
 }
 
@@ -950,8 +971,8 @@ export function readNativeTurnWriteHead(
 ) {
   const reader =
     scope.owner.kind === 'workspace'
-      ? getWorkspaceProductReadHandle(scope.path, scope.owner)
-      : openControlStoreProductReadHandle(scope.path, scope.owner);
+      ? getWorkspaceProductReadHandle(scope.path, scope.owner, scope.sqlite)
+      : openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
   let snapshot: ControlProductSnapshot | undefined;
   let sequence = 0;
   let eventSequence = 0;
@@ -986,7 +1007,7 @@ export function readNativeTurnWriteHead(
       }
     })();
   } finally {
-    if (scope.owner.kind === 'server') reader.close();
+    if (scope.owner.kind === 'server' || scope.sqlite) reader.close();
   }
   if (!snapshot) return undefined;
   const metadata = StoredTurnV1Schema.parse(snapshot.record);
@@ -1046,13 +1067,42 @@ export function readNativeTurnWriteHead(
 
 /** Reconstructs current Items in original first-seen order and retains every native revision. */
 export function readNativeTurnHistory(scope: NativeProductScope, turnId: string) {
+  const steps = readNativeTurnHistorySteps(scope, turnId);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * Reconstructs the original complete Turn history through the shared entry steps.
+ * Metadata selection ends before yielding; revision, attribution and final Turn validation retain
+ * their existing owners. Cooperative callers must not hold an enclosing transaction.
+ */
+export function* readNativeTurnHistorySteps(
+  scope: NativeProductScope,
+  turnId: string
+): Generator<
+  void,
+  | {
+      revision: number;
+      metadata: ControlProductSnapshot['record'];
+      turn: Turn;
+      itemRevisions: Item[];
+      captureCoverage: CaptureCoverageBinding | null;
+    }
+  | undefined,
+  void
+> {
   const snapshot = readNativeProduct(scope, 'turn', turnId);
   if (!snapshot) return undefined;
   const metadata = StoredTurnV1Schema.parse(snapshot.record);
+  yield;
   const items = new Map<string, Item>();
   const revisions: Item[] = [];
   const counts = new Map<string, number>();
-  for (const row of readNativeProductEntries(scope, turnId, 'item')) {
+  const entries = yield* readNativeProductEntriesSteps(scope, turnId, 'item');
+  for (const row of entries) {
     const parsed = readRetainedV1(row.value, StoredItemPayloadV1Schema.parse);
     const { schemaVersion: _header, ...payload } = row.value as Record<string, unknown>;
     const item = preserveDescriptiveRecord(payload, parsed, parsed) as Item;
@@ -1084,6 +1134,7 @@ export function readNativeTurnHistory(scope: NativeProductScope, turnId: string)
     items.set(item.id, item);
     counts.set(item.id, row.revision);
     revisions.push(item);
+    yield;
   }
   const {
     schemaVersion: _header,
@@ -1447,7 +1498,7 @@ export function loadWorkspace(workspaceRoot: string, workspaceId: string): Works
 
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
-  const artifacts = loadArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
+  const artifacts = readWorkspaceArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
   const knowledgeReader = getWorkspaceProductReadHandle(
     join(workspaceRoot, 'db', 'workspace.sqlite'),
     { kind: 'workspace', workspaceId }
@@ -1826,6 +1877,50 @@ export function readWorkspaceKnowledgeProposalInventory(
   knowledgeProposals: KnowledgeProposalRecord[];
   knowledgeProposalReviews: KnowledgeProposalReviewRecord[];
 } {
+  const steps = readWorkspaceKnowledgeProposalInventoryWithOwners(
+    workspaceRoot,
+    workspaceId,
+    workspaceDb,
+    true
+  );
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/**
+ * Reads every original Proposal and ordered Review through bounded id pages and the same verifiers.
+ * SQL selection ends before each yield or document/Git verification; no audience grant or atomic
+ * cross-family snapshot is created. Cooperative callers must not hold an enclosing transaction.
+ */
+export function* readWorkspaceKnowledgeProposalInventorySteps(
+  workspaceRoot: string,
+  workspaceId: string,
+  workspaceDb?: Pick<WorkspaceDb, 'scope' | 'workspaceId' | 'sqlite'>
+): Generator<
+  void,
+  {
+    knowledgeProposals: KnowledgeProposalRecord[];
+    knowledgeProposalReviews: KnowledgeProposalReviewRecord[];
+  },
+  void
+> {
+  return yield* readWorkspaceKnowledgeProposalInventoryWithOwners(
+    workspaceRoot,
+    workspaceId,
+    workspaceDb,
+    false
+  );
+}
+
+/** Select original ids together before separate addressed SQL/document/Review verification. */
+function* readWorkspaceKnowledgeProposalInventoryWithOwners(
+  workspaceRoot: string,
+  workspaceId: string,
+  workspaceDb: Pick<WorkspaceDb, 'scope' | 'workspaceId' | 'sqlite'> | undefined,
+  synchronousIdSelection: boolean
+): Generator<void, ReturnType<typeof readWorkspaceKnowledgeProposalInventory>, void> {
   if (workspaceDb && (workspaceDb.scope !== 'workspace' || workspaceDb.workspaceId !== workspaceId))
     throw new Error('Workspace Knowledge Proposal binding is recovery_required.');
   const sqlite =
@@ -1835,41 +1930,64 @@ export function readWorkspaceKnowledgeProposalInventory(
       workspaceId,
     }).sqlite;
   const db = { scope: 'workspace' as const, workspaceId, sqlite };
-  const rows = sqlite
-    .prepare('SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY proposal_id')
-    .all() as { proposal_id: string }[];
   const knowledgeProposals: KnowledgeProposalRecord[] = [];
   const knowledgeProposalReviews: KnowledgeProposalReviewRecord[] = [];
-  for (const row of rows) {
-    const selected = readControlKnowledgeProposal(db, row.proposal_id);
-    if (!selected) throw new Error('Workspace Knowledge Proposal is recovery_required.');
-    const content = selected.proposal.documentContent;
-    const bytes = readImmutableContentBytes(
-      {
-        root: join(workspaceRoot, 'knowledge', 'content'),
-        knowledgeBaseId: selected.proposal.knowledgeBaseId,
-        mount: content.reference.locator.mount,
-      },
-      { kind: 'workspace', workspaceId },
-      content,
-      content.byteLength
-    );
-    const proposal = parseWorkspaceKnowledgeProposalDocument(
-      workspaceRoot,
-      workspaceId,
-      row.proposal_id,
-      new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-    );
-    if (
-      proposal.baseRevision !== selected.proposal.baseRevision ||
-      proposal.candidateRevision !== selected.proposal.candidateRevision ||
-      proposal.contentDigest !== selected.proposal.contentDigest
-    )
-      throw new Error('Workspace Knowledge Proposal is recovery_required.');
-    knowledgeProposals.push(proposal);
-    knowledgeProposalReviews.push(...selected.reviews);
+  const selectedIds = synchronousIdSelection
+    ? (sqlite
+        .prepare('SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY proposal_id')
+        .all() as { proposal_id: string }[])
+    : undefined;
+  let after: string | undefined;
+  for (;;) {
+    const rows =
+      selectedIds ??
+      ((after === undefined
+        ? sqlite
+            .prepare(
+              'SELECT proposal_id FROM knowledge_notebook_proposals ORDER BY proposal_id LIMIT ?'
+            )
+            .all(CONTROL_PRODUCT_LIMITS.pageRows)
+        : sqlite
+            .prepare(
+              'SELECT proposal_id FROM knowledge_notebook_proposals WHERE proposal_id > ? ORDER BY proposal_id LIMIT ?'
+            )
+            .all(after, CONTROL_PRODUCT_LIMITS.pageRows)) as { proposal_id: string }[]);
+    if (!rows.length) return { knowledgeProposals, knowledgeProposalReviews };
+    yield;
+    for (const row of rows) {
+      const selected = readControlKnowledgeProposal(db, row.proposal_id);
+      if (!selected) throw new Error('Workspace Knowledge Proposal is recovery_required.');
+      yield;
+      const content = selected.proposal.documentContent;
+      const bytes = readImmutableContentBytes(
+        {
+          root: join(workspaceRoot, 'knowledge', 'content'),
+          knowledgeBaseId: selected.proposal.knowledgeBaseId,
+          mount: content.reference.locator.mount,
+        },
+        { kind: 'workspace', workspaceId },
+        content,
+        content.byteLength
+      );
+      const proposal = parseWorkspaceKnowledgeProposalDocument(
+        workspaceRoot,
+        workspaceId,
+        row.proposal_id,
+        new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      );
+      if (
+        proposal.baseRevision !== selected.proposal.baseRevision ||
+        proposal.candidateRevision !== selected.proposal.candidateRevision ||
+        proposal.contentDigest !== selected.proposal.contentDigest
+      )
+        throw new Error('Workspace Knowledge Proposal is recovery_required.');
+      knowledgeProposals.push(proposal);
+      knowledgeProposalReviews.push(...selected.reviews);
+      yield;
+    }
+    if (selectedIds) return { knowledgeProposals, knowledgeProposalReviews };
+    after = rows.at(-1)!.proposal_id;
   }
-  return { knowledgeProposals, knowledgeProposalReviews };
 }
 
 /**
@@ -2131,7 +2249,7 @@ function loadKnowledgeSources(
  * @param turnsById Known turns by id.
  * @returns Artifacts in directory-name order.
  */
-function loadArtifacts(
+export function readWorkspaceArtifacts(
   workspaceRoot: string,
   workspaceId: string,
   threadIds: ReadonlySet<string>,

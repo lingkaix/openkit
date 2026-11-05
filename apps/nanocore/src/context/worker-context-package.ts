@@ -607,6 +607,138 @@ export interface WorkerContextPackageAuthorityReader {
   ) => Record<string, unknown> | null;
 }
 
+/** Portable verification never reopens live original-source owners. */
+type PortableWorkerContextPackageAuthorityReader = Omit<
+  WorkerContextPackageAuthorityReader,
+  'readSourceFile'
+>;
+
+/** Wraps one original callback's argument/result tuple in its operational contribution form. */
+type PortableAuthorityReadSteps<Read> =
+  NonNullable<Read> extends (...args: infer Args) => infer Result
+    ? (...args: Args) => Generator<void, Result, void>
+    : never;
+
+/** The same readonly portable callback tuples, retaining lazy lookup of the sole optional callback. */
+export type WorkerContextPackageAuthorityStepReader = {
+  readonly [Key in Exclude<
+    keyof PortableWorkerContextPackageAuthorityReader,
+    'readAssistantTaskHandoffSource'
+  >]: PortableAuthorityReadSteps<PortableWorkerContextPackageAuthorityReader[Key]>;
+} & {
+  // A lazy accessor must be able to report the original callback's absence at lookup time.
+  readonly readAssistantTaskHandoffSource?:
+    | PortableAuthorityReadSteps<
+        WorkerContextPackageAuthorityReader['readAssistantTaskHandoffSource']
+      >
+    | undefined;
+};
+
+/** Adapts live callbacks lazily, retaining their original receiver and optional absence. */
+function portableAuthoritySteps(
+  authorities: WorkerContextPackageAuthorityReader
+): WorkerContextPackageAuthorityStepReader {
+  return {
+    get readAssistantTaskHandoffSource() {
+      const read = authorities.readAssistantTaskHandoffSource;
+      if (read == null) return undefined;
+      return (
+        // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original live call.
+        function* (
+          ...args: Parameters<
+            NonNullable<WorkerContextPackageAuthorityReader['readAssistantTaskHandoffSource']>
+          >
+        ) {
+          return read.apply(authorities, args);
+        }
+      );
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readThreadParent(...args) {
+      return authorities.readThreadParent(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readAdmission(...args) {
+      return authorities.readAdmission(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readAgentEnvironmentPackage(...args) {
+      return authorities.readAgentEnvironmentPackage(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readAgentSession(...args) {
+      return authorities.readAgentSession(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readWorkspaceImportedFrom(...args) {
+      return authorities.readWorkspaceImportedFrom(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readBackendHandoff(...args) {
+      return authorities.readBackendHandoff(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readMaterialRevision(...args) {
+      return authorities.readMaterialRevision(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readThreadItems(...args) {
+      return authorities.readThreadItems(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readTurn(...args) {
+      return authorities.readTurn(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readWorkspaceInputSnapshot(...args) {
+      return authorities.readWorkspaceInputSnapshot(...args);
+    },
+    // biome-ignore lint/correctness/useYield: This synchronous callback adapter preserves the original point read.
+    *readWorkspaceMaterializationRecord(...args) {
+      return authorities.readWorkspaceMaterializationRecord(...args);
+    },
+  };
+}
+
+/** Defers input access and callback adaptation until each original verification read site. */
+function portableVerificationStepInput(input: {
+  readonly authorities: WorkerContextPackageAuthorityReader;
+  readonly trace: WorkerContextPackageTrace;
+  readonly workspaceRoot: string;
+}): {
+  readonly authorities: WorkerContextPackageAuthorityStepReader;
+  readonly trace: WorkerContextPackageTrace;
+  readonly workspaceRoot: string;
+} {
+  return {
+    get authorities() {
+      return portableAuthoritySteps(input.authorities);
+    },
+    get trace() {
+      return input.trace;
+    },
+    get workspaceRoot() {
+      return input.workspaceRoot;
+    },
+  };
+}
+
+/** Completes shared verification synchronously and closes an interrupted delegated generator. */
+function completeWorkerContextSteps<T>(steps: Generator<void, T, void>): T {
+  let complete = false;
+  try {
+    for (;;) {
+      const step = steps.next();
+      if (step.done) {
+        complete = true;
+        return step.value;
+      }
+    }
+  } finally {
+    if (!complete) steps.return(undefined as never);
+  }
+}
+
 /** Input for creating deterministic package files. */
 export interface CreateWorkerContextPackageFilesInput {
   /** Caller-admitted serialized manifest ceiling, including JSON escapes; at most the 16 MiB metadata reader ceiling. */
@@ -1319,6 +1451,48 @@ export function readPortableWorkerContextPackageTrace(input: {
   readonly trace: WorkerContextPackageTrace;
   readonly verification: 'strict' | 'imported-history';
 } {
+  return completeWorkerContextSteps(
+    readPortableWorkerContextPackageTraceSteps({
+      get authorities() {
+        return portableAuthoritySteps(input.authorities);
+      },
+      get workspaceId() {
+        return input.workspaceId;
+      },
+      get threadId() {
+        return input.threadId;
+      },
+      get turnId() {
+        return input.turnId;
+      },
+      get workspaceRoot() {
+        return input.workspaceRoot;
+      },
+    })
+  );
+}
+
+/**
+ * Reads the original portable branch lazily without an enclosing SQL cut.
+ *
+ * @param input Step authorities and exact Workspace, Thread, Turn and root lineage.
+ * @returns The fully verified trace and original strict/imported branch as the completion value.
+ * @throws Error at the same original path, trace, owner or exact-byte verification boundary.
+ */
+export function* readPortableWorkerContextPackageTraceSteps(input: {
+  readonly authorities: WorkerContextPackageAuthorityStepReader;
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly workspaceRoot: string;
+}): Generator<
+  void,
+  {
+    readonly trace: WorkerContextPackageTrace;
+    readonly verification: 'strict' | 'imported-history';
+  },
+  void
+> {
   const path = workerContextPackageTracePath(input.workspaceRoot, input.threadId, input.turnId);
   if (!lstatSync(path, { throwIfNoEntry: false })) {
     throw new Error('Worker Context Package trace is unavailable.');
@@ -1338,7 +1512,8 @@ export function readPortableWorkerContextPackageTrace(input: {
   ) {
     throw new Error('Worker Context Package trace path lineage mismatch.');
   }
-  return verifyPortableWorkerContextPackageTrace({
+  yield;
+  return yield* verifyPortableWorkerContextPackageTraceSteps({
     authorities: input.authorities,
     trace,
     workspaceRoot: input.workspaceRoot,
@@ -1508,11 +1683,22 @@ export function verifyWorkerContextPackageTrace(input: {
   readonly trace: WorkerContextPackageTrace;
   readonly workspaceRoot: string;
 }): WorkerContextPackageTrace {
+  return completeWorkerContextSteps(
+    verifyWorkerContextPackageTraceSteps(portableVerificationStepInput(input))
+  );
+}
+
+/** Runs the original verifyWorkerContextPackageTrace branch through its shared owner steps. */
+function* verifyWorkerContextPackageTraceSteps(input: {
+  readonly authorities: WorkerContextPackageAuthorityStepReader;
+  readonly trace: WorkerContextPackageTrace;
+  readonly workspaceRoot: string;
+}): Generator<void, WorkerContextPackageTrace, void> {
   assertTraceShape(input.trace);
   if (input.trace.requestId.startsWith('import-lineage:')) {
     throw new Error('Worker Context Package strict delivery rejects reserved import lineage.');
   }
-  return verifyWorkerContextPackagePortableOwners(input, false);
+  return yield* verifyWorkerContextPackagePortableOwnersSteps(input, false);
 }
 
 /**
@@ -1527,11 +1713,22 @@ export function verifyImportedWorkerContextPackageTrace(input: {
   readonly trace: WorkerContextPackageTrace;
   readonly workspaceRoot: string;
 }): WorkerContextPackageTrace {
+  return completeWorkerContextSteps(
+    verifyImportedWorkerContextPackageTraceSteps(portableVerificationStepInput(input))
+  );
+}
+
+/** Runs the original verifyImportedWorkerContextPackageTrace branch through its shared owner steps. */
+function* verifyImportedWorkerContextPackageTraceSteps(input: {
+  readonly authorities: WorkerContextPackageAuthorityStepReader;
+  readonly trace: WorkerContextPackageTrace;
+  readonly workspaceRoot: string;
+}): Generator<void, WorkerContextPackageTrace, void> {
   assertTraceShape(input.trace);
   if (!IMPORTED_HISTORY_REQUEST_ID_PATTERN.test(input.trace.requestId)) {
     throw new Error('Worker Context Package imported history requires exact import lineage.');
   }
-  return verifyWorkerContextPackagePortableOwners(input, true);
+  return yield* verifyWorkerContextPackagePortableOwnersSteps(input, true);
 }
 
 /**
@@ -1549,13 +1746,31 @@ export function verifyPortableWorkerContextPackageTrace(input: {
   readonly trace: WorkerContextPackageTrace;
   readonly verification: 'strict' | 'imported-history';
 } {
+  return completeWorkerContextSteps(
+    verifyPortableWorkerContextPackageTraceSteps(portableVerificationStepInput(input))
+  );
+}
+
+/** Runs the original verifyPortableWorkerContextPackageTrace branch through its shared owner steps. */
+function* verifyPortableWorkerContextPackageTraceSteps(input: {
+  readonly authorities: WorkerContextPackageAuthorityStepReader;
+  readonly trace: WorkerContextPackageTrace;
+  readonly workspaceRoot: string;
+}): Generator<
+  void,
+  {
+    readonly trace: WorkerContextPackageTrace;
+    readonly verification: 'strict' | 'imported-history';
+  },
+  void
+> {
   const verification = IMPORTED_HISTORY_REQUEST_ID_PATTERN.test(input.trace.requestId)
     ? 'imported-history'
     : 'strict';
   const trace =
     verification === 'imported-history'
-      ? verifyImportedWorkerContextPackageTrace(input)
-      : verifyWorkerContextPackageTrace(input);
+      ? yield* verifyImportedWorkerContextPackageTraceSteps(input)
+      : yield* verifyWorkerContextPackageTraceSteps(input);
   return { trace, verification };
 }
 
@@ -1567,14 +1782,14 @@ export function verifyPortableWorkerContextPackageTrace(input: {
  * @returns The unchanged trace after the selected portable-owner verification.
  * @throws Error when lineage, an authority owner, or an exact package byte is inconsistent.
  */
-function verifyWorkerContextPackagePortableOwners(
+function* verifyWorkerContextPackagePortableOwnersSteps(
   input: {
-    readonly authorities: WorkerContextPackageAuthorityReader;
+    readonly authorities: WorkerContextPackageAuthorityStepReader;
     readonly trace: WorkerContextPackageTrace;
     readonly workspaceRoot: string;
   },
   importedHistory: boolean
-): WorkerContextPackageTrace {
+): Generator<void, WorkerContextPackageTrace, void> {
   const { authorities } = input;
   const trace = parseWorkerContextPackageTrace(input.trace);
   if ((trace.goalId === null) !== (trace.taskId === null)) {
@@ -1593,11 +1808,11 @@ function verifyWorkerContextPackagePortableOwners(
   if (trace.workerRequestItemId !== trace.includedItemIds[0]) {
     throw new Error('Worker Context Package request Item ordering mismatch.');
   }
-  if (importedHistory && !authorities.readWorkspaceImportedFrom(trace.workspaceId)) {
+  if (importedHistory && !(yield* authorities.readWorkspaceImportedFrom(trace.workspaceId))) {
     throw new Error('Worker Context Package imported history lacks Workspace import lineage.');
   }
 
-  const turn = authorities.readTurn(trace.workspaceId, trace.threadId, trace.turnId);
+  const turn = yield* authorities.readTurn(trace.workspaceId, trace.threadId, trace.turnId);
   if (
     !turn ||
     turn.id !== trace.turnId ||
@@ -1610,7 +1825,11 @@ function verifyWorkerContextPackagePortableOwners(
     throw new Error('Worker Context Package Turn authority mismatch.');
   }
   if (!importedHistory) {
-    const admission = authorities.readAdmission(trace.workspaceId, trace.threadId, trace.turnId);
+    const admission = yield* authorities.readAdmission(
+      trace.workspaceId,
+      trace.threadId,
+      trace.turnId
+    );
     if (
       !admission ||
       admission.status !== 'admitted' ||
@@ -1622,7 +1841,7 @@ function verifyWorkerContextPackagePortableOwners(
       throw new Error('Worker Context Package scheduler admission mismatch.');
     }
   }
-  const session = authorities.readAgentSession(trace.workspaceId, trace.agentSessionId);
+  const session = yield* authorities.readAgentSession(trace.workspaceId, trace.agentSessionId);
   if (
     !session ||
     session.id !== trace.agentSessionId ||
@@ -1635,7 +1854,7 @@ function verifyWorkerContextPackagePortableOwners(
   // Retained Goal/Task ids are historical lineage and require no deleted owner.
   const gateContextItemIds: readonly string[] = [];
 
-  const items = authorities.readThreadItems(trace.workspaceId, trace.threadId);
+  const items = yield* authorities.readThreadItems(trace.workspaceId, trace.threadId);
   assertUnique(
     items.map((item) => item.id),
     'Thread Item authority'
@@ -1666,25 +1885,34 @@ function verifyWorkerContextPackagePortableOwners(
   const isChatSubordinateTask =
     !importedHistory && isDirectTask
       ? isChatSubordinateTaskTurn({
-          originatingThreadId: authorities.readThreadParent(trace.workspaceId, trace.threadId),
+          originatingThreadId: yield* authorities.readThreadParent(
+            trace.workspaceId,
+            trace.threadId
+          ),
           requestId: trace.requestId,
           turn,
         })
       : false;
-  const isConfirmedAssistantTask =
+  let isConfirmedAssistantTask = false;
+  if (
     !importedHistory &&
     isDirectTask &&
     !isChatSubordinateTask &&
-    trace.knowledgeSelectionInput === null &&
-    Boolean(
-      authorities.readAssistantTaskHandoffSource?.({
-        workspaceId: trace.workspaceId,
-        threadId: trace.threadId,
-        turnId: trace.turnId,
-        requestId: trace.requestId,
-        workerRequest: requestItem.text,
-      })
+    trace.knowledgeSelectionInput === null
+  ) {
+    const readAssistantSource = authorities.readAssistantTaskHandoffSource;
+    isConfirmedAssistantTask = Boolean(
+      readAssistantSource == null
+        ? undefined
+        : yield* readAssistantSource.call(authorities, {
+            workspaceId: trace.workspaceId,
+            threadId: trace.threadId,
+            turnId: trace.turnId,
+            requestId: trace.requestId,
+            workerRequest: requestItem.text,
+          })
     );
+  }
   if (
     (!importedHistory &&
       isDirectTask &&
@@ -1708,6 +1936,7 @@ function verifyWorkerContextPackagePortableOwners(
     ) {
       throw new Error(`Worker Context Package Item authority mismatch: ${itemId}.`);
     }
+    yield;
   }
   const includedPriorItemIds = trace.includedItemIds.slice(1);
   const canonicalIncludedPriorItemIds = items
@@ -1724,11 +1953,11 @@ function verifyWorkerContextPackagePortableOwners(
     throw new Error('Worker Context Package included Item selection mismatch.');
   }
 
-  const environmentPackage = authorities.readAgentEnvironmentPackage(
+  const environmentPackage = yield* authorities.readAgentEnvironmentPackage(
     trace.workspaceId,
     trace.packageSnapshotId
   );
-  const packageRootDigest = verifyPackageFiles(input.workspaceRoot, trace);
+  const packageRootDigest = yield* verifyPackageFilesSteps(input.workspaceRoot, trace);
   const expectedInput = buildWorkerContextPackageWorkspaceInput({
     agentSessionId: trace.agentSessionId,
     packageRootDigest,
@@ -1756,7 +1985,7 @@ function verifyWorkerContextPackagePortableOwners(
     throw new Error('Worker Context Package AEP mismatch.');
   }
 
-  const inputSnapshot = authorities.readWorkspaceInputSnapshot(
+  const inputSnapshot = yield* authorities.readWorkspaceInputSnapshot(
     trace.workspaceId,
     trace.workspaceInputSnapshotId
   );
@@ -1765,7 +1994,7 @@ function verifyWorkerContextPackagePortableOwners(
   let readinessEvidence: readonly { readonly kind: string; readonly ref: string }[];
   let workerSessionId: string;
   if (importedHistory) {
-    materialization = authorities.readWorkspaceMaterializationRecord(
+    materialization = yield* authorities.readWorkspaceMaterializationRecord(
       trace.workspaceId,
       trace.workspaceMaterializationRecordId
     );
@@ -1790,7 +2019,10 @@ function verifyWorkerContextPackagePortableOwners(
     readinessEvidence = parsedMaterialization.data.readinessEvidence;
     workerSessionId = historicalWorkerSessionId;
   } else {
-    const handoff = authorities.readBackendHandoff(trace.workspaceId, trace.packageSnapshotId);
+    const handoff = yield* authorities.readBackendHandoff(
+      trace.workspaceId,
+      trace.packageSnapshotId
+    );
     if (
       !handoff ||
       handoff.workspaceHandoffState !== 'complete' ||
@@ -1829,7 +2061,7 @@ function verifyWorkerContextPackagePortableOwners(
   }
 
   if (!importedHistory) {
-    materialization = authorities.readWorkspaceMaterializationRecord(
+    materialization = yield* authorities.readWorkspaceMaterializationRecord(
       trace.workspaceId,
       trace.workspaceMaterializationRecordId
     );
@@ -1861,7 +2093,7 @@ function verifyWorkerContextPackagePortableOwners(
   }
 
   for (const selection of trace.materialSelections) {
-    const revision = authorities.readMaterialRevision(
+    const revision = yield* authorities.readMaterialRevision(
       trace.workspaceId,
       selection.materialId,
       selection.revisionId
@@ -1892,9 +2124,10 @@ function verifyWorkerContextPackagePortableOwners(
         projection: selection.projection,
       });
     }
+    yield;
   }
   for (const exclusion of trace.materialExclusions) {
-    const revision = authorities.readMaterialRevision(
+    const revision = yield* authorities.readMaterialRevision(
       trace.workspaceId,
       exclusion.materialId,
       exclusion.revisionId
@@ -1910,16 +2143,25 @@ function verifyWorkerContextPackagePortableOwners(
         `Worker Context Package Material exclusion mismatch: ${exclusion.materialId}.`
       );
     }
+    yield;
   }
   return trace;
 }
 
 /** Verifies all package bytes and returns the derived package-root digest. */
 function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTrace): string {
+  return completeWorkerContextSteps(verifyPackageFilesSteps(workspaceRoot, trace));
+}
+
+/** Verifies the same complete inventory and byte proofs, yielding only between original contributions. */
+function* verifyPackageFilesSteps(
+  workspaceRoot: string,
+  trace: WorkerContextPackageTrace
+): Generator<void, string, void> {
   const startedAt = performance.now();
   try {
     const packageRoot = workerContextPackageRoot(workspaceRoot, trace.threadId, trace.turnId);
-    const actualPaths = listPackageFilePaths(
+    const actualPaths = yield* listPackageFilePathsSteps(
       packageRoot,
       trace.fileInventory.map((entry) => entry.path)
     );
@@ -1936,6 +2178,7 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
         join(packageRoot, ...safeRelativePathSegments(entry.path)),
         entry
       );
+      yield;
     }
     for (const entry of [
       ...trace.materialSelections,
@@ -1947,6 +2190,7 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
           entry.projection,
           readCanonicalPackageFile(packageRoot, entry.packagePath, entry.projection.byteLength)
         );
+      yield;
     }
     const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json', 16_777_216);
     const originalManifest = JSON.parse(manifestBytes.toString('utf8'));
@@ -1990,6 +2234,7 @@ function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTr
     );
   } finally {
     try {
+      // Elapsed verification includes cooperative scheduling, not a held SQL-cut duration.
       const durationMs = performance.now() - startedAt;
       if (durationMs >= 100) {
         console.error(
@@ -2258,6 +2503,28 @@ function workerContextPackageRoot(
   );
 }
 
+/** Observes the exact optional trace filename through its original canonical path owner, without decoding it. */
+export function workerContextPackageTraceIdentity(
+  workspaceRoot: string,
+  threadId: string,
+  turnId: string
+): string | null {
+  // Definite absence is meaningful even when a non-Worker Turn has no physical directory yet.
+  const candidate = join(
+    workspaceRoot,
+    'threads',
+    threadId,
+    'turns',
+    turnId,
+    'context-package.json'
+  );
+  if (!existsSync(candidate)) return null;
+  const path = workerContextPackageTracePath(workspaceRoot, threadId, turnId);
+  const entry = lstatSync(path, { bigint: true });
+  if (!entry.isFile()) throw new Error('Worker Context Package trace is not a canonical file.');
+  return `${entry.dev}:${entry.ino}:${entry.size}:${entry.mtimeNs}`;
+}
+
 /** Returns one canonical trace path beneath the trusted Workspace root. */
 function workerContextPackageTracePath(
   workspaceRoot: string,
@@ -2309,13 +2576,17 @@ function readCanonicalPackageFile(
 }
 
 /** Lists the exact regular-file inventory while rejecting links and unexpected directories. */
-function listPackageFilePaths(packageRoot: string, expectedPaths: readonly string[]): string[] {
+function* listPackageFilePathsSteps(
+  packageRoot: string,
+  expectedPaths: readonly string[]
+): Generator<void, string[], void> {
   for (const path of expectedPaths) {
     safeRelativePathSegments(path);
+    yield;
   }
   const files: string[] = [];
   /** Visits one already verified package directory. */
-  const visit = (directory: string, prefix: string): void => {
+  const visit = function* (directory: string, prefix: string): Generator<void, void, void> {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
       const path = join(directory, entry.name);
@@ -2329,15 +2600,16 @@ function listPackageFilePaths(packageRoot: string, expectedPaths: readonly strin
           );
         }
         assertCanonicalDirectory(path);
-        visit(path, relativePath);
+        yield* visit(path, relativePath);
       } else if (entry.isFile()) {
         files.push(relativePath);
       } else {
         throw new Error(`Worker Context Package contains an unsupported entry: ${relativePath}.`);
       }
+      yield;
     }
   };
-  visit(packageRoot, '');
+  yield* visit(packageRoot, '');
   return files.sort((left, right) => compareCodeUnits(left, right));
 }
 

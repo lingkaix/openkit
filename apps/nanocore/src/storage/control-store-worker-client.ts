@@ -56,6 +56,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
+import type { ApplyKnowledgeSchemaResponse } from '@openkit/app-api-schemas';
 import type { AuditEvent } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import {
@@ -79,7 +80,6 @@ import {
   type ControlReviewCommandInput,
   type ControlReviewCommandResult,
 } from '../artifact-reviews.js';
-import { prepareAuditEventStatement } from '../audit-events.js';
 import {
   AdminRecoveryError,
   type ControlAdminRecoveryInput,
@@ -108,7 +108,6 @@ import type {
   ControlMaintenanceAdmissionResult,
 } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
-import type { CommandRequestRecord } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import { OperationError, restoreControlCapabilityFailure } from '../operation-error.js';
 import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
@@ -117,7 +116,10 @@ import {
   type ControlGoalInput,
   GoalCommandError,
 } from '../runtime/goal-owner.js';
-import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import {
+  IdempotencyKeyConflictError,
+  type IdempotentCommandReceipt,
+} from '../runtime/idempotent-command.js';
 import {
   type ControlPendingCommandResult,
   PendingRequestCommandError,
@@ -150,7 +152,6 @@ import {
   FileStorageAdmission,
   type FileStorageReservation,
 } from './artifacts/file-admission.js';
-import { prepareControlCommandRequestStatement } from './command-request-codecs.js';
 import { CONTROL_STORE_BUDGET, type ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
 import {
@@ -161,10 +162,7 @@ import {
   controlCapabilityText,
   prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
-import {
-  type ControlKnowledgeHead,
-  controlKnowledgeHeadStatements,
-} from './control-store-knowledge-heads.js';
+import { frameControlScalarText } from './control-store-input.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
 import {
   type ControlProductEntry,
@@ -196,6 +194,11 @@ import {
   ControlPhysicalForecastSchema,
   type ControlProductCohort,
   type ControlProvenanceInput,
+  type ControlSchemaApplicationFacts,
+  ControlSchemaApplicationFactsSchema,
+  type ControlSchemaApplicationInput,
+  ControlSchemaApplicationInputSchema,
+  ControlSchemaApplicationRefusalSchema,
   type ControlSqlResult,
   type ControlSqlStatement,
   type ControlWorkerCommand,
@@ -215,6 +218,7 @@ import type {
   ControlExecutionAttemptCommand,
   ControlExecutionAttemptResult,
 } from './execution-attempt-codecs.js';
+import { resolveDataRootPath } from './fs-layout.js';
 import type {
   ControlHarnessLifecycleInput,
   ControlHarnessLifecycleResult,
@@ -299,24 +303,6 @@ export interface ControlRecoveryNativeCall {
   readonly binding: ControlRecoveryNativeBinding;
 }
 
-const workspaceSchemaApplicationCall = Symbol('workspace-schema-application-call');
-
-/** One exact schema application admitted by the current lifecycle freeze owner. */
-interface ControlWorkspaceSchemaApplicationCall {
-  readonly kind: 'workspace-schema-application';
-  readonly [workspaceSchemaApplicationCall]: true;
-  readonly freeze: WorkspaceFrozenAdmission;
-  readonly workspaceId: string;
-  readonly command: Omit<OpenCommand, 'operation'>;
-  readonly path: string;
-  readonly identity: string;
-  readonly expectedHead: ControlKnowledgeHead;
-  readonly nextHead: ControlKnowledgeHead;
-  readonly requestId: string;
-  readonly reportDigest: string;
-  readonly statements: readonly ControlSqlStatement[];
-}
-
 const workspaceDeletionCall = Symbol('workspace-deletion-call');
 /** Reuses the caller's exact lifecycle freeze at Core admission and actual posting, never on the wire. */
 interface ControlWorkspaceDeletionCall {
@@ -360,7 +346,6 @@ type ControlFrozenNativeCall =
   | ControlRecoveryTargetRegistrationCall
   | ControlRecoveryTargetPreparationCall
   | ControlRecoveryNativeCall
-  | ControlWorkspaceSchemaApplicationCall
   | ControlWorkspaceDeletionCall;
 
 export { nativeUserDatabasePath };
@@ -433,6 +418,11 @@ interface Pending {
   readonly capacity: NativeCapacityReservation[];
   /** A forecast is resolved once within this request's existing slot. */
   physicalForecasted?: boolean;
+  /** Original owner capture; neither the supplier nor facts are sent back in a forecast decision. */
+  readonly schemaApplicationFacts?: {
+    readonly captured: ControlSchemaApplicationFacts;
+    readonly capture: () => ControlSchemaApplicationFacts;
+  };
   readonly closeout?: CapabilityCloseoutCredit | undefined;
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
@@ -1173,47 +1163,6 @@ class ControlStoreWorkerClient {
         throw new ControlStoreWorkerError('precondition', 'not-committed');
       }
     }
-    if ('kind' in recovery) {
-      try {
-        const physical =
-          opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
-        let admitted = physical?.command;
-        if (command.operation === 'open') {
-          const {
-            operation: _operation,
-            version: _version,
-            id: _id,
-            ...input
-          } = command as Extract<ControlWorkerRequest, { operation: 'open' }>;
-          admitted = input;
-        }
-        const current = statSync(recovery.path);
-        if (
-          recovery[workspaceSchemaApplicationCall] !== true ||
-          recovery.kind !== 'workspace-schema-application' ||
-          !this.workspaceMutationAdmission?.ownsFreeze(recovery.workspaceId, recovery.freeze) ||
-          recovery.command.productOwner?.kind !== 'workspace' ||
-          recovery.command.productOwner.workspaceId !== recovery.workspaceId ||
-          recovery.command.database !== `workspace:${resolve(recovery.command.path)}` ||
-          recovery.command.create !== false ||
-          recovery.command.initialize !== 'workspace' ||
-          realpathSync(recovery.command.path) !== recovery.path ||
-          `${current.dev}:${current.ino}` !== recovery.identity ||
-          (physical !== undefined &&
-            (physical.path !== recovery.path || physical.identity !== recovery.identity)) ||
-          !isDeepStrictEqual(recovery.command, admitted) ||
-          !('database' in command) ||
-          command.database !== recovery.command.database ||
-          (command.operation !== 'open' &&
-            (command.operation !== 'write' ||
-              !isDeepStrictEqual(command.statements, recovery.statements)))
-        )
-          throw new Error('Workspace Schema application binding is not current.');
-        return;
-      } catch {
-        throw new ControlStoreWorkerError('precondition', 'not-committed');
-      }
-    }
     try {
       const { binding, freeze } = recovery;
       const owner = binding.command.productOwner;
@@ -1292,7 +1241,7 @@ class ControlStoreWorkerClient {
     await this.openFrozen(command, recovery);
   }
 
-  /** Internal open shared only by recovery and the exact schema-freeze composition. */
+  /** Internal open shared by ordinary admission and the existing recovery lifecycle. */
   private async openFrozen(
     command: Omit<OpenCommand, 'operation'>,
     recovery?: ControlFrozenNativeCall
@@ -1364,87 +1313,6 @@ class ControlStoreWorkerClient {
   }
 
   /**
-   * Opens one exact Workspace Schema application while its exclusive lifecycle freeze remains owned.
-   *
-   * The returned function can submit only the head CAS, original successful Audit and
-   * original receipt that were bound here. The caller rechecks current human and Policy
-   * authority after this awaited open and before it invokes the function. Ordinary
-   * publishers remain closed, and each native boundary rechecks the live freeze and inode.
-   *
-   * @param input Exact physical owner and reviewed Schema application tuple.
-   * @returns A single-use submitter for the already bound native tuple.
-   */
-  async openWorkspaceSchemaApplication(input: {
-    readonly workspaceDb: WorkspaceDb;
-    readonly command: Omit<OpenCommand, 'operation'>;
-    readonly freeze: WorkspaceFrozenAdmission;
-    readonly expectedHead: ControlKnowledgeHead;
-    readonly nextHead: ControlKnowledgeHead;
-    readonly audit: AuditEvent;
-    readonly receipt: CommandRequestRecord;
-    readonly reportDigest: string;
-  }): Promise<() => Promise<void>> {
-    const { workspaceDb: db, expectedHead, nextHead, receipt, audit } = input;
-    const command = structuredClone(input.command);
-    const path = realpathSync(command.path);
-    const current = statSync(path);
-    if (
-      !this.workspaceMutationAdmission?.ownsFreeze(db.workspaceId, input.freeze) ||
-      db.scope !== 'workspace' ||
-      !db.sqlite.open ||
-      db.sqlite.inTransaction ||
-      resolve(db.sqlite.name) !== resolve(path) ||
-      typeof command.dataRoot !== 'string' ||
-      resolve(command.dataRoot) !== resolve(db.dataRoot) ||
-      command.database !== `workspace:${resolve(command.path)}` ||
-      command.productOwner?.kind !== 'workspace' ||
-      command.productOwner.workspaceId !== db.workspaceId ||
-      command.create !== false ||
-      command.initialize !== 'workspace' ||
-      expectedHead.workspaceId !== db.workspaceId ||
-      nextHead.workspaceId !== db.workspaceId ||
-      nextHead.knowledgeBaseId !== expectedHead.knowledgeBaseId ||
-      !/^sha256:[a-f0-9]{64}$/.test(input.reportDigest) ||
-      receipt.command !== 'knowledge.schema.apply' ||
-      receipt.requestId !== audit.requestId ||
-      receipt.response.kind !== 'knowledge_schema_report' ||
-      receipt.response.id !== input.reportDigest ||
-      audit.workspaceId !== db.workspaceId ||
-      audit.category !== 'knowledge' ||
-      audit.action !== 'knowledge.schema.apply' ||
-      audit.outcome !== 'succeeded' ||
-      audit.resource !== `knowledge-schema-report:${input.reportDigest}`
-    )
-      throw new ControlStoreWorkerError('precondition', 'not-committed');
-    const statements = Object.freeze([
-      ...controlKnowledgeHeadStatements(nextHead, expectedHead),
-      prepareAuditEventStatement(audit),
-      prepareControlCommandRequestStatement(db.workspaceId, receipt),
-    ]);
-    const application: ControlWorkspaceSchemaApplicationCall = Object.freeze({
-      kind: 'workspace-schema-application',
-      [workspaceSchemaApplicationCall]: true as const,
-      freeze: input.freeze,
-      workspaceId: db.workspaceId,
-      command,
-      path,
-      identity: `${current.dev}:${current.ino}`,
-      expectedHead: structuredClone(expectedHead),
-      nextHead: structuredClone(nextHead),
-      requestId: receipt.requestId,
-      reportDigest: input.reportDigest,
-      statements,
-    });
-    await this.openFrozen(command, application);
-    let submitted = false;
-    return async () => {
-      if (submitted) throw new ControlStoreWorkerError('precondition', 'not-committed');
-      submitted = true;
-      await this.writeFrozen(command.database, statements, application);
-    };
-  }
-
-  /**
    * Submits a whole conditional transition and its original receipt, never a callback.
    *
    * @param database Already-admitted worker database key.
@@ -1459,7 +1327,7 @@ class ControlStoreWorkerClient {
     return this.writeFrozen(database, statements, recovery);
   }
 
-  /** Internal write shared only by recovery and the exact schema-freeze composition. */
+  /** Internal write shared by the existing recovery composition. */
   private async writeFrozen(
     database: string,
     statements: readonly ControlSqlStatement[],
@@ -2664,6 +2532,97 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Opens the original Workspace writer and submits one complete schema application for FULL acknowledgement. */
+  async applyWorkspaceSchema(input: {
+    readonly workspaceDb: WorkspaceDb;
+    readonly request: ControlSchemaApplicationInput['request'];
+    readonly requestActor: ControlSchemaApplicationInput['requestActor'];
+    readonly producer: ControlSchemaApplicationInput['producer'];
+    readonly receipt: IdempotentCommandReceipt;
+    readonly candidateHead: ControlSchemaApplicationInput['candidateHead'];
+    readonly captureFacts: () => ControlSchemaApplicationFacts;
+  }): Promise<ApplyKnowledgeSchemaResponse> {
+    const { workspaceDb: db } = input;
+    const scope = nativeProductScope(db.dataRoot, {
+      kind: 'workspace',
+      workspaceId: db.workspaceId,
+    });
+    if (
+      db.scope !== 'workspace' ||
+      !db.sqlite.open ||
+      db.sqlite.inTransaction ||
+      resolve(db.sqlite.name) !== resolve(scope.path) ||
+      input.request.workspaceId !== db.workspaceId ||
+      input.candidateHead.workspaceId !== db.workspaceId
+    )
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const database = `workspace:${scope.path}`;
+    await this.open({
+      database,
+      path: scope.path,
+      dataRoot: db.dataRoot,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    // Only a proved, uncommitted administrative readset conflict permits one recomputation.
+    // The original reviewed input, candidate, timestamp and receipt remain exact on both attempts.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (!db.sqlite.open || db.sqlite.inTransaction)
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      // Capture after opening. Posting recaptures synchronously with no await before postMessage.
+      // A hold may retain this exact bounded frame, but changed facts refuse before posting.
+      let captured: ControlSchemaApplicationFacts;
+      try {
+        captured = ControlSchemaApplicationFactsSchema.parse(input.captureFacts());
+      } catch {
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      }
+      const owned = ControlSchemaApplicationInputSchema.parse({
+        request: input.request,
+        requestActor: input.requestActor,
+        producer: input.producer,
+        receipt: input.receipt,
+        candidateHead: input.candidateHead,
+        facts: captured,
+      });
+      const json = JSON.stringify(owned);
+      try {
+        const reply = await this.request(
+          {
+            operation: 'schema-application',
+            database,
+            input: { workspaceId: db.workspaceId, ...frameControlScalarText(json) },
+            content: new ArrayBuffer(0),
+          },
+          [json],
+          undefined,
+          false,
+          undefined,
+          [],
+          { captured, capture: input.captureFacts }
+        );
+        return (reply as Extract<Success, { operation: 'schema-application' }>).result;
+      } catch (error) {
+        if (
+          error instanceof ControlStoreWorkerError &&
+          error.domain?.operation === 'schema-application'
+        ) {
+          const refusal = ControlSchemaApplicationRefusalSchema.parse(error.domain);
+          if (refusal.code === 'schema_readset_changed' && error.commit === 'not-committed')
+            continue;
+          if (refusal.code === 'idempotency_key_conflict') throw new IdempotencyKeyConflictError();
+          throw new OperationError(refusal.code, refusal.message, refusal.status, {
+            ...(refusal.details ? { details: refusal.details } : {}),
+          });
+        }
+        throw error;
+      }
+    }
+    throw new ControlStoreWorkerError('busy', 'not-committed');
+  }
+
   /** Admits one scoped Knowledge unit; model work starts only after its native acknowledgement. */
   async maintenance(
     database: string,
@@ -3694,7 +3653,8 @@ class ControlStoreWorkerClient {
     target?: WriterHost,
     deferPost = false,
     recovery?: ControlFrozenNativeCall,
-    preparedCapacity: readonly NativeCapacityReservation[] = []
+    preparedCapacity: readonly NativeCapacityReservation[] = [],
+    schemaApplicationFacts?: Pending['schemaApplicationFacts']
   ): Promise<Success> {
     if (command.operation !== 'shutdown') {
       try {
@@ -3789,6 +3749,7 @@ class ControlStoreWorkerClient {
       command.operation === 'scheduler-admission' ||
       command.operation === 'generative-presentation' ||
       command.operation === 'app-kernel' ||
+      command.operation === 'schema-application' ||
       command.operation === 'thread-read-membership' ||
       command.operation === 'worker-control-final-status' ||
       command.operation === 'worker-control-heartbeat' ||
@@ -3806,6 +3767,7 @@ class ControlStoreWorkerClient {
             : command.operation === 'scheduler-admission' ||
                 command.operation === 'generative-presentation' ||
                 command.operation === 'app-kernel' ||
+                command.operation === 'schema-application' ||
                 command.operation === 'thread-read-membership' ||
                 command.operation === 'worker-control-final-status' ||
                 command.operation === 'worker-control-heartbeat' ||
@@ -3927,6 +3889,7 @@ class ControlStoreWorkerClient {
         inputBytes,
         capacity: [...capacity],
         closeout,
+        ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
         resolve,
         reject,
       };
@@ -4015,6 +3978,19 @@ class ControlStoreWorkerClient {
         );
       return;
     }
+    // There is no asynchronous gap from this same-owner recapture to native posting.
+    // Refusal preserves the original frame and byte account rather than resizing held work.
+    for (const member of members) {
+      if (!this.schemaApplicationFactsCurrent(member)) {
+        for (const refused of members)
+          this.complete(
+            refused.request.id,
+            undefined,
+            new ControlStoreWorkerError('precondition', 'not-committed')
+          );
+        return;
+      }
+    }
     for (const member of members) member.posted = true;
     try {
       const request = entry.request;
@@ -4093,6 +4069,21 @@ class ControlStoreWorkerClient {
     this.completeBackupDrain();
   }
 
+  /** Compares the original Main owners without disclosing a capture failure or its payload. */
+  private schemaApplicationFactsCurrent(entry: Pending): boolean {
+    if (entry.command.operation !== 'schema-application') return true;
+    const facts = entry.schemaApplicationFacts;
+    if (!facts) return false;
+    try {
+      return isDeepStrictEqual(
+        facts.captured,
+        ControlSchemaApplicationFactsSchema.parse(facts.capture())
+      );
+    } catch {
+      return false;
+    }
+  }
+
   /** Reserves the exact post-predecessor copy before the owner publishes any of it. */
   private receivePhysicalForecast(value: unknown, host: WriterHost): void {
     const parsed = ControlPhysicalForecastSchema.safeParse(value);
@@ -4117,16 +4108,38 @@ class ControlStoreWorkerClient {
       return;
     }
     entry.physicalForecasted = true;
-    let decision: 'admitted' | 'no-space' | 'unavailable' = 'admitted';
+    let decision: 'admitted' | 'no-space' | 'unavailable' | 'precondition' = 'admitted';
     const reserved: NativeCapacityReservation[] = [];
     try {
+      // This check precedes even the capacity-owner lookup and every forPath/reservation.
+      if (!this.schemaApplicationFactsCurrent(entry))
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
       const root = opening.command.dataRoot ?? dirname(opening.path);
       const admission = this.fileAdmissions.get(resolve(root));
       if (!admission) throw new Error('Missing native capacity owner.');
       const physicalRoot = dirname(opening.path);
+      // The opening owns both roots. A forecast cannot name another Workspace or supply a root.
+      const schemaHistoryRoot =
+        opening.command.initialize === 'workspace' &&
+        opening.command.productOwner?.kind === 'workspace' &&
+        opening.command.dataRoot
+          ? resolveDataRootPath(
+              opening.command.dataRoot,
+              'workspaces',
+              opening.command.productOwner.workspaceId,
+              'knowledge',
+              'schema',
+              'history'
+            )
+          : undefined;
       for (const file of forecast.files) {
         const target = resolve(file.path);
-        if (target !== physicalRoot && !target.startsWith(`${physicalRoot}/`))
+        if (
+          target !== physicalRoot &&
+          !target.startsWith(`${physicalRoot}/`) &&
+          (schemaHistoryRoot === undefined ||
+            (target !== schemaHistoryRoot && !target.startsWith(`${schemaHistoryRoot}/`)))
+        )
           throw new Error('Physical forecast is outside its admitted scope.');
         reserved.push(
           admission.forPath(target).reserve(
@@ -4146,7 +4159,12 @@ class ControlStoreWorkerClient {
       }
     } catch (error) {
       for (const reservation of reserved) reservation.release();
-      decision = error instanceof FileAdmissionError ? 'no-space' : 'unavailable';
+      decision =
+        error instanceof ControlStoreWorkerError && error.code === 'precondition'
+          ? 'precondition'
+          : error instanceof FileAdmissionError
+            ? 'no-space'
+            : 'unavailable';
     }
     try {
       host.worker!.postMessage(
@@ -4189,6 +4207,26 @@ class ControlStoreWorkerClient {
         value.domain.operation !== entry.command.operation)
     ) {
       this.fail(host);
+      return;
+    }
+    // Main owns these disclosure inputs. A new report refused before physical admission
+    // must not escape under a Policy that changed during released native computation.
+    if (
+      value.status === 'error' &&
+      entry.command.operation === 'schema-application' &&
+      value.commit === 'not-committed' &&
+      !entry.physicalForecasted &&
+      value.domain?.operation === 'schema-application' &&
+      'details' in value.domain &&
+      value.domain.details !== undefined &&
+      'actualReport' in value.domain.details &&
+      !this.schemaApplicationFactsCurrent(entry)
+    ) {
+      this.complete(
+        value.id,
+        undefined,
+        new ControlStoreWorkerError('precondition', 'not-committed')
+      );
       return;
     }
     if (value.status === 'error')

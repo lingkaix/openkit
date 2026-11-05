@@ -13,9 +13,11 @@ import {
 } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import {
   collectKnowledgeInventory,
+  currentKnowledgeReferenceProofs,
   type KnowledgeRetrievalAccess,
   knowledgePageReadable,
   knowledgeSourceAudienceReadable,
@@ -23,13 +25,14 @@ import {
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { openCoreDb } from './storage/db.js';
+import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import {
   rebuildWorkspaceDerivedIndexes,
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
+import { nativeProductScope } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import {
@@ -810,3 +813,306 @@ function removeMember(f: Awaited<ReturnType<typeof fixture>>, userId: string): v
 function workspacePageScope(f: Awaited<ReturnType<typeof fixture>>): string {
   return `page/workspace/${f.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspaceId } })}`;
 }
+
+// Schema #598: Source metadata and current disclosure keep their original separate owners.
+describe('borrowed FsStore Source selection and current admission', () => {
+  it('uses the borrowed Notebook selection without retaining a Source disclosure grant', async () => {
+    const f = await fixture();
+    const sourceThread = await f.store.createThread(f.workspaceId, 'Bound Source origin');
+    const first = await registerSource(f, sourceThread.id);
+    const owner = { kind: 'workspace' as const, workspaceId: f.workspaceId };
+    const scope = nativeProductScope(f.dataRoot, owner);
+    const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
+    try {
+      db.sqlite.exec('BEGIN');
+      const bound = new FsStore({
+        dataRoot: f.dataRoot,
+        nativeProductScope: { ...scope, sqlite: db.sqlite },
+      });
+      expect(bound.listKnowledgeSources(f.workspaceId).map(({ id }) => id)).toEqual([first.id]);
+      const second = await registerSource(f);
+      expect(
+        f.store
+          .listKnowledgeSources(f.workspaceId)
+          .map(({ id }) => id)
+          .sort()
+      ).toEqual([first.id, second.id].sort());
+      expect(bound.getKnowledgeSource(f.workspaceId, first.id)).toEqual(first);
+      expect(bound.listKnowledgeSources(f.workspaceId).map(({ id }) => id)).toEqual([first.id]);
+      expect(db.sqlite.inTransaction).toBe(true);
+      db.sqlite.exec('ROLLBACK');
+      expect(
+        bound
+          .listKnowledgeSources(f.workspaceId)
+          .map(({ id }) => id)
+          .sort()
+      ).toEqual([first.id, second.id].sort());
+      const current = { ...f, store: bound, access: { ...f.access, store: bound } };
+      expect(knowledgeSourceAudienceReadable(current, first.id)).toBe(true);
+      // The real request/decision/configuration owners revoke this exact origin's current audience.
+      await restrictSourceThread({ ...f, userId: LOCAL_USER_ID }, sourceThread.id);
+      expect(knowledgeSourceAudienceReadable(current, first.id)).toBe(false);
+      expect(db.sqlite.open).toBe(true);
+    } finally {
+      if (db.sqlite.inTransaction) db.sqlite.exec('ROLLBACK');
+      db.sqlite.close();
+    }
+  }, 30_000);
+});
+
+// Schema #598: the public retrieval seam must borrow an explicitly supplied Workspace cut.
+describe('borrowed Workspace retrieval selection', () => {
+  it('keeps the public Notebook and Source proof read on its held SQL selection until rollback', async () => {
+    const f = await fixture();
+    const firstSource = await registerSource(f);
+    const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+    const firstContent = serializeKnowledgePageFixture(
+      {
+        title: 'Held source page',
+        content: 'Exact before-publication bytes.',
+        sourceReferences: [`source:${firstSource.id}@${firstSource.contentDigest}`],
+        createdAt: '2026-11-03T00:00:00.000Z',
+        updatedAt: '2026-11-03T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: f.workspaceId }
+    );
+    const firstResponse = await app.request(
+      ...operationRequest(
+        'knowledge.notebook.create',
+        {
+          workspaceId: f.workspaceId,
+          baseRevision: f.notebook.publishedRevision(),
+          path: 'before.md',
+          content: firstContent,
+          summary: 'Publish the real initial retrieval page.',
+        },
+        { body: JSON.stringify({ requestId: randomUUID() }) }
+      )
+    );
+    expect(firstResponse.status, await firstResponse.clone().text()).toBe(200);
+    const firstRevision = f.notebook.publishedRevision();
+    const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
+    const originalConnection = db.sqlite;
+    const originalPath = originalConnection.name;
+    const scope = nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId: f.workspaceId });
+    const options: ConstructorParameters<typeof FsStore>[0] = {
+      dataRoot: f.dataRoot,
+      nativeProductScope: { ...scope, sqlite: originalConnection },
+    };
+    const bound = new FsStore(options);
+    // This narrow optional extension lets the baseline compile before the public access type
+    // acquires its accepted borrowed handle. It neither fabricates nor changes an Actor.
+    const access: Parameters<typeof readAuthorizedWorkspaceNotebookPages>[0]['access'] & {
+      readonly workspaceDb?: ReturnType<typeof openWorkspaceDb>;
+    } = { ...f.access, store: bound, workspaceDb: db };
+    try {
+      originalConnection.exec('BEGIN');
+      const before = readAuthorizedWorkspaceNotebookPages({ ...f, access });
+      expect(before.notebookRevision).toBe(firstRevision);
+      expect(before.pages).toEqual([
+        {
+          id: 'before',
+          path: 'before.md',
+          content: firstContent,
+          contentDigest: digest(firstContent),
+        },
+      ]);
+      expect(before.referenceProofs.get('before')).toEqual({
+        knowledgePageId: 'before',
+        contentDigest: digest(firstContent),
+        sourceReferences: [`source:${firstSource.id}@${firstSource.contentDigest}`],
+        resolvedReferences: new Set([`source:${firstSource.id}@${firstSource.contentDigest}`]),
+      });
+      expect(bound.listKnowledgeSources(f.workspaceId).map(({ id }) => id)).toEqual([
+        firstSource.id,
+      ]);
+      const secondSource = await registerSource(f);
+      const secondContent = serializeKnowledgePageFixture(
+        {
+          title: 'Later source page',
+          content: 'Exact peer-publication bytes.',
+          sourceReferences: [`source:${secondSource.id}@${secondSource.contentDigest}`],
+          createdAt: '2026-11-03T00:00:00.000Z',
+          updatedAt: '2026-11-03T00:00:00.000Z',
+        },
+        { kind: 'workspace', workspaceId: f.workspaceId }
+      );
+      const secondResponse = await app.request(
+        ...operationRequest(
+          'knowledge.notebook.create',
+          {
+            workspaceId: f.workspaceId,
+            baseRevision: f.notebook.publishedRevision(),
+            path: 'after.md',
+            content: secondContent,
+            summary: 'Publish through the real peer owner.',
+          },
+          { body: JSON.stringify({ requestId: randomUUID() }) }
+        )
+      );
+      expect(secondResponse.status, await secondResponse.clone().text()).toBe(200);
+      const later = readAuthorizedWorkspaceNotebookPages(f);
+      expect(later.notebookRevision).not.toBe(firstRevision);
+      expect(later.pages.map(({ id }) => id)).toEqual(['after', 'before']);
+      expect(later.referenceProofs.get('after')).toEqual({
+        knowledgePageId: 'after',
+        contentDigest: digest(secondContent),
+        sourceReferences: [`source:${secondSource.id}@${secondSource.contentDigest}`],
+        resolvedReferences: new Set([`source:${secondSource.id}@${secondSource.contentDigest}`]),
+      });
+      expect(
+        f.store
+          .listKnowledgeSources(f.workspaceId)
+          .map(({ id }) => id)
+          .sort()
+      ).toEqual([firstSource.id, secondSource.id].sort());
+      // Current implementation opens another Workspace reader here and follows the peer head.
+      // The deciding expected RED is the changed notebookRevision, not setup or lock failure.
+      const held = readAuthorizedWorkspaceNotebookPages({ ...f, access });
+      expect(held.notebookRevision).toBe(firstRevision);
+      expect(held.pages).toEqual(before.pages);
+      expect(held.referenceProofs).toEqual(before.referenceProofs);
+      expect(bound.listKnowledgeSources(f.workspaceId).map(({ id }) => id)).toEqual([
+        firstSource.id,
+      ]);
+      expect(db.sqlite).toBe(originalConnection);
+      expect(originalConnection.name).toBe(originalPath);
+      expect(originalConnection.open).toBe(true);
+      expect(originalConnection.inTransaction).toBe(true);
+      originalConnection.exec('ROLLBACK');
+      const refreshed = readAuthorizedWorkspaceNotebookPages({ ...f, access });
+      expect(refreshed.notebookRevision).toBe(later.notebookRevision);
+      expect(refreshed.pages).toEqual(later.pages);
+      expect(refreshed.referenceProofs).toEqual(later.referenceProofs);
+      expect(
+        bound
+          .listKnowledgeSources(f.workspaceId)
+          .map(({ id }) => id)
+          .sort()
+      ).toEqual([firstSource.id, secondSource.id].sort());
+      expect(db.sqlite).toBe(originalConnection);
+      expect(originalConnection.open).toBe(true);
+      expect(originalConnection.inTransaction).toBe(false);
+    } finally {
+      if (originalConnection.inTransaction) originalConnection.exec('ROLLBACK');
+      originalConnection.close();
+    }
+  }, 30_000);
+
+  it('refuses a mismatched borrowed Workspace owner or physical path before content and retains both callers', async () => {
+    const f = await fixture();
+    const source = await registerSource(f);
+    const content = serializeKnowledgePageFixture(
+      {
+        title: 'Correct physical owner page',
+        content: 'These valid bytes must not admit a wrong reader.',
+        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+        createdAt: '2026-11-03T00:00:00.000Z',
+        updatedAt: '2026-11-03T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: f.workspaceId }
+    );
+    const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+    const response = await app.request(
+      ...operationRequest(
+        'knowledge.notebook.create',
+        {
+          workspaceId: f.workspaceId,
+          baseRevision: f.notebook.publishedRevision(),
+          path: 'owned.md',
+          content,
+          summary: 'Publish through the actual Notebook owner.',
+        },
+        { body: JSON.stringify({ requestId: randomUUID() }) }
+      )
+    );
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(readAuthorizedWorkspaceNotebookPages(f).pages).toEqual([
+      { id: 'owned', path: 'owned.md', content, contentDigest: digest(content) },
+    ]);
+    const peer = await f.store.createWorkspace('Different physical retrieval owner');
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      workspaceId: peer.id,
+      ownerUserId: LOCAL_USER_ID,
+    });
+    const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
+    const peerDb = openWorkspaceDb(f.dataRoot, peer.id);
+    const originalConnection = db.sqlite;
+    const peerConnection = peerDb.sqlite;
+    const originalPath = originalConnection.name;
+    const peerPath = peerConnection.name;
+    const scope = nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId: f.workspaceId });
+    const options: ConstructorParameters<typeof FsStore>[0] = {
+      dataRoot: f.dataRoot,
+      nativeProductScope: { ...scope, sqlite: originalConnection },
+    };
+    const bound = new FsStore(options);
+    try {
+      originalConnection.exec('BEGIN');
+      peerConnection.exec('BEGIN');
+      expect(bound.listKnowledgeSources(f.workspaceId).map(({ id }) => id)).toEqual([source.id]);
+      const validAccess: Parameters<typeof currentKnowledgeReferenceProofs>[0]['access'] = {
+        ...f.access,
+        store: bound,
+        workspaceDb: db,
+      };
+      expect(
+        currentKnowledgeReferenceProofs({
+          workspaceId: f.workspaceId,
+          access: validAccess,
+          pageIds: ['owned'],
+        })
+      ).toEqual(readAuthorizedWorkspaceNotebookPages(f).referenceProofs);
+      const readRevision = vi.spyOn(KnowledgeNotebook.prototype, 'readRevision');
+      const readContent = vi.spyOn(KnowledgeNotebook.prototype, 'readContent');
+      // Both are deliberate invalid input descriptors over genuine admitted connections.
+      // The second keeps the claimed owner while substituting a foreign physical database.
+      const mismatches: Array<ReturnType<typeof openWorkspaceDb>> = [
+        peerDb,
+        { ...db, sqlite: peerConnection },
+        // A direct proof read must reject contradictory root metadata even when the
+        // actual connection has the correct retained Workspace and Knowledge Base.
+        { ...db, dataRoot: join(f.dataRoot, 'contradictory-root') },
+      ];
+      for (const workspaceDb of mismatches) {
+        const access: Parameters<typeof readAuthorizedWorkspaceNotebookPages>[0]['access'] & {
+          readonly workspaceDb?: ReturnType<typeof openWorkspaceDb>;
+        } = { ...f.access, store: bound, workspaceDb };
+        // Baseline ignores this supplied handle and returns the real page instead of refusing.
+        expect(() =>
+          readAuthorizedWorkspaceNotebookPages({ ...f, access, pageIds: ['owned'] })
+        ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+        // R1: this exported direct API must enforce the same physical owner before
+        // loading proof bytes; pinNotebook's validation cannot protect this crossing.
+        expect(() =>
+          currentKnowledgeReferenceProofs({
+            workspaceId: f.workspaceId,
+            access,
+            pageIds: ['owned'],
+          })
+        ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+        expect(readRevision).not.toHaveBeenCalled();
+        expect(readContent).not.toHaveBeenCalled();
+        expect(db.sqlite).toBe(originalConnection);
+        expect(peerDb.sqlite).toBe(peerConnection);
+        expect(originalConnection.name).toBe(originalPath);
+        expect(peerConnection.name).toBe(peerPath);
+        expect(originalConnection.open).toBe(true);
+        expect(peerConnection.open).toBe(true);
+        expect(originalConnection.inTransaction).toBe(true);
+        expect(peerConnection.inTransaction).toBe(true);
+      }
+      readRevision.mockRestore();
+      readContent.mockRestore();
+      expect(readAuthorizedWorkspaceNotebookPages({ ...f, access: f.access }).pages).toEqual([
+        { id: 'owned', path: 'owned.md', content, contentDigest: digest(content) },
+      ]);
+    } finally {
+      if (originalConnection.inTransaction) originalConnection.exec('ROLLBACK');
+      if (peerConnection.inTransaction) peerConnection.exec('ROLLBACK');
+      originalConnection.close();
+      peerConnection.close();
+    }
+  }, 30_000);
+});

@@ -59,12 +59,15 @@ import {
   type KnowledgeRetrievalAccess,
   knowledgePageDelegated,
   knowledgePageReadable,
-  knowledgeSourceReferencesReadable,
+  knowledgePageReadableSteps,
+  knowledgeSourceReferencesReadableSteps,
   prepareAuthorizedWorkspaceNotebookRead,
   readAuthorizedServerNotebookPages,
   readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
+  readAuthorizedWorkspaceNotebookPagesSteps,
   resolveKnowledgeQueryContext,
+  resolveKnowledgeQueryContextSteps,
   type UserMemoryRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
@@ -1180,6 +1183,17 @@ interface KnowledgeTraceReadInput {
 
 /** One canonical reader binds file identity, containing audience and current Server before projection. */
 function readAdmittedKnowledgeTrace(input: KnowledgeTraceReadInput): KnowledgeRetrievalTrace {
+  const steps = readAdmittedKnowledgeTraceSteps(input);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+function* readAdmittedKnowledgeTraceSteps(
+  input: KnowledgeTraceReadInput
+): Generator<void, KnowledgeRetrievalTrace, void> {
   const scope = parseReferenceScope(input.retrievalTraceRef.scopeId);
   if (!scope || scope.family !== 'retrieval-trace' || scope.workspaceId !== input.workspaceId)
     throw knowledgeTraceUnavailable();
@@ -1191,7 +1205,7 @@ function readAdmittedKnowledgeTrace(input: KnowledgeTraceReadInput): KnowledgeRe
       outputTurnId: scope.kind === 'turn' ? scope.turnId : undefined,
     },
   };
-  const context = resolveKnowledgeQueryContext(target);
+  const context = yield* resolveKnowledgeQueryContextSteps(target);
   admitKnowledgeRetrieval(target);
   const trace = readRetrievalTrace(
     resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId),
@@ -1260,6 +1274,25 @@ function currentKnowledgeReferenceContent(
   reference: PageReference,
   serverId: string
 ): string | null {
+  const steps = currentKnowledgeReferenceContentSteps(input, reference, serverId);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+function* currentKnowledgeReferenceContentSteps(
+  input: {
+    dataRoot: string;
+    workspaceId: string;
+    access: KnowledgeRetrievalAccess;
+    notebookRevision?: string | undefined;
+    notebookRead?: WorkspaceNotebookRead | undefined;
+  },
+  reference: PageReference,
+  serverId: string
+): Generator<void, string | null, void> {
   const scope = parseReferenceScope(reference.scopeId);
   if (!scope || scope.family !== 'page') throw knowledgeTraceUnavailable();
   if (scope.kind === 'user') {
@@ -1278,7 +1311,10 @@ function currentKnowledgeReferenceContent(
     }
   }
   // The selected trace's originating Server controls authority, not the Workspace's import history.
-  if (scope.kind === 'server' && serverId !== resolveKnowledgeQueryContext(input).serverId)
+  if (
+    scope.kind === 'server' &&
+    serverId !== (yield* resolveKnowledgeQueryContextSteps(input)).serverId
+  )
     throw knowledgeTraceUnavailable();
   if (scope.kind === 'server') {
     if (reference.scopeId !== currentKnowledgePageScope(input, 'server'))
@@ -1301,7 +1337,7 @@ function currentKnowledgeReferenceContent(
   const selection = readAdmittedWorkspaceKnowledgeSelection(
     workspaceRoot,
     input.workspaceId,
-    undefined,
+    input.access.workspaceDb,
     input.notebookRead?.selection
   );
   const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
@@ -1353,7 +1389,7 @@ function currentKnowledgeReferenceContent(
   }
   let selected: ReturnType<typeof readAuthorizedWorkspaceNotebookPages>;
   try {
-    selected = readAuthorizedWorkspaceNotebookPages({
+    selected = yield* readAuthorizedWorkspaceNotebookPagesSteps({
       ...input,
       pageIds: [reference.objectId],
     });
@@ -1372,7 +1408,7 @@ function currentKnowledgeReferenceContent(
   if (
     sensitivity === 'restricted' ||
     sensitivity === 'confidential' ||
-    !knowledgePageReadable(input, reference.objectId, content)
+    !(yield* knowledgePageReadableSteps(input, reference.objectId, content))
   )
     throw knowledgeTraceUnavailable();
   return content;
@@ -1382,7 +1418,18 @@ function currentKnowledgeReferenceContent(
 export function assertKnowledgeRetrievalTraceReadable(
   input: KnowledgeTraceReadInput
 ): KnowledgeRetrievalTrace {
-  return assertKnowledgeTraceProjectionReadable(input, 'full');
+  const steps = assertKnowledgeRetrievalTraceReadableSteps(input);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* assertKnowledgeRetrievalTraceReadableSteps(
+  input: KnowledgeTraceReadInput
+): Generator<void, KnowledgeRetrievalTrace, void> {
+  return yield* assertKnowledgeTraceProjectionReadableSteps(input, 'full');
 }
 
 /** Verifies the KM selection projection, whose exclusions contain no digest or Source metadata. */
@@ -1395,7 +1442,19 @@ function assertKnowledgeTraceProjectionReadable(
   input: KnowledgeTraceReadInput,
   projection: 'full' | 'selection'
 ): KnowledgeRetrievalTrace {
-  const trace = readAdmittedKnowledgeTrace(input);
+  const steps = assertKnowledgeTraceProjectionReadableSteps(input, projection);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+function* assertKnowledgeTraceProjectionReadableSteps(
+  input: KnowledgeTraceReadInput,
+  projection: 'full' | 'selection'
+): Generator<void, KnowledgeRetrievalTrace, void> {
+  const trace = yield* readAdmittedKnowledgeTraceSteps(input);
   if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
   const target = {
     notebookRevision: trace.notebookRevision,
@@ -1413,7 +1472,13 @@ function assertKnowledgeTraceProjectionReadable(
   ];
   for (const reference of references) {
     if (reference.scopeId !== trace.sourceScope) throw knowledgeTraceUnavailable();
-    if (currentKnowledgeReferenceContent(target, reference, trace.queryContext.serverId) === null)
+    if (
+      (yield* currentKnowledgeReferenceContentSteps(
+        target,
+        reference,
+        trace.queryContext.serverId
+      )) === null
+    )
       throw new OperationError(
         'knowledge_source_unavailable',
         'Knowledge trace source is unavailable.',
@@ -1425,7 +1490,7 @@ function assertKnowledgeTraceProjectionReadable(
       trace.retrievalParameters.sourceScope === 'user' ||
       trace.retrievalParameters.sourceScope === 'server'
     ) {
-      const content = currentKnowledgeReferenceContent(
+      const content = yield* currentKnowledgeReferenceContentSteps(
         target,
         entry.reference,
         trace.queryContext.serverId
@@ -1450,7 +1515,11 @@ function assertKnowledgeTraceProjectionReadable(
       continue;
     }
     if (
-      !knowledgeSourceReferencesReadable(target, entry.reference.objectId, entry.sourceReferences)
+      !(yield* knowledgeSourceReferencesReadableSteps(
+        target,
+        entry.reference.objectId,
+        entry.sourceReferences
+      ))
     )
       throw knowledgeTraceUnavailable();
   }

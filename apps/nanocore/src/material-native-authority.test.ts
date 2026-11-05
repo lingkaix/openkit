@@ -1,16 +1,33 @@
-import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { JsonOperationId } from '@openkit/app-api-schemas';
 import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
-import { expect, it, onTestFinished } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
-import { initializeDefaultKnowledgeBaseId } from './config/knowledge-base.js';
+import { listSqliteAuditEvents } from './audit-events.js';
+import {
+  initializeDefaultKnowledgeBaseId,
+  readDefaultKnowledgeBaseId,
+} from './config/knowledge-base.js';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readWorkerContextPackageTrace } from './context/worker-context-package.js';
+import { readVerifiedThreadWorkerContextTraces } from './context/worker-context-projection.js';
+import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
+import { OperationError } from './operation-error.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
@@ -37,10 +54,16 @@ import {
   buildWorkspaceMaterializationRecords,
 } from './runtime/workspace-materializer.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { artifactVersionRecordPath } from './storage/artifacts/artifact-version-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import { withCanonicalFileWriteAdmission } from './storage/canonical-write-capacity.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { agentSessionsRoot } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -387,7 +410,9 @@ it.each(
 });
 
 /** Prepares real package bytes and owner records; backend materialization evidence is fixture input. */
-async function preparedMaterial() {
+async function preparedMaterial(
+  options: { readonly deferBackendHandoff?: boolean; readonly includeArtifact?: boolean } = {}
+) {
   const f = await fixture();
   const { materialId } = await f.call('material.create', {
     requestId: 'source',
@@ -410,11 +435,49 @@ async function preparedMaterial() {
     expectedBindingState: 'not_bound',
   });
   const requestId = 'worker-context';
+  // Use the same admitted direct-import owner composition as the existing real S39 runtime test.
+  const artifactId = allocateEntityId('ar');
+  const artifactContent = 'An actual imported original selected by its exact version.\n';
+  const recordedAt = new Date().toISOString();
+  const selectedArtifact = options.includeArtifact
+    ? withCanonicalFileWriteAdmission(new FileStorageAdmission(f.root, () => 0n), () =>
+        f.store.createArtifact({
+          id: artifactId,
+          workspaceId: f.workspace.id,
+          threadId: null,
+          turnId: null,
+          kind: 'file',
+          title: 'Strict S39 selected original',
+          status: 'ready',
+          summary: null,
+          version: 1,
+          content: { format: 'text', body: artifactContent },
+          contentDigest: digest(artifactContent),
+          lastMutationRequestId: artifactId,
+          origin: {
+            kind: 'imported',
+            sourceKind: 'direct-import',
+            sourceId: artifactId,
+            sourceDigest: digest(artifactContent),
+            actor: { kind: 'user', id: f.userId },
+            requestId: artifactId,
+            recordedAt,
+          },
+          createdAt: recordedAt,
+          updatedAt: recordedAt,
+        })
+      )
+    : null;
   const workerRequest = JSON.stringify({
     schemaVersion: 1,
     objective: 'Review the source.',
     acceptanceCriteria: ['Review the exact original.'],
-    contextRefs: [{ kind: 'workspace', id: f.workspace.id }],
+    contextRefs: [
+      { kind: 'workspace', id: f.workspace.id },
+      ...(selectedArtifact
+        ? [{ kind: 'artifact', id: selectedArtifact.id, artifactVersion: selectedArtifact.version }]
+        : []),
+    ],
     resources: [],
     expectedArtifacts: [],
     constraints: { maxContextTokens: 12000, maxWorkerIterations: 1 },
@@ -587,10 +650,16 @@ async function preparedMaterial() {
       sandbox: { name: backendSessionId, state: 'created' },
     },
   });
-  await recordWorkspaceBackendHandoff(f.db, snapshots, materializations);
-  await markWorkerBackendWorkspaceHandoffComplete(f.coreDb, { attemptId, now });
+  /** Completes the existing Workspace handoff before marking its real Core attempt complete. */
+  const completeBackendHandoff = async () => {
+    await recordWorkspaceBackendHandoff(f.db, snapshots, materializations);
+    await markWorkerBackendWorkspaceHandoffComplete(f.coreDb, { attemptId, now });
+  };
+  if (!options.deferBackendHandoff) await completeBackendHandoff();
   return {
     f,
+    completeBackendHandoff,
+    selectedArtifact,
     materialId,
     revisionId,
     content,
@@ -622,6 +691,324 @@ async function preparedMaterial() {
       }),
   };
 }
+
+it('refuses first strict S39 acceptance until its original native backend handoff is complete', async () => {
+  const p = await preparedMaterial({ deferBackendHandoff: true });
+  const { f } = p;
+  const authorities = createWorkerContextPackageAuthorityReader({
+    coreDb: f.coreDb,
+    store: f.store,
+    workspaceDb: f.db,
+  });
+  expect(
+    authorities.readAgentEnvironmentPackage(f.workspace.id, p.environmentPackage.snapshotId)
+  ).toMatchObject({
+    snapshotId: p.environmentPackage.snapshotId,
+    scope: { agentSessionId: p.turn.agentSessionId, turnId: p.turn.id },
+  });
+  expect(
+    authorities.readBackendHandoff(f.workspace.id, p.environmentPackage.snapshotId)
+  ).toBeNull();
+  const tracePath = join(
+    p.preparedContext.workspaceRoot,
+    'threads',
+    f.thread.id,
+    'turns',
+    p.turn.id,
+    'context-package.json'
+  );
+  expect(existsSync(tracePath)).toBe(false);
+  await expect(p.accept()).rejects.toThrow(/backend handoff mismatch/);
+  expect(existsSync(tracePath)).toBe(false);
+  expect(selectQueuedThreadMaterialRevision(f.db, f.thread.id)).toMatchObject({
+    materialId: p.materialId,
+    revisionId: p.revisionId,
+  });
+
+  // Only the original Workspace and Core owners complete the missing proof. No replacement
+  // Session, AEP, Context Package, admission or trace is supplied to the verifier.
+  await p.completeBackendHandoff();
+  const accepted = await p.accept();
+  expect(p.verify()).toEqual(accepted);
+  expect(accepted).toMatchObject({
+    agentSessionId: p.turn.agentSessionId,
+    packageSnapshotId: p.environmentPackage.snapshotId,
+    materialSelections: [{ materialId: p.materialId, revisionId: p.revisionId }],
+  });
+  expect(selectQueuedThreadMaterialRevision(f.db, f.thread.id)).toBeNull();
+});
+
+it('requires the real selected Artifact original for first S39 acceptance and preserves exact retained delivery', async () => {
+  const p = await preparedMaterial({ includeArtifact: true });
+  const { f, selectedArtifact } = p;
+  expect(selectedArtifact).not.toBeNull();
+  const artifact = selectedArtifact!;
+  expect(
+    f.store.getArtifactVersion(f.workspace.id, artifact.id, artifact.version).artifact
+  ).toEqual(artifact);
+  const selected = p.preparedContext.packageFiles.sourceFiles!.find(
+    (source) => source.source.kind === 'artifact'
+  )!;
+  expect(selected).toMatchObject({
+    source: { kind: 'artifact', artifactVersion: artifact.version },
+    originalDigest: artifact.contentDigest,
+  });
+  const authorities = createWorkerContextPackageAuthorityReader({
+    coreDb: f.coreDb,
+    store: f.store,
+    workspaceDb: f.db,
+  });
+  expect(authorities.readSourceFile!(selected)).toMatchObject({
+    originalDigest: artifact.contentDigest,
+  });
+  const original = artifactVersionRecordPath(
+    p.preparedContext.workspaceRoot,
+    artifact.id,
+    artifact.version
+  );
+  const held = join(f.root, 'held-original-artifact-version.json');
+  const tracePath = join(
+    p.preparedContext.workspaceRoot,
+    'threads',
+    f.thread.id,
+    'turns',
+    p.turn.id,
+    'context-package.json'
+  );
+  const originalBytes = readFileSync(original);
+  onTestFinished(() => {
+    if (existsSync(held)) renameSync(held, original);
+  });
+  // The original owner created all valid records. Move only its real immutable version record
+  // out of reach; no replacement record or verifier result is supplied.
+  renameSync(original, held);
+  try {
+    expect(authorities.readSourceFile!(selected)).toBeNull();
+    await expect(p.accept()).rejects.toThrow(/original source authority mismatch/);
+    expect(existsSync(tracePath)).toBe(false);
+  } finally {
+    renameSync(held, original);
+  }
+  expect(readFileSync(original)).toEqual(originalBytes);
+  const accepted = await p.accept();
+  expect(p.verify()).toEqual(accepted);
+  // S39 and File Storage distinguish first admission from historical delivery. Once accepted,
+  // exact package bytes and original lineage remain proof even if the source is unavailable.
+  renameSync(original, held);
+  try {
+    expect(authorities.readSourceFile!(selected)).toBeNull();
+    expect(p.verify()).toEqual(accepted);
+  } finally {
+    renameSync(held, original);
+  }
+  expect(
+    f.store.getArtifactVersion(f.workspace.id, artifact.id, artifact.version).artifact
+  ).toEqual(artifact);
+});
+
+it('recomputes schema impact when an absent named AEP becomes unreadable in another real retained Session', async () => {
+  const p = await preparedMaterial({ includeArtifact: true });
+  const { f } = p;
+  const accepted = await p.accept();
+  expect(p.verify()).toEqual(accepted);
+  expect(accepted.sourceFiles).toContainEqual(
+    expect.objectContaining({
+      source: expect.objectContaining({
+        kind: 'artifact',
+        artifactVersion: p.selectedArtifact!.version,
+        reference: expect.objectContaining({ objectId: p.selectedArtifact!.id }),
+      }),
+      originalDigest: p.selectedArtifact!.contentDigest,
+    })
+  );
+  // This pre-existing reader must stay live even when a new retained Session is added later.
+  const liveAuthorities = createWorkerContextPackageAuthorityReader({
+    coreDb: f.coreDb,
+    store: f.store,
+    workspaceDb: f.db,
+  });
+  const namedAep = () =>
+    liveAuthorities.readAgentEnvironmentPackage(f.workspace.id, accepted.packageSnapshotId);
+  expect(namedAep()).toMatchObject({ snapshotId: accepted.packageSnapshotId });
+  const projection = () =>
+    readVerifiedThreadWorkerContextTraces({
+      coreDb: f.coreDb,
+      store: f.store,
+      workspaceDb: f.db,
+      threadId: f.thread.id,
+    });
+  expect(projection()).toEqual([
+    { startedAt: p.turn.startedAt, trace: accepted, verification: 'strict' },
+  ]);
+
+  // The negative named lookup must belong to a real retained Session. This Session has no
+  // accepted worker Turn and claims no AEP, admission, backend acceptance or delivery.
+  const otherThread = await f.store.createThread(f.workspace.id, 'Named AEP absence owner');
+  const otherSession = await f.store.createAgentSession({
+    id: allocateEntityId('as'),
+    agentId: p.environmentPackage.agent.agentId,
+    workspaceId: f.workspace.id,
+    threadId: otherThread.id,
+    status: 'ready',
+    message: null,
+    createdAt: p.turn.startedAt!,
+    updatedAt: p.turn.startedAt!,
+  });
+  expect(f.store.listWorkspaceAgentSessions(f.workspace.id).map((session) => session.id)).toEqual(
+    expect.arrayContaining([accepted.agentSessionId, otherSession.id])
+  );
+  const originalAepPath = join(
+    agentSessionsRoot(f.db),
+    accepted.agentSessionId,
+    'aep-snapshots',
+    `${accepted.packageSnapshotId}.json`
+  );
+  const originalAepBytes = readFileSync(originalAepPath);
+  const absentAepPath = join(
+    agentSessionsRoot(f.db),
+    otherSession.id,
+    'aep-snapshots',
+    `${accepted.packageSnapshotId}.json`
+  );
+  expect(existsSync(absentAepPath)).toBe(false);
+  expect(p.verify()).toEqual(accepted);
+
+  const workspaceRoot = p.preparedContext.workspaceRoot;
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: f.root,
+    scope: { kind: 'workspace', workspaceId: f.workspace.id },
+  });
+  const select = () =>
+    readWorkspaceNotebookSelection({ workspaceDb: f.db, workspaceRoot, knowledgeBaseId });
+  const fileAdmission = new FileStorageAdmission(f.root, () => 0n);
+  getControlStoreWorkerClient().setFileStorageAdmission(f.root, fileAdmission);
+  const invoke = createOperationInvocation({
+    coreDb: f.coreDb,
+    store: f.store,
+    dataRoot: f.root,
+    fileAdmission,
+    inflightCommands: new WeakMap(),
+    runtimeConfigManager: createRuntimeConfigManager({
+      dataRoot: f.root,
+      captureCoverage: f.store,
+    }),
+    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    repositoryWorkspaceDb: (id) => openWorkspaceDb(f.root, id),
+  });
+  const entry = { kind: 'public', actor: { kind: 'session', userId: f.userId } } as const;
+  const selected = select();
+  const candidate = `${selected.scopeSchemaText.trimEnd()}
+# Real strict S39 named AEP absence.
+`;
+  const reviewed = await invoke(
+    'knowledge.schema.preview',
+    {
+      workspaceId: f.workspace.id,
+      requestId: randomUUID(),
+      baseRevision: selected.head.notebookCommit,
+      schemaText: candidate,
+    },
+    entry
+  );
+  expect(reviewed.inventoryComplete).toBe(true);
+  expect(reviewed.dependencyInventory.every((row) => row.complete)).toBe(true);
+  const requestId = randomUUID();
+  const historyRoot = join(workspaceRoot, 'knowledge', 'schema', 'history');
+  const history = () =>
+    existsSync(historyRoot)
+      ? readdirSync(historyRoot)
+          .sort()
+          .map((name) => [name, readFileSync(join(historyRoot, name))])
+      : [];
+  const initialHistory = history();
+  const historyPaths: string[] = [];
+  let injections = 0;
+  const forPath = FileStorageAdmission.prototype.forPath;
+  const forecast = vi.spyOn(FileStorageAdmission.prototype, 'forPath').mockImplementation(function (
+    this: FileStorageAdmission,
+    path
+  ) {
+    if (dirname(path) === historyRoot) {
+      historyPaths.push(path);
+      if (injections === 0) {
+        injections += 1;
+        // Deliberate invalid-file fault AFTER genuine first acceptance and complete preview.
+        // These bytes are not offered as a valid duplicate AEP or fabricated package lineage.
+        mkdirSync(dirname(absentAepPath), { recursive: true });
+        writeFileSync(absentAepPath, '{}');
+      }
+    }
+    return forPath.call(this, path);
+  });
+  onTestFinished(() => {
+    forecast.mockRestore();
+    rmSync(absentAepPath, { force: true });
+  });
+  try {
+    const [outcome] = await Promise.allSettled([
+      invoke(
+        'knowledge.schema.apply',
+        {
+          workspaceId: f.workspace.id,
+          requestId,
+          baseRevision: reviewed.notebookRevision,
+          schemaText: candidate,
+          reviewedReport: reviewed,
+        },
+        entry
+      ),
+    ]);
+    expect(injections).toBe(1);
+    expect(historyPaths.length).toBeGreaterThan(0);
+    // The first physical forecast contains each original history destination once. Once the
+    // changed absence is proved, recomputation must refuse before another physical forecast.
+    expect(new Set(historyPaths).size).toBe(historyPaths.length);
+    expect(namedAep()).toBeNull();
+    expect(() => p.verify()).toThrow(/AEP mismatch/);
+    expect(projection).toThrow();
+    // Intended RED: publishing the pre-fault complete report returns success here. A bare
+    // readset-busy refusal also fails: the recomputed current inventory must explain refusal.
+    expect(outcome.status).toBe('rejected');
+    if (outcome.status !== 'rejected')
+      throw new Error('Schema published a stale complete S39 inventory.');
+    expect(outcome.reason).toBeInstanceOf(OperationError);
+    expect(outcome.reason).toMatchObject({ code: 'conflict', status: 409 });
+    const actual = outcome.reason.details?.actualReport as typeof reviewed | undefined;
+    expect(actual?.inventoryComplete).toBe(false);
+    expect(actual?.dependencyInventory).toContainEqual(
+      expect.objectContaining({
+        family: 'trace-references',
+        complete: false,
+        diagnostics: expect.arrayContaining([{ code: 'schema.inventory_unavailable' }]),
+      })
+    );
+    expect(select().head).toEqual(selected.head);
+    expect(select().scopeSchemaText).toBe(selected.scopeSchemaText);
+    expect(history()).toEqual(initialHistory);
+    expect(
+      f.store.getCommandRequest(
+        'knowledge.schema.apply',
+        requestId,
+        { workspaceId: f.workspace.id, actorId: f.userId },
+        f.db
+      )
+    ).toBeNull();
+    expect(
+      listSqliteAuditEvents(f.db.sqlite, f.workspace.id).filter(
+        (row) => row.requestId === requestId
+      )
+    ).toEqual([]);
+    expect(readFileSync(originalAepPath)).toEqual(originalAepBytes);
+  } finally {
+    forecast.mockRestore();
+    rmSync(absentAepPath, { force: true });
+  }
+  expect(namedAep()).toMatchObject({ snapshotId: accepted.packageSnapshotId });
+  expect(p.verify()).toEqual(accepted);
+  expect(projection()).toEqual([
+    { startedAt: p.turn.startedAt, trace: accepted, verification: 'strict' },
+  ]);
+});
 
 it('accepts a Material proposal with revision, pointer, every bound queue, Review and original receipt in the native writer', async () => {
   const p = await preparedMaterial();

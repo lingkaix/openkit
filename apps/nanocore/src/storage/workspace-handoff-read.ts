@@ -16,7 +16,10 @@ import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
 } from '../runtime/workspace-materializer.js';
-import { workspaceSnapshotAcceptedCommitIsKnown } from '../runtime/workspace-snapshot-chain.js';
+import {
+  workspaceSnapshotAcceptedCommitIsKnown,
+  workspaceSnapshotAcceptedCommitIsKnownSteps,
+} from '../runtime/workspace-snapshot-chain.js';
 import type { WorkspaceDb } from './db.js';
 
 /**
@@ -31,6 +34,19 @@ export function listWorkspaceInputSnapshots(
   workspaceId: string
 ): WorkspaceInputSnapshot[] {
   return listPayloadRows(
+    workspaceDb,
+    'workspace_input_snapshots',
+    workspaceId,
+    WorkspaceInputSnapshotReaderSchema
+  );
+}
+
+/** Shares the original complete owner predicate in released native contributions. */
+export function* readWorkspaceInputSnapshotsSteps(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  workspaceId: string
+): Generator<void, WorkspaceInputSnapshot[], void> {
+  return yield* readPayloadRowsSteps(
     workspaceDb,
     'workspace_input_snapshots',
     workspaceId,
@@ -57,6 +73,19 @@ export function listWorkspaceMaterializationRecords(
   );
 }
 
+/** Shares the original complete owner predicate in released native contributions. */
+export function* readWorkspaceMaterializationRecordsSteps(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  workspaceId: string
+): Generator<void, WorkspaceMaterializationRecord[], void> {
+  return yield* readPayloadRowsSteps(
+    workspaceDb,
+    'workspace_materialization_records',
+    workspaceId,
+    WorkspaceMaterializationRecordReaderSchema
+  );
+}
+
 /**
  * Lists durable backend workspace handles for one workspace.
  *
@@ -69,6 +98,19 @@ export function listBackendWorkspaceHandles(
   workspaceId: string
 ): BackendWorkspaceHandle[] {
   return listPayloadRows(
+    workspaceDb,
+    'backend_workspace_handles',
+    workspaceId,
+    BackendWorkspaceHandleReaderSchema
+  );
+}
+
+/** Shares the original complete owner predicate in released native contributions. */
+export function* readBackendWorkspaceHandlesSteps(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  workspaceId: string
+): Generator<void, BackendWorkspaceHandle[], void> {
+  return yield* readPayloadRowsSteps(
     workspaceDb,
     'backend_workspace_handles',
     workspaceId,
@@ -97,39 +139,74 @@ export function requireCompleteBackendWorkspaceHandleHandoff(
     readonly workerSessionId: string;
   }
 ): BackendWorkspaceHandle[] {
+  const steps = completeBackendHandoffSteps(workspaceDb, environmentPackage, expectedBackend, true);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Shares the original complete owner predicate in released native contributions. */
+export function* requireCompleteBackendWorkspaceHandleHandoffSteps(
+  workspaceDb: WorkspaceDb,
+  environmentPackage: AgentEnvironmentPackage,
+  expectedBackend?: Parameters<typeof requireCompleteBackendWorkspaceHandleHandoff>[2]
+): Generator<void, BackendWorkspaceHandle[], void> {
+  return yield* completeBackendHandoffSteps(
+    workspaceDb,
+    environmentPackage,
+    expectedBackend,
+    false
+  );
+}
+
+/** Keeps synchronous leaf inventories separate without a transaction over handoff validation. */
+function* completeBackendHandoffSteps(
+  workspaceDb: WorkspaceDb,
+  environmentPackage: AgentEnvironmentPackage,
+  expectedBackend: Parameters<typeof requireCompleteBackendWorkspaceHandleHandoff>[2],
+  synchronousLeafReads: boolean
+): Generator<void, BackendWorkspaceHandle[], void> {
   const expectedRecordIds = new Set(
     environmentPackage.workspace.inputs.map(
       (input) => `wmr_${environmentPackage.snapshotId}_${input.id}`
     )
   );
-  const handles = listBackendWorkspaceHandles(
-    workspaceDb,
-    environmentPackage.scope.workspaceId
+  const handles = (
+    synchronousLeafReads
+      ? listBackendWorkspaceHandles(workspaceDb, environmentPackage.scope.workspaceId)
+      : yield* readBackendWorkspaceHandlesSteps(workspaceDb, environmentPackage.scope.workspaceId)
   ).filter((handle) => handle.packageSnapshotId === environmentPackage.snapshotId);
   const actualRecordIds = handles.map((handle) => handle.materializationRecordId);
   const uniqueActualRecordIds = new Set(actualRecordIds);
-  const materializationRecords = listWorkspaceMaterializationRecords(
-    workspaceDb,
-    environmentPackage.scope.workspaceId
+  const materializationRecords = (
+    synchronousLeafReads
+      ? listWorkspaceMaterializationRecords(workspaceDb, environmentPackage.scope.workspaceId)
+      : yield* readWorkspaceMaterializationRecordsSteps(
+          workspaceDb,
+          environmentPackage.scope.workspaceId
+        )
   ).filter((record) => record.packageSnapshotId === environmentPackage.snapshotId);
   const materializationRecordsById = new Map(
     materializationRecords.map((record) => [record.id, record] as const)
   );
   const inputSnapshotsById = new Map(
-    listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId).map(
-      (snapshot) => [snapshot.id, snapshot] as const
-    )
+    (synchronousLeafReads
+      ? listWorkspaceInputSnapshots(workspaceDb, environmentPackage.scope.workspaceId)
+      : yield* readWorkspaceInputSnapshotsSteps(workspaceDb, environmentPackage.scope.workspaceId)
+    ).map((snapshot) => [snapshot.id, snapshot] as const)
   );
   const packageInputsById = new Map(
     environmentPackage.workspace.inputs.map((input) => [input.id, input] as const)
   );
 
-  if (
+  let incomplete =
     actualRecordIds.length !== uniqueActualRecordIds.size ||
     uniqueActualRecordIds.size !== expectedRecordIds.size ||
     [...uniqueActualRecordIds].some((recordId) => !expectedRecordIds.has(recordId)) ||
-    materializationRecordsById.size !== expectedRecordIds.size ||
-    handles.some((handle) => {
+    materializationRecordsById.size !== expectedRecordIds.size;
+  if (!incomplete) {
+    for (const handle of handles) {
       const record = materializationRecordsById.get(handle.materializationRecordId);
       const inputId = record?.id.replace(`wmr_${environmentPackage.snapshotId}_`, '') ?? '';
       const packageInput = packageInputsById.get(inputId);
@@ -165,13 +242,21 @@ export function requireCompleteBackendWorkspaceHandleHandoff(
         packageInput.source.kind === 'git' &&
         snapshot?.base.commit &&
         workSlot &&
-        workspaceSnapshotAcceptedCommitIsKnown(
-          workspaceDb,
-          environmentPackage.scope.workspaceId,
-          workSlot,
-          environmentPackage.scope.threadId,
-          snapshot.base.commit
-        )
+        (synchronousLeafReads
+          ? workspaceSnapshotAcceptedCommitIsKnown(
+              workspaceDb,
+              environmentPackage.scope.workspaceId,
+              workSlot,
+              environmentPackage.scope.threadId,
+              snapshot.base.commit
+            )
+          : yield* workspaceSnapshotAcceptedCommitIsKnownSteps(
+              workspaceDb,
+              environmentPackage.scope.workspaceId,
+              workSlot,
+              environmentPackage.scope.threadId,
+              snapshot.base.commit
+            ))
       ) {
         canonicalSnapshot = {
           ...canonicalSnapshot,
@@ -204,7 +289,7 @@ export function requireCompleteBackendWorkspaceHandleHandoff(
               },
             })[0]
           : undefined;
-      return (
+      if (
         !record ||
         !packageInput ||
         !snapshot ||
@@ -235,9 +320,14 @@ export function requireCompleteBackendWorkspaceHandleHandoff(
             !isDeepStrictEqual(record, canonicalRecord) ||
             handle.backendKind !== expectedBackend.backendKind ||
             handle.workerSessionId !== expectedBackend.workerSessionId))
-      );
-    })
-  ) {
+      ) {
+        incomplete = true;
+        break;
+      }
+      yield;
+    }
+  }
+  if (incomplete) {
     throw new Error(
       `Workspace backend handle handoff is incomplete for package ${environmentPackage.snapshotId}.`
     );
@@ -266,18 +356,60 @@ export function listPayloadRows<T>(
   workspaceId: string,
   schema: { parse(value: unknown): T }
 ): T[] {
-  return (
-    workspaceDb.sqlite
+  // Preserve each original payload SELECT, not a combined cut over multiple families or proofs.
+  return workspaceDb.sqlite
+    .transaction(() => {
+      const steps = readPayloadRowsSteps(workspaceDb, tableName, workspaceId, schema);
+      for (;;) {
+        const step = steps.next();
+        if (step.done) return step.value;
+      }
+    })
+    .deferred();
+}
+
+/** Shares the original complete owner predicate in released native contributions. */
+function* readPayloadRowsSteps<T>(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  tableName:
+    | 'workspace_input_snapshots'
+    | 'workspace_materialization_records'
+    | 'backend_workspace_handles'
+    | 'worker_output_manifests'
+    | 'workspace_change_sets',
+  workspaceId: string,
+  schema: { parse(value: unknown): T }
+): Generator<void, T[], void> {
+  const result: T[] = [];
+  let after: { createdAt: string; rowid: string } | undefined;
+  for (;;) {
+    const rows = workspaceDb.sqlite
       .prepare(
-        `SELECT schema_version AS schemaVersion, payload_json
+        `SELECT CAST(rowid AS TEXT) AS pageRowid, created_at AS pageCreatedAt,
+          schema_version AS schemaVersion, payload_json
         FROM ${tableName}
         WHERE workspace_id = ?
-        ORDER BY created_at ASC`
+          ${after ? 'AND (created_at > ? OR (created_at = ? AND rowid > ?))' : ''}
+        ORDER BY created_at ASC, rowid ASC LIMIT 128`
       )
-      .all(workspaceId) as Array<{ schemaVersion: unknown; payload_json: string }>
-  )
-    .map((row) => schema.parse(readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown))
-    .reverse();
+      .all(
+        workspaceId,
+        ...(after ? [after.createdAt, after.createdAt, after.rowid] : [])
+      ) as Array<{
+      pageRowid: string;
+      pageCreatedAt: string;
+      schemaVersion: unknown;
+      payload_json: string;
+    }>;
+    if (!rows.length) return result.reverse();
+    const page = rows.map(({ pageRowid: _pageRowid, pageCreatedAt: _pageCreatedAt, ...row }) =>
+      schema.parse(readRetainedV1(row, () => JSON.parse(row.payload_json)) as unknown)
+    );
+    result.push(...page);
+    const last = rows.at(-1)!;
+    after = { createdAt: last.pageCreatedAt, rowid: last.pageRowid };
+    yield;
+  }
 }
 
 /**

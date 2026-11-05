@@ -59,6 +59,11 @@ import {
   prepareControlGenerativePresentation,
 } from '../generative-ui/native-publication.js';
 import { NotebookError } from '../knowledge/notebook.js';
+import {
+  NativeSchemaReadsetConflict,
+  type PreparedNativeSchemaApplication,
+  prepareNativeSchemaApplication,
+} from '../knowledge/schema-application.js';
 import { OperationError, projectControlCapabilityFailure } from '../operation-error.js';
 import {
   applyControlExecutionJournal,
@@ -181,6 +186,7 @@ import {
   ControlPhysicalForecastDecisionSchema,
   type ControlPhysicalForecastFiles,
   ControlPhysicalForecastSchema,
+  ControlSchemaApplicationRefusalSchema,
   type ControlSqlResult,
   type ControlSqlRow,
   type ControlSqlStatement,
@@ -194,6 +200,7 @@ import {
   isControlProductCohort,
   isControlWorkerReply,
   isControlWorkerRequest,
+  readControlSchemaApplicationInput,
 } from './control-store-worker-protocol.js';
 import { CoreJournalRefusal } from './core-journal-codecs.js';
 import { applyControlCoreJournal } from './core-journal-native.js';
@@ -316,6 +323,7 @@ type WriteCommand = Extract<
       | 'publication'
       | 'project-cleanup'
       | 'app-kernel'
+      | 'schema-application'
       | 'worker-storage-binding'
       | 'workspace-apply-plan'
       | 'automation-scanner'
@@ -377,8 +385,8 @@ type WriteCommand = Extract<
 /** One slot is reserved before preparation; readiness never changes admitted causal order. */
 type WriteRequest = WriteCommand & {
   readonly lanes: ReadonlySet<string>;
-  /** Existing opaque SQL and archive commands retain their database-wide ordering boundary. */
-  readonly barrier: boolean;
+  /** Schema capture yields first; the same slot becomes a barrier before final publication. */
+  barrier: boolean;
   readonly settled: Promise<void>;
   readonly finish: () => void;
   /** Membership only; all members occupy the same existing pending array. */
@@ -391,6 +399,7 @@ type WriteRequest = WriteCommand & {
   refusal?: ControlWorkerReply;
   readonly preparedWorkspaceCapture?: RawWorkspaceCapture | null;
   readonly preparedApp?: PreparedControlApp;
+  readonly preparedSchemaApplication?: PreparedNativeSchemaApplication;
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
   readonly preparedThreadReadItemIds?: readonly string[];
@@ -568,6 +577,34 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       status: error instanceof WorkspaceRecoveryError ? 409 : error.status,
     });
     if (parsed.success) return parsed.data;
+  }
+  if (operation === 'schema-application') {
+    const code =
+      error instanceof NotebookError ||
+      error instanceof OperationError ||
+      error instanceof NativeSchemaReadsetConflict ||
+      error instanceof IdempotencyKeyConflictError
+        ? error.code
+        : undefined;
+    if (code) {
+      const parsed = ControlSchemaApplicationRefusalSchema.safeParse({
+        operation,
+        code,
+        message: `Schema application ${code.replaceAll('_', ' ')}.`,
+        status:
+          code === 'invalid_request'
+            ? 400
+            : code === 'workspace_access_denied'
+              ? 403
+              : code === 'operation_storage_unavailable'
+                ? 503
+                : 409,
+        ...(error instanceof OperationError && error.details !== undefined
+          ? { details: error.details }
+          : {}),
+      });
+      if (parsed.success) return parsed.data;
+    }
   }
   if (operation === 'app-kernel') {
     const mapped = mapAppSqliteError(error);
@@ -1440,6 +1477,48 @@ function reviewVersion(request: WriteCommand): string | undefined {
   return target ? `${target.artifactId}:${target.artifactVersion}` : undefined;
 }
 
+/** An independent administrative capture has no SQL effect or causal lane before promotion. */
+function yieldingSchema(request: WriteRequest): boolean {
+  return (
+    request.operation === 'schema-application' &&
+    !request.barrier &&
+    !request.ready &&
+    !request.refusal &&
+    !request.predecessorFailed &&
+    request.lanes.size === 0 &&
+    !request.cohort
+  );
+}
+
+/** Only administrative capture can yield its place; ordinary predecessors retain exact order. */
+function effectivePendingHead(owner: OwnedDatabase): WriteRequest | undefined {
+  return owner.pending.find((request) => !yieldingSchema(request));
+}
+
+/** A definite administrative refusal supplies no failed canonical predecessor to other work. */
+function isolatedSchemaRefusal(
+  owner: OwnedDatabase,
+  failed: WriteRequest,
+  refusal = failed.refusal
+): boolean {
+  if (
+    owner.poisoned ||
+    databases.get(failed.database) !== owner ||
+    failed.predecessorFailed ||
+    failed.operation !== 'schema-application' ||
+    refusal?.status !== 'error' ||
+    refusal.code !== 'precondition' ||
+    refusal.commit !== 'not-committed' ||
+    refusal.domain?.operation !== 'schema-application' ||
+    !ControlSchemaApplicationRefusalSchema.safeParse(refusal.domain).success
+  )
+    return false;
+  return (
+    refusal.domain.code === 'schema_readset_changed' ||
+    (!failed.barrier && failed.lanes.size === 0 && !failed.cohort)
+  );
+}
+
 /** Waits only the admitted writers of canonical proof; original expected values are never refreshed. */
 async function prepareAfterPredecessors(
   owner: OwnedDatabase,
@@ -1453,7 +1532,9 @@ async function prepareAfterPredecessors(
     if (queued.predecessorFailed || owner.poisoned) throw new ControlProductPreconditionError();
   };
   await wait(
-    (request) => request.barrier || queued.barrier || overlaps(queued.lanes, request.lanes)
+    (request) =>
+      !yieldingSchema(request) &&
+      (request.barrier || queued.barrier || overlaps(queued.lanes, request.lanes))
   );
   const commands = pendingCommands(queued);
   const goalPending =
@@ -1628,6 +1709,7 @@ function complete(owner: OwnedDatabase, request: WriteRequest, result: ControlWo
   if (request.operation === 'recovery-target-preparation')
     Object.assign(request, { preparedTargetProof: undefined });
   try {
+    request.preparedSchemaApplication?.close();
     reply(result);
   } finally {
     request.finish();
@@ -1638,10 +1720,11 @@ function complete(owner: OwnedDatabase, request: WriteRequest, result: ControlWo
 function readyBatch(owner: OwnedDatabase): WriteRequest[] {
   const blocked = new Set<string>();
   const result: WriteRequest[] = [];
+  const first = effectivePendingHead(owner);
   for (const request of owner.pending) {
+    if (yieldingSchema(request)) continue;
     if (request.barrier) {
-      if (result.length === 0 && owner.pending[0] === request && request.ready)
-        result.push(request);
+      if (result.length === 0 && first === request && request.ready) result.push(request);
       break;
     }
     if (!request.ready || [...request.lanes].some((turn) => blocked.has(turn))) {
@@ -1674,6 +1757,7 @@ function refuseSuccessors(
   failed: WriteRequest,
   excluded: ReadonlySet<WriteRequest> = new Set()
 ): void {
+  if (isolatedSchemaRefusal(owner, failed)) return;
   const turns = new Set(failed.lanes);
   let barrierFailed = failed.barrier;
   for (const request of owner.pending.slice(owner.pending.indexOf(failed) + 1)) {
@@ -1737,9 +1821,9 @@ function flush(owner: OwnedDatabase): void {
     complete(owner, first, outcome);
   }
   // Archive starts a batch so its immutable canonical proof includes every earlier committed writer.
-  const archiveIndex = owner.pending.findIndex((request) => archivedThreads(request).length > 0);
-  if (archiveIndex === 0 && owner.scopeDb?.scope === 'workspace') {
-    const first = owner.pending[0]!;
+  const archive = effectivePendingHead(owner);
+  if (archive && archivedThreads(archive).length > 0 && owner.scopeDb?.scope === 'workspace') {
+    const first = archive;
     if (!first.ready) return;
     // Both synchronous receipt reads and asynchronous proof failures stay with this scope.
     const refuse = (error: unknown) => {
@@ -1787,6 +1871,21 @@ function flush(owner: OwnedDatabase): void {
   }
   const selected = readyBatch(owner);
   if (selected.length === 0) return;
+  // The Schema barrier is the leading sole request. No await separates final CAS,
+  // create-only history publication and the existing covering FULL SQL commit.
+  for (const request of selected) {
+    if (!request.preparedSchemaApplication || request.refusal || request.predecessorFailed)
+      continue;
+    try {
+      request.preparedSchemaApplication.publishHistory();
+    } catch (error) {
+      const domain = domainRefusal(request.operation, error);
+      request.refusal = domain
+        ? { ...failure(request.id, 'precondition'), domain }
+        : failure(request.id, failureCode(error, [request.id]));
+      refuseSuccessors(owner, request);
+    }
+  }
   const publications = new Map(
     selected.flatMap((request) =>
       (request.preparedPublications ?? []).map(
@@ -1872,7 +1971,18 @@ function flush(owner: OwnedDatabase): void {
         sqlite.exec('SAVEPOINT control_transition');
         try {
           let outcome: ControlWorkerReply;
-          if (request.operation === 'transition') {
+          if (request.operation === 'schema-application') {
+            if (!request.preparedSchemaApplication) throw new ControlProductPreconditionError();
+            request.preparedSchemaApplication.revalidate();
+            apply(sqlite, request.preparedSchemaApplication.statements);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'schema-application',
+              result: request.preparedSchemaApplication.result,
+            };
+          } else if (request.operation === 'transition') {
             if (!owner.productOwner) throw new ControlProductPreconditionError();
             const result = applyControlAdmission(
               sqlite,
@@ -2822,13 +2932,12 @@ function flush(owner: OwnedDatabase): void {
           sqlite.exec('ROLLBACK TO control_transition');
           sqlite.exec('RELEASE control_transition');
           if (failureCode(error) === 'integrity') throw error;
-          refuseSuccessors(owner, request);
           const domain = domainRefusal(request.operation, error);
-          outcomes.push(
-            domain
-              ? { ...failure(request.id, 'precondition'), domain }
-              : failure(request.id, failureCode(error, [request.id]))
-          );
+          const refused = domain
+            ? { ...failure(request.id, 'precondition'), domain }
+            : failure(request.id, failureCode(error, [request.id]));
+          if (!isolatedSchemaRefusal(owner, request, refused)) refuseSuccessors(owner, request);
+          outcomes.push(refused);
         }
       }
       bodyFinished = true;
@@ -3485,6 +3594,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'app-kernel' ||
+      value.operation === 'schema-application' ||
       value.operation === 'thread-read-membership' ||
       value.operation === 'boot-audit' ||
       value.operation === 'admin-recovery' ||
@@ -3633,6 +3743,40 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 value.input,
                 (files) => admitPhysicalPublication(owner, queued, files)
               );
+            }
+            if (value.operation === 'schema-application') {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              const input = readControlSchemaApplicationInput(value.input, value.content);
+              if (
+                input.request.workspaceId !== owner.scopeDb.workspaceId ||
+                input.request.workspaceId !== value.input.workspaceId
+              )
+                throw new ControlProductPreconditionError();
+              await prepareAfterPredecessors(owner, queued, earlier);
+              const preparedSchemaApplication = await prepareNativeSchemaApplication(
+                owner.scopeDb,
+                input
+              );
+              // The same slot owns cleanup before its monotonic final-barrier promotion.
+              Object.assign(queued, { preparedSchemaApplication });
+              queued.barrier = true;
+              if (
+                queued.predecessorFailed ||
+                owner.poisoned ||
+                databases.get(value.database) !== owner
+              )
+                throw new ControlProductPreconditionError();
+              schedule(owner);
+              await Promise.all(earlier.map((request) => request.settled));
+              if (
+                queued.predecessorFailed ||
+                owner.poisoned ||
+                databases.get(value.database) !== owner
+              )
+                throw new ControlProductPreconditionError();
+              preparedSchemaApplication.validateInputs();
+              if (preparedSchemaApplication.files.length)
+                await admitPhysicalPublication(owner, queued, preparedSchemaApplication.files);
             }
             if (value.operation === 'app-kernel') {
               appInput = ControlAppInputSchema.parse(
@@ -3943,14 +4087,14 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             });
             schedule(owner);
           } catch (error) {
-            refuseSuccessors(owner, queued);
-            await releaseContentPreparation(newDirectories);
             const domain = domainRefusal(value.operation, error);
             queued.refusal = owner.poisoned
               ? failure(value.id, 'unavailable')
               : domain
                 ? { ...failure(value.id, 'precondition'), domain }
                 : failure(value.id, failureCode(error, [value.id]), 'not-committed');
+            refuseSuccessors(owner, queued);
+            await releaseContentPreparation(newDirectories);
             queued.ready = true;
             if (owner.poisoned) refusePoisonedPending(owner);
             else schedule(owner);

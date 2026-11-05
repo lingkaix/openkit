@@ -54,11 +54,11 @@ import {
   readServerKnowledgeSourceMetadata,
 } from './knowledge/server-knowledge-owner.js';
 import {
-  resolveWorkspaceKnowledgeReferenceProofs,
-  verifyKnowledgeProposalWorkHistory,
+  resolveWorkspaceKnowledgeReferenceProofsSteps,
+  verifyKnowledgeProposalWorkHistorySteps,
 } from './knowledge-source-authority.js';
 import type { FsStore } from './lib/store.js';
-import { OperationError } from './operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from './operation-error.js';
 import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
 import type { RetrievalDocument, RetrievalScope } from './retrieval-service.js';
 import {
@@ -68,7 +68,7 @@ import {
   type UserDb,
   type WorkspaceDb,
 } from './storage/db.js';
-import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
+import { readDataRootLayoutMarker, userDbPath, workspaceDbPath } from './storage/fs-layout.js';
 
 /** Current source and destination authority supplied by trusted operation assembly. */
 export interface KnowledgeRetrievalAccess {
@@ -83,6 +83,8 @@ export interface KnowledgeRetrievalAccess {
   outputTurnId?: string | undefined;
   /** Exact admitted Worker subject supplied only by trusted native context preparation. */
   resourcePolicyActor?: ResourcePolicyActor | undefined;
+  /** Actual admitted Workspace connection for native same-owner read/compute; lifetime stays with its caller. */
+  workspaceDb?: WorkspaceDb | undefined;
   /** Existing authenticated-self database, supplied by native Memory assembly when available. */
   userDb?: UserDb | undefined;
 }
@@ -514,6 +516,17 @@ export function readAuthorizedUserMemoryPages(input: Target) {
 }
 /** Resolves trusted query lineage before any source inventory or kernel access. */
 export function resolveKnowledgeQueryContext(input: Target) {
+  const steps = resolveKnowledgeQueryContextSteps(input);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* resolveKnowledgeQueryContextSteps(
+  input: Target
+): Generator<void, ReturnType<typeof KnowledgeQueryContextSchema.parse>, void> {
   const { access, workspaceId } = input;
   try {
     if (!workspaceId || !access.actor) throw new Error('Missing query owner.');
@@ -529,7 +542,7 @@ export function resolveKnowledgeQueryContext(input: Target) {
         : `retrieval-trace/thread/${workspaceId}/${access.outputThreadId}`;
       RetrievalTraceReferenceSchema.shape.scopeId.parse(scopeId);
       if (access.outputTurnId) {
-        const turn = access.store.getTurnById(access.outputTurnId);
+        const turn = yield* access.store.getTurnByIdSteps(access.outputTurnId);
         if (
           workspaceIdForOwner(turn.owner) !== workspaceId ||
           turn.threadId !== access.outputThreadId
@@ -618,10 +631,22 @@ export function knowledgeSourceAudienceReadable(
   input: Pick<Target, 'workspaceId' | 'access'>,
   sourceId: string
 ): boolean {
+  const steps = knowledgeSourceAudienceReadableSteps(input, sourceId);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* knowledgeSourceAudienceReadableSteps(
+  input: Pick<Target, 'workspaceId' | 'access'>,
+  sourceId: string
+): Generator<void, boolean, void> {
   admitKnowledgeRetrieval(input);
   try {
     const source = input.access.store.getKnowledgeSource(input.workspaceId, sourceId);
-    return knowledgeSourceLineageReadable(input, source);
+    return yield* knowledgeSourceLineageReadableSteps(input, source);
   } catch {
     return false;
   }
@@ -632,12 +657,24 @@ export function knowledgeSourceLineageReadable(
   input: Pick<Target, 'workspaceId' | 'access'>,
   source: { readonly originatingThreadId: string | null; readonly originatingTurnId: string | null }
 ): boolean {
+  const steps = knowledgeSourceLineageReadableSteps(input, source);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* knowledgeSourceLineageReadableSteps(
+  input: Pick<Target, 'workspaceId' | 'access'>,
+  source: { readonly originatingThreadId: string | null; readonly originatingTurnId: string | null }
+): Generator<void, boolean, void> {
   admitKnowledgeRetrieval(input);
   try {
     if (source.originatingThreadId && !threadReadable(input, source.originatingThreadId))
       return false;
     if (source.originatingTurnId) {
-      const turn = input.access.store.getTurnById(source.originatingTurnId);
+      const turn = yield* input.access.store.getTurnByIdSteps(source.originatingTurnId);
       if (
         !source.originatingThreadId ||
         workspaceIdForOwner(turn.owner) !== input.workspaceId ||
@@ -656,12 +693,31 @@ export function knowledgeSourceLineageReadable(
 export function currentKnowledgeReferenceProofs(
   input: Pick<Target, 'workspaceId' | 'access' | 'notebookRevision' | 'pageIds' | 'notebookRead'>
 ): ReadonlyMap<string, KnowledgePageReferenceProof> {
+  const steps = currentKnowledgeReferenceProofsSteps(input);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* currentKnowledgeReferenceProofsSteps(
+  input: Pick<Target, 'workspaceId' | 'access' | 'notebookRevision' | 'pageIds' | 'notebookRead'>
+): Generator<void, ReadonlyMap<string, KnowledgePageReferenceProof>, void> {
   const { access, workspaceId } = input;
-  const db = access.coreDb
-    ? openAdmittedWorkspaceReadDb(access.coreDb.dataRoot, workspaceId)
-    : undefined;
+  const ownedDb =
+    !access.workspaceDb && access.coreDb
+      ? openAdmittedWorkspaceReadDb(access.coreDb.dataRoot, workspaceId)
+      : undefined;
+  const db = access.workspaceDb ?? ownedDb;
   try {
-    return resolveWorkspaceKnowledgeReferenceProofs({
+    if (access.workspaceDb) {
+      const dataRoot = access.store.getDataRoot();
+      if (!dataRoot || (access.coreDb && resolve(access.coreDb.dataRoot) !== resolve(dataRoot)))
+        throw new NotebookError('recovery_required');
+      assertWorkspaceNotebookReadBinding(dataRoot, workspaceId, access.workspaceDb);
+    }
+    return yield* resolveWorkspaceKnowledgeReferenceProofsSteps({
       coreDb: access.coreDb,
       store: access.store,
       workspaceDb: db,
@@ -671,7 +727,7 @@ export function currentKnowledgeReferenceProofs(
       notebookRead: input.notebookRead,
     });
   } finally {
-    db?.sqlite.close();
+    ownedDb?.sqlite.close();
   }
 }
 /** Request-local immutable content selection; this object contains no retained authorization grant. */
@@ -686,18 +742,36 @@ interface PinnedNotebookTarget extends Target {
   readonly scopeSchemaText: string;
 }
 
+/** Checks the actual borrowed physical owner before either Notebook selection or direct proof reads. */
+function assertWorkspaceNotebookReadBinding(
+  dataRoot: string,
+  workspaceId: string,
+  db: WorkspaceDb
+): void {
+  if (
+    db.scope !== 'workspace' ||
+    db.workspaceId !== workspaceId ||
+    resolve(db.dataRoot) !== resolve(dataRoot) ||
+    !db.sqlite.open ||
+    resolve(db.sqlite.name) !== resolve(workspaceDbPath(dataRoot, workspaceId))
+  )
+    throw new NotebookError('recovery_required');
+}
+
 /** Opens only the explicit Workspace database needed to bind one request-local SQL selection. */
 function selectWorkspaceNotebook(
   dataRoot: string,
   workspaceId: string,
   knowledgeBaseId: string,
-  preparedSelection?: WorkspaceNotebookSelection
+  preparedSelection?: WorkspaceNotebookSelection,
+  borrowedDb?: WorkspaceDb
 ): WorkspaceNotebookSelection {
   let workspaceDb: WorkspaceDb | undefined;
   try {
-    workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
+    if (borrowedDb) assertWorkspaceNotebookReadBinding(dataRoot, workspaceId, borrowedDb);
+    if (!borrowedDb) workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
     return readCurrentWorkspaceNotebookSelection({
-      workspaceDb,
+      workspaceDb: borrowedDb ?? workspaceDb!,
       dataRoot,
       workspaceId,
       expectedKnowledgeBaseId: knowledgeBaseId,
@@ -765,7 +839,8 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
     dataRoot,
     input.workspaceId,
     knowledgeBaseId,
-    input.notebookRead?.selection
+    input.notebookRead?.selection,
+    input.access.workspaceDb
   );
   const notebook = selection.notebook;
   const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
@@ -809,12 +884,12 @@ function pinnedPage(input: PinnedNotebookTarget, pageId: string): string | null 
 }
 
 /** Checks exact pinned bytes and their full source closure without granting a Review. */
-function pinnedPageReadable(
+function* pinnedPageReadableSteps(
   input: PinnedNotebookTarget,
   pageId: string,
   content: string,
   visiting: ReadonlySet<string>
-): boolean {
+): Generator<void, boolean, void> {
   if (visiting.has(pageId) || pinnedPage(input, pageId) !== content) return false;
   const parsed = parseOkfDocument({ path: `knowledge/pages/${pageId}.md`, content });
   if (!parsed.ok) return false;
@@ -828,26 +903,34 @@ function pinnedPageReadable(
     return false;
   const refs = stringListFrontmatterField(parsed.document, 'source_refs');
   if (refs === null && !parsed.document.reserved) return false;
-  return pinnedSourcesReadable(input, refs ?? [], new Set([...visiting, pageId]));
+  return yield* pinnedSourcesReadableSteps(input, refs ?? [], new Set([...visiting, pageId]));
 }
 
 /** Reuses the completed-work owner, then checks current Source pins and audience without fetching originals. */
-function pinnedSourcesReadable(
+function* pinnedSourcesReadableSteps(
   input: PinnedNotebookTarget,
   refs: readonly string[],
   visiting: ReadonlySet<string>
-): boolean {
+): Generator<void, boolean, void> {
   admitKnowledgeRetrieval(input);
   const { store } = input.access;
   // Source-free pages do not depend on the Source metadata backend.
   let sources: ReturnType<typeof store.listKnowledgeSources> | undefined;
-  const workspaceDb =
+  const ownedWorkspaceDb =
+    !input.access.workspaceDb &&
     input.access.coreDb &&
     refs.some((reference) => /^(?:turn|item|context-package):/.test(reference))
       ? openAdmittedWorkspaceReadDb(input.access.coreDb.dataRoot, input.workspaceId)
       : undefined;
+  const workspaceDb = input.access.workspaceDb ?? ownedWorkspaceDb;
   try {
-    verifyKnowledgeProposalWorkHistory({
+    if (input.access.workspaceDb)
+      assertWorkspaceNotebookReadBinding(
+        input.dataRoot,
+        input.workspaceId,
+        input.access.workspaceDb
+      );
+    yield* verifyKnowledgeProposalWorkHistorySteps({
       coreDb: input.access.coreDb,
       workspaceDb,
       sourceReferences: refs,
@@ -870,7 +953,7 @@ function pinnedSourcesReadable(
         );
         if (!resolution.resolved || !resolution.targetId) return false;
         const source = sources.find((source) => source.id === resolution.targetId);
-        if (!source || !knowledgeSourceLineageReadable(input, source)) return false;
+        if (!source || !(yield* knowledgeSourceLineageReadableSteps(input, source))) return false;
       } else if (reference.startsWith('openkit:')) {
         const parsedReference = parseKnowledgePageSourceReference(reference, input.pageScopeId);
         if (!parsedReference) return false;
@@ -881,7 +964,8 @@ function pinnedSourcesReadable(
           (parsedReference.contentDigest && digest(content) !== parsedReference.contentDigest)
         )
           return false;
-        if (!pinnedKnowledgeSourceReadable(input, sourceId, content, visiting)) return false;
+        if (!(yield* pinnedKnowledgeSourceReadableSteps(input, sourceId, content, visiting)))
+          return false;
         // Exact history stays pinned; later source restrictions still govern its disclosure.
         const currentRevision =
           input.notebookRead?.current.revision ?? input.notebook.publishedRevision();
@@ -890,12 +974,17 @@ function pinnedSourcesReadable(
           const currentContent = pinnedPage(current, sourceId);
           if (
             currentContent !== null &&
-            !pinnedKnowledgeSourceReadable(current, sourceId, currentContent, new Set())
+            !(yield* pinnedKnowledgeSourceReadableSteps(
+              current,
+              sourceId,
+              currentContent,
+              new Set()
+            ))
           )
             return false;
         }
       } else if (reference.startsWith('turn:')) {
-        const turn = store.getTurnById(reference.slice(5));
+        const turn = yield* store.getTurnByIdSteps(reference.slice(5));
         if (
           workspaceIdForOwner(turn.owner) !== input.workspaceId ||
           !threadReadable(input, turn.threadId)
@@ -910,17 +999,17 @@ function pinnedSourcesReadable(
     if (error instanceof NotebookError) throw error;
     return false;
   } finally {
-    workspaceDb?.sqlite.close();
+    ownedWorkspaceDb?.sqlite.close();
   }
 }
 
 /** Applies source sensitivity and recursive audience checks within one selected revision. */
-function pinnedKnowledgeSourceReadable(
+function* pinnedKnowledgeSourceReadableSteps(
   input: PinnedNotebookTarget,
   pageId: string,
   content: string,
   visiting: ReadonlySet<string>
-): boolean {
+): Generator<void, boolean, void> {
   const parsed = parseOkfDocument({ path: `knowledge/pages/${pageId}.md`, content });
   const sensitivity = parsed.document
     ? stringFrontmatterField(parsed.document, 'sensitivity')
@@ -930,7 +1019,7 @@ function pinnedKnowledgeSourceReadable(
     sensitivity !== null &&
     sensitivity !== 'restricted' &&
     sensitivity !== 'confidential' &&
-    pinnedPageReadable(input, pageId, content, visiting)
+    (yield* pinnedPageReadableSteps(input, pageId, content, visiting))
   );
 }
 
@@ -941,7 +1030,21 @@ export function knowledgePageReadable(
   content: string,
   visiting = new Set<string>()
 ): boolean {
-  return pinnedPageReadable(pinNotebook(input), pageId, content, visiting);
+  const steps = knowledgePageReadableSteps(input, pageId, content, visiting);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* knowledgePageReadableSteps(
+  input: Target,
+  pageId: string,
+  content: string,
+  visiting = new Set<string>()
+): Generator<void, boolean, void> {
+  return yield* pinnedPageReadableSteps(pinNotebook(input), pageId, content, visiting);
 }
 
 /** Rechecks retained trace references against current authority and the same selected notebook commit. */
@@ -951,7 +1054,21 @@ export function knowledgeSourceReferencesReadable(
   refs: readonly string[],
   visiting = new Set<string>([pageId])
 ): boolean {
-  return pinnedSourcesReadable(pinNotebook(input), refs, visiting);
+  const steps = knowledgeSourceReferencesReadableSteps(input, pageId, refs, visiting);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* knowledgeSourceReferencesReadableSteps(
+  input: Target,
+  pageId: string,
+  refs: readonly string[],
+  visiting = new Set<string>([pageId])
+): Generator<void, boolean, void> {
+  return yield* pinnedSourcesReadableSteps(pinNotebook(input), refs, visiting);
 }
 
 /** Exact source-admitted page facts consumed by native Knowledge reads and retrieval. */
@@ -974,6 +1091,25 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
   readonly referenceProofs: ReadonlyMap<string, KnowledgePageReferenceProof>;
   readonly scopeSchemaText: string;
 } {
+  const steps = readAuthorizedWorkspaceNotebookPagesSteps(input);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Runs the same complete owner predicate in released contributions for native preparation. */
+export function* readAuthorizedWorkspaceNotebookPagesSteps(input: Target): Generator<
+  void,
+  {
+    readonly knowledgeBaseId: string;
+    readonly notebookRevision: string;
+    readonly pages: readonly AuthorizedWorkspaceNotebookPage[];
+    readonly referenceProofs: ReadonlyMap<string, KnowledgePageReferenceProof>;
+    readonly scopeSchemaText: string;
+  },
+  void
+> {
   const pinned = pinNotebook(input);
   const ids =
     input.pageIds ??
@@ -991,24 +1127,31 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
   }
   const pages: AuthorizedWorkspaceNotebookPage[] = [];
   for (const id of ids) {
+    yield;
     const content = pinnedPage(pinned, id);
-    if (content === null || !pinnedPageReadable(pinned, id, content, new Set())) {
+    if (content === null || !(yield* pinnedPageReadableSteps(pinned, id, content, new Set()))) {
       if (input.pageIds)
-        throw new OperationError('workspace_access_denied', 'Knowledge page is unavailable.', 403);
+        throw new OperationError(
+          WORKSPACE_ACCESS_DENIED.code,
+          'Knowledge page is unavailable.',
+          403
+        );
       continue;
     }
     pages.push({ id, path: `${id}.md`, content, contentDigest: digest(content) });
   }
-  const referenceProofs = currentKnowledgeReferenceProofs({
+  const referenceProofs = yield* currentKnowledgeReferenceProofsSteps({
     ...pinned,
     pageIds: pages.map(({ id }) => id),
   });
   // Source/work verification can observe changed owners; old disclosure eligibility is never a return grant.
-  const currentPages = pages.filter(({ id, content }) =>
-    pinnedPageReadable(pinned, id, content, new Set())
-  );
+  const currentPages: AuthorizedWorkspaceNotebookPage[] = [];
+  for (const page of pages) {
+    if (yield* pinnedPageReadableSteps(pinned, page.id, page.content, new Set()))
+      currentPages.push(page);
+  }
   if (input.pageIds && currentPages.length !== pages.length)
-    throw new OperationError('workspace_access_denied', 'Knowledge page is unavailable.', 403);
+    throw new OperationError(WORKSPACE_ACCESS_DENIED.code, 'Knowledge page is unavailable.', 403);
   const currentIds = new Set(currentPages.map(({ id }) => id));
   admitKnowledgeRetrieval(pinned);
   return {
@@ -1029,7 +1172,13 @@ export async function prepareAuthorizedWorkspaceNotebookRead(input: Target) {
   return prepareWorkspaceNotebookRead({
     ...input,
     dataRoot,
-    selection: selectWorkspaceNotebook(dataRoot, input.workspaceId, knowledgeBaseId),
+    selection: selectWorkspaceNotebook(
+      dataRoot,
+      input.workspaceId,
+      knowledgeBaseId,
+      undefined,
+      input.access.workspaceDb
+    ),
   });
 }
 /** Declares only body, description and tags as body fields; title has its own kernel weight. */

@@ -152,6 +152,47 @@ export function readThreadRetrievalTraces(
 
 /** Shares canonical path, retained decoding and identity checks for the existing query owners. */
 function readOwnedRetrievalTraces(workspaceRoot: string, scopeId: string) {
+  const steps = readRetrievalTraceSteps(workspaceRoot, scopeId);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Materializes the original query inventory, then verifies one immutable trace per contribution. */
+export function* readRetrievalTraceSteps(
+  workspaceRoot: string,
+  scopeId: string
+): Generator<
+  void,
+  Array<{ reference: RetrievalTraceReference; trace: ProductRetrievalTrace }>,
+  void
+> {
+  const selection = readRetrievalTraceInventory(workspaceRoot, scopeId);
+  if (!selection) return [];
+  yield;
+  const records: Array<{ reference: RetrievalTraceReference; trace: ProductRetrievalTrace }> = [];
+  for (const name of selection.names) {
+    const reference = RetrievalTraceReferenceSchema.parse({
+      scopeId,
+      objectId: name.slice(0, -5),
+    });
+    const trace = readRetainedV1(
+      JSON.parse(readCanonicalTextFile(join(selection.directory, name))),
+      (value) => StoredProductRetrievalTraceV1Schema.parse(value)
+    );
+    assertRetrievalTraceIdentity(reference, trace);
+    records.push({ reference, trace });
+    yield;
+  }
+  return records;
+}
+
+/** Selects exact native filenames or definite directory absence without reading immutable trace bodies. */
+export function readRetrievalTraceInventory(
+  workspaceRoot: string,
+  scopeId: string
+): { readonly directory: string; readonly names: readonly string[] } | null {
   const scope = parseReferenceScope(scopeId);
   if (!scope || scope.family !== 'retrieval-trace')
     throw new Error('Invalid retrieval trace owner.');
@@ -164,22 +205,13 @@ function readOwnedRetrievalTraces(workspaceRoot: string, scopeId: string) {
     'retrieval-traces',
   ]) {
     directory = join(directory, segment);
-    if (!existsSync(directory)) return [];
+    if (!existsSync(directory)) return null;
     assertCanonicalDirectory(directory);
   }
-  return readdirSync(directory)
-    .filter((name) => name.endsWith('.json'))
-    .sort()
-    .map((name) => {
-      const reference = RetrievalTraceReferenceSchema.parse({
-        scopeId,
-        objectId: name.slice(0, -5),
-      });
-      const trace = readRetainedV1(
-        JSON.parse(readCanonicalTextFile(join(directory, name))),
-        (value) => StoredProductRetrievalTraceV1Schema.parse(value)
-      );
-      assertRetrievalTraceIdentity(reference, trace);
-      return { reference, trace };
-    });
+  return {
+    directory,
+    names: readdirSync(directory)
+      .filter((name) => name.endsWith('.json'))
+      .sort(),
+  };
 }

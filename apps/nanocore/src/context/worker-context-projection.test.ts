@@ -3,12 +3,20 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  closeSchedulerExecutionAttemptWithoutEffects,
+  createSchedulerExecutionAttempt,
+  requireSchedulerExecutionAttempt,
+} from '../runtime/execution-attempt-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -16,8 +24,12 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { createDemoStore } from '../test-support/demo-store.js';
+import { createDemoStore, seedDemoWorkspace } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { createTestStore } from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
@@ -35,6 +47,7 @@ import {
   projectThreadMaterialContext,
   projectThreadTaskInputs,
   projectVerifiedThreadMaterialTraces,
+  readVerifiedThreadWorkerContextTraces,
   type VerifiedWorkerContextTrace,
 } from './worker-context-projection.js';
 
@@ -44,6 +57,9 @@ vi.mock('./worker-context-authorities.js', async (importOriginal) => {
     ...actual,
     createWorkerContextPackageAuthorityReader: vi.fn(
       actual.createWorkerContextPackageAuthorityReader
+    ),
+    createWorkerContextPackageAuthorityStepReader: vi.fn(
+      actual.createWorkerContextPackageAuthorityStepReader
     ),
   };
 });
@@ -266,6 +282,8 @@ describe('worker Context Package read projection', () => {
           workspaceRoot,
         }).trace.materialSelections
       ).toMatchObject([{ materialId: material.materialId, revisionId: material.revisionId }]);
+      // The ordinary root consumes these same controlled synchronous owner callbacks.
+      // Assistant provenance remains absent, as in the original authority fixture.
       vi.mocked(createWorkerContextPackageAuthorityReader).mockReturnValue(authorities);
       const input = {
         coreDb,
@@ -282,6 +300,7 @@ describe('worker Context Package read projection', () => {
       expect
         .soft(() => expect(projectThreadMaterialContext(input)).toEqual(expected))
         .not.toThrow();
+      expect(createWorkerContextPackageAuthorityReader).toHaveBeenCalledWith(input);
       const manifestPath = join(turnRoot, 'context-package/package.json');
       const originalBytes = readFileSync(manifestPath);
       chmodSync(manifestPath, 0o600);
@@ -696,4 +715,125 @@ describe('thread taskInputs projection', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+it.each([
+  'authority',
+  'thread-projection',
+] as const)('keeps the ordinary S39 admission cut when a real WAL owner requeues the selected attempt (%s)', async (route) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 's39-admission-snapshot-'));
+  const coreDb = openCoreDb(dataRoot);
+  let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
+  let writer: ReturnType<typeof openCoreDb> | undefined;
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    if (writer?.sqlite.open) writer.sqlite.close();
+    if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const store = createTestStore({ dataRoot });
+  await seedDemoWorkspace(store);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
+  const selectedThread = await store.createThread(workspaceId, 'Original S39 admission inventory');
+  workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  let selected: ReturnType<typeof requireSchedulerAdmissionEntry> | undefined;
+  let attemptId = '';
+  for (let index = 0; index < 129; index += 1) {
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      triggerActor: { kind: 'user', id: userId },
+      queueEntryId: index === 128 ? 'queue_s39_z' : `queue_s39_f${String(index).padStart(3, '0')}`,
+      workspaceId,
+      threadId: index === 128 ? selectedThread.id : testEntityId('th', `s39-snapshot-${index}`),
+      turnId: testEntityId('tu', `s39-snapshot-${index}`),
+      turnInput: 'Inspect original admission selection.',
+      requestedAgentId: 'agent_worker',
+      now: () => '2026-07-05T00:00:00.000Z',
+    });
+    const attempt = createSchedulerExecutionAttempt(coreDb, {
+      entry,
+      preparationInput: { admission: entry },
+    });
+    if (index === 128) {
+      selected = requireSchedulerAdmissionEntry(coreDb, entry.queueEntryId);
+      attemptId = attempt.attemptId;
+    }
+  }
+  const expected = selected!;
+  expect(expected.status).toBe('admitted');
+  const actualOwner = await vi.importActual<typeof import('./worker-context-authorities.js')>(
+    './worker-context-authorities.js'
+  );
+  const reader = actualOwner.createWorkerContextPackageAuthorityReader({
+    coreDb,
+    store,
+    workspaceDb,
+  });
+  writer = openCoreDb(dataRoot);
+  const writeDb = writer;
+  const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
+  let crossed = false;
+  // This is one owner callback, not complete S39 verification or an execution grant.
+  const observation = vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((sql) => {
+    const statement = prepare(sql);
+    if (
+      sql.includes('FROM scheduler_admission_entries') &&
+      sql.includes('ORDER BY enqueued_at ASC')
+    ) {
+      const all = statement.all.bind(statement);
+      vi.spyOn(statement, 'all').mockImplementation((...parameters) => {
+        const rows = all(...parameters);
+        if (!crossed) {
+          crossed = true;
+          closeSchedulerExecutionAttemptWithoutEffects(writeDb, {
+            attemptId,
+            noOutstandingEffects: true,
+            cause: 'fixture-no-effects',
+            requeue: true,
+          });
+        }
+        return rows;
+      });
+    }
+    return statement;
+  });
+  try {
+    expect(coreDb.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+    expect(writeDb.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+    const observed =
+      route === 'authority'
+        ? reader.readAdmission(workspaceId, expected.threadId, expected.turnId)
+        : undefined;
+    let projectionFailure: unknown;
+    if (route === 'thread-projection') {
+      // The original ordinary root must retain this admitted row and refuse its absent trace.
+      try {
+        readVerifiedThreadWorkerContextTraces({
+          coreDb,
+          store,
+          workspaceDb: workspaceDb!,
+          threadId: expected.threadId,
+        });
+      } catch (error) {
+        projectionFailure = error;
+      }
+    }
+    expect(crossed).toBe(true);
+    expect(requireSchedulerExecutionAttempt(writeDb, attemptId).phase).toBe('closed');
+    expect(requireSchedulerAdmissionEntry(writeDb, expected.queueEntryId).status).toBe('queued');
+    if (route === 'authority') expect(observed).toEqual(expected);
+    else
+      expect(projectionFailure).toMatchObject({
+        code: 'recovery_required',
+        status: 409,
+        message:
+          'An accepted worker Turn or admitted scheduler entry lacks its Context Package trace.',
+      });
+  } finally {
+    observation.mockRestore();
+  }
 });
