@@ -49,6 +49,23 @@ describe('App release identity', () => {
     });
   });
 
+  it('uses a source-build file only after an absent image identity, never over a present image', () => {
+    const image = writeIdentity(JSON.stringify({ releaseTag: TAG, sourceCommit: COMMIT }));
+    const sourceCommit = 'a'.repeat(40);
+    const source = writeIdentity(JSON.stringify({ releaseTag: null, sourceCommit }));
+    const missing = join(image, '..', 'absent-image.json');
+    expect(readReleaseIdentity(image, source)).toEqual({ releaseTag: TAG, sourceCommit: COMMIT });
+    expect(readReleaseIdentity(missing, source)).toEqual({ releaseTag: null, sourceCommit });
+    expect(readReleaseIdentity(missing, join(source, '..', 'absent-source.json'))).toEqual({
+      releaseTag: null,
+      sourceCommit: null,
+    });
+    writeFileSync(image, '{');
+    expect(() => readReleaseIdentity(image, source)).toThrow(BootConfigError);
+    writeFileSync(source, JSON.stringify({ releaseTag: null, sourceCommit: null }));
+    expect(() => readReleaseIdentity(missing, source)).toThrow(BootConfigError);
+  });
+
   it('ignores unknown additive file keys and does not copy them into diagnostics', () => {
     const path = writeIdentity(
       JSON.stringify({ releaseTag: TAG, sourceCommit: COMMIT, note: 'ignored' })

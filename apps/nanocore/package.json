@@ -9,7 +9,8 @@
   },
   "scripts": {
     "dev": "UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-16} tsx watch src/index.ts",
-    "build": "tsc && node scripts/build-control-store-worker.mjs",
+    "build": "node scripts/build-source.mjs",
+    "build:compiled": "node scripts/write-source-build-identity.mjs --invalidate && tsc && node scripts/build-control-store-worker.mjs",
     "start": "UV_THREADPOOL_SIZE=${UV_THREADPOOL_SIZE:-16} node dist/index.js",
     "operator": "tsx src/openkit-operator.ts",
     "data-root:restore": "tsx scripts/restore-data-root.ts",
