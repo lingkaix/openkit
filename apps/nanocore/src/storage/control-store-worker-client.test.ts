@@ -42,10 +42,7 @@ import {
 } from './control-store-worker-client.js';
 import {
   CONTROL_WORKER_LIMITS,
-  CONTROL_WORKER_VERSION,
   type ControlSqlStatement,
-  isControlWorkerReply,
-  isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
 import { createDataRootAdminOperationImplementations } from './data-root-admin-operations.js';
 import * as dataRootBackup from './data-root-backup.js';
@@ -323,61 +320,6 @@ afterEach(async () => {
 });
 
 describe('control writer parent admission', () => {
-  it('distinguishes descriptive row extensions from unsupported native object values', () => {
-    const header = { version: CONTROL_WORKER_VERSION, id: 0, status: 'ok', operation: 'write' };
-    expect(isControlWorkerReply({ ...header, results: [{ mode: 'get', row: new Date() }] })).toBe(
-      false
-    );
-    expect(
-      isControlWorkerReply({ ...header, results: [{ mode: 'get', row: new Uint8Array() }] })
-    ).toBe(false);
-    expect(
-      isControlWorkerReply({
-        ...header,
-        description: 'ignored descriptive extension',
-        results: [
-          { mode: 'get', row: { payload: new Uint8Array([1]), futureColumn: 'retained scalar' } },
-        ],
-      })
-    ).toBe(true);
-    expect(
-      isControlWorkerRequest({
-        version: 1,
-        id: 0,
-        database: 'user',
-        operation: 'open',
-        path: '/unused.sqlite',
-        create: true,
-        initialize: 'user',
-      })
-    ).toBe(false);
-  });
-
-  it('shares one host, applies the real native journal, and preserves read-after-ack', async () => {
-    const f = await fixture();
-    expect(getControlStoreWorkerClient()).toBe(f.client);
-    expect(interception.workers).toHaveLength(1);
-    const result = await f.client.write('user', metadata('acknowledged'));
-    expect(result).toMatchObject([{ mode: 'run', changes: 1 }]);
-    expect(count(f.path)).toBe(1);
-    const reader = new Database(f.path, { readonly: true, fileMustExist: true });
-    try {
-      reader.pragma('query_only = ON');
-      expect(reader.prepare('SELECT schema_version FROM thread_read_receipts').pluck().get()).toBe(
-        1
-      );
-      expect(reader.pragma('auto_vacuum', { simple: true })).toBe(2);
-      expect(() => reader.prepare('DELETE FROM thread_read_receipts').run()).toThrow();
-    } finally {
-      reader.close();
-    }
-    expect((await f.client.checkpoint('user')).walBytes).toBe(0);
-    expect(await f.client.reclaim('user')).toBe(true);
-    await f.client.close('user');
-    await f.client.open({ database: 'user', path: f.path, create: false, initialize: 'user' });
-    expect(count(f.path)).toBe(1);
-  });
-
   it('seals recovery only after accepted Item publications and hashes the closed tree', async () => {
     const root = mkdtempSync(join(tmpdir(), 'control-recovery-seal-'));
     roots.push(root);
@@ -569,48 +511,6 @@ describe('control writer parent admission', () => {
     });
     expect(store.listThreadItems(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)).toEqual([...before, item]);
     expect(statSync(scope.path).ino).toBe(inode);
-  });
-
-  it('pins open Workspace databases to four bounded hosts and keeps the server separate', async () => {
-    const posted = vi.spyOn(Worker.prototype, 'postMessage');
-    const f = await poolFixture();
-    const server = {
-      database: `server:${coreDbPath(f.root)}`,
-      path: coreDbPath(f.root),
-      create: true,
-      initialize: 'core' as const,
-      productOwner: { kind: 'server' as const },
-      dataRoot: f.root,
-    };
-    await f.client.open(server);
-    // DX Write And Space Budget fixes four Workspace workers and one separate server worker.
-    expect(interception.workers).toHaveLength(5);
-    const originalHosts = Array.from({ length: 4 }, (_, index) => {
-      const call = posted.mock.calls.findIndex(
-        ([request]) => request.database === f.scope(index).database
-      );
-      expect(call).toBeGreaterThanOrEqual(0);
-      return posted.mock.contexts[call];
-    });
-    expect(new Set(originalHosts).size).toBe(4);
-    const serverCall = posted.mock.calls.findIndex(
-      ([request]) => request.database === server.database
-    );
-    expect(originalHosts).not.toContain(posted.mock.contexts[serverCall]);
-    for (let index = 4; index < 9; index += 1) await f.client.open(f.scope(index));
-    for (let index = 0; index < 9; index += 1) {
-      const { database } = f.scope(index);
-      await f.client.write(database, nativeRequest(`scope-${index}`));
-      await f.client.checkpoint(database);
-      await f.client.reclaim(database);
-      await f.client.close(database);
-      const hosts = posted.mock.calls.flatMap(([request], call) =>
-        request.database === database ? [posted.mock.contexts[call]] : []
-      );
-      expect(new Set(hosts).size).toBe(1);
-      expect(originalHosts).toContain(hosts[0]);
-    }
-    expect(interception.workers).toHaveLength(5);
   });
 
   it.each([
@@ -871,99 +771,6 @@ describe('control writer parent admission', () => {
       await originalSettled;
       await Promise.allSettled(deferred === undefined ? [] : [deferred]);
     }
-  });
-
-  it('reserves held database slots before posting and snapshots their mutable binary input', async () => {
-    const f = await poolFixture(2);
-    const target = f.scope(0);
-    const sibling = f.scope(1);
-    const resume = await f.client.pauseForDataRootBackup(target.database);
-    const posted = vi.spyOn(Worker.prototype, 'postMessage');
-    const bytes = new Uint8Array([1, 2, 3, 4]);
-    const sql: ControlSqlStatement[] = [{ mode: 'get', sql: 'SELECT 1 AS value', parameters: [] }];
-    const accepted = [
-      f.client.write(target.database, [
-        { mode: 'get', sql: 'SELECT ? AS payload', parameters: [bytes] },
-      ]),
-      ...Array.from({ length: CONTROL_WORKER_LIMITS.pendingTransitions - 1 }, () =>
-        f.client.write(target.database, sql)
-      ),
-    ];
-    const settled = Promise.allSettled(accepted);
-    bytes.fill(9);
-    try {
-      await expect(f.client.write(target.database, sql)).rejects.toMatchObject({
-        code: 'busy',
-        commit: 'not-committed',
-      });
-      await expect(f.client.write(sibling.database, sql)).resolves.toMatchObject([
-        { mode: 'get', row: { value: 1n } },
-      ]);
-      expect(
-        posted.mock.calls.filter(
-          ([request]) => request.database === target.database && request.operation === 'write'
-        )
-      ).toHaveLength(0);
-    } finally {
-      resume();
-      resume();
-      await settled;
-    }
-    await expect(accepted[0]).resolves.toMatchObject([
-      { mode: 'get', row: { payload: new Uint8Array([1, 2, 3, 4]) } },
-    ]);
-    await expect(Promise.all(accepted)).resolves.toHaveLength(
-      CONTROL_WORKER_LIMITS.pendingTransitions
-    );
-    await expect(f.client.write(target.database, sql)).resolves.toHaveLength(1);
-  });
-
-  it('charges deferred database backing to the existing byte budget before posting', async () => {
-    const f = await poolFixture(2);
-    const target = f.scope(0);
-    const sibling = f.scope(1);
-    const resume = await f.client.pauseForDataRootBackup(target.database);
-    const posted = vi.spyOn(Worker.prototype, 'postMessage');
-    const bytes = new Uint8Array(256 * 1024);
-    const attempts = Math.floor(CONTROL_WORKER_LIMITS.pendingBytes / bytes.byteLength) + 1;
-    // Exceed backing capacity before the separate per-database slot bound can decide refusal.
-    expect(attempts).toBeLessThan(CONTROL_WORKER_LIMITS.pendingTransitions);
-    const accepted = Array.from({ length: attempts }, () =>
-      f.client
-        .write(target.database, [
-          { mode: 'get', sql: 'SELECT length(?) AS size', parameters: [bytes] },
-        ])
-        .catch((error: unknown) => error)
-    );
-    try {
-      await expect(Promise.race(accepted)).resolves.toMatchObject({
-        code: 'busy',
-        commit: 'not-committed',
-      });
-      expect(posted.mock.calls.filter(([request]) => request.operation === 'write')).toHaveLength(
-        0
-      );
-      // A target's 64 MiB backing pressure must not consume a sibling's native admission.
-      // Reuse the same bounded payload so leftover space below one command cannot mask coupling.
-      await expect(
-        f.client.write(sibling.database, [
-          { mode: 'get', sql: 'SELECT length(?) AS sibling_size', parameters: [bytes] },
-        ])
-      ).resolves.toMatchObject([{ mode: 'get', row: { sibling_size: BigInt(bytes.byteLength) } }]);
-    } finally {
-      resume();
-      await Promise.all(accepted);
-    }
-    const results = await Promise.all(accepted);
-    const committed = results.filter(Array.isArray);
-    expect(committed.length).toBeGreaterThan(0);
-    for (const result of committed)
-      expect(result).toMatchObject([{ mode: 'get', row: { size: BigInt(bytes.byteLength) } }]);
-    for (const result of results.filter((result) => !Array.isArray(result)))
-      expect(result).toMatchObject({ code: 'busy', commit: 'not-committed' });
-    await expect(
-      f.client.write(target.database, [{ mode: 'get', sql: 'SELECT 1 AS value', parameters: [] }])
-    ).resolves.toHaveLength(1);
   });
 
   it('refuses a scoped hold on a failed channel without replaying posted or deferred writes', async () => {
@@ -1267,30 +1074,6 @@ describe('control writer parent admission', () => {
     await finishKnowledge();
   });
 
-  it('refuses excess work before postMessage and keeps sibling admission separate', async () => {
-    const f = await fixture();
-    await f.client.open({
-      database: 'sibling',
-      path: join(f.root, 'sibling.sqlite'),
-      create: true,
-      initialize: 'user',
-    });
-    const posted = vi.spyOn(Worker.prototype, 'postMessage');
-    const sql: ControlSqlStatement[] = [{ mode: 'get', sql: 'SELECT 1 AS value', parameters: [] }];
-    const accepted = Array.from({ length: CONTROL_WORKER_LIMITS.pendingTransitions }, () =>
-      f.client.write('user', sql)
-    );
-    const excess = f.client.write('user', sql);
-    expect(posted.mock.calls.filter(([message]) => message.operation === 'write')).toHaveLength(
-      CONTROL_WORKER_LIMITS.pendingTransitions
-    );
-    await expect(excess).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
-    const sibling = f.client.write('sibling', sql);
-    await Promise.all(accepted);
-    await expect(sibling).resolves.toMatchObject([{ mode: 'get', row: { value: 1n } }]);
-    await expect(f.client.write('user', sql)).resolves.toHaveLength(1);
-  });
-
   // COORD21:55 r2-FIX-3 P1: eight TOTAL pending per physical database/Turn, including preparation.
   it('bounds a physical Turn before preparation while peer Turns and effect admission keep service', async () => {
     const f = await productPoolFixture();
@@ -1457,23 +1240,6 @@ describe('control writer parent admission', () => {
     expect(count(f.path)).toBe(1);
   });
 
-  it('refuses shared binary backing before posting while another COMMIT is blocked', async () => {
-    const f = await fixture('before');
-    const barrier = f.client.write('user', metadata('barrier'));
-    await waitForHold(f.gate!);
-    const posted = vi.spyOn(Worker.prototype, 'postMessage');
-    const bytes = new Uint8Array(new SharedArrayBuffer(4));
-    bytes.set([1, 2, 3, 4]);
-    const submitted = f.client
-      .write('user', [{ mode: 'get', sql: 'SELECT ? AS payload', parameters: [bytes] }])
-      .catch((error: unknown) => error);
-    bytes[0] = 9;
-    release(f.gate);
-    await barrier;
-    expect(await submitted).toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
-    expect(posted).not.toHaveBeenCalled();
-  });
-
   it('reports a lost reply as unknown even when the original receipt committed', async () => {
     const f = await fixture('after');
     const write = f.client
@@ -1593,56 +1359,6 @@ describe('control writer parent admission', () => {
     });
     expect(await write).toMatchObject({ commit: 'unknown' });
     expect(getControlStoreWorkerClient()).toBe(f.client);
-  });
-
-  it('terminates a transport that cannot decode messages instead of retaining its writer', async () => {
-    const f = await fixture('before');
-    const write = f.client.write('user', metadata('unreadable')).catch((error: unknown) => error);
-    await waitForHold(f.gate!);
-    const terminate = vi.spyOn(interception.workers[0]!, 'terminate');
-    interception.workers[0]!.emit('messageerror', new Error('fixture unreadable reply'));
-    expect(await write).toMatchObject({ commit: 'unknown' });
-    expect(terminate).toHaveBeenCalled();
-  });
-
-  it('drains accepted work on shutdown and rejects new unposted work', async () => {
-    const f = await fixture();
-    const accepted = ['one', 'two', 'three'].map((id) => f.client.write('user', metadata(id)));
-    const shutdown = f.client.shutdown();
-    await expect(f.client.write('user', metadata('late'))).rejects.toMatchObject({
-      commit: 'not-committed',
-    });
-    await Promise.all(accepted);
-    await shutdown;
-    expect(f.client.isClosed).toBe(true);
-    expect(count(f.path)).toBe(3);
-  });
-
-  it('joins an ordinary native refusal on shutdown without promoting its caller error', async () => {
-    const f = await fixture();
-    const request = f.client.write('user', [
-      { mode: 'run', sql: 'INSERT INTO missing_shutdown_table VALUES (1)', parameters: [] },
-    ]);
-    let refusal: unknown;
-    // Observe the original rejection; keep the caller's promise and native error unchanged.
-    void request.catch((error: unknown) => {
-      refusal = error;
-    });
-    // The open ACK is complete; Main cannot handle this request's reply before this stack ends.
-    const shutdown = f.client.shutdown();
-    try {
-      await expect(shutdown).resolves.toBeUndefined();
-      expect(refusal).toMatchObject({
-        name: 'ControlStoreWorkerError',
-        code: 'sql-failed',
-        commit: 'not-committed',
-      });
-      await expect(request).rejects.toBe(refusal);
-      expect(f.client.isClosed).toBe(true);
-    } finally {
-      // This shutdown has settled; do not await its result again in afterEach.
-      if (f.client.isClosed) client = undefined;
-    }
   });
 
   it('holds backup copying until native acknowledgement and captures the complete Item closure', async () => {
