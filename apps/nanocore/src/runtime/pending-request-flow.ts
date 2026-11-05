@@ -15,6 +15,7 @@ import {
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import type { FsStore } from '../lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
+import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import type { ControlAdmission } from '../storage/control-store-admission.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
@@ -1162,6 +1163,7 @@ async function admitNextOutcome(
 ): Promise<void> {
   if (await closeoutUnavailableRequests(store, dependencies, workspaceId, threadId)) return;
   if (await admitInvalidations(store, dependencies, workspaceId, threadId)) return;
+  const selectedRequestIds: string[] = [];
   let selected: {
     readonly executor: PendingExecutorKind;
     readonly triggerSource: ReturnType<typeof pendingOutcomeTrigger>;
@@ -1184,6 +1186,7 @@ async function admitNextOutcome(
       cause: 'outcome',
       responsibleUserId: first.responsibleUserId,
     });
+    selectedRequestIds.push(...batch.map((record) => record.requestId));
     selected = {
       executor: first.requesterKind,
       agentId: first.agentId,
@@ -1204,31 +1207,79 @@ async function admitNextOutcome(
   const turnId = allocateEntityId('tu');
   if (storeHasTurn(store, turnId)) throw associationGap();
   outcomeCauses.set(turnId, 'outcome');
-  const turn = await store.createTurn(
-    workspaceId,
-    threadId,
-    choice.triggerSource.kind === 'approval-resolution'
-      ? 'Approval outcomes'
-      : 'User-input outcomes',
-    choice.actorId === 'system'
-      ? pendingRequestSystemActor(null)
-      : { kind: 'user', id: choice.actorId },
-    null,
-    {
-      turnId,
-      status: choice.executor === 'worker' ? 'pending' : 'running',
-      executorKind: choice.executor,
-      agentId:
-        choice.executor === 'worker'
-          ? choice.agentId
-          : choice.executor === 'coordinator'
+  let turn: ReturnType<FsStore['getTurnById']>;
+  try {
+    turn = await store.createTurn(
+      workspaceId,
+      threadId,
+      choice.triggerSource.kind === 'approval-resolution'
+        ? 'Approval outcomes'
+        : 'User-input outcomes',
+      choice.actorId === 'system'
+        ? pendingRequestSystemActor(null)
+        : { kind: 'user', id: choice.actorId },
+      null,
+      {
+        turnId,
+        status: choice.executor === 'worker' ? 'pending' : 'running',
+        executorKind: choice.executor,
+        agentId:
+          choice.executor === 'worker'
             ? choice.agentId
-            : choice.executor === 'assistant'
-              ? 'quick-chat'
-              : null,
-      triggerSource: choice.triggerSource,
+            : choice.executor === 'coordinator'
+              ? choice.agentId
+              : choice.executor === 'assistant'
+                ? 'quick-chat'
+                : null,
+        triggerSource: choice.triggerSource,
+      }
+    );
+  } catch (error) {
+    // Native freezing owns the winner. A competing answer can win after this wake selected
+    // the same batch; its valid different owner fulfils this wake without another effect.
+    // Unknown native results and incomplete or changed associations must still fail closed.
+    if (
+      choice.executor === 'worker' &&
+      error instanceof PendingRequestCommandError &&
+      error.code === 'recovery_required' &&
+      storeProvesTurnAbsent(store, turnId) &&
+      withWorkspace(dependencies, workspaceId, (sqlite) => {
+        let winnerId: string | undefined;
+        return (
+          selectedRequestIds.length > 0 &&
+          selectedRequestIds.every((requestId) => {
+            const record = readPendingRequest(sqlite, requestId);
+            if (
+              !record ||
+              record.requesterKind !== 'worker' ||
+              record.agentId !== choice.agentId ||
+              record.responsibleUserId !== choice.actorId ||
+              !record.deliveryTurnId ||
+              record.deliveryTurnId === turnId ||
+              !['frozen', 'delivered', 'delivery-unknown'].includes(record.delivery) ||
+              !canonicalRecordIsUsable(store, sqlite, record)
+            )
+              return false;
+            winnerId ??= record.deliveryTurnId;
+            if (winnerId !== record.deliveryTurnId || !storeHasTurn(store, winnerId)) return false;
+            const winner = store.getTurnById(winnerId);
+            return (
+              workspaceIdForOwner(winner.owner) === workspaceId &&
+              winner.threadId === threadId &&
+              executorKindForTurn(winner) === 'worker' &&
+              winner.agentId === choice.agentId &&
+              winner.triggerActor.kind === 'user' &&
+              winner.triggerActor.id === choice.actorId
+            );
+          })
+        );
+      })
+    ) {
+      outcomeCauses.delete(turnId);
+      return;
     }
-  );
+    throw error;
+  }
   if (
     choice.executor === 'worker' ||
     choice.executor === 'assistant' ||
@@ -1606,6 +1657,16 @@ function withWorkspace<T>(
     return use(db.sqlite);
   } finally {
     db.sqlite.close();
+  }
+}
+
+/** Accepts only canonical absence; an unreadable scope cannot prove that no Turn exists. */
+function storeProvesTurnAbsent(store: FsStore, turnId: string): boolean {
+  try {
+    store.getTurnById(turnId);
+    return false;
+  } catch (error) {
+    return error instanceof StoreRecordNotFoundError;
   }
 }
 
