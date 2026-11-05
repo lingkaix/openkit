@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 
-import { spawn } from 'node:child_process';
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -61,9 +61,23 @@ import {
   surfaceUnprovedDeepSeekTurn,
 } from './deepseek.js';
 
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, spawn: vi.fn(actual.spawn) };
+});
+
+/** Observes the concrete process effect owned by this test, not a reflected session field. */
+function spawnedNativeChild(): ChildProcessWithoutNullStreams {
+  const child = vi.mocked(spawn).mock.results.at(-1)?.value;
+  if (!child?.stdin || !child.stdout || !child.stderr)
+    throw new Error('DeepSeek test expected a spawned process with piped stdio.');
+  return child as ChildProcessWithoutNullStreams;
+}
+
 // Defaults are image supply; test runs never import the developer's native home.
 let imageHome: string;
 beforeEach(() => {
+  vi.mocked(spawn).mockClear();
   imageHome = mkdtempSync(join(tmpdir(), 'deepseek-test-image-'));
   vi.stubEnv('HOME', imageHome);
 });
@@ -675,10 +689,7 @@ describe('deepseek resident adapter', () => {
           },
         });
         await waitFor(() => entered);
-        const native = session as unknown as {
-          child: import('node:child_process').ChildProcessWithoutNullStreams;
-        };
-        native.child.stdout.emit('data', Buffer.from('{invalid native tail}\n'));
+        spawnedNativeChild().stdout.emit('data', Buffer.from('{invalid native tail}\n'));
         const result = await active.settled;
         expect(result).toMatchObject({
           status: 'failed',
@@ -804,19 +815,24 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null);
       await (await session.startTurn(turn(roots, inference, 'retain', [], 'pipe-eof'))).settled;
-      const native = session as unknown as {
-        child: { stdout: Readable; stderr: Readable };
-        pipesEnd: Promise<void>;
-      };
+      const child = spawnedNativeChild();
       // Withhold the actual end callbacks while still allowing the real child to be reaped.
-      native.child[pipe].removeAllListeners('end');
-      native.pipesEnd = Promise.resolve();
-      await expect(session.close()).rejects.toThrow(/did not drain/);
-      expect(session.nativeEvidence?.()).toMatchObject({
-        processExited: true,
-        pipesDrained: false,
-        persistencePreservingClose: false,
-      });
+      child[pipe].removeAllListeners('end');
+      vi.useFakeTimers({ toFake: ['setTimeout', 'performance'] });
+      try {
+        const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+        const closing = expect(session.close()).rejects.toThrow(/did not drain/);
+        await exited;
+        await vi.advanceTimersByTimeAsync(LIFECYCLE_DEFAULTS.nativeStopMs);
+        await closing;
+        expect(session.nativeEvidence?.()).toMatchObject({
+          processExited: true,
+          pipesDrained: false,
+          persistencePreservingClose: false,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     },
     LIVE
   );
@@ -830,17 +846,14 @@ describe('deepseek resident adapter', () => {
       const session = await open(roots, inference, null);
       await (await session.startTurn(turn(roots, inference, 'retain', [], 'buffered-tail')))
         .settled;
-      const native = session as unknown as {
-        child: import('node:child_process').ChildProcessWithoutNullStreams;
-        sessionId: string;
-      };
-      const child = native.child;
+      const child = spawnedNativeChild();
+      const sessionId = await nativeSessionId(session);
       const originalEmit = child.stdout.emit.bind(child.stdout);
       const emit = vi.spyOn(child.stdout, 'emit').mockImplementation((event, ...args) => {
         if (event === 'end') {
           const tailAndEof = () => {
             expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
-            originalEmit('data', Buffer.from(textChunk(native.sessionId, 'late context')));
+            originalEmit('data', Buffer.from(textChunk(sessionId, 'late context')));
             originalEmit('end', ...args);
           };
           if (child.exitCode !== null || child.signalCode !== null) tailAndEof();
@@ -884,10 +897,8 @@ describe('deepseek resident adapter', () => {
           },
         },
       });
-      const native = session as unknown as {
-        child: import('node:child_process').ChildProcessWithoutNullStreams;
-        sessionId: string;
-      };
+      const child = spawnedNativeChild();
+      const sessionId = await nativeSessionId(session);
       for (const update of [
         {
           sessionUpdate: 'tool_call',
@@ -903,10 +914,10 @@ describe('deepseek resident adapter', () => {
           rawOutput: { result: 'exact tool result' },
         },
       ])
-        native.child.stdout.emit(
+        child.stdout.emit(
           'data',
           Buffer.from(
-            `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: native.sessionId, update } })}\n`
+            `${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update } })}\n`
           )
         );
       await active.interrupt();
@@ -2248,7 +2259,6 @@ describe('deepseek resident adapter', () => {
         })
       );
       await waitFor(() => session.childState() === 'absent');
-      expect((session as unknown as { unknownIdentity: boolean }).unknownIdentity).toBe(true);
       expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
       await expect(
         session.startTurn(
