@@ -1083,22 +1083,67 @@ export function useAepSnapshotDetail(workspaceId: string | null, snapshotId: str
   });
 }
 
+type WorkspaceAuditPage = Awaited<ReturnType<CoreClient['operations']['audit.workspace-list']>>;
+
 /**
- * Loads the bounded live usage, audit, and permission projection for the selected Workspace.
+ * Reads Workspace Audit history without a client page cap.
+ * The first call omits `limit`, so the server returns its full remaining collection.
+ * A later call sends that response's opaque cursor unchanged, with the same Workspace
+ * and still no limit. Each call is a new authorized read. The cursor is not decoded,
+ * stored, or treated as an access grant. A repeated cursor stops the read.
+ *
+ * @param client Live Core client for the current mount.
+ * @param workspaceId Selected Workspace. Continuation never substitutes another id.
+ * @param signal Aborts the walk when this mount or selection is no longer current.
+ * @returns Events in the server's descending page order, with no further cursor.
+ */
+async function readWorkspaceAudit(
+  client: CoreClient,
+  workspaceId: string,
+  signal: AbortSignal
+): Promise<WorkspaceAuditPage> {
+  const auditEvents: WorkspaceAuditPage['auditEvents'] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined;
+  let reportedWorkspaceId = workspaceId;
+  for (;;) {
+    signal.throwIfAborted();
+    const page = await client.operations['audit.workspace-list'](
+      cursor === undefined ? { workspaceId } : { workspaceId, cursor }
+    );
+    signal.throwIfAborted();
+    reportedWorkspaceId = page.workspaceId;
+    auditEvents.push(...page.auditEvents);
+    const next = page.nextCursor;
+    if (typeof next !== 'string' || next.length === 0) {
+      return { workspaceId: reportedWorkspaceId, auditEvents, nextCursor: null };
+    }
+    if (seen.has(next)) throw new Error('Workspace audit continuation repeated.');
+    seen.add(next);
+    cursor = next;
+  }
+}
+
+/**
+ * Loads live usage, audit, and permission evidence for the selected Workspace.
+ * Capability calls and usage records stay two separate arrays from one `usage.read`.
+ * Audit history follows continuation. Permission decisions stay one read.
  *
  * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
- * @returns TanStack query for the exact three-read Workspace projection.
+ * @returns TanStack query for the selected-Workspace projection.
  */
 export function useUsageAndAudit(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: settingsKeys.usage(workspaceId ?? ''),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
+      const selectedWorkspaceId = workspaceId as string;
       const [usage, audit, decisions] = await Promise.all([
-        client.operations['usage.read']({ workspaceId: workspaceId as string }),
-        client.operations['audit.workspace-list']({ workspaceId: workspaceId as string }),
-        client.operations['permission.workspace-list']({ workspaceId: workspaceId as string }),
+        client.operations['usage.read']({ workspaceId: selectedWorkspaceId }),
+        readWorkspaceAudit(client, selectedWorkspaceId, signal),
+        client.operations['permission.workspace-list']({ workspaceId: selectedWorkspaceId }),
       ]);
+      signal.throwIfAborted();
       return projectUsageAndAudit(usage, audit, decisions);
     },
     enabled: Boolean(workspaceId),

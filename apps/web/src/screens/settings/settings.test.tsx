@@ -1915,6 +1915,78 @@ describe('Usage and audit settings (board 17)', () => {
     expect(screen.getByText('chat_completions', { exact: true })).toBeInTheDocument();
     expect(await screen.findByText('Status may be stale', { exact: true })).toBeInTheDocument();
   });
+
+  it('follows the opaque Workspace Audit cursor without a limit and keeps both usage arrays', async () => {
+    const cursor = 'opaque-workspace-audit-cursor';
+    const older = {
+      ...WORKSPACE_AUDIT_EVENTS.auditEvents[0],
+      id: 'aud_00000000-0000-70e2-abff-6e1084ebf070',
+      action: 'workspace.inspect',
+      category: 'workspace',
+      summary: 'Older Workspace audit page.',
+    };
+    const listWorkspaceAuditEvents = vi
+      .fn()
+      .mockResolvedValueOnce({ ...WORKSPACE_AUDIT_EVENTS, nextCursor: cursor })
+      .mockResolvedValueOnce({
+        workspaceId: WORKSPACE.id,
+        auditEvents: [older],
+        nextCursor: null,
+      });
+    const client = makeClient({
+      app: {},
+      operations: { 'audit.workspace-list': listWorkspaceAuditEvents },
+    });
+    renderApp('/workspace/usage', client);
+
+    await openRecords();
+    const text = document.body.textContent ?? '';
+    expect(text.indexOf('llm.chat_completions')).toBeGreaterThan(-1);
+    expect(text.indexOf('llm.chat_completions')).toBeLessThan(text.indexOf('workspace.inspect'));
+    expect(screen.getByText('Older Workspace audit page.', { exact: true })).toBeVisible();
+    expect(screen.getByText('chat_completions', { exact: true })).toBeVisible();
+    expect(screen.getByText('12 tokens', { exact: true })).toBeVisible();
+    expect(listWorkspaceAuditEvents.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id, cursor }],
+    ]);
+    expect(listWorkspaceAuditEvents.mock.calls.every(([input]) => !('limit' in input))).toBe(true);
+    expect(vi.mocked(client.operations['usage.read']).mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
+    expect(vi.mocked(client.operations['permission.workspace-list']).mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+    ]);
+    expect(document.body.textContent).not.toContain(cursor);
+    expect(
+      screen.queryByRole('button', { name: /next page|load more|show more|more records/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it('stops when a Workspace Audit cursor repeats and does not render that cursor', async () => {
+    const cursor = 'opaque-workspace-audit-cursor';
+    const listWorkspaceAuditEvents = vi.fn().mockResolvedValue({
+      ...WORKSPACE_AUDIT_EVENTS,
+      nextCursor: cursor,
+    });
+    renderApp(
+      '/workspace/usage',
+      makeClient({
+        app: {},
+        operations: { 'audit.workspace-list': listWorkspaceAuditEvents },
+      })
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/couldn't load usage and audit/i);
+    expect(alert).not.toHaveTextContent(cursor);
+    expect(listWorkspaceAuditEvents).toHaveBeenCalledTimes(2);
+    expect(listWorkspaceAuditEvents.mock.calls).toEqual([
+      [{ workspaceId: WORKSPACE.id }],
+      [{ workspaceId: WORKSPACE.id, cursor }],
+    ]);
+    expect(screen.queryByText('chat_completions', { exact: true })).not.toBeInTheDocument();
+  });
 });
 
 describe('General settings (board 10)', () => {
