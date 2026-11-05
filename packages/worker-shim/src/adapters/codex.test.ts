@@ -391,31 +391,29 @@ describe('Codex App Server adapter', () => {
       },
     ];
     await writeFile(path, `${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`);
-    const child = controlledPeer(path, {
-      turn: { id: 'controlled-turn', status: 'completed', items: [] },
-    });
+    const child = controlledPeer(
+      path,
+      { turn: { id: 'controlled-turn', status: 'completed', items: [] } },
+      NATIVE_THREAD,
+      {
+        threadRead: {
+          thread: {
+            id: NATIVE_THREAD,
+            historyMode: 'paginated',
+            turns: [
+              {
+                id: 'controlled-turn',
+                status: 'completed',
+                items: [{ type: 'userMessage', content: [{ type: 'text', text: 'prompt' }] }],
+              },
+            ],
+          },
+        },
+      }
+    );
     const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
     sessions.push(session);
     await (await session.startTurn(turnInput(roots, [], 'prompt'))).settled;
-    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
-    const original = rpc.request.bind(rpc);
-    vi.spyOn(rpc, 'request').mockImplementation((method, params, timeout) =>
-      method === 'thread/read'
-        ? Promise.resolve({
-            thread: {
-              id: NATIVE_THREAD,
-              historyMode: 'paginated',
-              turns: [
-                {
-                  id: 'controlled-turn',
-                  status: 'completed',
-                  items: [{ type: 'userMessage', content: [{ type: 'text', text: 'prompt' }] }],
-                },
-              ],
-            },
-          })
-        : original(method, params, timeout)
-    );
     child.stdin.on('finish', () => {
       child.exitCode = 0;
       child.emit('exit', 0, null);
@@ -495,14 +493,14 @@ describe('Codex App Server adapter', () => {
         nativeEvidence: { nativeTerminal: true, processExited: true },
       });
       expect(accepted.slice(0, prior.length)).toEqual(prior);
-      expect((session as unknown as { active: boolean }).active).toBe(false);
+      expect(session.childState()).toBe('absent');
     } finally {
       release();
       await observed;
     }
   });
 
-  it('R4 bounds stop and invalidation joins without creating another signal owner', async () => {
+  it('R4 bounds public interruption joins and close after a malformed peer event', async () => {
     const roots = await tempRoots();
     closers.push(() => rm(roots.base, { recursive: true, force: true }));
     const child = controlledPeer();
@@ -511,42 +509,62 @@ describe('Codex App Server adapter', () => {
       stopGraceMs: 40,
     });
     sessions.push(session);
+    const turn = await session.startTurn(turnInput(roots, []));
+    const settled = turn.settled.then(
+      () => 'resolved',
+      () => 'unproved'
+    );
     const signals = vi.spyOn(child, 'kill');
-    const privateSession = session as unknown as {
-      stopProcess(deadline: LifecycleDeadline): Promise<boolean>;
-      invalidateTurn(reason: string, deadline: LifecycleDeadline): Promise<unknown>;
-    };
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-    const owner = privateSession
-      .invalidateTurn('malformed-result', new LifecycleDeadline(80))
-      .catch(() => undefined);
-    let stop: boolean | 'pending' = 'pending';
-    let invalidation = 'pending';
+    let first = 'pending';
+    let second = 'pending';
+    let closed = 'pending';
     try {
+      child.stdout.emit(
+        'data',
+        Buffer.from(`${JSON.stringify({ method: 'turn/completed', params: {} })}\n`)
+      );
       await vi.advanceTimersByTimeAsync(5);
-      const deadline = new LifecycleDeadline(10);
-      const joiningStop = privateSession.stopProcess(deadline).then((result) => {
-        stop = result;
-      });
-      const joiningInvalidation = privateSession
-        .invalidateTurn('interrupt-unproved', deadline)
-        .then(
+      const joining = [
+        turn.interrupt(new LifecycleDeadline(10)).then(
           () => {
-            invalidation = 'resolved';
+            first = 'resolved';
           },
           () => {
-            invalidation = 'unproved';
+            first = 'unproved';
           }
-        );
+        ),
+        turn.interrupt(new LifecycleDeadline(10)).then(
+          () => {
+            second = 'resolved';
+          },
+          () => {
+            second = 'unproved';
+          }
+        ),
+        session.close().then(
+          () => {
+            closed = 'resolved';
+          },
+          () => {
+            closed = 'unproved';
+          }
+        ),
+      ];
       await vi.advanceTimersByTimeAsync(10);
-      expect(stop).toBe(false);
-      expect(invalidation).toBe('unproved');
+      expect(first).toBe('unproved');
+      expect(second).toBe('unproved');
+      expect(closed).toBe('pending');
+      expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
       await vi.advanceTimersByTimeAsync(65);
-      await Promise.all([owner, joiningStop, joiningInvalidation]);
+      await Promise.all(joining);
+      expect(await settled).toBe('unproved');
+      expect(closed).toBe('unproved');
+      expect(session.childState()).toBe('unknown');
       expect(signals.mock.calls.map(([signal]) => signal)).toEqual(['SIGTERM', 'SIGKILL']);
     } finally {
       await vi.advanceTimersByTimeAsync(100);
-      await owner;
+      await settled;
       vi.useRealTimers();
     }
   });
@@ -578,7 +596,7 @@ describe('Codex App Server adapter', () => {
   it('uses the interrupt work budget and reserves the signal tail', async () => {
     const roots = await tempRoots();
     closers.push(() => rm(roots.base, { recursive: true, force: true }));
-    const child = controlledPeer();
+    const child = controlledPeer(undefined, undefined, NATIVE_THREAD, { withholdInterrupt: true });
     const session = await openCodexResidentSession(openInput(roots), {
       spawnProcess: () => child,
       stopGraceMs: 10,
@@ -586,8 +604,6 @@ describe('Codex App Server adapter', () => {
     });
     sessions.push(session);
     const turn = await session.startTurn(turnInput(roots, []));
-    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
-    const calls = vi.spyOn(rpc, 'request');
     child.kill = vi.fn((signal) => {
       if (signal === 'SIGKILL') {
         child.signalCode = 'SIGKILL';
@@ -597,14 +613,19 @@ describe('Codex App Server adapter', () => {
       }
       return true;
     }) as ChildProcessWithoutNullStreams['kill'];
-    await turn.interrupt(new LifecycleDeadline(40, 20));
-    const interrupt = calls.mock.calls.find(([method]) => method === 'turn/interrupt');
-    expect(interrupt?.[2]).toBeLessThanOrEqual(20);
-    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
-    expect(await turn.settled).toMatchObject({
-      status: 'failed',
-      nativeEvidence: { nativeTerminal: false, processExited: true },
-    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      const interrupt = turn.interrupt(new LifecycleDeadline(40, 20));
+      await vi.advanceTimersByTimeAsync(40);
+      await interrupt;
+      expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+      expect(await turn.settled).toMatchObject({
+        status: 'failed',
+        nativeEvidence: { nativeTerminal: false, processExited: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
@@ -4016,13 +4037,15 @@ function delay(ms: number): Promise<void> {
 function controlledPeer(
   rolloutPath?: string,
   turnResult?: unknown,
-  threadId: unknown = NATIVE_THREAD
+  threadId: unknown = NATIVE_THREAD,
+  responses: { threadRead?: unknown; withholdInterrupt?: boolean } = {}
 ): ChildProcessWithoutNullStreams {
   const child = childThatNeverExits(false);
   child.stdin.on('data', (chunk) => {
     for (const line of chunk.toString().trim().split('\n')) {
       const message = JSON.parse(line);
       if (message.id === undefined) continue;
+      if (message.method === 'turn/interrupt' && responses.withholdInterrupt) continue;
       const result =
         message.method === 'config/read'
           ? { config: { mcp_servers: {} } }
@@ -4030,7 +4053,9 @@ function controlledPeer(
             ? { thread: { id: threadId, path: rolloutPath } }
             : message.method === 'turn/start'
               ? (turnResult ?? { turn: { id: 'controlled-turn', status: 'inProgress', items: [] } })
-              : {};
+              : message.method === 'thread/read'
+                ? (responses.threadRead ?? {})
+                : {};
       child.stdout.write(`${JSON.stringify({ id: message.id, result })}\n`);
     }
   });
