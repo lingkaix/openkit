@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type AuditEvent, compareCodeUnits } from '@openkit/protocol';
+import { type AuditEvent, compareCodeUnits, type WorkspaceRecordSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   listServerAuditEvents,
@@ -10,7 +10,6 @@ import {
 } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { AutomationStore } from './lib/automation-store.js';
-import type { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -49,7 +48,7 @@ async function createFixture(workspaceNames: readonly string[] = ['Audit paginat
   const store = createTestStore({ dataRoot });
   const coreDb = createTestCoreDb(dataRoot);
   ensureLocalUser(coreDb);
-  const workspaces: Awaited<ReturnType<FsStore['createWorkspace']>>[] = [];
+  const workspaces: import('zod').infer<typeof WorkspaceRecordSchema>[] = [];
   const workspaceDbs = new Map<string, ReturnType<typeof createTestWorkspaceDb>>();
   const seedEvents = new Map<string, AuditEvent[]>();
   for (const name of workspaceNames) {

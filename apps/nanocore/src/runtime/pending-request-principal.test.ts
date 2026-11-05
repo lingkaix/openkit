@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
+import { allocateEntityId, type Turn, workspaceIdForOwner } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { listWorkspaceUsageRecords } from '../capability/usage-ledger.js';
-import type { FsStore } from '../lib/store.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -25,7 +24,7 @@ import { type PendingRequestRecord, pendingRequestItemId } from './pending-reque
 /** Publishes a distinct question through the existing native Pending owner. */
 async function raiseQuestion(
   pending: ReturnType<typeof createPendingRequestFixture>,
-  turn: ReturnType<FsStore['getTurnById']>,
+  turn: Turn,
   responsibleUserId: string
 ) {
   const requestId = randomUUID();
