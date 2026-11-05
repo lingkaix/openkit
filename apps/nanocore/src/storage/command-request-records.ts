@@ -119,6 +119,14 @@ export function recordCommandRequestRecord(dataRoot: string, record: CommandRequ
     throw new Error(`Workspace not found: ${owner.workspaceId}`);
   }
 
+  // Validate the pointer first, then refuse standalone native backfill before
+  // opening a database or creating layout for a command owned by a whole tuple.
+  if (
+    (owner.scope === 'core' || owner.scope === 'workspace' || owner.scope === 'user') &&
+    isControlNativeReceiptCommand(record.command, owner.scope)
+  )
+    throw new Error('Native admission receipts belong to the database worker.');
+
   const db = openCommandRequestDb(dataRoot, owner);
 
   try {

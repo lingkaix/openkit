@@ -57,7 +57,7 @@ import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
 const native = vi.hoisted(() => ({
   buffer: undefined as SharedArrayBuffer | undefined,
   worker: undefined as import('node:worker_threads').Worker | undefined,
-  afterAcknowledgement: undefined as (() => void) | undefined,
+  afterAcknowledgement: undefined as (() => void | Promise<void>) | undefined,
 }));
 
 // Pass through every real SQLite statement and worker reply. The private observer identifies the
@@ -128,21 +128,6 @@ vi.mock('node:worker_threads', async (load) => {
           }
         );
         native.worker = this;
-      }
-
-      override emit(event: string | symbol, ...args: unknown[]): boolean {
-        const result = super.emit(event, ...args);
-        if (
-          event === 'message' &&
-          native.buffer &&
-          Atomics.load(new Int32Array(native.buffer), 1)
-        ) {
-          const action = native.afterAcknowledgement;
-          native.afterAcknowledgement = undefined;
-          // The actual ACK has reached its listener; its Promise continuation has not run.
-          action?.();
-        }
-        return result;
       }
     },
   };
@@ -833,6 +818,19 @@ it('keeps CapabilityCall, PermissionDecision and Audit on the native writer whil
 async function heldClaim(f: Awaited<ReturnType<typeof capturedFixture>>) {
   Atomics.store(f.state, 0, 1);
   Atomics.store(f.state, 4, 0);
+  const client = getControlStoreWorkerClient();
+  const pendingCommand = client.pendingCommand.bind(client);
+  vi.spyOn(client, 'pendingCommand').mockImplementation(async (...args) => {
+    // Pass through the real native result unchanged. This runs AFTER the real
+    // ACK has resolved the client call, but BEFORE Main receives its result.
+    const acknowledged = await pendingCommand(...args);
+    if (Atomics.load(f.state, 1) === 1) {
+      const action = native.afterAcknowledgement;
+      native.afterAcknowledgement = undefined;
+      await action?.();
+    }
+    return acknowledged;
+  });
   let settled = false;
   const result = f
     .grant()
@@ -882,8 +880,15 @@ it('revocation after claim ACK gives the exact no-contact failure before the ori
   const f = await capturedFixture();
   const held = await heldClaim(f);
   let revocation: ReturnType<typeof f.revoke> | undefined;
-  native.afterAcknowledgement = () => {
+  let upstreamContacts = 0;
+  f.callTool.mockImplementation(async (input) => {
+    await input.recheckAdmission?.();
+    upstreamContacts += 1;
+    return { content: [{ type: 'text', text: 'Effect completed' }], isError: false };
+  });
+  native.afterAcknowledgement = async () => {
     revocation = f.revoke();
+    await revocation;
     expect(isCanonicalUserActive(f.coreDb, f.actor.userId)).toBe(false);
   };
   Atomics.store(f.state, 2, 1);
@@ -893,6 +898,7 @@ it('revocation after claim ACK gives the exact no-contact failure before the ori
   expect(revocation).toBeDefined();
   expect(result.error).toBeUndefined();
   expect(f.callTool).not.toHaveBeenCalled();
+  expect(upstreamContacts).toBe(0);
   const completed = readPendingRequest(f.db.sqlite, f.record.requestId);
   expect(completed).toMatchObject({
     claim: 'finished',
@@ -923,6 +929,7 @@ it('revocation after claim ACK gives the exact no-contact failure before the ori
   await f.grant();
   await f.grant(randomUUID()).catch(() => undefined);
   expect(f.callTool).not.toHaveBeenCalled();
+  expect(upstreamContacts).toBe(0);
   expect(readPendingRequest(f.db.sqlite, f.record.requestId)).toEqual(completed);
   expect(
     listWorkspaceCapabilityCalls(f.db, f.workspace.id).filter((call) => call.id === calls[0]!.id)

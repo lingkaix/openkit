@@ -1,15 +1,23 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { recordServerAuditEvent } from '../audit-events.js';
+import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
+import { listOpenKitAccessTokenRecords } from '../auth/access-token-store.js';
+import {
+  ensureServerBootstrapToken,
+  writeServerBootstrapTokenEmission,
+} from '../auth/bootstrap-token.js';
 import { type CommandRequestScope, FsStore } from '../lib/store.js';
+import type { AdmittedOperationContext } from '../operation-contract.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { ensureLocalUser } from '../test-support/local-user.js';
+import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 import { type InflightIdempotentCommand, runIdempotentCommand } from './idempotent-command.js';
 
 describe('workspace-transaction idempotent commands', () => {
@@ -153,123 +161,151 @@ describe('workspace-transaction idempotent commands', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-core-idempotent-command-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = new FsStore({ dataRoot });
-    const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
-    const scope: CommandRequestScope = {
-      coreId: 'server',
-      targetUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    };
-
     try {
-      ensureLocalUser(coreDb);
-      const common = {
-        command: 'user.disable' as const,
-        coreDb,
-        coreTransaction: true as const,
-        inflightCommands,
-        replay: (record: { response: { id: string } }) => ({ id: record.response.id }),
-        responseId: (value: { id: string }) => value.id,
-        responseKind: 'user' as const,
-        scope,
-        store,
-      };
-      const input = { userId: 'usr_00000000-0000-7000-8000-000000000001' };
-
-      const result = await runIdempotentCommand({
-        ...common,
-        execute: () => {
-          coreDb.sqlite
-            .prepare("UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = ?")
-            .run('2026-07-19T00:00:00.000Z', 'usr_00000000-0000-7000-8000-000000000001');
-          recordServerAuditEvent({
-            action: 'user.disable',
-            actor: { id: 'usr_00000000-0000-768a-8658-44c33d82c1f5', kind: 'user' },
-            auditEventId: 'aud_00000000-0000-7140-ad1a-008a1f2592a8',
-            coreDb,
-            now: new Date('2026-07-19T00:00:00.000Z'),
-            outcome: 'succeeded',
-            resource: 'user:usr_00000000-0000-7000-8000-000000000001',
-            resourceRevision: 1,
-            subject: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
-            summary: 'User disabled.',
-          });
-          return { id: 'usr_00000000-0000-7000-8000-000000000001' };
+      // Use the real Bootstrap producer and the real native User command owner,
+      // not a generic callback impersonating a now worker-owned command.
+      const bootstrap = ensureServerBootstrapToken(coreDb);
+      if (!bootstrap) throw new Error('Expected isolated Bootstrap admission.');
+      writeServerBootstrapTokenEmission(dataRoot, bootstrap);
+      const userId = allocateEntityId('usr');
+      const owner = await createAccessTokenOperationImplementations({ coreDb, mode: 'server' })[
+        'bootstrap.consume'
+      ]({
+        token: bootstrap.token,
+        ownerUserId: userId,
+        displayName: 'Native Core tuple owner',
+        email: [randomUUID(), 'example.test'].join('@'),
+        password: randomUUID(),
+        tokenExpiresAt: '2099-12-31T00:00:00.000Z',
+      });
+      const store = new FsStore({ dataRoot });
+      const context: AdmittedOperationContext = {
+        kind: 'public',
+        actor: {
+          kind: 'token',
+          userId,
+          tokenId: owner.record.tokenId,
+          tokenScope: 'server-admin',
+          tokenWorkspaceIds: [],
         },
-        input,
-        requestId: 'disable-user-1',
+        actorRef: { kind: 'user', id: userId },
+        scope: { kind: 'server' },
+      };
+      const scope: CommandRequestScope = {
+        coreId: 'server',
+        actorId: userId,
+        targetUserId: userId,
+      };
+      const operations = createWorkspaceSharingOperationImplementations({
+        coreDb,
+        store,
+        inflightCommands: new Map(),
       });
-
-      expect(result).toEqual({ id: 'usr_00000000-0000-7000-8000-000000000001' });
-      expect(
+      const requestId = randomUUID();
+      const input = { targetUserId: userId, requestId };
+      const auditCount = () =>
+        (
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get() as {
+            count: number;
+          }
+        ).count;
+      const receiptCount = () =>
+        (
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM idempotency_requests').get() as {
+            count: number;
+          }
+        ).count;
+      const user = () =>
         coreDb.sqlite
-          .prepare('SELECT status, disabled_at FROM users WHERE id = ?')
-          .get('usr_00000000-0000-7000-8000-000000000001')
-      ).toEqual({ disabled_at: '2026-07-19T00:00:00.000Z', status: 'disabled' });
-      expect(coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()).toEqual({
-        count: 1,
-      });
-      expect(coreDb.sqlite.prepare('SELECT response_id FROM idempotency_requests').get()).toEqual({
-        response_id: 'usr_00000000-0000-7000-8000-000000000001',
-      });
+          .prepare('SELECT status, disabled_at AS disabledAt FROM users WHERE id=?')
+          .get(userId);
+      const tokenStatus = () =>
+        listOpenKitAccessTokenRecords(coreDb).find(
+          (record) => record.tokenId === owner.record.tokenId
+        )?.status;
+      const initialAudits = auditCount();
+      expect(user()).toEqual({ status: 'active', disabledAt: null });
+      expect(tokenStatus()).toBe('active');
+      expect(receiptCount()).toBe(0);
+
+      const legacyExecute = vi.fn(() => ({ id: userId }));
       await expect(
         runIdempotentCommand({
-          ...common,
-          execute: () => {
-            throw new Error('Replay must not execute the command again.');
-          },
+          command: 'user.disable',
+          coreDb,
+          coreTransaction: true,
+          inflightCommands: new WeakMap(),
+          replay: (record) => ({ id: record.response.id }),
+          responseId: (value: { id: string }) => value.id,
+          responseKind: 'user',
+          scope,
+          store,
+          execute: legacyExecute,
           input,
-          requestId: 'disable-user-1',
+          requestId: randomUUID(),
         })
-      ).resolves.toEqual({ id: 'usr_00000000-0000-7000-8000-000000000001' });
-      await expect(
-        runIdempotentCommand({
-          ...common,
-          execute: () => ({ id: 'usr_00000000-0000-7000-8000-000000000001' }),
-          input: { changed: true, userId: 'usr_00000000-0000-7000-8000-000000000001' },
-          requestId: 'disable-user-1',
-        })
-      ).rejects.toMatchObject({ code: 'idempotency_key_conflict', status: 409 });
+      ).rejects.toThrow(
+        'Native product commands must commit their whole tuple in the database worker.'
+      );
+      expect(legacyExecute).not.toHaveBeenCalled();
 
+      // Fail the REAL native receipt insert after the real User/Token/Audit
+      // effects. The complete original tuple must roll back, without fake rows.
+      coreDb.sqlite.exec(`CREATE TRIGGER native_tuple_receipt_failure BEFORE INSERT ON idempotency_requests
+        BEGIN SELECT RAISE(ABORT, 'Private receipt failure'); END`);
       await expect(
-        runIdempotentCommand({
-          ...common,
-          execute: () => {
-            coreDb.sqlite
-              .prepare("UPDATE users SET status = 'active', disabled_at = NULL WHERE id = ?")
-              .run('usr_00000000-0000-7000-8000-000000000001');
-            recordServerAuditEvent({
-              action: 'user.disable.rollback',
-              auditEventId: 'aud_00000000-0000-7254-a975-bd0b63c0ab0b',
-              coreDb,
-              outcome: 'failed',
-              summary: 'Rolled back test event.',
-            });
-            return { id: 'usr_00000000-0000-7000-8000-000000000001' };
-          },
-          input: { rollback: true, userId: 'usr_00000000-0000-7000-8000-000000000001' },
-          requestId: 'disable-user-rollback',
-          responseId: () => null as unknown as string,
-        })
+        operations['user.disable']({ targetUserId: userId, requestId: randomUUID() }, context)
       ).rejects.toThrow();
+      coreDb.sqlite.exec('DROP TRIGGER native_tuple_receipt_failure');
+      expect(user()).toEqual({ status: 'active', disabledAt: null });
+      expect(tokenStatus()).toBe('active');
+      expect(auditCount()).toBe(initialAudits);
+      expect(receiptCount()).toBe(0);
+
+      const result = await operations['user.disable'](input, context);
+      expect(result.user).toMatchObject({ userId, status: 'disabled' });
+      if (!result.user.disabledAt) throw new Error('Expected the original disabled timestamp.');
+      expect(new Date(result.user.disabledAt).toISOString()).toBe(result.user.disabledAt);
+      expect(user()).toEqual({ status: 'disabled', disabledAt: result.user.disabledAt });
+      expect(tokenStatus()).toBe('revoked');
+      expect(auditCount()).toBe(initialAudits + 1);
+      expect(receiptCount()).toBe(1);
+      const receipt = store.getCommandRequest('user.disable', requestId, scope, coreDb);
+      expect(receipt?.response).toEqual({ kind: 'user', id: userId });
+      if (!receipt) throw new Error('Expected the original native Core pointer receipt.');
+      await expect(operations['user.disable'](input, context)).resolves.toEqual(result);
+      expect(auditCount()).toBe(initialAudits + 1);
+      expect(receiptCount()).toBe(1);
+
+      // This closed public command has no alternate legal payload for the same
+      // target-scoped key. Corrupt ONLY the hash of its actually committed row
+      // to exercise the real retained-conflict refusal, not an off-domain command
+      // or fabricated accepted history. It must neither replay nor rewrite it.
+      const conflictingHash = `sha256:${'f'.repeat(64)}`;
+      coreDb.sqlite
+        .prepare('UPDATE idempotency_requests SET input_hash=? WHERE request_key=?')
+        .run(conflictingHash, receipt.key);
+      await expect(operations['user.disable'](input, context)).rejects.toMatchObject({
+        code: 'idempotency_key_conflict',
+        status: 409,
+      });
+      expect(user()).toEqual({ status: 'disabled', disabledAt: result.user.disabledAt });
+      expect(tokenStatus()).toBe('revoked');
+      expect(auditCount()).toBe(initialAudits + 1);
+      expect(receiptCount()).toBe(1);
       expect(
         coreDb.sqlite
-          .prepare('SELECT status FROM users WHERE id = ?')
-          .get('usr_00000000-0000-7000-8000-000000000001')
-      ).toEqual({ status: 'disabled' });
-      expect(coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get()).toEqual({
-        count: 1,
-      });
-      expect(
-        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM idempotency_requests').get()
-      ).toEqual({ count: 1 });
+          .prepare('SELECT input_hash FROM idempotency_requests WHERE request_key=?')
+          .get(receipt.key)
+      ).toEqual({ input_hash: conflictingHash });
       expect(() =>
         store.recordCommandRequest(
           {
             command: 'user.disable',
             inputHash: 'sha256:test',
             requestId: 'ambiguous-owner',
-            response: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
-            scope: { coreId: 'server', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
+            response: { id: userId, kind: 'user' },
+            scope: { coreId: 'server', workspaceId: testEntityId('ws', 'ambiguous-owner') },
           },
           coreDb
         )

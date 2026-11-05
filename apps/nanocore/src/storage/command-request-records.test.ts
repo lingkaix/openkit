@@ -316,32 +316,44 @@ describe('kind-named command response pointers', () => {
 
   it('validates a Core response pointer before creating its database or directories', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-before-owner-'));
-    const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-source-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      closeWorkspaceProductReadHandles(sourceRoot);
-      rmSync(sourceRoot, { recursive: true, force: true });
-    });
-    const sourceStore = createTestStore({ dataRoot: sourceRoot });
     const userId = testEntityId('usr', 'receipt-disabled-user');
-    const record = sourceStore.recordCommandRequest({
+    const scope = { coreId: 'server', actorId: userId, targetUserId: userId };
+    // A format-only DTO, not fabricated durable history. Actual native tuple
+    // commit/rollback/replay/conflict is covered at the User command owner.
+    const record: CommandRequestRecord = {
+      key: commandRequestKey('user.disable', 'disable-pointer', scope),
       command: 'user.disable',
       requestId: 'disable-pointer',
-      scope: { coreId: 'server', actorId: userId, targetUserId: userId },
+      scope,
       inputHash: 'owned-input',
       response: { kind: 'user', id: userId },
       createdAt: '2026-10-06T00:00:00.000Z',
       expiresAt: '2999-01-01T00:00:00.000Z',
-    });
+    };
     try {
       const validRoot = join(root, 'valid');
-      recordCommandRequestRecord(validRoot, record);
-      expect(existsSync(join(validRoot, 'server', 'db', 'core.sqlite'))).toBe(true);
+      expect(normalizeCommandRequestResponse(record.command, record.response)).toEqual(
+        record.response
+      );
+      // A valid pointer cannot authorize standalone Main backfill of a native
+      // receipt, and refusal must not create even an empty Core layout.
+      expect(() => recordCommandRequestRecord(validRoot, record)).toThrow(
+        'Native admission receipts belong to the database worker.'
+      );
+      expect(existsSync(validRoot)).toBe(false);
       for (const [index, id] of ['legacy', testEntityId('ws', 'wrong-user-pointer')].entries()) {
         const invalidRoot = join(root, `invalid-${index}`);
-        expect(() =>
-          recordCommandRequestRecord(invalidRoot, { ...record, response: { kind: 'user', id } })
-        ).toThrow();
+        const response = { kind: 'user' as const, id };
+        let pointerError: unknown;
+        try {
+          normalizeCommandRequestResponse(record.command, response);
+        } catch (error) {
+          pointerError = error;
+        }
+        expect(pointerError).toBeInstanceOf(Error);
+        expect(() => recordCommandRequestRecord(invalidRoot, { ...record, response })).toThrow(
+          pointerError as Error
+        );
         expect(existsSync(invalidRoot)).toBe(false);
       }
     } finally {
