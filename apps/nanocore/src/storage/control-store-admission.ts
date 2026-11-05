@@ -109,6 +109,11 @@ export const CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS = [
   'knowledge.source.register',
 ] as const satisfies readonly CommandRequestName[];
 
+/** Complete lifecycle receipts owned only by the canonical Core tuple, never Workspace or User stores. */
+export const CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS = [
+  'user.disable',
+] as const satisfies readonly CommandRequestName[];
+
 /** Selects each activated physical-scope partition; scoped Notebook names never activate other User commands. */
 export function isControlNativeReceiptCommand(
   command: string,
@@ -117,7 +122,9 @@ export function isControlNativeReceiptCommand(
   if (scope === 'user') return SCOPED_NOTEBOOK_USER_RECEIPTS.some((name) => name === command);
   return (
     CONTROL_NATIVE_RECEIPT_COMMANDS.some((name) => name === command) ||
-    (scope === 'core' && SCOPED_NOTEBOOK_SERVER_RECEIPTS.some((name) => name === command)) ||
+    (scope === 'core' &&
+      (CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS.some((name) => name === command) ||
+        SCOPED_NOTEBOOK_SERVER_RECEIPTS.some((name) => name === command))) ||
     (scope === 'workspace' &&
       (CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS.some((name) => name === command) ||
         CATALOG_COMMAND_RECEIPTS.some((name) => name === command)))
@@ -219,7 +226,11 @@ export function pruneControlAdmissionReceipts(
           ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
           ...CATALOG_COMMAND_RECEIPTS,
         ]
-      : [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...SCOPED_NOTEBOOK_SERVER_RECEIPTS];
+      : [
+          ...CONTROL_NATIVE_RECEIPT_COMMANDS,
+          ...CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
+          ...SCOPED_NOTEBOOK_SERVER_RECEIPTS,
+        ];
   sqlite
     .prepare(
       `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND (command_name IN (${commands.map(() => '?').join(',')})${owner.kind === 'workspace' ? ` OR ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}` : ''}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`

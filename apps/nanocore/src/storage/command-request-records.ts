@@ -27,6 +27,7 @@ import {
   readConversationMetadata,
 } from './command-request-codecs.js';
 import {
+  CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
   CONTROL_NATIVE_EVALUATION_RECEIPT_SQL,
   CONTROL_NATIVE_RECEIPT_COMMANDS,
   CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
@@ -704,7 +705,11 @@ function pruneCommandRequestRecords(
         ]
       : db.scope === 'user'
         ? SCOPED_NOTEBOOK_USER_RECEIPTS
-        : [...CONTROL_NATIVE_RECEIPT_COMMANDS, ...SCOPED_NOTEBOOK_SERVER_RECEIPTS];
+        : [
+            ...CONTROL_NATIVE_RECEIPT_COMMANDS,
+            ...CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
+            ...SCOPED_NOTEBOOK_SERVER_RECEIPTS,
+          ];
 
   db.sqlite
     .prepare(

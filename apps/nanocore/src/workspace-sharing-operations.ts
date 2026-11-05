@@ -38,7 +38,7 @@ import {
   isWorkspaceOperationAuthorized,
   requireAdministratorOperation,
 } from './auth/operation-authorizer.js';
-import { disableCanonicalUser } from './auth/user-lifecycle.js';
+import type { DisabledCanonicalUser } from './auth/user-lifecycle.js';
 import { refuseScope, scopeAdmissionFailures } from './bootstrap/readiness.js';
 import {
   type CommandRequestRecord,
@@ -64,7 +64,10 @@ import {
   getCommandRequestRecordFromDb,
   recordCommandRequestRecordInDb,
 } from './storage/command-request-records.js';
-import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { nativeProductScope } from './storage/workspace-file-records.js';
 import {
@@ -100,6 +103,12 @@ async function executeCoreSharing<T>(
 ): Promise<T> {
   const snapshot = structuredClone(draft);
   const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+  // The new User tuple must use the supplied Main connection's exact physical Core before any open/post.
+  if (
+    snapshot.command === 'user.disable' &&
+    (coreDb.scope !== 'core' || coreDb.sqlite.name !== scope.path)
+  )
+    throw new ControlStoreWorkerError('invalid-request', 'not-committed');
   const database = `core:${scope.path}`;
   const client = getControlStoreWorkerClient();
   await client.open({
@@ -136,14 +145,21 @@ async function executeCoreSharing<T>(
       : {}),
   });
   const result = await client.coreSharing(database, prepared);
-  const expectedKind = snapshot.command.startsWith('workspace.invitation.')
-    ? 'invitation'
-    : snapshot.command === 'workspace.ownership.transfer'
-      ? 'workspace'
-      : snapshot.command === 'workspace.access.recover'
-        ? 'recovery'
-        : 'member';
-  if (result.kind !== expectedKind)
+  const expectedKind =
+    snapshot.command === 'user.disable'
+      ? 'user'
+      : snapshot.command.startsWith('workspace.invitation.')
+        ? 'invitation'
+        : snapshot.command === 'workspace.ownership.transfer'
+          ? 'workspace'
+          : snapshot.command === 'workspace.access.recover'
+            ? 'recovery'
+            : 'member';
+  if (
+    result.kind !== expectedKind ||
+    (snapshot.command === 'user.disable' &&
+      (result.kind !== 'user' || result.value.userId !== snapshot.targetUserId))
+  )
     throw new OperationError(
       'recovery_required',
       'The command outcome cannot be proven from its current durable owners.',
@@ -660,31 +676,15 @@ export function createWorkspaceSharingOperationImplementations(
         );
         const user = await runIdempotentCommand({
           command: 'user.disable',
-          coreDb,
-          coreTransaction: true,
-          execute: () => {
-            requireNoLifecycleAudit(coreDb, {
-              action: 'user.disable',
-              actorId,
-              requestId: request.requestId,
-              resource: `user:${targetUserId}`,
-            });
-            const result = disableCanonicalUser(coreDb, targetUserId);
-            if (!result) {
-              throw accessDenied();
-            }
-            if (result.changed) {
-              recordLifecycleAudit(coreDb, {
-                action: 'user.disable',
-                actorId,
-                requestId: request.requestId,
-                resource: `user:${targetUserId}`,
-                subjectId: targetUserId,
-                summary: 'Canonical user disabled.',
-              });
-            }
-            return result.user;
-          },
+          receiptDb: coreDb,
+          execute: (receipt) =>
+            executeCoreSharing<DisabledCanonicalUser>(
+              coreDb,
+              store,
+              { command: 'user.disable', actor, targetUserId, request },
+              receipt,
+              context.recheckAdmission
+            ),
           inflightCommands,
           input: request,
           replay: (record) => {
@@ -1054,7 +1054,7 @@ function authorizedWorkspaceSummary(
 }
 
 /** Fails closed when a request-owned lifecycle effect exists without its Core receipt. */
-function requireNoLifecycleAudit(
+export function requireNoLifecycleAudit(
   coreDb: CoreDb,
   input: {
     readonly action: string;
@@ -1110,7 +1110,7 @@ interface LifecycleAuditInput {
 }
 
 /** Records one successful Core-owned lifecycle mutation. */
-function recordLifecycleAudit(coreDb: CoreDb, input: LifecycleAuditInput): void {
+export function recordLifecycleAudit(coreDb: CoreDb, input: LifecycleAuditInput): void {
   recordServerAuditEvent({
     action: input.action,
     actor: { id: input.actorId, kind: 'user' },
@@ -1181,7 +1181,7 @@ function requireRecoveryState(
 }
 
 /** Reads one disabled-user projection for central receipt replay. */
-function requireDisabledUser(
+export function requireDisabledUser(
   coreDb: CoreDb,
   userId: string
 ): z.infer<typeof DisableUserResponseSchema>['user'] {

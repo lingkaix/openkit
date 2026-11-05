@@ -3,6 +3,7 @@ import {
   AuthorizedWorkspaceSummarySchema,
   CreateWorkspaceInvitationRequestSchema,
   DeclineWorkspaceInvitationRequestSchema,
+  DisableUserRequestSchema,
   LeaveWorkspaceRequestSchema,
   RecoverWorkspaceAccessRequestSchema,
   RemoveWorkspaceMemberRequestSchema,
@@ -42,6 +43,7 @@ const receipt = z
       'workspace.leave',
       'workspace.ownership.transfer',
       'workspace.access.recover',
+      'user.disable',
     ]),
     requestId: z.string().min(1),
     scope: z.record(z.string(), z.string()),
@@ -51,6 +53,7 @@ const receipt = z
       'workspace_member',
       'workspace',
       'workspace_recovery',
+      'user',
     ]),
     createdAt: z.string().datetime(),
     expiresAt: z.string().datetime(),
@@ -127,6 +130,14 @@ export const ControlCoreSharingSchema = z.discriminatedUnion('command', [
       request: RecoverWorkspaceAccessRequestSchema,
     })
     .strict(),
+  z
+    .object({
+      ...common,
+      command: z.literal('user.disable'),
+      targetUserId: UserIdSchema,
+      request: DisableUserRequestSchema,
+    })
+    .strict(),
 ]);
 /** Closed family input; its metadata uses the existing cloned-envelope reservation. */
 export type ControlCoreSharing = z.infer<typeof ControlCoreSharingSchema>;
@@ -142,6 +153,15 @@ export const ControlCoreSharingResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('member'), value: WorkspaceMemberSchema }).strict(),
   z.object({ kind: z.literal('workspace'), value: AuthorizedWorkspaceSummarySchema }).strict(),
   z.object({ kind: z.literal('recovery'), value: WorkspaceAccessRecoveryStateSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('user'),
+      // Preserve the original mutation snapshot; public timestamp validation still follows the ACK and hook.
+      value: z
+        .object({ userId: UserIdSchema, status: z.literal('disabled'), disabledAt: z.string() })
+        .strict(),
+    })
+    .strict(),
 ]);
 /** Typed success emitted only after the outer FULL commit. */
 export type ControlCoreSharingResult = z.infer<typeof ControlCoreSharingResultSchema>;

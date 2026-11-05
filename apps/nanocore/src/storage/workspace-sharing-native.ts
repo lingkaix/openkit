@@ -9,6 +9,7 @@ import {
   isWorkspaceOperationAuthorized,
   requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
+import { applyControlUserDisable } from '../auth/user-disable-native.js';
 import { commandRequestKey, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { IdempotencyKeyConflictError, OperationError } from '../operation-error.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
@@ -183,7 +184,11 @@ function audit(
   });
 }
 /** Selects a retained original result without producing another effect or Audit. */
-function replay(db: CoreDb, input: ControlCoreSharing, id: string): ControlCoreSharingResult {
+function replay(
+  db: CoreDb,
+  input: Exclude<ControlCoreSharing, { command: 'user.disable' }>,
+  id: string
+): ControlCoreSharingResult {
   switch (input.command) {
     case 'workspace.invitation.create':
     case 'workspace.invitation.accept':
@@ -223,6 +228,7 @@ export function applyControlCoreSharing(
 ): ControlCoreSharingResult {
   assertControlProductWriter(db.sqlite);
   const input = ControlCoreSharingSchema.parse(value);
+  if (input.command === 'user.disable') return applyControlUserDisable(db, input);
   const { receipt, request, command } = input;
   const actor = presentControlFacts(input.actor);
   const actorId = actor.userId;
@@ -338,7 +344,7 @@ export function applyControlCoreSharing(
       'membership.manage',
       true
     );
-  let result: ControlCoreSharingResult;
+  let result: Exclude<ControlCoreSharingResult, { kind: 'user' }>;
   switch (command) {
     case 'workspace.invitation.create': {
       requireNoAudit(db, command, actorId, request.requestId, undefined, input.workspaceId);
