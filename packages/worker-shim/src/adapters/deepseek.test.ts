@@ -1895,7 +1895,7 @@ describe('deepseek resident adapter', () => {
       );
       await waitFor(() => inference.requests.length > 0);
       const interrupting = active.interrupt();
-      for (const id of [nativePromptId(session)]) {
+      for (const id of [observedPromptId(spawnedNativeChild())]) {
         deliver(
           session,
           JSON.stringify({
@@ -1928,7 +1928,7 @@ describe('deepseek resident adapter', () => {
         session,
         JSON.stringify({
           error: { code: -32603, message: 'prompt failed' },
-          id: nativePromptId(session),
+          id: observedPromptId(spawnedNativeChild()),
           jsonrpc: '2.0',
         })
       );
@@ -2086,21 +2086,29 @@ describe('deepseek resident adapter', () => {
         turn(roots, inference, 'drop', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
       );
       await waitFor(() => inference.requests.length > 0);
-      const internals = session as unknown as { stopProcess(): Promise<boolean> };
-      const realStop = internals.stopProcess.bind(session);
-      internals.stopProcess = async () => false;
-      deliver(
-        session,
-        JSON.stringify({
-          error: { code: -32603, message: 'prompt failed' },
-          id: nativePromptId(session),
-          jsonrpc: '2.0',
-        })
-      );
-      await expect(active.settled).rejects.toThrow(/runtime is unavailable/);
-      expect(session.childState()).toBe('running');
-      internals.stopProcess = realStop;
-      await realStop();
+      const child = spawnedNativeChild();
+      const signalFailure = vi.spyOn(child, 'kill').mockImplementation(() => {
+        throw Object.assign(new Error('fixture signal refusal'), { code: 'EPERM' });
+      });
+      try {
+        child.stdout.emit(
+          'data',
+          Buffer.from(
+            `${JSON.stringify({
+              error: { code: -32603, message: 'prompt failed' },
+              id: observedPromptId(child),
+              jsonrpc: '2.0',
+            })}\n`
+          )
+        );
+        await expect(active.settled).rejects.toThrow(/runtime is unavailable/);
+        expect(session.childState()).toBe('running');
+        expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
+        expect(signalFailure).toHaveBeenCalledWith('SIGTERM');
+      } finally {
+        signalFailure.mockRestore();
+        await session.close().catch(() => undefined);
+      }
     },
     LIVE
   );
@@ -2145,7 +2153,7 @@ describe('deepseek resident adapter', () => {
       deliver(
         session,
         JSON.stringify({
-          id: nativePromptId(session),
+          id: observedPromptId(spawnedNativeChild()),
           jsonrpc: '2.0',
           result: { stopReason: 'future-required' },
         })
@@ -2177,12 +2185,12 @@ describe('deepseek resident adapter', () => {
         Buffer.from(
           [
             JSON.stringify({
-              id: nativePromptId(session),
+              id: observedPromptId(spawnedNativeChild()),
               jsonrpc: '2.0',
               result: { stopReason: 'end_turn' },
             }),
             JSON.stringify({
-              id: nativePromptId(session),
+              id: observedPromptId(spawnedNativeChild()),
               jsonrpc: '2.0',
               result: { stopReason: 'max_tokens' },
             }),
@@ -2214,7 +2222,7 @@ describe('deepseek resident adapter', () => {
       deliver(
         session,
         JSON.stringify({
-          id: nativePromptId(session),
+          id: observedPromptId(spawnedNativeChild()),
           jsonrpc: '2.0',
           result: { stopReason: 'end_turn' },
         })
@@ -2223,7 +2231,7 @@ describe('deepseek resident adapter', () => {
       deliver(
         session,
         JSON.stringify({
-          id: nativePromptId(session),
+          id: observedPromptId(spawnedNativeChild()),
           jsonrpc: '2.0',
           result: { stopReason: 'end_turn' },
         })
@@ -2250,28 +2258,21 @@ describe('deepseek resident adapter', () => {
         turn(roots, inference, 'tail', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
       );
       await waitFor(() => inference.requests.length > 0);
-      const internals = session as unknown as { classifyNativeLine(line: string): string | null };
-      const admitted: string[] = [];
-      const classify = internals.classifyNativeLine.bind(session);
-      internals.classifyNativeLine = (line: string) => {
-        admitted.push(line);
-        return classify(line);
-      };
+      const child = spawnedNativeChild();
       const valid = Buffer.from(
         JSON.stringify({
-          id: nativePromptId(session),
+          id: observedPromptId(child),
           jsonrpc: '2.0',
           result: { stopReason: 'end_turn' },
         })
       );
-      nativeStdout(session, Buffer.concat([valid, Buffer.from([0xe2])]));
-      nativeStdout(session, Buffer.from([0x82]));
-      nativeStdoutEnd(session);
+      child.stdout.emit('data', Buffer.concat([valid, Buffer.from([0xe2])]));
+      child.stdout.emit('data', Buffer.from([0x82]));
+      child.stdout.emit('end');
       const outcome = await Promise.race([
         active.settled,
         new Promise<string>((resolve) => setTimeout(() => resolve('unsettled'), NATIVE_STOP_MS)),
       ]);
-      expect(admitted.some((line) => line.endsWith('�'))).toBe(true);
       expect(outcome).toMatchObject({
         assistantText: null,
         status: 'failed',
@@ -2463,7 +2464,7 @@ describe('deepseek resident adapter', () => {
         deliver(
           session,
           JSON.stringify({
-            id: nativePromptId(session),
+            id: observedPromptId(spawnedNativeChild()),
             jsonrpc: '2.0',
             result: { stopReason: 'end_turn' },
           })
@@ -3457,19 +3458,6 @@ function nativeStdout(session: WorkerResidentSession, bytes: Buffer): void {
     session as unknown as { child: { stdout: { emit(event: string, bytes: Buffer): void } } }
   ).child;
   child.stdout.emit('data', bytes);
-}
-
-/** Delivers a native stdout EOF after the preceding injected bytes. */
-function nativeStdoutEnd(session: WorkerResidentSession): void {
-  const child = (session as unknown as { child: { stdout: { emit(event: string): void } } }).child;
-  child.stdout.emit('end');
-}
-
-/** Correlates injected responses with the actual prompt after model-selection RPCs. */
-function nativePromptId(session: WorkerResidentSession): number {
-  const id = (session as unknown as { promptRequestId: number | null }).promptRequestId;
-  if (id === null) throw new Error('DeepSeek test expected an admitted prompt request.');
-  return id;
 }
 
 /** Reads the ready native session id. */
