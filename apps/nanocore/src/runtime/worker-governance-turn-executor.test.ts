@@ -11196,7 +11196,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
 
     /** Proves #598 history preservation at the real schema/S39 seam while a public Task is live. */
-    async function assertLiveSchemaHistory(
+    async function* assertLiveSchemaHistory(
       completed: CompletedKnowledgeTask,
       sourceReferences: string[],
       candidatePageBytes: string
@@ -11488,6 +11488,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
             expect.objectContaining({ id: `context-package:${liveTurnId}`, status: 'valid' }),
           ])
         );
+        // Preview and application are separate public behaviors, not one cumulative latency budget.
+        // Keep the same live Task and captured history across this boundary, never a SQL read cut.
+        expect(db.sqlite.inTransaction).toBe(false);
+        yield;
         // Both strict reads and complete preview MUST pass before the intended old idle-only refusal.
         const requestId = randomUUID();
         const applyInput = {
@@ -11685,24 +11689,37 @@ describe('WorkerGovernanceTurnExecutor', () => {
     describe.sequential('live schema application with independent completed-work history', () => {
       let companion: CompletedKnowledgeTask | undefined;
       let lineage: Awaited<ReturnType<typeof proveCompletedWorkLineage>>;
+      let history: ReturnType<typeof assertLiveSchemaHistory> | undefined;
+      let previewed = false;
       beforeAll(async () => {
         const prepared = await prepareCompletedKnowledgeTask((value) => {
           companion = value;
         });
         lineage = await proveCompletedWorkLineage(prepared);
       }, 60_000);
-      afterAll(() => {
-        if (companion) {
-          companion.launchSpy.mockRestore();
-          companion.fixture.coreDb.sqlite.close();
+      afterAll(async () => {
+        try {
+          // Also release the owned live Task if preview failed or application was not reached.
+          await history?.return(undefined);
+        } finally {
+          if (companion) {
+            companion.launchSpy.mockRestore();
+            companion.fixture.coreDb.sqlite.close();
+          }
         }
       });
-      it('preserves exact completed and live Task history across schema application and replay', async () => {
-        await assertLiveSchemaHistory(
+      it('previews complete schema dependencies with exact completed and live Task history', async () => {
+        history = assertLiveSchemaHistory(
           companion!,
           lineage.sourceReferences,
           lineage.candidatePageBytes
         );
+        expect((await history.next()).done).toBe(false);
+        previewed = true;
+      }, 60_000);
+      it('preserves exact completed and live Task history across schema application and replay', async () => {
+        expect(previewed, 'the real live-Task preview must complete before application').toBe(true);
+        expect((await history!.next()).done).toBe(true);
       }, 60_000);
     });
     // This harness covers real Kernel, Git, S39 launch and Review recovery; it is not a product latency oracle.
