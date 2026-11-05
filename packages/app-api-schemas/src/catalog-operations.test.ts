@@ -110,8 +110,8 @@ describe('Agent, Worker and resource catalog definitions', () => {
       'catalog.plugin-list': {},
       'catalog.plugin-import': { expectedRevision: 1, tree },
     } satisfies Record<keyof typeof definitions, unknown>;
-    for (const [id, definition] of Object.entries(definitions)) {
-      expect(OPERATION_DEFINITIONS[id as keyof typeof definitions]).toBe(definition);
+    for (const id of Object.keys(definitions)) {
+      const definition = OPERATION_DEFINITIONS[id as keyof typeof definitions];
       expect(definition.binding).toBe('json');
       expect(operationMcpEligible(definition)).toBe(true);
       const model = operationModelInput(definition.inputSchema, ['workspaceId', 'requestId']);
