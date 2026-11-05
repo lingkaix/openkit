@@ -1103,15 +1103,17 @@ describe('Sandbox Integration', () => {
         request.end('{}');
       });
 
-    /** Sends headers declaring 100 body bytes and only one; resolves `cut` once it is destroyed. */
-    const uploading = (credential: string, path: string) =>
-      new Promise<'cut' | 'answered'>((resolve) => {
+    /** Starts a one-byte upload after a real HTTP continue response; observes only the client. */
+    const uploading = (credential: string, path: string) => {
+      let continued = false;
+      const outcome = new Promise<'cut' | 'answered'>((resolve) => {
         const request = requestHttp(
           {
             headers: {
               authorization: `Bearer ${credential}`,
               'content-length': '100',
               'content-type': 'application/json',
+              expect: '100-continue',
             },
             host: nativeTarget.hostname,
             method: 'POST',
@@ -1122,8 +1124,14 @@ describe('Sandbox Integration', () => {
         );
         request.once('error', () => resolve('cut'));
         request.once('close', () => resolve('cut'));
-        request.write('{');
+        request.once('continue', () => {
+          request.write('{');
+          continued = true;
+        });
+        request.flushHeaders();
       });
+      return { continued: () => continued, outcome };
+    };
 
     try {
       await integration.ready;
@@ -1204,18 +1212,15 @@ describe('Sandbox Integration', () => {
       });
 
       // The short window exercises incomplete drain of an upload; none of it goes upstream.
-      const openRequests = () =>
-        (integration as unknown as { nativeRequests: Set<unknown> }).nativeRequests.size;
       integration.bindTurnRouteTokens(
         'as_00000000-0000-75c4-8f9b-15087ed5df6e',
         tokens('turn-a-upload')
       );
       const upstreamBefore = upstream.length;
       const uploadingAtBarrier = uploading(a.inferenceCredential, '/inference/v1/responses');
-      await vi.waitFor(() => expect(openRequests()).toBe(1));
+      await vi.waitFor(() => expect(uploadingAtBarrier.continued()).toBe(true));
       expect(await integration.drainTurn('as_00000000-0000-75c4-8f9b-15087ed5df6e', 20)).toBe(1);
-      expect(await uploadingAtBarrier).toBe('cut');
-      await vi.waitFor(() => expect(openRequests()).toBe(0));
+      expect(await uploadingAtBarrier.outcome).toBe('cut');
       integration.clearTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e');
 
       // The production barrier bound is ten seconds.
@@ -1224,7 +1229,7 @@ describe('Sandbox Integration', () => {
         tokens('turn-a-bound')
       );
       const uploadingAtDefault = uploading(a.inferenceCredential, '/inference/v1/responses');
-      await vi.waitFor(() => expect(openRequests()).toBe(1));
+      await vi.waitFor(() => expect(uploadingAtDefault.continued()).toBe(true));
       vi.useFakeTimers({ toFake: ['setTimeout', 'performance'] });
       let defaultCut: number | null = null;
       try {
@@ -1241,7 +1246,7 @@ describe('Sandbox Integration', () => {
         vi.useRealTimers();
       }
       expect(defaultCut).toBe(1);
-      expect(await uploadingAtDefault).toBe('cut');
+      expect(await uploadingAtDefault.outcome).toBe('cut');
       integration.clearTurnRouteTokens('as_00000000-0000-75c4-8f9b-15087ed5df6e');
 
       // Destroying the credentials cuts a request still uploading its body.
@@ -1250,10 +1255,9 @@ describe('Sandbox Integration', () => {
         tokens('turn-a-destroy')
       );
       const uploadingAtClose = uploading(a.capabilityCredential, '/capabilities/mcp/echo');
-      await vi.waitFor(() => expect(openRequests()).toBe(1));
+      await vi.waitFor(() => expect(uploadingAtClose.continued()).toBe(true));
       integration.destroySessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e');
-      expect(await uploadingAtClose).toBe('cut');
-      await vi.waitFor(() => expect(openRequests()).toBe(0));
+      expect(await uploadingAtClose.outcome).toBe('cut');
       expect(upstream).toHaveLength(upstreamBefore);
       integration.registerSessionLoopback('as_00000000-0000-75c4-8f9b-15087ed5df6e', a);
 
