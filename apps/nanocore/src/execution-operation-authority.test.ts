@@ -2,7 +2,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
+import { listServerAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -16,12 +17,13 @@ import {
   denySchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -33,67 +35,67 @@ describe('execution operation authority', () => {
   ] as const)('uses current %s Workspace authority and preserves private child and revoked credential boundaries', async (kind) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b9-authority-'));
     const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const localUserId = ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      workspaceId: DEMO_WORKSPACE_ID,
-      ownerUserId: localUserId,
-    });
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-    const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
-    const automation = await automationStore.createAutomation(testEntityId('usr', 'user_other'), {
-      workspaceId: DEMO_WORKSPACE_ID,
-      name: 'Other owner',
-      intervalSeconds: 60,
-      threadId: DEMO_THREAD_ID,
-      prompt: 'Work',
-    });
-    const thread = await store.createThread(
-      DEMO_WORKSPACE_ID,
-      'Private queue',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: testEntityId('usr', 'user_other'),
-      }
-    );
-    createSchedulerAdmissionEntry(coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: 'queue_admin',
-      workspaceId: DEMO_WORKSPACE_ID,
-      threadId: thread.id,
-      turnId: testEntityId('tu', 'turn_admin'),
-      triggerActor: { kind: 'user', id: testEntityId('usr', 'user_other') },
-      turnInput: 'Work',
-      requestedAgentId: 'agent_codex_host',
-    });
-    denySchedulerAdmissionEntry(coreDb, {
-      queueEntryId: 'queue_admin',
-      denialReason: 'authority-denied',
-    });
-    let actor: Actor = { kind: 'session', userId: localUserId };
-    const app = new Hono<{ Variables: AuthVariables }>();
-    app.use('*', async (c, next) => {
-      c.set('actor', actor);
-      await next();
-    });
-    registerOperationJsonRoutes({
-      app,
-      coreDb,
-      automationStore,
-      requestStore: () => store,
-      workspaceMutationAdmission,
-      inflightCommands: new WeakMap(),
-      repositoryWorkspaceDb: (id) => {
-        const db = openWorkspaceDb(dataRoot, id);
-        applyScopedMigrations(db, undefined, 'pre-knowledge');
-        return db;
-      },
-    });
     try {
+      applyMigrations(coreDb);
+      const localUserId = ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        workspaceId: DEMO_WORKSPACE_ID,
+        ownerUserId: localUserId,
+      });
+      const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+      const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
+      const automation = await automationStore.createAutomation(testEntityId('usr', 'user_other'), {
+        workspaceId: DEMO_WORKSPACE_ID,
+        name: 'Other owner',
+        intervalSeconds: 60,
+        threadId: DEMO_THREAD_ID,
+        prompt: 'Work',
+      });
+      const thread = await store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Private queue',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: testEntityId('usr', 'user_other'),
+        }
+      );
+      createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: 'queue_admin',
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: thread.id,
+        turnId: testEntityId('tu', 'turn_admin'),
+        triggerActor: { kind: 'user', id: testEntityId('usr', 'user_other') },
+        turnInput: 'Work',
+        requestedAgentId: 'agent_codex_host',
+      });
+      denySchedulerAdmissionEntry(coreDb, {
+        queueEntryId: 'queue_admin',
+        denialReason: 'authority-denied',
+      });
+      let actor: Actor = { kind: 'session', userId: localUserId };
+      const app = new Hono<{ Variables: AuthVariables }>();
+      app.use('*', async (c, next) => {
+        c.set('actor', actor);
+        await next();
+      });
+      registerOperationJsonRoutes({
+        app,
+        coreDb,
+        automationStore,
+        requestStore: () => store,
+        workspaceMutationAdmission,
+        inflightCommands: new WeakMap(),
+        repositoryWorkspaceDb: (id) => {
+          const db = openWorkspaceDb(dataRoot, id);
+          applyScopedMigrations(db, undefined, 'pre-knowledge');
+          return db;
+        },
+      });
       const memberEdit = await app.request(
         ...operationRequest('automation.update', {
           automationId: automation.id,
@@ -110,10 +112,9 @@ describe('execution operation authority', () => {
         actor: automation.actor,
       });
       expect(
-        coreDb.sqlite
-          .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edit'")
-          .get()
-      ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: localUserId }) });
+        listServerAuditEvents(coreDb).find((event) => event.action === 'recurring.schedule.edit')
+          ?.actor
+      ).toEqual({ kind: 'user', id: localUserId });
       const queueBefore = requireSchedulerAdmissionEntry(coreDb, 'queue_admin');
       const privateDenied = await app.request(
         ...operationRequest('scheduler.retry', {
@@ -178,12 +179,10 @@ describe('execution operation authority', () => {
           actor: automation.actor,
         });
         expect(
-          coreDb.sqlite
-            .prepare(
-              "SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.delete'"
-            )
-            .get()
-        ).toEqual({ actor_json: JSON.stringify({ kind: 'user', id: localUserId }) });
+          listServerAuditEvents(coreDb).find(
+            (event) => event.action === 'recurring.schedule.delete'
+          )?.actor
+        ).toEqual({ kind: 'user', id: localUserId });
       } else {
         expect(automationStore.getAutomation(automation.id)).toEqual(updated);
       }
@@ -196,12 +195,7 @@ describe('execution operation authority', () => {
       expect(cancelled.status).toBe(kind === 'token' ? 403 : 404);
       expect(requireSchedulerAdmissionEntry(coreDb, 'queue_admin')).toEqual(retriedRow);
     } finally {
-      coreDb.sqlite.close();
+      await disposeTestStore(dataRoot, coreDb);
     }
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

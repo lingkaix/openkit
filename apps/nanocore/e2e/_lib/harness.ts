@@ -295,6 +295,8 @@ async function waitForHealth(
   output: CapturedProcessOutput
 ): Promise<void> {
   const deadline = Date.now() + 20_000;
+  let attempts = 0;
+  let lastHealth = 'no response';
 
   while (Date.now() < deadline) {
     if (process.exitCode !== null) {
@@ -304,17 +306,31 @@ async function waitForHealth(
     }
 
     try {
+      attempts += 1;
       const response = await fetch(`${baseUrl}/api/health`);
+      lastHealth = `HTTP ${response.status}`;
 
       if (response.ok) {
         return;
       }
-    } catch {
+    } catch (error) {
+      lastHealth = error instanceof Error ? error.name : typeof error;
+      if (
+        error instanceof Error &&
+        typeof error.cause === 'object' &&
+        error.cause !== null &&
+        'code' in error.cause &&
+        typeof error.cause.code === 'string'
+      ) {
+        lastHealth += ` (${error.cause.code})`;
+      }
       await sleep(100);
     }
   }
 
-  throw new Error('Timed out waiting for NanoCore health check.');
+  throw new Error(
+    `Timed out waiting for NanoCore health check. attempts=${attempts}; last=${lastHealth}; childExit=${process.exitCode}; childSignal=${process.signalCode}`
+  );
 }
 
 /**
