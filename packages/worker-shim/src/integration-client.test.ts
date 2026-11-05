@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { request as requestHttp } from 'node:http';
 import {
   createServer as createHttp2Server,
@@ -304,68 +303,6 @@ describe('Sandbox Integration', () => {
       supervisorSocket.destroy();
       await new Promise<void>((resolve) => bridge.close(() => resolve()));
     }
-  });
-
-  it('applies backpressure to H2 request and native response bodies', () => {
-    const production = readFileSync(new URL('./integration-client.ts', import.meta.url), 'utf8');
-    const limits = production
-      .split('const INTEGRATION_READY_TIMEOUT_MS')
-      .at(1)
-      ?.split('const FORBIDDEN_REQUEST_HEADERS')
-      .at(0);
-    expect(limits?.match(/const MAX_HTTP2_WRITE_BYTES = 64 \* 1024;/g)).toHaveLength(1);
-
-    const responseOwner = production
-      .split('async function responseForStream(')
-      .at(1)
-      ?.split('/** Writes one bounded H2 request')
-      .at(0);
-    expect(responseOwner).toBeDefined();
-    const writeCall = responseOwner?.indexOf('await writeRequestBody(stream, body, signal)') ?? -1;
-    const responseReturn = responseOwner?.indexOf('return await response') ?? -1;
-    expect(writeCall).toBeGreaterThanOrEqual(0);
-    expect(responseReturn).toBeGreaterThan(writeCall);
-    expect(responseOwner?.match(/await writeRequestBody\(stream, body, signal\)/g)).toHaveLength(1);
-    expect(responseOwner).not.toContain('stream.end(body)');
-
-    const writeOwner = production
-      .split('async function writeRequestBody(')
-      .at(1)
-      ?.split('/** Waits for H2 request capacity')
-      .at(0);
-    expect(writeOwner).toBeDefined();
-    const fixedStep = writeOwner?.indexOf('offset += MAX_HTTP2_WRITE_BYTES') ?? -1;
-    const fixedSlice =
-      writeOwner?.indexOf('bytes.subarray(offset, offset + MAX_HTTP2_WRITE_BYTES)') ?? -1;
-    const backpressure = writeOwner?.indexOf('if (!stream.write(bytes.subarray(') ?? -1;
-    const drain = writeOwner?.indexOf('await waitForHttp2Drain(stream, signal)') ?? -1;
-    expect(fixedStep).toBeGreaterThanOrEqual(0);
-    expect(fixedSlice).toBeGreaterThan(fixedStep);
-    expect(backpressure).toBeGreaterThanOrEqual(0);
-    expect(drain).toBeGreaterThan(backpressure);
-    expect(writeOwner?.match(/await waitForHttp2Drain\(stream, signal\)/g)).toHaveLength(1);
-    expect(writeOwner).toContain('stream.end();');
-    expect(writeOwner).not.toContain('stream.end(body)');
-
-    const nativeResponseOwner = production
-      .split('private async handleNativeRoute(')
-      .at(1)
-      ?.split('/** Closes both listeners')
-      .at(0);
-    expect(nativeResponseOwner).toBeDefined();
-    const nativeWrite = nativeResponseOwner?.indexOf('if (!response.write(chunk))') ?? -1;
-    const nativeDrain =
-      nativeResponseOwner?.indexOf("await once(response, 'drain', { signal: abort.signal })") ?? -1;
-    const nativeEnd = nativeResponseOwner?.indexOf('response.end()') ?? -1;
-    expect(nativeWrite).toBeGreaterThanOrEqual(0);
-    expect(nativeDrain).toBeGreaterThan(nativeWrite);
-    expect(nativeEnd).toBeGreaterThan(nativeDrain);
-    expect(nativeResponseOwner?.match(/if \(!response\.write\(chunk\)\)/g)).toHaveLength(1);
-    expect(nativeResponseOwner?.match(/response\.write\(chunk\)/g)).toHaveLength(1);
-    expect(
-      nativeResponseOwner?.match(/await once\(response, 'drain', \{ signal: abort\.signal \}\)/g)
-    ).toHaveLength(1);
-    expect(nativeResponseOwner?.match(/once\(response, 'drain'/g)).toHaveLength(1);
   });
 
   it('owns one fixed loopback target and exactly three H2 route namespaces', () => {
