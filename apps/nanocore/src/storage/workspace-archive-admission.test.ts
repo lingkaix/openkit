@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
@@ -8,20 +8,18 @@ import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
 const fixtures: Array<{ coreDb: ReturnType<typeof openCoreDb>; dataRoot: string }> = [];
 
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
   for (const fixture of fixtures.splice(0)) {
-    fixture.coreDb.sqlite.close();
-    rmSync(fixture.dataRoot, { recursive: true, force: true });
+    await disposeTestStore(fixture.dataRoot, fixture.coreDb);
   }
 });
 
@@ -54,7 +52,7 @@ async function archiveFixture(
     },
     coreDb,
     dataRoot,
-    fileAdmission,
+    ...(fileAdmission ? { fileAdmission } : {}),
     mode: 'server',
     store,
     workspaceMutationAdmission,

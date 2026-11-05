@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -9,8 +9,8 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import {
   findExternalTriggerAdmission,
@@ -60,11 +60,12 @@ function queue(
 }
 
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
   const remaining = fixtures.splice(0);
-  for (const { db } of remaining) if (db.sqlite.open) db.sqlite.close();
   for (const root of new Set(remaining.map((entry) => entry.root)))
-    rmSync(root, { recursive: true, force: true });
+    await disposeTestStore(
+      root,
+      ...remaining.filter((entry) => entry.root === root).map((entry) => entry.db)
+    );
 });
 
 describe('ExternalTriggerAdmission Core joins', () => {

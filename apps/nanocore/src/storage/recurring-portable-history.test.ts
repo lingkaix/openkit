@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -10,8 +10,8 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { insertExternalTriggerAdmission } from './external-trigger-admissions.js';
 import { applyMigrations } from './migrate.js';
@@ -44,9 +44,7 @@ describe('recurring portable history', () => {
     store = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
   });
   afterEach(async () => {
-    await shutdownControlStoreWorkerClient();
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   });
   async function acceptedHistory(publish = true) {
     const schedule = await store.createAutomation(localUserId, {
