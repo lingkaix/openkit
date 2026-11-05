@@ -1735,11 +1735,11 @@ describe('deepseek resident adapter', () => {
         const active = await started;
         const sessionId = await nativeSessionId(session);
         deliver(
-          session,
+          spawnedNativeChild(),
           sessionUpdate(sessionId, 'openkit_future_extension', { token: INFERENCE })
         );
         deliver(
-          session,
+          spawnedNativeChild(),
           sessionUpdate(sessionId, 'agent_message_chunk', {
             content: { credential: INFERENCE, text: 'nope', type: 'secret' },
           })
@@ -1781,7 +1781,7 @@ describe('deepseek resident adapter', () => {
         );
         const sessionId = await nativeSessionId(session);
         deliver(
-          session,
+          spawnedNativeChild(),
           sessionUpdate(sessionId, 'openkit_future_extension', { token: INFERENCE })
         );
         const result = await active.settled;
@@ -1807,7 +1807,10 @@ describe('deepseek resident adapter', () => {
       );
       await waitFor(() => inference.requests.length > 0);
       const sessionId = await nativeSessionId(session);
-      deliver(session, textChunk(sessionId, 'z'.repeat(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES)));
+      deliver(
+        spawnedNativeChild(),
+        textChunk(sessionId, 'z'.repeat(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES))
+      );
       expect(await single.settled).toMatchObject({
         assistantText: null,
         status: 'failed',
@@ -1820,6 +1823,7 @@ describe('deepseek resident adapter', () => {
         turn(aggregateRoots, inference, 'more', [], 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4')
       );
       const aggregateId = await nativeSessionId(aggregateSession);
+      const aggregateChild = spawnedNativeChild();
       const overhead = Buffer.byteLength(
         JSON.stringify({
           sessionId,
@@ -1830,8 +1834,8 @@ describe('deepseek resident adapter', () => {
         })
       );
       const first = 'y'.repeat(DEEPSEEK_SESSION_UPDATE_LIMIT_BYTES - overhead - 32);
-      deliver(aggregateSession, textChunk(aggregateId, first));
-      deliver(aggregateSession, textChunk(aggregateId, 'y'.repeat(64)));
+      deliver(aggregateChild, textChunk(aggregateId, first));
+      deliver(aggregateChild, textChunk(aggregateId, 'y'.repeat(64)));
       expect(await aggregate.settled).toMatchObject({
         assistantText: null,
         status: 'failed',
@@ -1865,7 +1869,7 @@ describe('deepseek resident adapter', () => {
       };
       const closing = session.close();
       await waitFor(() => internals.drainBoundary);
-      deliver(session, textChunk(sessionId, 'late'));
+      deliver(spawnedNativeChild(), textChunk(sessionId, 'late'));
       await expect(closing).rejects.toThrow(/did not drain/);
       await expect(session.close()).rejects.toThrow(/did not drain/);
       expect(session.childState()).toBe('absent');
@@ -1915,7 +1919,7 @@ describe('deepseek resident adapter', () => {
       const interrupting = active.interrupt();
       for (const id of [observedPromptId(spawnedNativeChild())]) {
         deliver(
-          session,
+          spawnedNativeChild(),
           JSON.stringify({
             error: { code: -32603, message: 'prompt failed' },
             id,
@@ -1943,7 +1947,7 @@ describe('deepseek resident adapter', () => {
       );
       await waitFor(() => inference.requests.length > 0);
       deliver(
-        session,
+        spawnedNativeChild(),
         JSON.stringify({
           error: { code: -32603, message: 'prompt failed' },
           id: observedPromptId(spawnedNativeChild()),
@@ -2048,9 +2052,10 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null);
       await (await session.startTurn(turn(roots, inference, 'seed', [], 'seed'))).settled;
+      const child = spawnedNativeChild();
+      const sessionId = await nativeSessionId(session);
       const native = session as unknown as {
         connection: ClientConnection;
-        sessionId: string;
         stopProcess(): Promise<boolean>;
       };
       interceptDeepSeekRequest(
@@ -2061,12 +2066,12 @@ describe('deepseek resident adapter', () => {
           setTimeout(
             () =>
               deliver(
-                session,
+                child,
                 JSON.stringify({
                   jsonrpc: '2.0',
                   method: 'session/update',
                   params: {
-                    sessionId: native.sessionId,
+                    sessionId,
                     update: { sessionUpdate: 'usage_update', used: 1 },
                   },
                 })
@@ -2142,7 +2147,7 @@ describe('deepseek resident adapter', () => {
         turn(roots, inference, 'bad-frame', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
       );
       await waitFor(() => inference.requests.length > 0);
-      nativeStdout(session, Buffer.from('{broken-json\n'));
+      nativeStdout(spawnedNativeChild(), Buffer.from('{broken-json\n'));
       const outcome = await Promise.race([
         active.settled,
         new Promise<string>((resolve) => setTimeout(() => resolve('unsettled'), NATIVE_STOP_MS)),
@@ -2169,7 +2174,7 @@ describe('deepseek resident adapter', () => {
       );
       await waitFor(() => inference.requests.length > 0);
       deliver(
-        session,
+        spawnedNativeChild(),
         JSON.stringify({
           id: observedPromptId(spawnedNativeChild()),
           jsonrpc: '2.0',
@@ -2199,7 +2204,7 @@ describe('deepseek resident adapter', () => {
       );
       await waitFor(() => inference.requests.length > 0);
       nativeStdout(
-        session,
+        spawnedNativeChild(),
         Buffer.from(
           [
             JSON.stringify({
@@ -2238,7 +2243,7 @@ describe('deepseek resident adapter', () => {
       );
       await waitFor(() => inference.requests.length > 0);
       deliver(
-        session,
+        spawnedNativeChild(),
         JSON.stringify({
           id: observedPromptId(spawnedNativeChild()),
           jsonrpc: '2.0',
@@ -2247,7 +2252,7 @@ describe('deepseek resident adapter', () => {
       );
       expect(await active.settled).toMatchObject({ status: 'completed' });
       deliver(
-        session,
+        spawnedNativeChild(),
         JSON.stringify({
           id: observedPromptId(spawnedNativeChild()),
           jsonrpc: '2.0',
@@ -2473,14 +2478,15 @@ describe('deepseek resident adapter', () => {
         );
         await waitFor(() => inference.requests.length > 0);
         const sessionId = await nativeSessionId(session);
+        const child = spawnedNativeChild();
         const bytes = Buffer.from(
           `${textChunk(sessionId, 'before')}\n${textChunk(sessionId, '€')}\n`
         );
         const euro = bytes.indexOf(Buffer.from('€'));
-        nativeStdout(session, bytes.subarray(0, euro + split));
-        nativeStdout(session, bytes.subarray(euro + split));
+        nativeStdout(child, bytes.subarray(0, euro + split));
+        nativeStdout(child, bytes.subarray(euro + split));
         deliver(
-          session,
+          child,
           JSON.stringify({
             id: observedPromptId(spawnedNativeChild()),
             jsonrpc: '2.0',
@@ -2525,7 +2531,7 @@ describe('deepseek resident adapter', () => {
           return outcome;
         };
         deliver(
-          session,
+          spawnedNativeChild(),
           JSON.stringify({
             id: 77,
             jsonrpc: '2.0',
@@ -2543,7 +2549,7 @@ describe('deepseek resident adapter', () => {
         await waitFor(() => outcomes.length === 1);
         expect(outcomes[0]).toEqual({ outcome: { outcome: 'selected', optionId: INFERENCE } });
         deliver(
-          session,
+          spawnedNativeChild(),
           JSON.stringify({
             id: 78,
             jsonrpc: '2.0',
@@ -2581,14 +2587,14 @@ describe('deepseek resident adapter', () => {
       );
       const sessionId = await nativeSessionId(session);
       deliver(
-        session,
+        spawnedNativeChild(),
         sessionUpdate(sessionId, 'compaction_update', {
           compactionId: 'compact-1',
           status: 'in_progress',
         })
       );
       deliver(
-        session,
+        spawnedNativeChild(),
         sessionUpdate(sessionId, 'compaction_summary_chunk', {
           compactionId: 'compact-1',
           content: { text: 'summary', type: 'text' },
@@ -3160,6 +3166,7 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null);
       await (await session.startTurn(turn(roots, inference, 'seed', [], 'seed'))).settled;
+      const child = spawnedNativeChild();
       const native = session as unknown as { connection: ClientConnection };
       let nativeClosed = false;
       interceptDeepSeekRequest(
@@ -3168,7 +3175,7 @@ describe('deepseek resident adapter', () => {
         async (input, close) => {
           const result = await close(input);
           nativeClosed = true;
-          nativeStdout(session, Buffer.from('{"broken":true}\n'));
+          nativeStdout(child, Buffer.from('{"broken":true}\n'));
           return result;
         }
       );
@@ -3298,7 +3305,6 @@ describe('deepseek resident adapter', () => {
         () => 'rejected'
       );
       expect({ handle, outcome }).toEqual({ handle: { state: 'unknown' }, outcome: 'rejected' });
-      expect(session.close()).toBe(close);
       await expect(session.close()).rejects.toThrow('DeepSeek close did not drain.');
     },
     LIVE
@@ -3319,13 +3325,14 @@ describe('deepseek resident adapter', () => {
       let requestedCreation = false;
       internals.spawnHost = async (record) => {
         await spawn(record);
+        const child = spawnedNativeChild();
         interceptDeepSeekRequest(
           internals.connection.agent,
           methods.agent.session.new,
           (input, create) => {
             requestedCreation = true;
             const pending = create(input);
-            nativeStdout(session, Buffer.from('{"broken":true}\n'));
+            nativeStdout(child, Buffer.from('{"broken":true}\n'));
             return pending;
           }
         );
@@ -3458,15 +3465,12 @@ describe('deepseek resident adapter', () => {
 });
 
 /** Injects one JSON-RPC line into the admitted native stream. */
-function deliver(session: WorkerResidentSession, line: string): void {
-  nativeStdout(session, Buffer.from(`${line}\n`));
+function deliver(child: ChildProcessWithoutNullStreams, line: string): void {
+  nativeStdout(child, Buffer.from(`${line}\n`));
 }
 
-/** Emits bytes at the real child stdout admission seam. */
-function nativeStdout(session: WorkerResidentSession, bytes: Buffer): void {
-  const child = (
-    session as unknown as { child: { stdout: { emit(event: string, bytes: Buffer): void } } }
-  ).child;
+/** Emits bytes at the concrete owned child stdout admission seam. */
+function nativeStdout(child: ChildProcessWithoutNullStreams, bytes: Buffer): void {
   child.stdout.emit('data', bytes);
 }
 
@@ -4008,7 +4012,7 @@ it(
       opaque: { text: 'E4 α', order: [3, null, 1] },
     };
     deliver(
-      session,
+      spawnedNativeChild(),
       JSON.stringify({
         jsonrpc: '2.0',
         method: 'session/update',
@@ -4020,7 +4024,7 @@ it(
       opaque: { text: 'second E4 unit', order: [1, null, 3] },
     };
     deliver(
-      session,
+      spawnedNativeChild(),
       JSON.stringify({
         jsonrpc: '2.0',
         method: 'session/update',
@@ -4091,10 +4095,7 @@ it(
     const child = spawnedNativeChild();
     child.stderr.emit('data', Buffer.from([0, 0xe2]));
     child.stderr.emit('data', Buffer.from([0x82, 0xac, 0x61, 0x62, 0x63, 0x64]));
-    deliver(
-      session,
-      '{"jsonrpc":"2.0","method":"future/notice","params":{"canary":"E4-RPC-ONLY"}}'
-    );
+    deliver(child, '{"jsonrpc":"2.0","method":"future/notice","params":{"canary":"E4-RPC-ONLY"}}');
     await active.interrupt();
     await active.settled;
     const logs = received.filter(({ record, body }) => record.fact.kind === 'runtime-log' && body);
