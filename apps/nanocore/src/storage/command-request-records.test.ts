@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EntityKind } from '@openkit/protocol';
 import { eq } from 'drizzle-orm';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { prepareAuditEvent } from '../audit-events.js';
 import type {
   CommandRequestRecord,
@@ -17,6 +17,8 @@ import {
   getCommandRequestRecordFromDb,
   listCommandRequestRecords,
   normalizeCommandRequestResponse,
+  readCommandRequestRecordPagesFromSqlite,
+  readCommandRequestRecordsFromSqlite,
   readDurableCommandRequestRecords,
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
@@ -27,7 +29,13 @@ import {
   openControlStoreProductReadHandle,
 } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { bindWorkspaceSqlite, openWorkspaceDb, type WorkspaceDb } from './db.js';
+import {
+  bindWorkspaceSqlite,
+  openUserDb,
+  openUserReadDb,
+  openWorkspaceDb,
+  type WorkspaceDb,
+} from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import { controlThreads } from './schema/index.js';
 
@@ -530,6 +538,111 @@ describe('retained SQL receipt format', () => {
       'Unsupported retained record format.'
     );
     expect(db.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(before);
+  });
+});
+
+describe('released receipt census pages and ordinary caller selection', () => {
+  function fixture() {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-census-wal-'));
+    const store = createTestStore({ dataRoot });
+    const writer = createTestStore({ dataRoot });
+    const userId = testEntityId('usr', 'receipt-census-owner');
+    const scope = { userId };
+    // This unchanged public User command-receipt owner writes these rows, not fixture SQL.
+    const add = (index: number) =>
+      writer.recordCommandRequest({
+        command: 'workspace.create',
+        requestId: `0190f4c8-0000-7000-8000-${String(index + 1).padStart(12, '0')}`,
+        scope,
+        inputHash: `sha256:receipt-census-${index}`,
+        response: { kind: 'workspace', id: testEntityId('ws', 'receipt-census-result') },
+        createdAt: '2026-10-06T00:00:00.000Z',
+        expiresAt: '3001-01-01T00:00:00.000Z',
+      });
+    const records = Array.from({ length: 129 }, (_, index) => add(index));
+    const db = openUserReadDb(dataRoot, userId);
+    onTestFinished(() => {
+      if (db.sqlite.open) db.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    expect(db.sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+    expect(store.listCommandRequests()).toHaveLength(129);
+    return { add, dataRoot, db, records, userId };
+  }
+
+  it.each([
+    'standalone',
+    'nested',
+  ] as const)('preserves the original supplied-connection selection through a real later WAL owner insert (%s)', (mode) => {
+    const { db, records, add } = fixture();
+    const prepare = db.sqlite.prepare.bind(db.sqlite);
+    let crossed = false;
+    let late: CommandRequestRecord | undefined;
+    const spy = vi.spyOn(db.sqlite, 'prepare').mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (sql.includes('FROM idempotency_requests') && sql.endsWith('LIMIT 128')) {
+        const all = statement.all.bind(statement);
+        Object.defineProperty(statement, 'all', {
+          value: (...values: unknown[]) => {
+            const rows = all(...values);
+            if (!crossed) {
+              crossed = true;
+              late = add(129);
+            }
+            return rows;
+          },
+        });
+      }
+      return statement;
+    });
+    let observed: CommandRequestRecord[];
+    try {
+      const read = () => readCommandRequestRecordsFromSqlite(db.sqlite);
+      observed = mode === 'nested' ? db.sqlite.transaction(read).deferred() : read();
+    } finally {
+      spy.mockRestore();
+    }
+    // Writer postconditions precede the complete-original-selection comparison.
+    expect(crossed).toBe(true);
+    expect(db.sqlite.inTransaction).toBe(false);
+    const after = readCommandRequestRecordsFromSqlite(db.sqlite);
+    expect(after).toHaveLength(130);
+    expect(after.at(-1)).toEqual(late);
+    expect(observed).toEqual(records);
+  });
+
+  it('releases before each cooperative page and does not promise a cross-page snapshot', () => {
+    const { db, records, add } = fixture();
+    const pages = readCommandRequestRecordPagesFromSqlite(db.sqlite);
+    const first = pages.next().value;
+    expect(first).toEqual(records.slice(0, 128));
+    expect(db.sqlite.inTransaction).toBe(false);
+    const late = add(129);
+    expect([...pages].flat()).toEqual([records[128], late]);
+    expect(db.sqlite.inTransaction).toBe(false);
+  });
+
+  it('refuses a later-page retained version before JSON decoding without rewriting it', () => {
+    const { dataRoot, userId, db, records } = fixture();
+    // Deliberate retained corruption only after owner seeding; not an admission fixture.
+    const retained = openUserDb(dataRoot, userId);
+    try {
+      retained.sqlite
+        .prepare(
+          'UPDATE idempotency_requests SET schema_version = 2, scope_json = ? WHERE request_key = ?'
+        )
+        .run('{invalid', records[128]!.key);
+      const before = retained.sqlite.prepare('SELECT * FROM idempotency_requests').all();
+      expect(() => readCommandRequestRecordsFromSqlite(db.sqlite)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => [...readCommandRequestRecordPagesFromSqlite(db.sqlite)]).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(retained.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(before);
+    } finally {
+      retained.sqlite.close();
+    }
   });
 });
 
