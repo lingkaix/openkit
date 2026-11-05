@@ -11,8 +11,8 @@ import { ArtifactSchema, ArtifactVersionSchema } from '@openkit/protocol';
 import { onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { ReactNode } from 'react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { type ReactNode, useEffect } from 'react';
+import { Link, MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { isSurfaceLive } from '../../app/flags';
@@ -436,9 +436,12 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
   } as unknown as CoreClient;
 }
 
+/** Reports committed locations, not renders; distinct same-URL transitions still count. */
 function LocationProbe({ onChange }: { onChange: (pathname: string) => void }) {
   const location = useLocation();
-  onChange(`${location.pathname}${location.search}`);
+  useEffect(() => {
+    onChange(`${location.pathname}${location.search}`);
+  }, [location, onChange]);
   return null;
 }
 
@@ -591,6 +594,43 @@ function poisonDom() {
 beforeEach(() => {
   localStorage.clear();
   useWorkspaceStore.setState({ currentWorkspaceId: null });
+});
+
+describe('LocationProbe navigation observation', () => {
+  it('does not count a render-only update as navigation', () => {
+    const onLocation = vi.fn();
+    const view = render(
+      <MemoryRouter initialEntries={['/probe']}>
+        <LocationProbe onChange={onLocation} />
+        <p>Before</p>
+      </MemoryRouter>
+    );
+    expect(onLocation.mock.calls).toEqual([['/probe']]);
+
+    view.rerender(
+      <MemoryRouter initialEntries={['/probe']}>
+        <LocationProbe onChange={onLocation} />
+        <p>After</p>
+      </MemoryRouter>
+    );
+    expect(onLocation.mock.calls).toEqual([['/probe']]);
+  });
+
+  it('still counts separate committed navigations to the same URL', async () => {
+    const user = userEvent.setup();
+    const onLocation = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/probe']}>
+        <LocationProbe onChange={onLocation} />
+        <Link to="/probe">Navigate to the same URL</Link>
+      </MemoryRouter>
+    );
+    expect(onLocation.mock.calls).toEqual([['/probe']]);
+
+    await user.click(screen.getByRole('link', { name: 'Navigate to the same URL' }));
+    await user.click(screen.getByRole('link', { name: 'Navigate to the same URL' }));
+    expect(onLocation.mock.calls).toEqual([['/probe'], ['/probe'], ['/probe']]);
+  });
 });
 
 describe('Recovery and search', () => {
