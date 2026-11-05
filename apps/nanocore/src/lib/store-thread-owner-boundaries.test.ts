@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -23,18 +23,18 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createVerifiedWorkspaceExport } from '../storage/workspace-transfer-routes.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FsStore } from './store.js';
 
 const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
 const roots: string[] = [];
-const databases: Array<{ sqlite: { open: boolean; close(): void } }> = [];
+const databases: Array<ReturnType<typeof openCoreDb> | ReturnType<typeof openWorkspaceDb>> = [];
 
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const database of databases.splice(0))
-    if (database.sqlite.open) await database.sqlite.close();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) {
+    await disposeTestStore(root, ...databases.splice(0));
+  }
 });
 
 /** Publishes acknowledged history through shared setup and the real native owners. */
