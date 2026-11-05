@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterAll, describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
@@ -120,13 +120,39 @@ async function replaceRetainedSurface(surface: RetainedSurface, record: Record<s
   }
 }
 
+/** Derives per-root native surfaces from one stopped fixture's immutable identities. */
+function retainedSurfaces(
+  dataRoot: string,
+  ids: { workspaceId: string; turnId: string; artifactId: string; sessionId: string }
+) {
+  const workspaceRoot = join(dataRoot, 'workspaces', ids.workspaceId);
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId: ids.workspaceId });
+  const surfaces: Record<RetainedFamily, RetainedSurface> = {
+    Workspace: {
+      kind: 'metadata',
+      database: scope.path,
+      table: 'control_workspaces',
+      id: ids.workspaceId,
+    },
+    Turn: { kind: 'metadata', database: scope.path, table: 'control_turns', id: ids.turnId },
+    Artifact: {
+      kind: 'file',
+      path: join(workspaceRoot, 'artifacts', ids.artifactId, 'artifact.json'),
+    },
+    AgentSession: {
+      kind: 'metadata',
+      database: scope.path,
+      table: 'control_agent_sessions',
+      id: ids.sessionId,
+    },
+    Item: { kind: 'entry', scope, turnId: ids.turnId, entryKind: 'item' },
+    'stream event': { kind: 'entry', scope, turnId: ids.turnId, entryKind: 'event' },
+  };
+  return { scope, surfaces };
+}
+
 /** Seeds native metadata, prior file-backed Item/event specimens and the file-owned Artifact. */
-async function createRetainedFixture() {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-file-formats-'));
-  onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
-    return rmSync(dataRoot, { recursive: true, force: true });
-  });
+async function buildRetainedFixture(dataRoot: string) {
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Retained formats');
   const thread = await store.createThread(workspace.id, 'Retained formats');
@@ -195,7 +221,6 @@ async function createRetainedFixture() {
     createdAt: now,
     updatedAt: now,
   });
-  const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   await store.persistTurnEvent(turn.id, {
     requestId: null,
     workspaceId: workspace.id,
@@ -205,25 +230,8 @@ async function createRetainedFixture() {
     data: { type: 'workspace-updated', workspace },
   });
   await shutdownControlStoreWorkerClient();
-  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId: workspace.id });
-  const surfaces: Record<RetainedFamily, RetainedSurface> = {
-    Workspace: {
-      kind: 'metadata',
-      database: scope.path,
-      table: 'control_workspaces',
-      id: workspace.id,
-    },
-    Turn: { kind: 'metadata', database: scope.path, table: 'control_turns', id: turn.id },
-    Artifact: { kind: 'file', path: join(workspaceRoot, 'artifacts', artifactId, 'artifact.json') },
-    AgentSession: {
-      kind: 'metadata',
-      database: scope.path,
-      table: 'control_agent_sessions',
-      id: sessionId,
-    },
-    Item: { kind: 'entry', scope, turnId: turn.id, entryKind: 'item' },
-    'stream event': { kind: 'entry', scope, turnId: turn.id, entryKind: 'event' },
-  };
+  const ids = { workspaceId: workspace.id, turnId: turn.id, artifactId, sessionId };
+  const { scope, surfaces } = retainedSurfaces(dataRoot, ids);
   // These retained-file cases require prior files to remain unchanged after descriptor replacement.
   // Seed only these stopped specimens through the existing immutable-file publication owner.
   for (const family of ['Item', 'stream event'] as const) {
@@ -234,7 +242,8 @@ async function createRetainedFixture() {
   }
   return {
     dataRoot,
-    workspaceId: workspace.id,
+    workspaceId: ids.workspaceId,
+    ids,
     scope,
     surfaces,
     expected: {
@@ -247,6 +256,50 @@ async function createRetainedFixture() {
     },
   };
 }
+
+let retainedTemplate: Awaited<ReturnType<typeof buildRetainedFixture>> | undefined;
+let retainedTemplateRoot: string | undefined;
+
+/**
+ * Builds one stopped public-owner fixture, then gives each case closed bytes from that template.
+ * The template keeps the exact native identities and readers; no case mutates another case's copy.
+ */
+async function createRetainedFixture() {
+  if (!retainedTemplate) {
+    retainedTemplateRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-file-formats-template-'));
+    retainedTemplate = await buildRetainedFixture(retainedTemplateRoot);
+  }
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-file-formats-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(dataRoot, { recursive: true, force: true });
+  });
+  cpSync(retainedTemplate.dataRoot, dataRoot, { recursive: true, verbatimSymlinks: true });
+  return {
+    ...retainedTemplate,
+    dataRoot,
+    ...retainedSurfaces(dataRoot, retainedTemplate.ids),
+  };
+}
+
+let refusalControl: Awaited<ReturnType<typeof buildRefusalControl>> | undefined;
+
+/** Seeds the healthy sibling once through public owner operations; refusal cases copy only closed bytes. */
+async function buildRefusalControl() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-control-'));
+  const seed = createTestStore({ dataRoot });
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
+  const siblingBefore = seed.getWorkspace(sibling.id);
+  await shutdownControlStoreWorkerClient();
+  return { dataRoot, sibling, siblingBefore, siblingThread };
+}
+
+afterAll(async () => {
+  await shutdownControlStoreWorkerClient();
+  if (refusalControl) rmSync(refusalControl.dataRoot, { recursive: true, force: true });
+  if (retainedTemplateRoot) rmSync(retainedTemplateRoot, { recursive: true, force: true });
+});
 
 /**
  * Validates one retained fault in a fresh admission lifetime without resetting process state.
@@ -264,12 +317,11 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
     await shutdownControlStoreWorkerClient();
     return rmSync(restartRoot, { recursive: true, force: true });
   });
-  const seed = createTestStore({ dataRoot: restartRoot });
-  const sibling = await seed.createWorkspace('Healthy refusal control');
-  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
-  const siblingBefore = seed.getWorkspace(sibling.id);
+  refusalControl ??= await buildRefusalControl();
   await shutdownControlStoreWorkerClient();
+  cpSync(refusalControl.dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+  const { sibling, siblingBefore, siblingThread } = refusalControl;
 
   /** Preserves all retained file bytes and logical SQL rows, excluding disposable WAL/SHM bookkeeping. */
   function snapshot(root: string): Record<string, Buffer | string> {
