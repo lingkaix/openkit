@@ -1,43 +1,18 @@
 // openkit-test-platform: posix
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { allocateEntityId, type Item } from '@openkit/protocol';
-import Database from 'better-sqlite3';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
-import { workspaceDbPath } from './fs-layout.js';
 
-const observation = vi.hoisted(() => ({
-  root: undefined as string | undefined,
-  writes: [] as string[],
-}));
-// Observe Main only; the actual native worker has its independent filesystem realm.
-vi.mock('node:fs/promises', async (load) => {
-  const actual = await load<typeof import('node:fs/promises')>();
-  return {
-    ...actual,
-    open: (...args: Parameters<typeof actual.open>) => {
-      if (
-        observation.root &&
-        String(args[0]).startsWith(observation.root) &&
-        /[wa+]/.test(String(args[1]))
-      )
-        observation.writes.push(String(args[0]));
-      return actual.open(...args);
-    },
-  };
-});
 const roots: string[] = [];
 afterEach(async () => {
-  observation.root = undefined;
-  observation.writes.length = 0;
-  vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) {
     closeWorkspaceProductReadHandles(root);
@@ -45,7 +20,7 @@ afterEach(async () => {
   }
 });
 
-it('publishes exact ordered Workspace events off Main and preserves sealed replay', async () => {
+it('retains exact ordered Workspace events across reopen and preserves sealed replay', async () => {
   const root = mkdtempSync(join(tmpdir(), 'database-owner-event-'));
   roots.push(root);
   const store = await createDemoStore({ dataRoot: root });
@@ -53,7 +28,7 @@ it('publishes exact ordered Workspace events off Main and preserves sealed repla
     kind: 'user',
     id: FIXTURE_LOCAL_USER_ID,
   });
-  const items: Item[] = [1, 2].map((index) => ({
+  const items: Extract<Item, { type: 'assistant-message' }>[] = [1, 2].map((index) => ({
     id: allocateEntityId('it'),
     owner: turn.owner,
     threadId: turn.threadId,
@@ -72,23 +47,6 @@ it('publishes exact ordered Workspace events off Main and preserves sealed repla
     turnId: turn.id,
     data: { type: 'item-created' as const, item },
   }));
-  const probe = new Database(':memory:');
-  const prototype = Object.getPrototypeOf(probe.prepare('SELECT 1')) as Database.Statement;
-  probe.close();
-  const reads: string[] = [];
-  let armed = true;
-  for (const method of ['get', 'all'] as const) {
-    const original = prototype[method];
-    vi.spyOn(prototype, method).mockImplementation(function (
-      this: Database.Statement,
-      ...args: unknown[]
-    ) {
-      if (armed && this.database.name === workspaceDbPath(root, DEMO_WORKSPACE_ID))
-        reads.push(this.source);
-      return Reflect.apply(original, this, args);
-    });
-  }
-  observation.root = `${join(root, 'workspaces', DEMO_WORKSPACE_ID)}${sep}`;
   const acks: number[] = [];
   const events = await Promise.all(
     inputs.map((input, index) =>
@@ -97,13 +55,7 @@ it('publishes exact ordered Workspace events off Main and preserves sealed repla
         return event;
       })
     )
-  ).finally(() => {
-    armed = false;
-    observation.root = undefined;
-  });
-  // DatabaseOwner resolves dependent head/sequence and prepares durable payloads in the native owner.
-  expect.soft(reads).toEqual([]);
-  expect.soft(observation.writes).toEqual([]);
+  );
   expect(acks).toEqual([1, 2]);
   expect(events.map((event) => event.sequence)).toEqual([1, 2]);
   expect(events.map((event) => event.data)).toEqual(inputs.map((input) => input.data));

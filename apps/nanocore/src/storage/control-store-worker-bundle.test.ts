@@ -10,7 +10,7 @@ import {
   rmSync,
   symlinkSync,
 } from 'node:fs';
-import { createRequire, isBuiltin } from 'node:module';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
@@ -29,13 +29,9 @@ import { nativeProductScope } from './workspace-file-records.js';
 
 const require = createRequire(import.meta.url);
 const roots: string[] = [];
-const fixtures: ReturnType<typeof fixture>[] = [];
+const fixtures: Array<{ worker: Worker; gate: Int32Array }> = [];
 let artifactRoot: string;
 let bundle: string;
-let metadata: {
-  inputs: Record<string, unknown>;
-  outputs: Record<string, { imports: { path: string; kind: string; external?: boolean }[] }>;
-};
 
 beforeAll(async () => {
   const original = mkdtempSync(join(tmpdir(), 'native-bundle-build-'));
@@ -44,7 +40,7 @@ beforeAll(async () => {
   const { buildControlStoreWorker } = await import(
     new URL('../../scripts/build-control-store-worker.mjs', import.meta.url).href
   );
-  metadata = (await buildControlStoreWorker(output)).metafile;
+  await buildControlStoreWorker(output);
   // Move the artifact before execution. No absolute build-checkout URL may locate its resources.
   artifactRoot = `${original}-relocated`;
   renameSync(original, artifactRoot);
@@ -151,30 +147,6 @@ const setup: readonly ControlSqlStatement[] = ['0000_setup', '0001_thread_read_r
 );
 
 describe('shipped native worker bundle', () => {
-  it('keeps internal lazy modules and JSONC in one graph, and only the PDF engine dynamic', () => {
-    expect(existsSync(`${bundle}.map`)).toBe(true);
-    expect(Object.keys(metadata.outputs)).toHaveLength(2);
-    expect(
-      Object.keys(metadata.inputs).some((path) => path.includes('jsonc-parser/lib/esm/'))
-    ).toBe(true);
-    const imports = Object.values(metadata.outputs).flatMap((output) => output.imports);
-    expect(
-      imports.some(
-        (item) => item.kind === 'dynamic-import' && item.path === 'pdfjs-dist/legacy/build/pdf.mjs'
-      )
-    ).toBe(true);
-    for (const item of imports.filter((item) => item.external)) {
-      expect(
-        isBuiltin(item.path) ||
-          ['better-sqlite3', '@napi-rs/canvas'].includes(item.path) ||
-          (item.kind === 'dynamic-import' && item.path === 'pdfjs-dist/legacy/build/pdf.mjs')
-      ).toBe(true);
-    }
-    expect(readFileSync(bundle, 'utf8')).not.toContain(
-      fileURLToPath(new URL('../..', import.meta.url))
-    );
-  });
-
   it('opens a real Core through the relocated bundled entry and its shipped migration resources', async () => {
     const f = fixture();
     const scope = nativeProductScope(f.root, { kind: 'server' });

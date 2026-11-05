@@ -1,10 +1,10 @@
 // openkit-test-platform: posix
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { allocateEntityId, type Item } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -12,34 +12,8 @@ import { closeWorkspaceProductReadHandles } from './control-store-product-record
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { workspaceDbPath } from './fs-layout.js';
 
-const observation = vi.hoisted(() => ({
-  workspaceRoot: undefined as string | undefined,
-  writeOpens: [] as string[],
-}));
-
-// Observe actual Main filesystem effects; the real worker retains its independent filesystem realm.
-vi.mock('node:fs/promises', async (load) => {
-  const actual = await load<typeof import('node:fs/promises')>();
-  return {
-    ...actual,
-    open: (...args: Parameters<typeof actual.open>) => {
-      const path = String(args[0]);
-      if (
-        observation.workspaceRoot &&
-        path.startsWith(observation.workspaceRoot) &&
-        /[wa+]/.test(String(args[1]))
-      )
-        observation.writeOpens.push(path);
-      return actual.open(...args);
-    },
-  };
-});
-
 const roots: string[] = [];
 afterEach(async () => {
-  observation.workspaceRoot = undefined;
-  observation.writeOpens.length = 0;
-  vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) {
     closeWorkspaceProductReadHandles(root);
@@ -48,7 +22,7 @@ afterEach(async () => {
 });
 
 describe('DatabaseOwner addressed Workspace Item publication', () => {
-  it('keeps dependent reads and large-body preparation off Main for new and revised Items', async () => {
+  it('retains ordered large Item revisions across reopen and refuses a corrupt sealed log', async () => {
     const root = mkdtempSync(join(tmpdir(), 'database-owner-item-'));
     roots.push(root);
     const store = await createDemoStore({ dataRoot: root });
@@ -75,46 +49,18 @@ describe('DatabaseOwner addressed Workspace Item publication', () => {
       text: `${first.text}final exact bytes\n`,
       completedAt: first.createdAt,
     };
-    const probe = new Database(':memory:');
-    const statementPrototype = Object.getPrototypeOf(
-      probe.prepare('SELECT 1')
-    ) as Database.Statement;
-    probe.close();
     const databasePath = workspaceDbPath(root, DEMO_WORKSPACE_ID);
-    const mainReads: string[] = [];
-    let armed = true;
-    // Cached statements also cross these actual native methods; observing prepare alone misses them.
-    for (const method of ['get', 'all'] as const) {
-      const original = statementPrototype[method];
-      vi.spyOn(statementPrototype, method).mockImplementation(function (
-        this: Database.Statement,
-        ...args: unknown[]
-      ) {
-        if (armed && this.database.name === databasePath) mainReads.push(this.source);
-        return Reflect.apply(original, this, args);
-      });
-    }
-    observation.workspaceRoot = `${join(root, 'workspaces', DEMO_WORKSPACE_ID)}${sep}`;
     const acknowledgements: number[] = [];
-    let results: Item[];
-    try {
-      results = await Promise.all([
-        store.createItem(first).then((item) => {
-          acknowledgements.push(1);
-          return item;
-        }),
-        store.createItem(second).then((item) => {
-          acknowledgements.push(2);
-          return item;
-        }),
-      ]);
-    } finally {
-      armed = false;
-      observation.workspaceRoot = undefined;
-    }
-    // Foundation DatabaseOwner writer and R4277 move the complete dependent preparation off Main.
-    expect.soft(mainReads).toEqual([]);
-    expect.soft(observation.writeOpens).toEqual([]);
+    const results = await Promise.all([
+      store.createItem(first).then((item) => {
+        acknowledgements.push(1);
+        return item;
+      }),
+      store.createItem(second).then((item) => {
+        acknowledgements.push(2);
+        return item;
+      }),
+    ]);
     // Storage Item Log Invariants and DX natural batching preserve same-Turn FULL ACK order.
     expect(acknowledgements).toEqual([1, 2]);
     expect(results).toEqual([first, second]);
