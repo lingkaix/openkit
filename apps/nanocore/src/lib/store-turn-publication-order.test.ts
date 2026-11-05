@@ -12,6 +12,7 @@ import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import type { WorkerArtifactCapture } from '../runtime/worker-governance-backend.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -156,7 +157,7 @@ async function fixture() {
     contentDigest: `sha256:${digest(bytes)}`,
     credentialCheckValues: {
       sensitiveValues: ['synthetic-injected-secret'],
-      loopbackDigests: ['a', 'b'].map((value) => digest(value.repeat(43))),
+      loopbackDigests: [digest('a'.repeat(43)), digest('b'.repeat(43))],
       routeTokenHashes: {
         workerControl: digest(Buffer.alloc(32, 17)),
         inference: digest(Buffer.alloc(32, 34)),
@@ -260,6 +261,50 @@ describe('Store same-Turn publication order through the real native worker', () 
     ]);
     expect(new FsStore({ dataRoot: f.root }).getTurnById(f.turn.id).items).toHaveLength(2);
   });
+  it('preserves a committed Item prefix and healthy sibling while refusing a failed Item and its queued successor', async () => {
+    const f = await fixture();
+    const prefix = message(f.turn, 'Committed prefix');
+    const failed = message(f.turn, 'Refused middle Item');
+    const successor = message(f.turn, 'Must not survive its failed predecessor');
+    const sibling = message(f.peer, 'Independent sibling');
+    // Fault injection follows real public Workspace, Thread and Turn creation; no row is fabricated.
+    f.workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_middle_item BEFORE INSERT ON control_product_entries
+      WHEN NEW.kind = 'item' AND NEW.id = '${failed.id}'
+      BEGIN SELECT RAISE(ABORT, 'injected Item publication refusal'); END`);
+    const gate = holdReply('item');
+    const first = observe(f.store.createItem(prefix));
+    let middle: typeof first | undefined;
+    let last: typeof first | undefined;
+    try {
+      await gate.reached;
+      middle = observe(f.store.createItem(failed));
+      last = observe(f.store.createItem(successor));
+      expect(await f.store.createItem(sibling)).toEqual(sibling);
+      // A successor cannot reach its native publication before the covering predecessor ACK.
+      expect(await beforeRelease(middle)).toBe('pending');
+    } finally {
+      gate.release();
+      await first;
+      if (middle) await middle;
+      if (last) await last;
+    }
+    expect(await first).toEqual({ status: 'ok', value: prefix });
+    expect(await middle!).toMatchObject({
+      status: 'error',
+      error: { code: 'constraint', commit: 'not-committed' },
+    });
+    expect(await last!).toMatchObject({ status: 'error', error: { commit: 'not-committed' } });
+    expect(f.store.getTurnById(f.turn.id).items).toEqual([prefix]);
+    expect(f.store.getTurnById(f.peer.id).items).toEqual([sibling]);
+    f.workspaceDb.sqlite.exec('DROP TRIGGER refuse_middle_item');
+    await shutdownControlStoreWorkerClient();
+    f.workspaceDb.sqlite.close();
+    closeWorkspaceProductReadHandles(f.root);
+    const reopened = new FsStore({ dataRoot: f.root });
+    expect(reopened.getTurnById(f.turn.id).items).toEqual([prefix]);
+    expect(reopened.getTurnById(f.peer.id).items).toEqual([sibling]);
+  });
+
   it('selects each new Item position after its same-Turn predecessor acknowledges', async () => {
     const f = await fixture();
     const items = [message(f.turn, 'First'), message(f.turn, 'Second')];
