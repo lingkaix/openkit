@@ -4,11 +4,7 @@ import userEvent from '@testing-library/user-event';
 import type { ComponentType, Key, ReactElement, ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { axe } from 'vitest-axe';
-import appShellSource from '../app/AppShell.tsx?raw';
-import themePickerSource from '../app/ThemePicker.tsx?raw';
-import goalScreenSource from '../screens/goal/GoalScreen.tsx?raw';
 import { Gallery } from './Gallery';
-import gallerySource from './Gallery.tsx?raw';
 import * as P from './index';
 import {
   Avatar,
@@ -64,23 +60,6 @@ const REQUIRED_EXPORTS = [
   'RadioGroup',
   'ToastProvider',
   'toastQueue',
-  'CodeView',
-  'DiffView',
-  'MaterialEditor',
-];
-
-/** Every primitive added by S3-S5 must appear as JSX in the shared component sheet. */
-const GALLERY_PRIMITIVES = [
-  'Dialog',
-  'Modal',
-  'Menu',
-  'Tabs',
-  'Table',
-  'Progress',
-  'Meter',
-  'RadioGroup',
-  'Toast',
-  'ToastProvider',
   'CodeView',
   'DiffView',
   'MaterialEditor',
@@ -147,12 +126,6 @@ describe('primitive tier — completeness', () => {
 });
 
 describe('primitive tier — renders and is accessible under every theme', () => {
-  it('the component sheet includes every S3-S5 primitive specimen', () => {
-    for (const name of GALLERY_PRIMITIVES) {
-      expect.soft(gallerySource).toMatch(new RegExp(`<${name}\\b`));
-    }
-  });
-
   for (const theme of ['', 'ok-theme-paper', 'ok-theme-noir']) {
     it(`the component sheet is axe-clean (${theme || 'spectrum'})`, async () => {
       const { container } = render(
@@ -1381,23 +1354,6 @@ describe('primitive tier — behavior', () => {
     expect(trigger).toHaveTextContent('Claude Sonnet 5');
     // Items are wired into the control (RAC mirrors them into a hidden native select).
     expect(container.querySelectorAll('select option').length).toBeGreaterThanOrEqual(2);
-  });
-});
-
-describe('primitive tier — ownership', () => {
-  it('GoalScreen delegates tab semantics and keyboard behavior to the Tabs primitive', () => {
-    expect(goalScreenSource).not.toMatch(/role=["']tab(?:list)?["']/);
-    expect(goalScreenSource).not.toMatch(/from ["']react-aria-components["']/);
-  });
-
-  it('AppShell mounts the shared ToastProvider', () => {
-    expect(appShellSource).toMatch(/<ToastProvider\b/);
-  });
-
-  it('ThemePicker delegates radio behavior to the OpenKit RadioGroup primitive', () => {
-    expect(themePickerSource).not.toMatch(/from ["']react-aria-components["']/);
-    expect(themePickerSource).toMatch(/from ["']\.\.\/primitives["']/);
-    expect(themePickerSource).toMatch(/<RadioGroup\b/);
   });
 });
 

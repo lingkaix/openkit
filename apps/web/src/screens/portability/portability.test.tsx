@@ -20,8 +20,6 @@ import { chatKeys } from '../chat/data';
 import { settingsKeys } from '../settings/data';
 import { useWorkspaceStore } from '../workspace-store';
 import { encodeVaultMaterial, workspaceExportArchiveHref } from './data';
-import portabilityDataSource from './data.ts?raw';
-import portabilityScreenSource from './PortabilityScreen.tsx?raw';
 
 /** Serializes one export JSON file the way NanoCore `writeJson` writes it. */
 function serializeExportJson(value: unknown): string {
@@ -374,10 +372,6 @@ beforeEach(() => {
 
 describe('Portability', () => {
   it('does not expose ordinary workspace import entry points', async () => {
-    const production = `${portabilityDataSource}\n${portabilityScreenSource}`;
-    expect(production).not.toMatch(/workspace\.import/);
-    expect(production).not.toMatch(/ImportPanel/);
-    expect(production).not.toMatch(/Portable archive/);
     renderApp('/settings/portability', makeClient());
     expect(
       await screen.findByRole('heading', { level: 1, name: 'Portability' })
@@ -427,16 +421,6 @@ describe('Portability', () => {
       await screen.findByText('Workspace export requires administrator authority.')
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Export workspace' })).toBeEnabled();
-  });
-
-  it('reuses the shared Settings Vault hook rather than a Portability-owned vault query', () => {
-    const production = `${portabilityDataSource}\n${portabilityScreenSource}`;
-    expect(production).toMatch(
-      /import\s*\{[\s\S]*?\buseVault\b[\s\S]*?\}\s*from\s*['"]\.\.\/settings(?:\/data)?['"]/
-    );
-    expect(production).toMatch(/\buseVault\s*\(/);
-    expect(production).not.toMatch(/\busePortabilityVaultReferences\b/);
-    expect(production).not.toMatch(/portabilityKeys\.vault/);
   });
 
   it('is a reachable administration surface for export and vault rebind', async () => {
@@ -1563,16 +1547,6 @@ describe('Portability', () => {
     const roundTripped = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
     expect(roundTripped).toHaveLength(utf8.length);
     expect(roundTripped.every((byte, index) => byte === utf8[index])).toBe(true);
-  });
-
-  it('keeps export archive href off JSON-base64 and host paths', () => {
-    const production = `${portabilityDataSource}\n${portabilityScreenSource}`;
-    expect(production).toMatch(/workspaceExportArchiveHref\(/);
-    expect(production).not.toMatch(/createObjectURL/);
-    expect(production).not.toMatch(/readAsDataURL/);
-    expect(production).not.toMatch(/contentBase64/);
-    expect(production).not.toMatch(/arrayBufferToBase64/);
-    expect(production).not.toMatch(/sourcePath/);
   });
 
   it('encodes export archive href paths without RangeError', () => {

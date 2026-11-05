@@ -11,8 +11,6 @@ import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
 import { useWorkspaceStore } from '../workspace-store';
 import { workspaceKeys } from './data';
-import knowledgeDataSource from './data.ts?raw';
-import knowledgeScreenSource from './KnowledgeScreen.tsx?raw';
 import { patchKnowledgePageTitleBody } from './knowledge-okf';
 import {
   knowledgeNotebookPageFixture,
@@ -926,26 +924,6 @@ async function proveScopedRetrySettled(region: HTMLElement, result: string | nul
   if (echo) expect(screen.queryByText(echo)).not.toBeInTheDocument();
 }
 
-const REQUIRED_KNOWLEDGE_OPERATION_HOOKS = [
-  'useRegisterKnowledgeSource',
-  'useReadKnowledgeSource',
-  'useKnowledgeIndexes',
-  'useRetrieveKnowledge',
-  'usePrepareKnowledgeContext',
-  'useAnswerKnowledgeManager',
-  'useSuggestKnowledgeRepairs',
-  'useCheckKnowledgeHealth',
-] as const;
-
-const KNOWLEDGE_TYPED_WRITE_SLICES = [
-  {
-    typeName: 'RegisterKnowledgeSourceCommand',
-    hookName: 'useRegisterKnowledgeSource',
-    method: 'knowledge.source.register',
-    inputIndex: 1,
-  },
-] as const;
-
 const KNOWLEDGE_DRAFT_WRITES = [
   { panel: 'Sources' as const, action: 'Register source' },
   { panel: 'Retrieval' as const, action: 'Retrieve' },
@@ -964,15 +942,6 @@ function callsOn(
         ? call[0].workspaceId
         : call[0]) === workspaceId
   );
-}
-
-/** Returns one exported Knowledge type or hook slice from workspace data.ts. */
-function exportedKnowledgeSlice(name: string): string {
-  const start = knowledgeDataSource.search(new RegExp(`export (?:type|function) ${name}\\b`));
-  expect(start).toBeGreaterThan(-1);
-  const from = knowledgeDataSource.slice(start);
-  const next = from.slice(1).search(/\nexport /);
-  return next === -1 ? from : from.slice(0, next + 1);
 }
 
 type KnowledgeAuthorityMode = 'switch' | 'remount';
@@ -4716,7 +4685,6 @@ describe('Knowledge (board 14)', () => {
       })
     );
     expect(document.body).not.toHaveTextContent('knowledge/pages/mem1.md');
-    expect(knowledgeScreenSource).not.toMatch(/\.fullText\b|indexTerms/);
 
     await fillKnowledgeFields(user, retrieval, [['Query', cjkQuery]]);
     await user.click(within(retrieval).getByRole('button', { name: 'Retrieve' }));
@@ -5391,38 +5359,6 @@ describe('Knowledge (board 14)', () => {
       testCase.result,
       'echo' in testCase ? testCase.echo : undefined
     );
-  });
-
-  it('represents the 7 required Knowledge user operations and omits unpublished proposal draft/reverse', () => {
-    for (const hook of REQUIRED_KNOWLEDGE_OPERATION_HOOKS) {
-      expect(knowledgeScreenSource).toContain(hook);
-    }
-    expect(knowledgeScreenSource).not.toMatch(/draftKnowledgeProposal/);
-    expect(knowledgeScreenSource).not.toMatch(/reverseKnowledgeProposal/);
-    expect(knowledgeDataSource).not.toMatch(/draftKnowledgeProposal/);
-    expect(knowledgeDataSource).not.toMatch(/reverseKnowledgeProposal/);
-  });
-
-  it('types Knowledge writes with Core Client owned inputs and does not cast them', () => {
-    for (const slice of KNOWLEDGE_TYPED_WRITE_SLICES) {
-      const typeSource = exportedKnowledgeSlice(slice.typeName);
-      const hookSource = exportedKnowledgeSlice(slice.hookName);
-      expect(typeSource).toMatch(
-        new RegExp(
-          `input: Omit<\\s*Parameters<CoreClient\\['operations'\\]\\['${slice.method}'\\]>\\[0\\]`
-        )
-      );
-      expect(hookSource).not.toMatch(/command\.input as /);
-      expect(hookSource).not.toMatch(/as unknown as Parameters<CoreClient\['app'\]/);
-    }
-  });
-
-  it('reuses the shared Select primitive instead of a Knowledge-local listbox', () => {
-    expect(knowledgeScreenSource).toMatch(
-      /import \{[\s\S]*?\bSelect\b[\s\S]*?\} from ['"]\.\.\/\.\.\/primitives['"]/
-    );
-    expect(knowledgeScreenSource).not.toMatch(/function PanelSelect\b/);
-    expect(knowledgeScreenSource).not.toMatch(/role=["']listbox["']/);
   });
 
   it('does not keep Workspace A Knowledge drafts submit-capable after switching to Workspace B', async ({

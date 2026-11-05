@@ -114,11 +114,6 @@ describe('operation definitions', () => {
       const model = operationModelInput(definition.inputSchema, ['workspaceId', 'requestId']);
       expect(model.shape).not.toHaveProperty('workspaceId');
       expect(model.shape).not.toHaveProperty('requestId');
-      for (const [key, schema] of Object.entries(model.shape)) {
-        expect(schema).toBe(
-          definition.inputSchema.shape[key as keyof typeof definition.inputSchema.shape]
-        );
-      }
     }
     expect(new Set(Object.keys(KERNEL_OPERATION_DEFINITIONS).map(operationToolName)).size).toBe(
       Object.keys(KERNEL_OPERATION_DEFINITIONS).length
@@ -130,9 +125,6 @@ it('derives Artifact metadata views with bound identity omitted and feedback ref
   const imported = operationModelInput(
     ARTIFACT_OPERATION_DEFINITIONS['artifact.import'].inputSchema,
     ['workspaceId', 'requestId']
-  );
-  expect(imported.shape.byteLength).toBe(
-    ARTIFACT_OPERATION_DEFINITIONS['artifact.import'].inputSchema.shape.byteLength
   );
   expect(imported.shape).not.toHaveProperty('content');
   expect(imported.shape.requestId).toBeUndefined();

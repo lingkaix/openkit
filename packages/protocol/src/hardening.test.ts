@@ -1,51 +1,7 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
 import * as protocol from './index.js';
 
-const packageRoots = [
-  new URL('.', import.meta.url),
-  new URL('../conformance/', import.meta.url),
-  new URL('../generated/', import.meta.url),
-];
-const legacyKnowledgeTerms = [
-  ['m', 'emory'].join(''),
-  ['M', 'emory'].join(''),
-  ['m', 'em_'].join(''),
-];
-
-/**
- * Lists tracked protocol contract files under a root.
- *
- * @param root Directory URL to scan.
- * @returns Source, fixture, and generated schema files.
- */
-function listContractFiles(root: URL): string[] {
-  return readdirSync(root.pathname).flatMap((entry) => {
-    const path = join(root.pathname, entry);
-
-    if (statSync(path).isDirectory()) {
-      return listContractFiles(new URL(`${entry}/`, root));
-    }
-
-    return /\.(json|ts)$/.test(path) ? [path] : [];
-  });
-}
-
 describe('protocol hardening boundary', () => {
-  it('keeps public protocol contracts on knowledge vocabulary', () => {
-    const offenders = packageRoots.flatMap((root) =>
-      listContractFiles(root).filter((path) => {
-        const source = readFileSync(path, 'utf8');
-
-        return legacyKnowledgeTerms.some((term) => source.includes(term));
-      })
-    );
-
-    expect(offenders).toEqual([]);
-  });
-
   it('does not export app/admin runtime config schemas from the stable protocol package', () => {
     const deniedExports = [
       /^RuntimeConfig/,

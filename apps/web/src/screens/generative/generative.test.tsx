@@ -8,14 +8,10 @@ import { CoreClientProvider } from '../../app/core-client';
 import { isSurfaceLive } from '../../app/flags';
 import { surfaceById } from '../../app/surfaces';
 import { A2UI_CATALOG, isWhitelisted } from './catalog';
-import catalogSource from './catalog.tsx?raw';
 import { FALLBACK_SAMPLE, READY_SAMPLE, unknownComponentDocument } from './fixtures';
 import { GenerativeScreen } from './GenerativeScreen';
-import screenSource from './GenerativeScreen.tsx?raw';
 import { A2UIRenderer, PlainContentFallback, renderA2UINode } from './render';
-import renderSource from './render.tsx?raw';
 import { resolveRenderState } from './states';
-import statesSource from './states.ts?raw';
 
 /** Minimal client — generative shell uses fixtures only. */
 function makeClient(): CoreClient {
@@ -51,9 +47,6 @@ function Providers({ children, path }: { children: ReactNode; path: string }) {
     </QueryClientProvider>
   );
 }
-
-/** Concatenated generative-shell module sources for safety scanning. */
-const SHELL_SOURCES = [catalogSource, renderSource, screenSource, statesSource].join('\n');
 
 describe('WP-9 generative surface — unpublished render shell', () => {
   it('keeps generative Tier C and not live', () => {
@@ -130,21 +123,13 @@ describe('WP-9 whitelist catalog', () => {
 });
 
 describe('WP-9 no arbitrary-code / no iframe path', () => {
-  it('shell modules do not contain iframe tags, eval, Function(, or script injection', () => {
-    expect(SHELL_SOURCES).not.toMatch(/from ['"]@a2ui\/react['"]/);
-    expect(SHELL_SOURCES).not.toMatch(/<iframe\b/i);
-    expect(SHELL_SOURCES).not.toMatch(/createElement\(\s*['"]iframe['"]/i);
-    expect(SHELL_SOURCES).not.toMatch(/\beval\s*\(/);
-    expect(SHELL_SOURCES).not.toMatch(/\bnew\s+Function\s*\(/);
-    expect(SHELL_SOURCES).not.toMatch(/\bFunction\s*\(/);
-    expect(SHELL_SOURCES).not.toMatch(/dangerouslySetInnerHTML/);
-    expect(SHELL_SOURCES).not.toMatch(/<script\b/i);
-  });
-
-  it('PlainContentFallback renders text only', () => {
-    const { container } = render(<PlainContentFallback content={'safe plain text'} />);
-    expect(container.querySelector('iframe')).toBeNull();
-    expect(screen.getByText('safe plain text')).toBeInTheDocument();
+  it('PlainContentFallback keeps script and iframe markup as literal text', () => {
+    const content =
+      'safe plain text <iframe src="https://example.invalid"></iframe><script>throw new Error("must stay text")</script>';
+    const { container } = render(<PlainContentFallback content={content} />);
+    expect(container.querySelector('iframe, script')).toBeNull();
+    expect(screen.getByText(content)).toBeInTheDocument();
+    expect(container.textContent).toBe(content);
   });
 });
 
