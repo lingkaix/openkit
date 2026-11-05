@@ -355,28 +355,45 @@ export async function createNativeTaskAdmissionFixture(
   };
   // Owner ACKs only wake the peer; native dispatch still selects and validates every command.
   let available = Promise.withResolvers<void>();
-  const queueOperation = harnessOwner.queueNanoHostHarnessOperation;
-  const acknowledgeResult = harnessOwner.acknowledgeNanoHostHarnessResult;
+  // Snapshot the callable, not a mutable spy object left by an overlapping peer.
+  const queueOwner = harnessOwner.queueNanoHostHarnessOperation;
+  const resultOwner = harnessOwner.acknowledgeNanoHostHarnessResult;
+  const queueOperation: typeof queueOwner | undefined = vi.isMockFunction(queueOwner)
+    ? queueOwner.getMockImplementation()
+    : queueOwner;
+  const acknowledgeResult: typeof resultOwner | undefined = vi.isMockFunction(resultOwner)
+    ? resultOwner.getMockImplementation()
+    : resultOwner;
+  if (!queueOperation || !acknowledgeResult)
+    throw new Error('Native peer observation requires the real owner pass-through.');
+  const observeQueue = async (
+    ...args: Parameters<typeof harnessOwner.queueNanoHostHarnessOperation>
+  ) => {
+    const sequence = await queueOperation(...args);
+    if (!stopped && args[0] === coreDb) available.resolve();
+    return sequence;
+  };
+  const observeConsumption = async (
+    ...args: Parameters<typeof harnessOwner.acknowledgeNanoHostHarnessResult>
+  ) => {
+    const result = await acknowledgeResult(...args);
+    if (!stopped && args[0] === coreDb) available.resolve();
+    return result;
+  };
   const queueObservation = vi
     .spyOn(harnessOwner, 'queueNanoHostHarnessOperation')
-    .mockImplementation(async (...args) => {
-      const sequence = await queueOperation(...args);
-      if (!stopped && args[0] === coreDb) available.resolve();
-      return sequence;
-    });
+    .mockImplementation(observeQueue);
   const consumptionObservation = vi
     .spyOn(harnessOwner, 'acknowledgeNanoHostHarnessResult')
-    .mockImplementation(async (...args) => {
-      const result = await acknowledgeResult(...args);
-      if (!stopped && args[0] === coreDb) available.resolve();
-      return result;
-    });
+    .mockImplementation(observeConsumption);
   let wakeObservationsRestored = false;
   const restoreWakeObservations = () => {
     if (wakeObservationsRestored) return;
     wakeObservationsRestored = true;
-    queueObservation.mockRestore();
-    consumptionObservation.mockRestore();
+    // A late predecessor must not uninstall a successor's wake observations.
+    if (queueObservation.getMockImplementation() === observeQueue) queueObservation.mockRestore();
+    if (consumptionObservation.getMockImplementation() === observeConsumption)
+      consumptionObservation.mockRestore();
   };
   // Subscribe before the first drain, including eligible work committed by an earlier controller.
   available.resolve();

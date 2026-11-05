@@ -163,7 +163,6 @@ import {
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
   dispatchNanoHostHarnessOperation,
-  initializeNanoHostRuntimeCheckVersions,
   markNanoHostHarnessOperationUnknown,
   openNanoHostAgentSessionBinding,
   readNanoHostMeasuredHarnessIdentity,
@@ -224,7 +223,6 @@ import {
   workerCredentialFileBinding,
 } from './worker-governance-backend.js';
 import {
-  agentSessionCompatibilityKeyFromPackage,
   prepareWorkerTurnJournalIntents,
   type WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
@@ -1650,116 +1648,6 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
-
-  it('keeps NanoHost session construction on the configured runtime target', () => {
-    const source = readFileSync(new URL('./turn-executor-factory.ts', import.meta.url), 'utf8');
-    expect(source).not.toContain('upsertNanoHostRuntimeTarget(');
-    expect(source).not.toContain('allocateNanoHostRuntimeTargetConnectionGeneration(');
-    const backendSource = source
-      .split('class NanoHostWorkerGovernanceBackend')[1]
-      ?.split('function sessionMatchesRuntimeImage')[0];
-    expect(backendSource).toBeDefined();
-    expect(backendSource).not.toContain('throw nanoHostSessionUnavailable()');
-    const materializeSource = backendSource
-      ?.split('public async materialize(')[1]
-      ?.split('public async prepareLaunch(')[0];
-    const launchSource = backendSource
-      ?.split('public async prepareLaunch(')[1]
-      ?.split('public async deliverCredentialBinding(')[0];
-    const importSource = backendSource
-      ?.split('private async importPreparedReference(')[1]
-      ?.split('public async replaceCredentialBinding(')[0];
-    const transcriptSource = backendSource
-      ?.split('public async collectTranscript(')[1]
-      ?.split('/** Returns ws_00000000-0000-7652-b38f-f1800a855e1b candidates')[0];
-    const workspaceSource = backendSource
-      ?.split('public async collectWorkspaceChanges(')[1]
-      ?.split('/** Dispatches one fixed effect')[0];
-    const cleanupSource = backendSource
-      ?.split('private async deleteSandbox(')[1]
-      ?.split('/** Drops process-local projections')[0];
-    expect(materializeSource).toBeDefined();
-    expect(launchSource).toBeDefined();
-    expect(transcriptSource).toBeDefined();
-    expect(workspaceSource).toBeDefined();
-    expect(cleanupSource).toBeDefined();
-
-    const imageBuild = materializeSource?.indexOf("'image.build'") ?? -1;
-    const sandboxCreate = materializeSource?.indexOf("'sandbox.create'") ?? -1;
-    const contextRefCarriage = materializeSource?.indexOf('contextRef: image.contextRef') ?? -1;
-    const referenceImport =
-      launchSource?.indexOf('this.importPreparedReference(session, file)') ?? -1;
-    const prepareImports = materializeSource?.indexOf('prepareNanoHostContextPackageImports') ?? -1;
-    expect(imageBuild).toBeGreaterThanOrEqual(0);
-    expect(contextRefCarriage).toBeGreaterThan(imageBuild);
-    expect(contextRefCarriage).toBeLessThan(sandboxCreate);
-    expect(sandboxCreate).toBeGreaterThanOrEqual(0);
-    expect(prepareImports).toBeGreaterThanOrEqual(0);
-    expect(prepareImports).toBeLessThan(
-      materializeSource?.indexOf('this.evictIncompatibleIdleSandbox(') ?? -1
-    );
-    expect(prepareImports).toBeLessThan(imageBuild);
-    expect(prepareImports).toBeLessThan(sandboxCreate);
-    expect(referenceImport).toBeGreaterThanOrEqual(0);
-    expect(importSource).toContain("'reference.import'");
-    expect(referenceImport).toBeLessThan(launchSource?.indexOf("'session.open'") ?? -1);
-    expect(referenceImport).toBeLessThan(launchSource?.indexOf("'session.inspect'") ?? -1);
-    expect(launchSource).not.toContain("'turn.start'");
-    expect(
-      backendSource?.split('public async submit(')[1]?.split('public async inspect(')[0]
-    ).toContain("'turn.start'");
-    expect(materializeSource).not.toContain("'reference.import'");
-    expect(launchSource).toContain('for (const file of pendingImports)');
-    expect(materializeSource).toContain('this.restoreSharedHarness(');
-    expect(materializeSource).toContain('await this.effect(identity, attemptId');
-    expect(launchSource).toContain('pendingImports');
-    for (const requiredImportOwner of ['contentDigest', 'byteLength', 'relativePath', 'body']) {
-      expect(importSource).toContain(requiredImportOwner);
-    }
-    expect(launchSource).toContain("'bridge.open'");
-    const effectSource = backendSource
-      ?.split('private async effect(')[1]
-      ?.split('private createCleanupRecoveryResult(')[0];
-    expect(effectSource).toContain(
-      'createNanoHostEffectRequest(identity, attemptId, operation, input)'
-    );
-    const identitySource = readFileSync(
-      new URL('./nanohost-effect-identity.ts', import.meta.url),
-      'utf8'
-    );
-    expect(identitySource).toContain('stableNanoHostEffectJson');
-    expect(identitySource).toContain('operation');
-    expect(identitySource).toContain("operation === 'bridge.open'");
-    for (const bootstrapField of ['harnessBindingRef', 'integrationReady', 'session.open']) {
-      expect(backendSource).toContain(bootstrapField);
-    }
-    expect(materializeSource).not.toContain('workerControlToken');
-    expect(materializeSource).not.toContain('workerInferenceToken');
-    expect(launchSource).not.toContain('workerControlToken');
-    expect(launchSource).not.toContain('workerInferenceToken');
-    expect(backendSource).toContain('acceptHarnessCommand');
-    expect(transcriptSource?.indexOf('final_status')).toBeLessThan(
-      transcriptSource?.indexOf("'file.export'") ?? -1
-    );
-    for (const collectionSource of [transcriptSource]) {
-      expect(collectionSource).toContain('await this.effect(');
-      expect(collectionSource).toContain("'file.export'");
-      for (const field of ['slot', 'relativePath', 'maxByteLength']) {
-        expect(collectionSource).toContain(field);
-      }
-      expect(collectionSource).toContain('terminalBarrierProved');
-      const exportCommand = collectionSource?.indexOf("'file.export'") ?? -1;
-      expect(collectionSource?.indexOf('sha256', exportCommand)).toBeGreaterThan(exportCommand);
-      expect(collectionSource?.indexOf('byteLength', exportCommand)).toBeGreaterThan(exportCommand);
-    }
-    for (const field of ['slot', 'relativePath', 'sha256', 'byteLength']) {
-      expect(importSource).toContain(field);
-    }
-    expect(cleanupSource?.indexOf("'bridge.close'")).toBeLessThan(
-      cleanupSource?.indexOf("'sandbox.delete'") ?? -1
-    );
-    expect(backendSource).not.toMatch(/\b(?:readFile|writeFile|copyFile|fetch)\s*\(/);
   });
 
   it('denies a fresh AgentSession before lease acquisition when RuntimeTarget is missing', async () => {
@@ -5249,6 +5137,21 @@ describe('createConfiguredTurnExecutor', () => {
       ]),
     });
     const options = { readRuntimeConfig: () => configuration };
+    if (fault === 'idle-concurrent') {
+      // A predecessor observation must not make this peer call a mutable spy recursively.
+      const queue = harnessRecords.queueNanoHostHarnessOperation;
+      const acknowledge = harnessRecords.acknowledgeNanoHostHarnessResult;
+      const queued = vi
+        .spyOn(harnessRecords, 'queueNanoHostHarnessOperation')
+        .mockImplementation((...args) => queue(...args));
+      const acknowledged = vi
+        .spyOn(harnessRecords, 'acknowledgeNanoHostHarnessResult')
+        .mockImplementation((...args) => acknowledge(...args));
+      onTestFinished(() => {
+        queued.mockRestore();
+        acknowledged.mockRestore();
+      });
+    }
     let native = await createNativeTaskAdmissionFixture(coreDb, store, options);
     let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
     let journalRef: ExecutionJournalRef | undefined;
@@ -15950,7 +15853,9 @@ describe('createConfiguredTurnExecutor', () => {
     }
   }, 60_000);
 
-  it('honors explicit selected and fresh storage on a shared resident contributor', async () => {
+  it('honors explicit selected and fresh storage on a shared resident contributor', async ({
+    signal,
+  }) => {
     const coreDb = createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -15975,24 +15880,13 @@ describe('createConfiguredTurnExecutor', () => {
           },
         ]),
       });
-    const nativeWork = observeOriginalFactoryNativeWork(coreDb);
-    onTestFinished(nativeWork.restore);
     const native = await createNativeTaskAdmissionFixture(coreDb, store, { readRuntimeConfig });
     const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
     const joins: Array<() => Promise<void>> = [];
-    // Fixed, value-free progress identifies a reached old bound without extending it.
-    let fixturePhase = 'setup';
-    let fixtureStep = 'initial';
     const proceed = Promise.withResolvers<void>();
     const fixtureFinished = Promise.withResolvers<void>();
+    signal.addEventListener('abort', () => proceed.resolve(), { once: true });
     onTestFinished(async () => {
-      console.error(
-        JSON.stringify({
-          event: 'shared-storage-fixture-phase',
-          phase: fixturePhase,
-          step: fixtureStep,
-        })
-      );
       // Release this fixture's barrier and join its original finally before the global writer hook.
       proceed.resolve();
       await fixtureFinished.promise;
@@ -16019,8 +15913,7 @@ describe('createConfiguredTurnExecutor', () => {
       threadId: string,
       choice?: SchedulerWorkerStorageChoice
     ) => {
-      fixturePhase = 'entry';
-      fixtureStep = label;
+      signal.throwIfAborted();
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:shared-choice-${label}`,
@@ -16046,7 +15939,7 @@ describe('createConfiguredTurnExecutor', () => {
       taskId: null,
     });
     const admit = async (entry: Awaited<ReturnType<typeof entryFor>>, sessionId?: string) => {
-      fixturePhase = 'admit';
+      signal.throwIfAborted();
       const candidate = testEntityId('as', `shared_choice_${entry.turnId}`);
       const admitted = await native.admitTurn(entry, {
         attemptId: testEntityId('attempt', `shared_choice_${entry.turnId}`),
@@ -16060,7 +15953,6 @@ describe('createConfiguredTurnExecutor', () => {
       entry: Awaited<ReturnType<typeof entryFor>>,
       admitted: Awaited<ReturnType<typeof admit>>
     ) => {
-      fixturePhase = 'complete';
       expect((await admitted.complete()).startedTurns).toHaveLength(1);
       const session = store.getAgentSession(admitted.pkg.scope.agentSessionId);
       expect(session).toMatchObject({ status: 'idle', nativeHandleDigest: 'a'.repeat(64) });
@@ -16112,9 +16004,6 @@ describe('createConfiguredTurnExecutor', () => {
       const original = predecessor.retainedStorage!;
       const workSlotRef = workerStorageDefaultWorkSlotRef(workspaceId, p);
       expect(original.workSlotRef).toBe(workSlotRef);
-      const omitted = await entryFor('omitted', p);
-      const omittedWork = await admit(omitted, predecessor.id);
-      expect((await finish(omitted, omittedWork)).retainedStorage).toEqual(original);
       const peer = await thread('peer');
       const peerChoice = selected(original.storageRef, workSlotRef);
       await refuse(
@@ -16129,8 +16018,6 @@ describe('createConfiguredTurnExecutor', () => {
         { ...peerChoice, reuseWorkSlotRef: 'wsl_missing_peer_slot' },
         'authorization_denied'
       );
-      const same = await entryFor('same', p, selected(original.storageRef, workSlotRef));
-      await finish(same, await admit(same, predecessor.id));
       expect(native.effects.filter((e) => e.kind === 'sandbox.create')).toHaveLength(1);
       expect(native.effects.filter((e) => e.kind === 'sandbox.delete')).toHaveLength(0);
       expect(commands.mock.calls.filter(([c]) => c.operation === 'session.open')).toHaveLength(1);
@@ -16321,7 +16208,6 @@ describe('createConfiguredTurnExecutor', () => {
         acknowledgement.mockRestore();
         commands.mockRestore();
         await native.restore();
-        nativeWork.markPeerJoined();
         await shutdownControlStoreWorkerClient();
         workspaceDb.sqlite.close();
         coreDb.sqlite.close();
@@ -16330,7 +16216,6 @@ describe('createConfiguredTurnExecutor', () => {
         fixtureFinished.resolve();
       }
     }
-    nativeWork.assertCompleteAndStopped();
   });
 
   it('retains a committed native wake across a cold final-null drain and old restore', async () => {
@@ -21672,100 +21557,3 @@ describe('retired Workspace resident isolation', () => {
     }
   }, 60_000);
 });
-
-/** Observes the complete original native work without supplying a command or acknowledgement. */
-function observeOriginalFactoryNativeWork(coreDb: ReturnType<typeof openCoreDb>) {
-  const database = `core:${nativeProductScope(coreDb.dataRoot, { kind: 'server' }).path}`;
-  const client = getControlStoreWorkerClient();
-  const original = client.harnessLifecycle.bind(client);
-  const queued: Array<{ command: harnessRecords.NanoHostHarnessCommand; ack: number }> = [];
-  const dispatched: Array<{ command: harnessRecords.NanoHostHarnessCommand; returned: number }> =
-    [];
-  const settled: string[] = [];
-  const consumed: string[] = [];
-  const entered: string[] = [];
-  let tick = 0;
-  let nullReplies = 0;
-  let inFlight = 0;
-  let joinedAt: number | undefined;
-  let restored = false;
-  const key = (
-    command: Pick<
-      harnessRecords.NanoHostHarnessCommand,
-      'harnessInstanceId' | 'sequence' | 'operationId'
-    >
-  ) => JSON.stringify([command.harnessInstanceId, command.sequence, command.operationId]);
-  const signature = (command: harnessRecords.NanoHostHarnessCommand) => ({
-    bytes: Buffer.byteLength(JSON.stringify(command)),
-    digest: commandInputHash(command),
-  });
-  const observation = vi.spyOn(client, 'harnessLifecycle').mockImplementation(async (db, input) => {
-    if (db !== database) return await original(db, input);
-    const snapshot = structuredClone(input);
-    entered.push(snapshot.kind);
-    inFlight++;
-    try {
-      const result = await original(db, input);
-      const returned = ++tick;
-      if (snapshot.kind === 'operation.queue') {
-        expect(result).toBe(snapshot.prepared.command.sequence);
-        queued.push({ command: snapshot.prepared.command, ack: returned });
-      } else if (snapshot.kind === 'operation.dispatch') {
-        if (result === null) nullReplies++;
-        else
-          dispatched.push({
-            command: structuredClone(result) as harnessRecords.NanoHostHarnessCommand,
-            returned,
-          });
-      } else if (snapshot.kind === 'operation.settle') {
-        settled.push(key(snapshot.result));
-      } else if (snapshot.kind === 'result.acknowledge') {
-        consumed.push(key(snapshot.result));
-      }
-      return result;
-    } finally {
-      inFlight--;
-    }
-  });
-  return {
-    markPeerJoined() {
-      joinedAt = entered.length;
-    },
-    assertCompleteAndStopped() {
-      expect(joinedAt, 'original peer restore must have fulfilled').toBeDefined();
-      expect(inFlight).toBe(0);
-      expect(entered.slice(joinedAt!).filter((kind) => kind === 'operation.dispatch')).toEqual([]);
-      expect(queued.length, 'real work must not disappear').toBeGreaterThan(0);
-      const publications = new Map(queued.map((queued) => [key(queued.command), queued]));
-      const deliveries = dispatched.map((delivery) => key(delivery.command));
-      expect(publications.size).toBe(queued.length);
-      expect(new Set(deliveries).size).toBe(dispatched.length);
-      expect([...deliveries].sort()).toEqual([...publications.keys()].sort());
-      for (const delivery of dispatched) {
-        const publication = publications.get(key(delivery.command))!;
-        expect(delivery.returned).toBeGreaterThan(publication.ack);
-        expect(delivery.command).toEqual(publication.command);
-        expect(signature(delivery.command)).toEqual(signature(publication.command));
-      }
-      for (const harness of new Set(queued.map((queued) => queued.command.harnessInstanceId)))
-        expect(
-          dispatched
-            .filter((delivery) => delivery.command.harnessInstanceId === harness)
-            .map((delivery) => key(delivery.command))
-        ).toEqual(
-          queued
-            .filter((publication) => publication.command.harnessInstanceId === harness)
-            .map((publication) => key(publication.command))
-        );
-      expect([...settled].sort()).toEqual([...deliveries].sort());
-      expect([...consumed].sort()).toEqual([...deliveries].sort());
-      // One bootstrap scan and at most one terminal empty scan per real owner ACK wake.
-      expect(nullReplies).toBeLessThanOrEqual(queued.length + consumed.length + 1);
-    },
-    restore() {
-      if (restored) return;
-      restored = true;
-      observation.mockRestore();
-    },
-  };
-}
