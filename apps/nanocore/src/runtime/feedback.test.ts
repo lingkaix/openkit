@@ -1,15 +1,15 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { BetterAuthServer } from '../auth/middleware.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from './feedback.js';
 
@@ -34,7 +34,7 @@ function createHeaderAuthStub(): BetterAuthServer {
 describe('turn feedback', () => {
   it('refuses missing or unknown feedback formats before decoding and does not replace them', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-format-'));
-    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    onTestFinished(() => disposeTestStore(dataRoot));
     const store = await createDemoStore({ dataRoot });
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -56,7 +56,7 @@ describe('turn feedback', () => {
   });
   it('preserves descriptive disk additions across update and reopen while returning only known fields', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-extension-'));
-    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    onTestFinished(() => disposeTestStore(dataRoot));
     const store = await createDemoStore({ dataRoot });
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -239,7 +239,7 @@ describe('turn feedback', () => {
       });
       expect(readdirSync(dirname(path)).sort()).toEqual(entriesBefore);
     } finally {
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot);
     }
   });
 
@@ -265,10 +265,7 @@ describe('turn feedback', () => {
       status: 'completed',
     });
     const coreDb = openCoreDb(dataRoot);
-    onTestFinished(() => {
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     for (const userId of [
@@ -361,9 +358,4 @@ describe('turn feedback', () => {
       history,
     });
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

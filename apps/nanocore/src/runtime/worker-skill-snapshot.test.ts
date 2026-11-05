@@ -24,13 +24,13 @@ import {
   setWorkspaceSkillPin,
   skillSnapshotPath,
 } from '../catalog/resource-catalog.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { disposeTestStore } from '../test-support/store.js';
 import {
   prepareNanoHostContextPackageImports,
   type WorkerGovernanceBackend,
@@ -136,11 +136,9 @@ describe('exact retained Worker Skill delivery', () => {
   }, 60_000);
 
   afterEach(async () => {
-    await shutdownControlStoreWorkerClient();
     vi.restoreAllMocks();
     syncBuiltinESMExports();
-    coreDb.sqlite.close();
-    rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    await disposeTestStore(coreDb.dataRoot, coreDb);
   });
 
   it('uses the composed setup exact version before a Workspace pin without changing shared selection', async () => {

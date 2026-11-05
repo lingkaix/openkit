@@ -3,20 +3,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
@@ -24,6 +24,8 @@ describe('scheduler admission routes', () => {
   it('closes workspace databases after scheduler admission audit attempts', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-routes-'));
     const coreDb = openCoreDb(dataRoot);
+    const workspaceDbs: WorkspaceDb[] = [];
+    onTestFinished(() => disposeTestStore(dataRoot, ...workspaceDbs, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -59,7 +61,6 @@ describe('scheduler admission routes', () => {
       denySchedulerAdmissionEntry(coreDb, { queueEntryId, denialReason: 'authority-denied' });
     }
 
-    const workspaceDbs: WorkspaceDb[] = [];
     let failAudit = false;
     const app = new Hono<{ Variables: AuthVariables }>();
     app.use('*', async (c, next) => {
@@ -93,60 +94,52 @@ describe('scheduler admission routes', () => {
       },
     });
 
-    try {
-      const retried = await app.request(
-        ...operationRequest(
-          'scheduler.retry',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            queueEntryId: 'queue_retry_close',
-          },
-          { method: 'POST' }
-        )
-      );
-      const cancelled = await app.request(
-        ...operationRequest(
-          'scheduler.cancel',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            queueEntryId: 'queue_cancel_close',
-          },
-          { method: 'POST' }
-        )
-      );
-      failAudit = true;
-      const auditFailed = await app.request(
-        ...operationRequest(
-          'scheduler.retry',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            queueEntryId: 'queue_retry_audit_failure',
-          },
-          { method: 'POST' }
-        )
-      );
+    const retried = await app.request(
+      ...operationRequest(
+        'scheduler.retry',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          queueEntryId: 'queue_retry_close',
+        },
+        { method: 'POST' }
+      )
+    );
+    const cancelled = await app.request(
+      ...operationRequest(
+        'scheduler.cancel',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          queueEntryId: 'queue_cancel_close',
+        },
+        { method: 'POST' }
+      )
+    );
+    failAudit = true;
+    const auditFailed = await app.request(
+      ...operationRequest(
+        'scheduler.retry',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          queueEntryId: 'queue_retry_audit_failure',
+        },
+        { method: 'POST' }
+      )
+    );
 
-      expect(retried.status).toBe(200);
-      expect(cancelled.status).toBe(200);
-      expect(auditFailed.status).toBe(500);
-      expect(await auditFailed.text()).toBe('Internal Server Error');
-      expect(workspaceDbs).toHaveLength(3);
-      for (const workspaceDb of workspaceDbs) {
-        expect(workspaceDb.sqlite.open).toBe(false);
-      }
-    } finally {
-      for (const workspaceDb of workspaceDbs) {
-        if (workspaceDb.sqlite.open) {
-          workspaceDb.sqlite.close();
-        }
-      }
-      coreDb.sqlite.close();
+    expect(retried.status).toBe(200);
+    expect(cancelled.status).toBe(200);
+    expect(auditFailed.status).toBe(500);
+    expect(await auditFailed.text()).toBe('Internal Server Error');
+    expect(workspaceDbs).toHaveLength(3);
+    for (const workspaceDb of workspaceDbs) {
+      expect(workspaceDb.sqlite.open).toBe(false);
     }
   });
 
   it('denies missing and cross-Workspace admissions with a nondisclosing 404 before mutation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-ownership-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -197,67 +190,62 @@ describe('scheduler admission routes', () => {
       repositoryWorkspaceDb,
     });
 
-    try {
-      const missingRetry = await app.request(
-        ...operationRequest(
-          'scheduler.retry',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
-          { method: 'POST' }
-        )
-      );
-      const missingCancel = await app.request(
-        ...operationRequest(
-          'scheduler.cancel',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
-          { method: 'POST' }
-        )
-      );
-      const missingRetryText = await missingRetry.text();
-      const missingCancelText = await missingCancel.text();
+    const missingRetry = await app.request(
+      ...operationRequest(
+        'scheduler.retry',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
+        { method: 'POST' }
+      )
+    );
+    const missingCancel = await app.request(
+      ...operationRequest(
+        'scheduler.cancel',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
+        { method: 'POST' }
+      )
+    );
+    const missingRetryText = await missingRetry.text();
+    const missingCancelText = await missingCancel.text();
 
-      expect(missingRetry.status).toBe(404);
-      expect(missingCancel.status).toBe(404);
-      expect(JSON.parse(missingRetryText)).toEqual({
-        protocolVersion: PROTOCOL_VERSION,
-        code: 'not_found',
-        message: 'Thread not found.',
-      });
-      expect(JSON.parse(missingCancelText)).toEqual({
-        protocolVersion: PROTOCOL_VERSION,
-        code: 'not_found',
-        message: 'Thread not found.',
-      });
-      for (const [queueEntryId, action, expectedStatus] of [
-        ['queue_foreign_retry', 'retry', 'denied'],
-        ['queue_foreign_cancel', 'cancel', 'queued'],
-      ] as const) {
-        const foreign = await app.request(
-          ...operationRequest(`scheduler.${action}`, {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            queueEntryId,
-          })
-        );
-        const foreignText = await foreign.text();
+    expect(missingRetry.status).toBe(404);
+    expect(missingCancel.status).toBe(404);
+    expect(JSON.parse(missingRetryText)).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'not_found',
+      message: 'Thread not found.',
+    });
+    expect(JSON.parse(missingCancelText)).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'not_found',
+      message: 'Thread not found.',
+    });
+    for (const [queueEntryId, action, expectedStatus] of [
+      ['queue_foreign_retry', 'retry', 'denied'],
+      ['queue_foreign_cancel', 'cancel', 'queued'],
+    ] as const) {
+      const foreign = await app.request(
+        ...operationRequest(`scheduler.${action}`, {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          queueEntryId,
+        })
+      );
+      const foreignText = await foreign.text();
 
-        expect(foreign.status).toBe(
-          action === 'retry' ? missingRetry.status : missingCancel.status
-        );
-        expect(foreignText).toBe(action === 'retry' ? missingRetryText : missingCancelText);
-        expect(
-          coreDb.sqlite
-            .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
-            .get(queueEntryId)
-        ).toEqual({ status: expectedStatus });
-      }
-      expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
-    } finally {
-      coreDb.sqlite.close();
+      expect(foreign.status).toBe(action === 'retry' ? missingRetry.status : missingCancel.status);
+      expect(foreignText).toBe(action === 'retry' ? missingRetryText : missingCancelText);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+          .get(queueEntryId)
+      ).toEqual({ status: expectedStatus });
     }
+    expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
   });
 
   it('lets an authorized workspace actor manage admissions created by another user', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-user-scope-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -313,46 +301,37 @@ describe('scheduler admission routes', () => {
       },
     });
 
-    try {
-      const listed = await app.request(
-        ...operationRequest('scheduler.list', {
+    const listed = await app.request(
+      ...operationRequest('scheduler.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    );
+
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toMatchObject({
+      items: expect.arrayContaining([
+        expect.objectContaining({ queueEntryId: 'queue_victim_retry', status: 'denied' }),
+        expect.objectContaining({ queueEntryId: 'queue_victim_cancel', status: 'queued' }),
+      ]),
+    });
+
+    for (const [queueEntryId, action, expectedStatus] of [
+      ['queue_victim_retry', 'retry', 'queued'],
+      ['queue_victim_cancel', 'cancel', 'cancelled'],
+    ] as const) {
+      const response = await app.request(
+        ...operationRequest(`scheduler.${action}`, {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          queueEntryId,
         })
       );
 
-      expect(listed.status).toBe(200);
-      await expect(listed.json()).resolves.toMatchObject({
-        items: expect.arrayContaining([
-          expect.objectContaining({ queueEntryId: 'queue_victim_retry', status: 'denied' }),
-          expect.objectContaining({ queueEntryId: 'queue_victim_cancel', status: 'queued' }),
-        ]),
-      });
-
-      for (const [queueEntryId, action, expectedStatus] of [
-        ['queue_victim_retry', 'retry', 'queued'],
-        ['queue_victim_cancel', 'cancel', 'cancelled'],
-      ] as const) {
-        const response = await app.request(
-          ...operationRequest(`scheduler.${action}`, {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            queueEntryId,
-          })
-        );
-
-        expect(response.status).toBe(200);
-        expect(
-          coreDb.sqlite
-            .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
-            .get(queueEntryId)
-        ).toEqual({ status: expectedStatus });
-      }
-    } finally {
-      coreDb.sqlite.close();
+      expect(response.status).toBe(200);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+          .get(queueEntryId)
+      ).toEqual({ status: expectedStatus });
     }
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

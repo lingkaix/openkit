@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -13,7 +13,6 @@ import {
 } from '../catalog/resource-catalog.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -23,23 +22,24 @@ import {
 import { createApp } from '../test-support/app.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 
-const cleanup: Array<() => void> = [];
+const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  await shutdownControlStoreWorkerClient();
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 
 /** Real catalog snapshots and command storage meet the existing modeled Worker boundary. */
 async function fixture(explicitSetupVersion = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-run-'));
-  cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
+  const databases: (ReturnType<typeof openCoreDb> | ReturnType<typeof openWorkspaceDb>)[] = [];
+  cleanup.push(() => disposeTestStore(dataRoot, ...databases.reverse()));
   const coreDb = openCoreDb(dataRoot);
-  cleanup.push(() => coreDb.sqlite.close());
+  databases.push(coreDb);
   applyMigrations(coreDb);
   const localUserId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
@@ -113,7 +113,7 @@ async function fixture(explicitSetupVersion = true) {
     agentManifests: [manifest],
   });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-  cleanup.push(() => workspaceDb.sqlite.close());
+  databases.push(workspaceDb);
   const request = async (digest: string, skillId = 'run-skill') => ({
     workspaceId: workspace.id,
     threadId: (

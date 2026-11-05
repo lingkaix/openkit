@@ -2,16 +2,16 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
@@ -19,6 +19,7 @@ describe('worker recovery routes', () => {
   it('does not discover or open unauthorized Workspaces', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-routes-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
@@ -42,21 +43,18 @@ describe('worker recovery routes', () => {
       requestStore: () => store,
     });
 
-    try {
-      const response = await app.request(...operationRequest('recovery.worker-list', {}));
+    const response = await app.request(...operationRequest('recovery.worker-list', {}));
 
-      expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toEqual({ items: [] });
-      expect(listWorkspaces).not.toHaveBeenCalled();
-      expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
-    } finally {
-      coreDb.sqlite.close();
-    }
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ items: [] });
+    expect(listWorkspaces).not.toHaveBeenCalled();
+    expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
   });
 
   it('denies a cross-Workspace Turn before opening recovery storage while preserving missing behavior', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-recovery-lineage-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -122,63 +120,54 @@ describe('worker recovery routes', () => {
       method: 'POST',
     } as const;
 
-    try {
-      const foreign = await app.request(
-        ...operationRequest(
-          'recovery.checkpoint-retry',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: localThread.id,
-            turnId: foreignTurn.id,
-          },
-          request
-        )
-      );
-      const missing = await app.request(
-        ...operationRequest(
-          'recovery.checkpoint-retry',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: localThread.id,
-            turnId: 'tu_00000000-0000-76d4-be96-fe2dccab50f4',
-          },
-          {
-            ...request,
-            body: JSON.stringify({ requestId: 'req_missing_retry' }),
-          }
-        )
-      );
+    const foreign = await app.request(
+      ...operationRequest(
+        'recovery.checkpoint-retry',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: localThread.id,
+          turnId: foreignTurn.id,
+        },
+        request
+      )
+    );
+    const missing = await app.request(
+      ...operationRequest(
+        'recovery.checkpoint-retry',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: localThread.id,
+          turnId: 'tu_00000000-0000-76d4-be96-fe2dccab50f4',
+        },
+        {
+          ...request,
+          body: JSON.stringify({ requestId: 'req_missing_retry' }),
+        }
+      )
+    );
 
-      const wrongThread = await app.request(
-        ...operationRequest(
-          'recovery.checkpoint-retry',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: localThread.id,
-            turnId: privateTurn.id,
-          },
-          { ...request, body: JSON.stringify({ requestId: 'req_wrong_thread' }) }
-        )
-      );
-      expect(wrongThread.status).toBe(404);
-      await expect(wrongThread.json()).resolves.toMatchObject({ code: 'not_found' });
-      expect(getTurnContent).not.toHaveBeenCalled();
-      expect(missing.status).toBe(400);
-      await expect(missing.json()).resolves.toMatchObject({ code: 'recovery_retry_failed' });
-      expect(foreign.status).toBe(403);
-      await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
-      expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
-      expect(store.getTurnById(foreignTurn.id)).toMatchObject({
-        status: 'running',
-        owner: { kind: 'workspace', workspaceId: foreignWorkspace.id },
-      });
-    } finally {
-      coreDb.sqlite.close();
-    }
+    const wrongThread = await app.request(
+      ...operationRequest(
+        'recovery.checkpoint-retry',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: localThread.id,
+          turnId: privateTurn.id,
+        },
+        { ...request, body: JSON.stringify({ requestId: 'req_wrong_thread' }) }
+      )
+    );
+    expect(wrongThread.status).toBe(404);
+    await expect(wrongThread.json()).resolves.toMatchObject({ code: 'not_found' });
+    expect(getTurnContent).not.toHaveBeenCalled();
+    expect(missing.status).toBe(400);
+    await expect(missing.json()).resolves.toMatchObject({ code: 'recovery_retry_failed' });
+    expect(foreign.status).toBe(403);
+    await expect(foreign.json()).resolves.toMatchObject({ code: 'workspace_access_denied' });
+    expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
+    expect(store.getTurnById(foreignTurn.id)).toMatchObject({
+      status: 'running',
+      owner: { kind: 'workspace', workspaceId: foreignWorkspace.id },
+    });
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

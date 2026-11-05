@@ -1,22 +1,22 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
@@ -24,6 +24,7 @@ describe('scheduler admission thread audience', () => {
   it('hides private Thread queue rows and denies child mutations with a nondisclosing 404', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-audience-'));
     const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => disposeTestStore(dataRoot, coreDb));
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
@@ -100,90 +101,80 @@ describe('scheduler admission thread audience', () => {
       repositoryWorkspaceDb,
     });
 
-    try {
-      const listed = await app.request(
-        ...operationRequest('scheduler.list', {
+    const listed = await app.request(
+      ...operationRequest('scheduler.list', {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    );
+    const listedBody = await listed.json();
+
+    expect(listed.status).toBe(200);
+    expect(
+      listedBody.items.map((item: { queueEntryId: string }) => item.queueEntryId).sort()
+    ).toEqual(['queue_own_private', 'queue_shared']);
+    expect(JSON.stringify(listedBody)).not.toContain(privateThread.id);
+    expect(JSON.stringify(listedBody)).not.toContain('queue_foreign_private');
+
+    const hiddenRetry = await app.request(
+      ...operationRequest(
+        'scheduler.retry',
+        {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        })
-      );
-      const listedBody = await listed.json();
+          queueEntryId: 'queue_foreign_private',
+        },
+        { method: 'POST' }
+      )
+    );
+    const hiddenCancel = await app.request(
+      ...operationRequest(
+        'scheduler.cancel',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          queueEntryId: 'queue_foreign_private',
+        },
+        { method: 'POST' }
+      )
+    );
+    const missingRetry = await app.request(
+      ...operationRequest(
+        'scheduler.retry',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
+        { method: 'POST' }
+      )
+    );
+    const missingCancel = await app.request(
+      ...operationRequest(
+        'scheduler.cancel',
+        { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
+        { method: 'POST' }
+      )
+    );
+    const hiddenRetryText = await hiddenRetry.text();
+    const hiddenCancelText = await hiddenCancel.text();
+    const missingRetryText = await missingRetry.text();
+    const missingCancelText = await missingCancel.text();
 
-      expect(listed.status).toBe(200);
-      expect(
-        listedBody.items.map((item: { queueEntryId: string }) => item.queueEntryId).sort()
-      ).toEqual(['queue_own_private', 'queue_shared']);
-      expect(JSON.stringify(listedBody)).not.toContain(privateThread.id);
-      expect(JSON.stringify(listedBody)).not.toContain('queue_foreign_private');
-
-      const hiddenRetry = await app.request(
-        ...operationRequest(
-          'scheduler.retry',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            queueEntryId: 'queue_foreign_private',
-          },
-          { method: 'POST' }
-        )
-      );
-      const hiddenCancel = await app.request(
-        ...operationRequest(
-          'scheduler.cancel',
-          {
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            queueEntryId: 'queue_foreign_private',
-          },
-          { method: 'POST' }
-        )
-      );
-      const missingRetry = await app.request(
-        ...operationRequest(
-          'scheduler.retry',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
-          { method: 'POST' }
-        )
-      );
-      const missingCancel = await app.request(
-        ...operationRequest(
-          'scheduler.cancel',
-          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', queueEntryId: 'queue_missing' },
-          { method: 'POST' }
-        )
-      );
-      const hiddenRetryText = await hiddenRetry.text();
-      const hiddenCancelText = await hiddenCancel.text();
-      const missingRetryText = await missingRetry.text();
-      const missingCancelText = await missingCancel.text();
-
-      expect(hiddenRetry.status).toBe(404);
-      expect(hiddenCancel.status).toBe(404);
-      expect(missingRetry.status).toBe(hiddenRetry.status);
-      expect(missingCancel.status).toBe(hiddenCancel.status);
-      expect(JSON.parse(hiddenRetryText)).toEqual({
-        protocolVersion: PROTOCOL_VERSION,
-        code: 'not_found',
-        message: 'Thread not found.',
-      });
-      expect(JSON.parse(hiddenCancelText)).toEqual({
-        protocolVersion: PROTOCOL_VERSION,
-        code: 'not_found',
-        message: 'Thread not found.',
-      });
-      expect(missingRetryText).toBe(hiddenRetryText);
-      expect(missingCancelText).toBe(hiddenCancelText);
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
-          .get('queue_foreign_private')
-      ).toEqual({ status: 'denied' });
-      expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
-    } finally {
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { force: true, recursive: true });
-    }
+    expect(hiddenRetry.status).toBe(404);
+    expect(hiddenCancel.status).toBe(404);
+    expect(missingRetry.status).toBe(hiddenRetry.status);
+    expect(missingCancel.status).toBe(hiddenCancel.status);
+    expect(JSON.parse(hiddenRetryText)).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'not_found',
+      message: 'Thread not found.',
+    });
+    expect(JSON.parse(hiddenCancelText)).toEqual({
+      protocolVersion: PROTOCOL_VERSION,
+      code: 'not_found',
+      message: 'Thread not found.',
+    });
+    expect(missingRetryText).toBe(hiddenRetryText);
+    expect(missingCancelText).toBe(hiddenCancelText);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT status FROM scheduler_admission_entries WHERE queue_entry_id = ?')
+        .get('queue_foreign_private')
+    ).toEqual({ status: 'denied' });
+    expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

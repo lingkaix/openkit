@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,7 +8,7 @@ import {
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
-import { afterEach, expect, it } from 'vitest';
+import { expect, it } from 'vitest';
 import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
@@ -16,12 +16,12 @@ import {
   writeWorkerContextPackageFiles,
 } from '../context/worker-context-package.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { disposeTestStore } from '../test-support/store.js';
 import {
   type NanoHostFileImportSource,
   prepareNanoHostContextPackageImports,
@@ -259,11 +259,6 @@ it('streams a complete admitted Turn ZIP into the live Context input without ret
     const revoked = raw.source.open(new AbortController().signal)[Symbol.asyncIterator]();
     await expect(revoked.next()).rejects.toThrow();
   } finally {
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

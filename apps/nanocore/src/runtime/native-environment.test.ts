@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
@@ -19,13 +19,10 @@ const imageDigest = `sha256:${'d'.repeat(64)}`;
 const roots: string[] = [];
 const dbs: CoreDb[] = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  dbs.splice(0).forEach((db) => {
-    db.sqlite.close();
-  });
-  roots.splice(0).forEach((root) => {
-    rmSync(root, { force: true, recursive: true });
-  });
+  const databases = dbs.splice(0);
+  for (const root of roots.splice(0)) {
+    await disposeTestStore(root, ...databases.filter((db) => db.dataRoot === root));
+  }
 });
 
 /** One actual authored manifest, not an environment-specific parallel setup format. */

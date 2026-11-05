@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
@@ -6,13 +6,13 @@ import { WORKER_ADAPTER_SUPPLY_FORMS } from '@openkit/worker-protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
@@ -57,9 +57,7 @@ describe('release-declared catalog Skill supply', () => {
   });
 
   afterEach(async () => {
-    await shutdownControlStoreWorkerClient();
-    coreDb.sqlite.close();
-    rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    await disposeTestStore(coreDb.dataRoot, coreDb);
   });
 
   it.each([
