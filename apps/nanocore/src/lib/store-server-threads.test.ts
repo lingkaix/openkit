@@ -13,6 +13,7 @@ import {
   readWorkObservations,
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from './store.js';
 
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -88,9 +89,7 @@ describe('Server-owned canonical history', () => {
           .all(item.id)
       ).toEqual([{ revision: 1 }, { revision: 2 }]);
     } finally {
-      await getControlStoreWorkerClient().shutdown();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot, coreDb);
     }
   });
 
@@ -221,9 +220,7 @@ describe('Server-owned canonical history', () => {
       expect(readWorkObservations(coreDb, owner)).toEqual(sealed);
       expect(Buffer.from(readWorkObservationBody(coreDb, body)!)).toEqual(bytes);
     } finally {
-      await getControlStoreWorkerClient().shutdown();
-      if (coreDb.sqlite.open) coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot, coreDb);
     }
   });
 
@@ -296,9 +293,7 @@ describe('Server-owned canonical history', () => {
         'archived'
       );
     } finally {
-      await getControlStoreWorkerClient().shutdown();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot, coreDb);
     }
   });
   it('preserves retained additions and refuses corrupt owner or terminal facts', async () => {
@@ -413,9 +408,7 @@ describe('Server-owned canonical history', () => {
       ).toBe(1);
       expect(() => new FsStore({ dataRoot })).toThrow();
     } finally {
-      await getControlStoreWorkerClient().shutdown();
-      coreDb.sqlite.close();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot, coreDb);
     }
   });
 });
@@ -469,9 +462,7 @@ it.each([
         : reopened.listThreadItems(workspace.id, thread.id);
     expect(items).toEqual([item]);
   } finally {
-    await getControlStoreWorkerClient().shutdown();
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   }
 });
 
@@ -523,8 +514,6 @@ it.each([
       results.flatMap((result) => (result.status === 'fulfilled' ? [result.value.id] : []))
     );
   } finally {
-    await getControlStoreWorkerClient().shutdown();
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   }
 });
