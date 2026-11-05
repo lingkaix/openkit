@@ -4981,11 +4981,15 @@ export class FsStore {
     turnId: string
   ): Generator<void, Turn, void> {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
-    const turn = this.dataRoot
-      ? (yield* readNativeTurnHistorySteps(
-          this.nativeScope({ kind: 'workspace', workspaceId }),
-          turnId
-        ))?.turn
+    const owner = { kind: 'workspace', workspaceId } as const;
+    const scope = this.dataRoot ? this.nativeScope(owner) : undefined;
+    // Borrow only the existing connection; every native snapshot and immutable proof still ends normally.
+    const readScope =
+      scope && !scope.sqlite
+        ? { ...scope, sqlite: getWorkspaceProductReadHandle(scope.path, owner).sqlite }
+        : scope;
+    const turn = readScope
+      ? (yield* readNativeTurnHistorySteps(readScope, turnId))?.turn
       : this.turns.get(turnId);
     if (
       !turn ||

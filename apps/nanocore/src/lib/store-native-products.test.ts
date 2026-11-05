@@ -822,6 +822,46 @@ describe('native Store authority and immutable closure', () => {
     }
   });
 
+  it('reuses the readonly product connection for complete native Turn history', async () => {
+    const f = await workspaceFixture();
+    const first = await f.store.createItem(message(f.turn, 'Original native history'));
+    const peer = new FsStore({ dataRoot: f.root });
+    const owner = { kind: 'workspace', workspaceId: f.workspace.id } as const;
+    closeWorkspaceProductReadHandles(f.scope.path);
+    const reader = getWorkspaceProductReadHandle(f.scope.path, owner);
+    const sqlite = reader.sqlite;
+    const prepare = sqlite.prepare;
+    const observed: string[] = [];
+    // Observe the real retained receiver; every query and returned body keeps its native owner.
+    sqlite.prepare = function (this: typeof sqlite, sql: string) {
+      observed.push(sql);
+      return Reflect.apply(prepare, this, [sql]);
+    } as typeof prepare;
+    try {
+      expect(f.store.getTurn(f.workspace.id, f.thread.id, f.turn.id).items).toEqual([first]);
+      expect({
+        metadata: observed.some((sql) => /\bcontrol_turns\b/i.test(sql)),
+        history: observed.some((sql) => /\bcontrol_product_entries\b/i.test(sql)),
+      }).toEqual({ metadata: true, history: true });
+      expect(sqlite.open).toBe(true);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(getWorkspaceProductReadHandle(f.scope.path, owner)).toBe(reader);
+
+      // A distinct Store acknowledges new immutable history through the actual native writer.
+      const second = await peer.createItem(message(f.turn, 'Fresh native history'));
+      expect(f.store.getTurn(f.workspace.id, f.thread.id, f.turn.id).items).toEqual([
+        first,
+        second,
+      ]);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(getWorkspaceProductReadHandle(f.scope.path, owner)).toBe(reader);
+    } finally {
+      sqlite.prepare = prepare;
+      await shutdownControlStoreWorkerClient();
+    }
+    expect(sqlite.open).toBe(false);
+  }, 30_000);
+
   it('reuses the actual readonly product connection while reading current Workspace and Thread metadata', async () => {
     const f = fixture();
     const workspace = await f.store.createWorkspace('Metadata reuse');

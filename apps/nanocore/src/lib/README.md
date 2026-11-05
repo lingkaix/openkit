@@ -105,6 +105,8 @@ Ordinary Core-minted Item and live event appends address their supplied owner an
 
 `FsStore.getWorkspace`, its Workspace Thread metadata reader, and `FsStore.getTurnMetadata` reuse the product owner's Workspace read connection and prepared statements. Every call still reads current committed metadata in its own short snapshot and validates the actual owner and retained semantics; Turn metadata retains its exact Thread binding. Publication admission, selector-miss and storage-refusal behavior remain unchanged. Connection reuse retains no canonical row.
 
+Complete Workspace Turn reads also borrow that existing query-only connection when the caller has not supplied SQLite. The native history owner still verifies every descriptor, immutable body, revision and attribution; each SELECT ends before byte verification or a cooperative yield. A supplied connection keeps its original transaction and closure owner. Default explicit native-history helpers keep their own short-lived handles; stopped and offline helper callers are not rerouted. Reader invalidation and shutdown remain with the existing product reader owner; no history, row or SQL snapshot is cached.
+
 The target recovery owner may settle only its restored Workspace publication marker after placement and complete scoped Store/config validation. It keeps readiness refused until its separate final synchronous settlement and does not clear sibling markers.
 
 `conversation-write-policy.ts` owns the existing pure sealed-Turn field and replay predicates and their refusal constructors. Exact publication equality remains distinct from the named display-field refresh; callers still own native reads, admission, the complete transaction and acknowledgement.
