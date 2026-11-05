@@ -445,21 +445,41 @@ describe('deepseek resident adapter', () => {
       closers.push(() => inference.close());
       const roots = tempRoots();
       const session = await open(roots, inference, null);
-      const native = session as unknown as { classifyNativeLine(line: string): string | null };
       const error = JSON.stringify({
         jsonrpc: '2.0',
         id: null,
         error: { code: -32700, message: 'Parse error' },
       });
-      expect(native.classifyNativeLine(error)).toBe(error);
       expect(session.nativeEvidence?.()).toEqual({});
-      const result = await (
-        await session.startTurn(turn(roots, inference, 'correlate', [], 'null-id-proof'))
-      ).settled;
-      expect(result).toMatchObject({
-        status: 'completed',
-        nativeEvidence: { nativeTerminal: true },
-      });
+      const spawnMock = vi.mocked(spawn);
+      // Capture the concrete pass-through, not a mutable mock that would call itself.
+      const spawnThrough = spawnMock.getMockImplementation();
+      if (!spawnThrough) throw new Error('DeepSeek fixture requires the real spawn pass-through.');
+      let injected = false;
+      const injectBeforeStartup = (...args: Parameters<typeof spawn>) => {
+        const child = spawnThrough(...args);
+        const stdout = child.stdout;
+        if (!stdout) throw new Error('DeepSeek fixture requires a piped stdout.');
+        stdout.once('data', () => {
+          injected = true;
+          stdout.emit('data', Buffer.from(`${error}\n`));
+        });
+        return child;
+      };
+      spawnMock.mockImplementation(injectBeforeStartup);
+      try {
+        const result = await (
+          await session.startTurn(turn(roots, inference, 'correlate', [], 'null-id-proof'))
+        ).settled;
+        expect(injected).toBe(true);
+        expect(result).toMatchObject({
+          status: 'completed',
+          nativeEvidence: { nativeTerminal: true },
+        });
+      } finally {
+        if (spawnMock.getMockImplementation() === injectBeforeStartup)
+          spawnMock.mockImplementation(spawnThrough);
+      }
     },
     LIVE
   );
@@ -1288,9 +1308,7 @@ describe('deepseek resident adapter', () => {
       const roots = tempRoots();
       const session = await open(roots, inference, null);
       await (await session.startTurn(turn(roots, inference, 'seed', [], 'loss-control'))).settled;
-      const child = (
-        session as unknown as { child: import('node:child_process').ChildProcessWithoutNullStreams }
-      ).child;
+      const child = spawnedNativeChild();
       child.stdout.emit('error', new Error('unsolicited current-generation channel loss'));
       await waitFor(() => session.childState() === 'absent');
       expect(await session.nativeHandle()).toEqual({ state: 'unknown' });
@@ -4078,9 +4096,7 @@ it(
       },
     });
     await waitFor(() => inference.requests.length === 1);
-    const child = (
-      session as unknown as { child: import('node:child_process').ChildProcessWithoutNullStreams }
-    ).child;
+    const child = spawnedNativeChild();
     child.stderr.emit('data', Buffer.from([0, 0xe2]));
     child.stderr.emit('data', Buffer.from([0x82, 0xac, 0x61, 0x62, 0x63, 0x64]));
     deliver(
