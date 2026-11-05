@@ -91,6 +91,10 @@
   --color-worker-you: var(--ok-worker-you-bg);
   --color-worker-you-fg: var(--ok-worker-you-fg);
 
+  /* Phone sheet inset. The fixed modal covers .ok-safe-shell, so the
+     home-indicator padding is this named spacing token. */
+  --spacing-safe-bottom: env(safe-area-inset-bottom);
+
   /* ---- Radius (DESIGN.md §6) ---------------------------------------------- */
   --radius-ok-sm: 4px;
   --radius-ok: 8px;

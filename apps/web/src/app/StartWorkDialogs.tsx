@@ -48,7 +48,7 @@ function StartDialog({
         {triggerLabel}
       </Button>
       <ModalOverlay className="fixed inset-0 z-50 flex bg-fg/40 max-[799px]:items-stretch min-[800px]:items-center min-[800px]:justify-center min-[800px]:p-6">
-        <AriaModal className="flex max-h-full w-full flex-col overflow-y-auto border border-border bg-elevated outline-none max-[799px]:h-full max-[799px]:pb-[env(safe-area-inset-bottom)] min-[800px]:max-w-lg min-[800px]:rounded-ok-lg min-[800px]:shadow-ok-menu">
+        <AriaModal className="flex max-h-full w-full flex-col overflow-y-auto border border-border bg-elevated outline-none max-[799px]:h-full max-[799px]:pb-safe-bottom min-[800px]:max-w-lg min-[800px]:rounded-ok-lg min-[800px]:shadow-ok-menu">
           <div className="flex flex-1 flex-col p-5">
             <Dialog title={title}>{children}</Dialog>
           </div>

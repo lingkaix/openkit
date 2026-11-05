@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -13,6 +16,8 @@ import { describe, expect, it } from 'vitest';
  * `max-w-[760px]`, `size-[22px]`, the 600x600 floor, the 800px persistent-nav threshold) are structural constants
  * from DESIGN.md §3/§12, not palette/type/spacing-scale values, so they are not
  * flagged; padding/margin/gap use the Tailwind 4-based scale (= the §6 ramp).
+ * The phone sheet's home-indicator inset is the named `pb-safe-bottom` token.
+ * An arbitrary `pb-[env(safe-area-inset-…)]` utility stays forbidden.
  */
 
 const FORBIDDEN: { name: string; re: RegExp }[] = [
@@ -60,6 +65,7 @@ describe('token rule — scanner catches violations', () => {
       '<div className="bg-[#fff] rounded-[7px]" />;',
       '<h1 className="text-[26px] tracking-[0.06em] leading-[1.2]" />;',
       '<div className="p-[13px] gap-[27px]" />;',
+      '<div className="max-[799px]:pb-[env(safe-area-inset-bottom)]" />;',
     ].join('\n');
     const hits = scanForbidden(dirty);
     for (const name of [
@@ -86,8 +92,23 @@ describe('token rule — scanner catches violations', () => {
       '<p className="text-eyebrow uppercase tracking-eyebrow text-fg-muted" />;',
       '<div className="bg-canvas text-fg rounded-ok shadow-ok-card p-4 gap-3 max-w-[760px]" />;',
       '<span className="bg-[color:var(--overlay-hover)] text-worker-scout-fg size-[22px]" />;',
+      '<div className="max-[799px]:pb-safe-bottom" />;',
     ].join('\n');
     expect(scanForbidden(clean)).toEqual([]);
+  });
+
+  it('keeps the phone sheet safe-area inset on the named spacing token', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const dialog = readFileSync(join(here, '../app/StartWorkDialogs.tsx'), 'utf8');
+    const theme = readFileSync(join(here, '../styles/theme.css'), 'utf8');
+    expect(dialog).toContain('max-[799px]:pb-safe-bottom');
+    expect(dialog).not.toContain('pb-[env(safe-area-inset-bottom)]');
+    expect(theme).toMatch(/--spacing-safe-bottom:\s*env\(safe-area-inset-bottom\);/);
+    const literal = scanForbidden(
+      '<AriaModal className="max-[799px]:pb-[env(safe-area-inset-bottom)]" />'
+    );
+    expect(literal.some((hit) => hit.startsWith('ad-hoc spacing literal'))).toBe(true);
+    expect(scanForbidden(dialog)).toEqual([]);
   });
 });
 
