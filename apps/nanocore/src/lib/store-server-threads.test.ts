@@ -1,11 +1,18 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { readWorkObservationBody, workObservationBodyBundleId } from '../evidence-bundles.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import {
+  appendWorkObservation,
+  readWorkObservations,
+  type WorkObservationDraft,
+} from '../storage/work-observations.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from './store.js';
 
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -83,6 +90,139 @@ describe('Server-owned canonical history', () => {
     } finally {
       await getControlStoreWorkerClient().shutdown();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('retains Server observations and exact bodies across rollback, terminal publication and cold reopen', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'server-observations-'));
+    let coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    try {
+      const store = new FsStore({ dataRoot });
+      const thread = await store.createServerThread('Server capture');
+      const turn = await store.createServerTurn(thread.id, 'Capture Server work', actor, null, {
+        startedAt: '2026-10-20T00:00:00.000Z',
+        captureCoverage: { scope: 'server', value: 'on' },
+      });
+      const owner = { threadId: thread.id, turnId: turn.id };
+      const environment: WorkObservationDraft = {
+        id: 'server-environment',
+        type: 'env.bound',
+        ts: '2026-10-20T00:00:01.000Z',
+        obs: 'nanocore',
+        payload: {
+          version: '1',
+          owner: { kind: 'server' },
+          systemPromptDigest: `sha256:${'a'.repeat(64)}`,
+          tools: [],
+        },
+      };
+      const first = await appendWorkObservation(coreDb, {
+        ...owner,
+        observation: environment,
+        bodies: [],
+      });
+      expect(first.disposition).toBe('committed');
+      expect(first.observation.seq).toBe(1);
+      expect(
+        await appendWorkObservation(coreDb, { ...owner, observation: environment, bodies: [] })
+      ).toEqual({
+        ...first,
+        disposition: 'duplicate',
+      });
+      const bytes = Buffer.from('{"prompt":"Exact Server capture"}\r\n');
+      await appendWorkObservation(coreDb, {
+        ...owner,
+        observation: {
+          id: 'server-request',
+          type: 'model.observed',
+          ts: '2026-10-20T00:00:02.000Z',
+          obs: 'llm-gateway',
+          corr: 'server-call',
+          payload: {
+            attempt: 0,
+            direction: 'request',
+            event: 'request',
+            runtimeOriginRef: null,
+            providerRef: 'test',
+            model: 'test',
+            systemPromptDigest: `sha256:${'a'.repeat(64)}`,
+            sampling: {},
+            content: { state: 'expected' },
+          },
+        },
+        bodies: [
+          { id: 'request', bytes, mediaType: 'application/json', boundary: 'model-request' },
+        ],
+      });
+      const body = {
+        ...owner,
+        bundleId: workObservationBodyBundleId(
+          { kind: 'server' },
+          thread.id,
+          turn.id,
+          'server-request',
+          'request'
+        ),
+        createdAt: '2026-10-20T00:00:02.000Z',
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+      };
+      const retained = readWorkObservations(coreDb, owner);
+      expect(retained.map((value) => [value.seq, value.type])).toEqual([
+        [1, 'env.bound'],
+        [2, 'model.observed'],
+        [3, 'content.published'],
+      ]);
+      expect(Buffer.from(readWorkObservationBody(coreDb, body)!)).toEqual(bytes);
+      await expect(
+        appendWorkObservation(coreDb, {
+          ...owner,
+          observation: {
+            ...environment,
+            id: 'foreign-environment',
+            payload: {
+              version: '1',
+              workspaceId: allocateEntityId('ws'),
+              systemPromptDigest: `sha256:${'a'.repeat(64)}`,
+              tools: [],
+            },
+          },
+          bodies: [],
+        })
+      ).rejects.toThrow();
+      expect(readWorkObservations(coreDb, owner)).toEqual(retained);
+      // Deliberate native failure follows genuine public Thread, Turn and observation admission.
+      coreDb.sqlite.exec(`CREATE TRIGGER refuse_server_observation BEFORE INSERT ON control_work_observations
+        BEGIN SELECT RAISE(ABORT, 'injected Server observation refusal'); END`);
+      try {
+        await expect(
+          appendWorkObservation(coreDb, {
+            ...owner,
+            observation: { ...environment, id: 'refused-environment' },
+            bodies: [],
+          })
+        ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+      } finally {
+        coreDb.sqlite.exec('DROP TRIGGER refuse_server_observation');
+      }
+      expect(readWorkObservations(coreDb, owner)).toEqual(retained);
+      expect(Buffer.from(readWorkObservationBody(coreDb, body)!)).toEqual(bytes);
+      await store.updateServerTurn(turn.id, {
+        status: 'completed',
+        completedAt: '2026-10-20T00:00:03.000Z',
+      });
+      const sealed = readWorkObservations(coreDb, owner);
+      expect(sealed.at(-1)).toMatchObject({ type: 'turn.reap', payload: { reason: 'completed' } });
+      await getControlStoreWorkerClient().shutdown();
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
+      expect(new FsStore({ dataRoot }).getServerTurnById(turn.id).status).toBe('completed');
+      expect(readWorkObservations(coreDb, owner)).toEqual(sealed);
+      expect(Buffer.from(readWorkObservationBody(coreDb, body)!)).toEqual(bytes);
+    } finally {
+      await getControlStoreWorkerClient().shutdown();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
