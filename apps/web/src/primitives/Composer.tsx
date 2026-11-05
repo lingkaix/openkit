@@ -610,6 +610,11 @@ export function Composer({
           type="submit"
           isDisabled={!canSubmit}
           aria-label="Send message"
+          // Keep Message focused through the press. On a phone, blurring it
+          // brings the sections bar back and moves this control before pointerup.
+          onMouseDown={(event) => {
+            event.preventDefault();
+          }}
           className="flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent outline-none transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 disabled:bg-disabled-bg disabled:text-disabled-fg"
         >
           <Icon name={pending || isSubmitting ? 'spinner' : 'send'} />

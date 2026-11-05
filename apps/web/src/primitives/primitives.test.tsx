@@ -742,6 +742,35 @@ describe('primitive tier — behavior', () => {
     );
   });
 
+  it('keeps Message focused through a mouse Send and submits the selected artifact version', async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const artifactId = 'ar_00000000-0000-7b97-b1e4-18ef545a7af3';
+    render(
+      <Composer
+        targetCatalog={availableComposerCatalog}
+        artifacts={[{ id: artifactId, version: 1, label: 'Comparison report' }]}
+        initialDraft={{
+          input: 'Continue from the selected exact version.',
+          targetRef: 'internal-role:assistant',
+          artifactRefs: [{ artifactId, artifactVersion: 1 }],
+        }}
+        onSubmit={onSubmit}
+      />
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    input.focus();
+    await user.click(screen.getByRole('button', { name: 'Send message' }));
+    expect(input).toHaveFocus();
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: 'Continue from the selected exact version.',
+        targetRef: 'internal-role:assistant',
+        artifactRefs: [{ artifactId, artifactVersion: 1 }],
+      })
+    );
+  });
+
   it('Composer submits the structured draft and clears', async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
