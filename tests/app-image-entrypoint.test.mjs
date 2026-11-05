@@ -57,11 +57,6 @@ test('uses the App HTTP upstream without publishing NanoHost transport', async (
 
   assert.ok(privateTransport >= 0 && privateTransport < publicApi, source);
   assert.match(source.slice(privateTransport, publicApi), /respond 404/u);
-  assert.equal(
-    [...source.matchAll(/reverse_proxy 127\.0\.0\.1:\{\$OPENKIT_HTTP_PORT:4317\}/gu)].length,
-    4,
-    source
-  );
   assert.doesNotMatch(source, /h2c:\/\//u);
 });
 

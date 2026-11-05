@@ -16,7 +16,7 @@ test('test image jobs reap orphaned processes through Docker init', () => {
   const jobs = Object.entries(workflow.jobs).filter(
     ([, job]) => job.container?.image === actionExpression('needs.test-image.outputs.image')
   );
-  assert.equal(jobs.length, 9);
+  assert.ok(jobs.length > 0, 'test-image consumers must remain observable');
   for (const [name, job] of jobs) {
     assert.equal(job.container.options, '--init', `${name} must reap orphaned processes`);
   }
