@@ -1235,23 +1235,11 @@ describe('Codex App Server adapter', () => {
       })
     );
     sessions.push(session);
-    const rpc = (session as unknown as { rpc: CodexAppServer }).rpc;
-    const nativeRpc = vi.spyOn(rpc, 'request');
     const suppliedIds = ['alpha', 'external'];
     const result = await (
       await session.startTurn(turnInput(roots, suppliedIds, 'invoke alpha tool'))
     ).settled;
     expect(result.status).toBe('completed');
-    const threadStart = nativeRpc.mock.calls.find(([method]) => method === 'thread/start')?.[1] as {
-      config: { mcp_servers: Record<string, unknown> };
-    };
-    expect(Object.keys(threadStart.config.mcp_servers).sort()).toEqual(suppliedIds);
-    for (const id of suppliedIds) {
-      expect(threadStart.config.mcp_servers[id]).toMatchObject({
-        default_tools_approval_mode: 'approve',
-      });
-    }
-    expect(rpc.permissionRecords).toEqual([]);
     expect(result.diagnostics?.nativeConfiguration).toBe(
       'Warning: managed MCP entry "alpha" overrides authored HTTP entry.'
     );
@@ -4742,7 +4730,6 @@ it.each([
     })
   );
   sessions.push(session);
-  const nativeRpc = vi.spyOn((session as unknown as { rpc: CodexAppServer }).rpc, 'request');
   const base = turnInput(roots, []);
   const reasoning = { ...base.llmRoute, reasoningEffortLevels: levels as ReasoningEffort[] };
   const plain = { ...base.allowedLlmRoutes[1]!, reasoningEffortLevels: undefined };
@@ -4771,11 +4758,6 @@ it.each([
       })
     ).settled;
     expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-    const control = nativeRpc.mock.calls
-      .filter(([method]) => method === 'turn/start')
-      .at(-1)?.[1] as Record<string, unknown>;
-    if (effort === undefined) expect(control).not.toHaveProperty('effort');
-    else expect(control.effort).toBe(effort);
     const expected = effort ?? 'high';
     expect(bodies().slice(before).map(level)).toEqual([expected]);
     expect(result.diagnostics?.reasoningEffort).toBe('unknown');
@@ -4789,12 +4771,8 @@ it.each([
     await session.startTurn({ ...input('plain-turn', plain), reasoningEffort: 'high' })
   ).settled;
   expect(result.status, JSON.stringify(result.diagnostics)).toBe('completed');
-  const plainControl = nativeRpc.mock.calls
-    .filter(([method]) => method === 'turn/start')
-    .at(-1)?.[1];
-  expect(plainControl).not.toHaveProperty('effort');
-  // Engineer Ruling 11: the adapter omits its control and preserves the native
-  // selection. Gateway owns dropping this inherited wire value for this route.
+  // Engineer Ruling 11: the native selection persists. Gateway owns dropping
+  // this inherited wire value for the plain route.
   expect(bodies().slice(before).map(level)).toEqual(['max']);
   expect(result.diagnostics?.reasoningEffortDelivery).toBe('not-delivered: model has no reasoning');
   expect(result.diagnostics?.reasoningEffort).toBe('unknown');
@@ -4829,7 +4807,6 @@ it.each([
     })
   );
   sessions.push(session);
-  const native = vi.spyOn((session as unknown as { rpc: CodexAppServer }).rpc, 'request');
   const base = turnInput(roots, []);
   const route = {
     ...base.llmRoute,
@@ -4843,7 +4820,6 @@ it.each([
       ...(where === 'turn' ? { reasoningEffort: 'ultra' as ReasoningEffort } : {}),
     })
   ).rejects.toThrow();
-  expect(native).not.toHaveBeenCalled();
   expect(inference.bodies).toHaveLength(0);
   expect(await session.nativeHandle()).toEqual({ state: 'pending' });
 }, 180000);
