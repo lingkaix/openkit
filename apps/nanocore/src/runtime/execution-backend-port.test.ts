@@ -223,8 +223,6 @@ async function fixture(
     now: () => '2026-10-06T00:00:00.000Z',
     awaitWorkerCompletion: () => new Promise(() => {}),
   });
-  vi.spyOn(executor, 'prepareAgentSessionForTurn');
-  vi.spyOn(executor, 'startTurn');
   const providerRegistry = new ProviderRegistry([
     {
       id: 'agent-openrouter',
@@ -897,7 +895,7 @@ describe('execution backend port through real Core coordination', () => {
     }
   });
 
-  it('lets durable queued cancellation win without preparation or backend submission', async () => {
+  it('keeps durable queued cancellation sessionless without backend submission', async () => {
     const f = await fixture();
     try {
       const entry = await f.queue('cancelled');
@@ -907,8 +905,7 @@ describe('execution backend port through real Core coordination', () => {
       });
       await f.dispatch();
       expect(f.port.submit).not.toHaveBeenCalled();
-      expect(f.executor.prepareAgentSessionForTurn).not.toHaveBeenCalled();
-      expect(f.executor.startTurn).not.toHaveBeenCalled();
+      expect(f.store.listThreadAgentSessions(entry.workspaceId, entry.threadId)).toEqual([]);
       expect(attempts(f.db)).toEqual([]);
       expect(listQueuedSchedulerAdmissionEntries(f.db)).toEqual([]);
       expect(requireSchedulerAdmissionEntry(f.db, entry.queueEntryId).status).toBe('cancelled');
