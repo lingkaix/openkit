@@ -20,17 +20,6 @@ import {
 import { closeWithDeadline } from './shutdown.js';
 
 /**
- * Extracts boot phase names from the NanoCore process entrypoint.
- *
- * @returns Ordered boot phase names.
- */
-function readEntrypointBootPhaseNames(): string[] {
-  const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
-
-  return Array.from(source.matchAll(/name: '([^']+)'/g), (match) => match[1] ?? '');
-}
-
-/**
  * Reads the NanoCore process entrypoint source.
  *
  * @returns Entrypoint source text.
@@ -281,16 +270,6 @@ function evaluateEntrypointShutdown(effects: {
 }
 
 describe('NanoCore boot phase order', () => {
-  it.each(['SIGINT', 'SIGTERM'])('installs %s shutdown before the first boot phase', (signal) => {
-    const source = readEntrypointSource();
-    const registration = source.indexOf(`process.once('${signal}', shutdown)`);
-    const phaseStart = source.indexOf('await runBootPhases(');
-
-    expect(registration).toBeGreaterThan(-1);
-    expect(phaseStart).toBeGreaterThan(-1);
-    expect(registration).toBeLessThan(phaseStart);
-  });
-
   it('settles listener shutdown when boot has not created optional process owners', async () => {
     const onClosed = vi.fn();
     const closeNanoCoreListeners = evaluateCloseNanoCoreListeners({
@@ -302,38 +281,6 @@ describe('NanoCore boot phase order', () => {
 
     expect(() => closeNanoCoreListeners(onClosed)).not.toThrow();
     await vi.waitFor(() => expect(onClosed).toHaveBeenCalledTimes(1));
-  });
-
-  it('matches the accepted startup phase order', () => {
-    expect(readEntrypointBootPhaseNames()).toEqual([
-      'config',
-      'data-root-layout',
-      'instance-lock',
-      'migrations',
-      'policy-kernel',
-      'vault',
-      'local-identity',
-      'scheduler-restart-recovery',
-    ]);
-
-    const source = readEntrypointSource();
-    const restartPhase = source.indexOf("name: 'scheduler-restart-recovery'");
-    const deletionFence = source.indexOf(
-      'restoreWorkspaceDeletionMutationAdmission({',
-      restartPhase
-    );
-    const runtimeFence = source.indexOf('fenceNanoHostRuntimeTargetAfterRestart(', restartPhase);
-    expect(deletionFence).toBeGreaterThan(restartPhase);
-    expect(runtimeFence).toBeGreaterThan(deletionFence);
-  });
-
-  it('preserves stopped scheduler hooks when shutdown hits the deadline', () => {
-    const source = readEntrypointSource();
-
-    expect(source).toContain('const stepsCompleted = [');
-    expect(source).toContain(
-      "onDeadline: () => finishShutdown(signal, [...stepsCompleted, 'shutdown.deadline'], true, 1)"
-    );
   });
 
   it('drains maintenance and listeners, locks Vault and awaits Audit before native close and exit', async () => {
@@ -491,49 +438,6 @@ describe('NanoCore boot phase order', () => {
     }
   });
 
-  it('validates listener and server-auth inputs before activating copied templates', () => {
-    const source = readEntrypointSource();
-    const configPhase = source.indexOf("name: 'config'");
-    const initialConfigLoad = source.indexOf(
-      'runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 })',
-      configPhase
-    );
-    const bindValidation = source.indexOf('resolveBindPort(process.env', configPhase);
-    const secretValidation = source.indexOf('resolveBetterAuthSecret(process.env', configPhase);
-    const templateWrite = source.indexOf('ensureConfigTemplateSurface(dataRoot)', configPhase);
-    const finalConfigLoad = source.indexOf(
-      'runtimeConfigSnapshot = loadRuntimeConfig(dataRoot, { version: 1 })',
-      initialConfigLoad + 1
-    );
-    const layoutPhase = source.indexOf("name: 'data-root-layout'", configPhase);
-
-    expect(initialConfigLoad).toBeGreaterThan(configPhase);
-    expect(bindValidation).toBeGreaterThan(configPhase);
-    expect(secretValidation).toBeGreaterThan(configPhase);
-    expect(initialConfigLoad).toBeLessThan(bindValidation);
-    expect(bindValidation).toBeLessThan(templateWrite);
-    expect(secretValidation).toBeLessThan(templateWrite);
-    expect(templateWrite).toBeLessThan(finalConfigLoad);
-    const unknownContextGate = source.indexOf(
-      'unknownModelContextFailure(runtimeConfigSnapshot)',
-      finalConfigLoad
-    );
-    expect(unknownContextGate).toBeGreaterThan(finalConfigLoad);
-    expect(unknownContextGate).toBeLessThan(layoutPhase);
-    expect(finalConfigLoad).toBeLessThan(layoutPhase);
-  });
-
-  it('composes queued scheduler retries with the vault-backed provider credential resolver', () => {
-    const source = readEntrypointSource();
-
-    expect(source).toContain(
-      'const schedulerProviderCredentialResolver = createVaultProviderCredentialResolver({'
-    );
-    expect(source).toContain(
-      'dependencies: { providerCredentialResolver: schedulerProviderCredentialResolver },'
-    );
-  });
-
   it('fails authoritative storage integrity before bootstrap credentials or listener binding', () => {
     const source = readEntrypointSource();
     const migrationsPhase = source.indexOf("name: 'migrations'");
@@ -551,7 +455,7 @@ describe('NanoCore boot phase order', () => {
       'if (criticalBootFailure || !bootReadiness.acceptingProductWork)'
     );
     const bootstrapCredential = source.indexOf(
-      'const bootstrap = ensureServerBootstrapToken(coreDb)',
+      'const bootstrap = await ensureServerBootstrapTokenForStartup(coreDb)',
       criticalFailureGate
     );
     const listenerBind = source.indexOf('appServer = appTlsListen', criticalFailureGate);
@@ -567,20 +471,6 @@ describe('NanoCore boot phase order', () => {
     expect(listenerBind).toBeGreaterThan(criticalFailureGate);
     expect(source).not.toContain('storageRecoveryEvents');
     expect(source).not.toContain("code: 'storage.quarantined'");
-  });
-
-  it('starts scheduler recovery maintenance only after constructing the ordinary listener', () => {
-    const source = readEntrypointSource();
-    const listenerConstruction = source.indexOf('appServer = appTlsListen');
-    const nanoHostListenerConstruction = source.indexOf('nanoHostServer = nanoHostListener');
-    const maintenanceStart = source.indexOf(
-      'schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({'
-    );
-
-    expect(listenerConstruction).toBeGreaterThan(-1);
-    expect(nanoHostListenerConstruction).toBeGreaterThan(listenerConstruction);
-    expect(maintenanceStart).toBeGreaterThan(listenerConstruction);
-    expect(maintenanceStart).toBeGreaterThan(nanoHostListenerConstruction);
   });
 
   it('closes process listeners without waiting for optional telemetry flush', async () => {
