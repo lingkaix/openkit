@@ -185,13 +185,6 @@ test('workspace vitest test scripts select tap-flat reporter', () => {
   );
 });
 
-test('test-env placements are any and host', () => {
-  assert.match(testEnvScript, /Usage: scripts\/test-env\.sh <any\|host>/u);
-  assert.match(testEnvScript, /^\s*any\)/mu);
-  assert.match(testEnvScript, /^\s*host\)/mu);
-  assert.doesNotMatch(testEnvScript, /^\s*image\)/mu);
-});
-
 test('any placement runs the command directly by default', () => {
   const result = spawnSync(
     'bash',
@@ -281,25 +274,24 @@ test('host placement refuses to run inside the test image', () => {
   }
 });
 
-test('in-image execution requires baked test-image identity in addition to executor metadata', () => {
-  const functionBody = testEnvScript.match(/inside_test_image\(\)\s*\{([\s\S]*?)\n\}/u)?.[1];
-  assert.ok(functionBody, 'scripts/test-env.sh does not declare inside_test_image');
-  assert.match(functionBody, /OPENKIT_TEST_EXECUTOR/u);
-  const identityPath = functionBody.match(/-[efr]\s+["']?(\/[a-zA-Z0-9_./-]+)/u)?.[1];
-  assert.ok(
-    identityPath,
-    'scripts/test-env.sh lets OPENKIT_TEST_EXECUTOR alone declare image placement'
-  );
-  assert.doesNotMatch(
-    functionBody,
-    /\|\|/u,
-    'scripts/test-env.sh provides an alternate host-controlled image-identity branch'
-  );
-  assert.match(
-    testImageDockerfile,
-    new RegExp(`(?:COPY|RUN)[^\\n]*${identityPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`, 'u'),
-    `containers/test-env/Dockerfile does not bake ${identityPath}`
-  );
+test('executor metadata alone cannot label a host command as in-image execution', () => {
+  const fixture = prepareInImageFixture();
+  try {
+    rmSync(join(fixture.fixtureRoot, 'openkit-test-env'));
+    const result = spawnSync(
+      'bash',
+      [fixture.fixtureScript, 'any', 'bash', '-c', 'printf %s "$OPENKIT_TEST_ENVIRONMENT"'],
+      {
+        cwd: fixture.fixtureRoot,
+        encoding: 'utf8',
+        env: { ...process.env, OPENKIT_TEST_EXECUTOR: '1', OPENKIT_TEST_USE_IMAGE: '0' },
+      }
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'host');
+  } finally {
+    rmSync(fixture.fixtureRoot, { force: true, recursive: true });
+  }
 });
 
 test('inside-image placement rejects a stale build-input digest before running the check', () => {
@@ -413,28 +405,46 @@ test('test image installs the exact workspace Playwright version', () => {
 test('test image smoke requires Playwright headless-shell and rejects Xvfb', () => {
   const browserRoot = mkdtempSync(join(tmpdir(), 'openkit-test-env-browser-smoke-'));
   const fakeBin = join(browserRoot, 'bin');
+  const forbiddenBin = join(browserRoot, 'forbidden-bin');
 
   try {
     mkdirSync(fakeBin);
-    writeFileSync(join(fakeBin, 'Xvfb'), '#!/usr/bin/env bash\nexit 0\n', { mode: 0o755 });
+    mkdirSync(forbiddenBin);
+    // Tool version probes are external effects of this browser-inventory check.
+    // Isolate them so the host's installed runtimes and Xvfb cannot decide it.
+    for (const command of ['node', 'pnpm', 'git', 'jq', 'python3', 'rustc', 'cargo', 'rustfmt']) {
+      writeFileSync(
+        join(fakeBin, command),
+        '#!/bin/sh\ncase "$*" in --version|"clippy --version") echo fixture-version;; *) exit 97;; esac\n',
+        { mode: 0o755 }
+      );
+    }
+    for (const command of ['bash', 'find', 'basename']) {
+      const executable = command === 'bash' ? '/bin/bash' : `/usr/bin/${command}`;
+      writeFileSync(join(fakeBin, command), `#!/bin/sh\nexec ${executable} "$@"\n`, {
+        mode: 0o755,
+      });
+    }
+    writeFileSync(join(forbiddenBin, 'Xvfb'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const browserEnv = {
+      ...process.env,
+      PATH: fakeBin,
+      PLAYWRIGHT_BROWSERS_PATH: browserRoot,
+    };
     mkdirSync(join(browserRoot, 'chromium-123'));
     const arbitraryChromium = spawnSync('bash', [testImageSmoke], {
       encoding: 'utf8',
-      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserRoot },
+      env: browserEnv,
     });
     rmSync(join(browserRoot, 'chromium-123'), { recursive: true });
     mkdirSync(join(browserRoot, 'chromium_headless_shell-123'));
     const headlessShell = spawnSync('bash', [testImageSmoke], {
       encoding: 'utf8',
-      env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserRoot },
+      env: browserEnv,
     });
     const forbiddenXvfb = spawnSync('bash', [testImageSmoke], {
       encoding: 'utf8',
-      env: {
-        ...process.env,
-        PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
-        PLAYWRIGHT_BROWSERS_PATH: browserRoot,
-      },
+      env: { ...browserEnv, PATH: `${forbiddenBin}:${fakeBin}` },
     });
 
     assert.deepEqual(
@@ -449,6 +459,13 @@ test('test image smoke requires Playwright headless-shell and rejects Xvfb', () 
         headlessShellStatus: 0,
       }
     );
+    assert.match(arbitraryChromium.stdout, /chromium-headless-shell: $/u);
+    assert.match(arbitraryChromium.stderr, /missing under /u);
+    assert.match(
+      headlessShell.stdout,
+      /chromium_headless_shell-123\nOpenKit test-env image smoke OK/u
+    );
+    assert.match(forbiddenXvfb.stderr, /Xvfb must not be installed/u);
   } finally {
     rmSync(browserRoot, { force: true, recursive: true });
   }

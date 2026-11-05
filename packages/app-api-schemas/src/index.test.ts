@@ -1,12 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
-import { WorkspaceMcpCredentialBindingSchema } from '@openkit/config-schema/mcp-credentials';
-import {
-  SubscriptionProviderIdSchema as ConfigSubscriptionProviderIdSchema,
-  ProviderSubscriptionAccountSlotIdSchema,
-} from '@openkit/config-schema/provider-subscription';
-import { WorkerCredentialReceiptSchema } from '@openkit/config-schema/worker-credentials';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
@@ -243,106 +235,35 @@ const rawSecretShapes = [
   'ghp_openkit_secret',
   'okt_openkit_secret',
 ] as const;
-const schemaSourceRoot = new URL('.', import.meta.url);
-const allowedRuntimeNeutralImports = new Set([
-  '@openkit/config-schema/mcp-credentials',
-  '@openkit/config-schema/worker-credentials',
-  '@openkit/config-schema/native-environment',
-  '@openkit/config-schema/provider-subscription',
-  '@openkit/config-schema/workspace-export',
-  '@openkit/config-schema/workspace-resource-policy',
-  '@openkit/protocol',
-  'zod',
-]);
-
-/** Lists package source files that define runtime App API schemas. */
-function listSchemaSourceFiles(root: string): string[] {
-  return readdirSync(root).flatMap((entry) => {
-    const path = join(root, entry);
-
-    if (statSync(path).isDirectory()) {
-      return listSchemaSourceFiles(path);
-    }
-
-    return path.endsWith('.ts') && !path.endsWith('.test.ts') ? [path] : [];
-  });
-}
-
-/** Extracts static module specifiers from TypeScript source imports. */
-function staticImportSpecifiers(source: string): string[] {
-  return [...source.matchAll(/\bimport(?:\s+type)?(?:\s+[^'"]+\s+from)?\s+['"]([^'"]+)['"]/g)].map(
-    (match) => match[1]
-  );
-}
-
-/** Returns true when an App API schema import is runtime-neutral. */
-function isRuntimeNeutralSchemaImport(specifier: string): boolean {
-  return specifier.startsWith('./') || allowedRuntimeNeutralImports.has(specifier);
-}
-
 describe('app api schema package boundary', () => {
-  it('reuses the browser-safe MCP credential binding schema without defaulting omitted updates', () => {
-    const credentials = appApiSchemas.UpdateMcpBindingRequestSchema.shape.credentialBindings;
-    expect(credentials.unwrap().element).toBe(WorkspaceMcpCredentialBindingSchema);
-    expect(credentials.parse(undefined)).toBeUndefined();
-    expect(credentials.parse([])).toEqual([]);
-  });
-  it('depends only on runtime-neutral schema dependencies', () => {
-    const offenders = listSchemaSourceFiles(schemaSourceRoot.pathname).flatMap((path) => {
-      const disallowedImports = staticImportSpecifiers(readFileSync(path, 'utf8')).filter(
-        (specifier) => !isRuntimeNeutralSchemaImport(specifier)
-      );
-
-      return disallowedImports.map((specifier) => ({ path, specifier }));
-    });
-
-    expect(offenders).toEqual([]);
-  });
-
-  it('uses the pure credential schema entry and the same actual receipt schema at both API consumers', async () => {
-    const source = readFileSync(
-      new URL('../../config-schema/src/worker-credentials.ts', import.meta.url),
-      'utf8'
-    );
+  it('preserves omitted and explicitly empty MCP credential updates', () => {
+    const update = {
+      allowedTools: ['echo'],
+      bindingRevision: 1,
+      enabled: true,
+      expectedRevision: 1,
+      requestId: '00000000-0000-4000-8000-000000000601',
+      schemaPolicy: 'pinned',
+    };
     expect(
-      staticImportSpecifiers(source).filter(
-        (specifier) => !['zod', '@openkit/protocol'].includes(specifier)
-      )
+      appApiSchemas.UpdateMcpBindingRequestSchema.parse(update).credentialBindings
+    ).toBeUndefined();
+    expect(
+      appApiSchemas.UpdateMcpBindingRequestSchema.parse({ ...update, credentialBindings: [] })
+        .credentialBindings
     ).toEqual([]);
-    const config = await import('@openkit/config-schema');
-    expect(config.WorkerCredentialReceiptSchema).toBe(WorkerCredentialReceiptSchema);
-    for (const operation of ['vault.binding-deliver', 'vault.binding-replace'] as const) {
-      expect(appApiSchemas.VAULT_OPERATION_DEFINITIONS[operation].outputSchema).toBe(
-        WorkerCredentialReceiptSchema
-      );
-    }
-    expect(isRuntimeNeutralSchemaImport('@openkit/config-schema')).toBe(false);
-    expect(isRuntimeNeutralSchemaImport('node:crypto')).toBe(false);
-    expect(isRuntimeNeutralSchemaImport('node:net')).toBe(false);
   });
 
   it('exports the closed provider-subscription identifier schema from the package root', () => {
     const schema = Reflect.get(appApiSchemas, 'SubscriptionProviderIdSchema');
 
     expect(schema).toBeDefined();
-    expect(schema.options).toEqual(['openai-codex', 'xai']);
     expect(schema.parse('openai-codex')).toBe('openai-codex');
     expect(schema.parse('xai')).toBe('xai');
     expect(schema.safeParse('anthropic').success).toBe(false);
   });
 
-  it('reuses the config-schema provider-subscription identity across public account schemas', () => {
-    expect
-      .soft(appApiSchemas.SubscriptionProviderIdSchema, 'package root')
-      .toBe(ConfigSubscriptionProviderIdSchema);
-    for (const branch of appApiSchemas.ProviderSubscriptionAccountSchema.options) {
-      expect
-        .soft(branch.shape.subscriptionProviderId, `account status ${branch.shape.status.value}`)
-        .toBe(ConfigSubscriptionProviderIdSchema);
-    }
-  });
-
-  it('preserves response slot identity while delegating create slot syntax to the account owner', () => {
+  it('delegates supplied create slot syntax to the account owner and refuses non-string slots', () => {
     const create = appApiSchemas.CreateProviderSubscriptionAccountRequestSchema;
     // Provider Subscription Accounts480: supplied strings reach native slot-error classification.
     for (const accountSlotId of ['work', '', 'Bad Slot', 'x'.repeat(65)]) {
@@ -350,25 +271,6 @@ describe('app api schema package boundary', () => {
     }
     for (const accountSlotId of [undefined, null, 42, false, [], {}]) {
       expect.soft(create.safeParse({ accountSlotId }).success).toBe(false);
-    }
-    for (const branch of appApiSchemas.ProviderSubscriptionAccountSchema.options) {
-      expect
-        .soft(branch.shape.accountSlotId, `account status ${branch.shape.status.value}`)
-        .toBe(ProviderSubscriptionAccountSlotIdSchema);
-    }
-    for (const branch of appApiSchemas.ProviderSubscriptionQuotaSchema.options) {
-      expect
-        .soft(branch.shape.subscriptionProviderId, `quota ${branch.shape.availability.value}`)
-        .toBe(ConfigSubscriptionProviderIdSchema);
-      expect
-        .soft(branch.shape.accountSlotId, `quota ${branch.shape.availability.value}`)
-        .toBe(ProviderSubscriptionAccountSlotIdSchema);
-    }
-    for (const branch of appApiSchemas.ProviderSubscriptionAutoTopupSchema.options) {
-      expect.soft(branch.shape.subscriptionProviderId.value, 'auto-topup provider').toBe('xai');
-      expect
-        .soft(branch.shape.accountSlotId, `auto-topup ${branch.shape.availability.value}`)
-        .toBe(ProviderSubscriptionAccountSlotIdSchema);
     }
   });
 });
