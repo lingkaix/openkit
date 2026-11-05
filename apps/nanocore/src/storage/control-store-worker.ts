@@ -116,6 +116,7 @@ import {
   WorkspaceMaterialError,
 } from '../workspace-materials.js';
 import { type AppDb, assertAppAuthority, lightAppDbPath } from './app-db.js';
+import { applyControlAttentionAttemptClaim } from './attention-attempt-claim-native.js';
 import { applyControlAttentionAttemptCompletion } from './attention-attempt-completion-native.js';
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
 import { applyCatalogCommandReceiptInDb } from './command-request-records.js';
@@ -344,6 +345,7 @@ type WriteCommand = Extract<
       | 'runtime-target'
       | 'backend-session'
       | 'remote-mcp-audit'
+      | 'attention-attempt-claim'
       | 'attention-attempt-completion'
       | 'bootstrap-ensure'
       | 'access-token-lifecycle'
@@ -2216,6 +2218,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-image',
               result,
             };
+          } else if (request.operation === 'attention-attempt-claim') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applyControlAttentionAttemptClaim(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'attention-attempt-claim',
+              result,
+            };
           } else if (request.operation === 'attention-attempt-completion') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyControlAttentionAttemptCompletion(owner.scopeDb, request.input);
@@ -3645,6 +3657,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'runtime-target' ||
       value.operation === 'backend-session' ||
       value.operation === 'remote-mcp-audit' ||
+      value.operation === 'attention-attempt-claim' ||
       value.operation === 'attention-attempt-completion' ||
       value.operation === 'bootstrap-ensure' ||
       value.operation === 'access-token-lifecycle' ||

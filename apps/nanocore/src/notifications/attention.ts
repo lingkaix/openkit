@@ -161,6 +161,72 @@ function decodeRow(value: unknown): AttentionDelivery {
   };
 }
 
+/** The existing admitted claim fields, shared with only the private native wire codec. */
+export const AttentionAttemptClaimSchema = DeliverSchema;
+
+/** Exact original in-transaction claim snapshot; request identities keep their existing unbounded semantics. */
+export const AttentionClaimedDeliverySchema = z
+  .object({
+    id: RowSchema.shape.id,
+    source: SourceSchema,
+    recipientUserId: RowSchema.shape.recipientUserId,
+    channel: ChannelSchema,
+    status: z.literal('sending'),
+    createdAt: RowSchema.shape.createdAt,
+    attempt: z
+      .object({
+        id: RowSchema.shape.attemptId.unwrap(),
+        status: z.literal('sending'),
+        failureCode: z.null(),
+        startedAt: RowSchema.shape.startedAt.unwrap(),
+        finishedAt: z.null(),
+      })
+      .strict(),
+  })
+  .strict();
+
+/** Original get primitive, also used inside the original claim transaction. */
+function getAttentionDeliveryInDb(sqlite: Database.Database, id: string): AttentionDelivery | null {
+  if (!RequestIdSchema.safeParse(id).success) throw new AttentionError('invalid_attention_input');
+  const row = sqlite.prepare(`${SELECT} WHERE a.id = ?`).get(id);
+  return row ? decodeRow(row) : null;
+}
+
+/** Owns the complete original claim transaction, including its guards, clock and final projection. */
+export function claimAttentionAttemptInDb(
+  sqlite: Database.Database,
+  admitted: z.infer<typeof DeliverSchema>,
+  now: () => string
+): AttentionDelivery {
+  return sqlite.transaction(() => {
+    const row = sqlite
+      .prepare(`${SELECT} WHERE a.id = ? AND a.recipient_user_id = ?`)
+      .get(admitted.deliveryId, admitted.recipientUserId);
+    if (!row) throw new AttentionError('attention_not_found');
+    const current = decodeRow(row);
+    if ((current.attempt?.id ?? null) !== admitted.expectedAttemptId) {
+      throw new AttentionError('attention_attempt_conflict');
+    }
+    if (current.channel !== null && current.channel !== admitted.channel) {
+      throw new AttentionError('attention_channel_conflict');
+    }
+    if (
+      current.status !== 'queued' &&
+      !(current.status === 'failed-no-send' && admitted.retry === true)
+    ) {
+      throw new AttentionError('attention_not_sendable');
+    }
+    sqlite
+      .prepare('UPDATE notification_attention SET channel = ? WHERE id = ? AND channel IS NULL')
+      .run(admitted.channel, current.id);
+    sqlite
+      .prepare(`INSERT INTO notification_delivery_attempts
+          (attention_id, channel, status, started_at) VALUES (?, ?, 'sending', ?)`)
+      .run(current.id, admitted.channel, now());
+    return getAttentionDeliveryInDb(sqlite, current.id)!;
+  })();
+}
+
 /** Exact original attempt outcome/pointer and completion clock, without transport or source content. */
 export interface AttentionAttemptCompletion {
   readonly deliveryId: string;
@@ -188,7 +254,7 @@ export class AttentionNotifications {
     private readonly options: {
       now?: () => string;
       buildAppPath?: (source: AttentionSource) => string;
-      /** Canonical runtime binding for only the original completion commit. */
+      /** Canonical runtime binding for the original claim and completion commits. */
       nativeCoreDb?: CoreDb;
     } = {}
   ) {}
@@ -224,9 +290,7 @@ export class AttentionNotifications {
 
   /** Reads an internal reference; callers must use current admission before exposing it. */
   get(id: string): AttentionDelivery | null {
-    if (!RequestIdSchema.safeParse(id).success) throw new AttentionError('invalid_attention_input');
-    const row = this.sqlite.prepare(`${SELECT} WHERE a.id = ?`).get(id);
-    return row ? decodeRow(row) : null;
+    return getAttentionDeliveryInDb(this.sqlite, id);
   }
 
   /** Returns an exact reference only for its current eligible recipient. */
@@ -277,33 +341,9 @@ export class AttentionNotifications {
     const parsed = DeliverSchema.safeParse(input);
     if (!parsed.success) throw new AttentionError('invalid_attention_input');
     const admitted = parsed.data;
-    const delivery = this.sqlite.transaction(() => {
-      const row = this.sqlite
-        .prepare(`${SELECT} WHERE a.id = ? AND a.recipient_user_id = ?`)
-        .get(admitted.deliveryId, admitted.recipientUserId);
-      if (!row) throw new AttentionError('attention_not_found');
-      const current = decodeRow(row);
-      if ((current.attempt?.id ?? null) !== admitted.expectedAttemptId) {
-        throw new AttentionError('attention_attempt_conflict');
-      }
-      if (current.channel !== null && current.channel !== admitted.channel) {
-        throw new AttentionError('attention_channel_conflict');
-      }
-      if (
-        current.status !== 'queued' &&
-        !(current.status === 'failed-no-send' && admitted.retry === true)
-      ) {
-        throw new AttentionError('attention_not_sendable');
-      }
-      this.sqlite
-        .prepare('UPDATE notification_attention SET channel = ? WHERE id = ? AND channel IS NULL')
-        .run(admitted.channel, current.id);
-      this.sqlite
-        .prepare(`INSERT INTO notification_delivery_attempts
-          (attention_id, channel, status, started_at) VALUES (?, ?, 'sending', ?)`)
-        .run(current.id, admitted.channel, this.now());
-      return this.get(current.id)!;
-    })();
+    const delivery = this.options.nativeCoreDb
+      ? await this.claimNative(admitted)
+      : claimAttentionAttemptInDb(this.sqlite, admitted, () => this.now());
     let appPath: string;
     try {
       appPath =
@@ -368,6 +408,39 @@ export class AttentionNotifications {
           failure_code = 'restart', finished_at = ? WHERE status = 'sending'`)
         .run(this.now()).changes;
     })();
+  }
+
+  /** Only a durable original claim snapshot may reach routing, fresh eligibility or transport. */
+  private async claimNative(admitted: z.infer<typeof DeliverSchema>): Promise<AttentionDelivery> {
+    const coreDb = this.options.nativeCoreDb!;
+    const { getControlStoreWorkerClient, ControlStoreWorkerError } = await import(
+      '../storage/control-store-worker-client.js'
+    );
+    if (coreDb.sqlite !== this.sqlite)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    let startedAt: string | null = null;
+    let clockError: unknown;
+    try {
+      startedAt = this.now();
+    } catch (error) {
+      clockError = error;
+    }
+    try {
+      return await getControlStoreWorkerClient().attentionAttemptClaim(coreDb, {
+        ...admitted,
+        startedAt,
+      });
+    } catch (error) {
+      // A prepared invalid clock is consumed only at the original insertion point,
+      // after the original lookup/CAS/channel/status guards and inside rollback.
+      if (
+        startedAt === null &&
+        error instanceof AttentionError &&
+        error.code === 'invalid_attention_input'
+      )
+        throw clockError;
+      throw error;
+    }
   }
 
   /** Settles only the exact live claim; an already-reconciled attempt can never become sent. */

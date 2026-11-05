@@ -9,11 +9,17 @@ import {
   type ControlBootstrapEnsureResult,
   ControlBootstrapEnsureResultSchema,
 } from '../auth/bootstrap-ensure-codecs.js';
+import { type AttentionDelivery, AttentionError } from '../notifications/attention.js';
 import { WorkspaceCollectionError } from '../runtime/workspace-collect-wire.js';
 import {
   PreservedWorkspaceCaptureRefusal,
   WorkspaceCaptureRecoveryRequired,
 } from '../runtime/workspace-snapshot-chain.js';
+import {
+  type ControlAttentionAttemptClaim,
+  ControlAttentionAttemptClaimResultSchema,
+  ControlAttentionAttemptClaimSchema,
+} from './attention-attempt-claim-codecs.js';
 import {
   type ControlAttentionAttemptCompletion,
   type ControlAttentionAttemptCompletionResult,
@@ -1964,6 +1970,58 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'not-committed');
     return result as ControlWorkspaceCapabilityCommandResult;
+  }
+
+  /** Returns only the original transaction's durable claim snapshot, never a later re-read. */
+  async attentionAttemptClaim(
+    db: CoreDb,
+    value: ControlAttentionAttemptClaim
+  ): Promise<AttentionDelivery> {
+    const input = ControlAttentionAttemptClaimSchema.parse(value);
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    let reply: Success;
+    if (!admitted) {
+      reply = (
+        await Promise.all([
+          this.open({
+            database,
+            path: scope.path,
+            dataRoot: db.dataRoot,
+            create: false,
+            initialize: 'core',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          }),
+          this.request({ operation: 'attention-attempt-claim', database, input }),
+        ])
+      )[1];
+    } else {
+      if (
+        admitted.command.path !== scope.path ||
+        admitted.command.dataRoot !== db.dataRoot ||
+        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      reply = await this.request({ operation: 'attention-attempt-claim', database, input });
+    }
+    if (reply.operation !== 'attention-attempt-claim')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    const result = ControlAttentionAttemptClaimResultSchema.safeParse(reply.result);
+    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    if (result.data.status === 'refused') throw new AttentionError(result.data.code);
+    const delivery = result.data.delivery;
+    if (
+      delivery.id !== input.deliveryId ||
+      delivery.recipientUserId !== input.recipientUserId ||
+      delivery.channel !== input.channel ||
+      delivery.attempt.startedAt !== input.startedAt
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return delivery;
   }
 
   /** Commits only the original attempt completion; Main's following projection stays separate. */

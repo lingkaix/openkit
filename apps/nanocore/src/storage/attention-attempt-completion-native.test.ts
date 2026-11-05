@@ -352,6 +352,12 @@ describe('native Attention attempt completion', () => {
     if (!worker) throw new Error('The real completion Worker must have posted.');
     await worker.terminate();
     await expect(result).rejects.toMatchObject({ commit: 'unknown' });
+    expect(fault.requests).toHaveLength(1);
+    expect(fault.acknowledgements).toBe(0);
+    expect(sends).toBe(1);
+    // Claim inspection now needs a live native owner. Recreate it explicitly
+    // for this durable retry fence; production never retries the lost command.
+    await shutdownControlStoreWorkerClient();
     await expect(
       f.notifications.deliver(
         {
@@ -384,22 +390,25 @@ describe('native Attention attempt completion', () => {
   ] as const)('refuses a mismatched physical Core %s before native open/post', async (mode) => {
     const f = fixture();
     const other = fixture();
-    f.options.nativeCoreDb =
-      mode === 'connection'
-        ? other.coreDb
-        : mode === 'path'
-          ? { ...f.coreDb, dataRoot: other.coreDb.dataRoot }
-          : ({ ...f.coreDb, scope: 'workspace' } as unknown as CoreDb);
     let sends = 0;
+    let postsBefore: string[] = [];
     await expect(
       send(f, async () => {
+        // Keep this completion-stage probe after the genuine native claim.
+        postsBefore = fault.posts.slice();
+        f.options.nativeCoreDb =
+          mode === 'connection'
+            ? other.coreDb
+            : mode === 'path'
+              ? { ...f.coreDb, dataRoot: other.coreDb.dataRoot }
+              : ({ ...f.coreDb, scope: 'workspace' } as unknown as CoreDb);
         sends += 1;
         f.coreDb.sqlite.pragma('query_only = ON');
         return { status: 'sent' };
       })
     ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
     expect(sends).toBe(1);
-    expect(fault.posts).toHaveLength(0);
+    expect(fault.posts).toEqual(postsBefore);
     expect(outcome(f)).toEqual({ status: 'sending', failureCode: null, finishedAt: null });
     expect(count(other).count).toBe(0);
     expect(other.notifications.get(other.delivery.id)?.status).toBe('queued');
@@ -424,6 +433,7 @@ describe('native Attention attempt completion', () => {
     const f = fixture();
     await expect(
       send(f, async () => {
+        const postsBefore = fault.posts.slice();
         const value = input(f);
         expect(
           ControlAttentionAttemptCompletionSchema.safeParse({ ...value, status: 'sending' }).success
@@ -444,7 +454,7 @@ describe('native Attention attempt completion', () => {
             callback: 'not-a-program',
           } as ControlAttentionAttemptCompletion)
         ).rejects.toThrow();
-        expect(fault.posts).toHaveLength(0);
+        expect(fault.posts).toEqual(postsBefore);
         expect(outcome(f).status).toBe('sending');
         f.coreDb.sqlite.pragma('query_only = ON');
         return { status: 'sent' };
@@ -457,9 +467,10 @@ describe('native Attention attempt completion', () => {
     const f = fixture();
     await expect(
       send(f, async () => {
+        const postsBefore = fault.posts.slice();
         expect(() => applyControlAttentionAttemptCompletion(f.coreDb, input(f))).toThrow();
         expect(outcome(f)).toEqual({ status: 'sending', failureCode: null, finishedAt: null });
-        expect(fault.posts).toHaveLength(0);
+        expect(fault.posts).toEqual(postsBefore);
         f.coreDb.sqlite.pragma('query_only = ON');
         return { status: 'sent' };
       })
