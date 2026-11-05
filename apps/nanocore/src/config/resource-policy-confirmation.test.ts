@@ -1,25 +1,24 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
-import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
 describe('raw Workspace configuration Policy edits', () => {
   it('requires the confirmed request path to remove a boundary but permits an unchanged Policy sibling', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'resource-policy-confirmation-'));
     const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    ensureLocalUser(coreDb);
     try {
-      const store = new FsStore({ dataRoot });
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = createTestStore({ dataRoot });
       const workspace = await store.createWorkspace('Managed Workspace');
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -87,9 +86,7 @@ describe('raw Workspace configuration Policy edits', () => {
         policy: source.workspace.policy,
       });
     } finally {
-      coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot, coreDb);
     }
   });
 });

@@ -1,11 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { projectAgentCatalogEntries, projectAgentCatalogEntry } from './catalog-projection.js';
 import { computeReadiness } from './readiness.js';
 
@@ -76,10 +75,7 @@ describe('projectAgentCatalogEntry', () => {
       displayName: 'Later Worker',
     }).manifest;
     const dataRoot = mkdtempSync(join(tmpdir(), 'catalog-projection-'));
-    onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
-    });
+    onTestFinished(() => disposeTestStore(dataRoot));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Catalog projection');
     let manifests = [configured];

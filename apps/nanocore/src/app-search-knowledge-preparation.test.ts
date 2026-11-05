@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AppSearchResponseSchema } from '@openkit/app-api-schemas';
@@ -9,20 +9,18 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { createTestStore } from './test-support/store.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 
 const roots: string[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
   await closeRetrievalServices();
-  await shutdownControlStoreWorkerClient();
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await disposeTestStore(root);
 });
 
 /** Publishes two lexical hits and their shared source through current human Notebook admission. */

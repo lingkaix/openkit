@@ -1,16 +1,16 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { listServerAuditEvents } from './audit-events.js';
 import { ensureLocalUser } from './auth/identity.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { AutomationStore } from './lib/automation-store.js';
-import { FsStore } from './lib/store.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -18,9 +18,10 @@ const owned: { root: string; db: CoreDb }[] = [];
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'automation-api-'));
   const db = openCoreDb(root);
+  owned.push({ root, db });
   applyMigrations(db);
   const localUserId = ensureLocalUser(db);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('Recurring');
   const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({
@@ -31,7 +32,6 @@ async function fixture() {
   let instant = '2026-10-16T00:00:00.000Z';
   const automationStore = new AutomationStore(db, new WorkspaceMutationAdmission(), () => instant);
   const app = createApp({ store, coreDb: db, dataRoot: root, automationStore });
-  owned.push({ root, db });
   const request = (id: string, input: unknown) =>
     app.request(`/api/app/operations/automation.${id}`, {
       method: 'POST',
@@ -61,11 +61,7 @@ async function fixture() {
   };
 }
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const { root, db } of owned.splice(0)) {
-    db.sqlite.close();
-    rmSync(root, { recursive: true, force: true });
-  }
+  for (const { root, db } of owned.splice(0)) await disposeTestStore(root, db);
 });
 
 describe('fixed-interval automation operations', () => {
@@ -264,10 +260,8 @@ it('attributes a member edit to the actual caller while preserving the responsib
   );
   expect(edited.actor).toEqual(schedule.actor);
   expect(
-    db.sqlite
-      .prepare("SELECT actor_json FROM audit_events WHERE action = 'recurring.schedule.edit'")
-      .get()
-  ).toEqual({
-    actor_json: JSON.stringify({ kind: 'user', id: localUserId }),
-  });
+    listServerAuditEvents(db)
+      .filter(({ action }) => action === 'recurring.schedule.edit')
+      .map(({ actor }) => actor)
+  ).toEqual([{ kind: 'user', id: localUserId }]);
 });
