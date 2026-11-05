@@ -8,6 +8,7 @@ import {
   GetThreadMaterialResponseSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
   StartTaskModeResponseSchema,
+  ThreadDashboardResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import {
@@ -2527,6 +2528,203 @@ describe('SimulatedTurnExecutor', () => {
       coreDb.sqlite.close();
     }
   });
+
+  // Public summary reads must not starve real outcome completion under the original15s/150s bounds.
+  it('keeps Material outcome delivery responsive while its dashboard is read', async () => {
+    const coreDb = await createCoreDb(false);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId,
+    });
+    const admission = new FileStorageAdmission(
+      coreDb.dataRoot,
+      () => 2_000_000n,
+      () => 16_000_000n
+    );
+    const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission: admission });
+    const executions = vi.spyOn(executor, 'startTurn');
+    const app = createApp({
+      agentManifests: [createTestAgentSetup().manifest],
+      coreDb,
+      fileAdmission: admission,
+      gatewayConfig: createTestGatewayConfig(),
+      openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
+      providerRegistry: new ProviderRegistry([
+        {
+          defaultModel: 'openai/gpt-5.2',
+          displayName: 'Material dashboard completion',
+          id: 'agent-openrouter',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      store,
+      turnExecutor: executor,
+    });
+    const startTask = async (requestId: string) => {
+      const index = executions.mock.calls.length;
+      const response = await app.request(
+        ...operationRequest(
+          'task.start',
+          { workspaceId, threadId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId,
+              input: 'Create a summary from the exact bound release revision.',
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(202);
+      await vi.waitFor(() => expect(executions.mock.calls.length).toBe(index + 1), {
+        timeout: 15_000,
+      });
+      await executions.mock.results[index]!.value;
+      const turn = store.listThreadTurns(workspaceId, threadId).at(-1)!;
+      expect(turn.status).toBe('completed');
+      return turn;
+    };
+    const answer = async (turnId: string, requestId: string) => {
+      const question = store
+        .listThreadItems(workspaceId, threadId)
+        .find((item) => item.type === 'user-input-request' && item.turnId === turnId);
+      if (!question || question.type !== 'user-input-request')
+        throw new Error('Missing real Material question.');
+      const response = await app.request(
+        ...operationRequest(
+          'question.answer',
+          { userInputRequestId: question.userInputRequestId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              workspaceId,
+              threadId,
+              userInputRequestId: question.userInputRequestId,
+              requestId,
+              answers: { tone: ['Concise'] },
+            }),
+          }
+        )
+      );
+      expect(response.status).toBe(200);
+      const turn = store.listThreadTurns(workspaceId, threadId).at(-1)!;
+      expect(turn.id).not.toBe(turnId);
+      await vi.waitFor(
+        async () => {
+          const response = await app.request(
+            ...operationRequest('thread.dashboard', { workspaceId, threadId })
+          );
+          expect(response.status).toBe(200);
+          const dashboard = ThreadDashboardResponseSchema.parse(await response.json());
+          expect(dashboard.turns.find((candidate) => candidate.id === turn.id)?.status).toBe(
+            'completed'
+          );
+        },
+        { timeout: 15_000 }
+      );
+      return turn;
+    };
+    try {
+      await linkRepository(app);
+      const created = await app.request(
+        ...operationRequest(
+          'material.create',
+          { workspaceId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'd3-census-create',
+              title: 'D3 release source',
+              kind: 'markdown',
+              sensitivity: 'internal',
+            }),
+          }
+        )
+      );
+      expect(created.status).toBe(201);
+      const material = CreateWorkspaceMaterialResponseSchema.parse(await created.json());
+      const save = async (
+        expectedRevisionId: string | null,
+        content: string,
+        requestId: string
+      ) => {
+        const response = await app.request(
+          ...operationRequest(
+            'material.revision-save',
+            { workspaceId, materialId: material.materialId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                requestId,
+                expectedRevisionId,
+                content,
+                contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+              }),
+            }
+          )
+        );
+        expect(response.status).toBe(201);
+        return SaveWorkspaceMaterialRevisionResponseSchema.parse(await response.json());
+      };
+      const firstRevision = await save(null, '# Release one\n', 'd3-census-revision-one');
+      const bound = await app.request(
+        ...operationRequest(
+          'material.bind',
+          { workspaceId, threadId, materialId: material.materialId },
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              requestId: 'd3-census-bind',
+              expectedBindingState: 'not_bound',
+            }),
+          }
+        )
+      );
+      expect(bound.status).toBe(200);
+      const first = await startTask('0190f4c8-0000-7000-8000-000000000393');
+      await save(firstRevision.revisionId, '# Release two\n', 'd3-census-revision-two');
+      await answer(first.id, '0190f4c8-0000-7000-8000-000000000394');
+      await Promise.allSettled(
+        executions.mock.results.filter((r) => r.type === 'return').map((r) => r.value)
+      );
+      const third = await startTask('0190f4c8-0000-7000-8000-000000000395');
+      expect(
+        store.listThreadTurns(workspaceId, threadId).filter((turn) => turn.status === 'completed')
+      ).toHaveLength(3);
+      await answer(third.id, '0190f4c8-0000-7000-8000-000000000396');
+      const dashboardResponse = await app.request(
+        ...operationRequest('thread.dashboard', { workspaceId, threadId })
+      );
+      expect(dashboardResponse.status).toBe(200);
+      expect(
+        ThreadDashboardResponseSchema.parse(await dashboardResponse.json()).taskInputs
+      ).toHaveLength(2);
+      expect(store.listThreadTurns(workspaceId, threadId)).toHaveLength(4);
+      expect(
+        store.listThreadTurns(workspaceId, threadId).every((turn) => turn.status === 'completed')
+      ).toBe(true);
+    } finally {
+      await Promise.allSettled(
+        executions.mock.results.filter((r) => r.type === 'return').map((r) => r.value)
+      );
+      executions.mockRestore();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      closeWorkspaceProductReadHandles();
+      coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  }, 150_000);
 });
 
 // This fixture supplies confirmed image evidence; the production resolver and subject checks still run.

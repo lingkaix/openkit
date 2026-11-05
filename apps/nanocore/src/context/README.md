@@ -17,6 +17,8 @@ This directory owns deterministic projection of durable OpenKit items into provi
 
 S39 recognizes the existing frozen Pending Request input envelope as worker request context. Outcome-initiated Turns use scheduler request lineage without inventing a Task checkpoint; their exact input bytes enter the existing immutable package and trace before native launch. The Material projection still refuses a genuinely missing accepted trace.
 
+The Thread objective projection first rejects Turns with no same-Turn structured request candidate. This eligibility check grants no provenance: every returned objective still requires the full shared S39 verifier, exact initiating Item, owner, Thread, Turn and request digest. Ordinary text, human JSON and outcome envelopes remain unchanged and produce no objective summary. This prevents dashboard reads from repeatedly verifying impossible summaries while native completion waits for Main callbacks. The [Task Mode owner](../../../../docs/specs/20260704-task_mode_worker_delegation.md#readable-initiating-request-projection) defines the output. Run `src/context/worker-context-projection.test.ts` and `src/lib/simulator.test.ts` for negative eligibility, positive proof and real Material outcome completion under public dashboard reads.
+
 The S39 authority reader locates the trace's exact AEP snapshot filename under retained Workspace AgentSession owners, independently of a session's mutable current-package pointer. It requires one strictly validated match for both package and backend-handoff reads, so unrelated malformed historical snapshots cannot prevent new delivery. Missing, malformed, or conflicting selected snapshots remain unavailable; workspace export still validates the full retained AEP inventory.
 
 ## Verification

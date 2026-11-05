@@ -84,6 +84,10 @@ export function readStrictWorkerContextPackageDigest(
  * Missing, inconsistent, unsupported, or malformed per-Turn proof omits that summary and does
  * not rewrite the original Item. The projection stores nothing.
  *
+ * Check request eligibility before expensive provenance reads so dashboard polling cannot make
+ * impossible summaries compete with Turn completion. This only rejects candidates; every
+ * published summary still requires the complete shared verifier and exact Item/digest checks.
+ *
  * @param input Existing authorities plus the Thread whose Turns are inspected.
  * @returns Proven initiating-request summaries in Thread Turn order.
  */
@@ -99,10 +103,21 @@ export function projectThreadTaskInputs(input: WorkerContextProjectionInput): Th
   }
 
   const itemsById = new Map(
-    input.store.listThreadItems(workspaceId, input.threadId).map((item) => [item.id, item] as const)
+    input.store.listThreadItems(workspaceId, input.threadId).flatMap((item) => {
+      if (item.type !== 'user-message') return [];
+      try {
+        const parsed = StructuredWorkerDelegationRequestSchema.safeParse(JSON.parse(item.text));
+        return parsed.success
+          ? [[item.id, { item, objective: parsed.data.objective }] as const]
+          : [];
+      } catch {
+        return [];
+      }
+    })
   );
   const summaries: ThreadTaskInput[] = [];
   for (const turn of turns) {
+    if (![...itemsById.values()].some(({ item }) => item.turnId === turn.id)) continue;
     try {
       const trace = readWorkerContextPackageTrace({
         authorities,
@@ -111,9 +126,10 @@ export function projectThreadTaskInputs(input: WorkerContextProjectionInput): Th
         workspaceId,
         workspaceRoot,
       });
-      const item = itemsById.get(trace.workerRequestItemId);
+      const candidate = itemsById.get(trace.workerRequestItemId);
+      if (!candidate) continue;
+      const { item, objective } = candidate;
       if (
-        !item ||
         workspaceIdForOwner(item.owner) !== workspaceId ||
         item.threadId !== input.threadId ||
         item.turnId !== turn.id ||
@@ -123,11 +139,7 @@ export function projectThreadTaskInputs(input: WorkerContextProjectionInput): Th
       ) {
         continue;
       }
-      const parsed = StructuredWorkerDelegationRequestSchema.safeParse(JSON.parse(item.text));
-      if (!parsed.success) {
-        continue;
-      }
-      summaries.push({ itemId: item.id, objective: parsed.data.objective });
+      summaries.push({ itemId: item.id, objective });
     } catch {}
   }
   return summaries;

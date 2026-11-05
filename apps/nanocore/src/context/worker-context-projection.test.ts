@@ -10,6 +10,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
@@ -492,6 +493,50 @@ describe('thread taskInputs projection', () => {
     await shutdownControlStoreWorkerClient();
     vi.mocked(createWorkerContextPackageAuthorityReader).mockRestore();
     vi.mocked(readWorkerContextPackageTrace).mockRestore();
+  });
+
+  it.each([
+    'An ordinary human instruction.',
+    '{"tone":"Concise"}',
+  ])('leaves an ineligible request verbatim without Context Package verification: %s', async (text) => {
+    // Task Mode's readable initiating request owner permits only proven structured requests.
+    // A negative eligibility check must not spend the full verifier on an impossible summary.
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-inputs-ineligible-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    try {
+      const thread = await store.createThread(workspaceId, 'Ordinary initiating request');
+      const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+      const turn = await store.createTurn(workspaceId, thread.id, text, actor);
+      const item = await store.createItem({
+        id: 'it_00000000-0000-7420-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId },
+        threadId: thread.id,
+        turnId: turn.id,
+        type: 'user-message',
+        status: 'completed',
+        actor,
+        text,
+        createdAt: turn.startedAt!,
+        completedAt: turn.startedAt,
+      });
+      vi.mocked(readWorkerContextPackageTrace).mockClear();
+      expect(projectThreadTaskInputs({ coreDb, store, threadId: thread.id, workspaceDb })).toEqual(
+        []
+      );
+      expect(store.listThreadItems(workspaceId, thread.id)).toContainEqual(item);
+      expect(readWorkerContextPackageTrace).not.toHaveBeenCalled();
+    } finally {
+      closeWorkspaceProductReadHandles();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   it('maps the objective from a verified trace through the exact request Item', async () => {
