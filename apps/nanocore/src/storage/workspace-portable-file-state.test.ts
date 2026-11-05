@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -26,10 +26,10 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareWorkspaceKnowledgeSelection } from './control-store-knowledge.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { retrieveWorkspaceKnowledge } from './index-rebuild.js';
@@ -51,9 +51,7 @@ async function workspaceFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-portable-files-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -130,8 +128,7 @@ describe('workspace portable file state', () => {
   it('completes staged configuration only for the initialized Knowledge Base binding', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-import-staged-config-'));
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      return rmSync(root, { recursive: true, force: true });
+      await disposeTestStore(root);
     });
     const knowledgeBaseId = testEntityId('kb', 'portable-config-target');
     const configPath = join(root, 'config', 'workspace.jsonc');

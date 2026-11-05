@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -15,9 +15,9 @@ import { correctMaterialRange } from '../material-range-corrections.js';
 import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { verifyWorkspaceExportTree } from './workspace-export.js';
@@ -32,9 +32,7 @@ it('preserves exact historical bytes, parents and publication lineage through th
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-portability-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -179,9 +177,7 @@ it('retains historical Artifact event snapshots and Item deltas in the verified 
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-events-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -330,9 +326,7 @@ it('exports target-owned judgements, exact range results and candidate choices',
   const dataRoot = mkdtempSync(join(tmpdir(), 'evaluation-portability-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(async () => {
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   });
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
