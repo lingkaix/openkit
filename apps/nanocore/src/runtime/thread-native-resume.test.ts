@@ -1,12 +1,10 @@
 // openkit-test-platform: posix
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TurnSchema, workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, expect, it, vi } from 'vitest';
-import { FsStore } from '../lib/store.js';
+import { expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { AgentSessionRecordSchema } from '../storage/workspace-file-records.js';
@@ -19,6 +17,7 @@ import {
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
@@ -78,7 +77,7 @@ it.each([
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const demo = createDemoWorkspaceForUser(FIXTURE_LOCAL_USER_ID);
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -339,12 +338,6 @@ it.each([
     ).rejects.toThrow('resume probe boundary');
     expect(offered).toEqual(resumes ? { locator: oldSessionId, digest: 'a'.repeat(64) } : null);
   } finally {
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot, coreDb);
   }
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

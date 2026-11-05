@@ -11,7 +11,7 @@ import {
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import {
   importWorkspaceSkill,
@@ -19,12 +19,12 @@ import {
   setWorkspaceSkillPin,
 } from '../catalog/resource-catalog.js';
 import { buildWorkerContextPackageWorkspaceInput } from '../context/worker-context-package.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, createDemoWorkspaceForUser } from '../test-support/demo-store.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { disposeTestStore } from '../test-support/store.js';
 import {
   openShellNetworkEndpointsFromPackagePolicy,
   prepareNanoHostContextPackageImports,
@@ -326,8 +326,7 @@ describe('NanoHost worker governance helpers', () => {
 async function createNanoHostPackage(): Promise<AgentEnvironmentPackage> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-governance-package-store-'));
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   });
   const store = await createDemoStore({ dataRoot });
   const turn = await store.createTurn(
@@ -764,9 +763,4 @@ it('prepares a large Context Package original as a verified bounded source and r
   } finally {
     rmSync(dataRoot, { recursive: true, force: true });
   }
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

@@ -1,15 +1,14 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
-import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { RecurringPreparation } from '../storage/recurring-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -34,7 +33,7 @@ async function fixture() {
   const db = openCoreDb(root);
   applyMigrations(db);
   const localUserId = ensureLocalUser(db);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('Recurring');
   const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({
@@ -99,11 +98,9 @@ async function fixture() {
   };
 }
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
   for (const { root, db, services } of owned.splice(0)) {
     for (const service of services) service.stop();
-    db.sqlite.close();
-    rmSync(root, { recursive: true, force: true });
+    await disposeTestStore(root, db);
   }
 });
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -30,7 +30,6 @@ import {
   preparePolicyDocument,
 } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -39,7 +38,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { disposeTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
@@ -98,10 +97,9 @@ function tools(): Tool[] {
   ];
 }
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   vi.restoreAllMocks();
 });
 
@@ -132,11 +130,7 @@ async function fixture(
   });
   const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(db, undefined, 'pre-knowledge');
-  cleanups.push(() => {
-    db.sqlite.close();
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
-  });
+  cleanups.push(() => disposeTestStore(dataRoot, db, coreDb));
   await openTestNativeWorkspace(db);
   const setup = createTestAgentSetup({ agentId: 'agent_demo', mcpIds: ['echo-server'] });
   admitTestNativeEnvironment(coreDb, setup.manifest);

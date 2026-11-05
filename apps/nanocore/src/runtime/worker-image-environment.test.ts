@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { disposeTestStore } from '../test-support/store.js';
 import {
   admitWorkerImageEnvironment,
   readAdmittedWorkerImageEnvironment,
@@ -97,9 +97,7 @@ describe('confirmed image environment settlement', () => {
           .get('1'.repeat(64))
       ).toEqual({ bytes: extended });
     } finally {
-      await shutdownControlStoreWorkerClient();
-      db.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
+      await disposeTestStore(root, db);
     }
   });
   it('refuses conflicting second admission before writing and revalidates durable bytes on read', async () => {
@@ -160,9 +158,7 @@ describe('confirmed image environment settlement', () => {
         );
       expect(() => readAdmittedWorkerImageEnvironment(db, imageDigest)).toThrow();
     } finally {
-      await shutdownControlStoreWorkerClient();
-      db.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
+      await disposeTestStore(root, db);
     }
   });
 });

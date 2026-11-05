@@ -1,11 +1,10 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -14,16 +13,13 @@ import {
 } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareRecurringOccurrence } from './recurring-schedule-preparation.js';
 
 const fixtures: { root: string; db: CoreDb }[] = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const { root, db } of fixtures.splice(0)) {
-    if (db.sqlite.open) db.sqlite.close();
-    rmSync(root, { recursive: true, force: true });
-  }
+  for (const { root, db } of fixtures.splice(0)) await disposeTestStore(root, db);
 });
 
 /** Uses the real current setup resolver and durable occurrence without a Worker backend. */

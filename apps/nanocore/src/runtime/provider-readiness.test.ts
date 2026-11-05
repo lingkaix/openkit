@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { GatewayConfig } from '@openkit/config-schema';
@@ -11,13 +11,13 @@ import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import type { ExecutionBackend } from './execution-backend.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
@@ -42,10 +42,9 @@ type SupplyCase =
   | 'healthy-account'
   | 'enabled-backup';
 
-const cleanups: Array<() => void> = [];
+const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 /** Creates one logical model and its current API-key or subscription supply. */
@@ -131,10 +130,7 @@ async function fixture(kind: SupplyCase) {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
   await recordTestNativeRuntimeTarget(coreDb);
-  cleanups.push(() => {
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
-  });
+  cleanups.push(() => disposeTestStore(dataRoot, coreDb));
   const backend: ExecutionBackend = {
     id: 'readiness-backend',
     submit: vi.fn().mockRejectedValue(new Error('Unexpected backend submission.')),

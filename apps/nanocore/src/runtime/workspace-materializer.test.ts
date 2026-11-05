@@ -1,15 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkspaceChangeSetSchema } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { disposeTestStore } from '../test-support/store.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -20,8 +20,7 @@ describe('workspace materializer records', () => {
   it('builds product-safe input snapshots from an Agent Environment Package', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-materializer-'));
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot);
     });
     const store = await createDemoStore({ dataRoot });
     const turn = await store.createTurn(
@@ -100,8 +99,7 @@ describe('workspace materializer records', () => {
   it('builds the exact S39 context handoff without changing generated near misses', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-materializer-'));
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot);
     });
     const store = await createDemoStore({ dataRoot });
     const turn = await store.createTurn(
@@ -244,8 +242,7 @@ describe('workspace materializer records', () => {
   it('carries catalog source ids into workspace lineage records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-materializer-'));
     onTestFinished(async () => {
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot);
     });
     const store = await createDemoStore({ dataRoot });
     const turn = await store.createTurn(
@@ -422,9 +419,4 @@ describe('workspace materializer records', () => {
       status: 'pending',
     });
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

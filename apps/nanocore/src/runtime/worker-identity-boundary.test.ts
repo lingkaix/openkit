@@ -1,13 +1,13 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-review-follow-up.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { WorkspaceDeletionClosureSchema } from '../workspace-deletion-evidence.js';
 import { WorkspaceDeletionRequestRecordSchema } from '../workspace-deletion-request.js';
 import type { WorkerGovernanceBackend } from './worker-governance-backend.js';
@@ -19,8 +19,7 @@ import { WorkerImageSettlementIdentitySchema } from './worker-image-settlements-
 async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'worker-identity-boundary-'));
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   });
   const store = await createDemoStore({ dataRoot });
   const turn = await store.createTurn(
@@ -149,9 +148,4 @@ it.each([
     schema.safeParse({ kind, id: `${prefix}_${uuid}`, annotation: 'unsupported instruction' })
       .success
   ).toBe(false);
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });

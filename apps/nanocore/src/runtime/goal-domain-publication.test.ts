@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -7,21 +7,19 @@ import type { Actor } from '../auth/identity.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
-import { FsStore } from '../lib/store.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
 import { readPendingRequest } from './pending-requests.js';
 
-const cleanup: (() => void)[] = [];
+const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
   for (const close of cleanup.splice(0)) await close();
 });
 
@@ -32,15 +30,11 @@ async function fixture() {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor: Actor = { kind: 'local', userId };
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Joint domain publication');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const db = openWorkspaceDb(dataRoot, workspace.id);
-  cleanup.push(() => {
-    db.sqlite.close();
-    coreDb.sqlite.close();
-    rmSync(dataRoot, { recursive: true, force: true });
-  });
+  cleanup.push(() => disposeTestStore(dataRoot, db, coreDb));
   mkdirSync(join(dataRoot, 'config'), { recursive: true });
   const configPath = join(dataRoot, 'config/server.jsonc');
   writeFileSync(configPath, JSON.stringify({ schemaVersion: 1 }));

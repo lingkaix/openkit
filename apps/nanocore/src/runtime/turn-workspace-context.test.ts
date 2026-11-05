@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,11 +8,11 @@ import {
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
 import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
 
@@ -314,7 +314,6 @@ function remoteGitCatalog(
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
-  if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
+  if (dataRoot) await disposeTestStore(dataRoot);
   dataRoot = undefined;
 });

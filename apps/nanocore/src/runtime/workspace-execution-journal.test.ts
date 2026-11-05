@@ -1,15 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
-import { FsStore } from '../lib/store.js';
 import { controlStoreFor } from '../storage/control-store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { createExecutionStepJournalReader } from './execution-journal.js';
 import type { ExecutionJournalSpan, ExecutionStepControl } from './execution-step-journal.js';
 
@@ -90,14 +89,11 @@ async function fixture() {
   const core = openCoreDb(root);
   let db: ReturnType<typeof openWorkspaceDb>;
   onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
-    if (db?.sqlite.open) db.sqlite.close();
-    if (core.sqlite.open) core.sqlite.close();
-    rmSync(root, { recursive: true, force: true });
+    await disposeTestStore(root, ...(db ? [db] : []), core);
   });
   applyMigrations(core);
   const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(core) };
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('Journal reader', {
     producer: actor,
     requestId: randomUUID(),

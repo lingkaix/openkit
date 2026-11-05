@@ -1,10 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { waitForWorkerTurnTerminalState } from './task-turn-wait.js';
 
 const SENTINEL = Symbol('still-waiting');
@@ -19,7 +18,7 @@ let dataRoot: string | null = null;
  * @returns Terminal turn read model, or the sentinel when the waiter did not settle.
  */
 async function settleOrSentinel(
-  store: FsStore,
+  store: Awaited<ReturnType<typeof createDemoStore>>,
   turnId: string
 ): Promise<Awaited<ReturnType<typeof waitForWorkerTurnTerminalState>> | typeof SENTINEL> {
   return Promise.race([
@@ -36,7 +35,9 @@ async function settleOrSentinel(
  * @param turnId Deterministic turn id.
  * @returns Store and the created turn id.
  */
-async function createWorkerTurn(turnId: string): Promise<{ store: FsStore; turnId: string }> {
+async function createWorkerTurn(
+  turnId: string
+): Promise<{ store: Awaited<ReturnType<typeof createDemoStore>>; turnId: string }> {
   dataRoot = mkdtempSync(join(tmpdir(), 'task-turn-wait-'));
   const store = await createDemoStore({ dataRoot });
   const thread = await store.createThread(
@@ -110,9 +111,8 @@ describe('waitForWorkerTurnTerminalState', () => {
 
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
   if (dataRoot) {
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
     dataRoot = null;
   }
 });
