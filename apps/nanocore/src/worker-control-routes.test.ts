@@ -21,7 +21,6 @@ import { WorkerControlClient } from '../../../packages/worker-shim/src/control-c
 import { WorkerTranscriptWriter } from '../../../packages/worker-shim/src/transcript.js';
 import { createDefaultWorkerControlGateway } from './app.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import type { FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
 import {
@@ -229,7 +228,7 @@ async function createWorkerControlRouteFixture(
   environmentPackage: AgentEnvironmentPackage;
   gateway: WorkerControlGateway;
   lineage: WorkerControlLineage;
-  store: FsStore;
+  store: Awaited<ReturnType<typeof createDemoStore>>;
   token: string;
   workspaceMutationAdmission: WorkspaceMutationAdmission;
 }> {
