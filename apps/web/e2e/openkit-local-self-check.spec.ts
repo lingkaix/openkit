@@ -6,8 +6,15 @@ import {
   ThreadDashboardResponseSchema,
 } from '@openkit/app-api-schemas';
 import { createCoreClient, createRequestId } from '@openkit/core-client';
-import { ThreadSchema, workspaceIdForOwner } from '@openkit/protocol';
-import { expect, type Page, test } from '@playwright/test';
+import {
+  ItemStatusSchema,
+  ItemTypeSchema,
+  ThreadSchema,
+  TurnReadProjectionSchema,
+  TurnStatusSchema,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
+import { expect, type Page, type TestInfo, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
@@ -389,6 +396,296 @@ async function waitForAnswerTurn(
     .toBe(true);
 }
 
+/** Demo Workspace named by this fixture. Not an account identifier. */
+const MATERIAL_WORKSPACE_ID = 'ws_00000000-0000-7000-8000-000000000001';
+/** Bounds one failure attachment. Extra rows are counted, then dropped. */
+const RETAINED_ROW_CAP = 8;
+/** Stops a failure-path read from buffering an unbounded public document. */
+const PUBLIC_BODY_CAP = 1_048_576;
+/** One shared deadline for every failure-path read. It cannot extend the 150s harness. */
+const PUBLIC_READ_TIMEOUT_MS = 1_000;
+/** Closed protocol enums. A value outside the enum is withheld rather than copied. */
+const RETAINED_TURN_STATUSES: ReadonlySet<string> = new Set(TurnStatusSchema.options);
+const RETAINED_ITEM_TYPES: ReadonlySet<string> = new Set(ItemTypeSchema.options);
+const RETAINED_ITEM_STATUSES: ReadonlySet<string> = new Set(ItemStatusSchema.options);
+/** Operation ids, agent ids, and error codes. Free text, including spaces, is withheld. */
+const PUBLIC_TOKEN = /^[A-Za-z0-9_.:-]{1,80}$/;
+/** Timestamp characters only. The protocol schema accepts any nonempty string. */
+const PUBLIC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T[0-9:.+Z-]{1,32}$/;
+
+/**
+ * Keeps one safe token, or a fixed withheld label when the value is not a token.
+ *
+ * @param value Field that the public schema may leave unbounded.
+ * @param withheld Label stored instead of the original characters.
+ * @returns The original token, or the withheld label.
+ */
+function retainedToken(value: string | null | undefined, withheld: string): string | null {
+  if (value == null) return null;
+  return PUBLIC_TOKEN.test(value) ? value : withheld;
+}
+
+/**
+ * Keeps one ISO-shaped timestamp, or null when the field is any other text.
+ *
+ * @param value Public timestamp field.
+ * @returns The timestamp, or null.
+ */
+function retainedTimestamp(value: string | null): string | null {
+  return value != null && PUBLIC_TIMESTAMP.test(value) ? value : null;
+}
+
+/**
+ * Reads at most the public-body cap, then cancels the rest.
+ *
+ * @param response Successful public operation response.
+ * @returns Decoded text, or null when the cap is crossed.
+ */
+async function readBoundedText(response: Response): Promise<string | null> {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const step = await reader.read();
+    if (step.done) break;
+    const value = step.value;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > PUBLIC_BODY_CAP) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+}
+
+/**
+ * Posts one existing public operation and returns parsed JSON, a status, or a cap.
+ *
+ * Non-success bodies are cancelled unread. No header, URL, or body is retained here.
+ * This does not use getJson: that helper puts the response text into its assertion message.
+ *
+ * @param path Existing app operation path.
+ * @param input Operation ids only.
+ * @returns Parsed JSON, or a fixed failure/cap result.
+ */
+async function readPublicOperation(
+  path: string,
+  input: Record<string, string>,
+  signal: AbortSignal
+): Promise<
+  | { kind: 'ok'; value: unknown }
+  | { kind: 'public-read-failed'; status: number | null }
+  | { kind: 'public-read-capped'; status: number | null }
+> {
+  if (!stack) return { kind: 'public-read-failed', status: null };
+  let response: Response;
+  try {
+    response = await fetch(`${stack.coreUrl}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+      signal,
+    });
+  } catch {
+    return { kind: 'public-read-failed', status: null };
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    return { kind: 'public-read-failed', status: response.status };
+  }
+  let text: string | null;
+  try {
+    text = await readBoundedText(response);
+  } catch {
+    return { kind: 'public-read-failed', status: response.status };
+  }
+  if (text == null) return { kind: 'public-read-capped', status: response.status };
+  try {
+    return { kind: 'ok', value: JSON.parse(text) as unknown };
+  } catch {
+    return { kind: 'public-read-failed', status: response.status };
+  }
+}
+
+/**
+ * Retains the second outcome-delivery boundary on failure only.
+ *
+ * The dashboard projection supplies turn status, error code, and item identity. turn.read adds
+ * only whether a context-package digest is present. Item text, error messages, account ids,
+ * headers, and the digest value are not copied. Local telemetry files are not read: fixture
+ * cleanup deletes them, and this public projection is the smaller record of the same boundary.
+ *
+ * @param threadId Fixed Thread that owns the outcome-delivery Turn.
+ * @param priorTurnIds Turn ids observed before the second answer.
+ * @param testInfo Playwright attachment sink. The attachment does not change the test result.
+ */
+async function retainOutcomeDeliveryFailure(
+  threadId: string,
+  priorTurnIds: ReadonlySet<string>,
+  testInfo: TestInfo
+): Promise<void> {
+  const observation: {
+    kind: 'outcome-delivery-observation';
+    operation: 'thread.dashboard';
+    workspaceId: string;
+    threadId: string;
+    deliveredTurnCount: number | null;
+    truncated: boolean;
+    turns: Array<{
+      id: string;
+      status: string;
+      agentId: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
+      errorCode: string | null;
+      itemCount: number;
+      items: Array<{
+        id: string;
+        type: string;
+        status: string;
+        turnId: string;
+        createdAt: string | null;
+      }>;
+    }>;
+    turnReads: Array<{
+      id: string;
+      read: 'ok' | 'public-read-failed' | 'public-read-capped';
+      httpStatus: number | null;
+      status: string | null;
+      errorCode: string | null;
+      contextPackageDigestPresent: boolean | null;
+    }>;
+    publicRead: 'ok' | 'public-read-failed' | 'public-read-capped';
+    publicReadStatus: number | null;
+  } = {
+    kind: 'outcome-delivery-observation',
+    operation: 'thread.dashboard',
+    workspaceId: MATERIAL_WORKSPACE_ID,
+    threadId: retainedToken(threadId, 'nonpublic-id') ?? 'nonpublic-id',
+    deliveredTurnCount: null,
+    truncated: false,
+    turns: [],
+    turnReads: [],
+    publicRead: 'public-read-failed',
+    publicReadStatus: null,
+  };
+  const signal = AbortSignal.timeout(PUBLIC_READ_TIMEOUT_MS);
+  const dashboard = await readPublicOperation(
+    '/api/app/operations/thread.dashboard',
+    {
+      workspaceId: MATERIAL_WORKSPACE_ID,
+      threadId,
+    },
+    signal
+  );
+  observation.publicRead = dashboard.kind === 'ok' ? 'ok' : dashboard.kind;
+  observation.publicReadStatus = dashboard.kind === 'ok' ? null : dashboard.status;
+  if (dashboard.kind === 'ok') {
+    try {
+      const parsed = ThreadDashboardResponseSchema.parse(dashboard.value);
+      const delivered = parsed.turns.filter((turn) => !priorTurnIds.has(turn.id));
+      observation.deliveredTurnCount = delivered.length;
+      observation.truncated = delivered.length > RETAINED_ROW_CAP;
+      for (const turn of delivered.slice(0, RETAINED_ROW_CAP)) {
+        const items = turn.items.slice(0, RETAINED_ROW_CAP);
+        if (turn.items.length > RETAINED_ROW_CAP) observation.truncated = true;
+        observation.turns.push({
+          id: retainedToken(turn.id, 'nonpublic-id') ?? 'nonpublic-id',
+          status: RETAINED_TURN_STATUSES.has(turn.status) ? turn.status : 'nonpublic-status',
+          agentId: retainedToken(turn.agentId, 'nonpublic-agent-id'),
+          startedAt: turn.startedAt == null ? null : retainedTimestamp(turn.startedAt),
+          completedAt: turn.completedAt == null ? null : retainedTimestamp(turn.completedAt),
+          errorCode: retainedToken(turn.error?.code, 'nonpublic-error-code'),
+          itemCount: turn.items.length,
+          items: items.map((item) => ({
+            id: retainedToken(item.id, 'nonpublic-id') ?? 'nonpublic-id',
+            type: RETAINED_ITEM_TYPES.has(item.type) ? item.type : 'nonpublic-type',
+            status: RETAINED_ITEM_STATUSES.has(item.status) ? item.status : 'nonpublic-status',
+            turnId: retainedToken(item.turnId, 'nonpublic-id') ?? 'nonpublic-id',
+            createdAt: retainedTimestamp(item.createdAt),
+          })),
+        });
+      }
+      for (const turn of observation.turns) {
+        const read = await readPublicOperation(
+          '/api/app/operations/turn.read',
+          {
+            workspaceId: MATERIAL_WORKSPACE_ID,
+            threadId,
+            turnId: turn.id,
+          },
+          signal
+        );
+        if (read.kind !== 'ok') {
+          observation.turnReads.push({
+            id: turn.id,
+            read: read.kind,
+            httpStatus: read.status,
+            status: null,
+            errorCode: null,
+            contextPackageDigestPresent: null,
+          });
+          continue;
+        }
+        try {
+          const projection = TurnReadProjectionSchema.parse(read.value);
+          observation.turnReads.push({
+            id: turn.id,
+            read: 'ok',
+            httpStatus: null,
+            status: RETAINED_TURN_STATUSES.has(projection.status)
+              ? projection.status
+              : 'nonpublic-status',
+            errorCode: retainedToken(projection.error?.code, 'nonpublic-error-code'),
+            contextPackageDigestPresent: projection.contextPackageDigest !== null,
+          });
+        } catch {
+          observation.turnReads.push({
+            id: turn.id,
+            read: 'public-read-failed',
+            httpStatus: null,
+            status: null,
+            errorCode: null,
+            contextPackageDigestPresent: null,
+          });
+        }
+      }
+    } catch {
+      observation.publicRead = 'public-read-failed';
+      observation.turns = [];
+      observation.turnReads = [];
+      observation.deliveredTurnCount = null;
+      observation.truncated = false;
+    }
+  }
+  const body = JSON.stringify(observation);
+  await testInfo.attach('outcome-delivery-observation.json', {
+    body:
+      body.length > 24_576
+        ? JSON.stringify({
+            kind: 'outcome-delivery-observation',
+            operation: 'thread.dashboard',
+            publicRead: 'public-read-capped',
+            publicReadStatus: null,
+            deliveredTurnCount: observation.deliveredTurnCount,
+            truncated: true,
+            turns: [],
+            turnReads: [],
+          })
+        : body,
+    contentType: 'application/json',
+  });
+}
+
 /**
  * Proves the fixed visible Plane 1 handoff, restart, proposal, apply, and conflict sequence.
  *
@@ -396,7 +693,7 @@ async function waitForAnswerTurn(
  */
 test('completes the fixed visible Material handoff and proposal-conflict sequence', async ({
   page,
-}) => {
+}, testInfo) => {
   // Cold startup, two worker turns, two Core restarts, and post-202 Context Package acceptance share this bounded harness budget. Per-action and assertion timeouts still detect stalled progress.
   test.setTimeout(150_000);
   const browserRuntimeErrors: string[] = [];
@@ -529,7 +826,17 @@ test('completes the fixed visible Material handoff and proposal-conflict sequenc
   await expect(page.getByText('You answered')).toHaveCount(2, { timeout: 15_000 });
   await expect(page.getByText('Which summary tone should the simulator use?')).toHaveCount(0);
 
-  await waitForAnswerTurn(threadId, beforeSecondAnswer);
+  try {
+    await waitForAnswerTurn(threadId, beforeSecondAnswer);
+  } catch (error) {
+    // Failure only. Retention cannot replace or complete the original outcome-delivery error.
+    try {
+      await retainOutcomeDeliveryFailure(threadId, beforeSecondAnswer, testInfo);
+    } catch {
+      // The attachment is optional. The original exception continues below.
+    }
+    throw error;
+  }
 
   const artifacts = (
     await getJson<{ items: ProposalArtifactSummary[] }>('/api/app/operations/artifact.list', {
