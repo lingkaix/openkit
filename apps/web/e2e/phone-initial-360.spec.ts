@@ -514,8 +514,25 @@ test('routes the selected artifact version from the phone without submitting', a
     );
     await expect(page.getByRole('button', { name: 'Remove Comparison report' })).toBeVisible();
     expect(submissions).toHaveLength(submitsBeforeUse);
-    // The explicit Send and its artifactRefs 202 stayed beyond this 120s bound.
-    // artifact-candidate-sets.spec.ts keeps that oracle. This run does not claim it.
+    // Preserve the retained phone failure as a regression; Use itself must not submit.
+    await page
+      .getByRole('textbox', { name: 'Message' })
+      .fill('Continue from the selected exact version.');
+    const sending = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === '/api/app/operations/conversation.submit'
+    );
+    await page.getByRole('button', { name: 'Send message', exact: true }).click();
+    const sent = await sending;
+    expect(sent.status()).toBe(202);
+    const payload = sent.request().postDataJSON();
+    expect(payload.artifactRefs).toEqual([{ artifactId: imported.artifactId, artifactVersion: 1 }]);
+    const catalog = await client.operations['conversation.targets']({
+      workspaceId: workspace.id,
+      threadId: handoff.receivingThreadId,
+    });
+    const admitted = catalog.targets.find((target) => target.targetRef === payload.targetRef);
+    expect(admitted?.availability).toBe('available');
+    expect(['new-task-worker', 'warm-worker', 'running-worker']).toContain(admitted?.kind);
     expect(runtimeErrors).toEqual([]);
     expect(page.viewportSize()).toEqual({ width: 360, height: 800 });
   } finally {
