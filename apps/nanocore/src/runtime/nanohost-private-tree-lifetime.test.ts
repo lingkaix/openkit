@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import fsPromises, { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import fsPromises, { lstat, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -11,8 +11,7 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
+import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
 import { removeNanoHostStagedExport } from './worker-governance-backend.js';
@@ -142,11 +141,6 @@ it('propagates completed export cleanup failure, preserves sibling bytes and per
     await capture?.catch(() => undefined);
     client?.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    try {
-      await shutdownControlStoreWorkerClient();
-    } finally {
-      closeTestCoreDb(coreDb);
-      await rm(root, { recursive: true, force: true });
-    }
+    await disposeTestStore(root, coreDb);
   }
 });

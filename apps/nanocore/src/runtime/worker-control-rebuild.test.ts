@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -12,7 +12,6 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -27,6 +26,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
@@ -114,9 +114,7 @@ async function createRestorableWorkerControlFixture(
   vi.setSystemTime(new Date('2026-07-13T00:00:06.000Z'));
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-'));
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
-    if (coreDb.sqlite.open) coreDb.sqlite.close();
-  });
+  onTestFinished(() => disposeTestStore(dataRoot, coreDb));
 
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -127,10 +125,7 @@ async function createRestorableWorkerControlFixture(
   });
   // Demo supplies the AEP input without populating the independent rebuild target.
   const sourceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-rebuild-source-'));
-  onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
-    rmSync(sourceRoot, { recursive: true, force: true });
-  });
+  onTestFinished(() => disposeTestStore(sourceRoot));
   const store = await createDemoStore({ dataRoot: sourceRoot });
   const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
@@ -229,6 +224,7 @@ describe('worker control gateway restart hydration', () => {
   afterEach(() => vi.useRealTimers());
   it('skips restart hydration before the scheduler schema exists', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-control-empty-rebuild-')));
+    onTestFinished(() => disposeTestStore(coreDb.dataRoot, coreDb));
     const gateway = new WorkerControlGateway();
 
     try {
@@ -331,9 +327,4 @@ describe('worker control gateway restart hydration', () => {
       }
     }
   });
-});
-
-// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
-afterEach(async () => {
-  await shutdownControlStoreWorkerClient();
 });
