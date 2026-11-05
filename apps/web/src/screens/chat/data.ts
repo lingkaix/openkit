@@ -11,6 +11,7 @@ import {
 } from '@openkit/core-client';
 import { ItemSchema, type ReasoningEffort, workspaceIdForOwner } from '@openkit/protocol';
 import {
+  type QueryClient,
   skipToken,
   useMutation,
   useMutationState,
@@ -338,26 +339,62 @@ export function classifiedThreadPath(
   return conversationThreadPath(workspaceId, threadId, item.activity);
 }
 
+/** One authorized Workspace row with the caller's explicit relationship and access cause. */
+export type WorkspaceAdmission = Awaited<
+  ReturnType<CoreClient['operations']['workspace.list']>
+>['items'][number];
+
+/**
+ * Generation of the latest Workspace discovery started on one QueryClient.
+ *
+ * The switcher reads a summary projection written from inside discovery. TanStack
+ * does not revert that write when a slower response finishes after a newer read,
+ * so publication is tied to this generation instead.
+ */
+const workspaceDiscoveryEpoch = new WeakMap<QueryClient, number>();
+
+/** Starts one Workspace discovery. A later start supersedes this one's publication. */
+export function beginWorkspaceDiscovery(queryClient: QueryClient): number {
+  const next = (workspaceDiscoveryEpoch.get(queryClient) ?? 0) + 1;
+  workspaceDiscoveryEpoch.set(queryClient, next);
+  return next;
+}
+
+/**
+ * Publishes Workspace rows for the switcher when this discovery is still current.
+ *
+ * @returns The Workspace records for the discovery query, without the caller's relationship fields.
+ * @throws DOMException when the signal is aborted or a newer discovery has started.
+ */
+export function commitDiscoveredWorkspaces(
+  queryClient: QueryClient,
+  signal: AbortSignal,
+  epoch: number,
+  items: readonly WorkspaceAdmission[]
+) {
+  signal.throwIfAborted();
+  if (workspaceDiscoveryEpoch.get(queryClient) !== epoch) {
+    throw new DOMException('The operation was aborted.', 'AbortError');
+  }
+  queryClient.setQueryData(chatKeys.workspaceSummaries, items);
+  return items.map((entry) => entry.workspace);
+}
+
 /** List the workspaces the user can act in. */
 export function useWorkspaces() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useQuery({
     queryKey: chatKeys.workspaces,
+    // A late personal-only list must not stay fresh and suppress the next account's read.
+    staleTime: 0,
     queryFn: async ({ signal }) => {
+      const epoch = beginWorkspaceDiscovery(queryClient);
       const { items } = await client.operations['workspace.list']({});
-      // An account transition cancels discovery; its late response must not repopulate the identity-scoped projection.
-      signal.throwIfAborted();
-      queryClient.setQueryData(chatKeys.workspaceSummaries, items);
-      return items.map((entry) => entry.workspace);
+      return commitDiscoveredWorkspaces(queryClient, signal, epoch, items);
     },
   });
 }
-
-/** One authorized Workspace row with the caller's explicit relationship and access cause. */
-export type WorkspaceAdmission = Awaited<
-  ReturnType<CoreClient['operations']['workspace.list']>
->['items'][number];
 
 /**
  * Reads the authorized Workspace rows without dropping ownership, membership, or access cause.

@@ -3,7 +3,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../app/core-client';
-import { chatKeys, useCurrentWorkspaceId } from './chat/data';
+import {
+  beginWorkspaceDiscovery,
+  chatKeys,
+  commitDiscoveredWorkspaces,
+  useCurrentWorkspaceId,
+  type WorkspaceAdmission,
+} from './chat/data';
 import { useWorkspaceStore, WORKSPACE_SELECTION_STORAGE_KEY } from './workspace-store';
 
 const USER_A_QUICK_CHAT = {
@@ -26,6 +32,23 @@ const OTHER_WORKSPACE = {
   name: 'Other Workspace',
   kind: 'general',
 } as const;
+
+/** One switcher row. Relationship fields are the membership the menu keeps. */
+function discoveredWorkspace(workspace: {
+  id: string;
+  name: string;
+  kind: string;
+}): WorkspaceAdmission {
+  return {
+    membershipStatus: 'active',
+    accessCause: 'membership',
+    workspace,
+    isOwner: true,
+    membershipRevision: 1,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    registryRevision: 1,
+  } as WorkspaceAdmission;
+}
 
 /** Reads the resolved switcher Workspace from the live hook. */
 function CurrentWorkspaceProbe({ preferred }: { preferred?: string } = {}) {
@@ -121,6 +144,65 @@ describe('workspace switcher persistence', () => {
     });
     expect(queryClient.getQueryData(chatKeys.workspaceSummaries)).toBeUndefined();
     expect(useWorkspaceStore.getState().selectionUserKey).toBeNull();
+  });
+
+  it('does not publish an older workspace discovery over a newer list', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const older = beginWorkspaceDiscovery(queryClient);
+    const newer = beginWorkspaceDiscovery(queryClient);
+    const signal = new AbortController().signal;
+    commitDiscoveredWorkspaces(queryClient, signal, newer, [
+      discoveredWorkspace(PROJECT_WORKSPACE),
+      discoveredWorkspace(USER_A_QUICK_CHAT),
+    ]);
+    expect(() =>
+      commitDiscoveredWorkspaces(queryClient, signal, older, [
+        discoveredWorkspace(USER_A_QUICK_CHAT),
+      ])
+    ).toThrow(DOMException);
+    expect(
+      queryClient
+        .getQueryData<WorkspaceAdmission[]>(chatKeys.workspaceSummaries)
+        ?.map((entry) => entry.workspace.id)
+    ).toEqual([PROJECT_WORKSPACE.id, USER_A_QUICK_CHAT.id]);
+  });
+
+  it('keeps the newer workspace list when a slower discovery resolves later', async () => {
+    let finishOlder!: (value: { items: WorkspaceAdmission[] }) => void;
+    const listWorkspaces = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishOlder = resolve;
+        })
+    );
+    const client = {
+      operations: { 'workspace.list': listWorkspaces },
+    } as unknown as CoreClient;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>
+          <CurrentWorkspaceProbe />
+        </CoreClientProvider>
+      </QueryClientProvider>
+    );
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(1));
+    const newer = beginWorkspaceDiscovery(queryClient);
+    commitDiscoveredWorkspaces(queryClient, new AbortController().signal, newer, [
+      discoveredWorkspace(PROJECT_WORKSPACE),
+      discoveredWorkspace(USER_A_QUICK_CHAT),
+    ]);
+    await act(async () => {
+      finishOlder({ items: [discoveredWorkspace(USER_A_QUICK_CHAT)] });
+    });
+    await waitFor(() => {
+      expect(queryClient.getQueryState(chatKeys.workspaces)?.fetchStatus).toBe('idle');
+    });
+    expect(
+      queryClient
+        .getQueryData<WorkspaceAdmission[]>(chatKeys.workspaceSummaries)
+        ?.map((entry) => entry.workspace.id)
+    ).toEqual([PROJECT_WORKSPACE.id, USER_A_QUICK_CHAT.id]);
   });
 
   it('restores an explicit authorized selection after hard reload', async () => {
