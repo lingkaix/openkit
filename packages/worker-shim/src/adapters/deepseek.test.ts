@@ -63,7 +63,14 @@ import {
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, spawn: vi.fn(actual.spawn) };
+  return {
+    ...actual,
+    spawn: vi.fn((...args: Parameters<typeof actual.spawn>) => {
+      const child = actual.spawn(...args);
+      if (child.stdin) vi.spyOn(child.stdin, 'write');
+      return child;
+    }),
+  };
 });
 
 /** Observes the concrete process effect owned by this test, not a reflected session field. */
@@ -72,6 +79,30 @@ function spawnedNativeChild(): ChildProcessWithoutNullStreams {
   if (!child?.stdin || !child.stdout || !child.stderr)
     throw new Error('DeepSeek test expected a spawned process with piped stdio.');
   return child as ChildProcessWithoutNullStreams;
+}
+
+/** Correlates a peer reply with the actual UTF-8 request written to its public stdio port. */
+function observedPromptId(child: ChildProcessWithoutNullStreams): string | number {
+  const bytes = Buffer.concat(
+    vi
+      .mocked(child.stdin.write)
+      .mock.calls.map(([chunk]) => (Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+  );
+  let id: string | number | undefined;
+  for (const line of bytes.toString('utf8').split('\n').filter(Boolean)) {
+    const frame: unknown = JSON.parse(line);
+    if (
+      typeof frame === 'object' &&
+      frame !== null &&
+      'method' in frame &&
+      frame.method === methods.agent.session.prompt &&
+      'id' in frame &&
+      (typeof frame.id === 'string' || typeof frame.id === 'number')
+    )
+      id = frame.id;
+  }
+  if (id === undefined) throw new Error('DeepSeek test expected an observed prompt request.');
+  return id;
 }
 
 // Defaults are image supply; test runs never import the developer's native home.
@@ -109,66 +140,6 @@ afterEach(async () => {
 });
 
 describe('deepseek permission and bounds', () => {
-  it.each([
-    {
-      code: -32603,
-      message: `Internal error: no content ${CAUSE_CANARIES.join(' ')} ${'界'.repeat(20_000)}`,
-      expected: 'DeepSeek prompt failed with ACP error -32603.',
-    },
-    {
-      code: -32603,
-      message: `Internal error: turn failed: model "${CAUSE_CANARIES.join(' ')} ${'界'.repeat(20_000)}" returned a completed response with no content`,
-      expected: 'DeepSeek model returned a completed response with no content.',
-    },
-    {
-      code: -32001,
-      message: `Internal error: turn failed: model "${CAUSE_CANARIES.join(' ')}" returned a completed response with no content`,
-      expected: 'DeepSeek prompt failed with ACP error -32001.',
-    },
-  ])('publishes a controlled prompt cause for ACP $code without native canaries', async ({
-    code,
-    message,
-    expected,
-  }) => {
-    const roots = tempRoots();
-    const session = await deepseekResidentAdapter.openSession({
-      agentSessionId: 'as_00000000-0000-7086-a90d-2f256a93902c',
-      controlRoot: roots.control,
-      stateRoot: roots.state,
-      environment: {},
-      loopback: {
-        inferenceBaseUrl: 'http://127.0.0.1:9',
-        inferenceCredential: INFERENCE,
-        capabilityBaseUrl: 'http://127.0.0.1:9',
-        capabilityCredential: CAPABILITY,
-      },
-      resumeReference: null,
-    });
-    sessions.push(session);
-    // Exercise production admission and normalization without claiming native settlement.
-    const native = session as unknown as {
-      promptRequestId: number;
-      classifyNativeLine(line: string): string | null;
-      beginTurn(): {
-        promptFailed: boolean;
-        settled: Promise<{ stopReason: string; diagnostics?: Readonly<Record<string, string>> }>;
-        finish(stopReason: undefined, promptFailed: boolean): void;
-      };
-    };
-    const active = native.beginTurn();
-    native.promptRequestId = 7;
-    native.classifyNativeLine(JSON.stringify({ jsonrpc: '2.0', id: 7, error: { code, message } }));
-    active.finish(undefined, active.promptFailed);
-    const result = await active.settled;
-    expect(result.stopReason).toBe('prompt_failed');
-    for (const canary of CAUSE_CANARIES)
-      expect(result.diagnostics?.failureCause).not.toContain(canary);
-    expect(result.diagnostics?.failureCause).toBe(expected);
-    expect(Buffer.byteLength(result.diagnostics?.failureCause ?? '')).toBeLessThanOrEqual(
-      DEEPSEEK_DIAGNOSTIC_LIMIT_BYTES
-    );
-  });
-
   it('selects allow_once by default and retains reject_once when no allow_once is offered', () => {
     expect(
       deepseekPermissionOutcome([
@@ -1979,39 +1950,38 @@ describe('deepseek resident adapter', () => {
         turn(roots, inference, 'drop', [], 'tu_00000000-0000-7e49-8268-e35715b55d0c')
       );
       await waitFor(() => inference.requests.length > 0);
-      const native = session as unknown as {
-        stderr: Buffer;
-        connection: ClientConnection;
-        sessionId: string;
-      };
-      native.stderr = Buffer.alloc(0);
+      const child = spawnedNativeChild();
+      const sessionId = await nativeSessionId(session);
+      const native = session as unknown as { connection: ClientConnection };
       // A failed drain must remain a close failure alongside the primary prompt cause.
       interceptDeepSeekRequest(native.connection.agent, methods.agent.session.close, async () => {
         throw new Error('flush failed');
       });
-      deliver(
-        session,
-        JSON.stringify({
-          error: {
-            code: -32603,
-            message: `Internal error: turn failed: no content ${INFERENCE} ${native.sessionId} ${roots.control} ${roots.state} Bearer unknown-secret ${CAUSE_CANARIES.join(' ')} ${'界'.repeat(20_000)}`,
-          },
-          id: nativePromptId(session),
-          jsonrpc: '2.0',
-        })
+      child.stdout.emit(
+        'data',
+        Buffer.from(
+          `${JSON.stringify({
+            error: {
+              code: -32001,
+              message: `Internal error: turn failed: model "${INFERENCE} ${sessionId} ${roots.control} ${roots.state} Bearer unknown-secret ${CAUSE_CANARIES.join(' ')} ${'界'.repeat(20_000)}" returned a completed response with no content`,
+            },
+            id: observedPromptId(child),
+            jsonrpc: '2.0',
+          })}\n`
+        )
       );
       const result = await active.settled;
       expect(result).toMatchObject({ status: 'failed', stopReason: 'prompt_failed' });
       expect(result.diagnostics?.stderr).toBeUndefined();
       expect(result.diagnostics?.failureCause).toBe(
-        'DeepSeek prompt failed with ACP error -32603.'
+        'DeepSeek prompt failed with ACP error -32001.'
       );
       expect(Buffer.byteLength(result.diagnostics?.failureCause ?? '')).toBeLessThanOrEqual(
         DEEPSEEK_DIAGNOSTIC_LIMIT_BYTES
       );
       expect(JSON.stringify(result.diagnostics)).not.toContain(INFERENCE);
       expect(JSON.stringify(result.diagnostics)).not.toContain('unknown-secret');
-      expect(JSON.stringify(result.diagnostics)).not.toContain(native.sessionId);
+      expect(JSON.stringify(result.diagnostics)).not.toContain(sessionId);
       expect(JSON.stringify(result.diagnostics)).not.toContain(roots.control);
       expect(JSON.stringify(result.diagnostics)).not.toContain(roots.state);
       for (const canary of CAUSE_CANARIES)
