@@ -1,18 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
   findNextDispatchableSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -25,6 +24,7 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { commandInputHash } from './idempotent-command.js';
 import {
@@ -38,7 +38,7 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
   try {
     applyMigrations(coreDb);
     const userId = ensureLocalUser(coreDb);
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const bad = await store.createWorkspace('Quarantined queue');
     const good = await store.createWorkspace('Healthy queue');
     for (const workspace of [bad, good])
@@ -161,7 +161,6 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
   } finally {
     await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
 });

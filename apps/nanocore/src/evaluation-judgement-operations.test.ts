@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,13 +8,12 @@ import {
 } from '@openkit/app-api-schemas';
 import { expect, it, onTestFinished } from 'vitest';
 import { createEvaluationJudgementOperationImplementations } from './evaluation-judgement-operations.js';
-import { FsStore } from './lib/store.js';
 import type { AdmittedOperationContext } from './operation-contract.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import {
   createWorkspaceMaterial,
   getWorkspaceMaterialRevision,
@@ -27,7 +26,7 @@ it('joins exact human annotations and corrections to ordinary transactional comm
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('Human evaluation');
   const workspaceId = workspace.id;
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
@@ -35,8 +34,7 @@ it('joins exact human annotations and corrections to ordinary transactional comm
   onTestFinished(async () => {
     if (db.sqlite.open) db.sqlite.close();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(root, { recursive: true, force: true });
+    await disposeTestStore(root);
   });
   applyScopedMigrations(db);
   const actor = { kind: 'user', id: userId } as const;
@@ -78,7 +76,10 @@ it('joins exact human annotations and corrections to ordinary transactional comm
   const operations = createEvaluationJudgementOperationImplementations({
     store,
     coreDb,
-    inflightCommands: new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>(),
+    inflightCommands: new WeakMap<
+      ReturnType<typeof createTestStore>,
+      Map<string, InflightIdempotentCommand>
+    >(),
     repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
   });
   const input = RecordEvaluationJudgementRequestSchema.parse({

@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,18 +11,17 @@ import {
   loadResourceCatalog,
   updateMcpBinding,
 } from '../catalog/resource-catalog.js';
-import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { createDefaultWorkerMcpGateway } from './worker-mcp-gateway.js';
 
 it('partitions shared stdio sessions and mutable data by consuming Workspace and preserves local same-id sessions on shared cleanup', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-shared-mcp-process-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const consumers = [
     await store.createWorkspace('Shared first'),
     await store.createWorkspace('Shared second'),
@@ -117,7 +116,6 @@ it('partitions shared stdio sessions and mutable data by consuming Workspace and
   } finally {
     await gateway.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
 });

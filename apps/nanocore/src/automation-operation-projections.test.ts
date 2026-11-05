@@ -1,15 +1,14 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, it } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { AutomationStore } from './lib/automation-store.js';
-import { FsStore } from './lib/store.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp, createLoopbackAppFetch } from './test-support/app.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
@@ -18,7 +17,7 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
   const localUserId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('Recurring');
   const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: localUserId });
@@ -60,7 +59,6 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
     expect(automationStore.getAutomation(record.id).status).toBe('deleted');
   } finally {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(root, { recursive: true, force: true });
+    await disposeTestStore(root);
   }
 });

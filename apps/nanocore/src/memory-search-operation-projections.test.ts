@@ -1,8 +1,7 @@
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
@@ -11,7 +10,6 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { createBetterAuth } from './auth/better-auth.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
-import { FsStore } from './lib/store.js';
 import { admitOperation } from './operation-resolvers.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
@@ -20,6 +18,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real bearer authentication selects each User; every page is published through the public operation. */
@@ -45,7 +44,7 @@ async function fixture() {
       })
     );
   }
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const app = createApp({ coreDb, dataRoot, store, mode: 'server' });
   const workspace = await store.createWorkspace('Memory query context', {
     requestId: randomUUID(),
@@ -56,8 +55,7 @@ async function fixture() {
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   });
   const call = async (user: number, operation: string, input: Record<string, unknown>) => {
     const { requestId, ...body } = input;

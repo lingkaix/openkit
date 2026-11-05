@@ -5,10 +5,9 @@ import { allocateEntityId } from '@openkit/protocol';
 import { expect, it } from 'vitest';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openBootVerifiedWorkspaceDb, openWorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { raiseRecordedPendingRequest } from './pending-request-flow.js';
 
 it.each([
@@ -110,7 +109,6 @@ it.each([
     if (badBytes) expect(readFileSync(badPath)).toEqual(badBytes);
     else expect(() => readFileSync(badPath)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
   } finally {
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
 });

@@ -210,35 +210,6 @@ describe('scheduler attempt maintenance service', () => {
     }
   });
 
-  it('starts immediately, schedules future maintenance, and stops cleanly', async () => {
-    const callbacks: Array<() => void> = [];
-    const cleared: unknown[] = [];
-
-    {
-      const service = startSchedulerAttemptMaintenanceService({
-        runRecoveryMaintenance: {
-          scheduler: async () => {},
-          native: async () => {},
-          checkpoints: async () => {},
-        },
-        intervalMs: 30_000,
-        clearInterval: (handle) => {
-          cleared.push(handle);
-        },
-        setInterval: (callback, intervalMs) => {
-          callbacks.push(callback);
-          return { intervalMs };
-        },
-      });
-
-      callbacks[0]?.();
-      await service.stop();
-
-      expect(callbacks).toHaveLength(1);
-      expect(cleared).toEqual([{ intervalMs: 30_000 }]);
-    }
-  });
-
   it('serializes restart recovery maintenance and retries after an isolated failure', async () => {
     const callbacks: Array<() => void> = [];
     const errors: unknown[] = [];

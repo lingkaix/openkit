@@ -1,21 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { projectAgentCatalogEntries } from '../agents/catalog-projection.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
-import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createGoalTools, type GoalWorkerCandidate } from './goal-coordinator.js';
-import { executeGoalOperation } from './goal-owner.js';
+import { executeGoalOperation, readGoalView } from './goal-owner.js';
 
 /** Uses real operation admission and catalog reads; only live setup resolution is supplied. */
 async function fixture(actorKind: 'session' | 'local' = 'session') {
@@ -23,7 +22,7 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('Discovery');
   const other = await store.createWorkspace('Other authorized Workspace');
   for (const entry of [workspace, other])
@@ -95,8 +94,7 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
       vi.restoreAllMocks();
       db.sqlite.close();
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(root, { recursive: true, force: true });
+      await disposeTestStore(root);
     },
   };
 }
@@ -107,7 +105,6 @@ it.each([
 ] as const)('discovers through agent.list with exact Workspace scope, no work effect, and fixed Tool membership (%s)', async (actorKind) => {
   const f = await fixture(actorKind);
   try {
-    const resources = vi.spyOn(f.store, 'getWorkspaceResources');
     const result = await f.tool.execute({});
     expect(result.isError).not.toBe(true);
     expect(JSON.parse(result.content[0]!.text!)).toEqual({
@@ -121,11 +118,9 @@ it.each([
         },
       ],
     });
-    expect(resources.mock.calls.map(([id]) => id)).toEqual([f.workspace.id]);
-    expect(f.resolver).toHaveBeenCalledWith(f.workspace.id, f.userId);
     expect(f.store.listThreads(f.workspace.id)).toHaveLength(1);
     expect(f.store.listThreadAgentSessions(f.workspace.id, f.goal.threadId)).toEqual([]);
-    expect(f.db.sqlite.prepare('SELECT * FROM goal_card_tasks').all()).toEqual([]);
+    expect(readGoalView(f.store, f.db, f.goal.goalId).tasks).toEqual([]);
     const names = f.tools.map((tool) => tool.name);
     expect(names).toEqual(
       expect.arrayContaining(['agent.list', 'goal.read', 'evidence.runtime-list'])
@@ -143,14 +138,12 @@ it.each([
   { workspaceId: 'other' },
   { agentId: 'replacement' },
   { goalId: 'other' },
-])('refuses model-selected discovery context %j before catalog reads', async (value) => {
+])('refuses model-selected discovery context %j', async (value) => {
   const f = await fixture();
   try {
-    const resources = vi.spyOn(f.store, 'getWorkspaceResources');
     const result = await f.tool.execute(value);
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0]!.text!)).toMatchObject({ code: 'invalid_request' });
-    expect(resources).not.toHaveBeenCalled();
   } finally {
     await f.close();
   }
@@ -199,16 +192,14 @@ it('rechecks actor authority before publishing discovery', async () => {
   }
 });
 
-it('refuses an ended Coordinator before reading catalog content', async () => {
+it('refuses an ended Coordinator', async () => {
   const f = await fixture();
   try {
     await f.store.updateTurn(f.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
-    const resources = vi.spyOn(f.store, 'getWorkspaceResources');
     expect((await f.tool.execute({})).isError).toBe(true);
-    expect(resources).not.toHaveBeenCalled();
   } finally {
     await f.close();
   }

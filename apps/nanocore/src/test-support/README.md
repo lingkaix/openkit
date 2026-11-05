@@ -73,6 +73,8 @@ The HTTP MCP fixture exposes server-observed header snapshots for exact bearer a
 
 `resource-policy.ts.workspaceMembershipDecisionFixture` obtains the actual current `membership.manage` Kernel decision for a fixture User and Workspace. Sharing owner tests pass it directly into the same synchronous Core command transaction. The helper creates no User, Token, membership, stored decision or administrator projection; missing or removed authority still denies.
 
+`store.ts.disposeTestStore` disposes a private fixture root after callers join their work and close their own database handles. It drains the native writer, closes shared Workspace read handles, then removes the root. A failed drain leaves the root intact. It is not a stop/reopen helper and exposes no native command or SQL interface.
+
 `store.ts.createTestUserDb` opens and migrates the actual User storage owner and returns its handle plus an idempotent close callback. It creates no User or authorization facts; tests pass the opaque handle to domain owners and do not access SQLite.
 
 `pending-request.ts.createPendingRequestFixture` owns a caller-selected Workspace handle and exposes the production Pending raise, command-intent resolution and canonical-record read operations. Tests supply the actual request and current actor; the fixture adds no records, decisions or authority. Close it before removing its root.

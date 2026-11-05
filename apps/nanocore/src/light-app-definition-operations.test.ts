@@ -12,13 +12,12 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { FsStore } from './lib/store.js';
 import { lightAppDbPath, lightAppRoot } from './storage/app-db.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** The real public catalog and Kernel owners share definition identity without implicit data migration. */
@@ -27,7 +26,7 @@ it('imports, pins, activates and restores a reusable definition through public o
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const ownerUserId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Definition lifecycle');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
   const app = createApp({ coreDb, dataRoot, store, mode: 'local' });
@@ -235,8 +234,7 @@ it('imports, pins, activates and restores a reusable definition through public o
     expect(await preservedAfter.json()).toEqual(preservedRecord);
   } finally {
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
 });
 
@@ -246,7 +244,7 @@ async function catalogReadFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const ownerUserId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Catalog read boundaries');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
   const app = createApp({ coreDb, dataRoot, store, mode: 'local' });
@@ -266,8 +264,7 @@ async function catalogReadFixture() {
       }),
     async close() {
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { recursive: true, force: true });
+      await disposeTestStore(dataRoot);
     },
   };
 }

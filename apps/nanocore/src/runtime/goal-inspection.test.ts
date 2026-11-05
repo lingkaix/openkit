@@ -1,23 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { runInternalAgentLoop } from '../internal-agents/internal-agent-loop.js';
-import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import {
   cancelSchedulerAdmissionEntry,
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createGoalTools } from './goal-coordinator.js';
@@ -54,7 +53,7 @@ it.each([
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = await store.createWorkspace('Evidence inspection');
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -578,7 +577,6 @@ it.each([
   } finally {
     db.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(root, { recursive: true, force: true });
+    await disposeTestStore(root);
   }
 });

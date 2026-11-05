@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
@@ -12,7 +12,6 @@ import { expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
-import { FsStore } from '../lib/store.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type {
@@ -20,7 +19,6 @@ import type {
   ProviderSubscriptionPairHandle,
 } from '../llm/provider-subscription-accounts.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -29,6 +27,7 @@ import {
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readGoalView } from './goal-owner.js';
 
@@ -37,7 +36,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Goal Knowledge');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   initializeScopedNotebook({
@@ -207,8 +206,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
     terminalObserver.mockRestore();
     db.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
 }, 30000);
 
@@ -217,7 +215,7 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Gateway Goal');
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -460,7 +458,7 @@ it('completes the real Coordinator request through stock Codex with unchanged To
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Stock Codex Goal');
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -601,7 +599,6 @@ it('completes the real Coordinator request through stock Codex with unchanged To
     fetchMock.mockRestore();
     db.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   }
 });

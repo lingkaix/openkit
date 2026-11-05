@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, onTestFinished, vi } from 'vitest';
@@ -7,12 +7,11 @@ import { listWorkspaceCapabilityCalls } from './capability/usage-ledger.js';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
-import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 
 /** Real authority, native invocation and delivery ledger; only the already tested role runner is injected. */
@@ -22,7 +21,7 @@ async function fixture() {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   await ensureUserQuickChatWorkspace({ coreDb, store, userId });
   const workspace = await store.ensureQuickChatWorkspace(userId);
   const timeline = await openAssistantTimeline(store, workspace.id, userId, 'Private question');
@@ -77,8 +76,7 @@ async function fixture() {
     workspaceDb.sqlite.close();
     userDb.sqlite.close();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   });
   return {
     invoke,

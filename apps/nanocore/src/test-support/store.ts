@@ -1,11 +1,15 @@
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import type { ActorRef } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { vi } from 'vitest';
 import { collectionTableName, quoteIdent } from '../generative-kernel/native.js';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
 import { openExistingAppDb } from '../storage/app-db.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
   openCoreDb,
@@ -55,6 +59,18 @@ export function setTestWorkspaceRevision(
 export function createTestStore(options: FsStoreOptions = {}): FsStore {
   if (options.dataRoot) initializeTestCore(options.dataRoot);
   return new FsStore(options);
+}
+
+/**
+ * Disposes a private Store fixture after its callers have joined work and closed their own handles.
+ * The native writer drains before shared read handles close and the fixture root is removed.
+ * A failed drain retains the root for inspection; this is not a stop/reopen operation.
+ * @param dataRoot Exact disposable root owned by this fixture.
+ */
+export async function disposeTestStore(dataRoot: string): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  closeWorkspaceProductReadHandles(dataRoot);
+  rmSync(dataRoot, { recursive: true, force: true });
 }
 
 /** Initializes the absent Core schema in a private fixture root before a caller constructs its own Store. */

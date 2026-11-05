@@ -1,14 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { policyDigest } from '../policy/statements.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { executeGoalOperation } from './goal-owner.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
 import { readPendingRequest } from './pending-requests.js';
@@ -151,7 +150,6 @@ it('captures the exact typed Goal domain and Plan in one human approval preview'
     expect(decided.goal!.activePlanVersionId).toBeNull();
   } finally {
     db.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(root, { recursive: true, force: true });
+    await disposeTestStore(root);
   }
 });

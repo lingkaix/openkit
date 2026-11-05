@@ -8,15 +8,14 @@ import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
-import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb } from './storage/db.js';
 import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real self authority and isolated canonical storage exercise the public Memory boundary. */
@@ -25,13 +24,12 @@ function fixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const app = createApp({ coreDb, dataRoot, store });
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
-    await shutdownControlStoreWorkerClient();
-    rmSync(dataRoot, { recursive: true, force: true });
+    await disposeTestStore(dataRoot);
   });
   const call = async (operation: string, input: Record<string, unknown> = {}) => {
     const { requestId, ...body } = input;

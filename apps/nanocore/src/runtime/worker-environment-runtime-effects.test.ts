@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ensureLocalUser, getLocalUserId } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { disposeTestStore } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import type {
@@ -77,8 +77,7 @@ describe('Worker environment runtime effects', () => {
     const coreDb = openCoreDb(root);
     onTestFinished(async () => {
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(root, { recursive: true, force: true });
+      await disposeTestStore(root);
     });
     applyMigrations(coreDb);
     // Real Server history supplies provenance without inventing a Workspace or identity.
@@ -190,8 +189,7 @@ describe('Worker environment runtime effects', () => {
     const coreDb = openCoreDb(root);
     onTestFinished(async () => {
       coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(root, { recursive: true, force: true });
+      await disposeTestStore(root);
     });
     applyMigrations(coreDb);
     // Keep the same recorded caller when the controlled Host reports mismatch or failure.
