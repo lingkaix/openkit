@@ -26,7 +26,13 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        limit: z.number().int().positive().optional(),
+        cursor: z.string().min(1).optional(),
+      })
+      .strict(),
     outputSchema: CapabilityUsageResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -58,7 +64,12 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    inputSchema: z.object({}).strict(),
+    inputSchema: z
+      .object({
+        limit: z.number().int().positive().optional(),
+        cursor: z.string().min(1).optional(),
+      })
+      .strict(),
     outputSchema: ListServerAuditEventsResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'server' },
@@ -97,7 +108,13 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    inputSchema: z.object({ workspaceId: WorkspaceIdSchema }).strict(),
+    inputSchema: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        limit: z.number().int().positive().optional(),
+        cursor: z.string().min(1).optional(),
+      })
+      .strict(),
     outputSchema: ListWorkspacePermissionDecisionsResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -110,7 +127,12 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    inputSchema: z.object({}).strict(),
+    inputSchema: z
+      .object({
+        limit: z.number().int().positive().optional(),
+        cursor: z.string().min(1).optional(),
+      })
+      .strict(),
     outputSchema: ListServerPermissionDecisionsResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'server' },

@@ -118668,6 +118668,15 @@
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "limit": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "required": [
@@ -119443,6 +119452,12 @@
               ],
               "additionalProperties": false
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -120701,7 +120716,17 @@
       "audit.server-list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "properties": {},
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "additionalProperties": false
       },
       "audit.server-list.output": {
@@ -121908,6 +121933,12 @@
               ],
               "additionalProperties": false
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -122610,6 +122641,15 @@
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "limit": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "required": [
@@ -123084,6 +123124,12 @@
               ],
               "additionalProperties": false
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -123095,7 +123141,17 @@
       "permission.server-list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "properties": {},
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
         "additionalProperties": false
       },
       "permission.server-list.output": {
@@ -123560,6 +123616,12 @@
               ],
               "additionalProperties": false
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -155201,5 +155263,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e9c2d592682a1a1d37ad17f701760009dbf6f9e625290fe082fe721ef13e90bd"
+  "x-openkit-source-digest": "sha256:79e9402308d282267761d82e5c95384fcf15e0b0a21176064cf84650f3d8ac4c"
 }

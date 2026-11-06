@@ -6,10 +6,13 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   listServerAuditEvents,
   listWorkspaceAuditEvents,
+  recordServerAuditEvent,
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { recordUsage, startCapabilityCall } from './capability/usage-ledger.js';
 import { AutomationStore } from './lib/automation-store.js';
+import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -550,5 +553,214 @@ describe('audit.workspace-list pagination', () => {
     expect(eventIds(page(refresh.body).auditEvents)).toEqual(
       eventIds(expectedDescending([newer, four, three, two, one, ...seed]))
     );
+  });
+
+  it('paginates audit.server-list, permission.workspace-list, permission.server-list, and usage.read', async () => {
+    const fixture = await createFixture();
+    const adminToken = createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: TOKEN_EXPIRY,
+      ownerUserId: OWNER_ID,
+      scope: 'server-admin',
+      workspaceIds: [],
+    }).secret;
+    const adminHeaders = { authorization: `Bearer ${adminToken}` };
+
+    recordServerAuditEvent({
+      coreDb: fixture.coreDb,
+      auditEventId: testEntityId('aud', 'srv-1'),
+      action: 'server.config.update',
+      outcome: 'succeeded',
+      summary: 'Server audit one.',
+      now: new Date('2099-01-01T00:00:01.000Z'),
+    });
+    recordServerAuditEvent({
+      coreDb: fixture.coreDb,
+      auditEventId: testEntityId('aud', 'srv-2'),
+      action: 'server.config.update',
+      outcome: 'succeeded',
+      summary: 'Server audit two.',
+      now: new Date('2099-01-01T00:00:02.000Z'),
+    });
+
+    const srvAudit1 = await (
+      await fixture.app.request(
+        ...operationRequest('audit.server-list', { limit: 1 }, { headers: adminHeaders })
+      )
+    ).json();
+    expect(srvAudit1.auditEvents).toHaveLength(1);
+    expect(typeof srvAudit1.nextCursor).toBe('string');
+    const srvAudit2 = await (
+      await fixture.app.request(
+        ...operationRequest(
+          'audit.server-list',
+          { cursor: srvAudit1.nextCursor },
+          { headers: adminHeaders }
+        )
+      )
+    ).json();
+    expect(srvAudit2.auditEvents.length).toBeGreaterThanOrEqual(1);
+    expect(srvAudit2.nextCursor).toBeNull();
+
+    const workspaceDb = fixture.workspaceDbs.get(fixture.workspace.id)!;
+    await recordProductPermissionDecision({
+      workspaceDb,
+      workspaceId: fixture.workspace.id,
+      ownerScope: 'workspace',
+      decisionId: testEntityId('pd', 'ws-1'),
+      action: 'runtime.launch',
+      contextSummary: {},
+      enforcementPoint: 'worker.launch',
+      policyEngineVersion: 'nanocore-worker-policy:v1',
+      policySnapshotId: 'worker_turn_launch_policy',
+      reasonCode: 'allowed',
+      resourceSummary: { kind: 'worker-turn' },
+      result: 'allow',
+      subjectSummary: { kind: 'user', id: OWNER_ID },
+      now: new Date('2099-01-01T00:00:01.000Z'),
+    });
+    await recordProductPermissionDecision({
+      workspaceDb,
+      workspaceId: fixture.workspace.id,
+      ownerScope: 'workspace',
+      decisionId: testEntityId('pd', 'ws-2'),
+      action: 'runtime.launch',
+      contextSummary: {},
+      enforcementPoint: 'worker.launch',
+      policyEngineVersion: 'nanocore-worker-policy:v1',
+      policySnapshotId: 'worker_turn_launch_policy',
+      reasonCode: 'allowed',
+      resourceSummary: { kind: 'worker-turn' },
+      result: 'allow',
+      subjectSummary: { kind: 'user', id: OWNER_ID },
+      now: new Date('2099-01-01T00:00:02.000Z'),
+    });
+
+    const wsPerm1 = await (
+      await fixture.app.request(
+        ...operationRequest(
+          'permission.workspace-list',
+          { workspaceId: fixture.workspace.id, limit: 1 },
+          { headers: fixture.ownerHeaders }
+        )
+      )
+    ).json();
+    expect(wsPerm1.permissionDecisions).toHaveLength(1);
+    expect(typeof wsPerm1.nextCursor).toBe('string');
+    const wsPerm2 = await (
+      await fixture.app.request(
+        ...operationRequest(
+          'permission.workspace-list',
+          { workspaceId: fixture.workspace.id, cursor: wsPerm1.nextCursor },
+          { headers: fixture.ownerHeaders }
+        )
+      )
+    ).json();
+    expect(wsPerm2.permissionDecisions.length).toBeGreaterThanOrEqual(1);
+    expect(wsPerm2.nextCursor).toBeNull();
+
+    await recordProductPermissionDecision({
+      coreDb: fixture.coreDb,
+      ownerScope: 'server',
+      decisionId: testEntityId('pd', 'srv-1'),
+      action: 'llm.gateway.chat_completions',
+      contextSummary: {},
+      enforcementPoint: 'llm.gateway.policy',
+      policyEngineVersion: 'nanocore-gateway-policy:v1',
+      policySnapshotId: 'runtime_config_gateway_policy',
+      reasonCode: 'allowed',
+      resourceSummary: { kind: 'llm-provider' },
+      result: 'allow',
+      subjectSummary: { kind: 'user', id: OWNER_ID },
+      now: new Date('2099-01-01T00:00:01.000Z'),
+    });
+    await recordProductPermissionDecision({
+      coreDb: fixture.coreDb,
+      ownerScope: 'server',
+      decisionId: testEntityId('pd', 'srv-2'),
+      action: 'llm.gateway.chat_completions',
+      contextSummary: {},
+      enforcementPoint: 'llm.gateway.policy',
+      policyEngineVersion: 'nanocore-gateway-policy:v1',
+      policySnapshotId: 'runtime_config_gateway_policy',
+      reasonCode: 'allowed',
+      resourceSummary: { kind: 'llm-provider' },
+      result: 'allow',
+      subjectSummary: { kind: 'user', id: OWNER_ID },
+      now: new Date('2099-01-01T00:00:02.000Z'),
+    });
+
+    const srvPerm1 = await (
+      await fixture.app.request(
+        ...operationRequest('permission.server-list', { limit: 1 }, { headers: adminHeaders })
+      )
+    ).json();
+    expect(srvPerm1.permissionDecisions).toHaveLength(1);
+    expect(typeof srvPerm1.nextCursor).toBe('string');
+    const srvPerm2 = await (
+      await fixture.app.request(
+        ...operationRequest(
+          'permission.server-list',
+          { cursor: srvPerm1.nextCursor },
+          { headers: adminHeaders }
+        )
+      )
+    ).json();
+    expect(srvPerm2.permissionDecisions.length).toBeGreaterThanOrEqual(1);
+    expect(srvPerm2.nextCursor).toBeNull();
+
+    for (const key of ['call-1', 'call-2'] as const) {
+      const started = await startCapabilityCall({
+        workspaceDb,
+        workspaceId: fixture.workspace.id,
+        authorityActor: { kind: 'user', id: OWNER_ID },
+        capabilityId: 'storage.workspace_export',
+        family: 'storage',
+        operation: 'workspace.export.write',
+        providerRef: 'nanocore-storage',
+        serviceRef: 'workspace-export',
+        redactionClass: 'metadata-only',
+        now: new Date(key === 'call-1' ? '2099-01-01T00:00:01.000Z' : '2099-01-01T00:00:02.000Z'),
+      });
+      await recordUsage({
+        workspaceDb,
+        call: started,
+        now: new Date(key === 'call-1' ? '2099-01-01T00:00:01.500Z' : '2099-01-01T00:00:02.500Z'),
+        records: [
+          {
+            category: 'storage',
+            unit: 'files',
+            quantity: 1,
+            source: 'workspace-export-inventory',
+            providerRef: 'nanocore-storage',
+          },
+        ],
+      });
+    }
+
+    const usage1 = await (
+      await fixture.app.request(
+        ...operationRequest(
+          'usage.read',
+          { workspaceId: fixture.workspace.id, limit: 1 },
+          { headers: fixture.ownerHeaders }
+        )
+      )
+    ).json();
+    expect(usage1.capabilityCalls).toHaveLength(1);
+    expect(usage1.usageRecords).toHaveLength(1);
+    expect(typeof usage1.nextCursor).toBe('string');
+
+    const usage2 = await (
+      await fixture.app.request(
+        ...operationRequest(
+          'usage.read',
+          { workspaceId: fixture.workspace.id, cursor: usage1.nextCursor },
+          { headers: fixture.ownerHeaders }
+        )
+      )
+    ).json();
+    expect(usage2.capabilityCalls.length).toBeGreaterThanOrEqual(1);
+    expect(usage2.usageRecords.length).toBeGreaterThanOrEqual(1);
+    expect(usage2.nextCursor).toBeNull();
   });
 });

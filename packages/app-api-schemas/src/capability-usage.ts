@@ -68,6 +68,7 @@ export const CapabilityUsageResponseSchema = z
     workspaceId: WorkspaceIdSchema,
     capabilityCalls: z.array(CapabilityUsageCallSchema),
     usageRecords: z.array(UsageRecordSchema),
+    nextCursor: z.string().nullable().optional(),
   })
   .strict();
 

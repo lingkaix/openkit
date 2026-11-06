@@ -76,6 +76,7 @@ export const ListWorkspaceAuditEventsResponseSchema = z
 export const ListServerAuditEventsResponseSchema = z
   .object({
     auditEvents: z.array(AuditEventSchema),
+    nextCursor: z.string().nullable().optional(),
   })
   .strict();
 
@@ -90,6 +91,7 @@ export type ListServerAuditEventsResponse = z.infer<typeof ListServerAuditEvents
 export const ListServerPermissionDecisionsResponseSchema = z
   .object({
     permissionDecisions: z.array(ServerPermissionDecisionSchema),
+    nextCursor: z.string().nullable().optional(),
   })
   .strict();
 
@@ -98,6 +100,7 @@ export const ListWorkspacePermissionDecisionsResponseSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     permissionDecisions: z.array(WorkspacePermissionDecisionSchema),
+    nextCursor: z.string().nullable().optional(),
   })
   .strict();
 

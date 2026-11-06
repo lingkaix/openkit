@@ -5987,3 +5987,28 @@ describe('notification.list pagination contract', () => {
     });
   });
 });
+
+describe('governance list pagination contracts', () => {
+  it('accepts optional positive limit and non-empty cursor on usage, server audit, and permission lists', () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    for (const id of ['usage.read', 'permission.workspace-list'] as const) {
+      const def = appApiSchemas.GOVERNANCE_OPERATION_DEFINITIONS[id];
+      expect(def.inputSchema.parse({ workspaceId, limit: 10, cursor: 'opaque' })).toEqual({
+        workspaceId,
+        limit: 10,
+        cursor: 'opaque',
+      });
+      expect(def.inputSchema.safeParse({ workspaceId, limit: 0 }).success).toBe(false);
+      expect(def.inputSchema.safeParse({ workspaceId, cursor: '' }).success).toBe(false);
+    }
+    for (const id of ['audit.server-list', 'permission.server-list'] as const) {
+      const def = appApiSchemas.GOVERNANCE_OPERATION_DEFINITIONS[id];
+      expect(def.inputSchema.parse({ limit: 10, cursor: 'opaque' })).toEqual({
+        limit: 10,
+        cursor: 'opaque',
+      });
+      expect(def.inputSchema.safeParse({ limit: 0 }).success).toBe(false);
+      expect(def.inputSchema.safeParse({ cursor: '' }).success).toBe(false);
+    }
+  });
+});

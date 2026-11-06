@@ -2,7 +2,10 @@ import type { GOVERNANCE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas'
 import {
   type AuditEvent,
   AuditEventIdSchema,
+  CapabilityCallIdSchema,
   compareCodeUnits,
+  PermissionDecisionIdSchema,
+  UsageRecordIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -36,63 +39,105 @@ export function createGovernanceOperationImplementations(
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
 
         try {
-          return {
-            workspaceId,
-            capabilityCalls: listWorkspaceCapabilityCalls(workspaceDb, workspaceId)
-              .filter(
-                (call) =>
-                  !call.threadId ||
-                  isThreadIdVisible(
-                    dependencies.store!,
-                    workspaceId,
-                    call.threadId,
-                    publicOperationActor(context).userId,
-                    isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
-                  )
-              )
-              .map((call) => {
-                const { extensions, ...projection } = call;
-                const lineage = extensions?.['openkit.gateway/routeLineage'];
-                return {
-                  ...projection,
-                  ...(lineage
-                    ? {
-                        routeLineage: {
-                          logicalModelId: lineage.logicalModelId,
-                          entries: lineage.entries.map((entry) => {
-                            const common = {
-                              routeMemberId: entry.routeMemberId,
-                              selectionReason: entry.selectionReason,
-                              ...(entry.failureKind ? { failureKind: entry.failureKind } : {}),
-                            };
-                            return entry.kind === 'attempt'
-                              ? {
-                                  ...common,
-                                  kind: entry.kind,
-                                  attemptOrder: entry.attemptOrder,
-                                  retryIndex: entry.retryIndex,
-                                  outputBegan: entry.outputBegan,
-                                  terminalResult: entry.terminalResult,
-                                  released: entry.outputBegan,
-                                }
-                              : { ...common, kind: entry.kind };
-                          }),
-                        },
-                      }
-                    : {}),
-                };
-              }),
-            usageRecords: listWorkspaceUsageRecords(workspaceDb, workspaceId).filter(
-              (usage) =>
-                !usage.threadId ||
+          const position = decodeUsageReadCursor(input.cursor, workspaceId);
+          const visibleCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId)
+            .filter(
+              (call) =>
+                !call.threadId ||
                 isThreadIdVisible(
                   dependencies.store!,
                   workspaceId,
-                  usage.threadId,
+                  call.threadId,
                   publicOperationActor(context).userId,
                   isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
                 )
-            ),
+            )
+            .map((call) => {
+              const { extensions, ...projection } = call;
+              const lineage = extensions?.['openkit.gateway/routeLineage'];
+              return {
+                ...projection,
+                ...(lineage
+                  ? {
+                      routeLineage: {
+                        logicalModelId: lineage.logicalModelId,
+                        entries: lineage.entries.map((entry) => {
+                          const common = {
+                            routeMemberId: entry.routeMemberId,
+                            selectionReason: entry.selectionReason,
+                            ...(entry.failureKind ? { failureKind: entry.failureKind } : {}),
+                          };
+                          return entry.kind === 'attempt'
+                            ? {
+                                ...common,
+                                kind: entry.kind,
+                                attemptOrder: entry.attemptOrder,
+                                retryIndex: entry.retryIndex,
+                                outputBegan: entry.outputBegan,
+                                terminalResult: entry.terminalResult,
+                                released: entry.outputBegan,
+                              }
+                            : { ...common, kind: entry.kind };
+                        }),
+                      },
+                    }
+                  : {}),
+              };
+            });
+          const visibleUsage = listWorkspaceUsageRecords(workspaceDb, workspaceId).filter(
+            (usage) =>
+              !usage.threadId ||
+              isThreadIdVisible(
+                dependencies.store!,
+                workspaceId,
+                usage.threadId,
+                publicOperationActor(context).userId,
+                isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
+              )
+          );
+          const remainingCalls = !position
+            ? visibleCalls
+            : position.call === null
+              ? []
+              : visibleCalls.filter(
+                  (call) =>
+                    (compareCodeUnits(call.startedAt ?? '', position.call![0]) ||
+                      compareCodeUnits(call.id, position.call![1])) > 0
+                );
+          const remainingUsage = !position
+            ? visibleUsage
+            : position.usage === null
+              ? []
+              : visibleUsage.filter(
+                  (usage) =>
+                    (compareCodeUnits(usage.recordedAt, position.usage![0]) ||
+                      compareCodeUnits(usage.id, position.usage![1])) > 0
+                );
+          const capabilityCalls =
+            input.limit === undefined ? remainingCalls : remainingCalls.slice(0, input.limit);
+          const usageRecords =
+            input.limit === undefined ? remainingUsage : remainingUsage.slice(0, input.limit);
+          const hasMoreCalls = capabilityCalls.length < remainingCalls.length;
+          const hasMoreUsage = usageRecords.length < remainingUsage.length;
+          return {
+            workspaceId,
+            capabilityCalls,
+            usageRecords,
+            nextCursor:
+              hasMoreCalls || hasMoreUsage
+                ? Buffer.from(
+                    JSON.stringify([
+                      'usage.read',
+                      workspaceId,
+                      hasMoreCalls
+                        ? [capabilityCalls.at(-1)!.startedAt ?? '', capabilityCalls.at(-1)!.id]
+                        : null,
+                      hasMoreUsage
+                        ? [usageRecords.at(-1)!.recordedAt, usageRecords.at(-1)!.id]
+                        : null,
+                    ])
+                  ).toString('base64url')
+                : null,
           };
         } finally {
           workspaceDb.sqlite.close();
@@ -147,7 +192,7 @@ export function createGovernanceOperationImplementations(
         governanceReadFailure(error);
       }
     },
-    'audit.server-list': () => {
+    'audit.server-list': (input) => {
       try {
         if (!coreDb) {
           throw new OperationError(
@@ -157,8 +202,20 @@ export function createGovernanceOperationImplementations(
           );
         }
 
+        const position = decodeServerAuditCursor(input.cursor);
+        const remaining = listServerAuditEvents(coreDb)
+          .sort(compareWorkspaceAuditPositions)
+          .filter((event) => !position || compareWorkspaceAuditPositions(event, position) > 0);
+        const auditEvents = input.limit === undefined ? remaining : remaining.slice(0, input.limit);
+        const last = auditEvents.at(-1);
         return {
-          auditEvents: listServerAuditEvents(coreDb),
+          auditEvents,
+          nextCursor:
+            last && auditEvents.length < remaining.length
+              ? Buffer.from(
+                  JSON.stringify(['audit.server-list', last.createdAt ?? '', last.id])
+                ).toString('base64url')
+              : null,
         };
       } catch (error) {
         governanceReadFailure(error);
@@ -204,12 +261,29 @@ export function createGovernanceOperationImplementations(
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
 
         try {
+          const position = decodeWorkspacePermissionCursor(input.cursor, workspaceId);
+          const remaining = listExportableWorkspacePermissionDecisions(workspaceDb, workspaceId)
+            .sort(comparePermissionDecisionPositions)
+            .filter(
+              (decision) => !position || comparePermissionDecisionPositions(decision, position) > 0
+            );
+          const permissionDecisions =
+            input.limit === undefined ? remaining : remaining.slice(0, input.limit);
+          const last = permissionDecisions.at(-1);
           return {
             workspaceId,
-            permissionDecisions: listExportableWorkspacePermissionDecisions(
-              workspaceDb,
-              workspaceId
-            ),
+            permissionDecisions,
+            nextCursor:
+              last && permissionDecisions.length < remaining.length
+                ? Buffer.from(
+                    JSON.stringify([
+                      'permission.workspace-list',
+                      workspaceId,
+                      last.createdAt,
+                      last.decisionId,
+                    ])
+                  ).toString('base64url')
+                : null,
           };
         } finally {
           workspaceDb.sqlite.close();
@@ -218,14 +292,29 @@ export function createGovernanceOperationImplementations(
         governanceReadFailure(error);
       }
     },
-    'permission.server-list': () => {
+    'permission.server-list': (input) => {
       try {
         if (!coreDb) {
           throw new OperationError('not_found', 'Core DB is not available.', 404);
         }
 
+        const position = decodeServerPermissionCursor(input.cursor);
+        const remaining = listServerPermissionDecisions(coreDb)
+          .sort(comparePermissionDecisionPositions)
+          .filter(
+            (decision) => !position || comparePermissionDecisionPositions(decision, position) > 0
+          );
+        const permissionDecisions =
+          input.limit === undefined ? remaining : remaining.slice(0, input.limit);
+        const last = permissionDecisions.at(-1);
         return {
-          permissionDecisions: listServerPermissionDecisions(coreDb),
+          permissionDecisions,
+          nextCursor:
+            last && permissionDecisions.length < remaining.length
+              ? Buffer.from(
+                  JSON.stringify(['permission.server-list', last.createdAt, last.decisionId])
+                ).toString('base64url')
+              : null,
         };
       } catch (error) {
         governanceReadFailure(error);
@@ -242,6 +331,34 @@ const workspaceAuditCursorSchema = z.tuple([
   AuditEventIdSchema,
 ]);
 
+const serverAuditCursorSchema = z.tuple([
+  z.literal('audit.server-list'),
+  z.union([z.string().datetime(), z.literal('')]),
+  AuditEventIdSchema,
+]);
+
+const workspacePermissionCursorSchema = z.tuple([
+  z.literal('permission.workspace-list'),
+  WorkspaceIdSchema,
+  z.string().datetime(),
+  PermissionDecisionIdSchema,
+]);
+
+const serverPermissionCursorSchema = z.tuple([
+  z.literal('permission.server-list'),
+  z.string().datetime(),
+  PermissionDecisionIdSchema,
+]);
+
+const usageReadCursorSchema = z
+  .tuple([
+    z.literal('usage.read'),
+    WorkspaceIdSchema,
+    z.tuple([z.union([z.string().datetime(), z.literal('')]), CapabilityCallIdSchema]).nullable(),
+    z.tuple([z.string().datetime(), UsageRecordIdSchema]).nullable(),
+  ])
+  .refine((value) => value[2] !== null || value[3] !== null);
+
 /** Descending canonical pair order; historical absent timestamps occupy the minimum position. */
 function compareWorkspaceAuditPositions(
   left: Pick<AuditEvent, 'createdAt' | 'id'>,
@@ -250,6 +367,17 @@ function compareWorkspaceAuditPositions(
   return (
     compareCodeUnits(right.createdAt ?? '', left.createdAt ?? '') ||
     compareCodeUnits(right.id, left.id)
+  );
+}
+
+/** Descending canonical pair order for permission decisions. */
+function comparePermissionDecisionPositions(
+  left: { createdAt: string; decisionId: string },
+  right: { createdAt: string; decisionId: string }
+): number {
+  return (
+    compareCodeUnits(right.createdAt, left.createdAt) ||
+    compareCodeUnits(right.decisionId, left.decisionId)
   );
 }
 
@@ -265,6 +393,66 @@ function decodeWorkspaceAuditCursor(cursor: string | undefined, workspaceId: str
     return { createdAt: position[2], id: position[3] };
   } catch {
     throw new OperationError('invalid_request', 'Invalid audit continuation.', 400);
+  }
+}
+
+/** Reject malformed server audit continuations without disclosing cursor content. */
+function decodeServerAuditCursor(cursor: string | undefined) {
+  if (cursor === undefined) return undefined;
+  try {
+    const bytes = Buffer.from(cursor, 'base64url');
+    const position = serverAuditCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== cursor) {
+      throw new Error('Invalid audit continuation.');
+    }
+    return { createdAt: position[1], id: position[2] };
+  } catch {
+    throw new OperationError('invalid_request', 'Invalid audit continuation.', 400);
+  }
+}
+
+/** Reject malformed or cross-Workspace permission decision continuations. */
+function decodeWorkspacePermissionCursor(cursor: string | undefined, workspaceId: string) {
+  if (cursor === undefined) return undefined;
+  try {
+    const bytes = Buffer.from(cursor, 'base64url');
+    const position = workspacePermissionCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== cursor || position[1] !== workspaceId) {
+      throw new Error('Invalid permission decision continuation.');
+    }
+    return { createdAt: position[2], decisionId: position[3] };
+  } catch {
+    throw new OperationError('invalid_request', 'Invalid permission decision continuation.', 400);
+  }
+}
+
+/** Reject malformed server permission decision continuations. */
+function decodeServerPermissionCursor(cursor: string | undefined) {
+  if (cursor === undefined) return undefined;
+  try {
+    const bytes = Buffer.from(cursor, 'base64url');
+    const position = serverPermissionCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== cursor) {
+      throw new Error('Invalid permission decision continuation.');
+    }
+    return { createdAt: position[1], decisionId: position[2] };
+  } catch {
+    throw new OperationError('invalid_request', 'Invalid permission decision continuation.', 400);
+  }
+}
+
+/** Reject malformed or cross-Workspace usage continuations. */
+function decodeUsageReadCursor(cursor: string | undefined, workspaceId: string) {
+  if (cursor === undefined) return undefined;
+  try {
+    const bytes = Buffer.from(cursor, 'base64url');
+    const position = usageReadCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== cursor || position[1] !== workspaceId) {
+      throw new Error('Invalid usage continuation.');
+    }
+    return { call: position[2], usage: position[3] };
+  } catch {
+    throw new OperationError('invalid_request', 'Invalid usage continuation.', 400);
   }
 }
 
