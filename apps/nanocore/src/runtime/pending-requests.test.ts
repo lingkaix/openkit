@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { canonicalJsonText } from '@openkit/protocol';
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -26,6 +27,7 @@ import {
 } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -229,25 +231,50 @@ it('permits denial of a person command intent whose exact detail is unavailable'
   }
 });
 
-/**
- * Opens one local Core app whose workspace database can hold pending requests.
- *
- * @returns App, store, data root, and the actual simulator executor.
- */
-async function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-'));
+interface PreparedPendingBase {
+  dataRoot: string;
+}
+
+let preparedPendingBase: PreparedPendingBase | undefined;
+let preparedPendingRoot: string | undefined;
+
+beforeAll(async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-base-'));
+  preparedPendingRoot = dataRoot;
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = await createDemoStore({ dataRoot });
-  const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
-  const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
+  await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   await recordTestNativeRuntimeTarget(coreDb);
+  await shutdownControlStoreWorkerClient();
+  if (coreDb.sqlite.open) coreDb.sqlite.close();
+  closeWorkspaceProductReadHandles(dataRoot);
+  preparedPendingBase = { dataRoot };
+}, 60_000);
+
+afterAll(() => {
+  if (preparedPendingRoot) rmSync(preparedPendingRoot, { recursive: true, force: true });
+});
+
+/**
+ * Opens one local Core app whose workspace database can hold pending requests.
+ *
+ * @returns App, store, data root, and the actual simulator executor.
+ */
+async function openPendingApp(agentId?: string, workerMcpGateway?: WorkerMcpGateway) {
+  const base = preparedPendingBase;
+  if (!base) throw new Error('The pending request base was not prepared.');
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-'));
+  cpSync(base.dataRoot, dataRoot, { recursive: true });
+  const coreDb = openCoreDb(dataRoot);
+  const store = createTestStore({ dataRoot });
+  const fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n);
+  const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
   admitTestNativeEnvironment(
     coreDb,
     createTestAgentSetup({ ...(agentId ? { agentId } : {}) }).manifest
