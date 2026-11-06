@@ -19,9 +19,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import fs, {
   chmodSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -55,7 +57,7 @@ import {
 } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { applyEdits, modify, parse } from 'jsonc-parser';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceAuditEvents } from './audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -149,12 +151,17 @@ import {
 } from './scheduler-records.js';
 import { lightAppDbPath } from './storage/app-db.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
-import { createDemoStore, createRetainedDemoStore } from './test-support/demo-store.js';
+import {
+  createDemoStore,
+  createRetainedDemoStore,
+  DEMO_WORKSPACE_ID,
+} from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -219,6 +226,64 @@ function recordMcpWorkerLineage(
   ).toBe('accepted');
 }
 
+/** One closed Demo data root. MCP route fixtures copy it instead of migrating and seeding again. */
+let mcpDemoBase: string | undefined;
+
+function directoryContainsText(dir: string, needle: string): boolean {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (directoryContainsText(path, needle)) return true;
+    } else if (entry.isFile() && readFileSync(path).includes(needle)) return true;
+  }
+  return false;
+}
+
+beforeAll(async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-demo-base-'));
+  await createDemoStore({ dataRoot });
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: ensureLocalUser(coreDb),
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+  } finally {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+  }
+  await shutdownControlStoreWorkerClient();
+  closeWorkspaceProductReadHandles(dataRoot);
+  if (directoryContainsText(dataRoot, dataRoot)) {
+    throw new Error('MCP demo base stores its own path and cannot be copied.');
+  }
+  mcpDemoBase = dataRoot;
+}, 60_000);
+
+afterAll(() => {
+  if (mcpDemoBase) rmSync(mcpDemoBase, { recursive: true, force: true });
+});
+
+/** Copies the prepared Demo root into an empty directory and opens its Core database. */
+function openCopiedMcpCore(dataRoot: string) {
+  const base = mcpDemoBase;
+  if (!base) throw new Error('MCP demo base is not prepared.');
+  cpSync(base, dataRoot, { recursive: true });
+  return openCoreDb(dataRoot);
+}
+
+/** Reopens the native Workspace writer on a copied Demo root. */
+async function reopenCopiedMcpStore(dataRoot: string): Promise<FsStore> {
+  const store = new FsStore({ dataRoot });
+  const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+  try {
+    await openTestNativeWorkspace(workspaceDb);
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+  return store;
+}
+
 describe('worker MCP routes', () => {
   it.each([
     '$ref',
@@ -226,11 +291,10 @@ describe('worker MCP routes', () => {
   ] as const)('accounts actual SDK output-schema failure %s through the Worker route', async (outputSchemaFault) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-schema-usage-'));
     const upstream = await createMcpHttpStub({ outputSchemaFault, protocolEra: '2026-07-28' });
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const coreDb = openCopiedMcpCore(dataRoot);
     const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const store = await createDemoStore({ dataRoot });
+    const store = await reopenCopiedMcpStore(dataRoot);
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
     const turn = await store.createTurn(
       workspaceId,
@@ -1091,10 +1155,9 @@ describe('worker MCP routes', () => {
     'expiry',
   ] as const)('releases the Tool handler and Workspace admission after accepted unresolved capture %s', async (ending) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-wait-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const coreDb = openCopiedMcpCore(dataRoot);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    const store = await reopenCopiedMcpStore(dataRoot);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1366,10 +1429,9 @@ describe('worker MCP routes', () => {
 
   it('serves one stateless-era client and one session-era client on the worker MCP route', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-era-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const coreDb = openCopiedMcpCore(dataRoot);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    const store = await reopenCopiedMcpStore(dataRoot);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -2784,10 +2846,9 @@ describe('worker MCP routes', () => {
     timeout: 60_000,
   }, async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-turn-schema-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const coreDb = openCopiedMcpCore(dataRoot);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    const store = await reopenCopiedMcpStore(dataRoot);
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const threadId = 'th_00000000-0000-7000-8000-000000000001';
     const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
@@ -3577,10 +3638,9 @@ describe('worker MCP routes', () => {
     timeout: 60_000,
   }, async (change) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-mcp-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const coreDb = openCopiedMcpCore(dataRoot);
     ensureLocalUser(coreDb);
-    let store = await createDemoStore({ dataRoot });
+    let store = await reopenCopiedMcpStore(dataRoot);
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const threadId = 'th_00000000-0000-7000-8000-000000000001';
     const userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -5322,10 +5382,9 @@ describe('worker MCP routes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-mcp-vault-'));
     const upstreamOptions: { credentialListEcho?: string } = {};
     const upstream = await createMcpHttpStub(upstreamOptions);
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
+    const coreDb = openCopiedMcpCore(dataRoot);
     ensureLocalUser(coreDb);
-    const store = await createDemoStore({ dataRoot });
+    const store = await reopenCopiedMcpStore(dataRoot);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -6487,14 +6546,13 @@ function observeNativeMcpPhysicalCommits(workspacePath: string) {
 /** Composes the public Worker MCP route with its actual Workspace ledger and Policy owners. */
 async function createMcpCommitFixture(interception = new PolicyInterception()) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-commit-'));
-  const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
+  const coreDb = openCopiedMcpCore(dataRoot);
   const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const nativeTrace = observeNativeMcpPhysicalCommits(
     join(dataRoot, 'workspaces', workspaceId, 'db', 'workspace.sqlite')
   );
-  const store = await createDemoStore({ dataRoot });
+  const store = await reopenCopiedMcpStore(dataRoot);
   const threadId = 'th_00000000-0000-7000-8000-000000000001';
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
   const turn = await store.createTurn(workspaceId, threadId, 'Count MCP commits', actor);
