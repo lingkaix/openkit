@@ -197,19 +197,3 @@ async function runInterruptedWorkerRetryCommand(input: {
     throw new TypeError('Invalid native checkpoint retry result.');
   return response;
 }
-
-/** Recovery owns its original Turn lineage and missing-checkpoint refusal, independent of operation spelling. */
-export function readRecoveryOperationLineage(
-  store: import('../lib/store.js').FsStore,
-  turnId: string
-) {
-  try {
-    const lineage = store.getTurnLineage(turnId);
-    if (!lineage) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
-    return lineage;
-  } catch (error) {
-    if (error instanceof StoreRecordNotFoundError)
-      throw new OperationError('recovery_retry_failed', error.message, 400, { cause: error });
-    throw error;
-  }
-}

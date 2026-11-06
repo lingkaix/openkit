@@ -17,12 +17,9 @@ import type {
 import { resolveWorkspaceMcpServer, WorkspaceMcpToolNameSchema } from '@openkit/config-schema';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
-  type ActorRef,
   allocateEntityId,
-  CapabilityCallStatusSchema,
   canonicalJsonText,
   deriveEntityId,
-  ItemSchema,
   isSealedTurnTerminal,
   readRetainedV1,
   responsibleUserIdForActor,
@@ -52,11 +49,7 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
-import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  DISPLAY_PROJECTION_REFRESH_FIELDS,
-  type FsStore,
-} from './lib/store.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
 import { serveStatelessMcp } from './mcp-stateless-http.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import {
@@ -127,11 +120,22 @@ import {
   WorkerControlGatewayError,
 } from './runtime/worker-control-gateway.js';
 import type { WorkerArtifactCapture } from './runtime/worker-governance-backend.js';
-import type {
-  WorkerMcpGateway,
-  WorkerMcpGatewayCredentials,
+import {
+  type DecidedMcpPublicationRow,
+  decidedMcpParentItemId,
+  decidedMcpPublicationItem,
+} from './runtime/worker-mcp-decision.js';
+import {
+  assertCurrentMcpVaultAuthority,
+  assertCurrentSharedMcpBinding,
+  completeMcpVaultInjections,
+  mcpDeniedError,
+  type PendingMcpVaultInjection,
+  resolveWorkerMcpCredentials,
+  type WorkerMcpGateway,
+  WorkerMcpGatewayCallError,
+  type WorkerMcpGatewayCredentials,
 } from './runtime/worker-mcp-gateway.js';
-import { WorkerMcpGatewayCallError } from './runtime/worker-mcp-gateway.js';
 import {
   requireWorkerRawOutputAvailable,
   WorkerRawOutputAuthorityError,
@@ -156,14 +160,10 @@ import {
 } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyScopedMigrations } from './storage/migrate.js';
-import { isTargetIssuedEffectAuthority } from './storage/workspace-import-authority.js';
 import { isCurrentServerMcpMaterial } from './vault/server-mcp-authority.js';
-import { VaultBackendError, vaultSecretMaterialToString } from './vault/vault-backend.js';
-import { getVaultGrant, type VaultGrantRecord } from './vault/vault-grants.js';
+import { getVaultGrant } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
-import { createVaultUseAuditedBackend } from './vault/vault-use-audited-backend.js';
-import { createVaultInjectionPlan } from './vault-injection-plans.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Borrows the existing native reader; scope lifecycle owns closure and each caller ends its snapshot before awaiting. */
@@ -1151,190 +1151,6 @@ function mcpBootDecidedPublicationEqual(
     recorded.result === reconstructed.result &&
     recorded.error === reconstructed.error
   );
-}
-
-/**
- * Resolves the `parentItemId` the decided MCP publication carried, from the AEP snapshot the call row names.
- *
- * Three outcomes, because a row that names no snapshot and a row whose named snapshot is unreadable are
- * not the same fact. A row with no snapshot lineage has nothing to be faithful to and is filled as the
- * earlier reader filled it. A row that names a snapshot the reader cannot open is a publication this boot
- * cannot reconstruct, so the caller leaves it for a later boot rather than publishing an Item that is not
- * the decided one. A snapshot that exists and does not validate still throws, because that is corruption
- * rather than absence.
- *
- * @param workspaceDb Open workspace database that owns the snapshot.
- * @param workspaceId Workspace that owns the call row.
- * @param row Terminal MCP call row with its AgentSession and snapshot lineage.
- * @returns Decided parent, an unnamed snapshot, or a named snapshot that could not be read.
- */
-function decidedMcpParentItemId(
-  workspaceDb: WorkspaceDb,
-  workspaceId: string,
-  row: { readonly agent_session_id: string | null; readonly package_snapshot_id: string | null }
-):
-  | { readonly kind: 'decided'; readonly parentItemId: string | null }
-  | { readonly kind: 'no-snapshot-named' }
-  | { readonly kind: 'snapshot-unreadable' } {
-  if (!row.agent_session_id || !row.package_snapshot_id) {
-    return { kind: 'no-snapshot-named' };
-  }
-  if (!isAddressableSnapshotLineage(row.agent_session_id, row.package_snapshot_id)) {
-    return { kind: 'snapshot-unreadable' };
-  }
-  let snapshot: ReturnType<typeof findNamedAgentEnvironmentPackageSnapshot>;
-  try {
-    snapshot = findNamedAgentEnvironmentPackageSnapshot(
-      workspaceDb,
-      workspaceId,
-      row.agent_session_id,
-      row.package_snapshot_id
-    );
-  } catch (error) {
-    const failure = error as NodeJS.ErrnoException;
-    // This caller defers unavailable publication inputs; the shared proof reader stays strict.
-    if (
-      error instanceof Error &&
-      typeof failure.errno === 'number' &&
-      ['EACCES', 'EPERM', 'EIO', 'EMFILE', 'ENFILE'].includes(failure.code ?? '') &&
-      ['lstat', 'open', 'read'].includes(failure.syscall ?? '')
-    ) {
-      return { kind: 'snapshot-unreadable' };
-    }
-    throw error;
-  }
-  return snapshot
-    ? { kind: 'decided', parentItemId: snapshot.snapshot.scope.itemId ?? null }
-    : { kind: 'snapshot-unreadable' };
-}
-
-/**
- * Returns whether a stored lineage pair can address a snapshot file at all.
- *
- * A lineage that is not a single path segment cannot name a file, so it reads as unreadable rather
- * than throwing out of the path assertion inside the finder.
- *
- * @param agentSessionId Stored AgentSession lineage.
- * @param snapshotId Stored AEP snapshot lineage.
- * @returns True when both values are single path segments.
- */
-function isAddressableSnapshotLineage(agentSessionId: string, snapshotId: string): boolean {
-  const addressable = (value: string): boolean =>
-    value !== '.' && value !== '..' && !/[/\\\0]/.test(value);
-  return addressable(agentSessionId) && addressable(snapshotId);
-}
-
-/** Ledger fields that own the product-safe terminal MCP Item publication. */
-interface DecidedMcpPublicationRow {
-  readonly schema_version: number;
-  agent_id: string | null;
-  agent_session_id: string | null;
-  call_id: string;
-  completed_at: string;
-  error_code: string | null;
-  item_id: string;
-  package_snapshot_id: string | null;
-  provider_ref: string;
-  service_ref: string;
-  started_at: string | null;
-  status: string;
-  thread_id: string;
-  turn_id: string;
-  workspace_id: string;
-}
-
-/**
- * Reconstructs the ledger-owned publication used by boot and terminal recovery.
- *
- * @param workspaceId Owning Workspace.
- * @param row Terminal MCP call with complete publication fields.
- * @param parentItemId Parent established by the call's immutable AEP snapshot.
- * @returns Validated product-safe MCP Item.
- */
-function decidedMcpPublicationItem(
-  workspaceId: string,
-  row: DecidedMcpPublicationRow,
-  parentItemId: string | null
-): ReturnType<FsStore['listAllItems']>[number] {
-  return ItemSchema.parse({
-    arguments: null,
-    causationId: row.call_id,
-    completedAt: row.completed_at,
-    createdAt: row.completed_at,
-    durationMs: row.started_at
-      ? Math.max(0, Date.parse(row.completed_at) - Date.parse(row.started_at))
-      : 0,
-    error: row.status === 'succeeded' ? null : row.error_code,
-    id: row.item_id,
-    ...(parentItemId ? { parentItemId } : {}),
-    result: null,
-    server: row.provider_ref,
-    status:
-      row.status === 'succeeded' ? 'completed' : row.status === 'denied' ? 'declined' : 'failed',
-    threadId: row.thread_id,
-    tool: row.service_ref.slice('mcp-tool:'.length),
-    turnId: row.turn_id,
-    type: 'tool-call',
-    owner: { kind: 'workspace', workspaceId: workspaceId },
-  });
-}
-
-/**
- * Proves an additional terminal-Turn Item completes its pre-terminal MCP decision.
- *
- * This is read-only: the admission marker alone is not evidence of a decided call.
- * Missing canonical lineage or a decision after terminalization cannot authorize repair.
- *
- * @param workspaceDb Existing Workspace capability ledger.
- * @param environmentPackage Exact package already validated by the recovery owner.
- * @param item Additional current Item absent from the older terminal event.
- * @param completedAt Immutable Turn completion time.
- * @returns True only for the exact decided publication, apart from admitted display fields.
- */
-export function isAlreadyDecidedWorkerMcpItem(
-  workspaceDb: WorkspaceDb,
-  environmentPackage: AgentEnvironmentPackage,
-  item: ReturnType<FsStore['listAllItems']>[number],
-  completedAt: string | null
-): boolean {
-  if (item.type !== 'tool-call' || !item.causationId || !completedAt) return false;
-  const row = workspaceDb.sqlite
-    .prepare(
-      `SELECT * FROM capability_calls WHERE call_id = ?
-       AND family = 'mcp' AND capability_id = 'mcp.call-tool' AND operation = 'mcp.call-tool'
-       AND status NOT IN ('queued', 'running')
-       AND item_id IS NOT NULL AND provider_ref IS NOT NULL
-       AND service_ref LIKE 'mcp-tool:%' AND completed_at IS NOT NULL`
-    )
-    .get(item.causationId) as DecidedMcpPublicationRow | undefined;
-  if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
-  const scope = environmentPackage.scope;
-  if (
-    !row ||
-    !CapabilityCallStatusSchema.safeParse(row.status).success ||
-    row.workspace_id !== scope.workspaceId ||
-    row.thread_id !== scope.threadId ||
-    row.turn_id !== scope.turnId ||
-    row.agent_id !== environmentPackage.agent.agentId ||
-    row.agent_session_id !== scope.agentSessionId ||
-    row.package_snapshot_id !== environmentPackage.snapshotId ||
-    row.item_id !== item.id ||
-    !row.started_at ||
-    !(Date.parse(row.started_at) <= Date.parse(row.completed_at)) ||
-    !(Date.parse(row.completed_at) <= Date.parse(completedAt))
-  )
-    return false;
-  const parent = decidedMcpParentItemId(workspaceDb, scope.workspaceId, row);
-  if (parent.kind !== 'decided') return false;
-  const candidate = decidedMcpPublicationItem(scope.workspaceId, row, parent.parentItemId);
-  // Keep repair equality separate from the Store's display refresh admission.
-  const decidedFields = (value: ReturnType<FsStore['listAllItems']>[number]) =>
-    Object.fromEntries(
-      Object.entries(value).filter(
-        ([field]) => !DISPLAY_PROJECTION_REFRESH_FIELDS.some((allowed) => allowed === field)
-      )
-    );
-  return isDeepStrictEqual(decidedFields(item), decidedFields(candidate));
 }
 
 /** Recreates missing product-safe MCP Items from terminal durable CapabilityCalls at boot. */
@@ -2782,13 +2598,6 @@ function assertValidMcpToolArguments(
   }
 }
 
-/** Returns the closed worker-visible denial for a consumed or ambiguous Approval. */
-function mcpDeniedError(): ProtocolError {
-  return new ProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool call was denied.', {
-    code: 'mcp-denied',
-  });
-}
-
 /** Discovers live tools while retaining the exact schema already selected for the Turn. */
 async function observeWorkerMcpTools(input: {
   readonly call: StartedCapabilityCall;
@@ -3014,263 +2823,6 @@ async function observeWorkerMcpTools(input: {
   };
 }
 
-/** Keeps trusted private failure identity separate from public denial and cleanup, without exception content. */
-function reportMcpCredentialFailure(error: unknown, stage: 'resolve' | 'cleanup'): void {
-  try {
-    const cause =
-      error instanceof Database.SqliteError
-        ? { errorClass: 'SqliteError', code: error.code }
-        : error instanceof ControlStoreWorkerError
-          ? { errorClass: 'ControlStoreWorkerError', code: error.code }
-          : error instanceof VaultBackendError
-            ? { errorClass: 'VaultBackendError', code: error.code }
-            : { errorClass: error instanceof OperationError ? 'OperationError' : 'other' };
-    console.error(JSON.stringify({ event: 'worker.mcp.credential-failure', stage, ...cause }));
-  } catch {
-    // Diagnostic sink failure cannot change credential denial or cleanup certainty.
-  }
-}
-
-/** Resolves every current Vault grant into the exact catalog-declared transport sink. */
-export async function resolveWorkerMcpCredentials(input: {
-  /** Rechecks the caller's existing live or captured authority after the Main writer hold settles. */
-  readonly current?: () => boolean;
-  readonly call: Pick<StartedCapabilityCall, 'id'>;
-  readonly environmentPackage: {
-    readonly snapshotId: string;
-    readonly scope: {
-      readonly workspaceId: string;
-      readonly agentSessionId: string;
-      readonly triggerActor?: ActorRef;
-    };
-    readonly agent: { readonly agentId: string };
-  };
-  readonly input: Pick<
-    RegisterWorkerMcpRoutesInput,
-    'coreDb' | 'workerMcpGateway' | 'vaultUnlockState'
-  > & { readonly vaultBackend?: () => import('./vault/vault-backend.js').VaultBackend };
-  readonly operation: 'mcp.list-tools' | 'mcp.call-tool';
-  readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
-  readonly workspaceDb: WorkspaceDb;
-}): Promise<{
-  credentials?: WorkerMcpGatewayCredentials;
-  injections: PendingMcpVaultInjection[];
-}> {
-  assertCurrentSharedMcpBinding(input);
-  if (input.resolved.credentialBindings.length === 0) return { injections: [] };
-  if (
-    input.resolved.scope === 'server' &&
-    (!input.environmentPackage.scope.triggerActor ||
-      !responsibleUserIdForActor(input.environmentPackage.scope.triggerActor))
-  ) {
-    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
-  }
-  const coreDb = input.input.coreDb!;
-  const environment: Record<string, string> = {};
-  const headers: Record<string, string> = {};
-  const query: Record<string, string> = {};
-  let bearer: string | undefined;
-  const injections: PendingMcpVaultInjection[] = [];
-
-  try {
-    if (!input.input.vaultUnlockState && !input.input.vaultBackend)
-      throw new Error('Vault is unavailable.');
-    if (input.current?.() === false) throw mcpDeniedError();
-    assertCurrentSharedMcpBinding(input);
-    for (const binding of input.resolved.credentialBindings) {
-      const grant = getVaultGrant(coreDb, binding.vaultGrantId);
-      const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
-      assertCurrentMcpVaultAuthority(input, grant, reference);
-      const planId = mcpVaultRecordId('plan', input, binding.slot, grant!.grantId);
-      const receiptId = mcpVaultRecordId('receipt', input, binding.slot, grant!.grantId);
-      const now = new Date().toISOString();
-      await createVaultInjectionPlan(coreDb, {
-        backendCapabilityRequirement: `mcp-gateway:${input.resolved.transport.kind}`,
-        capabilityId: input.operation,
-        expirationBehavior: grant!.expiresAt ? `expires-at:${grant!.expiresAt}` : 'grant-lifetime',
-        grantId: grant!.grantId,
-        injectionVisibility: 'gateway-only',
-        packageSnapshotId: input.environmentPackage.snapshotId,
-        planId,
-        redactionRule: 'exact-resolved-material',
-        revocationBehavior: 'close-gateway-session',
-        now: () => now,
-      });
-      if (input.current?.() === false) throw mcpDeniedError();
-      assertCurrentSharedMcpBinding(input);
-      assertCurrentMcpVaultAuthority(
-        input,
-        getVaultGrant(coreDb, binding.vaultGrantId),
-        getVaultReference(coreDb, reference!.referenceId)
-      );
-      const backend = input.input.vaultBackend?.() ?? input.input.vaultUnlockState!.backend();
-      if (
-        reference!.backendKind !== backend.kind ||
-        (input.resolved.scope === 'server' && !isCurrentServerMcpMaterial(backend, reference!))
-      )
-        throw new Error('Vault backend mismatch.');
-      const material = await createVaultUseAuditedBackend({
-        agentSessionId: input.environmentPackage.scope.agentSessionId,
-        backend,
-        capabilityCallId: input.call.id,
-        db: input.resolved.scope === 'server' ? coreDb : input.workspaceDb,
-        grantId: grant!.grantId,
-        ownerScope: input.resolved.scope === 'server' ? 'server' : 'workspace',
-        planId,
-        resolvingPath: 'grant',
-        ...(input.resolved.scope === 'server'
-          ? {
-              consumerWorkspaceId: input.environmentPackage.scope.workspaceId,
-              ...(input.environmentPackage.scope.triggerActor
-                ? { actor: input.environmentPackage.scope.triggerActor }
-                : {}),
-            }
-          : { workspaceId: input.environmentPackage.scope.workspaceId }),
-      }).resolve({
-        referenceId: reference!.referenceId,
-        version: reference!.currentVersion,
-      });
-      if (input.current?.() === false) throw mcpDeniedError();
-      assertCurrentSharedMcpBinding(input);
-      assertCurrentMcpVaultAuthority(
-        input,
-        getVaultGrant(coreDb, binding.vaultGrantId),
-        getVaultReference(coreDb, reference!.referenceId)
-      );
-      if (
-        getVaultReference(coreDb, reference!.referenceId)?.currentVersion !==
-        reference!.currentVersion
-      )
-        throw new Error('MCP Vault authority is not current.');
-      const value = vaultSecretMaterialToString(material);
-      if (binding.presentation === 'bearer') {
-        if (value.length === 0) throw new Error('Empty MCP bearer credential.');
-        bearer = value;
-      }
-      if (binding.sink.kind === 'env') environment[binding.sink.name] = value;
-      if (binding.sink.kind === 'header' && binding.presentation !== 'bearer') {
-        headers[binding.sink.name] = value;
-      }
-      if (binding.sink.kind === 'query') query[binding.sink.name] = value;
-      injections.push({
-        backendSummary: `mcp-gateway:${input.resolved.transport.kind}:${binding.sink.kind}`,
-        grant,
-        injectedAt: now,
-        planId,
-        receiptId,
-        referenceVersion: reference!.currentVersion,
-      });
-    }
-  } catch (error) {
-    reportMcpCredentialFailure(error, 'resolve');
-    try {
-      await input.input.workerMcpGateway.closeServer({
-        server: input.resolved,
-        workspaceId: input.environmentPackage.scope.workspaceId,
-      });
-    } catch (cleanupError) {
-      reportMcpCredentialFailure(cleanupError, 'cleanup');
-      throw new WorkerControlGatewayError(
-        'recovery_required',
-        'MCP server cleanup recovery is required.',
-        409
-      );
-    }
-    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
-  }
-
-  return {
-    credentials: {
-      ...(bearer !== undefined ? { bearer } : {}),
-      ...(Object.keys(environment).length ? { environment } : {}),
-      ...(Object.keys(headers).length ? { headers } : {}),
-      ...(Object.keys(query).length ? { query } : {}),
-    },
-    injections,
-  };
-}
-
-/** Re-derives Server origin and exact selection from canonical catalogs at credential and effect boundaries. */
-function assertCurrentSharedMcpBinding(input: {
-  readonly input: { readonly coreDb?: CoreDb };
-  readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
-  readonly environmentPackage: { readonly scope: { readonly workspaceId: string } };
-}): void {
-  if (input.resolved.scope !== 'server') return;
-  if (!input.input.coreDb) throw new Error('Server catalog authority is unavailable.');
-  const catalog = composeWorkspaceMcpCatalog({
-    dataRoot: input.input.coreDb.dataRoot,
-    workspaceId: input.environmentPackage.scope.workspaceId,
-  });
-  const current = resolveWorkspaceMcpServer({ catalog, serverId: input.resolved.id });
-  if (
-    current.scope !== 'server' ||
-    !current.enabled ||
-    current.catalogDigest !== input.resolved.catalogDigest
-  ) {
-    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
-  }
-}
-
-/** Verifies current grant, reference, scope, target, path, and lifetime authority. */
-export function assertCurrentMcpVaultAuthority(
-  input: {
-    readonly environmentPackage: {
-      readonly snapshotId: string;
-      readonly scope: {
-        readonly workspaceId: string;
-        readonly agentSessionId: string;
-        readonly triggerActor?: ActorRef;
-      };
-      readonly agent: { readonly agentId: string };
-    };
-    readonly operation: 'mcp.list-tools' | 'mcp.call-tool';
-    readonly resolved?: { readonly scope?: 'server' | undefined };
-  },
-  grant: VaultGrantRecord | null,
-  reference: ReturnType<typeof getVaultReference>
-): asserts grant is VaultGrantRecord {
-  const workspaceId = input.environmentPackage.scope.workspaceId;
-  const shared = input.resolved?.scope === 'server';
-  const expiresAt = grant?.expiresAt ?? null;
-  const expiry = expiresAt ? Date.parse(expiresAt) : null;
-  const expired =
-    expiry !== null &&
-    (!Number.isFinite(expiry) ||
-      new Date(expiry).toISOString() !== expiresAt ||
-      expiry <= Date.now());
-  if (
-    !grant ||
-    !reference ||
-    grant.issuance !== 'target' ||
-    (grant.approvalId !== null &&
-      (!isTargetIssuedEffectAuthority(grant.approvalId) || grant.policyDecisionId === null)) ||
-    grant.status !== 'active' ||
-    !isTargetIssuedEffectAuthority(grant.grantId) ||
-    (grant.approvalId !== null &&
-      (!isTargetIssuedEffectAuthority(grant.approvalId) || grant.policyDecisionId === null)) ||
-    expired ||
-    grant.ownerScope !== (shared ? 'server' : 'workspace') ||
-    grant.workspaceId !== (shared ? null : workspaceId) ||
-    (shared &&
-      (grant.userId !== null ||
-        grant.lifetime !== 'server' ||
-        grant.allowedInjectionPaths.length !== 1)) ||
-    !grant.allowedInjectionPaths.includes('gateway-only') ||
-    (grant.targetAgentId !== null &&
-      grant.targetAgentId !== input.environmentPackage.agent.agentId) ||
-    (grant.targetAgentSessionId !== null &&
-      grant.targetAgentSessionId !== input.environmentPackage.scope.agentSessionId) ||
-    (grant.targetCapabilityId !== null && grant.targetCapabilityId !== input.operation) ||
-    reference.status !== 'active' ||
-    reference.ownerScope !== (shared ? 'server' : 'workspace') ||
-    reference.workspaceId !== (shared ? null : workspaceId) ||
-    (shared && (reference.userId !== null || reference.secretKind !== 'mcp-credential'))
-  ) {
-    throw new Error('MCP Vault authority is not current.');
-  }
-}
-
 /** Rechecks every credential binding immediately before Gateway registration or tool contact. */
 function assertCurrentMcpVaultBindings(
   input: Pick<WorkerMcpToolCallInput, 'input' | 'environmentPackage' | 'resolved'>,
@@ -3314,58 +2866,6 @@ function assertCurrentMcpVaultBindings(
         throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
     }
   }
-}
-
-/** Creates receipts only after a successful credential-bearing upstream exchange. */
-export async function completeMcpVaultInjections(
-  coreDb: CoreDb,
-  call: StartedCapabilityCall,
-  injections: readonly PendingMcpVaultInjection[]
-): Promise<void> {
-  await getControlStoreWorkerClient().vault(coreDb, 'mcp-receipts-complete', {
-    receipts: injections.map((injection) => ({
-      agentSessionId: call.context.agentSessionId ?? null,
-      backendSummary: injection.backendSummary,
-      capabilityCallId: call.id,
-      expiresAt: injection.grant.expiresAt,
-      grantId: injection.grant.grantId,
-      injectedAt: injection.injectedAt,
-      planId: injection.planId,
-      receiptId: injection.receiptId,
-      revocationStatus: 'active' as const,
-    })),
-  });
-}
-
-/** Non-secret receipt metadata retained until an upstream sink succeeds. */
-export interface PendingMcpVaultInjection {
-  readonly backendSummary: string;
-  readonly grant: VaultGrantRecord;
-  readonly injectedAt: string;
-  readonly planId: string;
-  readonly receiptId: string;
-  /** Exact material version observed before asynchronous discovery; this grants no grace for stale use. */
-  readonly referenceVersion: number;
-}
-
-/** Builds a target-issued deterministic Vault record id for one binding and call. */
-function mcpVaultRecordId(
-  kind: 'plan' | 'receipt',
-  input: {
-    readonly call: Pick<StartedCapabilityCall, 'id'>;
-    readonly environmentPackage: { readonly snapshotId: string };
-    readonly operation: string;
-    readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
-  },
-  slot: string,
-  grantId: string
-): string {
-  return `${kind}_mcp_${createHash('sha256')
-    .update(
-      `${input.environmentPackage.snapshotId}\n${input.resolved.id}\n${input.operation}\n${input.call.id}\n${slot}\n${grantId}`
-    )
-    .digest('hex')
-    .slice(0, 24)}`;
 }
 
 /** Finishes one list handler failure and returns its bounded SDK error. */

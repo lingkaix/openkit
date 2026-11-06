@@ -98,6 +98,7 @@ import {
 import { OperationError } from './operation-error.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
+import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import { RetrievalServiceError } from './retrieval-service.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './runtime/aep-snapshot-ledger.js';
 import {
@@ -187,9 +188,6 @@ import {
   verifyTurnFileInputs,
 } from './storage/workspace-file-records.js';
 import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
-
-/** Stable attribution id for the direct Quick Chat provider call. */
-export const QUICK_CHAT_AGENT_ID = 'quick-chat';
 
 /** Shared absolute deadline for an ordinary Assistant run, including summaries and its answer. */
 const ConversationCommandBodySchema = SubmitConversationResponseSchema.omit({

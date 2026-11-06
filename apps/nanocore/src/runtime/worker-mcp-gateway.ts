@@ -11,16 +11,37 @@ import {
   StreamableHTTPClientTransport,
 } from '@modelcontextprotocol/client';
 import { getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
+import {
+  ProtocolErrorCode,
+  ProtocolError as ServerProtocolError,
+} from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
-import type { ResolvedWorkspaceMcpServer } from '@openkit/config-schema';
-import type { ActorRef } from '@openkit/protocol';
+import { type ResolvedWorkspaceMcpServer, resolveWorkspaceMcpServer } from '@openkit/config-schema';
+import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 
 import { prepareAuditEvent } from '../audit-events.js';
-import { loadResourceCatalog } from '../catalog/resource-catalog.js';
+import type { StartedCapabilityCall } from '../capability/usage-ledger.js';
+import { composeWorkspaceMcpCatalog, loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { OperationError } from '../operation-error.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
+import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
+import { isCurrentServerMcpMaterial } from '../vault/server-mcp-authority.js';
+import {
+  type VaultBackend,
+  VaultBackendError,
+  vaultSecretMaterialToString,
+} from '../vault/vault-backend.js';
+import { getVaultGrant, type VaultGrantRecord } from '../vault/vault-grants.js';
+import { getVaultReference } from '../vault/vault-references.js';
+import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
+import { createVaultInjectionPlan } from '../vault-injection-plans.js';
+import type { RegisterWorkerMcpRoutesInput } from '../worker-mcp-routes.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
 
 /** Maximum complete MCP result or explicit discovery observation, including metadata. */
@@ -1433,4 +1454,320 @@ function cleanupRecoveryError(
       ? error.credentialsMaterialized
       : hasCredentials(input) && fallbackEffect !== 'not-contacted'
   );
+}
+
+/** Returns the closed worker-visible denial for a consumed or ambiguous Approval. */
+export function mcpDeniedError(): ServerProtocolError {
+  return new ServerProtocolError(ProtocolErrorCode.InvalidRequest, 'MCP tool call was denied.', {
+    code: 'mcp-denied',
+  });
+}
+
+/** Keeps trusted private failure identity separate from public denial and cleanup, without exception content. */
+function reportMcpCredentialFailure(error: unknown, stage: 'resolve' | 'cleanup'): void {
+  try {
+    const cause =
+      error instanceof Database.SqliteError
+        ? { errorClass: 'SqliteError', code: error.code }
+        : error instanceof ControlStoreWorkerError
+          ? { errorClass: 'ControlStoreWorkerError', code: error.code }
+          : error instanceof VaultBackendError
+            ? { errorClass: 'VaultBackendError', code: error.code }
+            : { errorClass: error instanceof OperationError ? 'OperationError' : 'other' };
+    console.error(JSON.stringify({ event: 'worker.mcp.credential-failure', stage, ...cause }));
+  } catch {
+    // Diagnostic sink failure cannot change credential denial or cleanup certainty.
+  }
+}
+
+/** Resolves every current Vault grant into the exact catalog-declared transport sink. */
+export async function resolveWorkerMcpCredentials(input: {
+  /** Rechecks the caller's existing live or captured authority after the Main writer hold settles. */
+  readonly current?: () => boolean;
+  readonly call: Pick<StartedCapabilityCall, 'id'>;
+  readonly environmentPackage: {
+    readonly snapshotId: string;
+    readonly scope: {
+      readonly workspaceId: string;
+      readonly agentSessionId: string;
+      readonly triggerActor?: ActorRef;
+    };
+    readonly agent: { readonly agentId: string };
+  };
+  readonly input: Pick<
+    RegisterWorkerMcpRoutesInput,
+    'coreDb' | 'workerMcpGateway' | 'vaultUnlockState'
+  > & { readonly vaultBackend?: () => VaultBackend };
+  readonly operation: 'mcp.list-tools' | 'mcp.call-tool';
+  readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
+  readonly workspaceDb: WorkspaceDb;
+}): Promise<{
+  credentials?: WorkerMcpGatewayCredentials;
+  injections: PendingMcpVaultInjection[];
+}> {
+  assertCurrentSharedMcpBinding(input);
+  if (input.resolved.credentialBindings.length === 0) return { injections: [] };
+  if (
+    input.resolved.scope === 'server' &&
+    (!input.environmentPackage.scope.triggerActor ||
+      !responsibleUserIdForActor(input.environmentPackage.scope.triggerActor))
+  ) {
+    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+  }
+  const coreDb = input.input.coreDb!;
+  const environment: Record<string, string> = {};
+  const headers: Record<string, string> = {};
+  const query: Record<string, string> = {};
+  let bearer: string | undefined;
+  const injections: PendingMcpVaultInjection[] = [];
+
+  try {
+    if (!input.input.vaultUnlockState && !input.input.vaultBackend)
+      throw new Error('Vault is unavailable.');
+    if (input.current?.() === false) throw mcpDeniedError();
+    assertCurrentSharedMcpBinding(input);
+    for (const binding of input.resolved.credentialBindings) {
+      const grant = getVaultGrant(coreDb, binding.vaultGrantId);
+      const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
+      assertCurrentMcpVaultAuthority(input, grant, reference);
+      const planId = mcpVaultRecordId('plan', input, binding.slot, grant!.grantId);
+      const receiptId = mcpVaultRecordId('receipt', input, binding.slot, grant!.grantId);
+      const now = new Date().toISOString();
+      await createVaultInjectionPlan(coreDb, {
+        backendCapabilityRequirement: `mcp-gateway:${input.resolved.transport.kind}`,
+        capabilityId: input.operation,
+        expirationBehavior: grant!.expiresAt ? `expires-at:${grant!.expiresAt}` : 'grant-lifetime',
+        grantId: grant!.grantId,
+        injectionVisibility: 'gateway-only',
+        packageSnapshotId: input.environmentPackage.snapshotId,
+        planId,
+        redactionRule: 'exact-resolved-material',
+        revocationBehavior: 'close-gateway-session',
+        now: () => now,
+      });
+      if (input.current?.() === false) throw mcpDeniedError();
+      assertCurrentSharedMcpBinding(input);
+      assertCurrentMcpVaultAuthority(
+        input,
+        getVaultGrant(coreDb, binding.vaultGrantId),
+        getVaultReference(coreDb, reference!.referenceId)
+      );
+      const backend = input.input.vaultBackend?.() ?? input.input.vaultUnlockState!.backend();
+      if (
+        reference!.backendKind !== backend.kind ||
+        (input.resolved.scope === 'server' && !isCurrentServerMcpMaterial(backend, reference!))
+      )
+        throw new Error('Vault backend mismatch.');
+      const material = await createVaultUseAuditedBackend({
+        agentSessionId: input.environmentPackage.scope.agentSessionId,
+        backend,
+        capabilityCallId: input.call.id,
+        db: input.resolved.scope === 'server' ? coreDb : input.workspaceDb,
+        grantId: grant!.grantId,
+        ownerScope: input.resolved.scope === 'server' ? 'server' : 'workspace',
+        planId,
+        resolvingPath: 'grant',
+        ...(input.resolved.scope === 'server'
+          ? {
+              consumerWorkspaceId: input.environmentPackage.scope.workspaceId,
+              ...(input.environmentPackage.scope.triggerActor
+                ? { actor: input.environmentPackage.scope.triggerActor }
+                : {}),
+            }
+          : { workspaceId: input.environmentPackage.scope.workspaceId }),
+      }).resolve({
+        referenceId: reference!.referenceId,
+        version: reference!.currentVersion,
+      });
+      if (input.current?.() === false) throw mcpDeniedError();
+      assertCurrentSharedMcpBinding(input);
+      assertCurrentMcpVaultAuthority(
+        input,
+        getVaultGrant(coreDb, binding.vaultGrantId),
+        getVaultReference(coreDb, reference!.referenceId)
+      );
+      if (
+        getVaultReference(coreDb, reference!.referenceId)?.currentVersion !==
+        reference!.currentVersion
+      )
+        throw new Error('MCP Vault authority is not current.');
+      const value = vaultSecretMaterialToString(material);
+      if (binding.presentation === 'bearer') {
+        if (value.length === 0) throw new Error('Empty MCP bearer credential.');
+        bearer = value;
+      }
+      if (binding.sink.kind === 'env') environment[binding.sink.name] = value;
+      if (binding.sink.kind === 'header' && binding.presentation !== 'bearer') {
+        headers[binding.sink.name] = value;
+      }
+      if (binding.sink.kind === 'query') query[binding.sink.name] = value;
+      injections.push({
+        backendSummary: `mcp-gateway:${input.resolved.transport.kind}:${binding.sink.kind}`,
+        grant,
+        injectedAt: now,
+        planId,
+        receiptId,
+        referenceVersion: reference!.currentVersion,
+      });
+    }
+  } catch (error) {
+    reportMcpCredentialFailure(error, 'resolve');
+    try {
+      await input.input.workerMcpGateway.closeServer({
+        server: input.resolved,
+        workspaceId: input.environmentPackage.scope.workspaceId,
+      });
+    } catch (cleanupError) {
+      reportMcpCredentialFailure(cleanupError, 'cleanup');
+      throw new WorkerControlGatewayError(
+        'recovery_required',
+        'MCP server cleanup recovery is required.',
+        409
+      );
+    }
+    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+  }
+
+  return {
+    credentials: {
+      ...(bearer !== undefined ? { bearer } : {}),
+      ...(Object.keys(environment).length ? { environment } : {}),
+      ...(Object.keys(headers).length ? { headers } : {}),
+      ...(Object.keys(query).length ? { query } : {}),
+    },
+    injections,
+  };
+}
+
+/** Re-derives Server origin and exact selection from canonical catalogs at credential and effect boundaries. */
+export function assertCurrentSharedMcpBinding(input: {
+  readonly input: { readonly coreDb?: CoreDb };
+  readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
+  readonly environmentPackage: { readonly scope: { readonly workspaceId: string } };
+}): void {
+  if (input.resolved.scope !== 'server') return;
+  if (!input.input.coreDb) throw new Error('Server catalog authority is unavailable.');
+  const catalog = composeWorkspaceMcpCatalog({
+    dataRoot: input.input.coreDb.dataRoot,
+    workspaceId: input.environmentPackage.scope.workspaceId,
+  });
+  const current = resolveWorkspaceMcpServer({ catalog, serverId: input.resolved.id });
+  if (
+    current.scope !== 'server' ||
+    !current.enabled ||
+    current.catalogDigest !== input.resolved.catalogDigest
+  ) {
+    throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
+  }
+}
+
+/** Verifies current grant, reference, scope, target, path, and lifetime authority. */
+export function assertCurrentMcpVaultAuthority(
+  input: {
+    readonly environmentPackage: {
+      readonly snapshotId: string;
+      readonly scope: {
+        readonly workspaceId: string;
+        readonly agentSessionId: string;
+        readonly triggerActor?: ActorRef;
+      };
+      readonly agent: { readonly agentId: string };
+    };
+    readonly operation: 'mcp.list-tools' | 'mcp.call-tool';
+    readonly resolved?: { readonly scope?: 'server' | undefined };
+  },
+  grant: VaultGrantRecord | null,
+  reference: ReturnType<typeof getVaultReference>
+): asserts grant is VaultGrantRecord {
+  const workspaceId = input.environmentPackage.scope.workspaceId;
+  const shared = input.resolved?.scope === 'server';
+  const expiresAt = grant?.expiresAt ?? null;
+  const expiry = expiresAt ? Date.parse(expiresAt) : null;
+  const expired =
+    expiry !== null &&
+    (!Number.isFinite(expiry) ||
+      new Date(expiry).toISOString() !== expiresAt ||
+      expiry <= Date.now());
+  if (
+    !grant ||
+    !reference ||
+    grant.issuance !== 'target' ||
+    (grant.approvalId !== null &&
+      (!isTargetIssuedEffectAuthority(grant.approvalId) || grant.policyDecisionId === null)) ||
+    grant.status !== 'active' ||
+    !isTargetIssuedEffectAuthority(grant.grantId) ||
+    (grant.approvalId !== null &&
+      (!isTargetIssuedEffectAuthority(grant.approvalId) || grant.policyDecisionId === null)) ||
+    expired ||
+    grant.ownerScope !== (shared ? 'server' : 'workspace') ||
+    grant.workspaceId !== (shared ? null : workspaceId) ||
+    (shared &&
+      (grant.userId !== null ||
+        grant.lifetime !== 'server' ||
+        grant.allowedInjectionPaths.length !== 1)) ||
+    !grant.allowedInjectionPaths.includes('gateway-only') ||
+    (grant.targetAgentId !== null &&
+      grant.targetAgentId !== input.environmentPackage.agent.agentId) ||
+    (grant.targetAgentSessionId !== null &&
+      grant.targetAgentSessionId !== input.environmentPackage.scope.agentSessionId) ||
+    (grant.targetCapabilityId !== null && grant.targetCapabilityId !== input.operation) ||
+    reference.status !== 'active' ||
+    reference.ownerScope !== (shared ? 'server' : 'workspace') ||
+    reference.workspaceId !== (shared ? null : workspaceId) ||
+    (shared && (reference.userId !== null || reference.secretKind !== 'mcp-credential'))
+  ) {
+    throw new Error('MCP Vault authority is not current.');
+  }
+}
+
+/** Creates receipts only after a successful credential-bearing upstream exchange. */
+export async function completeMcpVaultInjections(
+  coreDb: CoreDb,
+  call: StartedCapabilityCall,
+  injections: readonly PendingMcpVaultInjection[]
+): Promise<void> {
+  await getControlStoreWorkerClient().vault(coreDb, 'mcp-receipts-complete', {
+    receipts: injections.map((injection) => ({
+      agentSessionId: call.context.agentSessionId ?? null,
+      backendSummary: injection.backendSummary,
+      capabilityCallId: call.id,
+      expiresAt: injection.grant.expiresAt,
+      grantId: injection.grant.grantId,
+      injectedAt: injection.injectedAt,
+      planId: injection.planId,
+      receiptId: injection.receiptId,
+      revocationStatus: 'active' as const,
+    })),
+  });
+}
+
+/** Non-secret receipt metadata retained until an upstream sink succeeds. */
+export interface PendingMcpVaultInjection {
+  readonly backendSummary: string;
+  readonly grant: VaultGrantRecord;
+  readonly injectedAt: string;
+  readonly planId: string;
+  readonly receiptId: string;
+  /** Exact material version observed before asynchronous discovery; this grants no grace for stale use. */
+  readonly referenceVersion: number;
+}
+
+/** Builds a target-issued deterministic Vault record id for one binding and call. */
+function mcpVaultRecordId(
+  kind: 'plan' | 'receipt',
+  input: {
+    readonly call: Pick<StartedCapabilityCall, 'id'>;
+    readonly environmentPackage: { readonly snapshotId: string };
+    readonly operation: string;
+    readonly resolved: ReturnType<typeof resolveWorkspaceMcpServer>;
+  },
+  slot: string,
+  grantId: string
+): string {
+  return `${kind}_mcp_${createHash('sha256')
+    .update(
+      `${input.environmentPackage.snapshotId}\n${input.resolved.id}\n${input.operation}\n${input.call.id}\n${slot}\n${grantId}`
+    )
+    .digest('hex')
+    .slice(0, 24)}`;
 }

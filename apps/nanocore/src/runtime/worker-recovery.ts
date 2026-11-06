@@ -16,7 +16,11 @@ import {
 } from '@openkit/protocol';
 import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
-import { DISPLAY_PROJECTION_REFRESH_FIELDS, type FsStore } from '../lib/store.js';
+import {
+  DISPLAY_PROJECTION_REFRESH_FIELDS,
+  type FsStore,
+  StoreRecordNotFoundError,
+} from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
@@ -25,7 +29,6 @@ import {
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { projectTurnEventRequestId } from '../storage/retained-work-events-v1.js';
-import { isAlreadyDecidedWorkerMcpItem } from '../worker-mcp-routes.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,
   listExportableAgentEnvironmentPackageSnapshots,
@@ -56,6 +59,7 @@ import {
   type WorkerCheckpointRecord,
 } from './worker-checkpoints.js';
 import { turnStatusForCanonicalWorkerStopReason } from './worker-control-records.js';
+import { isAlreadyDecidedWorkerMcpItem } from './worker-mcp-decision.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import {
   isTerminalWorkerTurnStage,
@@ -1290,4 +1294,20 @@ function createInterruptedWorkerRecoveryChoices(
   }
 
   return choices;
+}
+
+/** Recovery owns its original Turn lineage and missing-checkpoint refusal, independent of operation spelling. */
+export function readRecoveryOperationLineage(
+  store: import('../lib/store.js').FsStore,
+  turnId: string
+) {
+  try {
+    const lineage = store.getTurnLineage(turnId);
+    if (!lineage) throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
+    return lineage;
+  } catch (error) {
+    if (error instanceof StoreRecordNotFoundError)
+      throw new OperationError('recovery_retry_failed', error.message, 400, { cause: error });
+    throw error;
+  }
 }

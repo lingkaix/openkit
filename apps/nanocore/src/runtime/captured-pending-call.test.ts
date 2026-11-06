@@ -69,6 +69,7 @@ import { raiseRecordedPendingRequest, respondRecordedApproval } from './pending-
 import { executionCallIdForRequest, readPendingRequest } from './pending-requests.js';
 import type { WorkerControlGateway } from './worker-control-gateway.js';
 import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
+import * as workerMcpGateway from './worker-mcp-gateway.js';
 
 /** Upstream Tool fixture with retained input schema and independent top-level metadata. */
 type Tool = { name: string; inputSchema: Record<string, unknown>; description?: string };
@@ -726,7 +727,7 @@ describe('captured pending MCP schema identity at grant', () => {
           sqlite: f.db.sqlite,
         })
       ).toMatchObject({ toolInSupply: true, schemaCurrent: true });
-      const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
+      const credentials = vi.spyOn(workerMcpGateway, 'resolveWorkerMcpCredentials');
       let prepared: PreparedCapturedPendingCall | undefined;
       let executionCall: Awaited<ReturnType<typeof admitCapturedPendingCall>> | undefined;
       const result = await respondRecordedApproval({
@@ -816,7 +817,7 @@ describe('captured pending MCP schema identity at grant', () => {
 
   it('blocks a mediated source without a reviewer before credential resolution', async () => {
     const f = await fixture('tracking', true, true);
-    const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
+    const credentials = vi.spyOn(workerMcpGateway, 'resolveWorkerMcpCredentials');
     expect(await f.grant()).toMatchObject({
       disposition: 'execution-error',
       dispositionReason: 'policy-changed',
@@ -827,7 +828,7 @@ describe('captured pending MCP schema identity at grant', () => {
 
   it('requires exact mediated review for a catalog approval and keeps its once-only claim', async () => {
     const refused = await fixture('tracking', true, true, 'require_approval');
-    const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
+    const credentials = vi.spyOn(workerMcpGateway, 'resolveWorkerMcpCredentials');
     expect(await refused.grant()).toMatchObject({
       disposition: 'execution-error',
       dispositionReason: 'policy-changed',
@@ -875,7 +876,7 @@ describe('captured pending MCP schema identity at grant', () => {
 
   it('rejects changed mediation pins before credentials or execution', async () => {
     const f = await fixture('tracking', false, true);
-    const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
+    const credentials = vi.spyOn(workerMcpGateway, 'resolveWorkerMcpCredentials');
     expect(
       await f.grant(
         undefined,

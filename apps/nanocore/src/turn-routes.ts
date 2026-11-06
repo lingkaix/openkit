@@ -14,8 +14,8 @@ import type { Actor } from './auth/identity.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
 import type { FsStore } from './lib/store.js';
-import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import type { ProviderCredentialResolver } from './providers/registry.js';
+import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import {
   closeSchedulerExecutionAttemptWithoutEffects,
   listSchedulerExecutionAttemptsForTurn,

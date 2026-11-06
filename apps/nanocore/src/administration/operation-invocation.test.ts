@@ -147,6 +147,7 @@ describe('real administration assembly through invocation', () => {
         environmentTools: unaffected.slice(4) as unknown as AdministrationEnvironmentTools,
         runtimeTargetTool: createAdministrationNanoHostRuntimeTargetTool({
           coreDb,
+          createOperationInvocation: invocation.createOperationInvocation,
           mode: 'server',
           nanoHostConfig: target,
           actor,

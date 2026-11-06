@@ -16,7 +16,6 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { isAlreadyDecidedWorkerMcpItem } from '../worker-mcp-routes.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -58,6 +57,7 @@ import {
   hasPendingWorkerCancellationFinal,
 } from './worker-control-records.js';
 import type { WorkerGovernanceBackendSessionIdentity } from './worker-governance-backend.js';
+import { isAlreadyDecidedWorkerMcpItem } from './worker-mcp-decision.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 import { hasPendingWorkspaceCapture } from './workspace-reconciliation-records.js';
 import {

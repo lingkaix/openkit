@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { assertCurrentMcpVaultAuthority } from '../runtime/worker-mcp-gateway.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -11,7 +12,6 @@ import {
   importUnboundWorkspaceVaultReference,
   importWorkspaceVaultGrants,
 } from '../storage/test-support/vault-retained-fixtures.js';
-import { assertCurrentMcpVaultAuthority } from '../worker-mcp-routes.js';
 import {
   createVaultGrant,
   getVaultGrant,

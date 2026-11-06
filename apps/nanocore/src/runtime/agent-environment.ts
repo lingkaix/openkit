@@ -75,8 +75,8 @@ import {
   listSchedulerExecutionAttemptsForTurn,
 } from './execution-attempt-records.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
-import { createOpenkitGenerativeMcpSupply } from './openkit-generative-mcp.js';
-import { createOpenkitWorkMcpSupply } from './openkit-work-mcp.js';
+import { createOpenkitGenerativeMcpSupply } from './openkit-generative-supply.js';
+import { createOpenkitWorkMcpSupply } from './openkit-work-supply.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
   assertCurrentPublicNetworkGrants,

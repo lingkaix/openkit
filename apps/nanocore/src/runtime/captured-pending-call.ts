@@ -22,12 +22,6 @@ import type { VaultBackend } from '../vault/vault-backend.js';
 import { getVaultGrant } from '../vault/vault-grants.js';
 import { getVaultReference } from '../vault/vault-references.js';
 import {
-  assertCurrentMcpVaultAuthority,
-  completeMcpVaultInjections,
-  type PendingMcpVaultInjection,
-  resolveWorkerMcpCredentials,
-} from '../worker-mcp-routes.js';
-import {
   canonicalMcpToolSchemas,
   readCurrentMcpToolSchemaSnapshot,
   readRetainedMcpToolSchemaSnapshot,
@@ -38,6 +32,10 @@ import {
   type PendingRequestRecord,
 } from './pending-requests.js';
 import {
+  assertCurrentMcpVaultAuthority,
+  completeMcpVaultInjections,
+  type PendingMcpVaultInjection,
+  resolveWorkerMcpCredentials,
   type WorkerMcpGateway,
   WorkerMcpGatewayCallError,
   type WorkerMcpGatewayCredentials,

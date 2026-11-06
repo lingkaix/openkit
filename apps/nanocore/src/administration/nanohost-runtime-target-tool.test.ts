@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { createOperationInvocation } from '../operation-composition.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
@@ -19,6 +20,7 @@ const physicalEpoch = 'a'.repeat(64);
 function toolFor(coreDb: ReturnType<typeof openCoreDb> | undefined) {
   return createAdministrationNanoHostRuntimeTargetTool({
     coreDb,
+    createOperationInvocation,
     actor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
     lineage: {
       workspaceId: 'ws_00000000-0000-7385-aa6f-e0db858f78e5',

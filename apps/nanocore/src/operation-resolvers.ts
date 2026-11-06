@@ -39,7 +39,7 @@ import { readPendingOperationLineage } from './pending-request-operations.js';
 import { evaluateProductAccess } from './policy/workspace-access.js';
 import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
 import { evaluateThreadAuthorization } from './policy/workspace-resource-access.js';
-import { readRecoveryOperationLineage } from './runtime/worker-recovery-operations.js';
+import { readRecoveryOperationLineage } from './runtime/worker-recovery.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
 import {

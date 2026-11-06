@@ -4,13 +4,14 @@ import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import type { CoreMode } from '../config/mode.js';
 import type { AgentTool, AgentToolResult } from '../internal-agents/internal-agent-loop.js';
-import { createOperationInvocation } from '../operation-composition.js';
+import type { createOperationInvocation } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
 
 /** Trusted dependencies for the configured RuntimeTarget read. */
 export interface CreateAdministrationNanoHostRuntimeTargetToolInput {
   readonly coreDb: CoreDb | undefined;
+  readonly createOperationInvocation: typeof createOperationInvocation;
   readonly mode: CoreMode;
   readonly nanoHostConfig?: Pick<OpenKitNanoHostConfig, 'identityId' | 'deploymentId'>;
   /** Authenticated administrator; never supplied by the model. */
@@ -29,7 +30,7 @@ export function createAdministrationNanoHostRuntimeTargetTool(
 ): AgentTool {
   const id = 'nanohost.runtime-target';
   const definition = ADMINISTRATION_OPERATION_DEFINITIONS[id];
-  const invoke = createOperationInvocation(input);
+  const invoke = input.createOperationInvocation(input);
   return {
     name: id,
     description: definition.description,

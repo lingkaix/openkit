@@ -39,6 +39,7 @@ import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import type { createOperationInvocation } from '../operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
@@ -120,6 +121,7 @@ interface AdministrationEnvironmentToolContext {
 interface AdministrationDependencies {
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly coreDb: CoreDb | undefined;
+  readonly createOperationInvocation: typeof createOperationInvocation;
   readonly environmentToolsForTurn: (
     context: AdministrationEnvironmentToolContext
   ) => AdministrationEnvironmentTools;
@@ -419,6 +421,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                   actor,
                   lineage: { workspaceId, threadId: thread.id, turnId: turn.id },
                   coreDb: input.coreDb,
+                  createOperationInvocation: input.createOperationInvocation,
                   mode: input.mode,
                   ...(input.nanoHostConfig ? { nanoHostConfig: input.nanoHostConfig } : {}),
                 }),

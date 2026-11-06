@@ -27,8 +27,8 @@ import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runti
 import { projectThreadTaskInputs } from './context/worker-context-projection.js';
 import type { FsStore } from './lib/store.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
-import { QUICK_CHAT_AGENT_ID } from './mode-entry-routes.js';
 import { OperationError } from './operation-error.js';
+import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adapter.js';
 import { listGoalsForThread } from './runtime/goal-owner.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
