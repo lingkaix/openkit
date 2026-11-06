@@ -1,8 +1,14 @@
 import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-client';
 import type { KnowledgeClient, KnowledgeNode } from '@openkit/knowledge-ui';
+import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { useCoreClient } from '../../app/core-client';
-import { type KnowledgeNotebookPage, useKnowledge } from './data';
+import {
+  KNOWLEDGE_NOTEBOOK_PAGE_LIMIT,
+  type KnowledgeNotebookPage,
+  useKnowledge,
+  workspaceKeys,
+} from './data';
 import {
   composeUserAuthoredKnowledgePage,
   patchKnowledgePageTitleBody,
@@ -19,14 +25,26 @@ function updatedAtOf(content: string): string | null {
 
 function nodeFromPage(page: KnowledgeNotebookPage): KnowledgeNode {
   const display = readKnowledgePageDisplay(page.path, page.content);
+  const published = page.updatedAt;
   return {
     id: page.id,
-    parentId: null,
+    parentId: page.parentId ?? null,
     title: display.title,
     kind: 'page',
     mediaType: 'text/markdown',
-    updatedAt: updatedAtOf(page.content),
+    updatedAt:
+      typeof published === 'string' && published.length > 0 ? published : updatedAtOf(page.content),
   };
+}
+
+/** A missing, empty, or repeated cursor stops the read. The cursor stays opaque. */
+function continuedCursor(
+  nextCursor: string | null | undefined,
+  requested: string | undefined
+): string | null {
+  if (typeof nextCursor !== 'string' || nextCursor.length === 0) return null;
+  if (requested !== undefined && nextCursor === requested) return null;
+  return nextCursor;
 }
 
 function isTextFile(file: Blob, name: string): boolean {
@@ -45,15 +63,16 @@ function fileName(file: Blob): string {
 
 /**
  * OpenKit adapter over the notebook the screen already loaded.
- * `list` serves that snapshot. A second `knowledge.notebook.list` would change call counts the
- * existing Knowledge tests pin. Search, save, and import call the live operations.
- * `nextCursor` is null: notebook list and retrieval have no page cursor.
+ * The first `list` serves that snapshot, so opening Knowledge does not add a second
+ * `knowledge.notebook.list`. A later list sends the server cursor unchanged.
  */
 export function useOpenKitKnowledgeClient(workspaceId: string | null): KnowledgeClient {
   const core = useCoreClient();
+  const queries = useQueryClient();
   const knowledge = useKnowledge(workspaceId);
   const pages = knowledge.data?.pages;
   const revision = knowledge.data?.notebookRevision ?? null;
+  const nextCursor = knowledge.data?.nextCursor ?? null;
 
   return useMemo(
     () =>
@@ -62,8 +81,10 @@ export function useOpenKitKnowledgeClient(workspaceId: string | null): Knowledge
         workspaceId,
         pages: pages ?? [],
         revision,
+        nextCursor,
+        queryClient: queries,
       }),
-    [core, workspaceId, pages, revision]
+    [core, workspaceId, pages, revision, nextCursor, queries]
   );
 }
 
@@ -72,13 +93,37 @@ export function createOpenKitKnowledgeClient(input: {
   workspaceId: string | null;
   pages: readonly KnowledgeNotebookPage[];
   revision: string | null;
+  nextCursor?: string | null;
+  queryClient?: QueryClient;
 }): KnowledgeClient {
-  const { core, workspaceId, pages, revision } = input;
+  const { core, workspaceId, pages, revision, nextCursor = null, queryClient } = input;
 
   return {
     async list(parentId, cursor) {
-      if (parentId !== null || cursor) return { nodes: [], nextCursor: null };
-      return { nodes: pages.map(nodeFromPage), nextCursor: null };
+      const visible = (source: readonly KnowledgeNotebookPage[]) =>
+        source.filter((page) => (page.parentId ?? null) === parentId).map(nodeFromPage);
+      if (!cursor) return { nodes: visible(pages), nextCursor };
+      if (!workspaceId) return { nodes: [], nextCursor: null };
+      const page = await core.operations['knowledge.notebook.list']({
+        workspaceId,
+        limit: KNOWLEDGE_NOTEBOOK_PAGE_LIMIT,
+        cursor,
+      });
+      const continued = continuedCursor(page.nextCursor, cursor);
+      queryClient?.setQueryData(
+        workspaceKeys.knowledge(workspaceId),
+        (current: typeof page | undefined) => {
+          if (!current) return current;
+          const seen = new Set(current.pages.map((item) => item.id));
+          return {
+            ...current,
+            notebookRevision: page.notebookRevision,
+            pages: [...current.pages, ...page.pages.filter((item) => !seen.has(item.id))],
+            nextCursor: continued,
+          };
+        }
+      );
+      return { nodes: visible(page.pages), nextCursor: continued };
     },
 
     async read(id) {
@@ -92,9 +137,13 @@ export function createOpenKitKnowledgeClient(input: {
       };
     },
 
-    async search(query) {
+    async search(query, cursor) {
       if (!workspaceId) return { nodes: [], nextCursor: null };
-      const result = await core.operations['knowledge.retrieval']({ workspaceId, query });
+      const result = await core.operations['knowledge.retrieval']({
+        workspaceId,
+        query,
+        ...(cursor ? { cursor } : {}),
+      });
       const nodes = result.selected.map((candidate) => {
         const page = pages.find(
           (item) =>
@@ -116,7 +165,7 @@ export function createOpenKitKnowledgeClient(input: {
           : '';
         return { node, snippet };
       });
-      return { nodes, nextCursor: null };
+      return { nodes, nextCursor: continuedCursor(result.nextCursor, cursor) };
     },
 
     async saveText(id, body, expectedVersion) {

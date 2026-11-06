@@ -266,13 +266,19 @@ export function useRefreshAgentHealth() {
   });
 }
 
-/** List workspace Notebook pages. */
+/** One bounded notebook page. Omitted limit returns the whole remainder. */
+export const KNOWLEDGE_NOTEBOOK_PAGE_LIMIT = 50;
+
+/** List workspace Notebook pages. The first read is one bounded page. */
 export function useKnowledge(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledge(workspaceId ?? ''),
     queryFn: () =>
-      client.operations['knowledge.notebook.list']({ workspaceId: workspaceId as string }),
+      client.operations['knowledge.notebook.list']({
+        workspaceId: workspaceId as string,
+        limit: KNOWLEDGE_NOTEBOOK_PAGE_LIMIT,
+      }),
     enabled: Boolean(workspaceId),
   });
 }
