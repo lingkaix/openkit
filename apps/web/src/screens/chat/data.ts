@@ -13,6 +13,7 @@ import { ItemSchema, type ReasoningEffort, workspaceIdForOwner } from '@openkit/
 import {
   type QueryClient,
   skipToken,
+  useInfiniteQuery,
   useMutation,
   useMutationState,
   useQuery,
@@ -513,18 +514,55 @@ export function useThreads(workspaceId: string | null) {
   });
 }
 
+/** One bounded conversation.navigation page. Omitted limit returns the whole remainder. */
+export const CONVERSATION_NAVIGATION_PAGE_LIMIT = 50;
+
+/**
+ * One navigation page's continuation.
+ *
+ * A missing, empty, or repeated cursor stops the read. The cursor stays opaque.
+ */
+function nextNavigationCursor(
+  nextCursor: string | null | undefined,
+  pageParam: string | undefined,
+  previousCursors: readonly (string | null | undefined)[]
+): string | undefined {
+  if (typeof nextCursor !== 'string' || nextCursor.length === 0) return undefined;
+  if (pageParam !== undefined && nextCursor === pageParam) return undefined;
+  if (previousCursors.includes(nextCursor)) return undefined;
+  return nextCursor;
+}
+
 /** Refresh visible conversation activity while the Web app is in the foreground. */
 export function useConversationNavigation(workspaceId: string | null) {
   const client = useCoreClient();
-  return useQuery({
-    queryKey: chatKeys.navigation(workspaceId ?? ''),
-    queryFn: async () =>
-      (await client.operations['conversation.navigation']({ workspaceId: workspaceId as string }))
-        .items,
+  const query = useInfiniteQuery({
+    queryKey: [...chatKeys.navigation(workspaceId ?? ''), 'pages'],
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam, signal }) => {
+      signal.throwIfAborted();
+      const page = await client.operations['conversation.navigation']({
+        workspaceId: workspaceId as string,
+        limit: CONVERSATION_NAVIGATION_PAGE_LIMIT,
+        ...(pageParam ? { cursor: pageParam } : {}),
+      });
+      signal.throwIfAborted();
+      return page;
+    },
+    getNextPageParam: (last, pages, pageParam) =>
+      nextNavigationCursor(
+        last.nextCursor,
+        pageParam,
+        pages.slice(0, -1).map((page) => page.nextCursor)
+      ),
     enabled: Boolean(workspaceId),
     refetchInterval: 5_000,
     refetchIntervalInBackground: false,
   });
+  return {
+    ...query,
+    data: query.data?.pages.flatMap((page) => page.items),
+  };
 }
 
 /** Load one thread record. */

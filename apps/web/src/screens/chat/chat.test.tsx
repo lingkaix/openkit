@@ -785,6 +785,7 @@ describe('chat starter (board 01)', () => {
     await waitFor(() =>
       expect(listConversationNavigation).toHaveBeenCalledWith({
         workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+        limit: 50,
       })
     );
     expect(listConversationNavigation).not.toHaveBeenCalledWith({
@@ -841,6 +842,7 @@ describe('chat starter (board 01)', () => {
     await waitFor(() =>
       expect(listConversationNavigation).toHaveBeenCalledWith({
         workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+        limit: 50,
       })
     );
     expect(
@@ -898,6 +900,7 @@ describe('chat starter (board 01)', () => {
     await waitFor(() =>
       expect(listConversationNavigation).toHaveBeenCalledWith({
         workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+        limit: 50,
       })
     );
     expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
@@ -953,6 +956,7 @@ describe('chat starter (board 01)', () => {
     expect(failedRead).toHaveBeenCalledTimes(callsBeforeRetry + 1);
     expect(listNavigation).toHaveBeenCalledWith({
       workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      limit: 50,
     });
   });
 
@@ -993,6 +997,7 @@ describe('chat starter (board 01)', () => {
     expect(getSession).not.toHaveBeenCalled();
     expect(listNavigation).toHaveBeenCalledWith({
       workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      limit: 50,
     });
     expect(listNavigation).not.toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
@@ -1041,6 +1046,7 @@ describe('chat starter (board 01)', () => {
     await waitFor(() =>
       expect(listConversationNavigation).toHaveBeenCalledWith({
         workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+        limit: 50,
       })
     );
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(
@@ -1114,6 +1120,7 @@ describe('chat starter (board 01)', () => {
     expect(within(recent!).queryByText('Old chat')).not.toBeInTheDocument();
     expect(listConversationNavigation).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      limit: 50,
     });
   });
 
@@ -1314,6 +1321,7 @@ describe('chat starter (board 01)', () => {
     await waitFor(() =>
       expect(listConversationNavigation).toHaveBeenCalledWith({
         workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+        limit: 50,
       })
     );
   });

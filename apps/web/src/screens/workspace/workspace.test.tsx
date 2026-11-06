@@ -1677,7 +1677,7 @@ describe('Action Center (board 07)', () => {
     await waitFor(() => {
       expect(queryClient.getQueryState(['attention', WORKSPACE_A.id])?.isInvalidated).toBe(true);
       expect(
-        queryClient.getQueryState(['threads', WORKSPACE_A.id, 'navigation'])?.isInvalidated
+        queryClient.getQueryState(['threads', WORKSPACE_A.id, 'navigation', 'pages'])?.isInvalidated
       ).toBe(true);
     });
   });

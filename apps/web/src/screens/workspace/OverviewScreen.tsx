@@ -1,6 +1,7 @@
 import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { Link } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
+import { ConversationLoadMore } from '../../app/Sidebar';
 import {
   Button,
   Card,
@@ -189,6 +190,7 @@ export function OverviewScreen() {
           )}
         </section>
       ) : null}
+      <ConversationLoadMore navigation={navigation} />
     </Page>
   );
 }

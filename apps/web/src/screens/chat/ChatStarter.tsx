@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
+import { ConversationLoadMore } from '../../app/Sidebar';
 import {
   Composer,
   type ComposerDraft,
@@ -103,7 +104,7 @@ export function ChatStarter() {
     if (!navigation.isSuccess) {
       throw new Error('Assistant navigation is not ready.');
     }
-    const assistant = navigation.data.find((row) => row.activity === 'chat');
+    const assistant = (navigation.data ?? []).find((row) => row.activity === 'chat');
     if (assistant) {
       const response = await send.mutateAsync({
         workspaceId,
@@ -217,6 +218,7 @@ export function ChatStarter() {
             </ListRow>
           ))
         )}
+        <ConversationLoadMore navigation={navigation} />
       </section>
     </div>
   );

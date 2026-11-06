@@ -2738,6 +2738,7 @@ describe('Recovery and search', () => {
     await waitFor(() =>
       expect(vi.mocked(client.operations['conversation.navigation'])).toHaveBeenCalledWith({
         workspaceId: WORKSPACE_B.id,
+        limit: 50,
       })
     );
     expect(screen.getByRole('heading', { level: 1, name: 'Action Center' })).toBeInTheDocument();
@@ -4047,7 +4048,10 @@ describe('Recovery and search', () => {
       await discovery.promise;
     });
     await waitFor(() =>
-      expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: WORKSPACE.id })
+      expect(listConversationNavigation).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE.id,
+        limit: 50,
+      })
     );
     const workspaceAReadsBeforeDestination = [
       getWorkspaceDashboard.mock.calls.filter(([input]) => input.workspaceId === WORKSPACE.id)
@@ -4082,7 +4086,10 @@ describe('Recovery and search', () => {
     ]).toEqual(workspaceAReadsBeforeDestination);
     if (scenario.destination === '/' || scenario.destination === '/attention') {
       await waitFor(() =>
-        expect(listConversationNavigation).toHaveBeenCalledWith({ workspaceId: WORKSPACE_B.id })
+        expect(listConversationNavigation).toHaveBeenCalledWith({
+          workspaceId: WORKSPACE_B.id,
+          limit: 50,
+        })
       );
     } else {
       await waitFor(() =>

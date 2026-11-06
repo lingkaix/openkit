@@ -4,6 +4,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CONVERSATION_NAVIGATION_PAGE_LIMIT } from '../screens/chat/data';
 import { useWorkspaceStore } from '../screens/workspace-store';
 import { CoreClientProvider } from './core-client';
 import { AppRoutes } from './routes';
@@ -467,5 +468,50 @@ describe('P2 phone navigation', () => {
     expect(within(navigation).getByRole('button', { name: 'Action Center' })).toBeVisible();
     expect(within(navigation).queryByRole('button', { name: 'Needs you' })).not.toBeInTheDocument();
     expect(within(navigation).queryByRole('button', { name: 'More' })).not.toBeInTheDocument();
+    expect(within(navigation).queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
+  });
+
+  it('loads the next conversation page only when the server returns a cursor', async () => {
+    const user = userEvent.setup();
+    const first = navigationRow(
+      'th_019a0000-0000-7000-8000-000000000181',
+      'Fix the export',
+      'task'
+    );
+    const second = navigationRow('th_019a0000-0000-7000-8000-000000000182', 'Weekly notes', 'task');
+    const list = vi.fn(async (input: { cursor?: string }) =>
+      input.cursor === 'cursor-2'
+        ? { items: [second], nextCursor: null }
+        : { items: [first], nextCursor: 'cursor-2' }
+    );
+    const client = makeClient();
+    (
+      client.operations as unknown as {
+        'conversation.navigation': typeof list;
+      }
+    )['conversation.navigation'] = list;
+    renderAt('/attention', client);
+
+    const navigation = await screen.findByRole('navigation', {
+      name: 'Primary workspace navigation',
+    });
+    expect(await within(navigation).findByRole('button', { name: 'Fix the export' })).toBeVisible();
+    expect(
+      within(navigation).queryByRole('button', { name: 'Weekly notes' })
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith({
+        workspaceId: WORKSPACE_ID,
+        limit: CONVERSATION_NAVIGATION_PAGE_LIMIT,
+      })
+    );
+    await user.click(within(navigation).getByRole('button', { name: 'Load more' }));
+    expect(await within(navigation).findByRole('button', { name: 'Weekly notes' })).toBeVisible();
+    expect(list).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_ID,
+      limit: CONVERSATION_NAVIGATION_PAGE_LIMIT,
+      cursor: 'cursor-2',
+    });
+    expect(within(navigation).queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 });

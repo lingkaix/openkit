@@ -87,6 +87,28 @@ function SectionLabel({ children }: { children: string }) {
 
 type ListSegment = 'all' | 'tasks' | 'goals';
 
+/** Continues the bounded conversation list when the server returned a cursor. */
+export function ConversationLoadMore({
+  navigation,
+}: {
+  navigation: Pick<
+    ReturnType<typeof useConversationNavigation>,
+    'hasNextPage' | 'isFetchingNextPage' | 'fetchNextPage'
+  >;
+}) {
+  if (!navigation.hasNextPage) return null;
+  return (
+    <Button
+      variant="quiet"
+      className="min-h-11 justify-start px-3"
+      isDisabled={navigation.isFetchingNextPage}
+      onPress={() => void navigation.fetchNextPage()}
+    >
+      Load more
+    </Button>
+  );
+}
+
 /**
  * Assistant, Tasks, and Goals as separate lists.
  *
@@ -270,6 +292,7 @@ export function ThreadLists({ segment = 'all' }: { segment?: ListSegment }) {
           ))}
         </>
       ) : null}
+      <ConversationLoadMore navigation={navigation} />
     </div>
   );
 }
