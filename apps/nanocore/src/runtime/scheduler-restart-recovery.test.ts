@@ -912,42 +912,45 @@ describe('failed-start busy-history proof cost (#164)', () => {
       ['empty-process-key', 'worker_process_key_hash', ''],
       ['empty-token', 'worker_control_token_hash', ''],
     ] as const;
-    for (const [name, column, value] of variants) {
-      const label = `sibling ${name}`;
-      const f = await createFailedStartFixture(`cost_conflict_${name}`);
+    const f = await createFailedStartFixture('cost_conflict');
+    try {
       await terminalizeRecoveryCostFixture(f);
       const siblingId = seedRecoveryBusyHistory(f, 3)!;
       const baseline = recoveryProofSnapshot(f);
-      const original = f.coreDb.sqlite
-        .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
-        .get(siblingId) as Record<string, string | number | null>;
-      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        f.coreDb.sqlite
-          .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-          .run(value, siblingId);
-        const before = recoveryProofSnapshot(f);
-        const recovery = recoveryCostInput(f);
+      for (const [name, column, value] of variants) {
+        const label = `sibling ${name}`;
+        const original = f.coreDb.sqlite
+          .prepare('SELECT * FROM scheduler_execution_attempts WHERE attempt_id = ?')
+          .get(siblingId) as Record<string, string | number | null>;
+        const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
         try {
-          for (let pass = 0; pass < 2; pass++) {
-            await expect(
-              runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input),
-              label
-            ).rejects.toThrow();
-            expect(recoveryProofSnapshot(f), label).toEqual(before);
-            recovery.assertNoEffects(label);
+          f.coreDb.sqlite
+            .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
+            .run(value, siblingId);
+          const before = recoveryProofSnapshot(f);
+          const recovery = recoveryCostInput(f);
+          try {
+            for (let pass = 0; pass < 2; pass++) {
+              await expect(
+                runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input),
+                label
+              ).rejects.toThrow();
+              expect(recoveryProofSnapshot(f), label).toEqual(before);
+              recovery.assertNoEffects(label);
+            }
+          } finally {
+            recovery.restore();
           }
+          f.coreDb.sqlite
+            .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
+            .run(original[column], siblingId);
+          expect(recoveryProofSnapshot(f), label).toEqual(baseline);
         } finally {
-          recovery.restore();
+          log.mockRestore();
         }
-        f.coreDb.sqlite
-          .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
-          .run(original[column], siblingId);
-        expect(recoveryProofSnapshot(f), label).toEqual(baseline);
-      } finally {
-        log.mockRestore();
-        f.coreDb.sqlite.close();
       }
+    } finally {
+      f.coreDb.sqlite.close();
     }
   });
 
