@@ -1349,6 +1349,7 @@ describe('primitive tier — behavior', () => {
     // exist; RAC's virtual-focus listbox is flaky in jsdom.
     const trigger = screen.getByRole('button', { name: /Model/ });
     expect(trigger).toHaveAttribute('aria-haspopup', 'listbox');
+    expect(trigger).toHaveClass('min-h-11');
     expect(trigger).toHaveTextContent('Claude Sonnet 5');
     // Items are wired into the control (RAC mirrors them into a hidden native select).
     expect(container.querySelectorAll('select option').length).toBeGreaterThanOrEqual(2);
