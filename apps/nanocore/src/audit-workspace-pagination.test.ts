@@ -9,7 +9,10 @@ import {
   recordServerAuditEvent,
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  revokeOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
 import { recordUsage, startCapabilityCall } from './capability/usage-ledger.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -555,163 +558,186 @@ describe('audit.workspace-list pagination', () => {
     );
   });
 
-  it('paginates audit.server-list, permission.workspace-list, permission.server-list, and usage.read', async () => {
-    const fixture = await createFixture();
-    const adminToken = createOpenKitAccessTokenRecord(fixture.coreDb, {
+  it('paginates audit.server-list, permission.workspace-list, permission.server-list, and usage.read across tied boundaries, rejects foreign-scope and malformed cursors, and enforces revoked authority on resume', async () => {
+    const fixture = await createFixture(['Governance pagination A', 'Governance pagination B']);
+    const firstWorkspace = fixture.workspaces[0]!;
+    const secondWorkspace = fixture.workspaces[1]!;
+    const adminIssued = createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: TOKEN_EXPIRY,
       ownerUserId: OWNER_ID,
       scope: 'server-admin',
       workspaceIds: [],
-    }).secret;
-    const adminHeaders = { authorization: `Bearer ${adminToken}` };
+    });
+    const adminHeaders = { authorization: `Bearer ${adminIssued.secret}` };
 
-    recordServerAuditEvent({
+    const srvAuditOlder = recordServerAuditEvent({
       coreDb: fixture.coreDb,
-      auditEventId: testEntityId('aud', 'srv-1'),
+      auditEventId: testEntityId('aud', 'srv-older'),
       action: 'server.config.update',
       outcome: 'succeeded',
-      summary: 'Server audit one.',
+      summary: 'Server audit older.',
       now: new Date('2099-01-01T00:00:01.000Z'),
     });
-    recordServerAuditEvent({
+    const srvAuditTieA = recordServerAuditEvent({
       coreDb: fixture.coreDb,
-      auditEventId: testEntityId('aud', 'srv-2'),
+      auditEventId: testEntityId('aud', 'srv-tie-a'),
       action: 'server.config.update',
       outcome: 'succeeded',
-      summary: 'Server audit two.',
+      summary: 'Server audit tie A.',
       now: new Date('2099-01-01T00:00:02.000Z'),
     });
+    const srvAuditTieB = recordServerAuditEvent({
+      coreDb: fixture.coreDb,
+      auditEventId: testEntityId('aud', 'srv-tie-b'),
+      action: 'server.config.update',
+      outcome: 'succeeded',
+      summary: 'Server audit tie B.',
+      now: new Date('2099-01-01T00:00:02.000Z'),
+    });
+    const expectedSrvAuditTies = [srvAuditTieA.id, srvAuditTieB.id].sort((a, b) =>
+      compareCodeUnits(b, a)
+    );
 
     const srvAudit1 = await (
       await fixture.app.request(
         ...operationRequest('audit.server-list', { limit: 1 }, { headers: adminHeaders })
       )
     ).json();
-    expect(srvAudit1.auditEvents).toHaveLength(1);
+    expect(srvAudit1.auditEvents.map((e: { id: string }) => e.id)).toEqual([
+      expectedSrvAuditTies[0],
+    ]);
     expect(typeof srvAudit1.nextCursor).toBe('string');
+
     const srvAudit2 = await (
       await fixture.app.request(
         ...operationRequest(
           'audit.server-list',
-          { cursor: srvAudit1.nextCursor },
+          { limit: 1, cursor: srvAudit1.nextCursor },
           { headers: adminHeaders }
         )
       )
     ).json();
-    expect(srvAudit2.auditEvents.length).toBeGreaterThanOrEqual(1);
-    expect(srvAudit2.nextCursor).toBeNull();
+    expect(srvAudit2.auditEvents.map((e: { id: string }) => e.id)).toEqual([
+      expectedSrvAuditTies[1],
+    ]);
+    expect(typeof srvAudit2.nextCursor).toBe('string');
 
-    const workspaceDb = fixture.workspaceDbs.get(fixture.workspace.id)!;
-    await recordProductPermissionDecision({
-      workspaceDb,
-      workspaceId: fixture.workspace.id,
-      ownerScope: 'workspace',
-      decisionId: testEntityId('pd', 'ws-1'),
-      action: 'runtime.launch',
-      contextSummary: {},
-      enforcementPoint: 'worker.launch',
-      policyEngineVersion: 'nanocore-worker-policy:v1',
-      policySnapshotId: 'worker_turn_launch_policy',
-      reasonCode: 'allowed',
-      resourceSummary: { kind: 'worker-turn' },
-      result: 'allow',
-      subjectSummary: { kind: 'user', id: OWNER_ID },
-      now: new Date('2099-01-01T00:00:01.000Z'),
-    });
-    await recordProductPermissionDecision({
-      workspaceDb,
-      workspaceId: fixture.workspace.id,
-      ownerScope: 'workspace',
-      decisionId: testEntityId('pd', 'ws-2'),
-      action: 'runtime.launch',
-      contextSummary: {},
-      enforcementPoint: 'worker.launch',
-      policyEngineVersion: 'nanocore-worker-policy:v1',
-      policySnapshotId: 'worker_turn_launch_policy',
-      reasonCode: 'allowed',
-      resourceSummary: { kind: 'worker-turn' },
-      result: 'allow',
-      subjectSummary: { kind: 'user', id: OWNER_ID },
-      now: new Date('2099-01-01T00:00:02.000Z'),
-    });
+    const srvAuditRemainder = await (
+      await fixture.app.request(
+        ...operationRequest(
+          'audit.server-list',
+          { cursor: srvAudit2.nextCursor },
+          { headers: adminHeaders }
+        )
+      )
+    ).json();
+    expect(srvAuditRemainder.auditEvents.map((e: { id: string }) => e.id)).toContain(
+      srvAuditOlder.id
+    );
+    expect(srvAuditRemainder.nextCursor).toBeNull();
+
+    const workspaceDb = fixture.workspaceDbs.get(firstWorkspace.id)!;
+    const wsPermIdA = testEntityId('pd', 'ws-tie-a');
+    const wsPermIdB = testEntityId('pd', 'ws-tie-b');
+    for (const decisionId of [wsPermIdA, wsPermIdB]) {
+      await recordProductPermissionDecision({
+        workspaceDb,
+        workspaceId: firstWorkspace.id,
+        ownerScope: 'workspace',
+        decisionId,
+        action: 'runtime.launch',
+        contextSummary: {},
+        enforcementPoint: 'worker.launch',
+        policyEngineVersion: 'nanocore-worker-policy:v1',
+        policySnapshotId: 'worker_turn_launch_policy',
+        reasonCode: 'allowed',
+        resourceSummary: { kind: 'worker-turn' },
+        result: 'allow',
+        subjectSummary: { kind: 'user', id: OWNER_ID },
+        now: new Date('2099-01-01T00:00:02.000Z'),
+      });
+    }
+    const expectedWsPermTies = [wsPermIdA, wsPermIdB].sort((a, b) => compareCodeUnits(b, a));
 
     const wsPerm1 = await (
       await fixture.app.request(
         ...operationRequest(
           'permission.workspace-list',
-          { workspaceId: fixture.workspace.id, limit: 1 },
+          { workspaceId: firstWorkspace.id, limit: 1 },
           { headers: fixture.ownerHeaders }
         )
       )
     ).json();
-    expect(wsPerm1.permissionDecisions).toHaveLength(1);
+    expect(wsPerm1.permissionDecisions.map((d: { decisionId: string }) => d.decisionId)).toEqual([
+      expectedWsPermTies[0],
+    ]);
     expect(typeof wsPerm1.nextCursor).toBe('string');
+
     const wsPerm2 = await (
       await fixture.app.request(
         ...operationRequest(
           'permission.workspace-list',
-          { workspaceId: fixture.workspace.id, cursor: wsPerm1.nextCursor },
+          { workspaceId: firstWorkspace.id, limit: 1, cursor: wsPerm1.nextCursor },
           { headers: fixture.ownerHeaders }
         )
       )
     ).json();
-    expect(wsPerm2.permissionDecisions.length).toBeGreaterThanOrEqual(1);
+    expect(wsPerm2.permissionDecisions.map((d: { decisionId: string }) => d.decisionId)).toEqual([
+      expectedWsPermTies[1],
+    ]);
     expect(wsPerm2.nextCursor).toBeNull();
 
-    await recordProductPermissionDecision({
-      coreDb: fixture.coreDb,
-      ownerScope: 'server',
-      decisionId: testEntityId('pd', 'srv-1'),
-      action: 'llm.gateway.chat_completions',
-      contextSummary: {},
-      enforcementPoint: 'llm.gateway.policy',
-      policyEngineVersion: 'nanocore-gateway-policy:v1',
-      policySnapshotId: 'runtime_config_gateway_policy',
-      reasonCode: 'allowed',
-      resourceSummary: { kind: 'llm-provider' },
-      result: 'allow',
-      subjectSummary: { kind: 'user', id: OWNER_ID },
-      now: new Date('2099-01-01T00:00:01.000Z'),
-    });
-    await recordProductPermissionDecision({
-      coreDb: fixture.coreDb,
-      ownerScope: 'server',
-      decisionId: testEntityId('pd', 'srv-2'),
-      action: 'llm.gateway.chat_completions',
-      contextSummary: {},
-      enforcementPoint: 'llm.gateway.policy',
-      policyEngineVersion: 'nanocore-gateway-policy:v1',
-      policySnapshotId: 'runtime_config_gateway_policy',
-      reasonCode: 'allowed',
-      resourceSummary: { kind: 'llm-provider' },
-      result: 'allow',
-      subjectSummary: { kind: 'user', id: OWNER_ID },
-      now: new Date('2099-01-01T00:00:02.000Z'),
-    });
+    const srvPermIdA = testEntityId('pd', 'srv-tie-a');
+    const srvPermIdB = testEntityId('pd', 'srv-tie-b');
+    for (const decisionId of [srvPermIdA, srvPermIdB]) {
+      await recordProductPermissionDecision({
+        coreDb: fixture.coreDb,
+        ownerScope: 'server',
+        decisionId,
+        action: 'llm.gateway.chat_completions',
+        contextSummary: {},
+        enforcementPoint: 'llm.gateway.policy',
+        policyEngineVersion: 'nanocore-gateway-policy:v1',
+        policySnapshotId: 'runtime_config_gateway_policy',
+        reasonCode: 'allowed',
+        resourceSummary: { kind: 'llm-provider' },
+        result: 'allow',
+        subjectSummary: { kind: 'user', id: OWNER_ID },
+        now: new Date('2099-01-01T00:00:02.000Z'),
+      });
+    }
+    const expectedSrvPermTies = [srvPermIdA, srvPermIdB].sort((a, b) => compareCodeUnits(b, a));
 
     const srvPerm1 = await (
       await fixture.app.request(
         ...operationRequest('permission.server-list', { limit: 1 }, { headers: adminHeaders })
       )
     ).json();
-    expect(srvPerm1.permissionDecisions).toHaveLength(1);
+    expect(srvPerm1.permissionDecisions.map((d: { decisionId: string }) => d.decisionId)).toEqual([
+      expectedSrvPermTies[0],
+    ]);
     expect(typeof srvPerm1.nextCursor).toBe('string');
+
     const srvPerm2 = await (
       await fixture.app.request(
         ...operationRequest(
           'permission.server-list',
-          { cursor: srvPerm1.nextCursor },
+          { limit: 1, cursor: srvPerm1.nextCursor },
           { headers: adminHeaders }
         )
       )
     ).json();
-    expect(srvPerm2.permissionDecisions.length).toBeGreaterThanOrEqual(1);
+    expect(srvPerm2.permissionDecisions.map((d: { decisionId: string }) => d.decisionId)).toEqual([
+      expectedSrvPermTies[1],
+    ]);
     expect(srvPerm2.nextCursor).toBeNull();
 
-    for (const key of ['call-1', 'call-2'] as const) {
+    const startedCallIds: string[] = [];
+    const recordedUsageIds: string[] = [];
+    for (const _key of ['call-tie-a', 'call-tie-b'] as const) {
       const started = await startCapabilityCall({
         workspaceDb,
-        workspaceId: fixture.workspace.id,
+        workspaceId: firstWorkspace.id,
         authorityActor: { kind: 'user', id: OWNER_ID },
         capabilityId: 'storage.workspace_export',
         family: 'storage',
@@ -719,12 +745,13 @@ describe('audit.workspace-list pagination', () => {
         providerRef: 'nanocore-storage',
         serviceRef: 'workspace-export',
         redactionClass: 'metadata-only',
-        now: new Date(key === 'call-1' ? '2099-01-01T00:00:01.000Z' : '2099-01-01T00:00:02.000Z'),
+        now: new Date('2099-01-01T00:00:02.000Z'),
       });
-      await recordUsage({
+      startedCallIds.push(started.id);
+      const usageIds = await recordUsage({
         workspaceDb,
         call: started,
-        now: new Date(key === 'call-1' ? '2099-01-01T00:00:01.500Z' : '2099-01-01T00:00:02.500Z'),
+        now: new Date('2099-01-01T00:00:02.500Z'),
         records: [
           {
             category: 'storage',
@@ -735,32 +762,118 @@ describe('audit.workspace-list pagination', () => {
           },
         ],
       });
+      recordedUsageIds.push(...usageIds);
     }
+    const expectedCallTies = [...startedCallIds].sort(compareCodeUnits);
+    const expectedUsageTies = [...recordedUsageIds].sort(compareCodeUnits);
 
     const usage1 = await (
       await fixture.app.request(
         ...operationRequest(
           'usage.read',
-          { workspaceId: fixture.workspace.id, limit: 1 },
+          { workspaceId: firstWorkspace.id, limit: 1 },
           { headers: fixture.ownerHeaders }
         )
       )
     ).json();
-    expect(usage1.capabilityCalls).toHaveLength(1);
-    expect(usage1.usageRecords).toHaveLength(1);
+    expect(usage1.capabilityCalls.map((c: { id: string }) => c.id)).toEqual([expectedCallTies[0]]);
+    expect(usage1.usageRecords.map((u: { id: string }) => u.id)).toEqual([expectedUsageTies[0]]);
     expect(typeof usage1.nextCursor).toBe('string');
 
     const usage2 = await (
       await fixture.app.request(
         ...operationRequest(
           'usage.read',
-          { workspaceId: fixture.workspace.id, cursor: usage1.nextCursor },
+          { workspaceId: firstWorkspace.id, limit: 1, cursor: usage1.nextCursor },
           { headers: fixture.ownerHeaders }
         )
       )
     ).json();
-    expect(usage2.capabilityCalls.length).toBeGreaterThanOrEqual(1);
-    expect(usage2.usageRecords.length).toBeGreaterThanOrEqual(1);
+    expect(usage2.capabilityCalls.map((c: { id: string }) => c.id)).toEqual([expectedCallTies[1]]);
+    expect(usage2.usageRecords.map((u: { id: string }) => u.id)).toEqual([expectedUsageTies[1]]);
     expect(usage2.nextCursor).toBeNull();
+
+    for (const [operation, body, headers] of [
+      [
+        'permission.workspace-list',
+        { workspaceId: firstWorkspace.id, cursor: 'not-a-cursor' },
+        fixture.ownerHeaders,
+      ],
+      [
+        'permission.workspace-list',
+        { workspaceId: secondWorkspace.id, cursor: wsPerm1.nextCursor },
+        fixture.ownerHeaders,
+      ],
+      [
+        'permission.workspace-list',
+        { workspaceId: firstWorkspace.id, cursor: usage1.nextCursor },
+        fixture.ownerHeaders,
+      ],
+      [
+        'usage.read',
+        { workspaceId: firstWorkspace.id, cursor: 'not-a-cursor' },
+        fixture.ownerHeaders,
+      ],
+      [
+        'usage.read',
+        { workspaceId: secondWorkspace.id, cursor: usage1.nextCursor },
+        fixture.ownerHeaders,
+      ],
+      [
+        'usage.read',
+        { workspaceId: firstWorkspace.id, cursor: wsPerm1.nextCursor },
+        fixture.ownerHeaders,
+      ],
+      ['audit.server-list', { cursor: 'not-a-cursor' }, adminHeaders],
+      ['permission.server-list', { cursor: 'not-a-cursor' }, adminHeaders],
+    ] as const) {
+      const response = await fixture.app.request(...operationRequest(operation, body, { headers }));
+      expect(response.status, `${operation}: ${JSON.stringify(body)}`).toBe(400);
+      expect(await response.json()).toMatchObject({ code: 'invalid_request' });
+    }
+
+    const revocableWorkspaceToken = createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: TOKEN_EXPIRY,
+      ownerUserId: OWNER_ID,
+      scope: 'workspace-readonly',
+      workspaceIds: [firstWorkspace.id],
+    });
+    const revocableHeaders = { authorization: `Bearer ${revocableWorkspaceToken.secret}` };
+    expect(
+      (
+        await fixture.app.request(
+          ...operationRequest(
+            'permission.workspace-list',
+            { workspaceId: firstWorkspace.id, limit: 1 },
+            { headers: revocableHeaders }
+          )
+        )
+      ).status
+    ).toBe(200);
+    revokeOpenKitAccessTokenRecord(fixture.coreDb, revocableWorkspaceToken.record.tokenId);
+    for (const [operation, cursor] of [
+      ['permission.workspace-list', wsPerm1.nextCursor],
+      ['usage.read', usage1.nextCursor],
+    ] as const) {
+      const denied = await fixture.app.request(
+        ...operationRequest(
+          operation,
+          { workspaceId: firstWorkspace.id, cursor },
+          { headers: revocableHeaders }
+        )
+      );
+      expect(denied.status).toBe(401);
+    }
+
+    revokeOpenKitAccessTokenRecord(fixture.coreDb, adminIssued.record.tokenId);
+    for (const [operation, cursor] of [
+      ['audit.server-list', srvAudit1.nextCursor],
+      ['permission.server-list', srvPerm1.nextCursor],
+    ] as const) {
+      const denied = await fixture.app.request(
+        ...operationRequest(operation, { cursor }, { headers: adminHeaders })
+      );
+      expect(denied.status).toBe(401);
+    }
   });
 });
