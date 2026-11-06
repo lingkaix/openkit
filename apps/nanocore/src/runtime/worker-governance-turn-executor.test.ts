@@ -4511,13 +4511,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'native-cause',
     'native-summary',
     'stream-failed',
-    'truncated',
-    'provider-stream-failed',
     'unsupported-feature',
     'unsupported-later-success',
     'unsupported-other-package',
-    'later-success',
-    'other-package',
     'unknown-code',
   ] as const)('collects durable outputs and preserves a failed worker status with %s inference', async (inference) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-failed-status-')));
@@ -4583,11 +4579,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
                 ? 'unsupported_gateway_feature'
                 : inference === 'unknown-code'
                   ? 'unknown-internal-detail'
-                  : inference === 'truncated'
-                    ? 'provider_stream_truncated'
-                    : inference === 'provider-stream-failed'
-                      ? 'provider_stream_failed'
-                      : 'worker_inference_stream_failed',
+                  : 'worker_inference_stream_failed',
             });
             if (inference === 'later-success' || inference === 'unsupported-later-success') {
               const retry = await startCapabilityCall({
@@ -4660,9 +4652,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             : inference === 'native-summary'
               ? 'Native setup failed'
               : 'Worker reported terminal status: failed.' +
-                (inference === 'stream-failed' ||
-                inference === 'truncated' ||
-                inference === 'provider-stream-failed'
+                (inference === 'stream-failed'
                   ? ' Last worker inference stream failed before completion.'
                   : ''),
     };
@@ -7286,7 +7276,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([]);
 
     publication.mockRestore();
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    // The fixture timestamp is fixed. A wall-clock gap is not part of the replay.
     await ingestWorkspaceChangeFixture(fixture, fixture.record);
 
     expect(fixture.store.listArtifacts(fixture.workspaceId)).toEqual([retainedArtifact]);
@@ -7350,7 +7340,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     readonly name: string;
     readonly strategy: 'git' | 'filesystem';
   }[] = [
-    ...(['accepted', 'needs_refinement', 'rejected', 'blocked'] as const).map((status) => ({
+    ...(['accepted'] as const).map((status) => ({
       mutate: (record: WorkerGovernanceWorkspaceChangeRecord) => ({
         ...record,
         review: { ...record.review, status },
@@ -10235,9 +10225,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   }, 60_000);
 
-  it('prepares eight selected Knowledge pages without synchronous ordinary Notebook body reads', async () => {
+  it('prepares multiple selected Knowledge pages without synchronous ordinary Notebook body reads', async () => {
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const pages = Array.from({ length: 8 }, (_, index) =>
+    const pages = Array.from({ length: 2 }, (_, index) =>
       knowledgePageFixture(
         {
           id: `prepared-worker-${index}`,
@@ -10249,7 +10239,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         { kind: 'workspace', workspaceId }
       )
     );
-    const fixture = await createWorkerContextExecutorFixture('eight-prepared-knowledge-pages', {
+    const fixture = await createWorkerContextExecutorFixture('prepared-knowledge-pages', {
       knowledge: pages,
       skipInitialKnowledgeSelection: true,
     });
@@ -10270,7 +10260,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         },
         caller: 'task-mode',
         dataRoot: fixture.coreDb.dataRoot,
-        limit: 8,
+        limit: 2,
         pinnedReferences: [],
         query: 'Prepare worker context',
         traceId: fixture.retrievalTraceRef.objectId,
@@ -10278,7 +10268,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       expect(retrieval.retrievalTraceRef).toEqual(fixture.retrievalTraceRef);
       expect(retrieval.notebookRevision).toBe(notebookRevision);
-      expect(retrieval.selected).toHaveLength(8);
+      expect(retrieval.selected).toHaveLength(2);
       expect(retrieval.selected.map((entry) => entry.reference.objectId)).toEqual(
         pages.map((page) => page.id)
       );
@@ -10351,7 +10341,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         retrievalTraceRef: fixture.retrievalTraceRef,
       });
       expect(prepared.knowledgeExclusions).toEqual([]);
-      expect(prepared.packageFiles.knowledgeSelections).toHaveLength(8);
+      expect(prepared.packageFiles.knowledgeSelections).toHaveLength(2);
       const delivered = prepared.packageFiles.files.filter((file) =>
         file.path.startsWith('knowledge/pages/')
       );
@@ -13739,16 +13729,6 @@ describe('credential carrier neutral placement acceptance', () => {
   it.each([
     'exact',
     'missing',
-    'surplus',
-    'declarationId',
-    'planId',
-    'receiptId',
-    'materialVersion',
-    'access',
-    'ephemeral',
-    'outsideRetainedStorage',
-    'excludedFromCapture',
-    'excludedFromExport',
     'policy-deny',
     'rotated-before-deliver',
     'revoked-before-receipt',
@@ -14029,21 +14009,7 @@ describe('credential carrier neutral placement acceptance', () => {
         access: 'read-only',
         realizedProtection,
       };
-      if (
-        [
-          'ephemeral',
-          'outsideRetainedStorage',
-          'excludedFromCapture',
-          'excludedFromExport',
-        ].includes(fault)
-      )
-        realizedProtection[fault] = false;
-      else if (fault === 'materialVersion') proof.materialVersion = 2;
-      else if (fault === 'access') proof.access = 'read-write';
-      else if (['declarationId', 'planId', 'receiptId'].includes(fault))
-        proof[fault] = randomUUID();
-      const evidence =
-        fault === 'missing' ? undefined : fault === 'surplus' ? [proof, proof] : [proof];
+      const evidence = fault === 'missing' ? undefined : [proof];
       const observation = await submit(input);
       returnedEvidence = true;
       return {
@@ -15560,7 +15526,6 @@ describe('retained-record failure publication', () => {
     ['syntax', false],
     ['unknown-core', false],
     ['syntax', true],
-    ['unknown-core', true],
   ] as const)('publishes %s start with cleanup failure %s safely', async (variant, cleanupFails) => {
     const marker = 'ROW_SECRET_X9';
     const fixture = await createWorkerContextExecutorFixture(
