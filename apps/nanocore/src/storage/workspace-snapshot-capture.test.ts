@@ -2,6 +2,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
+  cpSync,
   existsSync,
   fstatSync,
   lstatSync,
@@ -30,7 +31,7 @@ import {
   ScriptTarget,
   transpileModule,
 } from 'typescript';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { isScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
@@ -88,7 +89,7 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
-import { createTestStore } from '../test-support/store.js';
+import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { listWorkspaceDeletionRequests } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -100,7 +101,10 @@ import {
 } from '../workspace-sharing.js';
 import { lightAppDbPath } from './app-db.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { openControlStoreProductReadHandle } from './control-store-product-records.js';
+import {
+  closeWorkspaceProductReadHandles,
+  openControlStoreProductReadHandle,
+} from './control-store-product-records.js';
 import type { ControlTerminalTransition } from './control-store-products.js';
 import {
   getControlStoreWorkerClient,
@@ -461,16 +465,50 @@ async function bytes(bundle: VerifiedWorkspaceBackupBundle, path: string): Promi
   return Buffer.concat(chunks);
 }
 
-/** Uses the existing native demo builder, then real owner operations for every scenario. */
+interface PreparedSnapshotBase {
+  root: string;
+  dataRoot: string;
+  ownerId: string;
+}
+
+let preparedSnapshotBase: PreparedSnapshotBase | undefined;
+let preparedSnapshotBaseRoot: string | undefined;
+
+beforeAll(async () => {
+  const root = mkdtempSync(join(tmpdir(), 'c-a-snapshot-base-'));
+  preparedSnapshotBaseRoot = root;
+  const dataRoot = join(root, 'source');
+  await createDemoStore({ dataRoot });
+  const coreDb = openCoreDb(dataRoot);
+  const ownerId = ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
+  await shutdownControlStoreWorkerClient();
+  if (coreDb.sqlite.open) coreDb.sqlite.close();
+  closeWorkspaceProductReadHandles(dataRoot);
+  preparedSnapshotBase = { root, dataRoot, ownerId };
+}, 60_000);
+
+afterAll(() => {
+  if (preparedSnapshotBaseRoot) {
+    rmSync(preparedSnapshotBaseRoot, { recursive: true, force: true });
+  }
+});
+
+/** Copies the prepared native demo root, then uses real owner operations for every scenario. */
 async function fixture() {
+  const base = preparedSnapshotBase;
+  if (!base) throw new Error('The workspace snapshot capture base was not prepared.');
   const root = mkdtempSync(join(tmpdir(), 'c-a-snapshot-'));
   roots.push(root);
   const dataRoot = join(root, 'source');
-  const store = await createDemoStore({ dataRoot });
+  cpSync(base.dataRoot, dataRoot, { recursive: true });
+  const store = createTestStore({ dataRoot });
   const coreDb = openCoreDb(dataRoot);
   databaseHandles.push(coreDb);
-  const ownerId = ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
+  const nativeWorkspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  await openTestNativeWorkspace(nativeWorkspaceDb);
+  nativeWorkspaceDb.sqlite.close();
+  const ownerId = base.ownerId;
   const mutationAdmission = new WorkspaceMutationAdmission();
   const stagingParent = join(root, 'staging');
   mkdirSync(stagingParent);
