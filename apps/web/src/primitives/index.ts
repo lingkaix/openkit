@@ -68,5 +68,5 @@ export { STATUS_CLASS, type StatusTone, WORKER_CLASS, type WorkerHue } from './s
 export { Table, type TableColumn, type TableProps, type TableRow } from './Table';
 export { type TabItem, Tabs, type TabsProps } from './Tabs';
 export { TextField, type TextFieldProps } from './TextField';
-export { Toast, type ToastProps, ToastProvider, toastQueue } from './Toast';
+export { type QueuedToast, Toast, type ToastProps, ToastProvider, toastQueue } from './Toast';
 export { TurnSeparator, type TurnSeparatorProps } from './TurnSeparator';

@@ -20,8 +20,13 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useConnectionFailure, useCoreClient } from '../../app/core-client';
-import type { ComposerWorkerEnvironmentOption, ComposerWorkerEnvironments } from '../../primitives';
+import {
+  type ComposerWorkerEnvironmentOption,
+  type ComposerWorkerEnvironments,
+  toastQueue,
+} from '../../primitives';
 import { useWorkspaceStore } from '../workspace-store';
 import { submitConversationDraft } from './file-drafts';
 
@@ -894,19 +899,45 @@ export function useLiveThreadItems(
   return dashboard;
 }
 
+/** Opens the thread that received a sent message. */
+function sentMessagePath(response: {
+  outcome: string;
+  receivingWorkspaceId: string;
+  receivingThreadId: string;
+}): string {
+  if (response.outcome === 'goal-handoff') {
+    return `/goals/${encodeURIComponent(response.receivingWorkspaceId)}/${encodeURIComponent(response.receivingThreadId)}`;
+  }
+  if (response.outcome === 'task-handoff') {
+    return taskThreadPath(response.receivingWorkspaceId, response.receivingThreadId);
+  }
+  return chatThreadPath(response.receivingWorkspaceId, response.receivingThreadId);
+}
+
 /**
  * Enter the route-selected Chat or Task mode, then refresh its projections.
+ *
+ * A successful admission queues a toast whose View action returns to the receiving thread.
  *
  * @returns A mutation whose variables retain the original route owner and input.
  */
 export function useSendTurn() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   return useMutation({
     mutationKey: chatKeys.submitMutation,
     mutationFn: async (input: ConversationSubmission) =>
       submitConversationDraft(client, input.workspaceId, input.threadId, input.draft),
     onSuccess: (response) => {
+      const path = sentMessagePath(response);
+      toastQueue.add(
+        {
+          message: 'Message sent',
+          onAction: () => navigate(path),
+        },
+        { timeout: 15_000 }
+      );
       void queryClient.invalidateQueries({
         queryKey: chatKeys.items(response.receivingWorkspaceId, response.receivingThreadId),
       });

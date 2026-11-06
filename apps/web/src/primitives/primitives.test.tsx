@@ -368,6 +368,7 @@ describe('primitive tier — behavior', () => {
     });
     const toast = await screen.findByRole('alertdialog');
     expect.soft(toast).toHaveAccessibleName('Material saved');
+    expect.soft(screen.queryByRole('button', { name: 'View' })).not.toBeInTheDocument();
     expect.soft(toast.querySelector('[role="status"], [aria-live]')).toBeNull();
     const results = await axe(baseElement, {
       rules: { 'color-contrast': { enabled: false } },
@@ -377,12 +378,32 @@ describe('primitive tier — behavior', () => {
     await waitFor(() => expect(screen.queryByText('Material saved')).not.toBeInTheDocument());
   });
 
+  it('shows the queued toast action from the mounted provider', async () => {
+    const user = userEvent.setup();
+    const ToastProvider = requiredPrimitive<ComponentType>('ToastProvider');
+    const toastQueue = requiredPrimitive<{
+      add(content: { message: string; onAction?: () => void }): string;
+      clear(): void;
+    }>('toastQueue');
+    const onAction = vi.fn();
+    act(() => toastQueue.clear());
+    render(<ToastProvider />);
+    act(() => {
+      toastQueue.add({ message: 'Message sent', onAction });
+    });
+    const action = await screen.findByRole('button', { name: 'View' });
+    expect(action).toHaveClass('min-h-11', 'min-w-11');
+    await user.click(action);
+    expect(onAction).toHaveBeenCalledOnce();
+  });
+
   it('gives the toast action a 44px target and no 340px width floor', () => {
     const Toast =
       requiredPrimitive<ComponentType<{ message: string; onAction: () => void }>>('Toast');
     render(<Toast message="Material saved" onAction={() => undefined} />);
     const action = screen.getByRole('button', { name: 'View' });
     expect(action).toHaveClass('min-h-11', 'min-w-11');
+    expect(screen.getByText('Material saved')).toHaveClass('break-normal');
     expect(action.closest('.ok-toast')).not.toHaveClass('min-w-[340px]');
   });
 

@@ -24,11 +24,11 @@ import { EmptyState, ErrorBanner, Skeleton } from './states';
 import { Table } from './Table';
 import { Tabs } from './Tabs';
 import { TextField } from './TextField';
-import { Toast, ToastProvider } from './Toast';
+import { type QueuedToast, Toast, ToastProvider } from './Toast';
 import { TurnSeparator } from './TurnSeparator';
 
 /** Isolated preview queue that never consumes app-level notifications. */
-const galleryToastQueue = new AriaToastQueue<string>();
+const galleryToastQueue = new AriaToastQueue<string | QueuedToast>();
 
 /** One labeled specimen block in the component sheet. */
 function Specimen({ title, children }: { title: string; children: React.ReactNode }) {

@@ -147,6 +147,13 @@
   .ok-toast-region {
     bottom: calc(1.5rem + env(safe-area-inset-bottom));
   }
+  @media (max-width: 799px) {
+    .ok-toast-region {
+      /* The composer and the section bar own the bottom edge. */
+      top: calc(0.75rem + env(safe-area-inset-top));
+      bottom: auto;
+    }
+  }
 }
 
 /* Assistant report typography stays local; human messages and evidence are verbatim. */
