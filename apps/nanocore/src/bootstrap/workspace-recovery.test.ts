@@ -17,10 +17,11 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { AutomationStore } from '../lib/automation-store.js';
+import { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -55,14 +56,201 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 const disposals: (() => Promise<void> | void)[] = [];
+const templateRoots: string[] = [];
 const runCli: (
   argv: readonly string[],
   write?: (line: string) => void,
   deps?: { releaseIdentityPath?: string }
 ) => Promise<WorkspaceRecoveryCliReport> = runWorkspaceRecoveryCli;
+
+interface BaseTemplate {
+  readonly demoOnlyRoot: string;
+  readonly unregisteredRoot: string;
+  readonly registeredRoot: string;
+  readonly badId: string;
+  readonly goodId: string;
+  readonly callId: string;
+  readonly token: string;
+  readonly ownerId: string;
+}
+
+interface RecurringTemplate {
+  readonly dataRoot: string;
+  readonly badId: string;
+  readonly goodId: string;
+  readonly callId: string;
+  readonly token: string;
+  readonly ownerId: string;
+  readonly scheduleId: string;
+  readonly turnId: string;
+  readonly queueEntryId: string;
+  readonly threadIds: ReadonlySet<string>;
+  readonly turns: ReadonlyMap<string, string>;
+}
+
+let baseTemplate: BaseTemplate;
+let recurringTemplate: RecurringTemplate;
+
+beforeAll(async () => {
+  const demoOnlyRoot = mkdtempSync(join(tmpdir(), 'd0-boot-tpl-demo-'));
+  templateRoots.push(demoOnlyRoot);
+  await createDemoStore({ dataRoot: demoOnlyRoot });
+  await shutdownControlStoreWorkerClient();
+
+  const unregisteredRoot = mkdtempSync(join(tmpdir(), 'd0-boot-tpl-unreg-'));
+  templateRoots.push(unregisteredRoot);
+  cpSync(demoOnlyRoot, unregisteredRoot, { recursive: true });
+  const store = new FsStore({ dataRoot: unregisteredRoot });
+  const badId = DEMO_WORKSPACE_ID;
+  const good = await store.createWorkspace('Healthy sibling');
+  const core = openCoreDb(unregisteredRoot);
+  const ownerId = ensureLocalUser(core);
+  recordWorkspaceOwnerMembership({ coreDb: core, workspaceId: good.id, ownerUserId: ownerId });
+  const token = createOpenKitAccessTokenRecord(core, {
+    ownerUserId: ownerId,
+    scope: 'workspace',
+    workspaceIds: [badId, good.id],
+    expiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  core.sqlite.close();
+  const callId = allocateEntityId('cap');
+  for (const workspaceId of [badId, good.id]) {
+    const db = openWorkspaceDb(unregisteredRoot, workspaceId);
+    try {
+      startCapabilityCall({
+        workspaceDb: db,
+        workspaceId,
+        callId,
+        authorityActor: { kind: 'user', id: ownerId },
+        family: 'llm',
+        operation: 'responses.create',
+        capabilityId: 'llm.responses',
+        requestId: randomUUID(),
+        redactionClass: 'metadata-only',
+      });
+    } finally {
+      db.sqlite.close();
+    }
+  }
+  await shutdownControlStoreWorkerClient();
+
+  const registeredRoot = mkdtempSync(join(tmpdir(), 'd0-boot-tpl-reg-'));
+  templateRoots.push(registeredRoot);
+  cpSync(unregisteredRoot, registeredRoot, { recursive: true });
+  const regCore = openCoreDb(registeredRoot);
+  try {
+    recordWorkspaceOwnerMembership({ coreDb: regCore, workspaceId: badId, ownerUserId: ownerId });
+  } finally {
+    regCore.sqlite.close();
+  }
+  baseTemplate = {
+    demoOnlyRoot,
+    unregisteredRoot,
+    registeredRoot,
+    badId,
+    goodId: good.id,
+    callId,
+    token: token.secret,
+    ownerId,
+  };
+
+  const recurringRoot = mkdtempSync(join(tmpdir(), 'd0-recurring-tpl-'));
+  templateRoots.push(recurringRoot);
+  cpSync(registeredRoot, recurringRoot, { recursive: true });
+  const recurringStore = new FsStore({ dataRoot: recurringRoot });
+  const recCore = openCoreDb(recurringRoot);
+  let instant = '2026-10-16T00:00:00.000Z';
+  const schedules = new AutomationStore(recCore, new WorkspaceMutationAdmission(), () => instant);
+  const schedule = await schedules.createAutomation(ownerId, {
+    name: 'Retained weekly work',
+    workspaceId: badId,
+    threadId: DEMO_THREAD_ID,
+    intervalSeconds: 60,
+    prompt: 'Historical recurring work must not restart.',
+  });
+  await schedules.updateAutomation(ownerId, schedule.id, {
+    expectedRevision: 1,
+    status: 'active',
+    scheduledAt: instant,
+  });
+  const occurrence = (await schedules.collectScanCandidates(instant))[0]!;
+  let turnId: string;
+  let queueEntryId: string;
+  try {
+    await schedules.commitAttempt(occurrence.id, 2, {
+      kind: 'ready',
+      payload: {
+        backendId: 'source-only-backend',
+        requestedAgentId: 'worker',
+        profileRef: 'source-profile',
+        modelId: 'source-model',
+        workspaceCwd: null,
+        workspaceRoots: [],
+      },
+    });
+    const accepted = schedules.getOccurrence(occurrence.id);
+    const entry = requireSchedulerAdmissionEntry(recCore, accepted.queueEntryId!);
+    expect(entry.status).toBe('queued');
+    queueEntryId = entry.queueEntryId;
+    turnId = entry.turnId;
+    await recurringStore.createTurn(
+      entry.workspaceId,
+      entry.threadId,
+      entry.turnInput,
+      entry.triggerActor,
+      null,
+      {
+        turnId: entry.turnId,
+        status: 'pending',
+        agentId: entry.requestedAgentId,
+        executorKind: 'worker',
+      }
+    );
+    instant = '2026-10-16T01:00:00.000Z';
+    await schedules.collectScanCandidates(instant);
+    for (const table of [
+      'recurring_schedules',
+      'recurring_occurrences',
+      'recurring_expired_ranges',
+    ]) {
+      expect(
+        recCore.sqlite
+          .prepare(`SELECT count(*) FROM ${table} WHERE workspace_id=?`)
+          .pluck()
+          .get(badId)
+      ).toBeGreaterThan(0);
+    }
+  } finally {
+    recCore.sqlite.close();
+  }
+  const threadIds = new Set(recurringStore.listThreads(badId).map((thread) => thread.id));
+  const turns = new Map(
+    recurringStore.listThreadTurns(badId, DEMO_THREAD_ID).map((turn) => [turn.id, DEMO_THREAD_ID])
+  );
+  await shutdownControlStoreWorkerClient();
+  recurringTemplate = {
+    dataRoot: recurringRoot,
+    badId,
+    goodId: good.id,
+    callId,
+    token: token.secret,
+    ownerId,
+    scheduleId: schedule.id,
+    turnId,
+    queueEntryId,
+    threadIds,
+    turns,
+  };
+}, 120_000);
+
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
   for (const dispose of disposals.splice(0).reverse()) await dispose();
+});
+
+afterAll(async () => {
+  await shutdownControlStoreWorkerClient();
+  for (const root of templateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Observes every retained byte; no mutation or repair is part of this census. */
@@ -119,6 +307,7 @@ async function boot(dataRoot: string) {
     env: {
       PATH: process.env.PATH,
       TMPDIR: tmpdir(),
+      VITEST: 'true',
       OPENKIT_DATA_ROOT: dataRoot,
       OPENKIT_CORE_MODE: 'server',
       OPENKIT_BIND_HOST: '127.0.0.1',
@@ -165,7 +354,7 @@ async function boot(dataRoot: string) {
         (await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(1000) })).status
       ).toBe(200);
     },
-    { timeout: 60_000, interval: 100 }
+    { timeout: 60_000, interval: 25 }
   );
   const call = (operation: string, input: Record<string, unknown>, token: string) =>
     fetch(`${base}/api/app/operations/${operation}`, {
@@ -185,42 +374,17 @@ async function boot(dataRoot: string) {
 async function fixture(registered: boolean) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'd0-boot-'));
   disposals.push(() => rmSync(dataRoot, { recursive: true, force: true }));
-  const store = await createDemoStore({ dataRoot });
-  const badId = DEMO_WORKSPACE_ID;
-  const good = await store.createWorkspace('Healthy sibling');
-  const core = openCoreDb(dataRoot);
-  const ownerId = ensureLocalUser(core);
-  recordWorkspaceOwnerMembership({ coreDb: core, workspaceId: good.id, ownerUserId: ownerId });
-  if (registered)
-    recordWorkspaceOwnerMembership({ coreDb: core, workspaceId: badId, ownerUserId: ownerId });
-  const token = createOpenKitAccessTokenRecord(core, {
-    ownerUserId: ownerId,
-    scope: 'workspace',
-    workspaceIds: [badId, good.id],
-    expiresAt: '2999-01-01T00:00:00.000Z',
+  cpSync(registered ? baseTemplate.registeredRoot : baseTemplate.unregisteredRoot, dataRoot, {
+    recursive: true,
   });
-  core.sqlite.close();
-  const callId = allocateEntityId('cap');
-  for (const workspaceId of [badId, good.id]) {
-    const db = openWorkspaceDb(dataRoot, workspaceId);
-    try {
-      startCapabilityCall({
-        workspaceDb: db,
-        workspaceId,
-        callId,
-        authorityActor: { kind: 'user', id: ownerId },
-        family: 'llm',
-        operation: 'responses.create',
-        capabilityId: 'llm.responses',
-        requestId: randomUUID(),
-        redactionClass: 'metadata-only',
-      });
-    } finally {
-      db.sqlite.close();
-    }
-  }
-  await shutdownControlStoreWorkerClient();
-  return { dataRoot, badId, goodId: good.id, callId, token: token.secret, ownerId, store };
+  return {
+    dataRoot,
+    badId: baseTemplate.badId,
+    goodId: baseTemplate.goodId,
+    callId: baseTemplate.callId,
+    token: baseTemplate.token,
+    ownerId: baseTemplate.ownerId,
+  };
 }
 
 /** Cold-opens private copies, including crash-retained journals, without repairing the source. */
@@ -305,7 +469,7 @@ async function crashMoveOut(
     ],
     {
       cwd: fileURLToPath(new URL('../../', import.meta.url)),
-      env: { PATH: process.env.PATH, TMPDIR: tmpdir() },
+      env: { PATH: process.env.PATH, TMPDIR: tmpdir(), VITEST: 'true' },
       stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
@@ -333,17 +497,23 @@ async function crashMoveOut(
     expect(await done, output).toBe(73);
     expect(JSON.parse(output)).toEqual({
       point,
-      visited: sourceCrashPoints.slice(0, sourceCrashPoints.indexOf(point) + 1),
+      visited: allSourceCrashPoints.slice(0, allSourceCrashPoints.indexOf(point) + 1),
     });
   } finally {
     clearTimeout(deadline);
   }
 }
 
-const sourceCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
+const allSourceCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
   'before-moved-out-commit',
   'after-moved-out-commit',
   'before-seal-publication',
+  'after-seal-publication',
+];
+
+const sourceCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
+  'before-moved-out-commit',
+  'after-moved-out-commit',
   'after-seal-publication',
 ];
 
@@ -553,77 +723,11 @@ describe('D0 RED-3 source crash boundaries / Ruling 13:07Z', () => {
   }, 120_000);
 });
 
-/** Creates native recurring rows through their owner, including one real published queued Turn when selected. */
-async function recurringFixture(queued: boolean) {
-  const f = await fixture(true);
-  const core = openCoreDb(f.dataRoot);
-  let instant = '2026-10-16T00:00:00.000Z';
-  const schedules = new AutomationStore(core, new WorkspaceMutationAdmission(), () => instant);
-  const schedule = await schedules.createAutomation(f.ownerId, {
-    name: 'Retained weekly work',
-    workspaceId: f.badId,
-    threadId: DEMO_THREAD_ID,
-    intervalSeconds: 60,
-    prompt: 'Historical recurring work must not restart.',
-  });
-  await schedules.updateAutomation(f.ownerId, schedule.id, {
-    expectedRevision: 1,
-    status: 'active',
-    scheduledAt: instant,
-  });
-  const occurrence = (await schedules.collectScanCandidates(instant))[0]!;
-  let turnId: string | undefined;
-  let queueEntryId: string | undefined;
-  try {
-    if (queued) {
-      await schedules.commitAttempt(occurrence.id, 2, {
-        kind: 'ready',
-        payload: {
-          backendId: 'source-only-backend',
-          requestedAgentId: 'worker',
-          profileRef: 'source-profile',
-          modelId: 'source-model',
-          workspaceCwd: null,
-          workspaceRoots: [],
-        },
-      });
-      const accepted = schedules.getOccurrence(occurrence.id);
-      const entry = requireSchedulerAdmissionEntry(core, accepted.queueEntryId!);
-      expect(entry.status).toBe('queued');
-      queueEntryId = entry.queueEntryId;
-      turnId = entry.turnId;
-      await f.store.createTurn(
-        entry.workspaceId,
-        entry.threadId,
-        entry.turnInput,
-        entry.triggerActor,
-        null,
-        {
-          turnId: entry.turnId,
-          status: 'pending',
-          agentId: entry.requestedAgentId,
-          executorKind: 'worker',
-        }
-      );
-    }
-    instant = '2026-10-16T01:00:00.000Z';
-    await schedules.collectScanCandidates(instant);
-    for (const table of [
-      'recurring_schedules',
-      'recurring_occurrences',
-      'recurring_expired_ranges',
-    ]) {
-      expect(
-        core.sqlite
-          .prepare(`SELECT count(*) FROM ${table} WHERE workspace_id=?`)
-          .pluck()
-          .get(f.badId)
-      ).toBeGreaterThan(0);
-    }
-  } finally {
-    core.sqlite.close();
-  }
-  await shutdownControlStoreWorkerClient();
+/** Creates native recurring rows through their owner, including one real published queued Turn. */
+async function recurringFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'd0-boot-'));
+  disposals.push(() => rmSync(dataRoot, { recursive: true, force: true }));
+  cpSync(recurringTemplate.dataRoot, dataRoot, { recursive: true });
   const commandRoot = mkdtempSync(join(tmpdir(), 'd0-recurring-'));
   disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
   const releaseIdentityPath = join(commandRoot, 'release-identity.json');
@@ -637,14 +741,12 @@ async function recurringFixture(queued: boolean) {
   const bundleRoot = join(commandRoot, 'bundle');
   const backupId = allocateEntityId('wsbak');
   return {
-    ...f,
+    ...recurringTemplate,
+    dataRoot,
     commandRoot,
     releaseIdentityPath,
     bundleRoot,
     backupId,
-    scheduleId: schedule.id,
-    turnId,
-    queueEntryId,
   };
 }
 
@@ -710,10 +812,8 @@ async function recurringBundle(f: Awaited<ReturnType<typeof recurringFixture>>) 
       ).toBe(false);
       const graph = readRecurringPortableFiles(files, {
         workspaceId: f.badId,
-        threadIds: new Set(f.store.listThreads(f.badId).map((thread) => thread.id)),
-        turns: new Map(
-          f.store.listThreadTurns(f.badId, DEMO_THREAD_ID).map((turn) => [turn.id, DEMO_THREAD_ID])
-        ),
+        threadIds: f.threadIds,
+        turns: f.turns,
       });
       expect(graph.schedules).toEqual([
         expect.objectContaining({ originScheduleId: f.scheduleId }),
@@ -747,11 +847,24 @@ function schedulingState(dataRoot: string, workspaceId: string) {
 }
 
 describe('D0-3 actual next-boot admission', () => {
-  it('WM 389, 438–441: an unregistered final Workspace is excluded before recovery while a healthy sibling serves writes', async () => {
+  it('WM 377, 389, 438–441: next real boot excludes unregistered and missing-authority Workspaces and refuses offline restore under the root lock while a healthy sibling serves writes', async () => {
     const f = await fixture(false);
     const badRoot = join(f.dataRoot, 'workspaces', f.badId);
     const before = bytes(badRoot);
     expect(callStatus(f.dataRoot, f.badId, f.callId)).toBe('running');
+    const missingId = allocateEntityId('ws');
+    const missingPath = workspaceDbPath(f.dataRoot, missingId);
+    const core = openCoreDb(f.dataRoot);
+    try {
+      recordWorkspaceOwnerMembership({
+        coreDb: core,
+        workspaceId: missingId,
+        ownerUserId: f.ownerId,
+      });
+    } finally {
+      core.sqlite.close();
+    }
+    expect(existsSync(missingPath)).toBe(false);
     const server = await boot(f.dataRoot);
     const healthy = await server.call(
       'thread.create',
@@ -763,36 +876,6 @@ describe('D0-3 actual next-boot admission', () => {
       f.token
     );
     expect(healthy.status, await healthy.clone().text()).toBe(200);
-    await server.stop();
-    // The active sibling proves ordinary startup recovery actually ran in this process.
-    expect(callStatus(f.dataRoot, f.goodId, f.callId)).toBe('unknown');
-    expect(callStatus(f.dataRoot, f.badId, f.callId)).toBe('running');
-    expect(bytes(badRoot)).toEqual(before);
-  }, 120_000);
-
-  it('WM 389, 441: registered missing authority stays absent and quarantined while a healthy sibling boots', async () => {
-    const f = await fixture(true);
-    const path = workspaceDbPath(f.dataRoot, f.badId);
-    rmSync(path);
-    const server = await boot(f.dataRoot);
-    const healthy = await server.call(
-      'thread.create',
-      {
-        workspaceId: f.goodId,
-        name: 'Healthy beside missing authority',
-        requestId: randomUUID(),
-      },
-      f.token
-    );
-    expect(healthy.status, await healthy.clone().text()).toBe(200);
-    await server.stop();
-    expect(existsSync(path)).toBe(false);
-    expect(callStatus(f.dataRoot, f.goodId, f.callId)).toBe('unknown');
-  }, 120_000);
-
-  it('D0 cold exclusion / WM 377, 389: the running server root lock refuses an offline restore', async () => {
-    const f = await fixture(true);
-    const server = await boot(f.dataRoot);
     const output: string[] = [];
     const releaseIdentityPath = join(f.dataRoot, 'fixture-release.json');
     writeFileSync(
@@ -818,6 +901,11 @@ describe('D0-3 actual next-boot admission', () => {
     expect((error as WorkspaceRecoveryError).code).toBe('root-locked');
     expect(output).toEqual([]);
     await server.stop();
+    // The active sibling proves ordinary startup recovery actually ran in this process.
+    expect(callStatus(f.dataRoot, f.goodId, f.callId)).toBe('unknown');
+    expect(callStatus(f.dataRoot, f.badId, f.callId)).toBe('running');
+    expect(bytes(badRoot)).toEqual(before);
+    expect(existsSync(missingPath)).toBe(false);
   }, 120_000);
 
   it('WM 411–415: process exit after the move-out report leaves a read-only, inspectable tombstone on the next real boot', async () => {
@@ -892,7 +980,7 @@ describe('D0-3 actual next-boot admission', () => {
       ],
       {
         cwd: fileURLToPath(new URL('../../', import.meta.url)),
-        env: { PATH: process.env.PATH, TMPDIR: tmpdir() },
+        env: { PATH: process.env.PATH, TMPDIR: tmpdir(), VITEST: 'true' },
         stdio: ['ignore', 'pipe', 'pipe'],
       }
     );
@@ -955,14 +1043,8 @@ describe('D0-3 actual next-boot admission', () => {
 });
 
 describe('D0 12:49Z recurring-history ruling / WM 182–188, 382, 431–432', () => {
-  it('captures real schedules, occurrences and compact expired ranges in all three required JSONL families', async () => {
-    const f = await recurringFixture(false);
-    await captureRecurring(f, 'backup');
-    await recurringBundle(f);
-  }, 120_000);
-
   it('captures beside a pending scheduler admission without carrying its execution authority', async () => {
-    const f = await recurringFixture(true);
+    const f = await recurringFixture();
     const report = await captureRecurring(f, 'backup');
     expect([
       ...report.capture!.interruptedTurnIds,
@@ -984,7 +1066,7 @@ describe('D0 12:49Z recurring-history ruling / WM 182–188, 382, 431–432', ()
     'restore',
     'move-in',
   ] as const)('%s retains recurring history inert across the next real boot without starting an occurrence', async (command) => {
-    const f = await recurringFixture(true);
+    const f = await recurringFixture();
     const prepared = await captureRecurring(f, command === 'restore' ? 'backup' : 'move');
     let targetRoot = f.dataRoot;
     let ownerId = f.ownerId;
@@ -1009,10 +1091,9 @@ describe('D0 12:49Z recurring-history ruling / WM 182–188, 382, 431–432', ()
         )
       ).resolves.toMatchObject({ disposition: 'moved-out' });
       targetRoot = join(f.commandRoot, 'target');
-      await createDemoStore({ dataRoot: targetRoot });
+      cpSync(baseTemplate.demoOnlyRoot, targetRoot, { recursive: true });
       // The target is otherwise native and configured; its demo Workspace is an unrelated identity collision.
       // Remove only that fixture authority before admission and keep the real server/configuration owners.
-      await shutdownControlStoreWorkerClient();
       rmSync(join(targetRoot, 'workspaces', DEMO_WORKSPACE_ID), { recursive: true, force: true });
       const targetCore = openCoreDb(targetRoot);
       ownerId = ensureLocalUser(targetCore);
@@ -1139,9 +1220,15 @@ function crashTargetState(dataRoot: string, workspaceId: string, requestId: stri
   }
 }
 
-const targetCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
+const allTargetCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
   'before-target-rename',
   'after-target-rename',
+  'before-registration-commit',
+  'after-registration-commit',
+];
+
+const targetCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
+  'before-target-rename',
   'before-registration-commit',
   'after-registration-commit',
 ];
@@ -1311,7 +1398,7 @@ async function crashTargetAdmission(
     ],
     {
       cwd: fileURLToPath(new URL('../../', import.meta.url)),
-      env: { PATH: process.env.PATH, TMPDIR: tmpdir() },
+      env: { PATH: process.env.PATH, TMPDIR: tmpdir(), VITEST: 'true' },
       stdio: ['ignore', 'pipe', 'pipe'],
     }
   );
@@ -1339,7 +1426,7 @@ async function crashTargetAdmission(
     expect(await done, output).toBe(73);
     expect(JSON.parse(output)).toEqual({
       point,
-      visited: targetCrashPoints.slice(0, targetCrashPoints.indexOf(point) + 1),
+      visited: allTargetCrashPoints.slice(0, allTargetCrashPoints.indexOf(point) + 1),
     });
   } finally {
     clearTimeout(deadline);
@@ -1347,23 +1434,44 @@ async function crashTargetAdmission(
 }
 
 describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
-  it.each(
-    targetCrashPoints
-  )('%s: cold publication, isolated boot and explicit same-request finish', async (point) => {
-    const source = await fixture(true);
-    // Use a new source identity so the target can retain its ordinary demo Workspace as a healthy sibling.
-    const workspaceId = source.goodId;
-    const commandRoot = mkdtempSync(join(tmpdir(), 'd0-target-crash-'));
-    disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
-    const bundleRoot = join(commandRoot, 'bundle');
-    const releaseIdentityPath = join(commandRoot, 'release-identity.json');
-    const expectedRelease = { version: 'v0.1.0-rc.11', buildId: '1'.repeat(40) };
+  const expectedRelease = { version: 'v0.1.0-rc.11', buildId: '1'.repeat(40) };
+  let source: Awaited<ReturnType<typeof fixture>>;
+  let workspaceId: string;
+  let backupId: string;
+  let sharedBundleRoot: string;
+  let releaseIdentityPath: string;
+  let capture: WorkspaceRecoveryCliReport;
+  let sealedBytes: Record<string, string>;
+  let sourceState: ReturnType<typeof crashSourceState>;
+  let targetTemplateRoot: string;
+  let ownerId: string;
+  let memberId: string;
+  let credentialSecret: string;
+  let siblingCall: string;
+
+  beforeAll(async () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), 'd0-target-crash-src-'));
+    templateRoots.push(sourceRoot);
+    cpSync(baseTemplate.registeredRoot, sourceRoot, { recursive: true });
+    source = {
+      dataRoot: sourceRoot,
+      badId: baseTemplate.badId,
+      goodId: baseTemplate.goodId,
+      callId: baseTemplate.callId,
+      token: baseTemplate.token,
+      ownerId: baseTemplate.ownerId,
+    };
+    workspaceId = source.goodId;
+    const sharedCommandRoot = mkdtempSync(join(tmpdir(), 'd0-target-crash-tpl-'));
+    templateRoots.push(sharedCommandRoot);
+    sharedBundleRoot = join(sharedCommandRoot, 'bundle');
+    releaseIdentityPath = join(sharedCommandRoot, 'release-identity.json');
     writeFileSync(
       releaseIdentityPath,
       JSON.stringify({ releaseTag: expectedRelease.version, sourceCommit: expectedRelease.buildId })
     );
-    const backupId = allocateEntityId('wsbak');
-    const capture = await runCli(
+    backupId = allocateEntityId('wsbak');
+    capture = await runCli(
       [
         'capture',
         '--source-data-root',
@@ -1373,7 +1481,7 @@ describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
         '--expected-source-deployment-id',
         readDataRootLayoutMarker(source.dataRoot).deploymentId,
         '--bundle-root',
-        bundleRoot,
+        sharedBundleRoot,
         '--purpose',
         'move',
         '--backup-id',
@@ -1387,18 +1495,19 @@ describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
         dataRoot: source.dataRoot,
         workspaceId,
         backupId,
-        bundleRoot,
+        bundleRoot: sharedBundleRoot,
         expectedRelease,
         expectedRevision: capture.capture!.capturedRevision,
       })
     ).resolves.toMatchObject({ disposition: 'moved-out' });
-    const sealedBytes = bytes(bundleRoot);
-    const sourceState = crashSourceState({ ...source, badId: workspaceId }, backupId);
-    const targetRoot = join(commandRoot, 'target');
-    await createDemoStore({ dataRoot: targetRoot });
-    const core = openCoreDb(targetRoot);
-    const ownerId = ensureLocalUser(core);
-    const memberId = allocateEntityId('usr');
+    sealedBytes = bytes(sharedBundleRoot);
+    sourceState = crashSourceState({ ...source, badId: workspaceId }, backupId);
+
+    targetTemplateRoot = join(sharedCommandRoot, 'target-template');
+    cpSync(baseTemplate.demoOnlyRoot, targetTemplateRoot, { recursive: true });
+    const core = openCoreDb(targetTemplateRoot);
+    ownerId = ensureLocalUser(core);
+    memberId = allocateEntityId('usr');
     core.sqlite
       .prepare(
         "INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,status) VALUES (?,'human','Crash probe member',?,0,?,?,'active')"
@@ -1415,9 +1524,10 @@ describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
       workspaceIds: [DEMO_WORKSPACE_ID, workspaceId],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
+    credentialSecret = credential.secret;
     core.sqlite.close();
-    const sibling = openWorkspaceDb(targetRoot, DEMO_WORKSPACE_ID);
-    const siblingCall = allocateEntityId('cap');
+    const sibling = openWorkspaceDb(targetTemplateRoot, DEMO_WORKSPACE_ID);
+    siblingCall = allocateEntityId('cap');
     startCapabilityCall({
       workspaceDb: sibling,
       workspaceId: DEMO_WORKSPACE_ID,
@@ -1431,6 +1541,17 @@ describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
     });
     sibling.sqlite.close();
     await shutdownControlStoreWorkerClient();
+  }, 120_000);
+
+  it.each(
+    targetCrashPoints
+  )('%s: cold publication, isolated boot and explicit same-request finish', async (point) => {
+    const commandRoot = mkdtempSync(join(tmpdir(), 'd0-target-crash-'));
+    disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
+    const bundleRoot = join(commandRoot, 'bundle');
+    cpSync(sharedBundleRoot, bundleRoot, { recursive: true });
+    const targetRoot = join(commandRoot, 'target');
+    cpSync(targetTemplateRoot, targetRoot, { recursive: true });
     const requestId = randomUUID();
     const input: WorkspaceTargetRecoveryInput = {
       command: 'move-in',
@@ -1499,15 +1620,15 @@ describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
           name: 'Healthy beside target crash',
           requestId: randomUUID(),
         },
-        credential.secret
+        credentialSecret
       );
       expect.soft(healthy.status, await healthy.clone().text()).toBe(200);
       const affected = committed
-        ? await server.call('thread.list', { workspaceId }, credential.secret)
+        ? await server.call('thread.list', { workspaceId }, credentialSecret)
         : await server.call(
             'thread.create',
             { workspaceId, name: 'Must not publish unfinished target', requestId: randomUUID() },
-            credential.secret
+            credentialSecret
           );
       expect
         .soft(committed ? [200] : [403, 409], await affected.clone().text())
