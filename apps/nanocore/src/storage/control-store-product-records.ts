@@ -6,6 +6,7 @@ import { isMainThread } from 'node:worker_threads';
 import { ContentReferenceSchema, KnowledgeBaseIdSchema, readRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
+import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { assertWorkspaceWorkOwner } from './fs-layout.js';
 import {
   StoredThreadSnapshotV1Schema,
@@ -103,6 +104,34 @@ export const ControlProductEntrySchema = z
   .strict();
 
 export type ControlProductEntry = z.infer<typeof ControlProductEntrySchema>;
+
+/** Conditional replacement of bounded metadata; zero means create, never overwrite. */
+export const ControlProductMutationSchema = z
+  .object({
+    kind: ControlProductKindSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    record: z.record(z.string(), z.unknown()),
+  })
+  .strict();
+
+export type ControlProductMutation = z.infer<typeof ControlProductMutationSchema>;
+
+/** Existing non-command lifecycle writes share the native product owner, without inventing a command receipt. */
+export const ControlProductTransitionSchema = z
+  .object({
+    products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
+    entries: z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries),
+    journalIntents: z.array(z.string().min(1)).max(CONTROL_PRODUCT_LIMITS.entries).optional(),
+    pending: z
+      .array(z.lazy(() => ControlPendingCommandInputSchema))
+      .max(CONTROL_PRODUCT_LIMITS.entries)
+      .optional(),
+  })
+  .strict()
+  .refine((value) => value.products.length + value.entries.length > 0);
+
+/** Whole bounded product transition; terminal candidates still require the complete native terminal path. */
+export type ControlProductTransition = z.infer<typeof ControlProductTransitionSchema>;
 
 /** Verifies original inline UTF-8 bytes before decoding; file references keep their existing owner. */
 export function inlineControlContentBytes(

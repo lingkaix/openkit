@@ -17,7 +17,7 @@ import {
   TurnIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { ControlProductTransitionSchema } from './storage/control-store-products.js';
+import { ControlProductTransitionSchema } from './storage/control-store-product-records.js';
 
 /** Closed structural failures raised by the Artifact Review authority. */
 export type ArtifactReviewErrorCode =

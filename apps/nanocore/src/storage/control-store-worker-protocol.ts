@@ -164,6 +164,8 @@ import {
   type ControlProductContentMount,
   ControlProductContentMountSchema,
   type ControlProductOwner,
+  type ControlProductTransition,
+  ControlProductTransitionSchema,
 } from './control-store-product-records.js';
 import {
   type ControlEventAppend,
@@ -171,8 +173,6 @@ import {
   ControlEventAppendSchema,
   type ControlItemAppend,
   ControlItemAppendSchema,
-  type ControlProductTransition,
-  ControlProductTransitionSchema,
   type ControlPublicationInput,
   ControlPublicationInputSchema,
   type ControlTerminalResult,

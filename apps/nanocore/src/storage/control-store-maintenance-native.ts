@@ -12,12 +12,9 @@ import {
   ControlMaintenanceAdmissionInputSchema,
   type ControlMaintenanceAdmissionResult,
 } from './control-store-maintenance-codecs.js';
+import type { ControlProductMutation } from './control-store-product-records.js';
 import { decode as decodeControlProduct, readProduct } from './control-store-product-records.js';
-import {
-  applyControlProducts,
-  assertControlProductWriter,
-  type ControlProductMutation,
-} from './control-store-products.js';
+import { applyControlProducts, assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;

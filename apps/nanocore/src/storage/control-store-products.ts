@@ -25,11 +25,9 @@ import {
   settleExecutionJournalStep,
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSettlement } from '../runtime/execution-step-journal.js';
+import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
-import {
-  applyControlPendingCommand,
-  ControlPendingCommandInputSchema,
-} from '../runtime/pending-requests.js';
+import { applyControlPendingCommand } from '../runtime/pending-requests.js';
 import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
 import { prepareControlPendingCommands } from './control-store-pending.js';
 import {
@@ -39,7 +37,8 @@ import {
   type ControlProductEntry,
   ControlProductEntrySchema,
   type ControlProductKind,
-  ControlProductKindSchema,
+  type ControlProductMutation,
+  ControlProductMutationSchema,
   type ControlProductOwner,
   ControlProductPreconditionError,
   decode,
@@ -64,15 +63,6 @@ import {
   assertTurnEventPayloadLineage,
   preserveDescriptiveRecord,
 } from './workspace-file-records.js';
-/** Conditional replacement of bounded metadata; zero means create, never overwrite. */
-export const ControlProductMutationSchema = z
-  .object({
-    kind: ControlProductKindSchema,
-    expectedRevision: z.number().int().nonnegative(),
-    record: z.record(z.string(), z.unknown()),
-  })
-  .strict();
-export type ControlProductMutation = z.infer<typeof ControlProductMutationSchema>;
 
 /** Counts descriptor metadata separately from bounded inline entry bodies; actual queue bytes stay charged. */
 export function controlProductMetadataJson(value: {
@@ -120,21 +110,6 @@ export interface ControlContentPreparation {
   readonly publications: Map<string, ControlContentPublication>;
   readonly published: Set<string>;
 }
-/** Existing non-command lifecycle writes share the native product owner, without inventing a command receipt. */
-export const ControlProductTransitionSchema = z
-  .object({
-    products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
-    entries: z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries),
-    journalIntents: z.array(z.string().min(1)).max(CONTROL_PRODUCT_LIMITS.entries).optional(),
-    pending: z
-      .array(z.lazy(() => ControlPendingCommandInputSchema))
-      .max(CONTROL_PRODUCT_LIMITS.entries)
-      .optional(),
-  })
-  .strict()
-  .refine((value) => value.products.length + value.entries.length > 0);
-/** Whole bounded product transition; terminal candidates still require the complete native terminal path. */
-export type ControlProductTransition = z.infer<typeof ControlProductTransitionSchema>;
 /** Native prepared bytes never cross an awaited callback or require file I/O inside SQL. */
 export interface PreparedControlEntry {
   readonly input: ControlProductEntry;

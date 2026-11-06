@@ -19,12 +19,12 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { createTestStore } from '../test-support/store.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
+import type { ControlProductTransition } from './control-store-product-records.js';
 import {
   type ControlProductEntry,
   type ControlStoreProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-product-records.js';
-import type { ControlProductTransition } from './control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,

@@ -3,12 +3,12 @@ import { RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
 import { advanceGoalForThread } from '../runtime/goal-owner.js';
+import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   applyControlPendingCommand,
   assertControlPendingArchive,
   type ControlPendingCommandInput,
-  ControlPendingCommandInputSchema,
   type ControlPendingCommandResult,
   isCommandIntentApproval,
   type PreparedControlPendingCommand,
@@ -27,12 +27,12 @@ import {
   type ControlProductContentMount,
   type ControlProductEntry,
   ControlProductEntrySchema,
+  ControlProductMutationSchema,
 } from './control-store-product-records.js';
 import type { ControlContentPreparation } from './control-store-products.js';
 import {
   applyControlProducts,
   applyControlTerminal,
-  ControlProductMutationSchema,
   ControlTerminalTransitionSchema,
   type PreparedControlEntry,
   type PreparedControlTerminal,

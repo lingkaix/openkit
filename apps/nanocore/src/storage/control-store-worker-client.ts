@@ -176,6 +176,7 @@ import {
 } from './control-store-capability.js';
 import { frameControlScalarText } from './control-store-input.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
+import type { ControlProductTransition } from './control-store-product-records.js';
 import {
   type ControlProductEntry,
   closeWorkspaceProductReadHandles,
@@ -185,7 +186,6 @@ import {
   type ControlEventAppendResult,
   ControlEventAppendSchema,
   type ControlItemAppend,
-  type ControlProductTransition,
   type ControlPublicationInput,
   type ControlTerminalResult,
   type ControlTerminalTransition,

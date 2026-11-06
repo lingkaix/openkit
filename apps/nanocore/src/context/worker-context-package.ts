@@ -42,7 +42,7 @@ import {
   StructuredWorkerDelegationRequestSchema,
 } from '../internal-agents/delegation.js';
 import { conversationTaskThreadId, conversationTaskTurnId } from '../runtime/idempotent-command.js';
-import { OUTCOME_DELIVERY_BOUND } from '../runtime/pending-requests.js';
+import { OUTCOME_DELIVERY_BOUND } from '../runtime/pending-request-codecs.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
   assertCanonicalDirectory,

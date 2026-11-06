@@ -3,7 +3,7 @@ import { AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
-import { ControlPendingCommandInputSchema } from '../runtime/pending-requests.js';
+import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { CATALOG_COMMAND_RECEIPTS } from './catalog-command-receipt-codecs.js';
 import {
   commandRequestKey,
@@ -13,6 +13,7 @@ import {
 import {
   CONTROL_PRODUCT_LIMITS,
   ControlProductEntrySchema,
+  ControlProductMutationSchema,
   type ControlProductOwner,
   ControlProductPreconditionError,
   decode as decodeControlProduct,
@@ -21,7 +22,6 @@ import {
 import {
   applyControlProducts,
   assertControlProductWriter,
-  ControlProductMutationSchema,
   type PreparedControlEntry,
 } from './control-store-products.js';
 import {

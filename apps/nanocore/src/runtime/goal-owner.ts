@@ -90,11 +90,11 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './idempotent-command.js';
+import { ControlPendingCommandInputSchema } from './pending-request-codecs.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
 import {
   applyControlPendingCommand,
   assistantPendingOutcomeSourceHash,
-  ControlPendingCommandInputSchema,
   claimCommandIntentGrant,
   denyPendingRequest,
   finishPendingExecution,

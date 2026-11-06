@@ -194,6 +194,7 @@ import {
 } from '../storage/control-store-admission.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
+import type { ControlProductMutation } from '../storage/control-store-product-records.js';
 import {
   type ControlProductEntry,
   ControlProductEntrySchema,
@@ -204,7 +205,6 @@ import {
   openControlStoreProductReadHandle,
 } from '../storage/control-store-product-records.js';
 import {
-  type ControlProductMutation,
   type ControlTerminalTransition,
   checkControlItemAppend,
   eventAgreesWithSealedTurnOutcome,

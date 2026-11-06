@@ -140,6 +140,7 @@ import {
   prepareControlPendingArchive,
   prepareControlPendingCommands,
 } from './control-store-pending.js';
+import type { ControlProductTransition } from './control-store-product-records.js';
 import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
@@ -155,7 +156,6 @@ import {
   applyControlPublication,
   applyControlTerminal,
   ControlItemAppendError,
-  type ControlProductTransition,
   type ControlPublicationInput,
   type ControlTerminalTransition,
   nativeUserDatabasePath,
