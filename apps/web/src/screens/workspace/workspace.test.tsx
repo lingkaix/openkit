@@ -4812,7 +4812,7 @@ describe('Knowledge (board 14)', () => {
     expect(within(retrieval).queryByText(excluded.content)).not.toBeInTheDocument();
     expect(within(retrieval).queryByText(excluded.id)).not.toBeInTheDocument();
     expect(within(retrieval).getByText('Sensitive content')).toBeInTheDocument();
-    expect(listKnowledge.mock.calls).toEqual([[{ workspaceId: WORKSPACE_A.id }]]);
+    expect(listKnowledge.mock.calls).toEqual([[{ workspaceId: WORKSPACE_A.id, limit: 50 }]]);
     expect(retrieveKnowledge.mock.calls).toEqual([
       [{ workspaceId: WORKSPACE_A.id, ...{ query: RETRIEVAL_QUERY } }],
     ]);

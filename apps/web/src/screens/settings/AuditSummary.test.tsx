@@ -203,7 +203,7 @@ describe('Usage & audit summaries and long lists (P8)', () => {
     }
   });
 
-  it('offers no next-page or load-more control and sends no cursor to the uncursored reads', async () => {
+  it('offers no next-page or load-more control when the reads have no next cursor, and the first read is one bounded page with no cursor', async () => {
     const client = makeClient();
     renderApp('/workspace/usage', client);
 
@@ -224,6 +224,7 @@ describe('Usage & audit summaries and long lists (P8)', () => {
     ] as const) {
       expect(client.operations[operation]).toHaveBeenCalledExactlyOnceWith({
         workspaceId: WORKSPACE_ID,
+        limit: 50,
       });
     }
   });
