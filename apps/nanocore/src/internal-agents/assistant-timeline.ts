@@ -1,5 +1,5 @@
 import type { FsStore } from '../lib/store.js';
-import type { ControlAdmission } from '../storage/control-store-admission.js';
+import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 
 /**
  * Resolves the user's single ordinary Assistant Timeline from canonical Threads.

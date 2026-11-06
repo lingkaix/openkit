@@ -191,7 +191,7 @@ import {
   type ControlAdmission,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
-} from '../storage/control-store-admission.js';
+} from '../storage/control-store-admission-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import type { ControlProductMutation } from '../storage/control-store-product-records.js';

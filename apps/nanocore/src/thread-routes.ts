@@ -20,7 +20,7 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { archiveThreadWithCloseout } from './runtime/pending-request-flow.js';
-import { ControlAdmissionSchema } from './storage/control-store-admission.js';
+import { ControlAdmissionSchema } from './storage/control-store-admission-codecs.js';
 import type { WorkspaceDb } from './storage/db.js';
 
 /** Existing Thread receipt and pending closeout owners. */

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
-import type { ControlAdmission } from './control-store-admission.js';
+import type { ControlAdmission } from './control-store-admission-codecs.js';
 import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,

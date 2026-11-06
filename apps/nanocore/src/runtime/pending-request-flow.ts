@@ -17,7 +17,7 @@ import type { FsStore } from '../lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
-import type { ControlAdmission } from '../storage/control-store-admission.js';
+import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';

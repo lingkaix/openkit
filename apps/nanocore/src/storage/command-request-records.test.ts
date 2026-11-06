@@ -23,7 +23,7 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from './command-request-records.js';
-import { ControlAdmissionSchema } from './control-store-admission.js';
+import { ControlAdmissionSchema } from './control-store-admission-codecs.js';
 import {
   closeWorkspaceProductReadHandles,
   openControlStoreProductReadHandle,

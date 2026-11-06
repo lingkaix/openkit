@@ -27,13 +27,15 @@ import {
   readConversationMetadata,
 } from './command-request-codecs.js';
 import {
-  CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
   CONTROL_NATIVE_EVALUATION_RECEIPT_SQL,
+  pruneControlAdmissionReceipts,
+} from './control-store-admission.js';
+import {
+  CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
   CONTROL_NATIVE_RECEIPT_COMMANDS,
   CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
   isControlNativeReceiptCommand,
-  pruneControlAdmissionReceipts,
-} from './control-store-admission.js';
+} from './control-store-admission-codecs.js';
 import {
   ControlProductPreconditionError,
   openControlStoreProductReadHandle,

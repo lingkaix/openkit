@@ -20,7 +20,8 @@ import {
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
-import { applyControlAdmission, ControlAdmissionSchema } from './control-store-admission.js';
+import { applyControlAdmission } from './control-store-admission.js';
+import { ControlAdmissionSchema } from './control-store-admission-codecs.js';
 import { commandInputHash } from './control-store-input.js';
 import {
   CONTROL_PRODUCT_LIMITS,

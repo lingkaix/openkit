@@ -16,6 +16,8 @@ Native Pending adapters and the worker client import the original Pending refusa
 
 Admission, Pending publication and terminal preparation resolve `commandRequestKey` from its defining receipt owner, `command-request-records.ts`. They do not load Store for this helper; terminal preparation keeps its existing asynchronous owner-loading stage before the deciding SQL body.
 
+`control-store-admission-codecs.ts` holds the closed Admission schemas, DTOs and existing receipt-family classifier. Protocol, Store and command receipt readers bind these leaf values. Native receipt pruning, application and the evaluation receipt query remain in `control-store-admission.ts`; its transaction and publication boundaries stay unchanged. Store type references in the codec are erased.
+
 `control-store-maintenance-native.ts` contains the existing synchronous Knowledge maintenance admission tuple. Its worker import excludes the model, editor and provider orchestration in `knowledge-agent-maintenance.ts`; authority, savepoint and FULL acknowledgement stay unchanged.
 
 Token bearer verification stays on Main. Only its exact existing identity/hash proof and last-use options enter the Core owner; the deciding section rereads current token and User facts, checks revocation, expiry and rotation grace, and records use before FULL acknowledgement. The reply is the existing redacted record or null. Other credential writes remain with their current owners.

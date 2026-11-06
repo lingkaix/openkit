@@ -136,7 +136,7 @@ import {
   type ControlAdmission,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
-} from './control-store-admission.js';
+} from './control-store-admission-codecs.js';
 import {
   type ControlCapabilityCommandResult,
   ControlCapabilityCommandResultSchema,

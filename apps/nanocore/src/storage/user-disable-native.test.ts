@@ -22,7 +22,7 @@ import { commandRequestKey, FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 import { getCommandRequestRecordFromDb } from './command-request-records.js';
-import { isControlNativeReceiptCommand } from './control-store-admission.js';
+import { isControlNativeReceiptCommand } from './control-store-admission-codecs.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { isControlWorkerRequest } from './control-store-worker-protocol.js';
 import { type CoreDb, openCoreDb } from './db.js';

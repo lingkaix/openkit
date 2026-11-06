@@ -29,7 +29,7 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import * as goalCoordinator from '../runtime/goal-coordinator.js';
-import type { ControlAdmission } from '../storage/control-store-admission.js';
+import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';

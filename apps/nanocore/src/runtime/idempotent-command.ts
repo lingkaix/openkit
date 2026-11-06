@@ -20,7 +20,7 @@ import {
   type FsStore,
 } from '../lib/store.js';
 import type { AppDb } from '../storage/app-db.js';
-import { isControlNativeReceiptCommand } from '../storage/control-store-admission.js';
+import { isControlNativeReceiptCommand } from '../storage/control-store-admission-codecs.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';

@@ -9,12 +9,8 @@ import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-even
 import { type CommandRequestRecord, commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { readCommandRequestRecordsFromSqlite } from './command-request-records.js';
-import {
-  applyControlAdmission,
-  type ControlAdmission,
-  ControlAdmissionSchema,
-  pruneControlAdmissionReceipts,
-} from './control-store-admission.js';
+import { applyControlAdmission, pruneControlAdmissionReceipts } from './control-store-admission.js';
+import { type ControlAdmission, ControlAdmissionSchema } from './control-store-admission-codecs.js';
 import {
   type ControlProductOwner,
   openControlStoreProductReadHandle,

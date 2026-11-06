@@ -162,7 +162,7 @@ import {
   type FileStorageReservation,
 } from './artifacts/file-admission.js';
 import { CONTROL_STORE_BUDGET, type ControlCheckpoint } from './control-store.js';
-import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
+import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission-codecs.js';
 import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
