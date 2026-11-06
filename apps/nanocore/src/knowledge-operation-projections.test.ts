@@ -358,21 +358,26 @@ describe('Knowledge operation definition cutover', () => {
     }
   });
 
-  it.each(oldRoutes)('removes %s %s with HTTP 404', async (method, path) => {
-    const f = await fixture();
-    try {
-      expect(
-        (
-          await f.app.request(path, {
-            method,
-            headers: { 'content-type': 'application/json' },
-            ...(method === 'GET' ? {} : { body: '{}' }),
-          })
-        ).status
-      ).toBe(404);
-    } finally {
-      await f.close();
-    }
+  describe('retired knowledge routes', () => {
+    it('removes every retired knowledge route with HTTP 404', async () => {
+      const f = await fixture();
+      try {
+        for (const [method, path] of oldRoutes) {
+          expect(
+            (
+              await f.app.request(path, {
+                method,
+                headers: { 'content-type': 'application/json' },
+                ...(method === 'GET' ? {} : { body: '{}' }),
+              })
+            ).status,
+            `${method} ${path}`
+          ).toBe(404);
+        }
+      } finally {
+        await f.close();
+      }
+    });
   });
 
   it.each([
