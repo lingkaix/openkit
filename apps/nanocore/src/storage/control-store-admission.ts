@@ -2,14 +2,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import {
-  type CommandRequestName,
-  type CommandRequestResponse,
-  commandRequestKey,
-} from '../lib/store.js';
+import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-requests.js';
 import { CATALOG_COMMAND_RECEIPTS } from './catalog-command-receipt-codecs.js';
 import {
+  commandRequestKey,
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
 } from './command-request-records.js';

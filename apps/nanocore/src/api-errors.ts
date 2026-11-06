@@ -4,11 +4,11 @@ import { z } from 'zod';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
 import type { projectOperationError } from './operation-error.js';
+import { IdempotencyKeyConflictError } from './operation-error.js';
 import {
   AgentEnvironmentSnapshotPreparationError,
   AgentEnvironmentSnapshotReadError,
 } from './runtime/aep-snapshot-ledger.js';
-import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { TurnStartValidationError } from './runtime/orchestrator.js';
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
 

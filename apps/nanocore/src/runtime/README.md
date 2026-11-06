@@ -1,5 +1,7 @@
 # Runtime
 
+Pending publication and flow, execution-attempt records and Goal Task context import receipt input hashing directly from `../storage/control-store-input.ts`. Their existing decisions and retained input encodings stay with the same owners.
+
 Worker outcome wakes retain their exact selected request IDs through native admission. If a competing answer already froze that complete batch into one valid different Turn for the same Worker and responsible User, an unpublished losing wake returns without another effect instead of rejecting the original native completion. Missing, inconsistent or differently owned associations and unknown native results still fail closed. No queue, retry, new durable state or alternate delivery owner is added. The simulator's real terminal-hook/answer race regression covers this boundary.
 
 `nanohost-session-dispatch.ts` lets result-only cleanup inspection join one exact accepted bridge-close or Sandbox-delete slot after its original allowance ends. Operation, request and physical origin must match; live, grouped and mismatched slots remain refused. The same pending slot keeps its command and original receipt consumer, so rollback retains exclusion and a late result still waits for the owning native FULL acknowledgement. Inspection grants no second physical delivery. The existing backend result map owns the new wait; no new queue, retry, ledger or durable state is added. Run the complete dispatcher and Factory suites for live recovery, rollback and cold-reopen coverage.

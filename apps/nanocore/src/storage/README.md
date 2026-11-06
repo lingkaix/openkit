@@ -8,6 +8,8 @@ Server startup Bootstrap ENSURE uses a closed `bootstrap-ensure` command on the 
 
 Pending publication and the worker client import the canonical idempotency error directly from `../operation-error.ts`; Pending input hashing comes from `control-store-input.ts`. Receipt types remain explicit type-only imports, so these bindings add no value dependency on Main idempotent-command orchestration.
 
+Admission, Pending publication and terminal preparation resolve `commandRequestKey` from its defining receipt owner, `command-request-records.ts`. They do not load Store for this helper; terminal preparation keeps its existing asynchronous owner-loading stage before the deciding SQL body.
+
 `control-store-maintenance-native.ts` contains the existing synchronous Knowledge maintenance admission tuple. Its worker import excludes the model, editor and provider orchestration in `knowledge-agent-maintenance.ts`; authority, savepoint and FULL acknowledgement stay unchanged.
 
 Token bearer verification stays on Main. Only its exact existing identity/hash proof and last-use options enter the Core owner; the deciding section rereads current token and User facts, checks revocation, expiry and rotation grace, and records use before FULL acknowledgement. The reply is the existing redacted record or null. Other credential writes remain with their current owners.

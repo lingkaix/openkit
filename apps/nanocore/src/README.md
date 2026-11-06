@@ -1,5 +1,7 @@
 HTTP operation routes share the existing API error owner's classified Response projection; unclassified failures retain their original HTTP error boundary.
 
+`api-errors.ts`, `artifact-reviews.ts` and `workspace-materials.ts` import the canonical idempotency conflict class from `operation-error.ts`. `scheduler-records.ts` and `workspace-materials.ts` import input hashing from `storage/control-store-input.ts`. These bindings do not load Main idempotent-command orchestration.
+
 # NanoCore Source
 
 Scheduler queue publication uses one typed native Core family. Ordinary acceptance, denial, explicit retry and cancellation retain their existing queue predicates; recurring attempt/acceptance and external event/queue joins each remain one savepoint under the covering FULL acknowledgement. Main keeps source preparation and readonly Workspace checks under the existing mutation admission, and the native owner repeats current Core predicates. Later Workspace Turn/Audit effects remain separate, ordered publications. Recurring definition and scanner cursor transactions retain their current owner until their complete lifecycle cut.

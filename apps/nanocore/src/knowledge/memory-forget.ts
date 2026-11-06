@@ -16,7 +16,6 @@ import {
   openAssistantTimeline,
 } from '../internal-agents/assistant-timeline.js';
 import type { FsStore } from '../lib/store.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
   admitIfIdle,
   raiseRecordedPendingRequest,
@@ -30,6 +29,7 @@ import {
   pendingRequestItemId,
   readPendingRequest,
 } from '../runtime/pending-requests.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
 

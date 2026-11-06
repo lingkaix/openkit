@@ -30,7 +30,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
-import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import { IdempotencyKeyConflictError } from './operation-error.js';
 import { readArtifactVersionRecord } from './storage/artifacts/artifact-version-records.js';
 import {
   MAX_ARTIFACT_MATERIAL_TEXT_BYTES,

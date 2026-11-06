@@ -1,6 +1,5 @@
 import { type ActorRef, responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
   assistantPendingHandoffIds,
   assistantPendingHandoffResultItemId,
@@ -11,6 +10,7 @@ import {
   requireUsablePendingRequest,
   requireUsablePendingRequestSteps,
 } from '../runtime/pending-requests.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import { openWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 
 /** Verifies receipt-free Task provenance from existing canonical owners; this grants no current execution authority. */

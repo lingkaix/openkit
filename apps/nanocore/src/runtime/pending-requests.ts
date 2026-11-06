@@ -28,7 +28,7 @@ import {
   readCommandRequestRecordPagesFromSqlite,
   readCommandRequestRecordsFromSqlite,
 } from '../storage/command-request-records.js';
-import { commandInputHash } from './idempotent-command.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 
 type ApprovalRequest = import('zod').infer<typeof ApprovalRequestSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;

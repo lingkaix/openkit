@@ -1872,7 +1872,7 @@ export interface ControlTerminalResult {
 // No import or asynchronous work occurs in the deciding body.
 let terminalOwners:
   | {
-      store: typeof import('../lib/store.js');
+      store: typeof import('./command-request-records.js');
       requests: typeof import('./command-request-records.js');
       audit: typeof import('../audit-events.js');
       task: typeof import('../runtime/task-terminal-fact.js');
@@ -1945,7 +1945,7 @@ export async function prepareControlTerminal(
   if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
   if (!terminalOwners) {
     const [store, requests, audit, task, evidence, observations] = await Promise.all([
-      import('../lib/store.js'),
+      import('./command-request-records.js'),
       import('./command-request-records.js'),
       import('../audit-events.js'),
       import('../runtime/task-terminal-fact.js'),

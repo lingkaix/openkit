@@ -26,12 +26,9 @@ import {
   readDefaultKnowledgeBaseId,
   readKnowledgeMounts,
 } from '../config/knowledge-base.js';
-import { OperationError } from '../operation-error.js';
-import {
-  commandInputHash,
-  IdempotencyKeyConflictError,
-  type IdempotentCommandReceipt,
-} from '../runtime/idempotent-command.js';
+import { IdempotencyKeyConflictError, OperationError } from '../operation-error.js';
+import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-knowledge.js';
 import { writeFileAtomic } from '../storage/workspace-file-records.js';
 import { deriveManagedSourceAccess, type ManagedSourceAdmission } from './managed-source-access.js';

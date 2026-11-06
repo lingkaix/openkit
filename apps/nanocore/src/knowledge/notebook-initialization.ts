@@ -10,9 +10,9 @@ import {
   recordServerAuditEvent,
   recordUserAuditEvent,
 } from '../audit-events.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import {
   prepareControlKnowledgeAuthorityTransfer,
   prepareWorkspaceKnowledgeSelection,

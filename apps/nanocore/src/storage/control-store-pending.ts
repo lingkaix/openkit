@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
-import { commandRequestKey } from '../lib/store.js';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
 import { advanceGoalForThread } from '../runtime/goal-owner.js';
 import {
@@ -17,6 +16,7 @@ import {
   readPendingRequest,
 } from '../runtime/pending-requests.js';
 import {
+  commandRequestKey,
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';

@@ -11,6 +11,7 @@ import {
   requireSchedulerAdmissionEntry,
   type SchedulerAdmissionEntryRecord,
 } from '../scheduler-records.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   SchedulerExecutionAttemptSchema as AttemptSchema,
@@ -22,7 +23,6 @@ import type {
   ExecutionOperationDisposition,
   ExecutionReleaseProof,
 } from './execution-backend.js';
-import { commandInputHash } from './idempotent-command.js';
 
 /** The production execution authority budget, fixed once at native submission. */
 export const EXECUTION_ATTEMPT_BUDGET_MS = 7_200_000;

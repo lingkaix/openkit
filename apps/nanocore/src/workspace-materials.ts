@@ -53,13 +53,13 @@ import {
   correctMaterialRange,
   readMaterialJudgement,
 } from './material-range-corrections.js';
-import { OperationError } from './operation-error.js';
-import { commandInputHash, IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import { IdempotencyKeyConflictError, OperationError } from './operation-error.js';
 import {
   commandRequestKey,
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
 } from './storage/command-request-records.js';
+import { commandInputHash } from './storage/control-store-input.js';
 import { readProduct } from './storage/control-store-product-records.js';
 import { assertControlProductWriter } from './storage/control-store-products.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';

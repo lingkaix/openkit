@@ -1,5 +1,7 @@
 # Knowledge Format
 
+Notebook initialization, Memory forget and Source publication import receipt input hashing from `../storage/control-store-input.ts`. Source publication imports the canonical conflict class from `../operation-error.ts`; its receipt type import from Main idempotent orchestration is erased.
+
 Schema application history retains the exact reviewed and actual reports in one immutable, digest-bound record, together with the original and candidate schema bytes. The original receipt and Audit select that record; replay returns its actual applied Notebook revision. Missing or contradictory actual evidence requires recovery. This pre-v0.1.0 format correction uses the final reset boundary, without a reviewed-only reader.
 
 User and Server Proposal previews share the admitted bounded projection. User and Server reads verify complete ordered Review evidence through the existing publisher. Server Proposal reads reject a contradictory candidate parent before serializing its changes. User reads keep self scope and actor checks; Server reads do not restrict a later decision to the original administrator. Decisions retain their exact command identity through the existing scoped owners. A retained rejected or deferred decision requires both its original Review and deciding Audit; missing or contradictory partial evidence returns `recovery_required`, without recreating either record or turning the incomplete request into publication. Accepted publication keeps the common publisher's admission, completion and receipt checks.

@@ -19,10 +19,10 @@ import {
   type SchedulerExecutionLineage,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { goalPlanDigest, readGoalView } from './goal-owner.js';
-import { commandInputHash } from './idempotent-command.js';
 import { listThreadPendingRequests, pendingRequestSystemActor } from './pending-requests.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
 

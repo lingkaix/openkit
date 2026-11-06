@@ -10,7 +10,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { commandInputHash } from './runtime/idempotent-command.js';
+import { commandInputHash } from './storage/control-store-input.js';
 import type { CoreDb } from './storage/db.js';
 import type {
   SchedulerAdmissionDenialReason,
