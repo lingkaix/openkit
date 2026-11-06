@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request as requestHttp } from 'node:http';
 import { createServer as createHttp2Server, type ServerHttp2Session } from 'node:http2';
 import { createRequire } from 'node:module';
@@ -23,7 +23,7 @@ import {
 } from '@openkit/config-schema';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WORKER_ADAPTERS } from '../../../packages/worker-shim/src/adapter-registry.js';
 import { openSandboxIntegration } from '../../../packages/worker-shim/src/integration-client.js';
 import { createDefaultWorkerControlGateway } from './app.js';
@@ -332,6 +332,54 @@ const WORKER_PROVIDER_MODEL = 'openai/gpt-5.2';
 const CODEX_PROVIDER_ID = 'openai-codex';
 const CODEX_PROVIDER_MODEL = 'openai-codex/gpt-5.6-sol';
 
+/** One closed Demo data root. Durable fixtures copy it instead of migrating and seeding again. */
+let workerInferenceFixtureBase: string | undefined;
+
+function directoryContainsText(dir: string, needle: string): boolean {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (directoryContainsText(path, needle)) return true;
+    } else if (entry.isFile() && readFileSync(path).includes(needle)) return true;
+  }
+  return false;
+}
+
+beforeAll(async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-inference-base-'));
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+  } finally {
+    coreDb.sqlite.close();
+  }
+  await shutdownControlStoreWorkerClient();
+  if (directoryContainsText(dataRoot, dataRoot)) {
+    throw new Error('Worker inference fixture base stores its own path and cannot be copied.');
+  }
+  workerInferenceFixtureBase = dataRoot;
+}, 60_000);
+
+afterAll(() => {
+  if (workerInferenceFixtureBase)
+    rmSync(workerInferenceFixtureBase, { recursive: true, force: true });
+});
+
+function openCopiedWorkerInferenceCore(): CoreDb {
+  const base = workerInferenceFixtureBase;
+  if (!base) throw new Error('Worker inference fixture base is not prepared.');
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-inference-route-'));
+  cpSync(base, dataRoot, { recursive: true });
+  return openCoreDb(dataRoot);
+}
+
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
@@ -378,19 +426,19 @@ async function createWorkerInferenceRouteFixture(
     options.subscriptionFamily === 'openai-codex' ? CODEX_PROVIDER_ID : 'agent-openrouter';
   const providerModel =
     options.subscriptionFamily === 'openai-codex' ? CODEX_PROVIDER_MODEL : WORKER_PROVIDER_MODEL;
-  const appCoreDb =
-    coreDb ??
-    (durableStorage
-      ? openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-inference-route-')))
-      : undefined);
+  const copiedCore = coreDb === undefined && durableStorage;
+  const appCoreDb = coreDb ?? (copiedCore ? openCopiedWorkerInferenceCore() : undefined);
   if (appCoreDb && !coreDb) {
-    applyMigrations(appCoreDb);
+    if (!copiedCore) applyMigrations(appCoreDb);
     ownedCoreDatabases.push(appCoreDb);
   }
   if (appCoreDb) ensureLocalUser(appCoreDb);
   // Publish the real native Workspace before Core relationships classify it as an existing home.
   // The route and its capability/Audit writer then share that exact prepared scope.
-  const store = await createDemoStore(appCoreDb ? { dataRoot: appCoreDb.dataRoot } : {});
+  // A copied root already contains that Workspace. A caller-supplied database still seeds it.
+  const store = copiedCore
+    ? new FsStore({ dataRoot: appCoreDb!.dataRoot })
+    : await createDemoStore(appCoreDb ? { dataRoot: appCoreDb.dataRoot } : {});
   if (appCoreDb) {
     recordWorkspaceOwnerMembership({
       coreDb: appCoreDb,
