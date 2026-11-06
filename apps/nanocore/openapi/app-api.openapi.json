@@ -92647,6 +92647,15 @@
           "workspaceId": {
             "type": "string",
             "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "limit": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "required": [
@@ -92822,6 +92831,12 @@
               ],
               "additionalProperties": false
             }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -155176,5 +155191,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:61e61ea307b48d0e9fe40b7060a82f65ecf7b1a2a65e0589a2f6769c8c4e36ad"
+  "x-openkit-source-digest": "sha256:653a7cb2a198156471aceb37dd5a1ebfdbbe3bc2263f5b916c985deea5ccef04"
 }

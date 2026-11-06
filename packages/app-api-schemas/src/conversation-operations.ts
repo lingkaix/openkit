@@ -42,7 +42,13 @@ export const CONVERSATION_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description: 'List visible Workspace conversation activity for navigation.',
-    inputSchema: z.object(workspaceSelector).strict(),
+    inputSchema: z
+      .object({
+        ...workspaceSelector,
+        limit: z.number().int().positive().optional(),
+        cursor: z.string().min(1).optional(),
+      })
+      .strict(),
     outputSchema: ConversationNavigationResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },

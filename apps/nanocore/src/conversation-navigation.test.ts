@@ -130,6 +130,7 @@ describe('conversation navigation', () => {
       older.id,
       newer.id,
     ]);
+    expect(result.nextCursor).toBeNull();
     expect(result.items[0]).toMatchObject({ activity: 'unknown', state: 'working' });
     expect(result.items[2]).toMatchObject({ activity: 'task', state: 'idle' });
     expect(result.items[1]).toMatchObject({
@@ -137,6 +138,93 @@ describe('conversation navigation', () => {
       state: 'idle',
       lastActivityAt: '2026-09-15T04:00:00.000Z',
     });
+
+    const firstPage = await (
+      await app.request(
+        ...operationRequest(
+          'conversation.navigation',
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', limit: 1 },
+          { headers: { authorization: `Bearer ${token}` } }
+        )
+      )
+    ).json();
+    expect(firstPage.items.map((row: { thread: { id: string } }) => row.thread.id)).toEqual([
+      working.id,
+    ]);
+    expect(typeof firstPage.nextCursor).toBe('string');
+
+    const secondPage = await (
+      await app.request(
+        ...operationRequest(
+          'conversation.navigation',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            limit: 1,
+            cursor: firstPage.nextCursor,
+          },
+          { headers: { authorization: `Bearer ${token}` } }
+        )
+      )
+    ).json();
+    expect(secondPage.items.map((row: { thread: { id: string } }) => row.thread.id)).toEqual([
+      older.id,
+    ]);
+    expect(typeof secondPage.nextCursor).toBe('string');
+
+    const thirdPage = await (
+      await app.request(
+        ...operationRequest(
+          'conversation.navigation',
+          {
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            cursor: secondPage.nextCursor,
+          },
+          { headers: { authorization: `Bearer ${token}` } }
+        )
+      )
+    ).json();
+    expect(thirdPage.items.map((row: { thread: { id: string } }) => row.thread.id)).toEqual([
+      newer.id,
+    ]);
+    expect(thirdPage.nextCursor).toBeNull();
+
+    const invalidCursor = await app.request(
+      ...operationRequest(
+        'conversation.navigation',
+        {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          cursor: 'not-a-cursor',
+        },
+        { headers: { authorization: `Bearer ${token}` } }
+      )
+    );
+    expect(invalidCursor.status).toBe(400);
+    expect(await invalidCursor.json()).toMatchObject({ code: 'invalid_request' });
+
+    const secondWorkspace = await store.createWorkspace('Second Workspace');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: secondWorkspace.id,
+    });
+    const bothToken = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      scope: 'workspace',
+      workspaceIds: ['ws_00000000-0000-7000-8000-000000000001', secondWorkspace.id],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }).secret;
+    const crossWorkspaceCursor = await app.request(
+      ...operationRequest(
+        'conversation.navigation',
+        {
+          workspaceId: secondWorkspace.id,
+          cursor: firstPage.nextCursor,
+        },
+        { headers: { authorization: `Bearer ${bothToken}` } }
+      )
+    );
+    expect(crossWorkspaceCursor.status).toBe(400);
+    expect(await crossWorkspaceCursor.json()).toMatchObject({ code: 'invalid_request' });
   });
 
   it('shows a foreign private Thread to a current administrator', async () => {

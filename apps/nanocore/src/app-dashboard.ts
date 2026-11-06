@@ -15,10 +15,14 @@ import {
   type ItemSchema,
   isRecoveryRewritableTurnStatus,
   isSealedTurnTerminal,
+  ThreadIdSchema,
   type ThreadSchema,
+  TimestampSchema,
   type TurnSchema,
+  WorkspaceIdSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
@@ -718,10 +722,65 @@ export class ConversationNavigationReadError extends Error {
   }
 }
 
+/** A continuation is a scoped position, not a retained anchor or an authorization grant. */
+const conversationNavigationCursorSchema = z.tuple([
+  z.literal('conversation.navigation'),
+  WorkspaceIdSchema,
+  z.enum(['working', 'needs-you', 'idle']),
+  TimestampSchema,
+  ThreadIdSchema,
+]);
+
+type ConversationNavigationPosition = {
+  state: ConversationNavigationResponse['items'][number]['state'];
+  lastActivityAt: string;
+  thread: { id: string };
+};
+
+/** Working and actionable rows sort before idle rows, then by descending activity timestamp and Thread id. */
+function compareConversationNavigationPositions(
+  left: ConversationNavigationPosition,
+  right: ConversationNavigationPosition
+): number {
+  return (
+    Number(right.state !== 'idle') - Number(left.state !== 'idle') ||
+    compareCodeUnits(right.lastActivityAt, left.lastActivityAt) ||
+    compareCodeUnits(right.thread.id, left.thread.id)
+  );
+}
+
+/** Reject malformed or foreign positions without reading an anchor or disclosing cursor content. */
+function decodeConversationNavigationCursor(
+  cursor: string | undefined,
+  workspaceId: string
+): ConversationNavigationPosition | undefined {
+  if (cursor === undefined) return undefined;
+  try {
+    const bytes = Buffer.from(cursor, 'base64url');
+    const position = conversationNavigationCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== cursor || position[1] !== workspaceId) {
+      throw new Error('Invalid conversation navigation continuation.');
+    }
+    return {
+      state: position[2],
+      lastActivityAt: position[3],
+      thread: { id: position[4] },
+    };
+  } catch {
+    throw new OperationError(
+      'invalid_request',
+      'Invalid conversation navigation continuation.',
+      400
+    );
+  }
+}
+
 /** Reads current conversation activity after native Workspace admission, admitting each audience before dependent reads. */
 export function readConversationNavigation({
   store,
   workspaceId,
+  limit,
+  cursor,
   actor,
   coreDb,
   runtimeConfigManager,
@@ -730,16 +789,19 @@ export function readConversationNavigation({
 }: {
   store: FsStore;
   workspaceId: string;
+  limit?: number | undefined;
+  cursor?: string | undefined;
   actor: import('./auth/identity.js').Actor;
   coreDb: CoreDb | undefined;
   runtimeConfigManager: RuntimeConfigManager;
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
-  administratorEligible?: boolean;
+  administratorEligible?: boolean | undefined;
 }): ConversationNavigationResponse {
   let workspaceDb: WorkspaceDb | undefined;
   let userDb: UserDb | undefined;
   try {
     store.getWorkspace(workspaceId);
+    const position = decodeConversationNavigationCursor(cursor, workspaceId);
     const agents = runtimeConfigManager.current().agentManifests;
     workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
     if (coreDb) {
@@ -806,14 +868,28 @@ export function readConversationNavigation({
           unreadCount,
         };
       });
-    rows.sort(
-      (left, right) =>
-        Number(right.state !== 'idle') - Number(left.state !== 'idle') ||
-        compareCodeUnits(right.lastActivityAt, left.lastActivityAt) ||
-        compareCodeUnits(left.thread.id, right.thread.id)
-    );
-    return ConversationNavigationResponseSchema.parse({ items: rows });
+    const remaining = rows
+      .sort(compareConversationNavigationPositions)
+      .filter((row) => !position || compareConversationNavigationPositions(row, position) > 0);
+    const items = limit === undefined ? remaining : remaining.slice(0, limit);
+    const last = items.at(-1);
+    return ConversationNavigationResponseSchema.parse({
+      items,
+      nextCursor:
+        last && items.length < remaining.length
+          ? Buffer.from(
+              JSON.stringify([
+                'conversation.navigation',
+                workspaceId,
+                last.state,
+                last.lastActivityAt,
+                last.thread.id,
+              ])
+            ).toString('base64url')
+          : null,
+    });
   } catch (error) {
+    if (error instanceof OperationError) throw error;
     throw new ConversationNavigationReadError(publishedErrorMessage(error));
   } finally {
     workspaceDb?.sqlite.close();

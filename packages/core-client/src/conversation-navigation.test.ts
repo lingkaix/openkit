@@ -4,18 +4,24 @@ import { createCoreClient as createClient } from './client.js';
 
 describe('conversation navigation client', () => {
   it('reads the selected Workspace projection and rejects malformed rows', async () => {
-    const fetch = vi.fn(async () => Response.json({ items: [] }));
+    const fetch = vi.fn(async () => Response.json({ items: [], nextCursor: null }));
     const client = createCoreClient({ baseUrl: 'https://nanocore.test', fetch });
     await expect(
       client.operations['conversation.navigation']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        limit: 10,
+        cursor: 'cursor_1',
       })
-    ).resolves.toEqual({ items: [] });
+    ).resolves.toEqual({ items: [], nextCursor: null });
     expect(fetch).toHaveBeenCalledWith(
       'https://nanocore.test/api/app/operations/conversation.navigation',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }),
+        body: JSON.stringify({
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          limit: 10,
+          cursor: 'cursor_1',
+        }),
       })
     );
     fetch.mockResolvedValueOnce(Response.json({ items: [{ activity: 'chat' }] }));

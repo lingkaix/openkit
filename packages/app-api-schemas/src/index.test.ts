@@ -5946,3 +5946,23 @@ describe('exact Artifact Review feedback and candidate choice', () => {
     expect(definition.inputSchema.safeParse({ ...input, reason: '' }).success).toBe(false);
   });
 });
+
+describe('conversation.navigation pagination contract', () => {
+  it('accepts optional positive limit and non-empty cursor and parses nullable nextCursor', () => {
+    const definition = appApiSchemas.CONVERSATION_OPERATION_DEFINITIONS['conversation.navigation'];
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    expect(definition.inputSchema.parse({ workspaceId, limit: 25, cursor: 'opaque' })).toEqual({
+      workspaceId,
+      limit: 25,
+      cursor: 'opaque',
+    });
+    expect(definition.inputSchema.safeParse({ workspaceId, limit: 0 }).success).toBe(false);
+    expect(definition.inputSchema.safeParse({ workspaceId, cursor: '' }).success).toBe(false);
+    expect(
+      appApiSchemas.ConversationNavigationResponseSchema.parse({ items: [], nextCursor: null })
+    ).toEqual({ items: [], nextCursor: null });
+    expect(
+      appApiSchemas.ConversationNavigationResponseSchema.parse({ items: [], nextCursor: 'next' })
+    ).toEqual({ items: [], nextCursor: 'next' });
+  });
+});

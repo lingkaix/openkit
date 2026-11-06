@@ -204,6 +204,7 @@ export const ConversationNavigationResponseSchema = z.object({
       unreadCount: z.number().int().nonnegative(),
     })
   ),
+  nextCursor: z.string().nullable().optional(),
 });
 
 /** Navigation activity and unread counts project current source records and User-owned receipts. */

@@ -66,7 +66,7 @@ The App-update response fixtures in `src/client.test.ts` include the complete ap
 
 `client.operations['vault.secret-create']`, `client.operations['vault.secret-rotate']`, `client.operations['vault.secret-revoke']`, `client.operations['vault.grant-create']`, and `client.operations['vault.grant-revoke']` project deployment-admin workspace secret management. Secret material appears only in POST request bodies; result schemas contain metadata only.
 
-`client.operations['conversation.navigation']` validates the selected-Workspace conversation activity projection; NanoCore owns ordering, current activity classification, and viewer-relative attention.
+`client.operations['conversation.navigation']` validates the selected-Workspace conversation activity projection, including optional `limit` and opaque `cursor` inputs and `nextCursor` continuation; NanoCore owns ordering, current activity classification, and viewer-relative attention.
 
 `client.operations['worker.list']` reads the selected-Workspace current Worker projection, including exact recorded work and separately labeled package preference and last-used model. NanoCore owns Thread visibility and the additional audit permission for usage; the client validates the response without joining records or exposing hidden runtime identity.
 

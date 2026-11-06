@@ -147,7 +147,7 @@ The Knowledge family has 19 definitions and the retained minimal entry family ha
 
 `ARTIFACT_OPERATION_DEFINITIONS` declares inventory, inline read, import, introduction, Review list and exact version Review decision. Inputs reuse the owned Artifact schemas with explicit selectors; the refined import and decision schemas retain their cross-field checks when trusted fields are omitted from model views. Import and introduction declare success status 201. `artifact.review-list` keeps its settled CLI identity, while `artifact.review.decide` keeps the settled domain command identity without a hyphenated alias.
 
-Conversation, Task, Attention and Pending Request operations are composed from their family definition tables; they reuse the existing structured schemas and preserve Task HTTP 202 and owner-selected conversation HTTP 200/202.
+Conversation, Task, Attention and Pending Request operations are composed from their family definition tables; they reuse the existing structured schemas and preserve Task HTTP 202 and owner-selected conversation HTTP 200/202. `conversation.navigation` accepts optional positive-integer `limit` and opaque `cursor`, returning nullable sibling `nextCursor`.
 
 Direct `task.start` accepts optional exact `agentId`. The selector narrows existing eligible Worker candidates without substitution; it does not change discovery or grant authority. Omission preserves ordinary selection and the existing replay input. The shared definition carries this field through the client, CLI, remote MCP and OpenAPI projections.
 
