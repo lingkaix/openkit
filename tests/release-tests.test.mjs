@@ -82,6 +82,34 @@ test('admission collects both variants and routine execution runs coverage once'
   assert.equal(result.execution, 'coverage passed');
   assert.equal(result.inventory, 'not collected');
 });
+test('NanoCore partition collection shares modules without changing execution isolation', () => {
+  const calls = [];
+  const owner = { name: '@openkit/nanocore', cwd: '/example' };
+  const spawn = (_exe, args) => {
+    calls.push(args);
+    return { status: 0, stdout: JSON.stringify(inventory) };
+  };
+  const result = coveredSuite(owner, {
+    inventoryOnly: true,
+    partition: { index: 1, count: 8 },
+    spawn,
+    run: () => [],
+  });
+  assert.equal(result.inventory, 'partition cases equal');
+  assert.equal(calls.length, 2);
+  for (const args of calls) assert(args.includes('--no-isolate'));
+  const admissionCalls = [];
+  coveredSuite(owner, {
+    inventoryOnly: true,
+    spawn: (_exe, args) => {
+      admissionCalls.push(args);
+      return { status: 0, stdout: JSON.stringify(inventory) };
+    },
+    run: () => [],
+  });
+  assert.equal(admissionCalls.length, 2);
+  for (const args of admissionCalls) assert(!args.includes('--no-isolate'));
+});
 test('deduplicated command propagates execution failure', () => {
   assert.throws(
     () =>

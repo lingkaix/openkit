@@ -101,6 +101,9 @@ export function coveredSuite(
         '--json',
         `--maxWorkers=${nanoCore ? workers : 4}`,
         '--pool=threads',
+        // Partition collection only builds a case inventory. Let those files share one module graph;
+        // isolated coverage execution still decides the actual inventory and any mismatch fails closed.
+        ...(nanoCore && partition ? ['--no-isolate'] : []),
         ...(coverage ? ['--coverage'] : []),
         ...(filesOnly ? ['--filesOnly'] : []),
         ...partitionArgs,
