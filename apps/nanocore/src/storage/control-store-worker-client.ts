@@ -92,7 +92,7 @@ import {
   ArtifactReviewError,
   type ControlReviewCommandInput,
   type ControlReviewCommandResult,
-} from '../artifact-reviews.js';
+} from '../artifact-review-codecs.js';
 import {
   AdminRecoveryError,
   type ControlAdminRecoveryInput,

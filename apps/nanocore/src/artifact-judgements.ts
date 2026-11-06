@@ -7,11 +7,8 @@ import {
 } from '@openkit/app-api-schemas';
 import { UserActorRefSchema, writeRetainedV1 } from '@openkit/protocol';
 import { ArtifactAuthorityError } from './artifact-authority.js';
-import {
-  ArtifactReviewError,
-  executeControlReviewCommand,
-  getArtifactReview,
-} from './artifact-reviews.js';
+import { ArtifactReviewError } from './artifact-review-codecs.js';
+import { executeControlReviewCommand, getArtifactReview } from './artifact-reviews.js';
 import type { Actor } from './auth/identity.js';
 import {
   isCurrentDeploymentAdministrator,

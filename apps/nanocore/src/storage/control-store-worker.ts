@@ -17,8 +17,8 @@ import { writeRetainedV1 } from '@openkit/protocol';
 import { changeVerifiedFileMode, publishVerifiedFileReplacement } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { ZodError } from 'zod';
+import { ArtifactReviewError } from '../artifact-review-codecs.js';
 import {
-  ArtifactReviewError,
   applyControlReviewCommand,
   type PreparedControlReviewCommand,
   prepareControlReviewCommand,

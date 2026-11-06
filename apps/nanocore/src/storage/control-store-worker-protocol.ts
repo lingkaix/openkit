@@ -26,7 +26,7 @@ import {
   ControlReviewCommandInputSchema,
   type ControlReviewCommandResult,
   ControlReviewCommandResultSchema,
-} from '../artifact-reviews.js';
+} from '../artifact-review-codecs.js';
 import {
   type ControlAccessTokenLifecycle,
   type ControlAccessTokenLifecycleResult,

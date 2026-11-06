@@ -96,11 +96,8 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { parse as parseJsonc } from 'jsonc-parser';
-import {
-  ArtifactReviewError,
-  type ControlReviewCommandInput,
-  type CreateArtifactReviewInput,
-} from '../artifact-reviews.js';
+import { ArtifactReviewError, type ControlReviewCommandInput } from '../artifact-review-codecs.js';
+import type { CreateArtifactReviewInput } from '../artifact-reviews.js';
 import { prepareAuditEvent, prepareAuditEventStatement } from '../audit-events.js';
 import {
   assertScopeAdmitted,
