@@ -334,4 +334,153 @@ describe('canonical page commands compose the native Notebook publisher and read
     expect(conflict.body).toMatchObject({ code: 'idempotency_key_conflict' });
     expect(selectedNotebookRevision(f)).toBe(removedRevision);
   });
+
+  it('walks three pages of knowledge.retrieval and knowledge.notebook.list cursors with exact identities, foreign-Workspace rejection, and changed admission', async () => {
+    const f = await fixture();
+    const initial = await listing(f);
+    const ids = ['notes/page-a', 'notes/page-b', 'notes/page-c', 'notes/page-d', 'notes/page-e'];
+    const seeded = await call(f, 'knowledge.notebook.update', {
+      requestId: randomUUID(),
+      baseRevision: initial.notebookRevision,
+      changes: ids.map((id) => ({
+        path: `${id}.md`,
+        content: page(f, `shared-retrieval-needle body for ${id}`),
+      })),
+      summary: 'Seed five retrieval pages',
+    });
+    expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
+
+    const retrievalIds: string[] = [];
+    let retrievalCursor: string | null = null;
+    let retrievalPages = 0;
+    for (;;) {
+      const res = await call(f, 'knowledge.retrieval', {
+        query: 'shared-retrieval-needle',
+        limit: 2,
+        ...(retrievalCursor ? { cursor: retrievalCursor } : {}),
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      retrievalPages += 1;
+      const batch = (res.body.selected as Array<{ reference: { objectId: string } }>).map(
+        (row) => row.reference.objectId
+      );
+      expect(batch.length).toBeGreaterThan(0);
+      expect(batch.length).toBeLessThanOrEqual(2);
+      retrievalIds.push(...batch);
+      if (res.body.nextCursor === null) break;
+      expect(typeof res.body.nextCursor).toBe('string');
+      retrievalCursor = res.body.nextCursor;
+    }
+    expect(retrievalPages).toBe(3);
+    expect(retrievalIds).toEqual(ids);
+    expect(new Set(retrievalIds).size).toBe(ids.length);
+
+    const listIds: string[] = [];
+    let listCursor: string | null = null;
+    let listPages = 0;
+    for (;;) {
+      const res = await call(f, 'knowledge.notebook.list', {
+        limit: 2,
+        ...(listCursor ? { cursor: listCursor } : {}),
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      listPages += 1;
+      const batch = (res.body.pages as Array<{ id: string }>).map((row) => row.id);
+      expect(batch.length).toBeGreaterThan(0);
+      expect(batch.length).toBeLessThanOrEqual(2);
+      listIds.push(...batch);
+      if (res.body.nextCursor === null) break;
+      expect(typeof res.body.nextCursor).toBe('string');
+      listCursor = res.body.nextCursor;
+    }
+    expect(listPages).toBe(3);
+    expect(listIds).toEqual(ids);
+
+    const firstRetrievalPage = await call(f, 'knowledge.retrieval', {
+      query: 'shared-retrieval-needle',
+      limit: 2,
+    });
+    expect(firstRetrievalPage.status).toBe(200);
+    expect(typeof firstRetrievalPage.body.nextCursor).toBe('string');
+
+    const firstListPage = await call(f, 'knowledge.notebook.list', { limit: 2 });
+    expect(firstListPage.status).toBe(200);
+    expect(typeof firstListPage.body.nextCursor).toBe('string');
+
+    const invalidRetrieval = await call(f, 'knowledge.retrieval', {
+      query: 'shared-retrieval-needle',
+      cursor: 'not-a-cursor',
+    });
+    expect(invalidRetrieval.status).toBe(400);
+    expect(invalidRetrieval.body).toMatchObject({ code: 'invalid_request' });
+
+    const secondWorkspace = await f.store.createWorkspace('Second Workspace', {
+      requestId: randomUUID(),
+      producer: { kind: 'user', id: f.userId },
+      instructionReference: 'Create second Workspace for cursor scoping',
+    });
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      workspaceId: secondWorkspace.id,
+      ownerUserId: f.userId,
+    });
+    const secondDb = openWorkspaceDb(f.dataRoot, secondWorkspace.id);
+    applyScopedMigrations(secondDb);
+    secondDb.sqlite.close();
+
+    for (const [operation, body] of [
+      [
+        'knowledge.retrieval',
+        {
+          workspaceId: secondWorkspace.id,
+          query: 'shared-retrieval-needle',
+          cursor: firstRetrievalPage.body.nextCursor,
+        },
+      ],
+      [
+        'knowledge.notebook.list',
+        {
+          workspaceId: secondWorkspace.id,
+          cursor: firstListPage.body.nextCursor,
+        },
+      ],
+    ] as const) {
+      const response = await f.app.request(`/api/app/operations/${operation}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ code: 'invalid_request' });
+    }
+
+    const restricted = await call(f, 'knowledge.notebook.update', {
+      requestId: randomUUID(),
+      baseRevision: seeded.body.notebookRevision,
+      changes: [
+        {
+          path: 'notes/page-c.md',
+          content: page(f, 'shared-retrieval-needle body for notes/page-c').replace(
+            'sensitivity: normal',
+            'sensitivity: confidential'
+          ),
+        },
+      ],
+      summary: 'Restrict notes/page-c before continuing retrieval pagination',
+    });
+    expect(restricted.status, JSON.stringify(restricted.body)).toBe(200);
+
+    const resumedAfterRestriction = await call(f, 'knowledge.retrieval', {
+      query: 'shared-retrieval-needle',
+      limit: 2,
+      cursor: firstRetrievalPage.body.nextCursor,
+    });
+    expect(resumedAfterRestriction.status).toBe(200);
+    expect(
+      (resumedAfterRestriction.body.selected as Array<{ reference: { objectId: string } }>).map(
+        (row) => row.reference.objectId
+      )
+    ).toEqual(['notes/page-d', 'notes/page-e']);
+    expect(resumedAfterRestriction.body.nextCursor).toBeNull();
+  });
 });

@@ -15,6 +15,7 @@ import {
   type PageReference,
   parseReferenceScope,
   type RetrievalTraceReference,
+  WorkspaceIdSchema,
 } from '@openkit/protocol';
 import {
   assertCanonicalDirectory,
@@ -22,6 +23,7 @@ import {
   readCanonicalTextFile,
   writeDerivedIndexFile,
 } from '@openkit/storage';
+import { z } from 'zod';
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
@@ -193,6 +195,8 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   query: string;
   /** Maximum number of selected candidates. */
   limit?: number | undefined;
+  /** Opaque continuation cursor from an earlier retrieval page. */
+  cursor?: string | undefined;
   /** Concepts that should be included when present and active. */
   pinnedReferences?: readonly PageReference[] | undefined;
   /** Optional any-match governed type names; combined selectors intersect. */
@@ -609,12 +613,14 @@ async function retrieveNotebookSelection(
   const normalized = RetrieveKnowledgeRequestSchema.parse({
     query: input.query,
     limit: input.limit,
+    cursor: input.cursor,
     pinnedReferences: input.pinnedReferences,
     types: input.types,
     appliesTo: input.appliesTo,
     sourceScope: input.sourceScope,
     states: input.states,
   });
+  const cursorPosition = decodeKnowledgeRetrievalCursor(normalized.cursor, input.workspaceId);
   const states = [...new Set(normalized.states)].sort(compareBytewise);
   const filters = {
     ...(normalized.types === undefined
@@ -833,8 +839,9 @@ async function retrieveNotebookSelection(
       score: scores.get(knowledgePageId) ?? 0,
     }))
     .sort(compareKnowledgeRetrievalCandidates);
-  const selected: WorkspaceKnowledgeRetrievalCandidate[] = [];
+  const selected: Array<WorkspaceKnowledgeRetrievalCandidate & { pinned: boolean }> = [];
   const excluded: WorkspaceKnowledgeRetrievalExclusion[] = [];
+  let hasMore = false;
 
   const pageReadable = (id: string, content: string) =>
     memory ||
@@ -1054,7 +1061,12 @@ async function retrieveNotebookSelection(
       continue;
     }
 
+    if (cursorPosition && compareKnowledgeRetrievalCandidates(candidate, cursorPosition) <= 0) {
+      continue;
+    }
+
     if (selected.length >= limit) {
+      hasMore = true;
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest,
@@ -1065,6 +1077,7 @@ async function retrieveNotebookSelection(
 
     selected.push({
       knowledgePageId: candidate.knowledgePageId,
+      pinned: candidate.pinned,
       contentDigest,
       score: candidate.score,
       sourceReferences,
@@ -1100,10 +1113,23 @@ async function retrieveNotebookSelection(
     },
     createdAt,
   };
+  const lastSelected = selected.at(-1);
+  const nextCursor =
+    lastSelected && hasMore
+      ? Buffer.from(
+          JSON.stringify([
+            'knowledge.retrieval',
+            input.workspaceId,
+            lastSelected.pinned,
+            lastSelected.score,
+            lastSelected.knowledgePageId,
+          ])
+        ).toString('base64url')
+      : null;
   const result = KnowledgeRetrievalResponseSchema.parse({
     ...metadata,
     workspaceId: input.workspaceId,
-    selected: selected.map(({ knowledgePageId, ...facts }) => ({
+    selected: selected.map(({ knowledgePageId, pinned: _pinned, ...facts }) => ({
       ...facts,
       reference: referenceFor(knowledgePageId),
       revision: notebookRevision,
@@ -1119,6 +1145,7 @@ async function retrieveNotebookSelection(
               compareBytewise
             ),
     })),
+    nextCursor,
   });
 
   await input.beforeDisclosure?.(result);
@@ -1801,6 +1828,33 @@ function matchingKnowledgeReferenceProof(
     return null;
   }
   return proof;
+}
+
+const knowledgeRetrievalCursorSchema = z.tuple([
+  z.literal('knowledge.retrieval'),
+  WorkspaceIdSchema,
+  z.boolean(),
+  z.number().finite().nonnegative(),
+  z.string().min(1),
+]);
+
+/** Decodes a Workspace-scoped retrieval continuation cursor without reading an anchor page. */
+function decodeKnowledgeRetrievalCursor(cursor: string | undefined, workspaceId: string) {
+  if (cursor === undefined) return undefined;
+  try {
+    const bytes = Buffer.from(cursor, 'base64url');
+    const position = knowledgeRetrievalCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
+    if (bytes.toString('base64url') !== cursor || position[1] !== workspaceId) {
+      throw new Error('Invalid retrieval continuation.');
+    }
+    return {
+      pinned: position[2],
+      score: position[3],
+      knowledgePageId: position[4],
+    };
+  } catch {
+    throw new OperationError('invalid_request', 'Invalid retrieval continuation.', 400);
+  }
 }
 
 /**

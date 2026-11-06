@@ -117,12 +117,6 @@ const knowledgeNotebookListCursorSchema = z.tuple([
   z.string().min(1),
 ]);
 
-const knowledgeRetrievalCursorSchema = z.tuple([
-  z.literal('knowledge.retrieval'),
-  WorkspaceIdSchema,
-  z.string().min(1),
-]);
-
 function decodeKnowledgeNotebookListCursor(cursor: string | undefined, workspaceId: string) {
   if (cursor === undefined) return undefined;
   try {
@@ -134,20 +128,6 @@ function decodeKnowledgeNotebookListCursor(cursor: string | undefined, workspace
     return { pageId: position[2] };
   } catch {
     throw new OperationError('invalid_request', 'Invalid notebook continuation.', 400);
-  }
-}
-
-function decodeKnowledgeRetrievalCursor(cursor: string | undefined, workspaceId: string) {
-  if (cursor === undefined) return undefined;
-  try {
-    const bytes = Buffer.from(cursor, 'base64url');
-    const position = knowledgeRetrievalCursorSchema.parse(JSON.parse(bytes.toString('utf8')));
-    if (bytes.toString('base64url') !== cursor || position[1] !== workspaceId) {
-      throw new Error('Invalid retrieval continuation.');
-    }
-    return { objectId: position[2] };
-  } catch {
-    throw new OperationError('invalid_request', 'Invalid retrieval continuation.', 400);
   }
 }
 
@@ -1111,7 +1091,7 @@ export function createKnowledgeOperationImplementations(
     },
     'knowledge.retrieval': async (input, context) => {
       const actor = context.actorRef;
-      const { workspaceId, cursor, ...commandInput } = input;
+      const { workspaceId, ...commandInput } = input;
 
       try {
         const dataRoot = store.getDataRoot();
@@ -1124,62 +1104,43 @@ export function createKnowledgeOperationImplementations(
           );
         }
 
-        const position = decodeKnowledgeRetrievalCursor(cursor, workspaceId);
-        const access = {
-          store,
-          coreDb,
-          actor: context.actorRef,
-          requestActor: publicOperationActor(context),
-          outputThreadId: context.queryContext?.threadId,
-          outputTurnId: context.queryContext?.turnId,
-        };
-        const rawResponse = await retrieveWorkspaceKnowledge({
-          dataRoot,
-          workspaceId,
-          caller: 'app-api',
-          query: commandInput.query,
-          limit: position ? 20 : commandInput.limit,
-          pinnedReferences: commandInput.pinnedReferences,
-          types: commandInput.types,
-          appliesTo: commandInput.appliesTo,
-          sourceScope: commandInput.sourceScope,
-          states: commandInput.states,
-          access,
-          traceId: allocateEntityId('krt'),
-          beforeDisclosure: (response) =>
-            recordKnowledgeGatewayUsage({
-              authorityActor: actor,
-              capabilityId: 'knowledge.retrieval',
-              operation: 'knowledge.retrieval',
-              serviceRef: 'knowledge-store',
-              summary: `Knowledge retrieval selected ${response.selected.length} candidates.`,
-              usageSource: 'knowledge-retrieval',
-              workspaceId,
-              ...(coreDb ? { coreDb: coreDb } : {}),
-            }),
-        });
-        const startIndex = position
-          ? (() => {
-              const index = rawResponse.selected.findIndex(
-                (candidate) => candidate.reference.objectId === position.objectId
-              );
-              return index >= 0 ? index + 1 : rawResponse.selected.length;
-            })()
-          : 0;
-        const remaining = rawResponse.selected.slice(startIndex);
-        const selected = remaining.slice(0, commandInput.limit);
-        const last = selected.at(-1);
-        const nextCursor =
-          last && selected.length < remaining.length
-            ? Buffer.from(
-                JSON.stringify(['knowledge.retrieval', workspaceId, last.reference.objectId])
-              ).toString('base64url')
-            : null;
-        return KnowledgeRetrievalResponseSchema.parse({
-          ...rawResponse,
-          selected,
-          ...(cursor !== undefined ? { nextCursor } : {}),
-        });
+        const response = KnowledgeRetrievalResponseSchema.parse(
+          await retrieveWorkspaceKnowledge({
+            dataRoot,
+            workspaceId,
+            caller: 'app-api',
+            query: commandInput.query,
+            limit: commandInput.limit,
+            cursor: commandInput.cursor,
+            pinnedReferences: commandInput.pinnedReferences,
+            types: commandInput.types,
+            appliesTo: commandInput.appliesTo,
+            sourceScope: commandInput.sourceScope,
+            states: commandInput.states,
+            access: {
+              store,
+              coreDb,
+              actor: context.actorRef,
+              requestActor: publicOperationActor(context),
+              outputThreadId: context.queryContext?.threadId,
+              outputTurnId: context.queryContext?.turnId,
+            },
+            traceId: allocateEntityId('krt'),
+            beforeDisclosure: (response) =>
+              recordKnowledgeGatewayUsage({
+                authorityActor: actor,
+                capabilityId: 'knowledge.retrieval',
+                operation: 'knowledge.retrieval',
+                serviceRef: 'knowledge-store',
+                summary: `Knowledge retrieval selected ${response.selected.length} candidates.`,
+                usageSource: 'knowledge-retrieval',
+                workspaceId,
+                ...(coreDb ? { coreDb: coreDb } : {}),
+              }),
+          })
+        );
+
+        return response;
       } catch (error) {
         if (error instanceof OperationError) throw error;
         throw new OperationError('knowledge_retrieval_failed', 'Knowledge retrieval failed.', 500);
