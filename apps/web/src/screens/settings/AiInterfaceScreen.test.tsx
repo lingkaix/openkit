@@ -365,7 +365,7 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe('AI interface deployment-admin workflow', () => {
+describe('Gateway deployment-admin workflow', () => {
   it('shows the returned login code while a subsequent status observation is pending', async () => {
     let finish!: (value: typeof PENDING_ACCOUNT) => void;
     const status = vi
