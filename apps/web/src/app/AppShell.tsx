@@ -69,7 +69,7 @@ function PhoneNav({ drawerOpen, onMore }: { drawerOpen: boolean; onMore: () => v
         <Button
           key={item.label}
           variant="quiet"
-          className="min-h-11 min-w-11 flex-1 px-1"
+          className="min-h-11 min-w-0 flex-1 whitespace-nowrap px-0.5 text-center text-sm"
           aria-current={item.active ? 'page' : undefined}
           onPress={() => navigate(item.path)}
         >
@@ -78,7 +78,7 @@ function PhoneNav({ drawerOpen, onMore }: { drawerOpen: boolean; onMore: () => v
       ))}
       <Button
         variant="quiet"
-        className="min-h-11 min-w-11 flex-1 px-1"
+        className="min-h-11 min-w-0 flex-1 whitespace-nowrap px-0.5 text-center text-sm"
         aria-expanded={drawerOpen}
         onPress={onMore}
       >
@@ -99,8 +99,9 @@ function PhoneNav({ drawerOpen, onMore }: { drawerOpen: boolean; onMore: () => v
  * at once (§4.6). The shell has no minimum viewport: a phone uses the full
  * width, and wide content scrolls inside its own region. Safe-area insets pad
  * the shell. Below 800px the sidebar is gone. Five buttons sit on the bottom:
- * Assistant, Work, Knowledge, Artifacts, and More. More opens the supporting
- * drawer. The bar hides while a composer field is focused.
+ * Assistant, Work, Knowledge, Artifacts, and More. Each label stays on one line
+ * so a 390px bar cannot break a word. More opens the supporting drawer. The bar
+ * hides while a composer field is focused.
  * The global disconnected banner sits above the work area (§9.12). Search lives
  * on the sidebar brand row, not as a pinned main-view strip.
  */

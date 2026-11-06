@@ -2,6 +2,7 @@ import { ApiCallError } from '@openkit/core-client';
 import { useMutationState } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { usePersistentNavigation } from '../../app/AppShell';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
@@ -275,7 +276,12 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const feedback = useTurnFeedback(workspaceId ?? '', threadId, feedbackTurn?.id ?? null);
   const submitFeedback = useSubmitTurnFeedback();
   const { failed: disconnected } = useConnection();
-  const [showRail, setShowRail] = useState(mode === 'chat');
+  const persistentNav = usePersistentNavigation();
+  // Below 800px the rail is an overlay. Opening it on entry covers the composer.
+  const [showRail, setShowRail] = useState(mode === 'chat' && persistentNav);
+  useEffect(() => {
+    if (!persistentNav) setShowRail(false);
+  }, [persistentNav]);
   const railToggle = useRef<HTMLButtonElement>(null);
 
   const title = thread.data?.name ?? thread.data?.preview ?? (mode === 'task' ? 'Task' : 'Chat');

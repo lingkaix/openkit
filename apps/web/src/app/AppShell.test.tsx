@@ -149,6 +149,9 @@ describe('AppShell navigation breakpoints (DESIGN.md §3.4 / §12)', () => {
     expect(destinations[2]).toHaveAccessibleName('Knowledge');
     expect(destinations[3]).toHaveAccessibleName('Artifacts');
     expect(destinations[4]).toHaveAccessibleName('More');
+    for (const destination of destinations) {
+      expect(destination.className).toContain('whitespace-nowrap');
+    }
     expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
 
     await user.click(destinations[4]!);
