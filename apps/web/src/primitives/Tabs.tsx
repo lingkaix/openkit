@@ -12,8 +12,8 @@ import {
 export interface TabItem {
   /** Stable selection identity shared by the tab and panel. */
   id: string;
-  /** Visible tab label. */
-  label: string;
+  /** Visible tab label. A node may include a count beside the word. */
+  label: ReactNode;
   /** Content shown while the tab is selected. */
   content: ReactNode;
 }

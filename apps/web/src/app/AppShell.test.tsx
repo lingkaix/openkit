@@ -146,8 +146,8 @@ describe('AppShell navigation breakpoints (DESIGN.md §3.4 / §12)', () => {
     expect(destinations).toHaveLength(5);
     expect(destinations[0]).toHaveAccessibleName('Assistant');
     expect(destinations[1]).toHaveAccessibleName('Work');
-    expect(destinations[2]).toHaveAccessibleName(/^Needs you/);
-    expect(destinations[3]).toHaveAccessibleName('Knowledge');
+    expect(destinations[2]).toHaveAccessibleName('Knowledge');
+    expect(destinations[3]).toHaveAccessibleName('Artifacts');
     expect(destinations[4]).toHaveAccessibleName('More');
     expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
 

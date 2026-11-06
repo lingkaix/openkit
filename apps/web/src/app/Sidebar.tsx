@@ -19,7 +19,7 @@ import { AssistantEntry } from './AssistantEntry';
 import { ConversationGoalGroups, type ConversationRow } from './ConversationGoalGroups';
 import { useCoreClient } from './core-client';
 import { NewGoalDialog, NewTaskDialog } from './StartWorkDialogs';
-import { type NavGroup, SURFACES, type Surface, surfacesInGroup } from './surfaces';
+import { type NavGroup, type Surface, surfacesInGroup } from './surfaces';
 
 /** Static wordmark for the brand row (DESIGN.md §8.2). Height matches the Search control. */
 function BrandMark() {
@@ -323,7 +323,7 @@ export interface SidebarProps {
  * Left sidebar — navigation and persistent context (DESIGN.md §3.1).
  *
  * Desktop keeps Assistant, Tasks, Goals, Knowledge, Artifacts, and Action Center.
- * The phone More drawer lists Artifacts and the supporting screens.
+ * The phone More drawer lists Action Center and the supporting screens.
  * Theme selection is NOT here — it lives in Settings → Appearance (§4.5).
  * Identity lives inside Settings, not a stacked user row (D-002).
  */
@@ -339,7 +339,6 @@ export function Sidebar({ onClose, variant = 'sidebar' }: SidebarProps = {}) {
   const attention = useHumanAttention(inSettings ? null : workspaceId);
   const go = (path: string) => navigate(path);
   const compactSurfaces = surfacesInGroup('workspace-compact', workspace?.kind);
-  const artifacts = SURFACES.find((surface) => surface.id === 'artifacts');
 
   function switchWorkspace(nextWorkspaceId: string) {
     if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
@@ -354,12 +353,15 @@ export function Sidebar({ onClose, variant = 'sidebar' }: SidebarProps = {}) {
   const moreDestinations =
     variant === 'more' && !inSettings ? (
       <>
-        {artifacts ? (
+        {workspace ? (
           <NavRow
-            icon={artifacts.icon}
-            label={artifacts.title}
-            active={isActive(artifacts, pathname)}
-            onPress={() => go(artifacts.path)}
+            icon="home"
+            label="Action Center"
+            active={pathname === '/attention' || pathname.startsWith('/attention/')}
+            trailing={
+              <CountBadge count={attention.data?.length ?? 0} label="need you" tone="notice" />
+            }
+            onPress={() => go('/attention')}
           />
         ) : null}
         {compactSurfaces.map((surface) => (

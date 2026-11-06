@@ -27,7 +27,11 @@ test('opens one thread, Gateway, and Knowledge at 360 by 800', async ({ page }) 
   await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
   await sections.getByRole('button', { name: 'Work', exact: true }).click();
   await expect(page.getByRole('tab', { name: 'Tasks', exact: true })).toBeVisible();
-  await sections.getByRole('button', { name: /^Needs you/ }).click();
+  await sections.getByRole('button', { name: 'More', exact: true }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: /^Action Center/ })
+    .click();
   await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
   await sections.getByRole('button', { name: 'Knowledge', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Knowledge', exact: true })).toBeVisible();

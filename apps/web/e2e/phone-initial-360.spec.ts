@@ -92,7 +92,7 @@ test('opens navigation, Knowledge, Gateway, and the private Assistant at 360', a
     await page.getByRole('tab', { name: 'Goals', exact: true }).click();
     await expect(page.getByRole('button', { name: 'New Goal', exact: true })).toBeVisible();
     await selectWorkspace(page, personal!.name);
-    await sections.getByRole('button', { name: 'Needs you', exact: true }).click();
+    await sections.getByRole('button', { name: 'Assistant', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Action Center', exact: true })).toBeVisible();
     await expect(
       page.getByRole('button', { name: 'Personal Assistant', exact: true })

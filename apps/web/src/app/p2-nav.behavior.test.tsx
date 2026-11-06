@@ -407,7 +407,7 @@ describe('P2 phone navigation', () => {
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
   });
 
-  it('shows exactly Assistant, Work, Needs you, Knowledge, and More below 800px', async () => {
+  it('shows exactly Assistant, Work, Knowledge, Artifacts, and More below 800px', async () => {
     const user = userEvent.setup();
     setViewportWidth(360);
     const client = makeClient({
@@ -415,25 +415,27 @@ describe('P2 phone navigation', () => {
     });
     renderAt('/attention', client);
 
-    const navigation = await screen.findByRole('navigation');
+    const navigation = await screen.findByRole('navigation', { name: 'Sections' });
     const buttons = within(navigation).getAllByRole('button');
     expect(buttons).toHaveLength(5);
     expect(buttons[0]).toHaveAccessibleName('Assistant');
     expect(buttons[1]).toHaveAccessibleName('Work');
-    expect(buttons[2]).toHaveAccessibleName(/^Needs you/);
-    expect(buttons[3]).toHaveAccessibleName('Knowledge');
+    expect(buttons[2]).toHaveAccessibleName('Knowledge');
+    expect(buttons[3]).toHaveAccessibleName('Artifacts');
     expect(buttons[4]).toHaveAccessibleName('More');
 
-    expect(within(navigation).queryByRole('button', { name: 'Artifacts' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Artifacts' })).not.toBeInTheDocument();
+    expect(
+      within(navigation).queryByRole('button', { name: /^Needs you/ })
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Navigation' })).not.toBeInTheDocument();
 
     await user.click(buttons[4]!);
     const drawer = await screen.findByRole('dialog');
-    expect(within(drawer).getByRole('button', { name: 'Artifacts' })).toBeVisible();
+    expect(within(drawer).getByRole('button', { name: /^Action Center/ })).toBeVisible();
+    expect(within(drawer).queryByRole('button', { name: 'Artifacts' })).not.toBeInTheDocument();
   });
 
-  it('shows the attention count on Needs you when a decision is waiting', async () => {
+  it('shows the attention count on the Tasks segment when a decision is waiting', async () => {
     setViewportWidth(360);
     const client = makeClient({
       attention: [
@@ -441,11 +443,10 @@ describe('P2 phone navigation', () => {
         attentionRow('q2', 'Pick the export scope', 'th_019a0000-0000-7000-8000-000000000171'),
       ],
     });
-    renderAt('/attention', client);
+    renderAt('/work', client);
 
-    const navigation = await screen.findByRole('navigation');
-    const needsYou = within(navigation).getByRole('button', { name: /^Needs you/ });
-    expect(await within(needsYou).findByText('2')).toBeInTheDocument();
+    const tasks = await screen.findByRole('tab', { name: /^Tasks/ });
+    expect(await within(tasks).findByText('2')).toBeInTheDocument();
   });
 
   it('keeps the desktop sidebar destinations and drops the bottom row at 800px', async () => {

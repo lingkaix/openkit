@@ -195,7 +195,7 @@ test('keeps Settings and Chat usable at 600 and 742 without page overflow', asyn
   await page.setViewportSize({ width: 360, height: 640 });
   await expect(phoneDestinations).toHaveCount(5);
   await expect(page.getByRole('button', { name: 'Assistant', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Needs you/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Artifacts', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Navigation' })).toHaveCount(0);
   overflow = await pageOverflow(page);
   expect(overflow.viewportWidth).toBeLessThanOrEqual(360);

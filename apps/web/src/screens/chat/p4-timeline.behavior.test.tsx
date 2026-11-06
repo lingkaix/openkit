@@ -503,9 +503,11 @@ async function expectLiveApproval(surface: 'desktop' | 'phone', scroll: ReturnTy
     return;
   }
 
-  const navigation = screen.getByRole('navigation');
-  const needsYouButton = within(navigation).getByRole('button', { name: /^Needs you/ });
-  await waitFor(() => expect(within(needsYouButton).getByText('1')).toBeInTheDocument(), {
+  const navigation = screen.getByRole('navigation', { name: 'Sections' });
+  const user = userEvent.setup();
+  await user.click(within(navigation).getByRole('button', { name: 'Work' }));
+  const tasks = await screen.findByRole('tab', { name: /^Tasks/ });
+  await waitFor(() => expect(within(tasks).getByText('1')).toBeInTheDocument(), {
     timeout: 8_000,
   });
 }
