@@ -1,5 +1,13 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -17,7 +25,7 @@ import {
   WorkerRuntimeNativeOriginIndexEntrySchema,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { loadRuntimeConfig } from '../config/runtime-config.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
@@ -47,7 +55,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   recordAgentEnvironmentPackageSnapshot,
@@ -81,6 +89,46 @@ import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
  * @param options Native terminal fault and publication-order interventions.
  * @returns Original admitted package, released attempt, retained products and cleanup.
  */
+
+const recoveryWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+
+interface PreparedRecoveryBase {
+  dataRoot: string;
+}
+
+let preparedRecoveryBase: PreparedRecoveryBase | undefined;
+let preparedRecoveryRoot: string | undefined;
+
+beforeAll(async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-recovery-base-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  await createDemoStore({ dataRoot });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: recoveryWorkspaceId,
+  });
+  const workspaceDb = openWorkspaceDb(dataRoot, recoveryWorkspaceId);
+  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  await recordTestNativeRuntimeTarget(coreDb);
+  admitTestNativeEnvironment(
+    coreDb,
+    createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] }).manifest
+  );
+  await shutdownControlStoreWorkerClient();
+  workspaceDb.sqlite.close();
+  coreDb.sqlite.close();
+  closeWorkspaceProductReadHandles(dataRoot);
+  preparedRecoveryRoot = dataRoot;
+  preparedRecoveryBase = { dataRoot };
+}, 60_000);
+
+afterAll(() => {
+  if (preparedRecoveryRoot) rmSync(preparedRecoveryRoot, { recursive: true, force: true });
+});
+
 async function createCheckpointCloseoutFixture(
   outcome: 'failed' | 'completed' | 'interrupted',
   retained = true,
@@ -91,21 +139,33 @@ async function createCheckpointCloseoutFixture(
   } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-checkpoint-closeout-'));
+  const workspaceId = recoveryWorkspaceId;
+  if (preparedRecoveryBase) cpSync(preparedRecoveryBase.dataRoot, dataRoot, { recursive: true });
   const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  ensureLocalUser(coreDb);
-  const store = await createDemoStore({ dataRoot });
-  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    workspaceId,
-  });
-  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-  await recordTestNativeRuntimeTarget(coreDb);
+  let store: ReturnType<typeof createTestStore>;
+  let workspaceDb: WorkspaceDb;
+  if (preparedRecoveryBase) {
+    store = createTestStore({ dataRoot });
+    workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    await openTestNativeWorkspace(workspaceDb);
+  } else {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId,
+    });
+    workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    await recordTestNativeRuntimeTarget(coreDb);
+    admitTestNativeEnvironment(
+      coreDb,
+      createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] }).manifest
+    );
+  }
   const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
-  admitTestNativeEnvironment(coreDb, setup.manifest);
   const requestId = options.requestId ?? '00000000-0000-4000-8000-000000000501';
   const input = 'Recover exact worker closeout';
   const turnId = allocateEntityId('tu');
