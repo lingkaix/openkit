@@ -57,7 +57,7 @@ import {
 } from './retained-work-events-v1.js';
 import { StoredItemPayloadV1Schema, StoredItemV1Schema } from './retained-work-items-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
-import { assertServerTurnEventLineage } from './server-thread-records.js';
+import { assertServerTurnEventLineage } from './server-turn-event-lineage.js';
 import {
   assertImmutableItemAttribution,
   assertTurnEventPayloadLineage,

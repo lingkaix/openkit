@@ -243,10 +243,10 @@ import {
 import { StoredItemPayloadV1Schema } from '../storage/retained-work-items-v1.js';
 import {
   assertServerItemRevision,
-  assertServerTurnEventLineage,
   loadServerThreadRecords,
   readServerTurnEvents,
 } from '../storage/server-thread-records.js';
+import { assertServerTurnEventLineage } from '../storage/server-turn-event-lineage.js';
 import {
   AgentSessionRecordSchema,
   artifactReferenceItemId,

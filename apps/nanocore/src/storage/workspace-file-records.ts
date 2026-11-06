@@ -176,7 +176,7 @@ import {
   StoredTurnV1Schema,
   StoredWorkspaceV1Schema,
 } from './retained-work-metadata-v1.js';
-import { assertServerTurnEventLineage } from './server-thread-records.js';
+import { assertServerTurnEventLineage } from './server-turn-event-lineage.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type KnowledgeNotebookPage = import('zod').infer<typeof KnowledgeNotebookPageSchema>;
