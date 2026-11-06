@@ -5159,66 +5159,50 @@ describe('W4 round-six admitted catalog', () => {
       'catalog-first'
     );
     expect(f.calls.filter((call) => call === 'session.switchModel')).toHaveLength(2);
+    // The selected native model is the wire model. No rewrite sits between them.
+    expect(primary(f.inference, 'catalog-second').body.model).toBe(f.b.model);
   }, 60000);
 
-  it('r6: independently proves native selected model without a wire rewrite', async () => {
+  it('r6: refuses every pre-prompt catalog fault before native work', async () => {
     const f = await fixture();
-    await complete(f.session, f.input('native-first'));
-    const handle = await f.session.nativeHandle();
-    if (handle.state !== 'ready') throw new Error('missing ready handle');
-    const id = Buffer.from(handle.reference).toString().slice(3);
-    expect((await f.native().session.get({ sessionID: id })).model).toMatchObject({
-      id: f.a.model,
-      providerID: OPENCODE_PROVIDER_ID,
-    });
-    await complete(f.session, f.input('native-second', f.b));
-    expect((await f.native().session.get({ sessionID: id })).model).toMatchObject({
-      id: f.b.model,
-      providerID: OPENCODE_PROVIDER_ID,
-    });
-    expect(requestTexts(primary(f.inference, 'native-second')).join(' ')).toContain('native-first');
-    expect(primary(f.inference, 'native-second').body.model).toBe(f.b.model);
-    expect(await f.session.nativeHandle()).toEqual(handle);
-  }, 60000);
-
-  it('r6: refuses an unsupported non-preferred member before native work', async () => {
-    const f = await fixture();
-    const count = f.calls.length;
-    await expect(
-      f.session.startTurn(f.input('unsupported', f.a, [f.a, directRoute()]))
-    ).rejects.toThrow(/route/);
-    expect(f.calls.length).toBe(count);
-    expect(f.inference.requests).toHaveLength(0);
-  }, 30000);
-
-  it('r6: refuses a credential in a non-preferred catalog member before native work', async () => {
-    const f = await fixture();
-    const count = f.calls.length;
-    await expect(
-      f.session.startTurn(
-        f.input('secret-member', f.a, [f.a, { ...f.b, model: f.creds.inferenceCredential }])
-      )
-    ).rejects.toThrow(/credential/);
-    expect(f.calls.length).toBe(count);
-    expect(f.inference.requests).toHaveLength(0);
-  }, 30000);
-
-  it('r6: refuses a preferred route outside the exact set before native work', async () => {
-    const f = await fixture();
-    const count = f.calls.length;
-    await expect(f.session.startTurn(f.input('outside', f.b, [f.a]))).rejects.toThrow(
-      /preferred.*admitted/
-    );
-    expect(f.calls.length).toBe(count);
-  }, 30000);
-
-  it('r6: refuses duplicate native model identities before native work', async () => {
-    const f = await fixture();
-    const count = f.calls.length;
-    await expect(
-      f.session.startTurn(f.input('duplicate', f.a, [f.a, { ...f.a, id: 'other' }]))
-    ).rejects.toThrow(/duplicate/);
-    expect(f.calls.length).toBe(count);
+    const faults: Array<{
+      label: string;
+      input: ReturnType<typeof f.input>;
+      pattern: RegExp;
+      requests: boolean;
+    }> = [
+      {
+        label: 'unsupported non-preferred member',
+        input: f.input('unsupported', f.a, [f.a, directRoute()]),
+        pattern: /route/,
+        requests: true,
+      },
+      {
+        label: 'credential in a non-preferred catalog member',
+        input: f.input('secret-member', f.a, [f.a, { ...f.b, model: f.creds.inferenceCredential }]),
+        pattern: /credential/,
+        requests: true,
+      },
+      {
+        label: 'preferred route outside the exact set',
+        input: f.input('outside', f.b, [f.a]),
+        pattern: /preferred.*admitted/,
+        requests: false,
+      },
+      {
+        label: 'duplicate native model identities',
+        input: f.input('duplicate', f.a, [f.a, { ...f.a, id: 'other' }]),
+        pattern: /duplicate/,
+        requests: false,
+      },
+    ];
+    for (const fault of faults) {
+      const count = f.calls.length;
+      const requests = f.inference.requests.length;
+      await expect(f.session.startTurn(fault.input), fault.label).rejects.toThrow(fault.pattern);
+      expect(f.calls.length, fault.label).toBe(count);
+      if (fault.requests) expect(f.inference.requests, fault.label).toHaveLength(requests);
+    }
   }, 30000);
 
   for (const failure of ['catalog', 'selection'] as const)
@@ -5464,26 +5448,31 @@ describe('W4 round-seven collection proof', () => {
       }).toEqual({ status: 'failed', text: null, child: 'absent' });
     }, 60000);
 
-  for (const cursor of [
-    {},
-    { next: null },
-    { next: undefined, extra: { next: 7 } },
-    { next: null, previous: null, extra: 'safe' },
-  ])
-    it(`r7: accepts valid additive cursor ${JSON.stringify(cursor)}`, async () => {
-      const layout = makeRoots();
-      const inference = await startSyntheticInference(() => ({ text: 'native-final' }));
-      servers.push(inference);
-      const creds = loopback('valid-envelope', inference.url);
-      const adapter = createOpenCodeAdapter({
-        loadClient: () => transformingModule({ messages: (response) => ({ ...response, cursor }) }),
-      });
-      const session = await adapter.openSession(openInput(layout, creds));
-      sessions.push(session);
-      const result = await complete(session, turnInput(layout, creds, 'valid', 'model'));
-      expect(result.assistantText).toBe('native-final');
-      expect(session.childState()).toBe('running');
-    }, 60000);
+  it('r7: accepts every valid additive cursor', async () => {
+    const cursors = [
+      {},
+      { next: null },
+      { next: undefined, extra: { next: 7 } },
+      { next: null, previous: null, extra: 'safe' },
+    ];
+    const layout = makeRoots();
+    const inference = await startSyntheticInference(() => ({ text: 'native-final' }));
+    servers.push(inference);
+    const creds = loopback('valid-envelope', inference.url);
+    let cursor: (typeof cursors)[number] = cursors[0]!;
+    const adapter = createOpenCodeAdapter({
+      loadClient: () => transformingModule({ messages: (response) => ({ ...response, cursor }) }),
+    });
+    const session = await adapter.openSession(openInput(layout, creds));
+    sessions.push(session);
+    for (const next of cursors) {
+      cursor = next;
+      const label = JSON.stringify(next);
+      const result = await complete(session, turnInput(layout, creds, `valid-${label}`, 'model'));
+      expect(result.assistantText, label).toBe('native-final');
+      expect(session.childState(), label).toBe('running');
+    }
+  }, 60000);
 
   it('r7: rejects exceptional settlement when malformed collection cannot prove stop', async () => {
     const layout = makeRoots();
