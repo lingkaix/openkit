@@ -1,13 +1,16 @@
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
 import { allocateEntityId, formatReferenceUri, KnowledgeOwnerScopeSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { stringify } from 'yaml';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
+  isActiveOpenKitKnowledgePage,
   knowledgeReferenceErrors,
+  OPENKIT_KNOWLEDGE_PROFILE_VERSION,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
@@ -978,3 +981,449 @@ describe('direct human page bytes at the scoped profile boundary', () => {
     ).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
   });
 });
+
+const workspaceId = allocateEntityId('ws');
+const owner: KnowledgeOwnerScope = { kind: 'workspace', workspaceId };
+const subjectUri = formatReferenceUri({
+  scopeId: `page/workspace/${workspaceId}/${allocateEntityId('kb')}`,
+  objectId: 'facts/release',
+});
+
+/** Build canonical input bytes independently from the validator under test. */
+function page(type: 'Claim' | 'Observation', fields: Record<string, unknown> = {}): string {
+  const frontmatter = {
+    type,
+    title: 'Reusable release understanding',
+    schema_version: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
+    requiredFeatures: [...REQUIRED_SCOPED_KNOWLEDGE_FEATURES],
+    scope: owner,
+    openkit_status: type === 'Observation' ? 'draft' : 'active',
+    status: type === 'Observation' ? 'draft' : 'stable',
+    source_refs: [],
+    review_state: type === 'Observation' ? 'unreviewed' : 'user-authored',
+    sensitivity: 'normal',
+    freshness: 'current',
+    created_at: '2026-10-18T00:00:00Z',
+    updated_at: '2026-10-18T00:00:00Z',
+    ...fields,
+  };
+  const defined = Object.fromEntries(
+    Object.entries(frontmatter).filter(([, value]) => value !== undefined)
+  );
+  return `---\n${stringify(defined)}---\nThe release cadence is fortnightly.\n`;
+}
+
+/** Exercise the public governed-page boundary, with no source or permission substitute. */
+function validate(content: string) {
+  return validateKnowledgePageCandidate({
+    path: 'facts/release.md',
+    content,
+    expectedOwnerScope: owner,
+    scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+    registeredSources: new Map(),
+    knowledgeIds: new Set(),
+  });
+}
+
+describe('governed Claim and reusable Observation fields', () => {
+  it.each([
+    0, 0.75, 1,
+  ])('preserves numeric Claim confidence %s and descriptive extensions', (confidence) => {
+    const content = page('Claim', {
+      confidence,
+      custom_annotation: { confidence: 'not an assessment', retained: true },
+    });
+    expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    const parsed = parseOkfDocument({ path: 'facts/release.md', content });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('The canonical fixture must parse.');
+    expect(parsed.document.frontmatter.confidence).toBe(confidence);
+    expect(parsed.document.frontmatter.custom_annotation).toEqual({
+      confidence: 'not an assessment',
+      retained: true,
+    });
+  });
+
+  it.each([
+    undefined,
+    null,
+    '0.75',
+    -0.01,
+    1.01,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('refuses missing or invalid Claim confidence %s', (confidence) => {
+    const report = validate(page('Claim', { confidence }));
+    expect(report.errors).toContainEqual(expect.objectContaining({ field: 'confidence' }));
+  });
+
+  it.each([
+    'unresolved',
+    'resolved',
+  ])('retains only conflict-specific Claim state %s', (conflict_status) => {
+    expect(validate(page('Claim', { confidence: 0.75, conflict_status }))).toMatchObject({
+      conformance: 'scope-schema-valid',
+      errors: [],
+    });
+  });
+
+  it.each([
+    'none',
+    'conflicting',
+    'weak_evidence',
+    'stale',
+    'needs_review',
+    'superseded',
+    'partially_superseded',
+    'unrecognized',
+  ])('refuses overloaded or unsupported conflict state %s', (conflict_status) => {
+    for (const type of ['Claim', 'Observation'] as const) {
+      const report = validate(
+        page(type, { confidence: 0.75, conflict_status, subject_refs: [subjectUri] })
+      );
+      expect(report.errors).toContainEqual(expect.objectContaining({ field: 'conflict_status' }));
+    }
+  });
+
+  it('keeps freshness, Review, lifecycle and confidence independent from actual conflicts', () => {
+    const content = page('Claim', {
+      confidence: 0.1,
+      freshness: 'stale',
+      review_state: 'needs-review',
+      openkit_status: 'superseded',
+      status: 'deprecated',
+    });
+    expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    const parsed = parseOkfDocument({ path: 'facts/release.md', content });
+    if (!parsed.ok) throw new Error('The canonical fixture must parse.');
+    expect(parsed.document.frontmatter).not.toHaveProperty('conflict_status');
+    expect(parsed.document.frontmatter).toMatchObject({
+      confidence: 0.1,
+      freshness: 'stale',
+      review_state: 'needs-review',
+      openkit_status: 'superseded',
+    });
+  });
+
+  it('keeps a reusable Observation non-active without inventing confidence or conflict state', () => {
+    const content = page('Observation');
+    expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    const parsed = parseOkfDocument({ path: 'facts/release.md', content });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('The canonical fixture must parse.');
+    expect(parsed.document.frontmatter.openkit_status).toBe('draft');
+    expect(parsed.document.frontmatter).not.toHaveProperty('confidence');
+    expect(parsed.document.frontmatter).not.toHaveProperty('conflict_status');
+  });
+
+  it('keeps subject-bound review and freshness without inventing an actual conflict', () => {
+    const content = page('Observation', {
+      subject_refs: [subjectUri],
+      review_state: 'needs-review',
+      freshness: 'stale',
+    });
+    expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    const parsed = parseOkfDocument({ path: 'facts/release.md', content });
+    if (!parsed.ok) throw new Error('The canonical fixture must parse.');
+    expect(parsed.document.frontmatter).not.toHaveProperty('conflict_status');
+    expect(parsed.document.frontmatter.subject_refs).toEqual([subjectUri]);
+  });
+
+  it('does not assign core assessment meaning to an Observation confidence annotation', () => {
+    expect(validate(page('Observation', { confidence: 'author annotation' }))).toMatchObject({
+      conformance: 'scope-schema-valid',
+      errors: [],
+    });
+  });
+
+  it.each(
+    [undefined, [], [{}]].map((value) => [value])
+  )('requires structured conflict subjects %j', (subject_refs) => {
+    const report = validate(page('Observation', { conflict_status: 'unresolved', subject_refs }));
+    expect(report.errors).toContainEqual(expect.objectContaining({ field: 'subject_refs' }));
+  });
+
+  it('retains a canonical conflict subject separately from supporting source evidence', () => {
+    const content = page('Observation', {
+      conflict_status: 'unresolved',
+      subject_refs: [subjectUri],
+    });
+    expect(validate(content)).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    const parsed = parseOkfDocument({ path: 'facts/release.md', content });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('The canonical fixture must parse.');
+    expect(parsed.document.frontmatter.subject_refs).toEqual([subjectUri]);
+    expect(parsed.document.frontmatter.source_refs).toEqual([]);
+  });
+
+  it('refuses a plain string in place of an owner-qualified subject URI', () => {
+    const report = validate(
+      page('Observation', {
+        conflict_status: 'unresolved',
+        subject_refs: ['not-an-owner-reference'],
+      })
+    );
+    expect(report.errors).toContainEqual(expect.objectContaining({ field: 'subject_refs' }));
+  });
+
+  it('refuses an unknown Observation conflict state', () => {
+    const report = validate(
+      page('Observation', { conflict_status: 'unrecognized', subject_refs: [] })
+    );
+    expect(report.errors).toContainEqual(expect.objectContaining({ field: 'conflict_status' }));
+  });
+});
+
+function registerOkfScopedProfileTests() {
+  const features = ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-git-notebook.v1'];
+  const workspace = KnowledgeOwnerScopeSchema.options[1].parse({
+    kind: 'workspace',
+    workspaceId: allocateEntityId('ws'),
+  });
+  const user = KnowledgeOwnerScopeSchema.options[0].parse({
+    kind: 'user',
+    userId: allocateEntityId('usr'),
+  });
+
+  function page(fields: Record<string, unknown> = {}) {
+    const frontmatter = {
+      type: 'KnowledgePage',
+      title: 'Scoped understanding',
+      schema_version: 'openkit-scope-knowledge-schema-v4',
+      openkit_status: 'active',
+      scope: workspace,
+      requiredFeatures: features,
+      source_refs: [],
+      review_state: 'delegated',
+      sensitivity: 'normal',
+      freshness: 'current',
+      created_at: '2026-10-16T00:00:00Z',
+      updated_at: '2026-10-16T00:00:00Z',
+      ...fields,
+    };
+    return [
+      '---',
+      ...Object.entries(frontmatter)
+        .filter(([, value]) => value !== undefined)
+        .map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
+      '---',
+      'Exact body.\n',
+    ].join('\n');
+  }
+
+  function parsedPage(fields: Record<string, unknown> = {}) {
+    const parsed = parseOkfDocument({ path: 'pages/scoped.md', content: page(fields) });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('Fixture must be valid generic OKF.');
+    return parsed.document;
+  }
+
+  describe('OpenKit scoped profile v4', () => {
+    it('names the accepted profile and default scope schema versions', () => {
+      expect(OPENKIT_KNOWLEDGE_PROFILE_VERSION).toBe('openkit-knowledge-profile-v4');
+      expect(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION).toBe('openkit-scope-knowledge-schema-v4');
+    });
+
+    // Generated scope IDs are inputs; collected case names must agree across separate processes.
+    it.each([user, workspace, { kind: 'server' }])('accepts complete owner (case %#)', (scope) => {
+      expect(validateOpenKitKnowledgeProfile(parsedPage({ scope }))).toMatchObject({
+        conformance: 'OpenKit-profile-valid',
+        errors: [],
+      });
+    });
+
+    it.each(
+      [
+        'workspace',
+        null,
+        [],
+        { kind: 'other' },
+        { kind: 'user' },
+        { kind: 'user', userId: '' },
+        { kind: 'user', userId: 1 },
+        { kind: 'workspace' },
+        { kind: 'workspace', workspaceId: '' },
+        { kind: 'workspace', workspaceId: 1 },
+        { kind: 'server', userId: user.userId },
+        { ...workspace, userId: user.userId },
+      ].map((value) => [value])
+    )('rejects an incomplete or contradictory owner (case %#)', (scope) => {
+      expect(validateOpenKitKnowledgeProfile(parsedPage({ scope })).errors).toContainEqual(
+        expect.objectContaining({ code: 'profile.invalid_scope', field: 'scope' })
+      );
+    });
+
+    it.each(
+      [undefined, null, 'openkit.knowledge-owner-scope.v1', [1]].map((value) => [value])
+    )('rejects missing or malformed required features %j', (requiredFeatures) => {
+      expect(
+        validateOpenKitKnowledgeProfile(parsedPage({ requiredFeatures })).errors
+      ).toContainEqual(expect.objectContaining({ field: 'requiredFeatures' }));
+    });
+
+    it.each(
+      [[], [features[0]], [features[1]]].map((value) => [value])
+    )('rejects an omitted v4 semantic %j', (requiredFeatures) => {
+      expect(
+        validateOpenKitKnowledgeProfile(parsedPage({ requiredFeatures })).errors
+      ).toContainEqual(
+        expect.objectContaining({
+          code: 'profile.missing_required_feature',
+          field: 'requiredFeatures',
+        })
+      );
+    });
+
+    it('refuses unknown required semantics without rejecting the external OKF envelope', () => {
+      const document = parsedPage({ requiredFeatures: [...features, 'openkit.future.v1'] });
+      expect(validateOpenKitKnowledgeProfile(document)).toMatchObject({
+        conformance: 'OKF-compatible',
+        errors: [expect.objectContaining({ code: 'profile.unsupported_required_feature' })],
+      });
+    });
+
+    it.each([
+      { owner_scope: workspace },
+      { openkit_revision: 1 },
+      { openkit_revision: '1' },
+    ])('refuses a second owner or page counter (case %#)', (fields) => {
+      expect(validateOpenKitKnowledgeProfile(parsedPage(fields)).errors).toContainEqual(
+        expect.objectContaining({ code: 'profile.obsolete_authority_field' })
+      );
+    });
+
+    it('retains unknown additive metadata through a governed edit', () => {
+      const extension = { nested: [{ label: 'annotation', count: 3 }] };
+      const content = page({ extension });
+      const edited = updateOkfFrontmatter({
+        path: 'pages/scoped.md',
+        content,
+        updates: { title: 'Edited' },
+      });
+      const parsed = parseOkfDocument({ path: 'pages/scoped.md', content: edited });
+      expect(parsed.ok).toBe(true);
+      expect(parsed.document?.body).toBe('Exact body.\n');
+      expect(parsed.document?.frontmatter.extension).toEqual(extension);
+      if (!parsed.ok) return;
+      expect(validateOpenKitKnowledgeProfile(parsed.document).errors).toEqual([]);
+    });
+
+    it('validates delegated pages under the default v4 scope schema', () => {
+      const document = parsedPage();
+      expect(validateScopeKnowledgeSchema(document, undefined, workspace)).toMatchObject({
+        conformance: 'scope-schema-valid',
+        scopeSchemaVersion: 'openkit-scope-knowledge-schema-v4',
+        errors: [],
+      });
+      expect(isActiveOpenKitKnowledgePage(document, undefined, workspace)).toBe(true);
+    });
+
+    it.each([
+      [workspace, user],
+      [workspace, { kind: 'server' }],
+      [user, { ...user, userId: allocateEntityId('usr') }],
+      [workspace, { ...workspace, workspaceId: allocateEntityId('ws') }],
+      [{ kind: 'server' }, user],
+    ])('refuses a valid page owned by another admitted notebook (case %#)', (scope, expectedOwnerScope) => {
+      const document = parsedPage({ scope });
+      const expected = KnowledgeOwnerScopeSchema.parse(expectedOwnerScope);
+      expect(validateScopeKnowledgeSchema(document, undefined, expected)).toMatchObject({
+        conformance: 'OKF-compatible',
+        errors: [expect.objectContaining({ code: 'profile.scope_mismatch', field: 'scope' })],
+      });
+      expect(isActiveOpenKitKnowledgePage(document, undefined, expected)).toBe(false);
+      expect(
+        validateKnowledgePageCandidate({
+          path: 'pages/scoped.md',
+          content: page({ scope }),
+          expectedOwnerScope: expected,
+          registeredSources: new Map(),
+          knowledgeIds: new Set(),
+        }).errors
+      ).toContainEqual(expect.objectContaining({ code: 'profile.scope_mismatch' }));
+    });
+
+    it('compares normalized owner values independent of YAML key order', () => {
+      expect(
+        validateKnowledgePageCandidate({
+          path: 'pages/scoped.md',
+          content: page({ scope: { workspaceId: workspace.workspaceId, kind: 'workspace' } }),
+          scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+          expectedOwnerScope: workspace,
+          registeredSources: new Map(),
+          knowledgeIds: new Set(),
+        })
+      ).toMatchObject({ conformance: 'scope-schema-valid', errors: [] });
+    });
+
+    it('does not admit old page/schema bytes through a v2 fallback', () => {
+      const document = parsedPage({ schema_version: 'openkit-workspace-knowledge-schema-v2' });
+      expect(validateScopeKnowledgeSchema(document)).toMatchObject({
+        conformance: 'OpenKit-profile-valid',
+        errors: [expect.objectContaining({ code: 'scope_schema.version_mismatch' })],
+      });
+      expect(
+        validateOpenKitKnowledgeProfile(
+          parsedPage({ scope: 'workspace', requiredFeatures: undefined })
+        ).conformance
+      ).toBe('OKF-compatible');
+    });
+
+    it.each(
+      [['openkit.future.v1'], ['openkit.knowledge-owner-scope.v2'], [1], 'invalid'].map((value) => [
+        value,
+      ])
+    )('refuses unsupported schema semantics %j', (requiredFeatures) => {
+      const schema = parseScopeKnowledgeSchema(
+        `${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT}requiredFeatures: ${JSON.stringify(requiredFeatures)}\n`
+      );
+      expect(schema.ok).toBe(false);
+      expect(schema.errors).toContainEqual(expect.objectContaining({ field: 'requiredFeatures' }));
+    });
+
+    it('retains permissive external import for a minimal unknown type', () => {
+      const parsed = parseOkfDocument({
+        path: 'pages/external.md',
+        content: '---\ntype: External Concept\nannotation: {nested: [1, true]}\n---\nBody',
+      });
+      expect(parsed.ok).toBe(true);
+      expect(parsed.document?.frontmatter.annotation).toEqual({ nested: [1, true] });
+      if (!parsed.ok) return;
+      expect(validateOpenKitKnowledgeProfile(parsed.document).conformance).toBe('OKF-compatible');
+    });
+
+    it('accepts known schema features and rejects an explicitly empty schema', () => {
+      expect(
+        parseScopeKnowledgeSchema(
+          `${DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT}requiredFeatures: ${JSON.stringify(features)}\n`
+        ).ok
+      ).toBe(true);
+      expect(
+        validateKnowledgePageCandidate({
+          path: 'pages/scoped.md',
+          content: page(),
+          scopeSchemaText: '',
+          expectedOwnerScope: workspace,
+          registeredSources: new Map(),
+          knowledgeIds: new Set(),
+        })
+      ).toMatchObject({
+        conformance: 'OpenKit-profile-valid',
+        errors: expect.arrayContaining([
+          expect.objectContaining({ code: 'scope_schema.missing_schema_version' }),
+        ]),
+      });
+    });
+
+    it.each(
+      [[1], [null], [{ reference: 'https://example.test' }], 'https://example.test'].map(
+        (value) => [value]
+      )
+    )('keeps source_refs strict %j', (source_refs) => {
+      expect(validateOpenKitKnowledgeProfile(parsedPage({ source_refs })).errors).toContainEqual(
+        expect.objectContaining({ code: 'profile.invalid_source_refs' })
+      );
+    });
+  });
+}
+registerOkfScopedProfileTests();
