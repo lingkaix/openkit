@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,7 +19,7 @@ import { canonicalJsonText, writeRetainedV1 } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { applyEdits, modify, parse as parseJsonc } from 'jsonc-parser';
-import { expect, it, onTestFinished, vi } from 'vitest';
+import { afterAll, beforeAll, expect, it, onTestFinished, vi } from 'vitest';
 import { listSqliteAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -69,6 +70,7 @@ import {
   prepareWorkspaceKnowledgeSelection,
   readControlKnowledgeHead,
 } from './control-store-knowledge.js';
+import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -78,7 +80,7 @@ import {
   ControlSchemaApplicationRefusalSchema,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
-import { openWorkspaceDb, openWorkspaceReadDb } from './db.js';
+import { type CoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
 import { retrieveWorkspaceKnowledge } from './index-rebuild.js';
 import { retrievalTraceRelativePath } from './retrieval-traces.js';
 import { appendWorkObservation, readWorkObservations } from './work-observations.js';
@@ -870,23 +872,29 @@ it('applies only a reviewed complete schema report and respects an existing exte
   ).toEqual(historyBytes);
 });
 
-/** Composes public schema operations with real membership, Source publication and native Store. */
-async function nativeSchemaReviewFixture() {
-  const dataRoot = mkdtempSync(join(tmpdir(), 'native-schema-review-'));
-  const coreDb = createTestCoreDb(dataRoot);
-  const userId = ensureLocalUser(coreDb);
-  const store = createTestStore({ dataRoot });
-  let db: ReturnType<typeof openWorkspaceDb> | undefined;
-  onTestFinished(async () => {
-    await shutdownControlStoreWorkerClient();
-    if (db?.sqlite.open) db.sqlite.close();
-    closeTestCoreDb(coreDb);
-    rmSync(dataRoot, { recursive: true, force: true });
-  });
-  const workspace = await store.createWorkspace('Native schema review');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+interface NativeSchemaReviewFixtureInput {
+  dataRoot: string;
+  coreDb: CoreDb;
+  userId: string;
+  workspace: { id: string };
+  store: ReturnType<typeof createTestStore>;
+  sourcePin: string;
+  sourcePath: string;
+}
+
+/**
+ * Builds the public schema-operation surface on an already prepared Workspace copy.
+ * Source facts are mutable so the base preparation can register its Source before the first
+ * page publication while every test copy starts with the retained Source bytes.
+ */
+function openNativeSchemaReviewFixture(input: NativeSchemaReviewFixtureInput) {
+  const { dataRoot, coreDb, userId, workspace, store: appStore } = input;
+  const sourceRef = { pin: input.sourcePin, path: input.sourcePath };
   const admission = new WorkspaceMutationAdmission();
-  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot, captureCoverage: store });
+  const runtimeConfigManager = createRuntimeConfigManager({
+    dataRoot,
+    captureCoverage: appStore,
+  });
   const fileAdmission = new FileStorageAdmission(
     dataRoot,
     () => 0n,
@@ -896,7 +904,7 @@ async function nativeSchemaReviewFixture() {
     mode: 'server',
     coreDb,
     dataRoot,
-    store,
+    store: appStore,
     workspaceMutationAdmission: admission,
     runtimeConfigManager,
     fileAdmission,
@@ -908,7 +916,6 @@ async function nativeSchemaReviewFixture() {
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
   const workspaceDb = openWorkspaceReadDb(dataRoot, workspace.id);
-  db = workspaceDb;
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   const knowledgeBaseId = readDefaultKnowledgeBaseId({
     dataRoot,
@@ -929,20 +936,12 @@ async function nativeSchemaReviewFixture() {
     });
     return { status: response.status, body: await response.json() };
   };
-  const source = await call('knowledge.source.register', {
-    kind: 'document',
-    title: 'Schema review evidence',
-    content: 'A real captured original shared by the reviewed Pages.',
-  });
-  expect(source.status, JSON.stringify(source.body)).toBe(200);
-  const sourcePin = `source:${source.body.source.id}@${source.body.source.contentDigest}`;
-  const sourcePath = `@sources/${source.body.source.id}.md`;
   const publish = async (path: string, type: 'KnowledgePage' | 'Observation' = 'KnowledgePage') => {
     const content = serializeKnowledgePageFixture(
       {
         title: path,
         content: 'An explicit human-authored Page with admitted Source evidence.',
-        sourceReferences: [sourcePin],
+        sourceReferences: [sourceRef.pin],
         createdAt: '2026-11-03T00:00:00.000Z',
         updatedAt: '2026-11-03T00:00:00.000Z',
       },
@@ -973,12 +972,12 @@ async function nativeSchemaReviewFixture() {
       'trace-references',
     ]);
     expect(report.records).toContainEqual(
-      expect.objectContaining({ path: sourcePath, status: 'valid' })
+      expect.objectContaining({ path: sourceRef.path, status: 'valid' })
     );
     return report;
   };
   const receipt = (requestId: string) =>
-    store.getCommandRequest(
+    appStore.getCommandRequest(
       'knowledge.schema.apply',
       requestId,
       { workspaceId: workspace.id, actorId: userId },
@@ -988,9 +987,14 @@ async function nativeSchemaReviewFixture() {
     listSqliteAuditEvents(workspaceDb.sqlite, workspace.id).filter(
       (row) => row.requestId === requestId
     );
-  await publish('first.md');
+  const dispose = async () => {
+    await shutdownControlStoreWorkerClient();
+    if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+    closeTestCoreDb(coreDb);
+    closeWorkspaceProductReadHandles(dataRoot);
+  };
   return {
-    store,
+    store: appStore,
     workspace,
     userId,
     admission,
@@ -1001,13 +1005,18 @@ async function nativeSchemaReviewFixture() {
     preview,
     receipt,
     audits,
-    sourcePath,
-    sourcePin,
+    sourcePath: input.sourcePath,
+    sourcePin: input.sourcePin,
     dataRoot,
     coreDb,
     workspaceDb,
     runtimeConfigManager,
     fileAdmission,
+    setSource: (pin: string, path: string) => {
+      sourceRef.pin = pin;
+      sourceRef.path = path;
+    },
+    dispose,
     // This operation's strict input has no requestId. Keep the original call helper
     // unchanged and use the same App, manager and genuine credential for publication.
     applyApprovedResourcePolicy: async (input: { threadId: string; approvalRequestId: string }) => {
@@ -1030,6 +1039,90 @@ async function nativeSchemaReviewFixture() {
       tokenWorkspaceIds: [...owner.record.workspaceIds],
     },
   };
+}
+
+interface PreparedNativeSchemaReviewBase {
+  dataRoot: string;
+  workspaceId: string;
+  userId: string;
+  sourcePin: string;
+  sourcePath: string;
+}
+
+let preparedNativeSchemaReviewBase: PreparedNativeSchemaReviewBase | undefined;
+let preparedNativeSchemaReviewRoot: string | undefined;
+
+beforeAll(async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'native-schema-review-base-'));
+  preparedNativeSchemaReviewRoot = dataRoot;
+  const coreDb = createTestCoreDb(dataRoot);
+  const userId = ensureLocalUser(coreDb);
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Native schema review');
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  const fixture = openNativeSchemaReviewFixture({
+    dataRoot,
+    coreDb,
+    userId,
+    workspace,
+    store,
+    sourcePin: '',
+    sourcePath: '',
+  });
+  let sourcePin = '';
+  let sourcePath = '';
+  try {
+    const source = await fixture.call('knowledge.source.register', {
+      kind: 'document',
+      title: 'Schema review evidence',
+      content: 'A real captured original shared by the reviewed Pages.',
+    });
+    expect(source.status, JSON.stringify(source.body)).toBe(200);
+    sourcePin = `source:${source.body.source.id}@${source.body.source.contentDigest}`;
+    sourcePath = `@sources/${source.body.source.id}.md`;
+    fixture.setSource(sourcePin, sourcePath);
+    await fixture.publish('first.md');
+  } finally {
+    await fixture.dispose();
+  }
+  preparedNativeSchemaReviewBase = {
+    dataRoot,
+    workspaceId: workspace.id,
+    userId,
+    sourcePin,
+    sourcePath,
+  };
+}, 60_000);
+
+afterAll(() => {
+  if (preparedNativeSchemaReviewRoot) {
+    rmSync(preparedNativeSchemaReviewRoot, { recursive: true, force: true });
+  }
+});
+
+/** Copies the prepared Workspace bytes and reopens only per-test handles and credentials. */
+async function nativeSchemaReviewFixture() {
+  const base = preparedNativeSchemaReviewBase;
+  if (!base) throw new Error('The native schema review base was not prepared.');
+  const dataRoot = mkdtempSync(join(tmpdir(), 'native-schema-review-'));
+  cpSync(base.dataRoot, dataRoot, { recursive: true });
+  const coreDb = createTestCoreDb(dataRoot);
+  const store = createTestStore({ dataRoot });
+  const workspace = store.getWorkspace(base.workspaceId);
+  const fixture = openNativeSchemaReviewFixture({
+    dataRoot,
+    coreDb,
+    userId: base.userId,
+    workspace,
+    store,
+    sourcePin: base.sourcePin,
+    sourcePath: base.sourcePath,
+  });
+  onTestFinished(async () => {
+    await fixture.dispose();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  return fixture;
 }
 
 /** Complete immutable-history byte inventory; an absent history directory is an empty inventory. */
