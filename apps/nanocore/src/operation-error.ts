@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import type { PiAiFailure } from './llm/pi-ai-failure.js';
 import { ControlStoreNoSpaceError } from './storage/control-store.js';
 import type { ControlCapabilityAdmissionFailure } from './storage/control-store-capability.js';
-import { ControlStoreWorkerError } from './storage/control-store-worker-client.js';
+import { ControlStoreWorkerError } from './storage/control-store-worker-error.js';
 
 /** Fixed public Workspace denial facts shared by existing error subclasses and transport-neutral callers. */
 export const WORKSPACE_ACCESS_DENIED = {

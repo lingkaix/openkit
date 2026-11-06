@@ -2,8 +2,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { commandRequestKey } from '../lib/store.js';
+import { IdempotencyKeyConflictError } from '../operation-error.js';
 import { advanceGoalForThread } from '../runtime/goal-owner.js';
-import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import {
   applyControlPendingCommand,
   assertControlPendingArchive,
@@ -21,6 +21,7 @@ import {
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { applyControlAdmission, ControlAdmissionSchema } from './control-store-admission.js';
+import { commandInputHash } from './control-store-input.js';
 import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,

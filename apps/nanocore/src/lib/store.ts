@@ -152,7 +152,7 @@ import type {
   ExecutionJournalSettlement,
 } from '../runtime/execution-step-journal.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
-import { commandInputHash, type IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
+import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import type {
   ControlPendingCommandInput,
   ControlPendingCommandResult,
@@ -195,6 +195,7 @@ import {
   type ControlAdmissionResult,
   ControlAdmissionSchema,
 } from '../storage/control-store-admission.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import {
   type ControlProductEntry,

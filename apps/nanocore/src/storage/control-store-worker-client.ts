@@ -121,17 +121,18 @@ import type {
 } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
-import { OperationError, restoreControlCapabilityFailure } from '../operation-error.js';
+import {
+  IdempotencyKeyConflictError,
+  OperationError,
+  restoreControlCapabilityFailure,
+} from '../operation-error.js';
 import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
 import {
   type ControlGoalCommandResult,
   type ControlGoalInput,
   GoalCommandError,
 } from '../runtime/goal-owner.js';
-import {
-  IdempotencyKeyConflictError,
-  type IdempotentCommandReceipt,
-} from '../runtime/idempotent-command.js';
+import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import {
   type ControlPendingCommandResult,
   PendingRequestCommandError,
