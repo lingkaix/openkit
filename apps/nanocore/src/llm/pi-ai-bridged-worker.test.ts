@@ -1,10 +1,13 @@
+import { createServer, type Server } from 'node:http';
 import { zstdDecompressSync } from 'node:zlib';
 import {
   type CredentialStore,
+  createAssistantMessageEventStream,
   createModels,
   fauxAssistantMessage,
   fauxProvider,
   fauxText,
+  fauxThinking,
   fauxToolCall,
   getCurrentTools,
   type OAuthCredential,
@@ -13,8 +16,10 @@ import {
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { admitModelRequest } from '../context/model-request-admission.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { GatewayUnsupportedFeatureError, PiAiGatewayClient } from './pi-ai-client.js';
+import { REASONING_ATTRIBUTION_LIMIT, ReasoningAttribution } from './reasoning-attribution.js';
 
 /**
  * Chat-native bridged provider used as the worker-inference Responses test double.
@@ -412,3 +417,403 @@ it('preserves native commentary and final-answer identity across a successful to
   );
   expect(nonStreaming.output).toEqual([reply]);
 });
+
+/** Creates a real pi-ai runtime with a synthetic provider that exposes received history. */
+function fixture() {
+  const faux = fauxProvider({
+    api: 'openai-responses',
+    provider: 'openai-codex',
+    models: [
+      { id: 'gpt-test', reasoning: true },
+      { id: 'gpt-other', reasoning: true },
+    ],
+  });
+  const models = createModels();
+  const history: unknown[] = [];
+  const capsule = {
+    id: `rs_${crypto.randomUUID()}`,
+    type: 'reasoning',
+    encrypted_content: 'opaque-ciphertext',
+    content: null,
+    summary: [{ type: 'summary_text', text: 'Readable reasoning.' }],
+  };
+  const block = {
+    ...fauxThinking('Readable reasoning.'),
+    thinkingSignature: JSON.stringify(capsule),
+  };
+  const message = fauxAssistantMessage([block, fauxText('Answer.')]);
+  Object.assign(faux.provider, {
+    stream: (_model: unknown, context: TranscriptContext) => {
+      history.push(context.messages);
+      const events = createAssistantMessageEventStream();
+      events.push({ type: 'start', partial: { ...message, content: [] } });
+      events.push({
+        type: 'thinking_end',
+        contentIndex: 0,
+        content: block.thinking,
+        partial: message,
+      });
+      events.push({ type: 'text_end', contentIndex: 1, content: 'Answer.', partial: message });
+      events.push({ type: 'done', reason: 'stop', message });
+      events.end(message);
+      return events;
+    },
+  });
+  models.setProvider(faux.provider);
+  const provider = {
+    id: 'account-a',
+    adapterId: 'openai-codex',
+    subscriptionProviderId: 'openai-codex',
+    backend: 'pi-ai',
+    apiKey: null,
+    requiresApiKey: false,
+    baseUrl: null,
+    models: ['gpt-test', 'gpt-other'],
+    gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+  } as unknown as ResolvedLLMProviderConfig;
+  return { capsule, history, models, provider };
+}
+
+/** Builds a reasoning/tool history with an fc_ identity tied to the capsule. */
+function replay(capsule: Record<string, unknown>) {
+  return {
+    model: 'gpt-test',
+    input: [
+      capsule,
+      {
+        type: 'function_call',
+        id: 'fc_paired',
+        call_id: 'call_paired',
+        name: 'check',
+        arguments: '{}',
+      },
+      { type: 'function_call_output', call_id: 'call_paired', output: 'ok' },
+    ],
+    tools: [{ type: 'function', name: 'check', parameters: { type: 'object', properties: {} } }],
+  };
+}
+
+describe('pi-ai reasoning attribution', () => {
+  it('hands external capsules off as readable assistant text and drops the paired fc_ id', async () => {
+    const { capsule, history, models, provider } = fixture();
+    await new PiAiGatewayClient().createResponses(provider, replay(capsule), undefined, {}, models);
+    const bytes = JSON.stringify(history.at(-1));
+    expect(bytes).toContain('Readable reasoning.');
+    expect(bytes).not.toContain('opaque-ciphertext');
+    expect(bytes).not.toContain('thinkingSignature');
+    expect(bytes).not.toContain('fc_paired');
+    expect(bytes).toContain('call_paired');
+  });
+  it.each([
+    'restart',
+    'eviction',
+  ])('uses readable handoff after %s even for the original member', async (loss) => {
+    const { history, models, provider } = fixture();
+    const association = new ReasoningAttribution();
+    const client = new PiAiGatewayClient({ reasoningAttribution: association });
+    const response = await client.createResponses(
+      provider,
+      { model: 'gpt-test', input: 'hello' },
+      undefined,
+      {},
+      models
+    );
+    if (loss === 'eviction') {
+      for (let index = 0; index < REASONING_ATTRIBUTION_LIMIT; index++)
+        association.record(`rs_other_${index}`, { providerId: provider.id, modelId: 'gpt-test' });
+    }
+    const restarted =
+      loss === 'restart'
+        ? new PiAiGatewayClient({ reasoningAttribution: new ReasoningAttribution() })
+        : client;
+    await restarted.createResponses(provider, replay(response.output![0]!), undefined, {}, models);
+    const bytes = JSON.stringify(history.at(-1));
+    expect(bytes).toContain('Readable reasoning.');
+    expect(bytes).not.toContain('opaque-ciphertext');
+    expect(bytes).not.toContain('thinkingSignature');
+    expect(bytes).not.toContain('fc_paired');
+  });
+  it('matches two logical-model dispatches using the same profile and native model across clients', async () => {
+    const { history, models, provider } = fixture();
+    // Logical route ids are resolved above the client; both dispatches arrive with this same native id.
+    const first = await new PiAiGatewayClient().createResponses(
+      provider,
+      { model: 'gpt-test', input: 'first logical model' },
+      undefined,
+      {},
+      models
+    );
+    await new PiAiGatewayClient().createResponses(
+      provider,
+      replay(first.output![0]!),
+      undefined,
+      {},
+      models
+    );
+    expect(JSON.stringify(history.at(-1))).toContain('opaque-ciphertext');
+    expect(JSON.stringify(history.at(-1))).toContain('fc_paired');
+  });
+  it.each([
+    [[]],
+    [[{ type: 'summary_text', text: '  ' }]],
+  ])('omits unattributed empty/redacted thinking (%j)', async (summary) => {
+    const { history, models, provider, capsule } = fixture();
+    await new PiAiGatewayClient().createResponses(
+      provider,
+      replay({ ...capsule, summary }),
+      undefined,
+      {},
+      models
+    );
+    const bytes = JSON.stringify(history.at(-1));
+    expect(bytes).not.toContain('opaque-ciphertext');
+    expect(bytes).not.toContain('thinkingSignature');
+    expect(bytes).not.toContain('fc_paired');
+    expect(bytes).not.toContain('"type":"thinking"');
+  });
+  it.each([
+    false,
+    true,
+  ])('preserves only same-profile/native-model round trips (stream=%s)', async (stream) => {
+    const { capsule, history, models, provider } = fixture();
+    const client = new PiAiGatewayClient();
+    const request = { model: 'gpt-test', input: 'hello' };
+    const response = stream
+      ? JSON.parse(
+          (
+            await new Response(
+              await client.createResponsesStream(provider, request, undefined, {}, models)
+            ).text()
+          )
+            .split('\n')
+            .find((line) => line.includes('"type":"response.completed"'))!
+            .slice(6)
+        ).response
+      : await client.createResponses(provider, request, undefined, {}, models);
+    expect(response.output[0]).toEqual({ ...capsule, status: 'completed' });
+    await client.createResponses(provider, replay(response.output[0]), undefined, {}, models);
+    expect(JSON.stringify(history.at(-1))).toContain('opaque-ciphertext');
+    expect(JSON.stringify(history.at(-1))).toContain('fc_paired');
+    await client.createResponses(
+      { ...provider, id: 'account-b' },
+      replay(response.output[0]),
+      undefined,
+      {},
+      models
+    );
+    expect(JSON.stringify(history.at(-1))).not.toContain('opaque-ciphertext');
+    expect(JSON.stringify(history.at(-1))).not.toContain('fc_paired');
+    await client.createResponses(
+      provider,
+      { ...replay(response.output[0]), model: 'gpt-other' },
+      undefined,
+      {},
+      models
+    );
+    expect(JSON.stringify(history.at(-1))).not.toContain('opaque-ciphertext');
+  });
+});
+
+function registerPiAiImageInputTests() {
+  const png =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  const jpeg =
+    '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAABAAEDAREAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAb/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCwAB//2Q==';
+  const servers: Server[] = [];
+  afterEach(async () => {
+    for (const server of servers.splice(0)) {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      );
+    }
+  });
+
+  /** Uses the pinned stock Codex serializer with a test-owned HTTP endpoint and synthetic auth. */
+  async function fixture(imageInput = true, contextWindowTokens = 131_072) {
+    const bodies: Record<string, unknown>[] = [];
+    const server = createServer((request, response) => {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        const encoded = Buffer.concat(chunks);
+        const decoded =
+          request.headers['content-encoding'] === 'zstd' ? zstdDecompressSync(encoded) : encoded;
+        bodies.push(JSON.parse(decoded.toString('utf8')));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          `data: ${JSON.stringify({
+            type: 'response.completed',
+            response: {
+              id: 'resp_image',
+              status: 'completed',
+              output: [],
+              usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 },
+            },
+          })}\n\n`
+        );
+      })().catch((error: unknown) => response.destroy(error as Error));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Fixture endpoint unavailable.');
+    const models = createModels();
+    const stock = openaiCodexProvider();
+    models.setProvider(stock);
+    const model = models.getModels().find((entry) => entry.api === 'openai-codex-responses');
+    if (!model) throw new Error('Stock Codex fixture model unavailable.');
+    const provider: ResolvedLLMProviderConfig = {
+      id: 'image-fixture',
+      displayName: 'Image fixture',
+      adapterId: stock.id,
+      apiKey: `synthetic.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture' } })).toString('base64url')}.synthetic`,
+      baseUrl: `http://127.0.0.1:${address.port}/v1`,
+      models: [model.id],
+      modelMetadata: {
+        [model.id]: {
+          modalities: { input: imageInput ? ['text', 'image'] : ['text'] },
+          limit: { context: contextWindowTokens, output: 8_192 },
+        },
+      },
+      requiresApiKey: true,
+      gatewayCapabilities: { responses: 'native', chatCompletions: 'bridged' },
+    };
+    const attribution = new ReasoningAttribution();
+    attribution.record('rs_image', { providerId: provider.id, modelId: model.id });
+    return {
+      client: new PiAiGatewayClient({ models, reasoningAttribution: attribution }),
+      provider,
+      model,
+      bodies,
+    };
+  }
+
+  /** Carries inline user PNG and native function-result JPEG with retained text and reasoning history. */
+  function request(model: string) {
+    return {
+      model,
+      instructions: 'Keep the selected source identity.',
+      max_output_tokens: 32,
+      tools: [
+        {
+          type: 'function',
+          name: 'work_source_view',
+          parameters: { type: 'object', properties: {} },
+          strict: false,
+        },
+      ],
+      input: [
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: 'Read this PNG.' },
+            { type: 'input_image', image_url: `data:image/png;base64,${png}`, detail: 'auto' },
+          ],
+        },
+        {
+          type: 'reasoning',
+          id: 'rs_image',
+          summary: [{ type: 'summary_text', text: 'Preserve earlier reasoning.' }],
+          encrypted_content: 'synthetic-opaque-reasoning',
+        },
+        {
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'Read the bounded source view.' }],
+        },
+        {
+          type: 'function_call',
+          id: 'fc_view',
+          call_id: 'call_view',
+          name: 'work_source_view',
+          arguments: '{}',
+        },
+        {
+          type: 'function_call_output',
+          call_id: 'call_view',
+          output: [
+            { type: 'input_text', text: 'Exact source and crop facts.' },
+            { type: 'input_image', image_url: `data:image/jpeg;base64,${jpeg}`, detail: 'high' },
+            { type: 'input_text', text: 'Keep the complete trailing facts.' },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('preserves native PNG/JPEG bytes and history through stock HTTP and final request admission', async () => {
+    const f = await fixture();
+    const input = request(f.model.id);
+    const before = structuredClone(input);
+    const admitted: unknown[] = [];
+    const response = await f.client.createResponses(f.provider, input, undefined, {
+      finalRequestAdmission: (final) => {
+        admitted.push(final.payload);
+        admitModelRequest({
+          payload: final.payload,
+          contextWindowTokens: final.contextWindowTokens,
+          outputReserveTokens: final.outputReserveTokens,
+        });
+      },
+    });
+
+    expect(response.status).toBe('completed');
+    expect(f.bodies).toHaveLength(1);
+    expect(f.bodies[0]!.input).toEqual(input.input);
+    expect(f.bodies[0]!.instructions).toBe(input.instructions);
+    expect(admitted).toEqual(f.bodies);
+    expect(input).toEqual(before);
+  });
+
+  it('refuses the same images on a text-only selected model before HTTP or final handoff', async () => {
+    const f = await fixture(false);
+    const admission = vi.fn();
+    await expect(
+      f.client.createResponses(f.provider, request(f.model.id), undefined, {
+        finalRequestAdmission: admission,
+      })
+    ).rejects.toMatchObject({
+      code: 'unsupported_gateway_feature',
+      feature: 'pi-ai Responses model image input',
+    });
+    expect(f.bodies).toEqual([]);
+    expect(admission).not.toHaveBeenCalled();
+  });
+
+  it('refuses the approximate image allowance at the actual final callback before any stock HTTP effect', async () => {
+    // The two image allowances, fixed margin and actual reserve already exceed this physical capacity, before text metadata.
+    const capacity = 2 * 8_192 + 4_096 + 32 - 1;
+    const f = await fixture(true, capacity);
+    const input = request(f.model.id);
+    const before = structuredClone(input);
+    let admissionFailure: unknown;
+    const admission = vi.fn(
+      (
+        final: Parameters<typeof admitModelRequest>[0] & { codexTurnState?: string | undefined }
+      ) => {
+        expect(final.contextWindowTokens).toBe(capacity);
+        expect(final.outputReserveTokens).toBe(32);
+        expect(final.payload).toMatchObject({
+          input: input.input,
+          instructions: input.instructions,
+        });
+        try {
+          admitModelRequest({ ...final, continuity: final.codexTurnState });
+        } catch (error) {
+          admissionFailure = error;
+          throw error;
+        }
+      }
+    );
+    await expect(
+      f.client.createResponses(f.provider, input, undefined, {
+        finalRequestAdmission: admission,
+      })
+    ).rejects.toThrow();
+    expect(admission).toHaveBeenCalledOnce();
+    expect(admissionFailure).toMatchObject({ code: 'internal_agent_context_exceeded' });
+    expect(f.bodies).toEqual([]);
+    expect(input).toEqual(before);
+  });
+}
+registerPiAiImageInputTests();
