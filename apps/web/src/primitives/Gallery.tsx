@@ -1,41 +1,31 @@
 import { UNSTABLE_ToastQueue as AriaToastQueue } from 'react-aria-components';
-import {
-  ArtifactRow,
-  AssistantMessage,
-  Avatar,
-  Button,
-  ChannelTag,
-  CodeView,
-  Composer,
-  CountBadge,
-  Dialog,
-  DiffView,
-  EmptyState,
-  ErrorBanner,
-  Icon,
-  ItemCard,
-  KanbanCard,
-  KanbanColumn,
-  MaterialEditor,
-  Menu,
-  Meter,
-  Modal,
-  NavRow,
-  PhaseStepper,
-  Progress,
-  RadioGroup,
-  Select,
-  Skeleton,
-  StatusChip,
-  Switch,
-  Table,
-  Tabs,
-  TextField,
-  Toast,
-  ToastProvider,
-  TurnSeparator,
-  UserMessage,
-} from './index';
+import { ArtifactRow } from './ArtifactRow';
+import { Avatar } from './Avatar';
+import { CountBadge } from './Badge';
+import { Button } from './Button';
+import { ChannelTag } from './ChannelTag';
+import { StatusChip } from './Chip';
+import { Composer } from './Composer';
+import { Dialog, Modal } from './Dialog';
+import { CodeView, DiffView } from './DiffView';
+import { Icon } from './Icon';
+import { ItemCard } from './ItemCard';
+import { KanbanCard, KanbanColumn } from './Kanban';
+import { MaterialEditor } from './MaterialEditor';
+import { Menu } from './Menu';
+import { AssistantMessage, UserMessage } from './Message';
+import { NavRow } from './NavRow';
+import { PhaseStepper } from './PhaseStepper';
+import { Meter, Progress } from './Progress';
+import { RadioGroup } from './RadioGroup';
+import { Select } from './Select';
+import { Switch } from './Switch';
+import { EmptyState, ErrorBanner, Skeleton } from './states';
+import { Table } from './Table';
+import { Tabs } from './Tabs';
+import { TextField } from './TextField';
+import { Toast, ToastProvider } from './Toast';
+import { TurnSeparator } from './TurnSeparator';
 
 /** Isolated preview queue that never consumes app-level notifications. */
 const galleryToastQueue = new AriaToastQueue<string>();
