@@ -483,4 +483,87 @@ describe('canonical page commands compose the native Notebook publisher and read
     ).toEqual(['notes/page-d', 'notes/page-e']);
     expect(resumedAfterRestriction.body.nextCursor).toBeNull();
   });
+
+  it('continues knowledge.retrieval across a candidate score change without error or un-admitted rows', async () => {
+    const f = await fixture();
+    const initial = await listing(f);
+    const admittedIds = ['notes/rank-a', 'notes/rank-b', 'notes/rank-c'];
+    const seeded = await call(f, 'knowledge.notebook.update', {
+      requestId: randomUUID(),
+      baseRevision: initial.notebookRevision,
+      changes: [
+        {
+          path: 'notes/rank-a.md',
+          content: page(
+            f,
+            'score-shift-needle score-shift-needle score-shift-needle score-shift-needle'
+          ),
+        },
+        {
+          path: 'notes/rank-b.md',
+          content: page(f, 'score-shift-needle score-shift-needle'),
+        },
+        {
+          path: 'notes/rank-c.md',
+          content: page(f, 'score-shift-needle'),
+        },
+        {
+          path: 'notes/rank-hidden.md',
+          content: page(f, 'score-shift-needle score-shift-needle score-shift-needle').replace(
+            'sensitivity: normal',
+            'sensitivity: confidential'
+          ),
+        },
+      ],
+      summary: 'Seed ranked retrieval candidates and one confidential candidate',
+    });
+    expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
+
+    const page1 = await call(f, 'knowledge.retrieval', {
+      query: 'score-shift-needle',
+      limit: 1,
+    });
+    expect(page1.status, JSON.stringify(page1.body)).toBe(200);
+    const page1Ids = (page1.body.selected as Array<{ reference: { objectId: string } }>).map(
+      (row) => row.reference.objectId
+    );
+    expect(page1Ids).toEqual(['notes/rank-a']);
+    expect(typeof page1.body.nextCursor).toBe('string');
+
+    const reindexed = await call(f, 'knowledge.notebook.update', {
+      requestId: randomUUID(),
+      baseRevision: seeded.body.notebookRevision,
+      changes: [
+        {
+          path: 'notes/rank-a.md',
+          content: page(f, 'score-shift-needle'),
+        },
+        {
+          path: 'notes/rank-b.md',
+          content: page(
+            f,
+            'score-shift-needle score-shift-needle score-shift-needle score-shift-needle score-shift-needle'
+          ),
+        },
+      ],
+      summary: 'Shift candidate scores between page 1 and page 2',
+    });
+    expect(reindexed.status, JSON.stringify(reindexed.body)).toBe(200);
+
+    const page2 = await call(f, 'knowledge.retrieval', {
+      query: 'score-shift-needle',
+      limit: 2,
+      cursor: page1.body.nextCursor,
+    });
+    expect(page2.status, JSON.stringify(page2.body)).toBe(200);
+    const page2Ids = (page2.body.selected as Array<{ reference: { objectId: string } }>).map(
+      (row) => row.reference.objectId
+    );
+    expect(page2Ids.length).toBeGreaterThan(0);
+    for (const id of page2Ids) {
+      expect(admittedIds).toContain(id);
+    }
+    expect(page2Ids).not.toContain('notes/rank-hidden');
+    expect(page2.body.nextCursor === null || typeof page2.body.nextCursor === 'string').toBe(true);
+  });
 });

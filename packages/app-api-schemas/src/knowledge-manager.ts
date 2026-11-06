@@ -207,7 +207,13 @@ export const RetrieveKnowledgeRequestSchema = z
   .object({
     query: z.string().min(1),
     limit: z.number().int().positive().max(20).default(5),
-    cursor: z.string().min(1).optional(),
+    cursor: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Opaque continuation over the current relevance ranking; rows can shift if the index changes between calls, and results stay limited to the caller's current admission."
+      ),
     pinnedReferences: z.array(KnowledgePageReferenceSchema).default([]),
     states: z
       .array(z.enum(['active', 'draft', 'archived', 'superseded']))

@@ -7094,7 +7094,7 @@
         "tags": [
           "knowledge"
         ],
-        "summary": "Retrieve governed, source-qualified Knowledge candidates in the trusted query context.",
+        "summary": "Retrieve governed, source-qualified Knowledge candidates in the trusted query context. Continuation follows the current ranking; rows can shift if the index changes between calls, and results stay limited to the caller's current admission.",
         "security": [
           {
             "bearerAuth": []
@@ -7115,7 +7115,7 @@
         },
         "responses": {
           "200": {
-            "description": "Retrieve governed, source-qualified Knowledge candidates in the trusted query context.",
+            "description": "Retrieve governed, source-qualified Knowledge candidates in the trusted query context. Continuation follows the current ranking; rows can shift if the index changes between calls, and results stay limited to the caller's current admission.",
             "content": {
               "application/json": {
                 "schema": {
@@ -68983,6 +68983,7 @@
             "maximum": 20
           },
           "cursor": {
+            "description": "Opaque continuation over the current relevance ranking; rows can shift if the index changes between calls, and results stay limited to the caller's current admission.",
             "type": "string",
             "minLength": 1
           },
@@ -73571,6 +73572,7 @@
             "maximum": 20
           },
           "cursor": {
+            "description": "Opaque continuation over the current relevance ranking; rows can shift if the index changes between calls, and results stay limited to the caller's current admission.",
             "type": "string",
             "minLength": 1
           },
@@ -155342,5 +155344,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:6776e4bf542afa6d633d9ba87f0c403773cb6aeac6a66ac36cabdc605947c962"
+  "x-openkit-source-digest": "sha256:4c500f13277b15500843eede60cfd32412171f0fa57eaccfbf47ad381488e3f9"
 }

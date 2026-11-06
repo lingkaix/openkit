@@ -62,6 +62,8 @@ Public `audit.workspace-list`, `audit.server-list`, `permission.workspace-list`,
 
 Public `conversation.navigation` applies the same optional positive-integer `limit` and opaque Workspace-scoped `cursor` continuation over visible active Threads ordered by working/actionable precedence and descending `(lastActivityAt,thread.id)`, returning sibling `nextCursor` or `null` after re-evaluating Workspace admission and Thread visibility on every read.
 
+Public `knowledge.retrieval` continuation follows the current relevance ranking. Rows can shift if the index changes between calls, and results stay limited to the caller's current admission.
+
 Internal Chat, Administration and Knowledge Manager Stop commands wait for their native terminal result. The original Stop receipt and Audit commit with that result, together with the original conversation command when both converge. A terminal refusal returns recovery_required and commits neither tuple; actual provider cancellation remains a separate runtime fact.
 
 Dashboard newest-Artifact selection stays in `src/app-dashboard.ts`, preserving inventory order and the first equal-timestamp candidate. Completion summaries select the newest exact-Turn Artifact before the Thread fallback, then use its summary or the Thread preview; empty summaries remain empty.

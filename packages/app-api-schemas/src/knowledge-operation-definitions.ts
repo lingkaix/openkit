@@ -182,7 +182,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description:
-      'Retrieve governed, source-qualified Knowledge candidates in the trusted query context.',
+      "Retrieve governed, source-qualified Knowledge candidates in the trusted query context. Continuation follows the current ranking; rows can shift if the index changes between calls, and results stay limited to the caller's current admission.",
     inputSchema: RetrieveKnowledgeRequestSchema.extend({ ...workspaceSelector }).strict(),
     outputSchema: KnowledgeRetrievalResponseSchema,
     credentials: publicCredentials,
